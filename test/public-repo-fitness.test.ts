@@ -8,6 +8,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { scanRepo, trackedFiles } from '../scripts/public-repo-scan.mjs';
+import { loadTemplate } from './helpers/cfn.ts';
 import { appliesStack, REPO_ROOT } from './helpers/repo-model.ts';
 import { loadWorkflow } from './helpers/workflow.ts';
 
@@ -26,13 +27,19 @@ describe('fitness: no file names the old home, holds an id, or cites an issue of
 });
 
 // Anyone can read a public repo's Actions logs, and a step's env block prints
-// each value it is given. Actions masks only secrets.
-describe('fitness: the deploy reads the alert email and the drop box from repository secrets (public-repo.md)', () => {
+// each value it is given. Actions masks only a secret's exact string.
+describe('fitness: the alert email never passes through GitHub, and the drop box is a repository secret (public-repo.md)', () => {
   const { workflow, codeOnly } = loadWorkflow(resolve(REPO_ROOT, '.github/workflows/deploy.yml'));
   const apply = (workflow.jobs?.deploy?.steps ?? []).find(appliesStack('governor'));
+  const stack = loadTemplate(resolve(REPO_ROOT, 'infra/governor.cfn.yml'));
 
-  test('the apply takes both from secrets', () => {
-    assert.equal(apply?.env?.ALERT_EMAIL, '${{ secrets.ALERT_EMAIL }}');
+  test('the stack reads the alert email from Parameter Store, and the deploy names it nowhere', () => {
+    assert.equal(stack.Parameters?.AlertEmail?.Type, 'AWS::SSM::Parameter::Value<String>');
+    assert.equal(stack.Parameters?.AlertEmail?.Default, '/governor/alert-email');
+    assert.doesNotMatch(codeOnly, /ALERT_EMAIL|AlertEmail/);
+  });
+
+  test('the apply takes the drop box from a secret', () => {
     assert.equal(apply?.env?.DROP_BOX_URL, '${{ secrets.DROP_BOX_URL }}');
   });
 

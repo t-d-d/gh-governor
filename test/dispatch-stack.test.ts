@@ -498,16 +498,19 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /stoppedReason/);
   });
 
-  test('every alarm publishes to the stack\'s own alerts topic, which emails the address the deploy names', () => {
+  test('every alarm publishes to the stack\'s own alerts topic, which emails the address in Parameter Store', () => {
     for (const [id, r] of resourcesOfType(template, 'AWS::CloudWatch::Alarm')) {
       assert.deepEqual(r.Properties?.AlarmActions, ['${AlertsTopic}'], `${id} does not publish to the alerts topic`);
     }
     assert.equal(template.Resources.AlertsTopic?.Type, 'AWS::SNS::Topic');
     assert.deepEqual(template.Resources.AlertsTopic?.Properties?.Subscription, [{ Protocol: 'email', Endpoint: '${AlertEmail}' }]);
-    assert.equal(template.Parameters?.AlertEmail?.Default, undefined, 'an alert address is required');
+    // CloudFormation reads the address inside AWS on every apply, so it never
+    // passes through GitHub, and a stack whose parameter is missing fails.
+    assert.equal(template.Parameters?.AlertEmail?.Type, 'AWS::SSM::Parameter::Value<String>');
+    assert.equal(template.Parameters?.AlertEmail?.Default, '/governor/alert-email');
     const apply = steps.find(appliesStack('governor'));
-    assert.match(apply?.run ?? '', /"AlertEmail=\$\{ALERT_EMAIL\}"/);
-    assert.equal(apply?.env?.ALERT_EMAIL, '${{ secrets.ALERT_EMAIL }}');
+    assert.doesNotMatch(apply?.run ?? '', /AlertEmail=/, 'the deploy passes the address, which it should never hold');
+    assert.equal(apply?.env?.ALERT_EMAIL, undefined);
   });
 
   test('no alarm carries a Retain in its steady-state home', () => {
@@ -615,10 +618,10 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
     for (const line of lines) {
       assert.doesNotMatch(line, /echo "(?!::add-mask::).*(WEBHOOK_SECRET|APP_PRIVATE_KEY)|point-app-webhook\.mjs\s+\S/, 'the keys must reach the script through the environment');
     }
-    // GitHub holds only the two values a public log must not show
-    // (public-repo.md); the App key lives in Secrets Manager.
+    // GitHub holds only the drop box (public-repo.md); the App key lives in
+    // Secrets Manager, and the alert email in Parameter Store.
     const githubSecrets = [...new Set([...codeOnly.matchAll(/\bsecrets\.([A-Za-z_]+)/g)].map((m) => m[1]))].sort();
-    assert.deepEqual(githubSecrets, ['ALERT_EMAIL', 'DROP_BOX_URL'], 'a GitHub secret beyond the alert email and the drop box');
+    assert.deepEqual(githubSecrets, ['DROP_BOX_URL'], 'a GitHub secret beyond the drop box');
   });
 
   test('the workflow packages the receiver before the apply, and applies the packaged template', () => {

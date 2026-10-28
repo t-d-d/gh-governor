@@ -184,17 +184,18 @@ Under your account's or organisation's **Settings → Developer settings → Git
 
 Only a run on your repo's `main` can assume the role. The trust names the repo by its owner and repo ids as well as their names, which is the token subject GitHub gives a repo created after 15 July 2026. The role has `AdministratorAccess`. It creates the main stack's IAM roles, and a role that can do that can make itself an administrator anyway, which is why the account should hold governor alone.
 
-### 4. Save the secrets
+### 4. Save the secrets and the alert address
 
-From a machine with the AWS CLI signed in as an identity that may write the secrets (`--profile` names an AWS CLI profile; leave it out in CloudShell), in a checkout of your repo. The scripts pass no region, so the profile's region must be the deploy's: set `AWS_REGION` to it in the shell first if it is not.
+From a machine with the AWS CLI signed in as an identity that may write the secrets and the parameter (`--profile` names an AWS CLI profile; leave it out in CloudShell), in a checkout of your repo. The commands pass no region, so the profile's region must be the deploy's: set `AWS_REGION` to it in the shell first if it is not.
 
 1. The App key: `node scripts/save-secret.mjs github-app --app-id <id> --file <app.pem> --profile <p>`. The deploy and the task read the App key from Secrets Manager, never from a GitHub secret.
 2. The claude.ai login: `node scripts/mint-claude-login.mjs --profile <p>`. It signs in under a throwaway directory, so the login your machine already holds is untouched. Sign in with the subscription account the sessions will run under. It prints the login's expiry; mint again before that date.
-3. Optional, with a drop box: the drop-box writer, `node scripts/save-secret.mjs session-log-writer --file <writer.txt> --profile <p>`. The file holds 32 or more lowercase hex digits.
+3. The address the alarms email, in Parameter Store: `aws ssm put-parameter --name /governor/alert-email --type String --value <address> --profile <p>`. The stack reads it there on every deploy, so it never passes through GitHub. To change it, put the new address with `--overwrite`, deploy, and confirm the subscription AWS emails to the new address.
+4. Optional, with a drop box: the drop-box writer, `node scripts/save-secret.mjs session-log-writer --file <writer.txt> --profile <p>`. The file holds 32 or more lowercase hex digits.
 
-### 5. Set the repository variables and secrets
+### 5. Set the repository variables and secret
 
-Under the repo's **Settings → Secrets and variables → Actions**. Anyone can read a public repo's run logs, and Actions masks only secrets, so the alert email and the drop box are secrets.
+Under the repo's **Settings → Secrets and variables → Actions**. Anyone can read a public repo's run logs, and Actions masks only secrets, so the drop box is a secret.
 
 | Variable | Value |
 |---|---|
@@ -207,7 +208,6 @@ Under the repo's **Settings → Secrets and variables → Actions**. Anyone can 
 
 | Secret | Value |
 |---|---|
-| `ALERT_EMAIL` | Where the alarms send email. |
 | `DROP_BOX_URL` | Optional. An https URL that the PR review's transcripts are PUT under. Unset ships none. |
 
 ### 6. Run the first deploy
@@ -216,7 +216,7 @@ Run the **Deploy** workflow on `main` from the Actions tab, or merge to `main`. 
 
 If the first deploy fails while it creates the main stack, the stack is left in `ROLLBACK_COMPLETE`, and every later deploy refuses until it is gone. Delete it with `aws cloudformation delete-stack --stack-name governor`, and run the deploy again. The secrets are in the bootstrap stack, so the delete loses nothing you saved.
 
-Confirm the alerts subscription from the email AWS sends to `ALERT_EMAIL`. Until you do, the alarms send nothing.
+Confirm the alerts subscription from the email AWS sends to the alert address. Until you do, the alarms send nothing.
 
 ### 7. Read governor's logs
 

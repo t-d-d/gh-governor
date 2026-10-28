@@ -265,7 +265,7 @@ Never sign that login out: a revoke would kill the stored copy. A refresh rotate
 
 ## Alarms
 
-Every alarm publishes to the `governor-alerts` topic, which emails `AlertEmail` once the subscription is confirmed.
+Every alarm publishes to the `governor-alerts` topic, which emails the address in Parameter Store under `/governor/alert-email` once the subscription is confirmed.
 
 | Alarm | Fires on |
 |---|---|

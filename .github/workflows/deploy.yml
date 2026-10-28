@@ -8,9 +8,11 @@
 #
 # The deploy job does nothing until the AWS_DEPLOY_ROLE_ARN variable is set,
 # so a fork's first merges run the gate alone. Its settings are repository
-# variables and secrets, never values in this file. Anyone can read a public
-# repo's run logs, and Actions masks only secrets, so the two values a reader
-# could use are secrets (docs/constraints/public-repo.md).
+# variables and a secret, never values in this file. Anyone can read a public
+# repo's run logs, and Actions masks only a secret's exact string, so the drop
+# box is a secret, and the alert email never passes through GitHub: the stack
+# reads it from Parameter Store, /governor/alert-email
+# (docs/constraints/public-repo.md).
 #
 #   AWS_DEPLOY_ROLE_ARN  variable: the role the job assumes through GitHub's
 #                        OIDC, the bootstrap stack's output
@@ -19,7 +21,6 @@
 #   APP_ID               variable: the GitHub App's ID
 #   APP_SLUG             variable: the App's slug, for the app-events check
 #   SELECT_LABELS        variable: the labels whose addition queues a selection fire
-#   ALERT_EMAIL          secret: where the alarms send their email
 #   DROP_BOX_URL         secret, optional: where the PR review's transcripts go
 #
 # One job, in order: apply the bootstrap stack (infra/bootstrap.cfn.yml),
@@ -194,19 +195,16 @@ jobs:
           GOVERNOR_OWNERS: ${{ vars.GOVERNOR_OWNERS }}
           APP_ID: ${{ vars.APP_ID }}
           SELECT_LABELS: ${{ vars.SELECT_LABELS }}
-          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           DROP_BOX_URL: ${{ secrets.DROP_BOX_URL }}
         run: |
           if [[ ! "$APP_ID" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::APP_ID variable is not an App ID"
             exit 1
           fi
-          for name in GOVERNOR_OWNERS ALERT_EMAIL; do
-            if [[ -z "${!name}" ]]; then
-              echo "::error::${name} is not set"
-              exit 1
-            fi
-          done
+          if [[ -z "$GOVERNOR_OWNERS" ]]; then
+            echo "::error::the GOVERNOR_OWNERS variable is not set"
+            exit 1
+          fi
           # The packaged template: the source one still carries `Code: ../dispatch/webhook/`.
           aws cloudformation deploy \
             --stack-name governor \
@@ -219,7 +217,6 @@ jobs:
               "DispatchOwners=${GOVERNOR_OWNERS}" \
               "GitHubAppId=${APP_ID}" \
               "SelectLabels=${SELECT_LABELS}" \
-              "AlertEmail=${ALERT_EMAIL}" \
               "DropBoxUrl=${DROP_BOX_URL}"
 
       # The App's webhook follows the stack: the receiver's URL and the
