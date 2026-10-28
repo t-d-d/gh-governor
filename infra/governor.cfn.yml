@@ -89,55 +89,11 @@ Parameters:
 # Resources
 # ─────────────────────────────────────────────────────────────────────────────
 Resources:
-  # ── The secrets ────────────────────────────────────────────────────────────
-  # Each is created holding a random placeholder that nothing reads as a
-  # value: CloudFormation owns the secret's existence and its policy, never
-  # its contents. The operator writes each once: the login with
-  # scripts/mint-claude-login.mjs --to secretsmanager, the App key and the
-  # drop-box writer with scripts/save-secret.mjs.
-  # A template change that does not touch GenerateSecretString leaves the
-  # stored value alone.
-  ClaudeLoginSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: governor/claude-login
-      Description: >-
-        A stored claude.ai login (the CLI's .credentials.json, beside its
-        account and org UUIDs), minted by
-        scripts/mint-claude-login.mjs. The dispatcher refreshes it
-        and writes it back; nothing else reads it.
-      GenerateSecretString:
-        SecretStringTemplate: '{}'
-        GenerateStringKey: placeholder
-        ExcludePunctuation: true
-
-  GitHubAppSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: governor/github-app
-      Description: >-
-        {"appId", "privateKey"} of the GitHub App, written by the operator
-        with scripts/save-secret.mjs. The task mints installation tokens from
-        it, and the deploy its JWT to point the App's webhook.
-      GenerateSecretString:
-        SecretStringTemplate: '{}'
-        GenerateStringKey: placeholder
-        ExcludePunctuation: true
-
-  # The PR review's transcripts go to the drop box DropBoxUrl names, under
-  # this writer credential. The turn reads a placeholder as no writer, and
-  # ships nothing.
-  SessionLogWriterSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: governor/session-log-writer
-      Description: >-
-        The drop-box writer credential the PR review's transcripts are sent
-        with, written by the operator with scripts/save-secret.mjs.
-      GenerateSecretString:
-        SecretStringTemplate: '{}'
-        GenerateStringKey: placeholder
-        ExcludePunctuation: true
+  # The secrets the operator writes (governor/claude-login,
+  # governor/github-app, governor/session-log-writer) live in the bootstrap
+  # stack, infra/bootstrap.cfn.yml, so they exist before this stack's first
+  # deploy and outlive a delete of it. This stack names them; Secrets Manager
+  # ends each ARN with six random characters after the name.
 
   # ── The alerts ─────────────────────────────────────────────────────────────
   # Every alarm publishes here, and the topic emails AlertEmail once the
@@ -218,15 +174,15 @@ Resources:
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource:
-                  - !Ref ClaudeLoginSecret
-                  - !Ref GitHubAppSecret
-                  - !Ref SessionLogWriterSecret
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:governor/claude-login-??????'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:governor/github-app-??????'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:governor/session-log-writer-??????'
               # The CLI rotates the refresh token when it refreshes; the
               # rotated login has to go back or the next turn holds a dead one.
               - Sid: WriteBackTheLogin
                 Effect: Allow
                 Action: secretsmanager:PutSecretValue
-                Resource: !Ref ClaudeLoginSecret
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:governor/claude-login-??????'
               # A turn that messaged sessions waits for their replies only
               # while no fire is queued (awaitReplies,
               # scripts/lib/session-signoff.mjs): it counts the lane
@@ -320,15 +276,15 @@ Resources:
           # hand), so a task started without one refuses to run.
           Environment:
             - Name: CLAUDE_LOGIN_SECRET_ID
-              Value: !Ref ClaudeLoginSecret
+              Value: governor/claude-login
             - Name: GITHUB_APP_SECRET_ID
-              Value: !Ref GitHubAppSecret
+              Value: governor/github-app
             - Name: DISPATCH_OWNERS
               Value: !Ref DispatchOwners
             - Name: DISPATCH_CAP
               Value: !Ref DispatchCap
             - Name: SESSION_LOG_SECRET_ID
-              Value: !Ref SessionLogWriterSecret
+              Value: governor/session-log-writer
             # Where the review's transcripts go; empty ships none.
             - Name: SESSION_LOG_URL
               Value: !Ref DropBoxUrl
@@ -1146,14 +1102,6 @@ Outputs:
     Value: !Ref DispatchFiresQueue
   StarterLogGroupName:
     Value: !Ref StarterLogGroup
-
-  ClaudeLoginSecretArn:
-    Description: Where scripts/mint-claude-login.mjs --to secretsmanager writes the login.
-    Value: !Ref ClaudeLoginSecret
-
-  GitHubAppSecretArn:
-    Description: Written by the operator with scripts/save-secret.mjs github-app.
-    Value: !Ref GitHubAppSecret
 
   WebhookUrl:
     Description: The App webhook's Payload URL, which the deploy writes (scripts/point-app-webhook.mjs).

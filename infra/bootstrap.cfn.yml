@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Governor's bootstrap: GitHub's OIDC provider, the role a run on main
+  assumes to deploy, and the secrets the operator writes before the first
+  deploy. Stack governor-bootstrap, in the main stack's region.
+
+# Applied once by hand as an administrator, since nothing can assume a role
+# that does not exist yet (README, Fork and deploy). Every deploy applies it
+# again before the main stack (.github/workflows/deploy.yml), naming the repo
+# and its ids from the run.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Description: The repo's owner, by name.
+
+  GitHubOwnerId:
+    Type: String
+    AllowedPattern: '^[1-9][0-9]*$'
+    Description: The repo owner's numeric id, github.repository_owner_id on any run.
+
+  GitHubRepo:
+    Type: String
+    Description: The repo's name, without the owner.
+
+  GitHubRepoId:
+    Type: String
+    AllowedPattern: '^[1-9][0-9]*$'
+    Description: The repo's numeric id, github.repository_id on any run.
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # IAM checks GitHub's certificate against its own trusted roots and
+      # ignores this value, but the API still accepts one.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: governor-github-deploy
+      Description: Assumed by GitHub Actions on a push to main, to deploy governor
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !GetAtt GitHubOidcProvider.Arn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # GitHub names the owner and repo by id as well as by name for
+                # a repo created after 15 July 2026, so a trust by name alone
+                # refuses every deploy, and a later repo that takes either name
+                # cannot assume this role. A job that names a GitHub
+                # environment gets another subject, so the deploy job sets none.
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepo}@${GitHubRepoId}:ref:refs/heads/main'
+      # The account holds governor alone. A policy scoped to governor would
+      # not hold: the role must create the main stack's roles and pass them to
+      # Lambda, and a role that can do that can make itself an administrator.
+      # The trust above, the owner's merges and the gate guard it.
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  # ── The secrets the operator writes ────────────────────────────────────────
+  # They live here, not in the main stack, so they exist before its first
+  # deploy, and a failed first create of the main stack is cleared by deleting
+  # it without losing them. Each is created holding a random placeholder that
+  # nothing reads as a value: CloudFormation owns the secret's existence,
+  # never its contents. The operator writes each once: the login with
+  # scripts/mint-claude-login.mjs, the App key and the drop-box writer with
+  # scripts/save-secret.mjs. Retained, so a template change that drops or
+  # replaces one leaves the stored value in place.
+  ClaudeLoginSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: governor/claude-login
+      Description: >-
+        A stored claude.ai login (the CLI's .credentials.json, beside its
+        account and org UUIDs), minted by scripts/mint-claude-login.mjs. The
+        task refreshes it and writes it back; nothing else reads it.
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: placeholder
+        ExcludePunctuation: true
+
+  GitHubAppSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: governor/github-app
+      Description: >-
+        {"appId", "privateKey"} of the GitHub App, written by the operator
+        with scripts/save-secret.mjs. The task mints installation tokens from
+        it, and the deploy its JWT to point the App's webhook.
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: placeholder
+        ExcludePunctuation: true
+
+  # The PR review's transcripts go to the drop box the main stack's
+  # DropBoxUrl names, under this writer credential. The turn reads a
+  # placeholder as no writer, and ships nothing.
+  SessionLogWriterSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: governor/session-log-writer
+      Description: >-
+        The drop-box writer credential the PR review's transcripts are sent
+        with, written by the operator with scripts/save-secret.mjs.
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: placeholder
+        ExcludePunctuation: true
+
+Outputs:
+  DeployRoleArn:
+    Description: The value of the repository variable AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn

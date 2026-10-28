@@ -8,29 +8,32 @@
 #
 # The deploy job does nothing until the AWS_DEPLOY_ROLE_ARN variable is set,
 # so a fork's first merges run the gate alone. Its settings are repository
-# variables, never values in this file:
+# variables and secrets, never values in this file. Anyone can read a public
+# repo's run logs, and Actions masks only secrets, so the two values a reader
+# could use are secrets (docs/constraints/public-repo.md).
 #
-#   AWS_DEPLOY_ROLE_ARN  the role the job assumes through GitHub's OIDC
-#   AWS_REGION           where the stack lives (default us-east-1)
-#   GOVERNOR_OWNERS      the GitHub accounts served, comma-separated
-#   APP_ID               the GitHub App's ID
-#   APP_SLUG             the App's slug, for the app-events check
-#   SELECT_LABELS        the labels whose addition queues a selection fire
-#   ALERT_EMAIL          where the alarms send their email
-#   DROP_BOX_URL         optional: where the PR review's transcripts go
+#   AWS_DEPLOY_ROLE_ARN  variable: the role the job assumes through GitHub's
+#                        OIDC, the bootstrap stack's output
+#   AWS_REGION           variable: where the stacks live (default us-east-1)
+#   GOVERNOR_OWNERS      variable: the GitHub accounts served, comma-separated
+#   APP_ID               variable: the GitHub App's ID
+#   APP_SLUG             variable: the App's slug, for the app-events check
+#   SELECT_LABELS        variable: the labels whose addition queues a selection fire
+#   ALERT_EMAIL          secret: where the alarms send their email
+#   DROP_BOX_URL         secret, optional: where the PR review's transcripts go
 #
-# One job, in order: derive the image tag from the image's inputs, build only
-# when that tag is new, read the default VPC's subnets, package and apply the
-# stack, point the App's webhook at the receiver, read back what GitHub and
-# AWS now hold (scripts/conformance.mjs), and run the task's probe. The probe
-# proves what a gate test cannot: that the task can pull its image, reach the
-# network, hold a pseudo-terminal and find the CLI. A red probe is a red
-# deploy.
+# One job, in order: apply the bootstrap stack (infra/bootstrap.cfn.yml),
+# derive the image tag from the image's inputs, build only when that tag is
+# new, read the default VPC's subnets, package and apply the main stack, point
+# the App's webhook at the receiver, read back what GitHub and AWS now hold
+# (scripts/conformance.mjs), and run the task's probe. The probe proves what a
+# gate test cannot: that the task can pull its image, reach the network, hold
+# a pseudo-terminal and find the CLI. A red probe is a red deploy.
 #
 # No secret is written here. The operator saves the claude.ai login, the App
-# key and the drop-box writer into the stack's secrets once
-# (scripts/mint-claude-login.mjs, scripts/save-secret.mjs); this job reads
-# only the App key, to point the App's webhook.
+# key and the drop-box writer into the bootstrap stack's secrets once, before
+# the first deploy (scripts/mint-claude-login.mjs, scripts/save-secret.mjs);
+# this job reads only the App key, to point the App's webhook.
 
 name: Deploy
 
@@ -88,6 +91,29 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      # The role this job holds, and the secrets the operator writes. The
+      # operator applies the stack once by hand; from then on each deploy
+      # applies it, naming the repo and its ids from the run, which is what
+      # the role's trust pins.
+      - name: Apply the bootstrap stack
+        if: ${{ !inputs.probe_only }}
+        env:
+          OWNER: ${{ github.repository_owner }}
+          OWNER_ID: ${{ github.repository_owner_id }}
+          REPO: ${{ github.event.repository.name }}
+          REPO_ID: ${{ github.repository_id }}
+        run: |
+          aws cloudformation deploy \
+            --stack-name governor-bootstrap \
+            --template-file infra/bootstrap.cfn.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "GitHubOwner=${OWNER}" \
+              "GitHubOwnerId=${OWNER_ID}" \
+              "GitHubRepo=${REPO}" \
+              "GitHubRepoId=${REPO_ID}"
 
       - name: Plan the image tag
         id: plan
@@ -162,8 +188,8 @@ jobs:
           GOVERNOR_OWNERS: ${{ vars.GOVERNOR_OWNERS }}
           APP_ID: ${{ vars.APP_ID }}
           SELECT_LABELS: ${{ vars.SELECT_LABELS }}
-          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
-          DROP_BOX_URL: ${{ vars.DROP_BOX_URL }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          DROP_BOX_URL: ${{ secrets.DROP_BOX_URL }}
         run: |
           if [[ ! "$APP_ID" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::APP_ID variable is not an App ID"
@@ -171,7 +197,7 @@ jobs:
           fi
           for name in GOVERNOR_OWNERS ALERT_EMAIL; do
             if [[ -z "${!name}" ]]; then
-              echo "::error::the ${name} variable is not set"
+              echo "::error::${name} is not set"
               exit 1
             fi
           done

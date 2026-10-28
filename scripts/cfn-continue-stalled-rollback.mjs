@@ -19,11 +19,11 @@
 // What it will NOT do is clear a ROLLBACK_COMPLETE or a ROLLBACK_FAILED — a
 // failed FIRST create, in the two spellings it leaves behind. Only a delete
 // clears either (ContinueUpdateRollback takes UPDATE_ROLLBACK_FAILED and no
-// other state), and a deploy role should hold no DeleteStack: a deploy that
-// may delete the stack may delete its secrets with it. Both are reachable
-// only on a fresh account, where admin credentials are already present. So it refuses and says which
-// credentials the operator needs, rather than letting the deploy fail later
-// with an error about change sets.
+// other state), and a deploy that deletes a stack is one nobody asked for.
+// Both are reachable only on a fresh account, where the operator is at hand,
+// and the main stack holds none of the secrets the operator wrote: they live
+// in the bootstrap stack. So it refuses and says what to delete, rather than
+// letting the deploy fail later with an error about change sets.
 
 import { spawnSync } from 'node:child_process';
 import { isCliEntry } from './lib/cli-entry.mjs';
@@ -141,8 +141,7 @@ function main(stackName) {
   if (action === 'refuse') {
     console.error(
       `::error::${stackName} is in ${status}: a create that failed, which only a delete clears. ` +
-        'This role holds no cloudformation:DeleteStack. Delete the stack with admin ' +
-        'credentials, then dispatch this workflow again.',
+        'This workflow deletes no stack. Delete it by hand, then run this workflow again.',
     );
     process.exit(1);
   }

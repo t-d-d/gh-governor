@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ACCOUNT_ID_PLACEHOLDER, loadTemplate } from './helpers/cfn.ts';
-import { runsCommand, runsScript } from './helpers/repo-model.ts';
+import { appliesStack, runsScript } from './helpers/repo-model.ts';
 import { loadWorkflow } from './helpers/workflow.ts';
 import { handle } from '../dispatch/webhook/route.mjs';
 import {
@@ -195,7 +195,7 @@ describe('webhook-url — the names the check reads by', () => {
   test('the stack the deploy reads back is the one it applies', () => {
     const stack = String((readStep?.env ?? {})[STACK_VAR] ?? '');
     assert.ok(stack, `the read-back step names no ${STACK_VAR}`);
-    const apply = steps.find(runsCommand('cloudformation deploy'));
+    const apply = steps.find(appliesStack('governor'));
     // Ends at whitespace, not `\b`: `-` is a non-word character, so `\b` would
     // let `governor` match an applied `governor-v2`.
     assert.match(apply?.run ?? '', new RegExp(`^\\s*--stack-name ${stack}(?=\\s|$)`, 'm'), `${stack} is not the stack the deploy applies`);

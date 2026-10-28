@@ -25,7 +25,7 @@ import {
   type Statement,
 } from './helpers/cfn.ts';
 import { loadWorkflow, type WorkflowStep } from './helpers/workflow.ts';
-import { runsCommand, runsScript, usesAction, withId } from './helpers/repo-model.ts';
+import { appliesStack, runsCommand, runsScript, usesAction, withId } from './helpers/repo-model.ts';
 import { OUTPUT_KEYS, START_BUDGET_MS } from '../scripts/run-turn.mjs';
 import { DEADLINE_MS } from '../dispatch/cli.mjs';
 import { STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
@@ -47,12 +47,17 @@ const container = taskDefinition?.Properties?.ContainerDefinitions?.[0];
 const actionsOf = (s: Statement) => asList(s.Action);
 const sidOf = (s: Statement) => String((s as { Sid?: string }).Sid ?? '');
 const resourcesOf = (s: Statement) => asList(s.Resource).map(String);
-// The shared schema collapses `!Ref X` to a `${X}` placeholder.
-const loginArn = '${ClaudeLoginSecret}';
-const appArn = '${GitHubAppSecret}';
-const writerArn = '${SessionLogWriterSecret}';
-
 const ACCOUNT = ACCOUNT_ID_PLACEHOLDER;
+// The secrets the operator writes live in the bootstrap stack
+// (infra/bootstrap.cfn.yml), so this stack names them. Secrets Manager ends a
+// secret's ARN with six random characters after its name.
+const loginName = 'governor/claude-login';
+const appName = 'governor/github-app';
+const writerName = 'governor/session-log-writer';
+const arnOfSecret = (name: string) => `arn:aws:secretsmanager:us-east-1:${ACCOUNT}:secret:${name}-??????`;
+const loginArn = arnOfSecret(loginName);
+const appArn = arnOfSecret(appName);
+const writerArn = arnOfSecret(writerName);
 const LOG_GROUP = '/governor';
 
 
@@ -111,7 +116,7 @@ describe('infra/governor.cfn.yml — the task', () => {
   // governor's own, named so a reader tells them from a session's.
   test('writes review transcripts to the drop box under its own writer', () => {
     const env = new Map<string, unknown>((container?.Environment ?? []).map((e: { Name: string; Value: unknown }) => [e.Name, e.Value]));
-    assert.equal(env.get('SESSION_LOG_SECRET_ID'), writerArn);
+    assert.equal(env.get('SESSION_LOG_SECRET_ID'), writerName);
     assert.equal(env.get('SESSION_LOG_URL'), '${DropBoxUrl}');
     assert.equal(template.Parameters?.DropBoxUrl?.Default, '', 'the drop box is optional');
   });
@@ -249,13 +254,10 @@ describe('infra/governor.cfn.yml — the grants', () => {
     }
   });
 
-  test('every secret is created with a placeholder CloudFormation never rewrites', () => {
-    for (const id of ['ClaudeLoginSecret', 'GitHubAppSecret', 'SessionLogWriterSecret']) {
-      const secret = template.Resources[id];
-      assert.equal(secret?.Type, 'AWS::SecretsManager::Secret');
-      assert.equal(secret?.Properties?.SecretString, undefined, `${id} carries a value in the template`);
-      assert.ok(secret?.Properties?.GenerateSecretString, `${id} has no placeholder`);
-    }
+  // A failed first create is cleared by deleting this stack, which must not
+  // take the login, the App key or the writer with it.
+  test('creates no secret the operator writes: its only secret is the webhook key', () => {
+    assert.deepEqual(resourcesOfType(template, 'AWS::SecretsManager::Secret').map(([id]) => id), ['WebhookSecret']);
   });
 });
 
@@ -503,9 +505,9 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     assert.equal(template.Resources.AlertsTopic?.Type, 'AWS::SNS::Topic');
     assert.deepEqual(template.Resources.AlertsTopic?.Properties?.Subscription, [{ Protocol: 'email', Endpoint: '${AlertEmail}' }]);
     assert.equal(template.Parameters?.AlertEmail?.Default, undefined, 'an alert address is required');
-    const apply = steps.find(runsCommand('cloudformation deploy'));
+    const apply = steps.find(appliesStack('governor'));
     assert.match(apply?.run ?? '', /"AlertEmail=\$\{ALERT_EMAIL\}"/);
-    assert.equal(apply?.env?.ALERT_EMAIL, '${{ vars.ALERT_EMAIL }}');
+    assert.equal(apply?.env?.ALERT_EMAIL, '${{ secrets.ALERT_EMAIL }}');
   });
 
   test('no alarm carries a Retain in its steady-state home', () => {
@@ -565,7 +567,7 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
   test('knows the labels whose addition queues a selection fire, which the deploy sets', () => {
     assert.equal(fn?.Properties?.Environment?.Variables?.SELECT_LABELS, '${SelectLabels}');
     assert.equal(template.Parameters?.SelectLabels?.Type, 'String');
-    const apply = steps.find(runsCommand('cloudformation deploy'));
+    const apply = steps.find(appliesStack('governor'));
     assert.match(apply?.run ?? '', /"SelectLabels=\$\{SELECT_LABELS\}"/);
     assert.equal(apply?.env?.SELECT_LABELS, '${{ vars.SELECT_LABELS }}', 'the operator\'s labels are a repository variable, not a value here');
   });
@@ -601,7 +603,7 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
   });
 
   test('the workflow points the App\'s webhook after the apply, the keys read from the stack\'s secrets into the environment', () => {
-    const apply = steps.findIndex(runsCommand('cloudformation deploy'));
+    const apply = steps.findIndex(appliesStack('governor'));
     const point = steps.findIndex(runsScript('scripts/point-app-webhook.mjs'));
     assert.ok(apply >= 0 && point > apply, 'the App\'s webhook is pointed after the apply');
     const lines = (steps[point]!.run ?? '').split('\n');
@@ -613,12 +615,15 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
     for (const line of lines) {
       assert.doesNotMatch(line, /echo "(?!::add-mask::).*(WEBHOOK_SECRET|APP_PRIVATE_KEY)|point-app-webhook\.mjs\s+\S/, 'the keys must reach the script through the environment');
     }
-    assert.doesNotMatch(codeOnly, /secrets\./, 'no GitHub secret: the App key lives in Secrets Manager');
+    // GitHub holds only the two values a public log must not show
+    // (public-repo.md); the App key lives in Secrets Manager.
+    const githubSecrets = [...new Set([...codeOnly.matchAll(/\bsecrets\.([A-Za-z_]+)/g)].map((m) => m[1]))].sort();
+    assert.deepEqual(githubSecrets, ['ALERT_EMAIL', 'DROP_BOX_URL'], 'a GitHub secret beyond the alert email and the drop box');
   });
 
   test('the workflow packages the receiver before the apply, and applies the packaged template', () => {
     const pkg = steps.findIndex(runsCommand('cloudformation package'));
-    const apply = steps.findIndex(runsCommand('cloudformation deploy'));
+    const apply = steps.findIndex(appliesStack('governor'));
     assert.ok(pkg >= 0 && apply > pkg, 'the package step must precede the apply');
     assert.match(steps[pkg]!.run ?? '', /--template-file infra\/governor\.cfn\.yml/);
     assert.match(steps[apply]!.run ?? '', /--template-file "\$RUNNER_TEMP\/governor\.packaged\.yml"/);
@@ -921,10 +926,14 @@ describe('.github/workflows/deploy.yml', () => {
 
   test('does nothing until the deploy role is set, and names no value of the operator\'s', () => {
     assert.equal(workflow.jobs?.deploy?.if, "${{ vars.AWS_DEPLOY_ROLE_ARN != '' }}");
-    const apply = steps.find(runsCommand('cloudformation deploy'));
-    for (const [parameter, variable] of [['DispatchOwners', 'GOVERNOR_OWNERS'], ['GitHubAppId', 'APP_ID'], ['DropBoxUrl', 'DROP_BOX_URL']] as const) {
+    const apply = steps.find(appliesStack('governor'));
+    for (const [parameter, variable, store] of [
+      ['DispatchOwners', 'GOVERNOR_OWNERS', 'vars'],
+      ['GitHubAppId', 'APP_ID', 'vars'],
+      ['DropBoxUrl', 'DROP_BOX_URL', 'secrets'],
+    ] as const) {
       assert.match(apply?.run ?? '', new RegExp(`"${parameter}=\\$\\{${variable}\\}"`), parameter);
-      assert.equal(apply?.env?.[variable], `\${{ vars.${variable} }}`, variable);
+      assert.equal(apply?.env?.[variable], `\${{ ${store}.${variable} }}`, variable);
     }
   });
 
@@ -960,7 +969,7 @@ describe('.github/workflows/deploy.yml', () => {
     const discover = steps.find(runsCommand('ec2 describe-subnets'));
     assert.ok(discover?.run, 'no step reads the subnets');
     assert.match(discover.run, /default-for-az/);
-    const apply = steps.find(runsCommand('cloudformation deploy'));
+    const apply = steps.find(appliesStack('governor'));
     assert.match(apply?.run ?? '', /"SubnetIds=\$/);
     assert.doesNotMatch(apply?.run ?? '', /ReservedConcurrency/, 'a task has no reserved concurrency to set');
   });
