@@ -85,14 +85,16 @@ describe('infra/bootstrap.cfn.yml', () => {
   });
 
   // The login is minted by hand and lasts about two weeks; a template change
-  // that dropped or replaced its secret would take it with it.
-  test('each secret starts as a placeholder, and is kept if its resource is removed or replaced', () => {
+  // that dropped or replaced its secret would take it with it. A failed first
+  // create is the exception: under a plain Retain its rollback leaves the
+  // three names taken, and the next create fails on them.
+  test('each secret starts as a placeholder, is kept if its resource is removed or replaced, and goes with a failed first create', () => {
     for (const [id, name] of Object.entries(OPERATOR_SECRETS)) {
       const secret = bootstrap.Resources[id];
       assert.equal(secret?.Properties?.Name, name, id);
       assert.equal(secret?.Properties?.SecretString, undefined, `${id} carries a value in the template`);
       assert.ok(secret?.Properties?.GenerateSecretString, `${id} has no placeholder`);
-      assert.equal(secret?.DeletionPolicy, 'Retain', `${id} is deleted with its resource`);
+      assert.equal(secret?.DeletionPolicy, 'RetainExceptOnCreate', `${id} is deleted with its resource, or outlives a failed first create`);
       assert.equal(secret?.UpdateReplacePolicy, 'Retain', `${id} is deleted when its resource is replaced`);
     }
   });
@@ -118,7 +120,7 @@ describe('the secrets the operator writes', () => {
   });
 });
 
-describe('.github/workflows/deploy.yml — the bootstrap stack', () => {
+describe('.github/workflows/deploy.yml: the bootstrap stack', () => {
   const credentials = steps.findIndex(usesAction('aws-actions/configure-aws-credentials'));
   const applyBootstrap = steps.findIndex(appliesStack('governor-bootstrap'));
   const applyMain = steps.findIndex(appliesStack('governor'));
@@ -127,6 +129,15 @@ describe('.github/workflows/deploy.yml — the bootstrap stack', () => {
     assert.ok(credentials >= 0, 'no step takes the deploy role');
     assert.ok(applyBootstrap > credentials, 'the bootstrap stack is applied before the job holds the role');
     assert.ok(applyMain > applyBootstrap, 'the main stack is applied before the bootstrap stack');
+  });
+
+  // A bootstrap stack stuck in UPDATE_ROLLBACK_FAILED refuses every update,
+  // and the main stack's guard runs only after this apply.
+  test('continues a stalled rollback of the bootstrap stack before applying it', () => {
+    const guard = steps.findIndex((s) => /cfn-continue-stalled-rollback\.mjs governor-bootstrap(?![\w-])/.test(s.run ?? ''));
+    assert.ok(guard > credentials, 'no guard for the bootstrap stack once the job holds the role');
+    assert.ok(guard < applyBootstrap, 'the guard runs after the bootstrap apply');
+    assert.equal(steps[guard]?.if, '${{ !inputs.probe_only }}');
   });
 
   test('applies the bootstrap template with the capability its named role needs, and no change is no failure', () => {

@@ -77,10 +77,12 @@ Resources:
   # never its contents. The operator writes each once: the login with
   # scripts/mint-claude-login.mjs, the App key and the drop-box writer with
   # scripts/save-secret.mjs. Retained, so a template change that drops or
-  # replaces one leaves the stored value in place.
+  # replaces one leaves the stored value in place. A failed first create
+  # deletes them, since they then hold only placeholders, so its retry does
+  # not find the three names already taken.
   ClaudeLoginSecret:
     Type: AWS::SecretsManager::Secret
-    DeletionPolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
     Properties:
       Name: governor/claude-login
@@ -95,7 +97,7 @@ Resources:
 
   GitHubAppSecret:
     Type: AWS::SecretsManager::Secret
-    DeletionPolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
     Properties:
       Name: governor/github-app
@@ -113,7 +115,7 @@ Resources:
   # placeholder as no writer, and ships nothing.
   SessionLogWriterSecret:
     Type: AWS::SecretsManager::Secret
-    DeletionPolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
     Properties:
       Name: governor/session-log-writer

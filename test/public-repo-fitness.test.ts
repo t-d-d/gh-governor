@@ -36,7 +36,7 @@ describe('fitness: the deploy reads the alert email and the drop box from reposi
     assert.equal(apply?.env?.DROP_BOX_URL, '${{ secrets.DROP_BOX_URL }}');
   });
 
-  test('every repository variable the deploy reads is one a public log may show', () => {
+  test('reads its other values from the six repository variables the README lists', () => {
     const variables = [...new Set([...codeOnly.matchAll(/\bvars\.([A-Za-z_]+)/g)].map((m) => m[1]))].sort();
     assert.deepEqual(variables, ['APP_ID', 'APP_SLUG', 'AWS_DEPLOY_ROLE_ARN', 'AWS_REGION', 'GOVERNOR_OWNERS', 'SELECT_LABELS']);
   });

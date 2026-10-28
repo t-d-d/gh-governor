@@ -47,8 +47,8 @@ a reader at a ticket they cannot open, or at the wrong one here.
 
 - Exempt a file from the scan: the exemption list becomes the place a real
   value hides.
-- Read an address, a URL or another value a reader could use from a
-  repository variable: the deploy's log prints it for anyone to read.
+- Read the alert email or the drop box from a repository variable: the
+  deploy's log prints it for anyone to read.
 - Keep an operator's value in a workflow or the stack's defaults "to save
   looking it up": a fork deploys it.
 - Map another repo's issue numbers onto this repo's: the number then points

@@ -92,6 +92,12 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
+      # The bootstrap stack is applied before the main stack's guard runs, so
+      # it has a guard of its own.
+      - name: Continue a stalled rollback of the bootstrap stack, if it is in one
+        if: ${{ !inputs.probe_only }}
+        run: node scripts/cfn-continue-stalled-rollback.mjs governor-bootstrap
+
       # The role this job holds, and the secrets the operator writes. The
       # operator applies the stack once by hand; from then on each deploy
       # applies it, naming the repo and its ids from the run, which is what
