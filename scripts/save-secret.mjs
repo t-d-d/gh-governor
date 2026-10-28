@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Save the App key or the drop-box writer into the secret the stack created
- * for it (infra/governor.cfn.yml). The operator runs it once per value, and
- * again to rotate one; the claude.ai login has its own script,
- * scripts/mint-claude-login.mjs.
+ * Save the App key or the drop-box writer into the secret the bootstrap
+ * stack created for it (infra/bootstrap.cfn.yml). The operator runs it once
+ * per value, and again to rotate one; the claude.ai login has its own
+ * script, scripts/mint-claude-login.mjs.
  *
  *   node scripts/save-secret.mjs github-app --app-id <id> --file <app.pem> [--profile <aws profile>]
  *   node scripts/save-secret.mjs session-log-writer --file <writer.txt> [--profile <aws profile>]

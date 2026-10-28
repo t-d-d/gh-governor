@@ -113,7 +113,7 @@ A label added to an issue starts a selection at once only if the deployment's `S
 - **One claude.ai login.** The task creates sessions with a stored claude.ai login, kept in Secrets Manager. Each turn refreshes it and writes it back. The login's refresh expiry is fixed when it is minted, about two weeks on, so it must be minted again before then; an alarm warns three days ahead.
 - **A two-hourly schedule.** EventBridge fires the receiver every two hours. That fire sweeps every served repo: it picks up ready tickets, writes heartbeats, and archives signed-off sessions.
 
-Everything lives in one CloudFormation stack, `governor` ([infra/governor.cfn.yml](infra/governor.cfn.yml)), applied by [.github/workflows/deploy.yml](.github/workflows/deploy.yml) on a green push to `main`. A fire costs a fraction of a cent, and no GitHub Actions minutes.
+Governor runs from one CloudFormation stack, `governor` ([infra/governor.cfn.yml](infra/governor.cfn.yml)). A second stack, `governor-bootstrap` ([infra/bootstrap.cfn.yml](infra/bootstrap.cfn.yml)), holds the deploy's role and the secrets the operator writes. [.github/workflows/deploy.yml](.github/workflows/deploy.yml) applies both on a green push to `main`. A fire costs a fraction of a cent, and no GitHub Actions minutes.
 
 ## Fork and deploy
 
@@ -160,73 +160,61 @@ Under your account's or organisation's **Settings → Developer settings → Git
 
    and create its ready label, `mode: afk`. Leave `prReview` off: governor should not review changes to its own code.
 
-### 3. Create an AWS account and a deploy role
+### 3. Create an AWS account and apply the bootstrap stack
 
-1. Create an AWS account, or pick one.
+1. Create an AWS account that holds governor and nothing else.
 2. Make sure the region you deploy to has a default VPC. If not, run `aws ec2 create-default-vpc` once.
-3. Add GitHub's OIDC identity provider to the account: URL `https://token.actions.githubusercontent.com`, audience `sts.amazonaws.com`.
-4. Create the deploy role. The repo ships no template for it.
+3. Read your repo's numeric ids: `gh api repos/<owner>/<repo> --jq '.owner.id, .id'`.
+4. Signed in as an administrator of the account, in the region you deploy to, apply the bootstrap stack from a checkout of your repo:
 
-   Its trust policy lets GitHub's OIDC provider assume it from your repo's `main` branch only:
-
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [{
-       "Effect": "Allow",
-       "Principal": { "Federated": "arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com" },
-       "Action": "sts:AssumeRoleWithWebIdentity",
-       "Condition": {
-         "StringEquals": {
-           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-           "token.actions.githubusercontent.com:sub": "repo:<owner>/<repo>:ref:refs/heads/main"
-         }
-       }
-     }]
-   }
+   ```
+   aws cloudformation deploy --stack-name governor-bootstrap \
+     --template-file infra/bootstrap.cfn.yml --capabilities CAPABILITY_NAMED_IAM \
+     --parameter-overrides GitHubOwner=<owner> GitHubOwnerId=<owner id> \
+       GitHubRepo=<repo> GitHubRepoId=<repo id>
    ```
 
-   Its permissions must allow it to:
+   It creates GitHub's OIDC provider, so the account must not have one already. It also creates the deploy role, `governor-github-deploy`, and the three secrets step 4 fills, each holding a placeholder. Every deploy applies the stack again after this.
+5. Read the deploy role's ARN, for step 5:
 
-   - apply and package the `governor` stack: CloudFormation on that stack; IAM roles named `governor-*`, including passing them to ECS, Lambda and EventBridge; ECS; Lambda; SQS; DynamoDB; EventBridge; CloudWatch alarms and logs; SNS; Secrets Manager on secrets under `governor/`, plus `secretsmanager:GetRandomPassword` on `*`, which takes no resource and which the stack's generated secrets need; and reading the default VPC's subnets;
-   - create ECS's service-linked role (`iam:CreateServiceLinkedRole` for `ecs.amazonaws.com`), which a fresh account lacks until its first cluster;
-   - create and push to the `governor` ECR repository, and get ECR Public's authorisation token (`ecr-public:GetAuthorizationToken` and `sts:GetServiceBearerToken`);
-   - create, list, read and write the `governor-build-<account>-<region>` bucket: the deploy checks it exists, and the stack's Lambdas are created from the code packaged there;
-   - read the values of `governor/webhook-secret` and `governor/github-app`;
-   - run the probe task and read its logs.
+   ```
+   aws cloudformation describe-stacks --stack-name governor-bootstrap \
+     --query "Stacks[0].Outputs[?OutputKey=='DeployRoleArn'].OutputValue" --output text
+   ```
 
-### 4. Set the stack parameters as repository variables
+Only a run on your repo's `main` can assume the role. The trust names the repo by its owner and repo ids as well as their names, which is the token subject GitHub gives a repo created after 15 July 2026. The role has `AdministratorAccess`. It creates the main stack's IAM roles, and a role that can do that can make itself an administrator anyway, which is why the account should hold governor alone.
 
-Under the repo's **Settings → Secrets and variables → Actions → Variables**. None of these is a secret.
-
-| Variable | Value |
-|---|---|
-| `AWS_REGION` | The region to deploy to. Default `us-east-1`. |
-| `GOVERNOR_OWNERS` | The GitHub accounts whose installations are served, comma-separated. |
-| `APP_ID` | The App's numeric ID. |
-| `APP_SLUG` | The App's slug, for the deploy's check of its events. |
-| `SELECT_LABELS` | The labels whose addition starts a selection at once, comma-separated, such as `mode: afk`. Empty means every label. |
-| `ALERT_EMAIL` | Where the alarms send email. |
-| `DROP_BOX_URL` | Optional. An https URL that the PR review's transcripts are PUT under. Empty ships none. |
-
-Leave `AWS_DEPLOY_ROLE_ARN` unset for now. While it is unset, a push to `main` runs the gate and deploys nothing.
-
-### 5. Set the deploy-role variable and run the first deploy
-
-1. Set the repository variable `AWS_DEPLOY_ROLE_ARN` to the deploy role's ARN.
-2. Run the **Deploy** workflow on `main` from the Actions tab, or merge to `main`.
-
-The first deploy builds the image and creates the stack, its three secrets, each holding only a placeholder (`governor/claude-login`, `governor/github-app`, `governor/session-log-writer`) and its webhook key. It then stops red at **Point the App's webhook at the receiver**, because `governor/github-app` holds no key yet. Step 6 fills the secrets.
-
-### 6. Save the secrets, and deploy again
+### 4. Save the secrets
 
 From a machine with the AWS CLI signed in as an identity that may write the secrets (`--profile` names an AWS CLI profile; leave it out in CloudShell), in a checkout of your repo. The scripts pass no region, so the profile's region must be the deploy's: set `AWS_REGION` to it in the shell first if it is not.
 
 1. The App key: `node scripts/save-secret.mjs github-app --app-id <id> --file <app.pem> --profile <p>`. The deploy and the task read the App key from Secrets Manager, never from a GitHub secret.
 2. The claude.ai login: `node scripts/mint-claude-login.mjs --profile <p>`. It signs in under a throwaway directory, so the login your machine already holds is untouched. Sign in with the subscription account the sessions will run under. It prints the login's expiry; mint again before that date.
-3. Optional, with `DROP_BOX_URL`: the drop-box writer, `node scripts/save-secret.mjs session-log-writer --file <writer.txt> --profile <p>`. The file holds 32 or more lowercase hex digits.
+3. Optional, with a drop box: the drop-box writer, `node scripts/save-secret.mjs session-log-writer --file <writer.txt> --profile <p>`. The file holds 32 or more lowercase hex digits.
 
-Then re-run the **Deploy** workflow. It points the App's webhook at the receiver, checks the App's events and the receiver's URL, and runs the task's probe. A red probe prints the task's log, which says whether the task could not reach the network, hold a pseudo-terminal or find the CLI. A task that never ran its container, such as one whose image pull was refused, has no log, and the probe prints its stop reason instead.
+### 5. Set the repository variables and secrets
+
+Under the repo's **Settings → Secrets and variables → Actions**. Anyone can read a public repo's run logs, and Actions masks only secrets, so the alert email and the drop box are secrets.
+
+| Variable | Value |
+|---|---|
+| `AWS_DEPLOY_ROLE_ARN` | The deploy role's ARN, from step 3. Until it is set, a push to `main` runs the gate and deploys nothing. |
+| `AWS_REGION` | The region to deploy to, the bootstrap stack's. Default `us-east-1`. |
+| `GOVERNOR_OWNERS` | The GitHub accounts whose installations are served, comma-separated. |
+| `APP_ID` | The App's numeric ID. |
+| `APP_SLUG` | The App's slug, for the deploy's check of its events. |
+| `SELECT_LABELS` | The labels whose addition starts a selection at once, comma-separated, such as `mode: afk`. Empty means every label. |
+
+| Secret | Value |
+|---|---|
+| `ALERT_EMAIL` | Where the alarms send email. |
+| `DROP_BOX_URL` | Optional. An https URL that the PR review's transcripts are PUT under. Unset ships none. |
+
+### 6. Run the first deploy
+
+Run the **Deploy** workflow on `main` from the Actions tab, or merge to `main`. It applies the bootstrap stack, builds the image, and creates the main stack. Then it points the App's webhook at the receiver, checks the App's events and the receiver's URL, and runs the task's probe. A red probe prints the task's log, which says whether the task could not reach the network, hold a pseudo-terminal or find the CLI. A task that never ran its container, such as one whose image pull was refused, has no log, and the probe prints its stop reason instead.
+
+If the first deploy fails while it creates the main stack, the stack is left in `ROLLBACK_COMPLETE`, and every later deploy refuses until it is gone. Delete it with `aws cloudformation delete-stack --stack-name governor`, and run the deploy again. The secrets are in the bootstrap stack, so the delete loses nothing you saved.
 
 Confirm the alerts subscription from the email AWS sends to `ALERT_EMAIL`. Until you do, the alarms send nothing.
 

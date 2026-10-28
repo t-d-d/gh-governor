@@ -85,6 +85,14 @@ export const runsCommand = (command: string | RegExp): StepLocator => {
   return (step) => pattern.test(runCode(step));
 };
 
+/**
+ * A step whose `run:` applies the stack `name` with `aws cloudformation deploy`.
+ * The name ends at a non-name character, so `governor` does not match an
+ * applied `governor-bootstrap`.
+ */
+export const appliesStack = (name: string): StepLocator =>
+  runsCommand(new RegExp(`cloudformation deploy\\b[^\\n]*--stack-name ${escapeRegExp(name)}(?![\\w-])`));
+
 // --- The model --------------------------------------------------------------
 
 export function deepFreeze<T>(value: T): T {

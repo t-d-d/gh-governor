@@ -1,6 +1,6 @@
 /**
  * The operator's write of the App key and the drop-box writer into the
- * stack's secrets (scripts/save-secret.mjs).
+ * bootstrap stack's secrets (scripts/save-secret.mjs).
  */
 
 import { test, describe } from 'node:test';
@@ -39,7 +39,7 @@ const deps = (files: Record<string, string>, status = 0) => {
 };
 
 describe('save-secret', () => {
-  test('names the two secrets the stack creates', () => {
+  test('names the two secrets the bootstrap stack creates', () => {
     assert.deepEqual(Object.keys(SECRETS).sort(), ['github-app', 'session-log-writer']);
     assert.equal(SECRETS['github-app'], 'governor/github-app');
     assert.equal(SECRETS['session-log-writer'], 'governor/session-log-writer');
