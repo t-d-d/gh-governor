@@ -65,7 +65,8 @@ The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`) queu
 | Deploy run on the default branch went red | Its workflow marks a shipping job | Messages, or one fresh session for a `triage` target | `deployMessages` |
 | Scheduled run on the default branch went red | First attempt | One fresh session on the run | `redScheduledRun` |
 | Dispatched run on another branch finished | Any outcome | A message to the session that wrote its commit | `branchRunMessages` |
-| PR opened, ready, pushed to or its body edited | Not a draft; by an owner, member or collaborator | The PR review | `prReview` |
+| PR opened, ready, pushed to, or its body or base edited | Not a draft; by an owner, member or collaborator | The PR review | `prReview` |
+| Workflow run finished on a PR's head | The PR is open | The PR review, at that head | `prReview` |
 
 A mention starts a session only from someone with a say in the repo. A bot cannot, and neither can a session, whose posts end in the Claude Code footer. On a PR a session owns, a mention starts nobody: the owner is messaged instead.
 
@@ -148,7 +149,7 @@ Each conflicted PR's owner session is told the PR, the merge that moved the base
 
 ## The PR review
 
-The review runs in each served repo whose file turns `prReview` on, from that repo's `review` section ([constraints/dispatcher-review.md](constraints/dispatcher-review.md)). The image carries no repo's checklist: each review reads the repo's own, from its default branch. The review turn (`dispatch/review.mjs`) reads the PR, the tickets its body closes and the last review marker, then runs `claude -p` under the stored login with the checklist as the system prompt, the PR's facts on stdin, no tools, and the answer held to a JSON schema. The review starts no session.
+The review runs in each served repo whose file turns `prReview` on, from that repo's `review` section ([constraints/dispatcher-review.md](constraints/dispatcher-review.md)). The image carries no repo's checklist: each review reads the repo's own, from its default branch. The review turn (`dispatch/review.mjs`) reads the PR, the tickets its body closes and the last review marker, then runs `claude -p` under the stored login with the checklist appended to the system prompt, the PR's facts on stdin, no tools, and the answer held to a JSON schema. The review starts no session.
 
 **Decided in code.** Three tests are decided before the model is asked, and a PR failing one is commented on without a model run:
 
@@ -156,9 +157,9 @@ The review runs in each served repo whose file turns `prReview` on, from that re
 - Test 7, the human-only list: no changed path, or path a rename left, matches `review.humanOnly`, unless every ticket carries one of the entry's `unless` labels. A modified file matching `review.quote` goes to the model instead, quoted whole at the merge base and at the head. A `decides` ticket's first line, `Constraint now lives at <path>, …`, passes the quoted files it names.
 - Test 8, required checks: no status check the default branch requires is red on the head. A check still running skips the review; the run finishing queues a new one.
 
-So a checklist numbers its own tests 2 to 6.
+So a checklist numbers its own tests 2 to 6. Code also fails tests 5 and 6 when the PR body's Verification table or Left for later names a ticket that is closed or does not exist; the rest of those tests are the model's.
 
-**Pass.** Governor waits for GitHub to compute the PR's mergeable state, merges with a merge commit pinned to the head it reviewed, and comments `Passes the PR review: <reason>.` With `review.merge` false, it posts an approving review pinned to that head instead, and the owner merges. A later head that does not pass dismisses that approval. A conflict is a comment telling the author session to merge the base in.
+**Pass.** Governor waits for GitHub to compute the PR's mergeable state, merges with a merge commit pinned to the head it reviewed, and comments `Passes the PR review: <reason>.` With `review.merge` false, it merges nothing: it posts an approving review pinned to that head as well as the comment, and the owner merges. A later head that does not pass dismisses that approval. A conflict is a comment telling the author session to merge the base in.
 
 **Fail.** A comment naming the first failed test: `Waits for a description edit: …` where an edit to the PR body would pass it, or `Waits for a person: …` where none can. A fail on the same test as the last review edits that comment in place rather than posting again.
 
@@ -166,7 +167,7 @@ So a checklist numbers its own tests 2 to 6.
 
 **Skipped.** A PR whose head and body the last marker names, a draft, a closed PR, a PR into any branch but the default, and a PR by someone not an owner, member or collaborator.
 
-**Dependabot.** A PR `dependabot[bot]` opened is held to test 7 alone, with no model run, against `review.dependabot` in place of the human-only list. It merges when every changed file is on that list and modified, and every commit's author is `dependabot[bot]` and was committed and signed by GitHub. Anything else waits for a person. A conflict posts nothing: Dependabot rebases its own PRs.
+**Dependabot.** A PR `dependabot[bot]` opened is held to tests 7 and 8 alone, with no model run, using `review.dependabot` in place of the human-only list. It passes when every changed file is on that list and modified, and every commit's author is `dependabot[bot]` and was committed and signed by GitHub. Anything else waits for a person. A pass merges, or with `merge` false is approved. A conflict posts nothing: Dependabot rebases its own PRs.
 
 **Limits.** A review of every open PR starts no review past five minutes into the turn; the rest are reviewed on their next push or edit. A model run refused by the login's session limit is `limited`, not a failure. A failed review (a merge GitHub refused, an answer outside the schema) exits 1.
 
@@ -215,7 +216,7 @@ GitHub posts every installation's events to one Lambda Function URL (`governor-w
 - A label added by a bot queues no selection, since governor's own claim and release are a bot's. Subscribers still hear it.
 - A delivery's id is its deduplication id on the queue, so a redelivery is not a second fire.
 
-Every fire, the schedule's included, goes on `governor-fires.fifo`. The starter (`governor-starter`, `dispatch/webhook/starter.mjs`) runs one task per fire, never beside a running one. A fire that finds a task running goes back on the queue for ten seconds. After half an hour of attempts it goes to the dead-letter queue, and `governor-fires-dead` pages. A task that fails to start (an image pull refused, no placement) is retried by `governor-retrier` up to three times.
+Every fire, the schedule's included, goes on `governor-fires.fifo`. The starter (`governor-starter`, `dispatch/webhook/starter.mjs`) runs one task per fire, never beside a running one. A fire that finds a task running goes back on the queue for ten seconds. After half an hour of attempts it goes to the dead-letter queue, and `governor-fires-dead` pages. A task that fails to start (an image pull refused, no placement) is put back on the queue by `governor-retrier`, for three attempts in all.
 
 After every apply, the deploy runs `scripts/point-app-webhook.mjs`, which writes the receiver's URL and the stack's key to the App's webhook config, as the App. It first reads the App's events, and writes nothing while one the receiver routes is unticked. The deploy's conformance checks (`scripts/conformance.mjs`) then read back the App's events and post once, unsigned, to the receiver, failing on anything but its own `401`.
 
@@ -291,4 +292,4 @@ A message an archived session refused, with no fallback tried, is not an error. 
 
 **A session was not archived.** Its last reply's last line must start `Signing off`, and the session must be idle. `dispatch-signoff` in `/governor` names each candidate and the decision.
 
-**The deploy's probe is red.** The probe prints the task's log, which says whether the task could not pull its image, reach the network, hold a pseudo-terminal or find the CLI.
+**The deploy's probe is red.** The probe prints the task's log, which says whether the task could not reach the network, hold a pseudo-terminal or find the CLI. A task that never ran its container, such as one whose image pull was refused, has no log, and the probe prints its stop reason instead.

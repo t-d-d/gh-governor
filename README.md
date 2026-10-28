@@ -76,7 +76,7 @@ The switches in `features`:
 | `deployMessages` | A shipping job, or a red deploy, tells the sessions of the merges it shipped. |
 | `branchRunMessages` | A run dispatched on a branch tells the session that wrote its commit. |
 | `conflicts` | A merge into the default branch tells each PR it left conflicted. |
-| `deployedLabels` | A shipping job labels the tickets it shipped `deployed: <target>`. |
+| `deployedLabels` | A shipping job labels the tickets it shipped `deployed: <target>`. Needs `deployMessages`. |
 | `prReview` | The PR review, run from the `review` section. |
 | `heartbeat` | The two-hourly sweep stamps the issue `heartbeat` names. |
 
@@ -90,7 +90,7 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 
 `review`:
 
-- `checklist` (required): the model's system prompt, as text or `{ "file": "<path>" }`.
+- `checklist` (required): what is appended to the model's system prompt, as text or `{ "file": "<path>" }`.
 - `humanOnly`: `{ "glob", "reason", "unless" }` entries. A PR changing a matching path waits for a person, unless every ticket it closes carries one of the `unless` labels.
 - `tickets`: `require` and `forbid` lists of `{ "labels", "unless" }` rules that every ticket the PR closes must meet.
 - `quote`: globs of changed files the model reads whole. A `!` entry takes a path back out.
@@ -188,9 +188,10 @@ Under your account's or organisation's **Settings → Developer settings → Git
 
    Its permissions must allow it to:
 
-   - apply and package the `governor` stack: CloudFormation on that stack; IAM roles named `governor-*`, including passing them to ECS, Lambda and EventBridge; ECS; Lambda; SQS; DynamoDB; EventBridge; CloudWatch alarms and logs; SNS; Secrets Manager on secrets under `governor/`; and reading the default VPC's subnets;
+   - apply and package the `governor` stack: CloudFormation on that stack; IAM roles named `governor-*`, including passing them to ECS, Lambda and EventBridge; ECS; Lambda; SQS; DynamoDB; EventBridge; CloudWatch alarms and logs; SNS; Secrets Manager on secrets under `governor/`, plus `secretsmanager:GetRandomPassword` on `*`, which takes no resource and which the stack's generated secrets need; and reading the default VPC's subnets;
+   - create ECS's service-linked role (`iam:CreateServiceLinkedRole` for `ecs.amazonaws.com`), which a fresh account lacks until its first cluster;
    - create and push to the `governor` ECR repository, and get ECR Public's authorisation token (`ecr-public:GetAuthorizationToken` and `sts:GetServiceBearerToken`);
-   - create the `governor-build-<account>-<region>` bucket and write to it;
+   - create, list, read and write the `governor-build-<account>-<region>` bucket: the deploy checks it exists, and the stack's Lambdas are created from the code packaged there;
    - read the values of `governor/webhook-secret` and `governor/github-app`;
    - run the probe task and read its logs.
 
@@ -215,17 +216,17 @@ Leave `AWS_DEPLOY_ROLE_ARN` unset for now. While it is unset, a push to `main` r
 1. Set the repository variable `AWS_DEPLOY_ROLE_ARN` to the deploy role's ARN.
 2. Run the **Deploy** workflow on `main` from the Actions tab, or merge to `main`.
 
-The first deploy builds the image and creates the stack, its three empty secrets (`governor/claude-login`, `governor/github-app`, `governor/session-log-writer`) and its webhook key. It then stops red at **Point the App's webhook at the receiver**, because `governor/github-app` holds no key yet. Step 6 fills the secrets.
+The first deploy builds the image and creates the stack, its three secrets, each holding only a placeholder (`governor/claude-login`, `governor/github-app`, `governor/session-log-writer`) and its webhook key. It then stops red at **Point the App's webhook at the receiver**, because `governor/github-app` holds no key yet. Step 6 fills the secrets.
 
 ### 6. Save the secrets, and deploy again
 
-From a machine with the AWS CLI signed in as an identity that may write the secrets (`--profile` names an AWS CLI profile; leave it out in CloudShell), in a checkout of your repo:
+From a machine with the AWS CLI signed in as an identity that may write the secrets (`--profile` names an AWS CLI profile; leave it out in CloudShell), in a checkout of your repo. The scripts pass no region, so the profile's region must be the deploy's: set `AWS_REGION` to it in the shell first if it is not.
 
 1. The App key: `node scripts/save-secret.mjs github-app --app-id <id> --file <app.pem> --profile <p>`. The deploy and the task read the App key from Secrets Manager, never from a GitHub secret.
 2. The claude.ai login: `node scripts/mint-claude-login.mjs --profile <p>`. It signs in under a throwaway directory, so the login your machine already holds is untouched. Sign in with the subscription account the sessions will run under. It prints the login's expiry; mint again before that date.
 3. Optional, with `DROP_BOX_URL`: the drop-box writer, `node scripts/save-secret.mjs session-log-writer --file <writer.txt> --profile <p>`. The file holds 32 or more lowercase hex digits.
 
-Then re-run the **Deploy** workflow. It points the App's webhook at the receiver, checks the App's events and the receiver's URL, and runs the task's probe. A red probe prints the task's log, which says whether the task could not pull its image, reach the network, hold a pseudo-terminal or find the CLI.
+Then re-run the **Deploy** workflow. It points the App's webhook at the receiver, checks the App's events and the receiver's URL, and runs the task's probe. A red probe prints the task's log, which says whether the task could not reach the network, hold a pseudo-terminal or find the CLI. A task that never ran its container, such as one whose image pull was refused, has no log, and the probe prints its stop reason instead.
 
 Confirm the alerts subscription from the email AWS sends to `ALERT_EMAIL`. Until you do, the alarms send nothing.
 
