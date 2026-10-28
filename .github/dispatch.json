@@ -1,0 +1,5 @@
+{
+  "environment": "askme",
+  "labels": { "ready": ["mode: afk"], "claim": "claimed", "claimRemoves": [] },
+  "features": { "pickup": false, "summons": true, "prMessages": true, "subscribeMessages": true }
+}
