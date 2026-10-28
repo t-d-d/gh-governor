@@ -1,0 +1,8 @@
+{
+  "environments": [
+    { "kind": "anthropic_cloud", "environment_id": "env_01FACTORY", "name": "acme", "created_at": "2026-05-02T09:14:00Z", "state": "active" },
+    { "kind": "anthropic_cloud", "environment_id": "env_01ASKME", "name": "askme", "created_at": "2026-08-11T16:40:00Z", "state": "active" },
+    { "kind": "anthropic_cloud", "environment_id": "env_01SPOTIMY", "name": "shared", "created_at": "2026-09-01T08:00:00Z", "state": "active" },
+    { "kind": "anthropic_cloud", "environment_id": "env_01TAGALONG", "name": "shared", "created_at": "2026-09-03T08:00:00Z", "state": "active" }
+  ]
+}

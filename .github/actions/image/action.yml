@@ -1,0 +1,169 @@
+name: Resolve the task image
+description: >-
+  Ensure the task's container image exists in its ECR repository for a
+  given content-hash tag, building and pushing it only when the tag is not
+  already there, and hand back the digest-pinned URI.
+
+  The caller computes `image_tag` (a hash of exactly the files the
+  Dockerfile COPYs, pinned by test/dispatch-stack.test.ts) and holds the
+  AWS credentials; this action does the ECR half. The repository is created
+  IMMUTABLE, so a tag is pushed at most once and two runs racing the same
+  new tag cannot both win: the loser's push fails, which is the correct
+  answer (builds are not byte-reproducible).
+
+inputs:
+  repo_name:
+    description: 'ECR repository, e.g. governor'
+    required: true
+  image_tag:
+    description: 'The content-hash tag; the caller derives it, this action never does'
+    required: true
+  dockerfile:
+    description: 'Dockerfile path relative to the repo root (the build context)'
+    required: true
+  region:
+    description: 'AWS region of the registry'
+    required: true
+  cache_scope:
+    description: >-
+      GHA buildx cache scope (`type=gha,scope=<this>`). Empty disables the
+      cache — right for a COPY-only image whose two layers cost more to
+      export than they could ever save.
+    required: false
+    default: ''
+  build_args:
+    description: 'Newline-separated `KEY=value` build args, passed straight to buildx'
+    required: false
+    default: ''
+
+outputs:
+  image_uri:
+    description: 'Digest-pinned image URI (repo@sha256:…) for the resolved tag'
+    value: ${{ steps.resolve.outputs.image_uri }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve registry (${{ inputs.repo_name }})
+      id: registry
+      shell: bash
+      env:
+        REGION: ${{ inputs.region }}
+        REPO_NAME: ${{ inputs.repo_name }}
+      run: |
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+        echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
+        echo "repo_uri=${REGISTRY}/${REPO_NAME}" >> "$GITHUB_OUTPUT"
+
+    - name: Ensure ECR repo exists (${{ inputs.repo_name }})
+      shell: bash
+      env:
+        REPO: ${{ inputs.repo_name }}
+      run: |
+        aws ecr describe-repositories --repository-names "$REPO" >/dev/null 2>&1 || \
+          aws ecr create-repository \
+            --repository-name "$REPO" \
+            --image-scanning-configuration scanOnPush=true \
+            --image-tag-mutability IMMUTABLE
+
+    - name: Check for existing image (${{ inputs.repo_name }})
+      id: check
+      shell: bash
+      env:
+        REPO: ${{ inputs.repo_name }}
+        TAG: ${{ inputs.image_tag }}
+      run: |
+        err_file=$(mktemp)
+        DIGEST=$(aws ecr describe-images \
+          --repository-name "$REPO" \
+          --image-ids imageTag="$TAG" \
+          --query 'imageDetails[0].imageDigest' \
+          --output text 2>"$err_file") || rc=$?
+        err_msg=$(cat "$err_file")
+        rm -f "$err_file"
+        # ImageNotFoundException is the expected "tag doesn't exist yet"
+        # case — fall through to the build path. Anything else (notably
+        # AccessDenied when the deploy role lacks the ECR grants) is a real
+        # failure; surface it with a hint
+        # instead of silently "not found".
+        if [ "${rc:-0}" -ne 0 ]; then
+          if echo "$err_msg" | grep -q 'ImageNotFoundException'; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "Image ${REPO}:${TAG} not found — will build"
+          else
+            echo "::error::Failed to query ECR for ${REPO}:${TAG}"
+            echo "::error::AWS error: ${err_msg}"
+            echo "::error::If this is AccessDenied, the deploy role is missing ECR permissions on ${REPO}."
+            exit 1
+          fi
+        elif [ -n "$DIGEST" ] && [ "$DIGEST" != "None" ]; then
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Image ${REPO}:${TAG} already exists (${DIGEST}) — skipping build"
+        else
+          echo "found=false" >> "$GITHUB_OUTPUT"
+          echo "Image ${REPO}:${TAG} not found — will build"
+        fi
+
+    - name: Set up Docker Buildx
+      if: steps.check.outputs.found != 'true'
+      uses: docker/setup-buildx-action@v4
+
+    - name: Log in to Amazon ECR
+      if: steps.check.outputs.found != 'true'
+      shell: bash
+      env:
+        REGION: ${{ inputs.region }}
+        REGISTRY: ${{ steps.registry.outputs.registry }}
+      run: |
+        aws ecr get-login-password --region "$REGION" \
+          | docker login --username AWS --password-stdin "$REGISTRY"
+
+    # The Dockerfiles build FROM public.ecr.aws. Anonymous pulls there are
+    # limited per source IP, which GitHub-hosted runners share, so a deploy
+    # could fail on a 429; logged in, they count against the
+    # account's own limit. ECR Public issues tokens in us-east-1 only. A
+    # refused token warns and builds anonymously rather than stopping every
+    # image build until the deploy role is granted it.
+    - name: Log in to Amazon ECR Public
+      if: steps.check.outputs.found != 'true'
+      shell: bash
+      run: |
+        if ! aws ecr-public get-login-password --region us-east-1 \
+            | docker login --username AWS --password-stdin public.ecr.aws; then
+          echo "::warning::ECR Public login failed; pulling public.ecr.aws bases anonymously, which a shared runner IP can exhaust (429)."
+          echo "::warning::If the error was AccessDenied, grant the deploy role ecr-public:GetAuthorizationToken and sts:GetServiceBearerToken."
+        fi
+
+    # Native arm64 (the caller's runner) — building linux/arm64 on x86_64
+    # would route through qemu emulation and triple+ the wall-clock.
+    - name: Build and push image (${{ inputs.repo_name }})
+      if: steps.check.outputs.found != 'true'
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        file: ./${{ inputs.dockerfile }}
+        platforms: linux/arm64
+        push: true
+        provenance: false
+        tags: ${{ steps.registry.outputs.repo_uri }}:${{ inputs.image_tag }}
+        # An empty scope is an empty list to buildx: no cache import or export.
+        cache-from: ${{ inputs.cache_scope != '' && format('type=gha,scope={0}', inputs.cache_scope) || '' }}
+        cache-to: ${{ inputs.cache_scope != '' && format('type=gha,mode=max,scope={0}', inputs.cache_scope) || '' }}
+        build-args: ${{ inputs.build_args }}
+
+    - name: Resolve immutable image URI (${{ inputs.repo_name }})
+      id: resolve
+      shell: bash
+      env:
+        REPO: ${{ inputs.repo_name }}
+        TAG: ${{ inputs.image_tag }}
+        REPO_URI: ${{ steps.registry.outputs.repo_uri }}
+      run: |
+        DIGEST=$(aws ecr describe-images \
+          --repository-name "$REPO" \
+          --image-ids imageTag="$TAG" \
+          --query 'imageDetails[0].imageDigest' \
+          --output text)
+        echo "image_uri=${REPO_URI}@${DIGEST}" >> "$GITHUB_OUTPUT"

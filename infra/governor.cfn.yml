@@ -1,0 +1,1164 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Governor: a Fargate task that starts Claude Code cloud sessions from a
+  stored claude.ai login, on a schedule and on the GitHub events its webhook
+  receiver takes (an issue event that changes the selection, a mention of
+  @claude). Every fire waits its turn on one FIFO lane, and a starter runs
+  one task at a time. Applied by .github/workflows/deploy.yml, which also
+  builds the image.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parameters
+# ─────────────────────────────────────────────────────────────────────────────
+Parameters:
+  ImageUri:
+    Type: String
+    Description: >
+      Digest-pinned image URI (repo@sha256:…) of dispatch/Dockerfile, from
+      .github/actions/image; the workflow derives the tag from the image's
+      inputs and builds only when the tag is new.
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >
+      Where the task runs: the default VPC's subnets, which the workflow
+      reads (ec2 describe-subnets, default-for-az) and passes in. They are
+      public, so a task with a public IP reaches ECR, GitHub and claude.ai
+      through the internet gateway with no NAT to pay for. The VPC's default
+      security group applies, which allows all egress.
+
+  DispatchOwners:
+    Type: String
+    AllowedPattern: '^[A-Za-z0-9-]+(,[A-Za-z0-9-]+)*$'
+    Description: >
+      The GitHub accounts whose App installations governor serves,
+      comma-separated. The receiver queues nothing for a delivery from any
+      other account, and the task reads no installation on one. Adding an
+      owner is a deploy, deliberately.
+
+  SelectLabels:
+    Type: String
+    Default: ''
+    Description: >
+      The labels whose addition to an issue queues a selection fire, in
+      every served repo, comma-separated. The receiver reads no repo's
+      config file, so it cannot tell a ready label from any other; the turn
+      still checks the label against the repo's ready labels. Empty means
+      every label selects. A repo whose ready label is not listed is picked
+      up by the two-hourly schedule fire instead.
+
+  GitHubAppId:
+    Type: String
+    AllowedPattern: '^[1-9][0-9]*$'
+    Description: >
+      The GitHub App's ID. The webhook receiver takes a comment carrying the
+      PR review's marker for the review's only when this App posted it.
+
+  ScheduleExpression:
+    Type: String
+    Default: cron(17 1-23/2 * * ? *)
+    Description: >
+      When the schedule fire runs: every 2 h, odd hours at :17. A served
+      repo's watchdog that reads the heartbeat expects the same cadence.
+
+  DispatchCap:
+    Type: String
+    Default: '2'
+    Description: >
+      How many issues one schedule fire may dispatch. Above two, a fire
+      whose launches are slow stops short of it to end inside the task's
+      deadline (dispatch/turn.mjs SCHEDULE_LAUNCH_WINDOW_MS).
+
+  AlertEmail:
+    Type: String
+    AllowedPattern: '^[^@\s]+@[^@\s]+$'
+    Description: >
+      Where the alarms send their email. The stack creates its own alerts
+      topic and subscribes this address; the subscription waits until the
+      address confirms it.
+
+  DropBoxUrl:
+    Type: String
+    Default: ''
+    Description: >
+      Optional. The URL the PR review's transcripts are PUT under, with the
+      writer credential the operator saves in governor/session-log-writer.
+      Empty ships no transcript.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resources
+# ─────────────────────────────────────────────────────────────────────────────
+Resources:
+  # ── The secrets ────────────────────────────────────────────────────────────
+  # Each is created holding a random placeholder that nothing reads as a
+  # value: CloudFormation owns the secret's existence and its policy, never
+  # its contents. The operator writes each once: the login with
+  # scripts/mint-claude-login.mjs --to secretsmanager, the App key and the
+  # drop-box writer with scripts/save-secret.mjs.
+  # A template change that does not touch GenerateSecretString leaves the
+  # stored value alone.
+  ClaudeLoginSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: governor/claude-login
+      Description: >-
+        A stored claude.ai login (the CLI's .credentials.json, beside its
+        account and org UUIDs), minted by
+        scripts/mint-claude-login.mjs. The dispatcher refreshes it
+        and writes it back; nothing else reads it.
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: placeholder
+        ExcludePunctuation: true
+
+  GitHubAppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: governor/github-app
+      Description: >-
+        {"appId", "privateKey"} of the GitHub App, written by the operator
+        with scripts/save-secret.mjs. The task mints installation tokens from
+        it, and the deploy its JWT to point the App's webhook.
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: placeholder
+        ExcludePunctuation: true
+
+  # The PR review's transcripts go to the drop box DropBoxUrl names, under
+  # this writer credential. The turn reads a placeholder as no writer, and
+  # ships nothing.
+  SessionLogWriterSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: governor/session-log-writer
+      Description: >-
+        The drop-box writer credential the PR review's transcripts are sent
+        with, written by the operator with scripts/save-secret.mjs.
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: placeholder
+        ExcludePunctuation: true
+
+  # ── The alerts ─────────────────────────────────────────────────────────────
+  # Every alarm publishes here, and the topic emails AlertEmail once the
+  # address has confirmed the subscription.
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: governor-alerts
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  # ── The task ───────────────────────────────────────────────────────────────
+  # The awslogs driver writes one stream per task beneath it,
+  # named <prefix>/<container>/<task id>, which is how the probe finds the
+  # run it started. DispatchNotRunRule writes a stop event into its own
+  # stream here too.
+  DispatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /governor
+      RetentionInDays: 30
+
+  # The dispatcher's own state (docs/constraints/dispatcher-state.md):
+  # one table, keyed pk/sk, each use a key prefix. First use: each label's
+  # cursor under its workflow, the newest run whose news a turn planned.
+  # No TableName,
+  # so CloudFormation names it (governor-…, which the deploy role's
+  # table grant matches) and a re-create cannot collide with a kept one. No
+  # point-in-time recovery: a lost cursor falls back to the runs list.
+  DispatchStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  DispatchCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: governor
+
+  # Least privilege, inline, where a test can read all of it
+  # (test/dispatch-stack.test.ts). Three roles, each with one job. RoleName
+  # is left generated, prefixed by the stack name, `governor-`.
+  #
+  # The task role: what the turn itself may do. The login read and written,
+  # the App key and the drop-box writer read, the state table's items, the
+  # fire lane counted, nothing else; the logs are the execution role's.
+  DispatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The dispatcher task's role, what the turn runs as
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: dispatch
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadTheSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref ClaudeLoginSecret
+                  - !Ref GitHubAppSecret
+                  - !Ref SessionLogWriterSecret
+              # The CLI rotates the refresh token when it refreshes; the
+              # rotated login has to go back or the next turn holds a dead one.
+              - Sid: WriteBackTheLogin
+                Effect: Allow
+                Action: secretsmanager:PutSecretValue
+                Resource: !Ref ClaudeLoginSecret
+              # A turn that messaged sessions waits for their replies only
+              # while no fire is queued (awaitReplies,
+              # scripts/lib/session-signoff.mjs): it counts the lane
+              # and takes nothing off it.
+              - Sid: CountTheFires
+                Effect: Allow
+                Action: sqs:GetQueueAttributes
+                Resource: !GetAtt DispatchFiresQueue.Arn
+              # Each label's cursor under its workflow (dispatch/turn.mjs
+              # dynamoState): read once a turn, written forward
+              # after its sends. What a held cursor's range delivered: read,
+              # and merged into.
+              - Sid: ReadAndWriteTheState
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt DispatchStateTable.Arn
+
+  # The execution role: what ECS does on the task's behalf before and around
+  # it. Pull the one image, write the one log group.
+  DispatchExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The dispatcher task's execution role, for the image pull and the log driver
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: execution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # The registry login takes no resource.
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              # The repository the workflow pushes to (.github/actions/image's
+              # repo_name); the image URI's digest pins which image.
+              - Sid: PullTheImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/governor'
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                # The group's Arn already ends in `:*`, which covers the
+                # streams beneath it; a second `:*` would demand two segments
+                # after the name and miss the group itself.
+                Resource: !GetAtt DispatchLogGroup.Arn
+
+  # Half a vCPU and a gigabyte: the turn is a Python launcher holding a
+  # pseudo-terminal around the CLI, twice, and a few HTTPS calls. arm64,
+  # which the image is built for and Fargate prices lowest.
+  DispatchTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: governor
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '512'
+      Memory: '1024'
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      TaskRoleArn: !GetAtt DispatchRole.Arn
+      ExecutionRoleArn: !GetAtt DispatchExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: dispatch
+          Image: !Ref ImageUri
+          Essential: true
+          # node is PID 1 in the container and PID 1 gets no default signal
+          # handling: without an init, a stop-task's SIGTERM is dropped until
+          # the SIGKILL thirty seconds later, and the launcher's orphaned
+          # grandchildren are never reaped.
+          LinuxParameters:
+            InitProcessEnabled: true
+          # DISPATCH_EVENT is deliberately absent: every run overrides it
+          # (the schedule rule's Input below; scripts/run-turn.mjs by
+          # hand), so a task started without one refuses to run.
+          Environment:
+            - Name: CLAUDE_LOGIN_SECRET_ID
+              Value: !Ref ClaudeLoginSecret
+            - Name: GITHUB_APP_SECRET_ID
+              Value: !Ref GitHubAppSecret
+            - Name: DISPATCH_OWNERS
+              Value: !Ref DispatchOwners
+            - Name: DISPATCH_CAP
+              Value: !Ref DispatchCap
+            - Name: SESSION_LOG_SECRET_ID
+              Value: !Ref SessionLogWriterSecret
+            # Where the review's transcripts go; empty ships none.
+            - Name: SESSION_LOG_URL
+              Value: !Ref DropBoxUrl
+            # Where each label's cursor under its workflow lives.
+            - Name: DISPATCH_STATE_TABLE
+              Value: !Ref DispatchStateTable
+            # The fire lane the sign-off wait counts (scripts/lib/session-signoff.mjs).
+            - Name: DISPATCH_FIRES_QUEUE_URL
+              Value: !Ref DispatchFiresQueue
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref DispatchLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: task
+
+  # ── The schedule ───────────────────────────────────────────────────────────
+  # The rule invokes the webhook receiver below with the schedule event,
+  # rather than running the task itself, so the schedule fire joins the same
+  # lane a webhook delivery's does: a task a delivery started at :10 is
+  # still running at :17, and two turns would refresh one login. A receiver
+  # EventBridge could not invoke is retried, inside the lane's five-minute
+  # deduplication window, so a retry of a fire the receiver did queue is not
+  # a second fire.
+  ScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: governor-schedule
+      Description: The pickup cadence; the payload names the fire so the receiver never guesses
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Id: dispatch
+          Arn: !GetAtt WebhookFunction.Arn
+          Input: '{"kind":"schedule"}'
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: 300
+
+  SchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebhookFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ScheduleRule.Arn
+
+  # ── The alarms ─────────────────────────────────────────────────────────────
+  # A turn that could not dispatch says so on one log line, `dispatch-failed`
+  # (dispatch/cli.mjs): a login the secret no longer holds, a GitHub read
+  # refused, a launcher that cannot start, a deadline. A message into an
+  # archived session, or a review the login's session limit refused
+  # (dispatch/checklist.mjs usageLimit), logs `dispatch-result` instead.
+  # Keyed on the event, never on a level
+  # (a level is the code's choice; an event is a fact). A served repo's
+  # watchdog would notice the missing heartbeat within a day; this says so
+  # within fifteen minutes.
+  DispatchFailuresFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "dispatch-failed" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: Failures
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DispatchErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-errors
+      AlarmDescription: '[tripwire] A dispatcher turn failed. Read /governor for the dispatch-failed line it logged.'
+      Namespace: governor
+      MetricName: Failures
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # A workflow turn that refuses to plan from a runs list lacking its run
+  # (dispatch/workflow.mjs) exits 0, so the filter above never hears
+  # it. A run of stale answers from the API would silence every deploy
+  # notice, and the sessions they were for never sign off. The
+  # refusal logs `dispatch-stale-runs`, naming the run and the newest run the
+  # list held. A turn that cannot read its label's cursor, or what the
+  # cursor's range has delivered, refuses the same way. A refused turn leaves the cursor, so the next run of the workflow
+  # covers the refused run's merges: the page asks for hand work only
+  # when no next run comes.
+  DispatchStaleRunsFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "dispatch-stale-runs" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: StaleRuns
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DispatchStaleRunsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-stale-runs
+      AlarmDescription: '[tripwire] A workflow turn refused to tell a run''s sessions: the Actions runs list still lacked the run after every re-read, or the workflow''s cursor, or what its range has delivered, could not be read from the dispatcher''s state table. Read /governor for the dispatch-stale-runs line; it names the run and why. The next run of the same workflow on main tells the refused run''s merges: the next green deploy tells and labels what it shipped, and the next red CI counts its merges among the suspects. Only when no next run comes (a red CI followed by green ones), or that turn refuses too, tell the run''s PRs by hand: a deploy''s that it shipped, a red CI''s suspects that it broke main.'
+      Namespace: governor
+      MetricName: StaleRuns
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # The login's refresh expiry is fixed at mint, about 14 days on; refreshes
+  # do not move it. Past it the dispatcher stops and
+  # DispatchErrorsAlarm pages, too late. Each turn within
+  # LOGIN_EXPIRY_WARNING_MS (scripts/lib/claude-login.mjs, three days) of it
+  # logs `dispatch-login-expiring` (dispatch/turn.mjs). A day's period, not
+  # fifteen minutes: turns run every two hours or less, so each day of the
+  # window holds a line and the alarm stays in ALARM, one page, until a
+  # re-mint; the next day's turns publish 0 (DefaultValue) and clear it.
+  DispatchLoginExpiringFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "dispatch-login-expiring" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: LoginExpiring
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DispatchLoginExpiringAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-login-expiring
+      AlarmDescription: '[tripwire] The dispatcher''s stored claude.ai login reaches its refresh expiry within three days, and refreshes do not extend it. Read /governor for the dispatch-login-expiring line; it names the expiry. Re-mint before then: node scripts/mint-claude-login.mjs --profile admin.'
+      Namespace: governor
+      MetricName: LoginExpiring
+      Statistic: Sum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # The dispatcher claims a ticket before it launches the ticket's session.
+  # A claim whose turn ends with no dispatch marker naming a session
+  # (an unconfirmed launch, one past its budget, a thrown turn, the deadline)
+  # logs `dispatch-claim-stranded` naming the ticket (dispatch/turn.mjs,
+  # dispatch/cli.mjs). The ticket stays under development, so no fire picks
+  # it again: a person decides whether a session is on it.
+  DispatchClaimStrandedFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "dispatch-claim-stranded" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: ClaimsStranded
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DispatchClaimStrandedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-claim-stranded
+      AlarmDescription: '[tripwire] The dispatcher claimed a ticket (workflow: under development) and no dispatch marker names the session it launched for it, so no fire will pick the ticket again. Read /governor for the dispatch-claim-stranded line; it names the ticket. Look in the sessions list for a session named after it: if one is working, leave it; if none is, put workflow: ready for development back and take workflow: under development off.'
+      Namespace: governor
+      MetricName: ClaimsStranded
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # A served repo's config file that fails its schema (dispatch/repos.mjs,
+  # dispatch/repo-config.mjs) leaves the repo unserved until it is fixed: no
+  # dispatch, no archiving. Each turn that reads it logs
+  # `dispatch-config-invalid` naming the repo and the fault. A repo with no
+  # file logs `dispatch-not-served` at info and pages nobody.
+  DispatchConfigInvalidFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "dispatch-config-invalid" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: ConfigInvalid
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DispatchConfigInvalidAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-config-invalid
+      AlarmDescription: '[tripwire] A served repo''s .github/dispatch.json fails its schema, so the dispatcher skips the repo: no pickup, no messages, no archiving. Read /governor for the dispatch-config-invalid line; it names the repo and the fault. Fix the file on the repo''s default branch (dispatch/repo-config.mjs holds the schema); the next fire serves the repo again.'
+      Namespace: governor
+      MetricName: ConfigInvalid
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # A launch in a served repo that started nothing (a cloud environment the
+  # file names wrongly, a login refused) skips the rest of that repo's
+  # tickets for the fire, and logs `dispatch-repo-skipped` naming the repo
+  # (dispatch/turn.mjs). The other repos still go.
+  DispatchRepoSkippedFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "dispatch-repo-skipped" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: ReposSkipped
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DispatchRepoSkippedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-repo-skipped
+      AlarmDescription: '[tripwire] A launch in a served repo started nothing, so the fire skipped the rest of that repo''s ready tickets. Read /governor for the dispatch-repo-skipped line; it names the repo, and the dispatch-launcher-output line before it says why. A wrong environment in the repo''s .github/dispatch.json is the repo''s to fix; a login refused is a re-mint (scripts/mint-claude-login.mjs).'
+      Namespace: governor
+      MetricName: ReposSkipped
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # A schedule fire that never reached the receiver logs nothing: EventBridge
+  # counts the invocation it could not make on the rule. A task RunTask
+  # refused is the fire lane's to retry, and its dead-letter alarm's to page.
+  DispatchNotStartedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-not-started
+      AlarmDescription: '[tripwire] EventBridge could not invoke the receiver for the schedule fire. Read the schedule rule''s failed invocations, then fire by hand: node scripts/run-turn.mjs --kind schedule.'
+      Namespace: AWS/Events
+      MetricName: FailedInvocations
+      Dimensions:
+        - Name: RuleName
+          Value: !Ref ScheduleRule
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # A task RunTask started but whose container never ran (a pull refused, no
+  # capacity to place it, an ENI that would not attach) logs nothing, and the
+  # RunTask succeeded, so neither alarm above hears it. ECS says so on
+  # the task's STOPPED event; this rule writes that whole event, stoppedReason
+  # included, into the task's own log group, one stream per event, for the
+  # operator to read, and hands it to the retrier (below), which puts the
+  # fire the task carried back on the lane; the alarm below counts
+  # the rule's matches. A task that ran its container stops with
+  # EssentialContainerExited, whatever its exit code: that path is the
+  # dispatch-failed filter's.
+  DispatchNotRunRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: governor-not-run
+      Description: A dispatcher task stopped without running its container
+      State: ENABLED
+      EventPattern:
+        source: [aws.ecs]
+        detail-type: [ECS Task State Change]
+        detail:
+          clusterArn: [!GetAtt DispatchCluster.Arn]
+          lastStatus: [STOPPED]
+          stopCode: [TaskFailedToStart]
+      Targets:
+        - Id: log
+          Arn: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DispatchLogGroup}'
+        - Id: retry
+          Arn: !GetAtt RetrierFunction.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: 3600
+
+  # A log-group target takes no role: EventBridge writes on the group's
+  # resource policy, both principals, the one group.
+  DispatchEventsLogPolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: governor-events
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": ["events.amazonaws.com", "delivery.logs.amazonaws.com"] },
+              "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+              "Resource": "${DispatchLogGroup.Arn}"
+            }
+          ]
+        }
+
+  # Counted on the rule's own matches, not off the log it writes: a write the
+  # group's policy refused would leave this tripwire deaf (it is a
+  # FailedInvocation, which DispatchNotRunUndeliveredAlarm reads). One stop is the retrier's to absorb, so the
+  # threshold is one fire's worth of attempts in the window
+  # (dispatch/webhook/retry.mjs MAX_START_ATTEMPTS): stops the retries are
+  # not beating. The fire that runs out of attempts pages on its own, from
+  # the dead-letter queue.
+  DispatchNotRunAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-not-run
+      AlarmDescription: '[tripwire] Dispatcher tasks keep stopping without running their container, MAX_START_ATTEMPTS (dispatch/webhook/retry.mjs) or more in fifteen minutes. Read /governor for the ECS Task State Change events the stops logged; detail.stoppedReason says why (an image pull, a placement, an ENI). /aws/lambda/governor-retrier says which fires went back on the lane.'
+      Namespace: AWS/Events
+      MetricName: TriggeredRules
+      Dimensions:
+        - Name: RuleName
+          Value: !Ref DispatchNotRunRule
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # ── The retrier ────────────────────────────────────────────────────────────
+  # The starter is done with a fire once RunTask succeeds, so a task that
+  # then failed to start dropped its fire. The not-run rule hands
+  # the stop event here: the fire rides the container override, the attempt
+  # rides the task's startedBy, and the retrier puts the fire back on the
+  # lane until it has had its attempts, then on the dead-letter queue, whose
+  # tripwire pages (dispatch/webhook/retry.mjs).
+  RetrierLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/governor-retrier
+      RetentionInDays: 30
+
+  # What the retrier may do: queue a fire on the lane or its dead-letter
+  # queue. It starts nothing: the starter does.
+  RetrierRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The fire retrier's execution role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: retry
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: QueueAFire
+                Effect: Allow
+                Action: sqs:SendMessage
+                Resource:
+                  - !GetAtt DispatchFiresQueue.Arn
+                  - !GetAtt DispatchFiresDeadQueue.Arn
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt RetrierLogGroup.Arn
+
+  RetrierFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: governor-retrier
+      Description: Puts back on the lane the fire of a dispatcher task that failed to start
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      Handler: retry-handler.handler
+      Code: ../dispatch/webhook/
+      Role: !GetAtt RetrierRole.Arn
+      MemorySize: 256
+      # One SQS call.
+      Timeout: 20
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref RetrierLogGroup
+      Environment:
+        Variables:
+          FIRES_QUEUE_URL: !Ref DispatchFiresQueue
+          DEAD_QUEUE_URL: !Ref DispatchFiresDeadQueue
+
+  RetrierPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RetrierFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DispatchNotRunRule.Arn
+
+  # The rule's RetryPolicy covers EventBridge's delivery alone; a retrier
+  # that throws is retried by Lambda, a minute then two minutes later. The
+  # age bound keeps both retries inside the lane's five-minute deduplication
+  # window, so a retry of a send the lane took is not a second fire.
+  RetrierInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref RetrierFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 2
+      MaximumEventAgeInSeconds: 300
+
+  # A stop event EventBridge could not hand the retrier (a throttle past the
+  # rule's retries, a permission gone) is a fire lost, and one stop is below
+  # the not-run alarm's threshold. A log write the group's policy refused
+  # counts here too.
+  DispatchNotRunUndeliveredAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-not-run-undelivered
+      AlarmDescription: '[tripwire] EventBridge could not deliver a dispatcher task''s stop event to the retrier or the log group, so its fire may be lost. Read the governor-not-run rule''s failed invocations, then re-fire by hand: node scripts/run-turn.mjs.'
+      Namespace: AWS/Events
+      MetricName: FailedInvocations
+      Dimensions:
+        - Name: RuleName
+          Value: !Ref DispatchNotRunRule
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # A retrier that throws has lost the fire the stop carried, once Lambda's
+  # async retries are spent (RetrierInvokeConfig): a lane that refused the
+  # send, a starter task with no fire on it.
+  RetrierErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-retrier-errors
+      AlarmDescription: '[tripwire] The retrier threw on a dispatcher task that failed to start, so its fire may be lost. Read /aws/lambda/governor-retrier for the retry-failed line, then re-fire by hand: node scripts/run-turn.mjs.'
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref RetrierFunction
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # ── The webhook receiver ───────────────────────────────────────────────────
+  # GitHub posts the repository's issue, comment and review events here. An
+  # issue labelled ready queues a schedule fire naming it, which the task
+  # dispatches if the selection would; a mention of @claude by someone with
+  # a say in the repository queues a dispatch fire with a prompt of its own
+  # (dispatch/webhook/route.mjs, mention.mjs). The receiver starts nothing:
+  # the fire lane below does, one task at a time.
+  # The Function URL is unsigned by necessity, since GitHub cannot sign
+  # SigV4; what keeps anyone else from queueing fires is the HMAC over every
+  # body, keyed by the secret below, which the deploy workflow writes into
+  # the App's webhook after every apply (scripts/point-app-webhook.mjs).
+  WebhookSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: governor/webhook-secret
+      Description: >-
+        The HMAC key the webhook receiver verifies GitHub deliveries with;
+        the same value goes into the repository webhook's Secret field.
+        Generated here, read by the receiver, never written by anything.
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+
+  WebhookLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/governor-webhook
+      RetentionInDays: 30
+
+  # What the receiver may do: read its key, queue a fire. Nothing else: the
+  # starter below is the one thing that starts a task.
+  WebhookRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The webhook receiver's execution role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: receive
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadTheKey
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref WebhookSecret
+              - Sid: QueueAFire
+                Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt DispatchFiresQueue.Arn
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt WebhookLogGroup.Arn
+
+  WebhookFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: governor-webhook
+      Description: Queues a dispatcher fire from a GitHub delivery
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      Handler: handler.handler
+      # A local directory, uploaded by `aws cloudformation package` in the
+      # workflow; dependency-free ESM over the runtime's own AWS SDK, so what
+      # deploys is what is in the repo. The starter below is packaged from
+      # the same directory.
+      Code: ../dispatch/webhook/
+      Role: !GetAtt WebhookRole.Arn
+      MemorySize: 256
+      Timeout: 20
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref WebhookLogGroup
+      Environment:
+        Variables:
+          WEBHOOK_SECRET_ID: !Ref WebhookSecret
+          DISPATCH_OWNERS: !Ref DispatchOwners
+          SELECT_LABELS: !Ref SelectLabels
+          FIRES_QUEUE_URL: !Ref DispatchFiresQueue
+          APP_ID: !Ref GitHubAppId
+
+  WebhookUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt WebhookFunction.Arn
+      AuthType: NONE
+
+  # The public needs both grants: a Function URL made after October 2025
+  # answers 403 before the function runs on InvokeFunctionUrl alone (AWS's
+  # urls-auth page), and the first registered hook's ping found that out.
+  # InvokedViaFunctionUrl keeps the second to the URL: the Invoke API still
+  # needs a signed caller the policy names (SchedulePermission, above).
+  WebhookUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebhookFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  WebhookUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebhookFunction
+      Action: lambda:InvokeFunction
+      Principal: '*'
+      InvokedViaFunctionUrl: true
+
+  # The schedule reaches the receiver as an async invoke, which Lambda
+  # retries on a function error a minute and then two minutes later; the
+  # rule's own RetryPolicy covers EventBridge's delivery alone. Both retries
+  # land inside the lane's five-minute deduplication window, so a schedule
+  # fire the lane refused (a throttled SendMessage) is queued by the retry,
+  # and one it took is not queued twice. Spelled out rather than left to the
+  # default, with the age bound that keeps the retries inside the window.
+  WebhookInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref WebhookFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 2
+      MaximumEventAgeInSeconds: 300
+
+  # ── The fire lane ──────────────────────────────────────────────────────────
+  # Every fire, the schedule's and a delivery's, waits its turn here, and
+  # the starter drains the lane one task at a time: a dispatcher turn
+  # refreshes the stored login, and two turns refreshing one login leave
+  # one of them dead. FIFO with one message group is what serialises the
+  # fires; a delivery's id is its deduplication id, so a redelivery is not
+  # a second fire, and the schedule's identical body deduplicates itself
+  # within the five-minute window. A fire that finds a task running is
+  # handed straight back (dispatch/webhook/starter.mjs), as is one that
+  # fails: the queue re-offers it in seconds, and the attempts outlast a
+  # whole task and its provisioning (dispatch/cli.mjs DEADLINE_MS, eighteen
+  # minutes) before the fire is dead-lettered and the tripwire pages.
+  DispatchFiresQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: governor-fires.fifo
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      # How long an invocation may hold a fire before the lane offers it
+      # again: twice the starter's Timeout below, since a fire handed to a
+      # second invocation while the first still holds it would be two
+      # tasks. Not the pace: a deferred fire is asked back sooner by the
+      # starter (dispatch/webhook/starter.mjs DEFER_SECONDS), and this is
+      # what a refused ask costs it.
+      VisibilityTimeout: 60
+      # A fire a day old is stale: the schedule has fired since, and a
+      # mention's author has long since looked.
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DispatchFiresDeadQueue.Arn
+        # Half an hour of re-offers at the starter's ten-second pace: a
+        # task's deadline, its provisioning, and a margin. A fire that fails
+        # is re-offered at the same pace, so this is also how long a
+        # persistent failure holds the lane before the tripwire.
+        maxReceiveCount: 180
+
+  DispatchFiresDeadQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: governor-fires-dead.fifo
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600
+
+  StarterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/governor-starter
+      RetentionInDays: 30
+
+  # What the starter may do: consume the lane, see whether a dispatcher task
+  # is running, start one. Every task start, the schedule's included, is
+  # this role's.
+  StarterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The fire starter's execution role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: start
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ConsumeTheLane
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  # A deferred fire is asked back in seconds, not the minute
+                  # the queue would take.
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt DispatchFiresQueue.Arn
+              # ListTasks takes no resource; the cluster condition keeps it
+              # to this one.
+              - Sid: SeeRunningTasks
+                Effect: Allow
+                Action: ecs:ListTasks
+                Resource: '*'
+                Condition:
+                  ArnEquals:
+                    ecs:cluster: !GetAtt DispatchCluster.Arn
+              - Sid: RunTheTask
+                Effect: Allow
+                Action: ecs:RunTask
+                Resource: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/governor:*'
+                Condition:
+                  ArnEquals:
+                    ecs:cluster: !GetAtt DispatchCluster.Arn
+              - Sid: PassTheTaskRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !GetAtt DispatchRole.Arn
+                  - !GetAtt DispatchExecutionRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ecs-tasks.amazonaws.com
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt StarterLogGroup.Arn
+
+  StarterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: governor-starter
+      Description: Starts one dispatcher task per fire off the lane, never beside a running one
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      Handler: starter-handler.handler
+      Code: ../dispatch/webhook/
+      Role: !GetAtt StarterRole.Arn
+      MemorySize: 256
+      # Two ECS calls and an SQS call; the starter never waits.
+      Timeout: 30
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref StarterLogGroup
+      Environment:
+        Variables:
+          CLUSTER: !Ref DispatchCluster
+          TASK_FAMILY: governor
+          CONTAINER_NAME: dispatch
+          SUBNET_IDS: !Join [',', !Ref SubnetIds]
+          # For the re-offer: a receipt handle is changed on its queue's URL.
+          FIRES_QUEUE_URL: !Ref DispatchFiresQueue
+
+  # One message per invocation. Two is the smallest concurrency the event
+  # source takes; the single message group is what keeps the fires serial.
+  StarterLane:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt DispatchFiresQueue.Arn
+      FunctionName: !Ref StarterFunction
+      BatchSize: 1
+      ScalingConfig:
+        MaximumConcurrency: 2
+      # A deferred or failed fire leaves as a batch item failure, not a
+      # throw, so neither counts toward the account-wide Errors safety net.
+      FunctionResponseTypes: [ReportBatchItemFailures]
+
+  # A fire that failed every attempt: RunTask refused it each time, a task
+  # ran for the whole half hour, or every task it started failed to start
+  # (the retrier sends it here). The starter logs a failure (fire-failed)
+  # and hands the fire back rather than throwing, so the lane retries it at
+  # the deferral's pace; this is where it ends.
+  DispatchFiresDeadAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-fires-dead
+      AlarmDescription: '[tripwire] A fire failed every attempt to start a dispatcher task and sits in governor-fires-dead.fifo. Read /aws/lambda/governor-starter for why, or /aws/lambda/governor-retrier (fire-gave-up) for a fire whose tasks failed to start, then redrive the dead-letter queue or purge it.'
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DispatchFiresDeadQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # A receiver that throws (a key it cannot read, a lane that refused the
+  # fire: the receiver rethrows a failed SendMessage after logging it) is a
+  # delivery lost until the next schedule fire; a refused signature is a 401
+  # the receiver returns, not a throw, so a stranger probing the URL never
+  # pages.
+  WebhookErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-webhook-errors
+      AlarmDescription: '[tripwire] The webhook receiver threw. Read /aws/lambda/governor-webhook for the delivery it was handling.'
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref WebhookFunction
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Outputs — what scripts/run-turn.mjs reads to start a probe, or queue
+# a fire and find the task the starter started for it
+# ─────────────────────────────────────────────────────────────────────────────
+Outputs:
+  ClusterName:
+    Value: !Ref DispatchCluster
+  TaskDefinitionFamily:
+    Value: governor
+  ContainerName:
+    Value: dispatch
+  SubnetIds:
+    Value: !Join [',', !Ref SubnetIds]
+  LogGroupName:
+    Value: !Ref DispatchLogGroup
+  LogStreamPrefix:
+    Value: task
+  FiresQueueUrl:
+    Value: !Ref DispatchFiresQueue
+  StarterLogGroupName:
+    Value: !Ref StarterLogGroup
+
+  ClaudeLoginSecretArn:
+    Description: Where scripts/mint-claude-login.mjs --to secretsmanager writes the login.
+    Value: !Ref ClaudeLoginSecret
+
+  GitHubAppSecretArn:
+    Description: Written by the operator with scripts/save-secret.mjs github-app.
+    Value: !Ref GitHubAppSecret
+
+  WebhookUrl:
+    Description: The App webhook's Payload URL, which the deploy writes (scripts/point-app-webhook.mjs).
+    Value: !GetAtt WebhookUrl.FunctionUrl
+
+  WebhookSecretArn:
+    Description: Holds the webhook's Secret; the deploy workflow reads it and writes it into the repository webhook.
+    Value: !Ref WebhookSecret

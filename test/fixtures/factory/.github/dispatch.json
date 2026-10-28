@@ -1,0 +1,399 @@
+{
+  "environment": "env_fakefactory",
+  "labels": {
+    "ready": [
+      "workflow: ready for development",
+      "mode: afk"
+    ],
+    "claim": "workflow: under development",
+    "claimRemoves": [
+      "workflow: ready for development"
+    ]
+  },
+  "features": {
+    "pickup": true,
+    "summons": true,
+    "prMessages": true,
+    "subscribeMessages": true,
+    "prReview": true,
+    "ciMessages": true,
+    "deployMessages": true,
+    "redScheduledRun": true,
+    "branchRunMessages": true,
+    "conflicts": true,
+    "deployedLabels": true,
+    "mergeHandoff": true,
+    "heartbeat": true
+  },
+  "heartbeat": {
+    "issue": 412,
+    "marker": "<!-- factory:routine-heartbeat:auto-develop -->"
+  },
+  "workflows": {
+    "ci": ".github/workflows/ci.yml",
+    "triage": [
+      "prod"
+    ],
+    "tags": {
+      "dev": "deploy/dev",
+      "prod": "deploy/prod"
+    }
+  },
+  "review": {
+    "checklist": {
+      "file": ".claude/skills/pr-review/SKILL.md"
+    },
+    "humanOnly": [
+      {
+        "glob": "docs/constraints/**",
+        "reason": "the architectural constraints; changing what one means takes an ADR"
+      },
+      {
+        "glob": "/CLAUDE.md",
+        "reason": "the instructions every session follows",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": ".claude/**",
+        "reason": "the skills, hooks and settings every session runs, this review's checklist among them",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "infra/**",
+        "reason": "infrastructure: IAM, roles and the stacks outside the app deploy",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "serverless/**",
+        "reason": "the app stack: Lambdas, tables, alarms and grants",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": ".github/workflows/deliver.yml",
+        "reason": "the delivery train (docs/constraints/promotion-gate.md)",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": ".github/workflows/deploy*.yml",
+        "reason": "the deploy stages",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": ".github/workflows/dispatch.yml",
+        "reason": "the dispatcher's deploy",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "dispatch/**",
+        "reason": "the dispatcher, which runs this review and merges on its answer",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": ".github/workflows/e2e.yml",
+        "reason": "the promotion gate (docs/constraints/promotion-gate.md)",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "test/e2e/lib/gate.ts",
+        "reason": "the promotion gate (docs/constraints/promotion-gate.md)",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "scripts/refuse-unless-dev-serves.sh",
+        "reason": "the promotion gate (docs/constraints/promotion-gate.md)",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "src/billing/entitlements.ts",
+        "reason": "billing: every entitlement write's guard",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "src/billing/webhook.ts",
+        "reason": "billing: Stripe's webhook",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "src/billing/**/*subscription*",
+        "reason": "billing: subscription state",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "src/billing/apple/**",
+        "reason": "billing: Apple's purchases and notifications",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "src/billing/google/**",
+        "reason": "billing: Play's purchases and notifications",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "src/billing/stripe/**",
+        "reason": "billing: Stripe",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "src/billing/pack*",
+        "reason": "billing: article packs",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "src/billing/auto-topup*",
+        "reason": "billing: automatic pack top-up",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "src/oauth/**",
+        "reason": "auth: the MCP OAuth server",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "src/mcp/authorizations*",
+        "reason": "auth: MCP grants",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "clients/shared/auth.js",
+        "reason": "auth: sign-in and tokens",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "clients/shared/*billing*",
+        "reason": "billing: the client billers",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "config/tiers.json",
+        "reason": "the tiers: prices, limits and voices",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "config/packs.json",
+        "reason": "the article packs",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "config/capacity-register.json",
+        "reason": "the capacity register",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "/package.json",
+        "reason": "the dependencies and the toolchain",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "/package-lock.json",
+        "reason": "the dependencies",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "requirements.txt",
+        "reason": "a Lambda's Python dependencies",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "kokoro-lambda/Dockerfile",
+        "reason": "a base image and its model digests",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "stitcher-lambda/Dockerfile",
+        "reason": "a base image and its encoder pins",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": "Dockerfile.base",
+        "reason": "a base image and the dependencies it carries",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": ".github/actions/lambda-image/**",
+        "reason": "the Lambda image build",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": ".github/actions/normalize-base-image/**",
+        "reason": "the normalizer's base image build",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": ".github/workflows/build-normalize-base.yml",
+        "reason": "the normalizer's base image build",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      },
+      {
+        "glob": ".github/dispatch.json",
+        "reason": "the dispatcher's config: these lists, the review's checklist and what the dispatcher may do here",
+        "unless": [
+          "mode: hitl",
+          "mode: human"
+        ]
+      }
+    ],
+    "tickets": {
+      "require": [
+        {
+          "labels": [
+            "mode: afk",
+            "mode: hitl",
+            "mode: human"
+          ]
+        }
+      ],
+      "forbid": [
+        {
+          "labels": [
+            "type: prd"
+          ]
+        },
+        {
+          "labels": [
+            "type: adr"
+          ],
+          "unless": [
+            "workflow: ready for development",
+            "workflow: under development"
+          ]
+        }
+      ]
+    },
+    "quote": [
+      "docs/constraints/*.md",
+      "!docs/constraints/README.md"
+    ],
+    "decides": [
+      "type: adr"
+    ],
+    "dependabot": [
+      "/package.json",
+      "/package-lock.json",
+      "normalize-lambda/requirements.txt",
+      "kokoro-lambda/requirements.txt",
+      "tools/webmainbench/requirements.txt",
+      "clients/*/Gemfile",
+      "clients/*/Gemfile.lock"
+    ],
+    "merge": true
+  },
+  "prompts": {
+    "signOff": "Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make `Signing off.` the last line of your reply, and the dispatcher archives the session. Above it, write any `Lesson:` lines CLAUDE.md § Lessons calls for; usually there are none.",
+    "mergeHandoff": "For each ticket waiting on you (CLAUDE.md § After your PR merges): rewrite what waited from the code that merged, drop the `Spec waits until` line and mark it `workflow: ready for development`. A decision only a person can make goes into its body as a question instead, and it stays unlabelled.\nFor each started or ready one: if the merge contradicts its spec, fix its body. If it is `workflow: under development`, message its session too (the dispatcher's marker comment on the ticket names it).",
+    "mergeHandoffUnread": "Read them yourself (`gh-deps list-blocking <n>`, the issue-dependencies skill) and follow CLAUDE.md § After your PR merges.",
+    "redScheduledRun": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. Read the docs/constraints/ files that name the workflow file before re-running it: some tiers limit how soon one run may follow another. First search the open issues and PRs for it: if one already covers this failure, comment this run on it and stop. If the fix is in the repo, push it on a new branch from origin/main with a new PR. If it is not (a lapsed credential, a third-party outage), raise an issue saying what failed and what it needs.",
+    "ciBreaker": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If the cause is in your change, push the fix on a new branch from origin/main with a new PR: PR #{pr} is merged and its branch is done. If it is not, comment on PR #{pr} with what you found instead.",
+    "ciTriage": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. Work out which merge caused it, and push the fix on a new branch from origin/main with a new PR naming that PR. Then comment on the culprit PR with what broke and a link to your fix.",
+    "ciBumpTriage": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If the bump caused it, push the fix on a new branch from origin/main with a new PR naming PR #{pr}: the change the new version needs. Where none is in reach, revert the bump in that PR instead and raise an issue naming the bump and what broke, since Dependabot raises it again. Then comment on PR #{pr} with what broke and a link to your fix. If the bump did not cause it, comment on PR #{pr} with what you found instead.",
+    "prodTriage": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If a merge caused it, push the fix on a new branch from origin/main with a new PR naming that PR, and comment on it with what broke and a link to your fix. If none did (a prod-only secret, store or quota), raise an issue saying what broke and what the operator must do.",
+    "deployGreen": "Run what your PR's Verification table promised at `{target} deploy`, if anything, and report the result on PR #{pr}. If it promised nothing there, nothing is owed.",
+    "deployGreenMany": "Run what their Verification tables promised at `{target} deploy`, if anything, and report the results in one comment on PR #{pr}, the newest. If none promised anything there, nothing is owed.",
+    "deployRed": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If your change caused it, push the fix on a new branch from origin/main with a new PR. If it did not, nothing is owed; say what you found on PR #{pr}.",
+    "deployRedMany": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If one of your changes caused it, push the fix on a new branch from origin/main with a new PR. If none did, nothing is owed; say what you found in one comment on PR #{pr}, the newest."
+  }
+}

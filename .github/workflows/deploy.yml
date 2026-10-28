@@ -1,0 +1,231 @@
+# Governor's deploy
+#
+# Builds the task's image and applies infra/governor.cfn.yml: the stack that
+# starts Claude Code cloud sessions from a stored claude.ai login. A green
+# gate on a push to main deploys; nothing else does. The dispatches it makes
+# cost no runner minutes, since EventBridge and the webhook receiver start
+# the task with no runner involved.
+#
+# The deploy job does nothing until the AWS_DEPLOY_ROLE_ARN variable is set,
+# so a fork's first merges run the gate alone. Its settings are repository
+# variables, never values in this file:
+#
+#   AWS_DEPLOY_ROLE_ARN  the role the job assumes through GitHub's OIDC
+#   AWS_REGION           where the stack lives (default us-east-1)
+#   GOVERNOR_OWNERS      the GitHub accounts served, comma-separated
+#   APP_ID               the GitHub App's ID
+#   APP_SLUG             the App's slug, for the app-events check
+#   SELECT_LABELS        the labels whose addition queues a selection fire
+#   ALERT_EMAIL          where the alarms send their email
+#   DROP_BOX_URL         optional: where the PR review's transcripts go
+#
+# One job, in order: derive the image tag from the image's inputs, build only
+# when that tag is new, read the default VPC's subnets, package and apply the
+# stack, point the App's webhook at the receiver, read back what GitHub and
+# AWS now hold (scripts/conformance.mjs), and run the task's probe. The probe
+# proves what a gate test cannot: that the task can pull its image, reach the
+# network, hold a pseudo-terminal and find the CLI. A red probe is a red
+# deploy.
+#
+# No secret is written here. The operator saves the claude.ai login, the App
+# key and the drop-box writer into the stack's secrets once
+# (scripts/mint-claude-login.mjs, scripts/save-secret.mjs); this job reads
+# only the App key, to point the App's webhook.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      probe_only:
+        description: Skip the build and the apply; only run the deployed task's probe.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Two applies at once would race on the stack and on the image tag; queue.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+# Which tickets the shipping job labels: those a merge in the run's range
+# closed. The label itself, and the commit it built, are in the shipping
+# job's name (`… at <sha> · deployed: <target>`), which governor reads off
+# the `workflow_job` event when a repo turns `deployedLabels` on.
+env:
+  TICKET_LABEL_PATHS: all
+
+jobs:
+  gate:
+    uses: ./.github/workflows/gate.yml
+
+  deploy:
+    needs: gate
+    if: ${{ vars.AWS_DEPLOY_ROLE_ARN != '' }}
+    # A probe-only run deploys nothing, and its name carries no label.
+    name: "${{ inputs.probe_only && 'Probe only: build the image, apply the stack, probe the task' || format('Build the image, apply the stack, probe the task at {0} · deployed: governor', github.sha) }}"
+    # Native arm64: the task runs on arm64 and the CLI's postinstall fetches
+    # the platform binary.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      id-token: write   # OIDC token for AWS assume-role
+      contents: read    # checkout
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Plan the image tag
+        id: plan
+        if: ${{ !inputs.probe_only }}
+        # Content-hashed from exactly what the Dockerfile copies;
+        # test/dispatch-stack.test.ts holds the two lists together.
+        run: |
+          set -o pipefail
+          IMAGE_TAG=$(git ls-tree -r HEAD -- \
+                dispatch/Dockerfile dispatch/turn.mjs dispatch/deliveries.mjs dispatch/handoff.mjs dispatch/cli.mjs dispatch/workflow.mjs dispatch/runs.mjs dispatch/coverage.mjs dispatch/labels.mjs dispatch/branch-run.mjs dispatch/review.mjs dispatch/checklist.mjs dispatch/pr-body.mjs dispatch/conflicts.mjs dispatch/prompts.mjs dispatch/repo-config.mjs dispatch/repos.mjs dispatch/heartbeat.mjs dispatch/launch-session.py dispatch/webhook/fire.mjs dispatch/webhook/mention.mjs dispatch/webhook/subscribe.mjs dispatch/webhook/review-comment.mjs \
+                dispatch/package.json dispatch/package-lock.json \
+                scripts/lib/claude-login.mjs scripts/lib/cli-entry.mjs scripts/lib/dispatch-prompt.mjs scripts/lib/dispatch-router.mjs scripts/lib/error-message.mjs scripts/lib/github-app.mjs scripts/lib/ready-work.mjs scripts/lib/session-branch.mjs scripts/lib/session-signoff.mjs \
+              | git hash-object --stdin)
+          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 ]; then
+            echo "::error::image tag hashed an empty file list."
+            exit 1
+          fi
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the task image
+        id: image
+        if: ${{ !inputs.probe_only }}
+        uses: ./.github/actions/image
+        with:
+          repo_name: governor
+          image_tag: ${{ steps.plan.outputs.image_tag }}
+          dockerfile: dispatch/Dockerfile
+          region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          cache_scope: dispatch
+
+      # The task runs in the default VPC's subnets: public, with an internet
+      # gateway and no NAT to pay for. An account without a default VPC gets
+      # one back with `aws ec2 create-default-vpc` (admin, once).
+      - name: Read the default VPC's subnets
+        id: network
+        if: ${{ !inputs.probe_only }}
+        run: |
+          SUBNET_IDS=$(aws ec2 describe-subnets \
+            --filters Name=default-for-az,Values=true \
+            --query 'Subnets[].SubnetId' --output text | tr '\t' ',')
+          if [[ -z "$SUBNET_IDS" ]]; then
+            echo "::error::no default VPC subnets in this region; the task has nowhere to run"
+            exit 1
+          fi
+          echo "subnet_ids=${SUBNET_IDS}" >> "$GITHUB_OUTPUT"
+
+      # A stack in UPDATE_ROLLBACK_FAILED cannot be updated, and clearing it
+      # would otherwise need admin credentials on a laptop.
+      - name: Continue a stalled rollback, if the stack is in one
+        if: ${{ !inputs.probe_only }}
+        run: node scripts/cfn-continue-stalled-rollback.mjs governor
+
+      # The webhook receiver's `Code:` is a local directory; package uploads
+      # it to the deploy's own bucket and writes a template naming the object.
+      - name: Package the webhook receiver
+        if: ${{ !inputs.probe_only }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET="governor-build-${ACCOUNT_ID}-${AWS_REGION}"
+          aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null || aws s3 mb "s3://${BUCKET}"
+          aws cloudformation package \
+            --template-file infra/governor.cfn.yml \
+            --s3-bucket "$BUCKET" \
+            --s3-prefix governor \
+            --output-template-file "$RUNNER_TEMP/governor.packaged.yml"
+
+      - name: Apply the stack
+        if: ${{ !inputs.probe_only }}
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+          SUBNET_IDS: ${{ steps.network.outputs.subnet_ids }}
+          GOVERNOR_OWNERS: ${{ vars.GOVERNOR_OWNERS }}
+          APP_ID: ${{ vars.APP_ID }}
+          SELECT_LABELS: ${{ vars.SELECT_LABELS }}
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
+          DROP_BOX_URL: ${{ vars.DROP_BOX_URL }}
+        run: |
+          if [[ ! "$APP_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::APP_ID variable is not an App ID"
+            exit 1
+          fi
+          for name in GOVERNOR_OWNERS ALERT_EMAIL; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::the ${name} variable is not set"
+              exit 1
+            fi
+          done
+          # The packaged template: the source one still carries `Code: ../dispatch/webhook/`.
+          aws cloudformation deploy \
+            --stack-name governor \
+            --template-file "$RUNNER_TEMP/governor.packaged.yml" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "ImageUri=${IMAGE_URI}" \
+              "SubnetIds=${SUBNET_IDS}" \
+              "DispatchOwners=${GOVERNOR_OWNERS}" \
+              "GitHubAppId=${APP_ID}" \
+              "SelectLabels=${SELECT_LABELS}" \
+              "AlertEmail=${ALERT_EMAIL}" \
+              "DropBoxUrl=${DROP_BOX_URL}"
+
+      # The App's webhook follows the stack: the receiver's URL and the
+      # stack's key, written as the App itself, and every installation
+      # delivers through it. The keys reach the script through the
+      # environment and never an argument list.
+      - name: Point the App's webhook at the receiver
+        if: ${{ !inputs.probe_only }}
+        run: |
+          WEBHOOK_URL=$(aws cloudformation describe-stacks --stack-name governor \
+            --query "Stacks[0].Outputs[?OutputKey=='WebhookUrl'].OutputValue" --output text)
+          WEBHOOK_SECRET=$(aws secretsmanager get-secret-value --secret-id governor/webhook-secret \
+            --query SecretString --output text)
+          echo "::add-mask::${WEBHOOK_SECRET}"
+          APP=$(aws secretsmanager get-secret-value --secret-id governor/github-app \
+            --query SecretString --output text)
+          APP_ID=$(jq -r '.appId // empty' <<<"$APP")
+          APP_PRIVATE_KEY=$(jq -r '.privateKey // empty' <<<"$APP")
+          while IFS= read -r line; do [[ -n "$line" ]] && echo "::add-mask::${line}"; done <<<"$APP_PRIVATE_KEY"
+          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error::governor/github-app holds no App key yet: save it with scripts/save-secret.mjs github-app"
+            exit 1
+          fi
+          export WEBHOOK_URL WEBHOOK_SECRET APP_ID APP_PRIVATE_KEY
+          node scripts/point-app-webhook.mjs
+
+      # What GitHub and AWS now hold, read back: the App delivers every event
+      # the receiver routes, and AWS lets an unsigned caller reach the
+      # receiver, which refuses it.
+      - name: Read back the App's events and the webhook URL
+        if: ${{ !inputs.probe_only }}
+        env:
+          GOVERNOR_STACK: governor
+          GOVERNOR_APP_SLUG: ${{ vars.APP_SLUG }}
+        run: node scripts/conformance.mjs
+
+      # The same script an operator runs; it exits with the task's exit code,
+      # 1 when the runtime cannot hold a pseudo-terminal or find the CLI, and
+      # prints the task's log first.
+      - name: Probe the task
+        run: node scripts/run-turn.mjs --kind probe
