@@ -21,9 +21,11 @@ a reader at a ticket they cannot open, or at the wrong one here.
 - The stack takes the operator's values as parameters: the owner list, the
   App ID, `SelectLabels`, the alert email and the optional drop box. The
   deploy reads the owner list, the App ID and `SelectLabels` from repository
-  variables, and the alert email and the drop box from repository secrets.
-  Anyone can read a public repo's run logs, a step prints each value its
-  env block is given, and Actions masks only secrets.
+  variables, and the drop box from a repository secret. The stack reads the
+  alert email from Parameter Store, `/governor/alert-email`, so it never
+  passes through GitHub. Anyone can read a public repo's run logs, a step
+  prints each value its env block is given, and Actions masks only a
+  secret's exact string.
 - The App key, the claude.ai login and the drop-box writer live in AWS
   Secrets Manager under `governor/`, in the bootstrap stack
   (infra/bootstrap.cfn.yml). The operator writes them with
@@ -38,8 +40,9 @@ a reader at a ticket they cannot open, or at the wrong one here.
 - The scan: `npm run scan`, the first step of `npm run gate`, and
   `fitness: no file names the old home, holds an id, or cites an issue of
   four or more digits (public-repo.md)` in test/public-repo-fitness.test.ts.
-- The deploy's values: `fitness: the deploy reads the alert email and the
-  drop box from repository secrets (public-repo.md)`, in the same file.
+- The deploy's values: `fitness: the alert email never passes through
+  GitHub, and the drop box is a repository secret (public-repo.md)`, in the
+  same file.
 - A fixture repo shaped like a real served repo: test/fixtures/factory/,
   `acme/factory`.
 
@@ -54,4 +57,4 @@ a reader at a ticket they cannot open, or at the wrong one here.
 - Map another repo's issue numbers onto this repo's: the number then points
   at an unrelated issue here.
 
-History: Set when governor's code was extracted into this repo, October 2026. Earlier decisions are in a private repo. The alert email and the drop box moved from repository variables to secrets in #3.
+History: Set when governor's code was extracted into this repo, October 2026. Earlier decisions are in a private repo. The alert email and the drop box moved from repository variables to secrets in #3, and the alert email to Parameter Store in #7.

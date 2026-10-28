@@ -69,13 +69,16 @@ Parameters:
       whose launches are slow stops short of it to end inside the task's
       deadline (dispatch/turn.mjs SCHEDULE_LAUNCH_WINDOW_MS).
 
+  # Read from Parameter Store inside AWS on every apply, so the address never
+  # passes through GitHub, whose run logs are public for this repo. The
+  # operator saves it once (README, Fork and deploy); the deploy passes none.
   AlertEmail:
-    Type: String
-    AllowedPattern: '^[^@\s]+@[^@\s]+$'
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /governor/alert-email
     Description: >
-      Where the alarms send their email. The stack creates its own alerts
-      topic and subscribes this address; the subscription waits until the
-      address confirms it.
+      The Parameter Store name of the address the alarms send their email
+      to. The stack creates its own alerts topic and subscribes the address;
+      the subscription waits until the address confirms it.
 
   DropBoxUrl:
     Type: String
