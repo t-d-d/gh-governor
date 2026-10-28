@@ -1,0 +1,9 @@
+# The image copies its files one by one (dispatch/Dockerfile); nothing else
+# belongs in the build context.
+.git
+.github
+.claude
+node_modules
+dispatch/node_modules
+test
+docs

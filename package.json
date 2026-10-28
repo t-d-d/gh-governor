@@ -1,0 +1,32 @@
+{
+  "name": "governor",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "gate": "npm run scan && npm run lint && npm run types && npm test",
+    "scan": "node scripts/public-repo-scan.mjs",
+    "lint": "eslint . --max-warnings 0",
+    "types": "tsc -p .",
+    "test": "node --experimental-strip-types --no-warnings=ExperimentalWarning --test --test-concurrency=4 'test/**/*.test.ts'"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "3.1006.0",
+    "@aws-sdk/client-ecs": "3.1044.0",
+    "@aws-sdk/client-secrets-manager": "3.1140.0",
+    "@aws-sdk/client-sqs": "3.1044.0",
+    "@eslint/js": "9.39.4",
+    "@types/js-yaml": "4.0.9",
+    "@types/node": "25.3.3",
+    "@typescript-eslint/parser": "8.59.0",
+    "acorn": "8.16.0",
+    "eslint": "9.39.4",
+    "globals": "14.0.0",
+    "js-yaml": "4.3.2",
+    "typescript": "5.9.3",
+    "zod": "4.6.7"
+  }
+}

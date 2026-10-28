@@ -1,0 +1,739 @@
+/**
+ * The fire: the one message the receiver queues and the dispatcher task
+ * runs, and the vocabulary both ends read it in.
+ *
+ * The receiver (route.mjs, mention.mjs) builds every fire with
+ * {@link build}; the starter (starter.mjs) refuses one with nothing to start
+ * with {@link startable} before it spends a task on it; the task
+ * (dispatch/turn.mjs, scripts/run-turn.mjs) and the retrier (retry.mjs)
+ * read one with {@link parseFire}, which refuses anything the receiver could
+ * not have built: a session costs money and attention. The builders are
+ * where a field is spelled, so a new kind of fire, or a new field, is one
+ * edit here and one test.
+ *
+ * Nine kinds. A `schedule` fire (EventBridge, every two hours) selects
+ * ready work up to the cap; one naming an `issue` (an issue just given a
+ * label on the stack's SelectLabels) selects that issue alone, if the label
+ * is one of the repo's ready labels and the selection would; one naming a
+ * `freed` issue (an issue just closed) selects, the same way, the issues it
+ * directly blocked. A `dispatch` fire carries one prompt, for a mention of
+ * @claude, a scheduled run gone red, a probe run or an operator's one-off. A
+ * `probe` proves the runtime can hold a pseudo-terminal and starts nothing.
+ * A `message` carries text into a cloud session that already exists (its id
+ * or its claude.ai/code URL); one with a `fallback` names the prompt to
+ * start a fresh session on, the name for it, and the PR it is on, should the
+ * session refuse. A subscriber's names what it is `on`, the `event`,
+ * a push's `commit`, and `closing` for a close; the owner's of a merge into
+ * main carries `merged`, which the task adds the tickets the PR's closed
+ * issues blocked to, with a fallback when one waits on the session.
+ * One on a PR whose body names
+ * no session carries `byBranch` in place of the session, and the `poster` to
+ * skip. A `workflow` names a red run on the repo's default branch
+ * (dispatch/workflow.mjs); a `job` a shipping job that succeeded there,
+ * the one that earns a `deployed: ` label ({@link shippingJob});
+ * a `branch-run` a finished run dispatched on another
+ * branch (dispatch/branch-run.mjs); a `review` a PR and the head it was
+ * queued for, or no PR for every open one (dispatch/review.mjs); a
+ * `conflicts` a PR merged into the default branch and its merge commit
+ * (dispatch/conflicts.mjs). Each of those names the default branch its
+ * payload did: no fire takes it for `main`.
+ *
+ * Pure, and a leaf: the Lambda packages dispatch/webhook/ whole, and the
+ * task image copies this file (dispatch/Dockerfile).
+ */
+
+// ── The vocabulary ───────────────────────────────────────────────────────
+
+/**
+ * What a subscriber can hear of. `comments` are issue comments and review
+ * comments, `reviews` submitted reviews, `pushes` a PR's `synchronize`,
+ * `close` a PR closed (merged or not) or an issue closed or reopened,
+ * `labels` an issue labelled or unlabelled but for a `deployed: ` label
+ * added, `ci` and `deploys` the runs on main after a PR merged
+ * (dispatch/workflow.mjs). On an issue, `deploys` is a `deployed: ` label
+ * added (`ticketsOf` in dispatch/turn.mjs), which its owner hears only through a line of
+ * its own, as with `labels`.
+ */
+export const SUBSCRIPTION_EVENTS = /** @type {const} */ (['comments', 'reviews', 'pushes', 'close', 'labels', 'ci', 'deploys']);
+
+/** @typedef {typeof SUBSCRIPTION_EVENTS[number]} SubscriptionEvent */
+
+const EVENTS = /** @type {ReadonlySet<string>} */ (new Set(SUBSCRIPTION_EVENTS));
+
+/** A run's conclusions that mean it went red; a cancelled one was stopped by someone. */
+export const RED = new Set(['failure', 'timed_out', 'startup_failure']);
+
+/** A job conclusion that failed the run; `cancelled` is a fail-fast's echo, not a cause. */
+export const FAILED = new Set(['failure', 'timed_out']);
+
+/** A workflow file's path as a run names it, which the task reads the ticket label from. */
+export const WORKFLOW_PATH = /^\.github\/workflows\/[\w.-]+\.ya?ml$/;
+
+/**
+ * A cloud session's link as the CLI prints it and a body carries it: an
+ * alphanumeric id. Unanchored and unflagged; a reader anchors it or bounds
+ * it as it needs (subscribe.mjs).
+ */
+export const SESSION_LINK = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]{4,128}/;
+
+/**
+ * A message's session as a fire names it: a link subscribe.mjs reads out of
+ * a body, or its bare id, which the operator's dispatch-task CLI takes.
+ * Nothing narrower or wider, so the task parses only a fire the receiver
+ * could have built.
+ */
+export const MESSAGE_SESSION = /^(https:\/\/claude\.ai\/code\/)?session_[A-Za-z0-9]{4,128}$/;
+
+/** The family of labels the dispatcher adds as a ticket's change ships. */
+export const LABEL_PREFIX = 'deployed: ';
+
+/**
+ * The target a `deployed: ` label names, or null for any other label.
+ *
+ * @param {unknown} name
+ * @returns {string | null}
+ */
+export const deployedTarget = (name) => {
+  const text = String(name ?? '');
+  return text.startsWith(LABEL_PREFIX) && text.length > LABEL_PREFIX.length ? text.slice(LABEL_PREFIX.length) : null;
+};
+
+/**
+ * The marker a shipping job carries at the end of its name:
+ * ` · deployed: <target>` (U+00B7, one space each side), and before it,
+ * optionally, ` at <sha>`, the commit it built. Read from the end: a
+ * reusable workflow's job is named `<caller job> / <inner name>`.
+ */
+const SHIPPING_JOB = /(?: at ([0-9a-f]{7,40}))? \u00b7 (deployed: .+)$/;
+
+/**
+ * What a job's name says it shipped: the label it earns, the target that
+ * label names, and the commit it built where the name carries one; null
+ * for a job with no marker. The one reading of the marker: the receiver
+ * fires on it (route.mjs), the turn's label write and messages read it
+ * (dispatch/runs.mjs, dispatch/labels.mjs), and a fitness test holds the
+ * workflow files to it.
+ *
+ * @param {unknown} name
+ * @returns {{ label: string, target: string, commit?: string } | null}
+ */
+export const shippingJob = (name) => {
+  const found = SHIPPING_JOB.exec(String(name ?? ''));
+  if (found === null) return null;
+  const label = /** @type {string} */ (found[2]).trim();
+  const target = deployedTarget(label);
+  if (target === null || label.includes('\u00b7')) return null;
+  return { label, target, ...(found[1] === undefined ? {} : { commit: found[1] }) };
+};
+
+/** The author associations GitHub reports that carry a say in the repository. */
+export const SUMMONERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+/** Dependabot's login: its bumps are reviewed by the Dependabot list, though it summons nothing, and no session owns them. */
+export const DEPENDABOT = 'dependabot[bot]';
+
+/**
+ * The last line of a prompt that starts a session: the dispatcher started
+ * it, and nobody is at it. A message into a session that exists carries no
+ * such line: its owner may be a local, Remote Control or cloud
+ * session with its operator at it, which the dispatcher cannot tell.
+ */
+export const UNATTENDED = 'Unattended session: nobody answers a question here. Decide, act, and report on GitHub.';
+
+/**
+ * The lane's one message group: FIFO within it is what serialises the
+ * fires. The receiver queues on it, the retrier requeues on it, and so does
+ * a fire by hand (scripts/run-turn.mjs).
+ */
+export const LANE = 'dispatch';
+
+// ── The dispatch marker ──────────────────────────────────────────────────
+
+/**
+ * How long after a dispatch an issue stays out of selection: the schedule's
+ * cadence. A fire can follow another within minutes, before the worker of
+ * the first has claimed its ticket.
+ */
+export const DISPATCH_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * How the comment a dispatch leaves on its issue or PR starts: the receiver
+ * keeps it off every subscriber, and the task reads the dispatch back by it.
+ */
+export const DISPATCH_MARKER = '<!-- governor:dispatched ';
+
+const MARKER = /<!-- governor:dispatched (\S+) -->/;
+const MARKED_SESSION = new RegExp(`Dispatched to (${SESSION_LINK.source})(?![A-Za-z0-9_-])`);
+
+/**
+ * The comment a dispatch leaves on its issue, carrying the session URL where
+ * the launcher printed one: the in-flight list lives on the ticket.
+ *
+ * @param {{ at: string, sessionUrl: string | null }} args
+ * @returns {string}
+ */
+export const dispatchMarker = ({ at, sessionUrl }) =>
+  [
+    `${DISPATCH_MARKER}${at} -->`,
+    sessionUrl
+      ? `Dispatched to ${sessionUrl} at ${at}.`
+      : `Dispatched to a cloud session at ${at}; the launcher printed no session id.`,
+  ].join('\n');
+
+/**
+ * The newest dispatch a comment records inside the window, and the session
+ * it went to where the launcher printed one; null when none did. The
+ * marker is the forwarding address: a message the PR's own session refuses
+ * goes to the session the marker names rather than starting another.
+ *
+ * @param {Array<{ body: string } & Record<string, unknown>>} comments
+ * @param {number} now
+ * @param {number} [windowMs]
+ * @returns {{ at: string, sessionUrl: string | null } | null}
+ */
+export const lastDispatch = (comments, now, windowMs = DISPATCH_WINDOW_MS) => {
+  /** @type {{ at: string, sessionUrl: string | null, stamped: number } | null} */
+  let newest = null;
+  for (const comment of comments) {
+    const body = comment.body ?? '';
+    const at = MARKER.exec(body)?.[1];
+    if (!at) continue;
+    const stamped = Date.parse(at);
+    if (!Number.isFinite(stamped) || now - stamped >= windowMs) continue;
+    if (newest === null || stamped > newest.stamped) {
+      newest = { at, sessionUrl: MARKED_SESSION.exec(body)?.[1] ?? null, stamped };
+    }
+  }
+  return newest && { at: newest.at, sessionUrl: newest.sessionUrl };
+};
+
+/**
+ * Whether any comment records a dispatch inside the window.
+ *
+ * @param {Array<{ body: string } & Record<string, unknown>>} comments
+ * @param {number} now
+ * @param {number} [windowMs]
+ * @returns {boolean}
+ */
+export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS) =>
+  lastDispatch(comments, now, windowMs) !== null;
+
+// ── The shape ────────────────────────────────────────────────────────────
+
+/**
+ * @typedef {{ kind: 'schedule', issue?: number, freed?: number, label?: string }} ScheduleFire
+ *   `label`: the label just added to `issue` in a repo whose ready labels
+ *   the receiver does not know; the turn ends before the login unless it is
+ *   one of them.
+ * @typedef {{ kind: 'probe' }} ProbeFire
+ * @typedef {{ kind: 'dispatch', prompt: string, sessionName?: string, model?: string, scheduled?: ScheduledRun }} DispatchFire
+ *   `scheduled`: the scheduled run gone red the session is for (route.mjs).
+ * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, merged?: true, subscribed?: true }
+ *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
+ *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
+ *   `merged`: the owner's message of PR `on` merged into main (dispatch/handoff.mjs).
+ *   `subscribed`: the session hears by subscription, a `governor:subscribe`
+ *   line or as an issue's filer, which the repo's subscribe-messages switch
+ *   turns on; without it, it is the PR's owner, whose is the PR-messages
+ *   switch (dispatch/repo-config.mjs).
+ * @typedef {{ kind: 'workflow', name: string, path?: string, branch: string, event?: string, runId: number, url: string, conclusion: string, headSha: string, runAttempt?: number }} WorkflowFire
+ *   A run of any workflow on the default branch, `branch`, that ended red;
+ *   `path`: its file, where the run named one; `event`: what started it.
+ * @typedef {{ kind: 'branch-run', name: string, runId: number, url: string, conclusion: string, headSha: string, branch: string, runAttempt?: number }} BranchRunFire
+ *   A run of any workflow dispatched on a branch other than the default, finished.
+ * @typedef {{ kind: 'job', name: string, workflow: string, branch: string, runId: number, jobId: number, url: string, headSha: string, label: string, commit: string, runAttempt?: number }} JobFire
+ *   A shipping job that succeeded on the default branch, `branch`: its name, carrying
+ *   the marker; its workflow's name; its run and job ids; its page; the
+ *   run's head; the label the marker names; and the commit it built, the
+ *   one its name carries, else the head.
+ * @typedef {{ kind: 'review', pr?: number, headSha?: string }} ReviewFire
+ * @typedef {{ kind: 'conflicts', pr: number, sha: string, base: string }} ConflictsFire A PR merged into the default branch, `base`, and its merge commit.
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire) & { repo?: string }} Fire
+ *   `repo`: the `owner/name` the fire is for. Every fire names
+ *   one but a probe and the bare schedule fire; {@link parseFire} refuses
+ *   any other without one: nothing falls back to a default repo.
+ *
+ * @typedef {{ workflowId: number, runId: number, branch: string }} ScheduledRun A scheduled run on the default branch, `branch`, gone red, and its workflow.
+ * @typedef {{ prompt: string, sessionName?: string, issue?: number }} Fallback
+ *   `issue`: the PR the remark is on, where the turn leaves the dispatch marker and reads it back.
+ *
+ * @typedef {{ fire: Fire, reason: string, delivery?: string, github?: string, attempt?: number, retryOf?: string }} FireMessage
+ *   One lane message: the fire, and why and for which delivery it was queued.
+ */
+
+/**
+ * `fields` without the ones that are undefined, so a fire carries an absent
+ * field as absent and the parser reads back what was built.
+ *
+ * @template {Record<string, unknown>} T
+ * @param {T} fields
+ * @returns {{ [K in keyof T]?: Exclude<T[K], undefined> }}
+ */
+const present = (fields) => /** @type {any} */ (Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)));
+
+/**
+ * The fires the receiver queues, one builder per kind.
+ */
+export const build = Object.freeze({
+  /** @param {{ issue?: number | undefined, freed?: number | undefined, label?: string | undefined }} args @returns {ScheduleFire} */
+  schedule: ({ issue, freed, label }) => ({ kind: 'schedule', ...present({ issue, freed, label }) }),
+
+  /**
+   * @param {{ prompt: string, sessionName?: string | undefined, model?: string | undefined, scheduled?: ScheduledRun | undefined }} args
+   * @returns {DispatchFire}
+   */
+  dispatch: ({ prompt, sessionName, model, scheduled }) => ({ kind: 'dispatch', prompt, ...present({ sessionName, model, scheduled }) }),
+
+  /**
+   * @param {({ session: string, byBranch?: undefined, poster?: undefined } | { session?: undefined, byBranch: true, poster?: string | undefined }) & {
+   *   text: string, on?: number | undefined, event?: SubscriptionEvent | undefined, commit?: string | undefined,
+   *   closing?: boolean | undefined, merged?: boolean | undefined, subscribed?: boolean | undefined, fallback?: Fallback | undefined,
+   * }} args
+   * @returns {MessageFire}
+   */
+  message: ({ session, byBranch, poster, text, on, event, commit, closing, merged, subscribed, fallback }) => /** @type {MessageFire} */ ({
+    kind: 'message',
+    ...(byBranch === true ? { byBranch, ...present({ poster }) } : { session }),
+    text,
+    ...present({
+      on,
+      event,
+      commit,
+      closing: closing === true ? /** @type {true} */ (true) : undefined,
+      merged: merged === true ? /** @type {true} */ (true) : undefined,
+      subscribed: subscribed === true ? /** @type {true} */ (true) : undefined,
+      fallback: fallback && present(fallback),
+    }),
+  }),
+
+  /**
+   * @param {Omit<WorkflowFire, 'kind' | 'path' | 'event' | 'runAttempt'> & { path?: string | undefined, event?: string | undefined, runAttempt?: number | undefined }} args
+   * @returns {WorkflowFire}
+   */
+  workflow: ({ name, path, branch, event, runId, url, conclusion, headSha, runAttempt }) => ({ kind: 'workflow', name, ...present({ path }), branch, ...present({ event }), runId, url, conclusion, headSha, ...present({ runAttempt }) }),
+
+  /**
+   * @param {Omit<BranchRunFire, 'kind' | 'runAttempt'> & { runAttempt?: number | undefined }} args
+   * @returns {BranchRunFire}
+   */
+  branchRun: ({ name, runId, url, conclusion, headSha, branch, runAttempt }) => ({ kind: 'branch-run', name, runId, url, conclusion, headSha, branch, ...present({ runAttempt }) }),
+
+  /**
+   * @param {Omit<JobFire, 'kind' | 'runAttempt'> & { runAttempt?: number | undefined }} args
+   * @returns {JobFire}
+   */
+  job: ({ name, workflow, branch, runId, jobId, url, headSha, label, commit, runAttempt }) => ({ kind: 'job', name, workflow, branch, runId, jobId, url, headSha, label, commit, ...present({ runAttempt }) }),
+
+  /** @param {{ pr?: number | undefined, headSha?: string | undefined }} args @returns {ReviewFire} */
+  review: ({ pr, headSha }) => ({ kind: 'review', ...present({ pr, headSha }) }),
+
+  /** @param {{ pr: number, sha: string, base: string }} args @returns {ConflictsFire} */
+  conflicts: ({ pr, sha, base }) => ({ kind: 'conflicts', pr, sha, base }),
+});
+
+// ── The container override ───────────────────────────────────────────────
+
+/** The task's environment variable the fire rides in (dispatch/cli.mjs reads it). */
+export const FIRE_VARIABLE = 'DISPATCH_EVENT';
+
+/** What ECS takes of a RunTask's overrides, in characters of JSON. */
+export const OVERRIDE_CAP = 8192;
+
+/**
+ * What a fire may weigh in the override ({@link overrideWeight}): the fire
+ * rides it as a JSON string inside that JSON, and an owner's message fire
+ * carries its prompt twice (the text, the fallback). The rest of the cap is
+ * the override's own framing. The standing line the task appends is added
+ * after the override, and costs it nothing.
+ */
+export const OVERRIDE_BUDGET = 7000;
+
+/** A fire's weight in the override: its JSON, quoted as a string value. @param {unknown} fire */
+export const overrideWeight = (fire) => Buffer.byteLength(JSON.stringify(JSON.stringify(fire)));
+
+/**
+ * The RunTask overrides that carry `fire` to the task's container: the
+ * starter's, and a fire by hand's (scripts/run-turn.mjs).
+ *
+ * @param {string} containerName
+ * @param {unknown} fire
+ */
+export const containerOverride = (containerName, fire) => ({
+  containerOverrides: [{ name: containerName, environment: [{ name: FIRE_VARIABLE, value: JSON.stringify(fire) }] }],
+});
+
+/**
+ * The fire a task's overrides carried, as carried: the retrier's read of a
+ * stopped task, which it then reads with {@link parseFire}. Overrides with no
+ * fire object are a throw.
+ *
+ * @param {{ containerOverrides?: Array<{ environment?: Array<{ name?: string, value?: string }> }> } | undefined} overrides
+ * @returns {Record<string, unknown>}
+ */
+export const fireOfOverride = (overrides) => {
+  const value = (overrides?.containerOverrides ?? [])
+    .flatMap((o) => o.environment ?? [])
+    .find((e) => e.name === FIRE_VARIABLE)?.value;
+  /** @type {unknown} */
+  let fire;
+  try {
+    fire = JSON.parse(String(value));
+  } catch {
+    // Refused below.
+  }
+  if (!fire || typeof fire !== 'object') throw new Error(`the overrides carry no ${FIRE_VARIABLE}`);
+  return /** @type {Record<string, unknown>} */ (fire);
+};
+
+// ── The starter's check ──────────────────────────────────────────────────
+
+/**
+ * Throw unless `fire` has something to start: a kind, and for a dispatch a
+ * prompt, for a message a session (or byBranch) and text. The starter calls
+ * it before RunTask; the task's {@link parseFire} refuses the rest.
+ *
+ * @param {any} fire
+ * @returns {asserts fire is Fire}
+ */
+export const startable = (fire) => {
+  if (!fire || typeof fire.kind !== 'string') throw new Error('the message carries no fire');
+  if (fire.kind === 'dispatch' && !(typeof fire.prompt === 'string' && fire.prompt.trim() !== '')) {
+    throw new Error('a dispatch fire needs a prompt');
+  }
+  if (fire.kind === 'message') {
+    if (!(typeof fire.session === 'string' && fire.session.trim() !== '') && fire.byBranch !== true) throw new Error('a message fire needs a session, or byBranch');
+    if (!(typeof fire.text === 'string' && fire.text.trim() !== '')) throw new Error('a message fire needs text');
+  }
+};
+
+// ── The parser ───────────────────────────────────────────────────────────
+
+/** A fire's numbers (issue, PR, run) are positive integers. @param {unknown} v */
+const isPositiveInt = (v) => Number.isInteger(v) && Number(v) > 0;
+
+/** A full commit id. @param {unknown} v @returns {v is string} */
+export const isCommit = (v) => typeof v === 'string' && /^[0-9a-f]{40}$/.test(v);
+
+/** A branch's name, as a payload names it: one line, not empty. @param {unknown} v @returns {v is string} */
+export const isBranch = (v) => typeof v === 'string' && v !== '' && !/\s/.test(v);
+
+/**
+ * A dispatch fire's scheduled run: a positive workflow id and run id, and
+ * the default branch it ran on.
+ *
+ * @param {unknown} value
+ * @returns {ScheduledRun}
+ */
+const parseScheduled = (value) => {
+  const v = /** @type {Record<string, unknown> | null} */ (value);
+  if (!isPositiveInt(v?.workflowId) || !isPositiveInt(v?.runId) || !isBranch(v?.branch)) {
+    throw new Error(`a dispatch invocation's scheduled names a positive workflowId and runId, and its branch, got: ${JSON.stringify(value)}`);
+  }
+  return { workflowId: Number(v?.workflowId), runId: Number(v?.runId), branch: /** @type {string} */ (v?.branch) };
+};
+
+/**
+ * The stack's owner list, off its comma-separated
+ * `DISPATCH_OWNERS`; unset is no owner. The receiver's and the task's.
+ *
+ * @param {string | undefined} raw
+ * @returns {string[]}
+ */
+export const ownersOf = (raw) => (raw ?? '').split(',').map((o) => o.trim()).filter((o) => o !== '');
+
+/**
+ * The stack's SelectLabels, off its comma-separated
+ * `SELECT_LABELS`: the labels whose addition queues a selection fire.
+ * Unset or empty is every label. The receiver's.
+ *
+ * @param {string | undefined} raw
+ * @returns {string[]}
+ */
+export const selectLabelsOf = ownersOf;
+
+/**
+ * Whether `account` is on the owner list, in any case.
+ *
+ * @param {readonly string[]} owners
+ * @param {string} account
+ */
+export const ownerListed = (owners, account) => owners.some((o) => o.toLowerCase() === account.toLowerCase());
+
+/** A repository's `owner/name`, as GitHub spells one. */
+export const REPO_NAME = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
+
+/**
+ * Read the fire off the raw event: a lane message's fire, a fire by hand, or
+ * EventBridge's own scheduled event. Anything unrecognised is refused rather
+ * than dispatched: a session costs money and attention. A fire's `repo` rides
+ * along (a probe's is dropped: it touches no repo). Every fire but a probe
+ * and the bare schedule fire names one, and is refused without: a
+ * fire queued before the dispatcher served more than one repo is refused,
+ * not read as the stack's.
+ *
+ * @param {unknown} event
+ * @returns {Fire}
+ */
+export const parseFire = (event) => {
+  const fire = parseKind(event);
+  const repo = /** @type {Record<string, unknown> | null} */ (event)?.repo;
+  if (fire.kind === 'probe') return fire;
+  if (repo === undefined) {
+    if (fire.kind === 'schedule' && fire.issue === undefined && fire.freed === undefined) return fire;
+    throw new Error(`a ${fire.kind} fire names its repo, and this one names none: ${JSON.stringify(event)?.slice(0, 300)}`);
+  }
+  if (typeof repo !== 'string' || !REPO_NAME.test(repo)) throw new Error(`a fire's repo is an owner/name, got: ${JSON.stringify(repo)}`);
+  return { ...fire, repo };
+};
+
+/**
+ * @param {unknown} event
+ * @returns {Fire}
+ */
+const parseKind = (event) => {
+  const e = /** @type {Record<string, unknown> | null} */ (event);
+  if (e && e.source === 'aws.events') return { kind: 'schedule' };
+  const kind = e?.kind;
+  if (kind === 'probe') return { kind };
+  if (kind === 'schedule') {
+    if (e?.issue !== undefined && e?.freed !== undefined) {
+      throw new Error(`a schedule fire names an issue or a freed one, not both: ${JSON.stringify(event)}`);
+    }
+    const positive = (/** @type {'issue' | 'freed'} */ key) => {
+      if (!isPositiveInt(e?.[key])) {
+        throw new Error(`a schedule fire's ${key} must be a positive integer, got: ${JSON.stringify(e?.[key])}`);
+      }
+      return Number(e?.[key]);
+    };
+    if (e?.label !== undefined && (e?.issue === undefined || typeof e.label !== 'string' || e.label.trim() === '')) {
+      throw new Error(`a schedule fire's label names the label just added to its issue, got: ${JSON.stringify(e?.label)}`);
+    }
+    if (e?.issue !== undefined) return { kind, issue: positive('issue'), ...(e?.label === undefined ? {} : { label: /** @type {string} */ (e.label) }) };
+    if (e?.freed !== undefined) return { kind, freed: positive('freed') };
+    return { kind };
+  }
+  if (kind === 'dispatch') {
+    if (typeof e?.prompt !== 'string' || e.prompt.trim() === '') {
+      throw new Error('a dispatch invocation needs a prompt');
+    }
+    return {
+      kind,
+      prompt: e.prompt,
+      ...(typeof e.sessionName === 'string' ? { sessionName: e.sessionName } : {}),
+      ...(typeof e.model === 'string' ? { model: e.model } : {}),
+      ...(e.scheduled === undefined ? {} : { scheduled: parseScheduled(e.scheduled) }),
+    };
+  }
+  if (kind === 'message') return parseMessage(e, event);
+  if (kind === 'workflow') return parseWorkflow(e);
+  if (kind === 'branch-run') return parseBranchRun(e);
+  if (kind === 'job') return parseJob(e);
+  if (kind === 'review') {
+    if (e?.pr !== undefined && !isPositiveInt(e.pr)) {
+      throw new Error(`a review invocation's pr must be a positive integer, got: ${JSON.stringify(e.pr)}`);
+    }
+    if (e?.headSha !== undefined && !(e.pr !== undefined && isCommit(e.headSha))) {
+      throw new Error(`a review invocation's headSha must be a commit id on a named pr, got: ${JSON.stringify(e.headSha)}`);
+    }
+    return {
+      kind,
+      ...(e?.pr === undefined ? {} : { pr: Number(e.pr) }),
+      ...(e?.headSha === undefined ? {} : { headSha: /** @type {string} */ (e.headSha) }),
+    };
+  }
+  if (kind === 'conflicts') {
+    if (!isPositiveInt(e?.pr)) {
+      throw new Error(`a conflicts invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);
+    }
+    if (!isCommit(e?.sha)) {
+      throw new Error(`a conflicts invocation's sha must be a commit id, got: ${JSON.stringify(e?.sha)}`);
+    }
+    if (!isBranch(e?.base)) {
+      throw new Error(`a conflicts invocation's base must name the default branch, got: ${JSON.stringify(e?.base)}`);
+    }
+    return { kind, pr: Number(e?.pr), sha: /** @type {string} */ (e?.sha), base: /** @type {string} */ (e?.base) };
+  }
+  throw new Error(`invocation has no recognised kind: ${JSON.stringify(event)}`);
+};
+
+/**
+ * A message fire, refused unless it names a session it could have read out
+ * of a body (or byBranch and the PR it is on) and text.
+ *
+ * @param {Record<string, unknown> | null} e
+ * @param {unknown} event
+ * @returns {MessageFire}
+ */
+const parseMessage = (e, event) => {
+  if (e?.byBranch !== undefined) {
+    if (e.byBranch !== true || e.session !== undefined) {
+      throw new Error(`a message invocation names a session or byBranch: true, not both: ${JSON.stringify(event).slice(0, 300)}`);
+    }
+    if (!isPositiveInt(e.on)) throw new Error(`a byBranch message invocation needs the PR it is on, got: ${JSON.stringify(e.on)}`);
+    if (e.poster !== undefined && !(typeof e.poster === 'string' && MESSAGE_SESSION.test(e.poster))) {
+      throw new Error(`a message invocation's poster must be a session id or claude.ai/code URL, got: ${JSON.stringify(e.poster)}`);
+    }
+  } else if (typeof e?.session !== 'string' || !MESSAGE_SESSION.test(e.session)) {
+    throw new Error(`a message invocation needs a session id or claude.ai/code URL, got: ${JSON.stringify(e?.session)}`);
+  }
+  if (typeof e?.text !== 'string' || e.text.trim() === '') throw new Error('a message invocation needs text');
+  if (e.on !== undefined && !isPositiveInt(e.on)) {
+    throw new Error(`a message invocation's on must be a positive integer, got: ${JSON.stringify(e.on)}`);
+  }
+  if (e.event !== undefined && !EVENTS.has(String(e.event))) {
+    throw new Error(`a message invocation's event is not one a session subscribes to: ${JSON.stringify(e.event)}`);
+  }
+  if (e.commit !== undefined && !isCommit(e.commit)) {
+    throw new Error(`a message invocation's commit must be a commit id, got: ${JSON.stringify(e.commit)}`);
+  }
+  if (e.closing !== undefined && e.closing !== true) {
+    throw new Error(`a message invocation's closing is true or absent, got: ${JSON.stringify(e.closing)}`);
+  }
+  if (e.subscribed !== undefined && e.subscribed !== true) {
+    throw new Error(`a message invocation's subscribed is true or absent, got: ${JSON.stringify(e.subscribed)}`);
+  }
+  if (e.merged !== undefined && (e.merged !== true || e.on === undefined)) {
+    throw new Error(`a message invocation's merged is true, on the PR it names, or absent, got: ${JSON.stringify(e.merged)} on ${JSON.stringify(e.on)}`);
+  }
+  const to = e.byBranch === true
+    ? { byBranch: /** @type {true} */ (true), on: Number(e.on), ...(typeof e.poster === 'string' ? { poster: e.poster } : {}) }
+    : { session: /** @type {string} */ (e.session) };
+  return {
+    kind: 'message',
+    ...to,
+    text: e.text,
+    ...(e.fallback === undefined ? {} : { fallback: parseFallback(e.fallback) }),
+    ...(e.on === undefined ? {} : { on: Number(e.on) }),
+    ...(e.event === undefined ? {} : { event: /** @type {SubscriptionEvent} */ (e.event) }),
+    ...(e.commit === undefined ? {} : { commit: e.commit }),
+    ...(e.closing === true ? { closing: /** @type {true} */ (true) } : {}),
+    ...(e.merged === true ? { merged: /** @type {true} */ (true) } : {}),
+    ...(e.subscribed === true ? { subscribed: /** @type {true} */ (true) } : {}),
+  };
+};
+
+/**
+ * A workflow fire, refused unless it names a workflow and the run whole:
+ * the turn reads the jobs by the id, the PRs by the commit, and the ticket
+ * label from the file at `path`.
+ *
+ * @param {Record<string, unknown> | null} e
+ * @returns {WorkflowFire}
+ */
+const parseWorkflow = (e) => {
+  const name = e?.name;
+  if (typeof name !== 'string' || name.trim() === '') {
+    throw new Error(`a workflow invocation must name its workflow, got: ${JSON.stringify(name)}`);
+  }
+  if (e?.path !== undefined && !(typeof e.path === 'string' && WORKFLOW_PATH.test(e.path))) {
+    throw new Error(`a workflow invocation's path must be a file under .github/workflows, got: ${JSON.stringify(e.path)}`);
+  }
+  if (!isPositiveInt(e?.runId)) throw new Error(`a workflow invocation's runId must be a positive integer, got: ${JSON.stringify(e?.runId)}`);
+  if (typeof e?.url !== 'string' || !e.url.startsWith('https://')) throw new Error(`a workflow invocation needs the run's url, got: ${JSON.stringify(e?.url)}`);
+  if (typeof e?.conclusion !== 'string' || e.conclusion === '') throw new Error(`a workflow invocation needs the run's conclusion, got: ${JSON.stringify(e?.conclusion)}`);
+  if (!isCommit(e?.headSha)) throw new Error(`a workflow invocation's headSha must be a commit id, got: ${JSON.stringify(e?.headSha)}`);
+  if (!isBranch(e?.branch)) throw new Error(`a workflow invocation's branch must name the default branch, got: ${JSON.stringify(e?.branch)}`);
+  if (e.event !== undefined && !(typeof e.event === 'string' && e.event !== '')) throw new Error(`a workflow invocation's event must name what started the run, got: ${JSON.stringify(e.event)}`);
+  if (e.runAttempt !== undefined && !isPositiveInt(e.runAttempt)) {
+    throw new Error(`a workflow invocation's runAttempt must be a positive integer, got: ${JSON.stringify(e.runAttempt)}`);
+  }
+  return {
+    kind: 'workflow',
+    name,
+    ...(e.path === undefined ? {} : { path: /** @type {string} */ (e.path) }),
+    branch: /** @type {string} */ (e.branch),
+    ...(e.event === undefined ? {} : { event: /** @type {string} */ (e.event) }),
+    runId: Number(e.runId),
+    url: e.url,
+    conclusion: e.conclusion,
+    headSha: e.headSha,
+    ...(e.runAttempt === undefined ? {} : { runAttempt: Number(e.runAttempt) }),
+  };
+};
+
+/**
+ * A branch-run fire, refused unless it names the run whole and a branch
+ * other than main: the turn reads the jobs by the id and the session by the
+ * commit.
+ *
+ * @param {Record<string, unknown> | null} e
+ * @returns {BranchRunFire}
+ */
+const parseBranchRun = (e) => {
+  const refuse = (/** @type {string} */ what) => { throw new Error(`a branch-run invocation's ${what}, got: ${JSON.stringify(e)?.slice(0, 300)}`); };
+  if (typeof e?.name !== 'string' || e.name.trim() === '') refuse('name must name the workflow');
+  if (!isPositiveInt(e?.runId)) refuse('runId must be a positive integer');
+  if (typeof e?.url !== 'string' || !e.url.startsWith('https://')) refuse("url must be the run's");
+  if (typeof e?.conclusion !== 'string' || e.conclusion === '') refuse("conclusion must be the run's");
+  if (!isCommit(e?.headSha)) refuse('headSha must be a commit id');
+  if (!isBranch(e?.branch)) refuse('branch must name it');
+  if (e?.runAttempt !== undefined && !isPositiveInt(e.runAttempt)) refuse('runAttempt must be a positive integer');
+  return {
+    kind: 'branch-run',
+    name: /** @type {string} */ (e?.name),
+    runId: Number(e?.runId),
+    url: /** @type {string} */ (e?.url),
+    conclusion: /** @type {string} */ (e?.conclusion),
+    headSha: /** @type {string} */ (e?.headSha),
+    branch: /** @type {string} */ (e?.branch),
+    ...(e?.runAttempt === undefined ? {} : { runAttempt: Number(e.runAttempt) }),
+  };
+};
+
+/**
+ * A job fire, refused unless it names the job whole and its name carries
+ * the marker for the label it claims: the turn reads the run by the id for
+ * its workflow file, the range by the commit, and the label is what it
+ * writes.
+ *
+ * @param {Record<string, unknown> | null} e
+ * @returns {JobFire}
+ */
+const parseJob = (e) => {
+  const refuse = (/** @type {string} */ what) => { throw new Error(`a job invocation's ${what}, got: ${JSON.stringify(e)?.slice(0, 300)}`); };
+  if (typeof e?.name !== 'string' || e.name.trim() === '') refuse('name must name the job');
+  if (typeof e?.workflow !== 'string' || e.workflow.trim() === '') refuse('workflow must name the workflow');
+  if (!isBranch(e?.branch)) refuse('branch must name the default branch');
+  if (!isPositiveInt(e?.runId)) refuse('runId must be a positive integer');
+  if (!isPositiveInt(e?.jobId)) refuse('jobId must be a positive integer');
+  if (typeof e?.url !== 'string' || !e.url.startsWith('https://')) refuse("url must be the job's");
+  if (!isCommit(e?.headSha)) refuse('headSha must be a commit id');
+  if (!isCommit(e?.commit)) refuse('commit must be a commit id');
+  if (typeof e?.label !== 'string' || shippingJob(e?.name)?.label !== e.label) refuse('label must be the one its name carries');
+  if (e?.runAttempt !== undefined && !isPositiveInt(e.runAttempt)) refuse('runAttempt must be a positive integer');
+  return {
+    kind: 'job',
+    name: /** @type {string} */ (e?.name),
+    workflow: /** @type {string} */ (e?.workflow),
+    branch: /** @type {string} */ (e?.branch),
+    runId: Number(e?.runId),
+    jobId: Number(e?.jobId),
+    url: /** @type {string} */ (e?.url),
+    headSha: /** @type {string} */ (e?.headSha),
+    label: /** @type {string} */ (e?.label),
+    commit: /** @type {string} */ (e?.commit),
+    ...(e?.runAttempt === undefined ? {} : { runAttempt: Number(e.runAttempt) }),
+  };
+};
+
+/**
+ * A message's fallback, refused unless it names a prompt: a fallback with
+ * nothing to start would report a refused message as answered.
+ *
+ * @param {unknown} raw
+ * @returns {Fallback}
+ */
+const parseFallback = (raw) => {
+  const f = /** @type {Record<string, unknown> | null} */ (raw);
+  if (!f || typeof f !== 'object' || typeof f.prompt !== 'string' || f.prompt.trim() === '') {
+    throw new Error(`a message invocation's fallback needs a prompt, got: ${JSON.stringify(raw)}`);
+  }
+  if (f.issue !== undefined && !isPositiveInt(f.issue)) {
+    throw new Error(`a message invocation's fallback names an issue that is not a positive integer: ${JSON.stringify(f.issue)}`);
+  }
+  return {
+    prompt: f.prompt,
+    ...(typeof f.sessionName === 'string' ? { sessionName: f.sessionName } : {}),
+    ...(f.issue === undefined ? {} : { issue: Number(f.issue) }),
+  };
+};

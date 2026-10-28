@@ -1,0 +1,356 @@
+/**
+ * A served repo's dispatcher config file: what the dispatcher does in a
+ * repo, written and reviewed in that repo.
+ *
+ * The file is `.github/dispatch.json` on the repo's default branch. It names
+ * the repo's cloud environment, by ID or by name, the labels that mark a ticket ready and the
+ * label that claims it, turns each feature on, may replace the
+ * instruction in each message kind (`prompts`, dispatch/prompts.mjs),
+ * names the repo's CI workflow, its triage targets and the tag
+ * each target's deploy moves (`workflows`), and holds the PR
+ * review's checklist and lists (`review`), and names the issue
+ * the schedule fire writes its heartbeat into (`heartbeat`).
+ * Every feature is a switch, off unless the file turns it on, and a turn
+ * refuses a fire kind its repo's file does not turn on ({@link switchOf}).
+ * Every switch is generic: the schema accepts none by repo. The file holds
+ * no secret: a served repo may be public.
+ *
+ * Every prompt value, each in `prompts` and the review's `checklist`, is the
+ * text or `{ "file": "<path>" }`, a file in the repo read from the default
+ * branch beside the config file ({@link resolveFiles}).
+ *
+ * The schema is {@link configSchema}; {@link readConfig} reads a file's text
+ * against it for one repo, {@link resolveFiles} reads the prompt files it
+ * names, and {@link environmentFrom} turns a name into its ID from the
+ * login's environment list.
+ */
+
+import { z } from 'zod';
+import { WORKFLOW_PATH } from './webhook/fire.mjs';
+import { PROMPTS, unknownFills } from './prompts.mjs';
+
+/** Where the file lives, on the repo's default branch. */
+export const CONFIG_PATH = '.github/dispatch.json';
+
+/**
+ * The switches any served repo may turn on: pickup, summons, PR and
+ * subscribe messages, the red scheduled run, the merge hand-off, CI and
+ * deploy messages, branch-run messages, the conflicts check,
+ * deployed-label job fires, the PR review and the heartbeat. Every switch
+ * there is.
+ */
+export const GENERIC_SWITCHES = Object.freeze([
+  'pickup', 'summons', 'prMessages', 'subscribeMessages', 'redScheduledRun', 'mergeHandoff',
+  'ciMessages', 'deployMessages', 'branchRunMessages', 'conflicts', 'deployedLabels', 'prReview',
+  'heartbeat',
+]);
+
+// GitHub's issues query splits its `labels` on commas, so a ready label
+// holding one would match nothing.
+const label = z.string().trim().min(1).max(50).regex(/^[^,]*$/, 'a label holds no comma');
+
+/**
+ * The fault in a prompt's text for `kind`: a fact the kind does not have,
+ * or null.
+ *
+ * @param {string} kind
+ * @param {string} text
+ */
+const fillsFault = (kind, text) => {
+  const unknown = unknownFills(kind, text);
+  return unknown.length === 0 ? null : `${kind} has no fact ${unknown.map((n) => `{${n}}`).join(', ')} (it has ${PROMPTS[kind]?.fills.map((n) => `{${n}}`).join(', ') || 'none'})`;
+};
+
+/**
+ * A path in the repo, from its root: no leading slash, no `..` segment, so
+ * a prompt file is always one of the repo's own.
+ */
+const repoPath = z.string().trim().min(1).refine((p) => !p.startsWith('/') && !p.split('/').includes('..') && !p.includes('\0'), 'a path in the repo, from its root');
+
+/** A prompt in a file: the file, read from the default branch beside the config file. */
+const promptFile = z.strictObject({ file: repoPath });
+
+/**
+ * A prompt for `kind`: some text naming only the facts the kind has, or a
+ * file holding it, whose text {@link resolveFiles} checks the same way. A
+ * key the schema does not know is refused, so a typo is a fault, not a
+ * default.
+ *
+ * @param {string} kind
+ */
+const prompt = (kind) => z.union([
+  z.string().trim().min(1).superRefine((text, ctx) => {
+    const fault = fillsFault(kind, text);
+    if (fault !== null) ctx.addIssue({ code: 'custom', message: fault });
+  }),
+  promptFile,
+]);
+
+// A glob a review list matches changed paths with (dispatch/checklist.mjs's `globMatches`).
+const glob = z.string().trim().min(1);
+
+/**
+ * A ticket rule: `labels`, the labels it is about; `unless`, the labels that
+ * waive it. Under `require`, a ticket carries one of `labels`; under
+ * `forbid`, none; either unless it carries one of `unless`.
+ */
+const ticketRule = z.strictObject({ labels: z.array(label).min(1), unless: z.array(label).default([]) });
+
+/**
+ * The PR review's settings: `checklist`, the model's prompt;
+ * `humanOnly`, the globs a PR may not change without a person, each with
+ * its reason and the labels that waive it when every ticket the PR closes
+ * carries one; `tickets`, the label rules each ticket the PR closes meets;
+ * `quote`, the globs of changed files the model reads whole (a `!` entry
+ * takes a path back out); `decides`, the labels of a ticket whose body's
+ * first line, `Constraint now lives at <path>, …`, decides the quoted files
+ * it names, so they pass unread; `dependabot`, the manifests a Dependabot PR may
+ * change; `merge`, whether a pass merges. Settings, never code: a check
+ * they cannot express is the repo's CI, read as a required status check.
+ */
+const reviewSchema = z.strictObject({
+  checklist: z.union([z.string().trim().min(1), promptFile]),
+  humanOnly: z.array(z.strictObject({ glob, reason: z.string().trim().min(1), unless: z.array(label).default([]) })).default([]),
+  tickets: z.strictObject({ require: z.array(ticketRule).default([]), forbid: z.array(ticketRule).default([]) }).default({ require: [], forbid: [] }),
+  quote: z.array(z.string().trim().regex(/^!?[^!\s]/, 'a glob, or `!` and a glob')).default([]),
+  decides: z.array(label).default([]),
+  dependabot: z.array(glob).default([]),
+  merge: z.boolean().default(true),
+});
+
+// A deploy target, as a shipping job's name ends `deployed: <target>`.
+const target = z.string().trim().min(1).max(50 - 'deployed: '.length).regex(/^[^\n,]*$/, 'a target is one line, with no comma');
+
+/**
+ * What the repo's workflows are to the dispatcher: `ci`, the
+ * workflow whose red run its merges' sessions hear of; `triage`, the deploy
+ * targets whose failure starts one fresh session instead; `tags`, the tag a
+ * target's deploy moves, which its messages name.
+ */
+const workflowsSchema = z.strictObject({
+  ci: z.string().regex(WORKFLOW_PATH, 'a workflow file under .github/workflows/').optional(),
+  triage: z.array(target).default([]),
+  tags: z.record(target, z.string().trim().min(1).regex(/^[\w./-]+$/, 'a tag name')).default({}),
+}).default({ triage: [], tags: {} });
+
+/** A repo's `workflows` when its file names none: no CI, no triage, no tags. @type {Readonly<Workflows>} */
+export const NO_WORKFLOWS = Object.freeze({ triage: [], tags: {} });
+
+/**
+ * Whether `run` is of the repo's CI workflow, the file its config names:
+ * a red run is its merges' to fix. Every other workflow a PR
+ * hears of declares a deploy target. A workflow's name decides nothing.
+ *
+ * @param {{ path?: string }} run
+ * @param {Workflows} workflows
+ */
+export const isCi = (run, workflows) => workflows.ci !== undefined && run.path === workflows.ci;
+
+/**
+ * The issue the bare schedule fire stamps `last-run` into, and the marker its
+ * body must already carry for the write to go: a wrong number
+ * then refuses the write rather than overwrite someone's ticket.
+ */
+const heartbeatSchema = z.strictObject({
+  issue: z.number().int().positive(),
+  marker: z.string().trim().regex(/^<!--[^\n]*-->$/, 'an HTML comment on one line, `<!-- … -->`'),
+});
+
+/**
+ * The file's schema. It is the same in every repo: no switch is any one
+ * repo's.
+ */
+export const configSchema = z.strictObject({
+  environment: z.string().trim().min(1, 'a cloud environment name, or its ID (env_…)'),
+  labels: z.strictObject({
+    ready: z.array(label).min(1),
+    claim: label,
+    claimRemoves: z.array(label).default([]),
+  }).refine((l) => !l.ready.includes(l.claim), 'the claim label cannot be a ready label')
+    .refine((l) => l.claimRemoves.every((r) => l.ready.includes(r)), 'claimRemoves names only ready labels'),
+  features: z.strictObject(Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, z.boolean().optional()]))),
+  prompts: z.strictObject(Object.fromEntries(Object.keys(PROMPTS).map((kind) => [kind, prompt(kind).optional()]))).default({}),
+  workflows: workflowsSchema,
+  review: reviewSchema.optional(),
+  heartbeat: heartbeatSchema.optional(),
+}).refine((c) => c.features.prReview !== true || c.review !== undefined, { message: 'prReview is on, so the file needs a review section with its checklist', path: ['review'] })
+  .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue and marker', path: ['heartbeat'] });
+
+/**
+ * @typedef {{ ci?: string, triage: string[], tags: Record<string, string> }} Workflows
+ *   `ci`: the CI workflow's file; without it, no run is CI. `triage`: the
+ *   targets whose failure gets one fresh session. `tags`: each target's tag.
+ * @typedef {{ labels: string[], unless: string[] }} TicketRule
+ * @typedef {{ glob: string, reason: string, unless: string[] }} HumanOnly
+ * @typedef {{
+ *   checklist: string,
+ *   humanOnly: HumanOnly[],
+ *   tickets: { require: TicketRule[], forbid: TicketRule[] },
+ *   quote: string[],
+ *   decides: string[],
+ *   dependabot: string[],
+ *   merge: boolean,
+ * }} Review The PR review's settings, its checklist read.
+ * @typedef {{ file: string }} PromptFile
+ * @typedef {{ issue: number, marker: string }} Heartbeat
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat }} RepoConfig
+ *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
+ *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
+ *   ready labels the claim takes off, and a failed launch puts back.
+ *   `prompts`: the repo's instruction for each message kind it replaces.
+ *   `workflows`: what the repo's workflows are to the dispatcher.
+ *   `review`: the PR review's settings, where the file has them.
+ *   `heartbeat`: the issue the schedule fire's heartbeat goes into, and its marker.
+ * @typedef {Omit<RepoConfig, 'prompts' | 'review'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile } }} FileConfig
+ *   The file as read, before {@link resolveFiles} reads the prompt files it names.
+ */
+
+/**
+ * A config file's text, read: the config, or the fault that keeps the repo
+ * unserved. The schema is every repo's, so the repo does not enter.
+ *
+ * @param {string} text
+ * @returns {{ ok: true, config: FileConfig } | { ok: false, fault: string }}
+ */
+export const readConfig = (text) => {
+  /** @type {unknown} */
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    return { ok: false, fault: `not JSON: ${/** @type {Error} */ (error).message}` };
+  }
+  const result = configSchema.safeParse(parsed);
+  if (!result.success) {
+    return { ok: false, fault: result.error.issues.map((i) => `${i.path.join('.') || '(file)'}: ${i.message}`).join('; ') };
+  }
+  return { ok: true, config: /** @type {FileConfig} */ (result.data) };
+};
+
+/**
+ * A prompt file's text without a skill's frontmatter, which is the CLI's
+ * metadata and nothing the model is to follow: a repo may point its
+ * checklist at the skill its sessions run by hand.
+ *
+ * @param {string} text
+ */
+export const withoutFrontmatter = (text) => text.replace(/^---\n[\s\S]*?\n---\n+/, '').trim();
+
+/**
+ * The config with every prompt file it names read, through `read` (a path's
+ * text on the default branch, null when GitHub says it is not there; any
+ * other failure throws, and is never a missing file). A file that is
+ * missing or empty, or a prompt naming a fact its kind lacks, is the fault
+ * that keeps the repo unserved, naming the key and the path.
+ *
+ * @param {FileConfig} config
+ * @param {(path: string) => Promise<string | null>} read
+ * @returns {Promise<{ ok: true, config: RepoConfig } | { ok: false, fault: string }>}
+ */
+export const resolveFiles = async (config, read) => {
+  /** @type {Map<string, Promise<string | null>>} */
+  const reads = new Map();
+  /** @param {string} path */
+  const once = (path) => {
+    let text = reads.get(path);
+    if (text === undefined) reads.set(path, text = read(path));
+    return text;
+  };
+  /**
+   * @param {string} key
+   * @param {string | PromptFile} value
+   * @returns {Promise<{ text: string } | { fault: string }>}
+   */
+  const textOf = async (key, value) => {
+    if (typeof value === 'string') return { text: value };
+    const text = await once(value.file);
+    if (text === null) return { fault: `${key}: ${value.file} is not on the default branch` };
+    const body = withoutFrontmatter(text);
+    return body === '' ? { fault: `${key}: ${value.file} is empty` } : { text: body };
+  };
+  /** @type {Record<string, string | undefined>} */
+  const prompts = {};
+  /** @type {string[]} */
+  const faults = [];
+  const entries = Object.entries(config.prompts).filter(/** @returns {e is [string, string | PromptFile]} */ (e) => e[1] !== undefined);
+  const [texts, checklist] = await Promise.all([
+    Promise.all(entries.map(([kind, value]) => textOf(`prompts.${kind}`, value))),
+    config.review === undefined ? null : textOf('review.checklist', config.review.checklist),
+  ]);
+  entries.forEach(([kind], i) => {
+    const got = /** @type {{ text: string } | { fault: string }} */ (texts[i]);
+    if ('fault' in got) { faults.push(got.fault); return; }
+    const fault = fillsFault(kind, got.text);
+    if (fault === null) prompts[kind] = got.text;
+    else faults.push(`prompts.${kind}: ${fault}`);
+  });
+  if (checklist !== null && 'fault' in checklist) faults.push(checklist.fault);
+  if (faults.length > 0) return { ok: false, fault: faults.join('; ') };
+  const review = config.review === undefined || checklist === null || 'fault' in checklist ? undefined : { ...config.review, checklist: checklist.text };
+  const { review: _file, ...rest } = config;
+  return { ok: true, config: { ...rest, prompts, ...(review === undefined ? {} : { review }) } };
+};
+
+/** A cloud environment ID: anything else in `environment` is a name. */
+const ENVIRONMENT_ID = /^env_[A-Za-z0-9]+$/;
+
+/** Whether a file's `environment` names its environment rather than giving its ID. */
+export const namesEnvironment = (/** @type {string} */ environment) => !ENVIRONMENT_ID.test(environment);
+
+const environmentList = z.object({
+  environments: z.array(z.object({ environment_id: z.string().regex(ENVIRONMENT_ID), name: z.string() })),
+});
+
+/**
+ * A file's `environment` as an ID: an ID as it is, a name as the ID of the
+ * one environment in the login's list (`GET /v1/environment_providers`,
+ * which `/remote-env` lists) of that name. No match, or more than one, is
+ * the fault that keeps the repo unserved. A list not in that shape throws:
+ * a failed read, never no match.
+ *
+ * @param {string} environment
+ * @param {unknown} listed The environment list's answer, parsed.
+ * @returns {{ id: string } | { fault: string }}
+ */
+export const environmentFrom = (environment, listed) => {
+  if (!namesEnvironment(environment)) return { id: environment };
+  const read = environmentList.safeParse(listed);
+  if (!read.success) throw new Error(`the login's environment list is not in the shape the CLI reads: ${read.error.issues[0]?.message ?? ''}`);
+  const matches = read.data.environments.filter((e) => e.name === environment);
+  if (matches.length === 1) return { id: /** @type {{ environment_id: string }} */ (matches[0]).environment_id };
+  return { fault: matches.length === 0 ? `no cloud environment is named "${environment}"` : `${matches.length} cloud environments are named "${environment}"` };
+};
+
+/**
+ * Whether `config` turns `name` on.
+ *
+ * @param {RepoConfig} config
+ * @param {string} name
+ */
+export const turnsOn = (config, name) => config.features[name] === true;
+
+/**
+ * The switch a fire kind needs, or null for one that needs none (a probe).
+ * A message to a PR's owner needs PR messages, one heard by subscription
+ * (a `governor:subscribe` line, an issue's filer) subscribe messages; a
+ * dispatch is a summons unless it is the red scheduled run's. A red run of
+ * the repo's CI needs CI messages; a red deploy, like a green shipping job,
+ * deploy messages. The bare schedule fire's heartbeat is read on its own.
+ *
+ * @param {import('./webhook/fire.mjs').Fire} fire
+ * @param {Workflows} [workflows] The repo's config file's.
+ * @returns {string | null}
+ */
+export const switchOf = (fire, workflows = NO_WORKFLOWS) => {
+  switch (fire.kind) {
+    case 'schedule': return 'pickup';
+    case 'dispatch': return fire.scheduled === undefined ? 'summons' : 'redScheduledRun';
+    case 'message': return fire.subscribed === true ? 'subscribeMessages' : 'prMessages';
+    case 'workflow': return isCi(fire, workflows) ? 'ciMessages' : 'deployMessages';
+    case 'job': return 'deployMessages';
+    case 'branch-run': return 'branchRunMessages';
+    case 'conflicts': return 'conflicts';
+    case 'review': return 'prReview';
+    default: return null;
+  }
+};
