@@ -14,14 +14,14 @@
   "periodics": [
     {
       "name": "Code review",
-      "prompt": "Review the pull requests merged into the default branch that governor lists below, which are everything merged since the last code review. Read each one's change against the code as it stands now. Raise one issue for each defect, missing test or piece of drift worth fixing, after searching the open issues so you raise none twice. Change no code yourself. When you are done, make `Signing off.` the last line of your reply.",
+      "prompt": "Review the pull requests merged into the default branch that governor lists below, which are the ones merged since the time it gives. Where it says there are more than it lists, find the rest yourself. Read each one's change against the code as it stands now. Raise one issue for each defect, missing test or piece of drift worth fixing, after searching the open issues so you raise none twice. Change no code yourself. When you are done, make `Signing off.` the last line of your reply.",
       "days": 7,
       "counts": { "merges": 10 },
       "gapHours": 4
     },
     {
       "name": "Ticket review",
-      "prompt": "Review the issues opened that governor lists below, which are every issue opened since the last ticket review. For each one still open, check it against the code: whether it says what done looks like, whether the code already does it, and whether another open issue already covers it. Comment on one that needs work, saying what it lacks. Close a duplicate, or one the code already settles, with a comment saying why. Change no code yourself. When you are done, make `Signing off.` the last line of your reply.",
+      "prompt": "Review the issues opened that governor lists below, which are the ones opened since the time it gives. Where it says there are more than it lists, find the rest yourself. For each one still open, check it against the code: whether it says what done looks like, whether the code already does it, and whether another open issue already covers it. Comment on one that needs work, saying what it lacks. Close a duplicate, or one the code already settles, with a comment saying why. Leave alone the issues the heartbeat check opens, which close themselves. Change no code yourself. When you are done, make `Signing off.` the last line of your reply.",
       "days": 7,
       "counts": { "issuesOpened": 5 }
     },
