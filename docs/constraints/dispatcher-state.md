@@ -37,6 +37,10 @@ group.
 - A PR told of the conflict a merge left it in: `conflicts#<repo>` /
   `<pr>#<merge sha>` in `dynamoState`, put only where none stands, before
   the send, so a merge tells each PR once (dispatch/conflicts.mjs).
+- A periodic's last fire: `periodic#<repo>` / `<name>` in `dynamoState`,
+  put only over the record the turn read, and never expired. A missing one
+  is the baseline, and a failed read refuses the periodic
+  (dispatch/periodics.mjs).
 
 ## Do not
 

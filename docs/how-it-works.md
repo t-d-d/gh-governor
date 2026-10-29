@@ -43,6 +43,8 @@ A task has no timeout of its own, so the entrypoint ends the turn after eighteen
 
 **Which fire picks up what.** A ready label added by a person, and listed in `SelectLabels`, queues a fire for that one issue. An issue closing queues a fire for the issues it directly blocked, up to the cap: a close never runs the whole selection, so one finished session cannot start a cascade. The two-hourly fire runs the whole selection over every served repo. Only the two-hourly fire writes a heartbeat.
 
+**Periodics.** The two-hourly fire also starts each periodic that is due, ahead of the tickets ([Periodics](#periodics)).
+
 **Each repo on its own.** Each served repo gets its own installation token, workspace and cloud environment. A repo whose launch fails is skipped for the rest of the fire (`dispatch-repo-skipped`), and the other repos still go.
 
 ## Triggers
@@ -54,6 +56,7 @@ The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`) queu
 | Issue labelled | A ready label, added by a person, listed in `SelectLabels` | That issue is picked up, if the selection would take it | `pickup` |
 | Issue closed | It blocked open ready tickets | Those tickets are picked up, up to the cap | `pickup` |
 | Two-hourly schedule | Always | Every served repo: pickup, heartbeat, sign-off sweep | `pickup`, `heartbeat` |
+| Two-hourly schedule | A periodic's day limit has passed since its last fire | One session on the periodic's prompt | `periodics` |
 | Comment, issue or review with `@claude` | By an owner, member or collaborator; no session owns the PR | One session, pointed at the remark | `summons` |
 | Comment, review, push, merge or close on a PR | The PR names a session, or a local session holds its branch | A message into that session | `prMessages` |
 | Comment, label, close or reopen on an issue | The issue's filer, or a subscribed session | A message into each | `subscribeMessages` |
@@ -195,6 +198,17 @@ A repo's `prompts` map replaces the instruction in a kind of message, or the ope
 
 A value is the text, or `{ "file": "<path>" }`, read from the default branch beside the config file. A skill file's frontmatter is dropped. An unknown key, a fact the kind lacks, or a missing or empty file makes the config invalid.
 
+## Periodics
+
+A periodic is a recurring session a repo lists in its config file, with a name, a prompt and a day limit in whole days (`dispatch/periodics.mjs`). Only the bare two-hourly fire starts one.
+
+- **When it is due.** Governor keeps each periodic's record in the state table, under `periodic#<repo>` / `<name>`: the time of its last fire, and the session it started, or none for an unconfirmed launch. A periodic is due once its day limit has passed since that time, or will within the hour: the record holds the launch's time, a little after the sweep read it, so the sweep nearest the limit fires it rather than every run slipping a sweep.
+- **No record.** A new periodic, or one whose record was lost, has none. The fire writes now as the baseline and starts nothing, so the first run comes one day limit later. A lost record costs at most one late run, never a burst of runs.
+- **The launch.** Due periodics go into the fire's launch plan ahead of the tickets, the one that came due first going first. They do not count against `DispatchCap`, but a cap of 0 still starts nothing. They share the fire's seven-minute launch window, and one left unlaunched stays due for the next fire.
+- **The session.** It is named after the periodic, in the repo's environment. Its prompt is the periodic's, then a line governor writes: `This periodic last fired at <time>.`, or `This is the first run of this periodic that governor has a record of.` after a baseline. No repo can drop or reword that line.
+- **The record.** A launch that started, or may have, writes the new record, and only over the record the fire read, so two turns never both record one fire. The write comes after the launch, so it is the one task at a time that keeps two turns from both starting a periodic. A failed launch writes nothing, the periodic stays due, and the rest of its repo waits for the next fire (`dispatch-repo-skipped`), as after a ticket's failed launch.
+- **A failed read.** A record that cannot be read refuses that periodic for the turn, and is never taken for a missing one. The turn logs `dispatch-periodic-unread` and exits 1. A record that could not be written after a launch logs `dispatch-periodic-unrecorded` and exits 1, since the next fire may start the periodic again.
+
 ## When a repo's file goes wrong
 
 | What | Logged | Alarm |
@@ -204,6 +218,7 @@ A value is the text, or `{ "file": "<path>" }`, read from the default branch bes
 | A file that could not be read (anything but a 404) | `dispatch-config-unread`; the repo is left out and the turn exits 1 | `governor-errors` |
 | The login's environment list could not be read | `dispatch-environments-unread`, after one refresh attempt | `governor-errors` |
 | A repo's launch started nothing | `dispatch-repo-skipped` | `governor-repo-skipped` |
+| A periodic's record could not be read, or its baseline written | `dispatch-periodic-unread` or `dispatch-periodic-unrecorded`; that periodic waits and the turn exits 1 | `governor-errors` |
 | The installation list or a token mint failed | `dispatch-failed` | `governor-errors` |
 
 ## The webhook

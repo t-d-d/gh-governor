@@ -99,6 +99,7 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
+import { duePeriodics, periodicPrompt } from './periodics.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
 import { repoServed, servedRepos } from './repos.mjs';
 import { CONFIG_PATH, switchOf, turnsOn } from './repo-config.mjs';
@@ -255,7 +256,7 @@ export const sessionUrlFrom = (output) => {
  *   delivered: (repo: string, workflow: string, label: string | null, from: number | null) => Promise<Delivered>,
  *   record: (repo: string, workflow: string, label: string | null, from: number | null, delivered: Delivered) => Promise<void>,
  *   recordConflict: (repo: string, pr: number, merge: string) => Promise<boolean>,
- * }} DispatchState
+ * } & import('./periodics.mjs').PeriodicState} DispatchState
  *   Each label's cursor, by its repo, its workflow's file name and the
  *   label (null for CI's, which earns none): read (null when it has none),
  *   and moved forward (false when a cursor at or past it already stood).
@@ -263,6 +264,8 @@ export const sessionUrlFrom = (output) => {
  *   for none) delivered while it was held: read (empty when none), and
  *   merged into. That PR `pr` of `repo` was told of the conflict
  *   merge `merge` left it in: recorded, false where a record stood.
+ *   A periodic's record (dispatch/periodics.mjs): read, and written over
+ *   the record the turn read, false where another stood.
  *   A read or write that fails throws.
  *
  * @typedef {{ told: string[], failed: string[] }} Delivered
@@ -270,6 +273,7 @@ export const sessionUrlFrom = (output) => {
  *   a session per send to it that failed, so a session's count is its tries.
  *
  * @typedef {{ repo: string, issue: number | null, outcome: 'dispatched' | 'unconfirmed' | 'failed', sessionUrl: string | null }} Dispatched
+ *   `issue`: null for a launch with no ticket, a periodic's among them.
  */
 
 /**
@@ -939,12 +943,14 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
   }
 
   const started = deps.now();
-  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string }>} */
+  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord } }>} */
   const plan = [];
   /** The issues a targeted schedule fire limits the plan to; undefined for the sweep. @type {number[] | undefined} */
   let only;
   /** The served repos whose backlog the bare fire could not read. @type {Array<{ repo: string, error: string }>} */
   const unread = [];
+  /** The periodics whose record the bare fire could not read, baseline, or write after a launch. @type {Array<{ repo: string, error: string }>} */
+  const periodicsUnread = [];
   if (invocation.kind === 'schedule') {
     // Every served repo's ready tickets in one queue; a repo
     // whose file turns pickup off is still swept, and its backlog unread.
@@ -987,6 +993,30 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
     }
     for (const d of planned) {
       plan.push({ issue: d.issue ?? null, repo: d.repo, prompt: d.prompt, sessionName: d.sessionName, model: DEFAULT_MODEL });
+    }
+    // The bare fire's due periodics go ahead of the tickets, oldest due
+    // first. They do not count against the cap, but a cap of 0 starts
+    // nothing; they share the launch window, and one left unlaunched has
+    // no new record, so it stays due for the next fire.
+    if (bare) {
+      /** @type {Array<import('./periodics.mjs').Due & { repo: string }>} */
+      const due = [];
+      for (const { repo, config } of served) {
+        if (!turnsOn(config, 'periodics')) continue;
+        const read = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log });
+        due.push(...read.due.map((d) => ({ ...d, repo })));
+        periodicsUnread.push(...read.unread);
+      }
+      if (deps.cap > 0) {
+        plan.unshift(...due.sort((a, b) => a.due - b.due).map(({ repo, periodic, read }) => ({
+          issue: null,
+          repo,
+          prompt: periodicPrompt(periodic.prompt, read),
+          sessionName: periodic.name,
+          model: DEFAULT_MODEL,
+          periodic: { name: periodic.name, read },
+        })));
+      }
     }
     // A scheduled red after a red plans nothing: the red before started the session that is on it.
   } else if (!(invocation.kind === 'dispatch' && invocation.scheduled !== undefined && await redBefore(invocation.scheduled, getReader, deps))) {
@@ -1075,7 +1105,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
 
   /** @type {Dispatched[]} */
   const dispatched = [];
-  /** The repos whose launch started nothing: the rest of their tickets wait for the next fire. @type {Set<string>} */
+  /** The repos whose launch started nothing: the rest of their tickets and periodics wait for the next fire. @type {Set<string>} */
   const skipped = new Set();
   let heartbeat = false;
   let loginStored = false;
@@ -1086,21 +1116,39 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
         break;
       }
       const ticket = entry.issue === null ? null : { repo: entry.repo, issue: entry.issue };
-      if (ticket !== null && skipped.has(ticket.repo)) continue;
+      if (skipped.has(entry.repo)) continue;
       const claimed = ticket === null ? 'claimed' : await claim(ticket);
       if (claimed === 'taken') continue;
       if (claimed === 'failed') {
         dispatched.push({ repo: entry.repo, issue: entry.issue, outcome: 'failed', sessionUrl: null });
         continue;
       }
+      const firedAt = new Date(deps.now()).toISOString();
       const { outcome, sessionUrl, status } = await start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo });
-      deps.log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.sessionName, outcome, status, sessionUrl });
-      if (ticket !== null && outcome === 'failed') {
-        await release(ticket);
+      deps.log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.sessionName, ...(entry.periodic === undefined ? {} : { periodic: entry.periodic.name }), outcome, status, sessionUrl });
+      // A periodic's record moves to this fire only for a launch that started
+      // or may have, and only over the record the turn read. A failed launch
+      // writes nothing, so the periodic stays due.
+      if (entry.periodic !== undefined && outcome !== 'failed') {
+        const { name, read } = entry.periodic;
+        try {
+          if (await deps.state.recordPeriodic(entry.repo, name, read, { at: firedAt, session: sessionUrl, baseline: false })) {
+            deps.log('dispatch-periodic', { repo: entry.repo, periodic: name, outcome: 'recorded', at: firedAt, sessionUrl });
+          } else {
+            deps.log('dispatch-periodic-unrecorded', { level: 'error', repo: entry.repo, periodic: name, sessionUrl, reason: `its record moved since this turn read it (last fire ${read.at}): another turn fired it too` });
+          }
+        } catch (error) {
+          deps.log('dispatch-periodic-unrecorded', { level: 'error', repo: entry.repo, periodic: name, sessionUrl, error: messageOf(error), reason: 'its record could not be written, so the next fire may start it again' });
+          // The turn fails, so the alarm says a periodic may start twice.
+          periodicsUnread.push({ repo: entry.repo, error: `periodic ${name}: its record could not be written: ${messageOf(error)}` });
+        }
+      }
+      if ((ticket !== null || entry.periodic !== undefined) && outcome === 'failed') {
+        if (ticket !== null) await release(ticket);
         // A launch that started nothing is the repo's environment or the
-        // login: the repo's next ticket would fail the same way.
-        skipped.add(ticket.repo);
-        deps.log(REPO_SKIPPED, { level: 'error', repo: ticket.repo, issue: ticket.issue, status, reason: 'its launch started nothing: the rest of its tickets wait for the next fire' });
+        // login: the repo's next ticket or periodic would fail the same way.
+        skipped.add(entry.repo);
+        deps.log(REPO_SKIPPED, { level: 'error', repo: entry.repo, issue: entry.issue, ...(entry.periodic === undefined ? {} : { periodic: entry.periodic.name }), status, reason: 'its launch started nothing: the rest of its tickets and periodics wait for the next fire' });
       } else if (ticket !== null) {
         const at = new Date(deps.now()).toISOString();
         await (await readerFor(ticket.repo)).comment(ticket.issue, dispatchMarker({ at, sessionUrl }));
@@ -1160,7 +1208,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
     // the copy from before it would hold a dead refresh token.
     loginStored = await storeIfRefreshed(deps, original, account);
   }
-  return { kind: invocation.kind, dispatched, heartbeat, loginStored, ...(unread.length === 0 ? {} : { unread }) };
+  const left = [...unread, ...periodicsUnread];
+  return { kind: invocation.kind, dispatched, heartbeat, loginStored, ...(left.length === 0 ? {} : { unread: left }) };
 };
 
 /**
@@ -1477,7 +1526,9 @@ export const cliEnv = (env, home, account) => ({
  * `delivered#<run id>`), merged into by one update and expired by `ttl`
  * once the cursor moves on. A PR told of a merge's conflict is the
  * item `conflicts#<repo>` / `<pr>#<merge sha>`, put only where none stands
- * and expired by `ttl`.
+ * and expired by `ttl`. A periodic's record is the item `periodic#<repo>` /
+ * `<name>`, put only over the record the turn read, and never expired: a
+ * lost one costs a late run.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -1486,6 +1537,7 @@ export const cliEnv = (env, home, account) => ({
 export const dynamoState = (client, table) => {
   const pk = (/** @type {string} */ repo, /** @type {string} */ workflow) => ({ S: `workflow#${repo}#${workflow}` });
   const key = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label) => ({ pk: pk(repo, workflow), sk: { S: label === null ? 'cursor' : `cursor#${label}` } });
+  const periodicKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `periodic#${repo}` }, sk: { S: name } });
   const sent = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label, /** @type {number | null} */ from) => ({ pk: pk(repo, workflow), sk: { S: `delivered#${label === null ? '' : `${label}#`}${from ?? 'none'}` } });
   return {
     cursor: async (repo, workflow, label) => {
@@ -1530,6 +1582,31 @@ export const dynamoState = (client, table) => {
           TableName: table,
           Item: { pk: { S: `conflicts#${repo}` }, sk: { S: `${pr}#${merge}` }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.now() / 1000) + CONFLICT_TTL_S) } },
           ConditionExpression: 'attribute_not_exists(pk)',
+        }));
+        return true;
+      } catch (error) {
+        if (error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException') return false;
+        throw error;
+      }
+    },
+    periodic: async (repo, name) => {
+      const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: periodicKey(repo, name), ConsistentRead: true }));
+      if (item === undefined) return null;
+      const at = item.at?.S;
+      // A malformed item is a failed read, never a missing one.
+      if (at === undefined || Number.isNaN(Date.parse(at)) || (item.session !== undefined && item.session.S === undefined)) {
+        throw new Error(`the periodic item for ${repo} ${name} is malformed: ${JSON.stringify(item)}`);
+      }
+      return { at, session: item.session?.S ?? null, baseline: item.baseline?.BOOL === true };
+    },
+    recordPeriodic: async (repo, name, read, { at, session, baseline }) => {
+      try {
+        await client.send(new PutItemCommand({
+          TableName: table,
+          Item: { ...periodicKey(repo, name), at: { S: at }, ...(session === null ? {} : { session: { S: session } }), ...(baseline ? { baseline: { BOOL: true } } : {}) },
+          ...(read === null
+            ? { ConditionExpression: 'attribute_not_exists(pk)' }
+            : { ConditionExpression: '#at = :read', ExpressionAttributeNames: { '#at': 'at' }, ExpressionAttributeValues: { ':read': { S: read.at } } }),
         }));
         return true;
       } catch (error) {
@@ -1766,13 +1843,15 @@ export const realDeps = () => {
     },
     sleep: (ms) => new Promise((resolveSleep) => { setTimeout(resolveSleep, ms); }),
     fires: env.DISPATCH_FIRES_QUEUE_URL ? sqsFires(new SQSClient({}), env.DISPATCH_FIRES_QUEUE_URL) : undefined,
-    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, rather than guess.
+    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, and no periodic starts, rather than guess.
     state: env.DISPATCH_STATE_TABLE
       ? dynamoState(new DynamoDBClient({}), env.DISPATCH_STATE_TABLE)
       : {
         cursor: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         advance: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         delivered: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        periodic: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordPeriodic: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         record: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordConflict: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
       },

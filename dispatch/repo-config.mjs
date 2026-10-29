@@ -8,14 +8,16 @@
  * instruction in each message kind (`prompts`, dispatch/prompts.mjs),
  * names the repo's CI workflow, its triage targets and the tag
  * each target's deploy moves (`workflows`), and holds the PR
- * review's checklist and lists (`review`), and names the issue
- * the schedule fire writes its heartbeat into (`heartbeat`).
+ * review's checklist and lists (`review`), names the issue
+ * the schedule fire writes its heartbeat into (`heartbeat`), and lists the
+ * recurring sessions the schedule fire starts (`periodics`, dispatch/periodics.mjs).
  * Every feature is a switch, off unless the file turns it on, and a turn
  * refuses a fire kind its repo's file does not turn on ({@link switchOf}).
  * Every switch is generic: the schema accepts none by repo. The file holds
  * no secret: a served repo may be public.
  *
- * Every prompt value, each in `prompts` and the review's `checklist`, is the
+ * Every prompt value, each in `prompts`, the review's `checklist` and each
+ * periodic's `prompt`, is the
  * text or `{ "file": "<path>" }`, a file in the repo read from the default
  * branch beside the config file ({@link resolveFiles}).
  *
@@ -36,13 +38,13 @@ export const CONFIG_PATH = '.github/dispatch.json';
  * The switches any served repo may turn on: pickup, summons, PR and
  * subscribe messages, the red scheduled run, the merge hand-off, CI and
  * deploy messages, branch-run messages, the conflicts check,
- * deployed-label job fires, the PR review and the heartbeat. Every switch
- * there is.
+ * deployed-label job fires, the PR review, the heartbeat and periodics.
+ * Every switch there is.
  */
 export const GENERIC_SWITCHES = Object.freeze([
   'pickup', 'summons', 'prMessages', 'subscribeMessages', 'redScheduledRun', 'mergeHandoff',
   'ciMessages', 'deployMessages', 'branchRunMessages', 'conflicts', 'deployedLabels', 'prReview',
-  'heartbeat',
+  'heartbeat', 'periodics',
 ]);
 
 // GitHub's issues query splits its `labels` on commas, so a ready label
@@ -157,6 +159,17 @@ const heartbeatSchema = z.strictObject({
 });
 
 /**
+ * A recurring session: `name`, unique in the file, which the session is
+ * named after and its record keyed by; `prompt`, what it runs; `days`, how
+ * many whole days after its last fire it comes due.
+ */
+const periodicSchema = z.strictObject({
+  name: z.string().trim().min(1).max(100).regex(/^[^\n]*$/, 'a name is one line'),
+  prompt: z.union([z.string().trim().min(1), promptFile]),
+  days: z.number().int().min(1),
+});
+
+/**
  * The file's schema. It is the same in every repo: no switch is any one
  * repo's.
  */
@@ -173,8 +186,17 @@ export const configSchema = z.strictObject({
   workflows: workflowsSchema,
   review: reviewSchema.optional(),
   heartbeat: heartbeatSchema.optional(),
+  periodics: z.array(periodicSchema).default([])
+    .superRefine((list, ctx) => {
+      const seen = new Set();
+      for (const { name } of list) {
+        if (seen.has(name)) ctx.addIssue({ code: 'custom', message: `two periodics are named "${name}": a name is unique in the file` });
+        seen.add(name);
+      }
+    }),
 }).refine((c) => c.features.prReview !== true || c.review !== undefined, { message: 'prReview is on, so the file needs a review section with its checklist', path: ['review'] })
-  .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue and marker', path: ['heartbeat'] });
+  .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue and marker', path: ['heartbeat'] })
+  .refine((c) => c.features.periodics !== true || c.periodics.length > 0, { message: 'periodics is on, so the file lists at least one periodic', path: ['periodics'] });
 
 /**
  * @typedef {{ ci?: string, triage: string[], tags: Record<string, string> }} Workflows
@@ -193,7 +215,8 @@ export const configSchema = z.strictObject({
  * }} Review The PR review's settings, its checklist read.
  * @typedef {{ file: string }} PromptFile
  * @typedef {{ issue: number, marker: string }} Heartbeat
- * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat }} RepoConfig
+ * @typedef {{ name: string, prompt: string, days: number }} Periodic A recurring session, its prompt read.
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, periodics: Periodic[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
  *   ready labels the claim takes off, and a failed launch puts back.
@@ -201,7 +224,8 @@ export const configSchema = z.strictObject({
  *   `workflows`: what the repo's workflows are to the dispatcher.
  *   `review`: the PR review's settings, where the file has them.
  *   `heartbeat`: the issue the schedule fire's heartbeat goes into, and its marker.
- * @typedef {Omit<RepoConfig, 'prompts' | 'review'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile } }} FileConfig
+ *   `periodics`: the recurring sessions the schedule fire starts.
+ * @typedef {Omit<RepoConfig, 'prompts' | 'review' | 'periodics'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile }, periodics: Array<Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }> }} FileConfig
  *   The file as read, before {@link resolveFiles} reads the prompt files it names.
  */
 
@@ -273,9 +297,10 @@ export const resolveFiles = async (config, read) => {
   /** @type {string[]} */
   const faults = [];
   const entries = Object.entries(config.prompts).filter(/** @returns {e is [string, string | PromptFile]} */ (e) => e[1] !== undefined);
-  const [texts, checklist] = await Promise.all([
+  const [texts, checklist, periodicTexts] = await Promise.all([
     Promise.all(entries.map(([kind, value]) => textOf(`prompts.${kind}`, value))),
     config.review === undefined ? null : textOf('review.checklist', config.review.checklist),
+    Promise.all(config.periodics.map((p) => textOf(`periodics.${p.name}.prompt`, p.prompt))),
   ]);
   entries.forEach(([kind], i) => {
     const got = /** @type {{ text: string } | { fault: string }} */ (texts[i]);
@@ -285,10 +310,17 @@ export const resolveFiles = async (config, read) => {
     else faults.push(`prompts.${kind}: ${fault}`);
   });
   if (checklist !== null && 'fault' in checklist) faults.push(checklist.fault);
+  /** @type {Periodic[]} */
+  const periodics = [];
+  config.periodics.forEach((p, i) => {
+    const got = /** @type {{ text: string } | { fault: string }} */ (periodicTexts[i]);
+    if ('fault' in got) faults.push(got.fault);
+    else periodics.push({ ...p, prompt: got.text });
+  });
   if (faults.length > 0) return { ok: false, fault: faults.join('; ') };
   const review = config.review === undefined || checklist === null || 'fault' in checklist ? undefined : { ...config.review, checklist: checklist.text };
   const { review: _file, ...rest } = config;
-  return { ok: true, config: { ...rest, prompts, ...(review === undefined ? {} : { review }) } };
+  return { ok: true, config: { ...rest, prompts, periodics, ...(review === undefined ? {} : { review }) } };
 };
 
 /** A cloud environment ID: anything else in `environment` is a name. */
