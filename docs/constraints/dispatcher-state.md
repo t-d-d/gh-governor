@@ -45,6 +45,11 @@ group.
   put only where none or an earlier sweep stands, and never expired. A
   missing one means sweep now, and a failed read refuses the repo's sweep
   (dispatch/pickup.mjs).
+- A session governor started: `session#<session id>` / `started` in
+  `dynamoState`, under no repo, put after every launch that printed one,
+  and never expired. The PR review reads it, and a failed read fails the review. A
+  lost item lets a ticket's mode label waive a human-only path, so the item
+  outlasts every PR it guards (dispatcher-review.md).
 
 ## Do not
 
@@ -57,4 +62,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13.

@@ -54,6 +54,8 @@ const ask = async (over: {
   /** The checks the base requires, and the checks at the head. */
   required?: string[],
   checks?: Array<{ name: string, red: boolean }>,
+  /** The sessions governor's state table says it started; a string is the error its read fails with. */
+  started?: string[] | string,
 } = {}) => {
   const judged = (over.judged ?? []) as Array<{ system: string, prompt: string, schema: unknown }>;
   const baseReads: Array<[string, string]> = [];
@@ -91,9 +93,15 @@ const ask = async (over: {
     transcript: async () => ({ key: 'k' }),
     log: () => {},
   });
-  const facts = await readFacts(reader as never, pull as never);
+  const sessionsRead: string[] = [];
+  const started = async (session: string) => {
+    sessionsRead.push(session);
+    if (typeof over.started === 'string') throw new Error(over.started);
+    return (over.started ?? []).includes(session);
+  };
+  const facts = await readFacts(reader as never, pull as never, started);
   const answer = await checklist({ ...facts, rules: FACTORY_RULES }, judge);
-  return { answer, text: commentText(answer, { conflict: false }), judged, baseReads, fileReads, openReads };
+  return { answer, text: commentText(answer, { conflict: false }), judged, baseReads, fileReads, openReads, sessionsRead };
 };
 
 /** What the receiver queues for the review's comment on #767 saying `text`. */
@@ -423,6 +431,40 @@ describe('tests 1 and 7, decided in code before any model call', () => {
       const h = await ask({ body: 'Closes #748. Closes #754.', tickets: { 748: worked('mode: human'), 754: worked('mode: hitl') }, files: LISTED });
       assert.equal(h.judged.length, 1);
       assert.equal(h.answer.answer, 'pass');
+    });
+
+    // The label says who should work the ticket, not who did: a summons on
+    // it starts a session nobody watches.
+    test('from a session governor started, it clears nothing: the label is not a person having read the diff', async () => {
+      for (const mode of ['mode: hitl', 'mode: human']) {
+        const h = await ask({ tickets: { 748: worked(mode) }, files: LISTED, started: ['https://claude.ai/code/session_01OWNER'] });
+        assert.deepEqual(h.sessionsRead, ['https://claude.ai/code/session_01OWNER'], mode);
+        assert.deepEqual(h.judged, [], mode);
+        assert.match(h.text, person, mode);
+        assert.match(h.text, /\(test 7\)/, mode);
+      }
+    });
+
+    test('from a session a person started, or a body naming none, it still clears the list', async () => {
+      for (const body of [BODY, 'Closes #748.\n\nWorked by hand.']) {
+        const h = await ask({ body, tickets: { 748: worked('mode: hitl') }, files: LISTED, started: ['https://claude.ai/code/session_01OTHER'] });
+        assert.equal(h.answer.answer, 'pass', body);
+      }
+      const unnamed = await ask({ body: 'Closes #748.', tickets: { 748: worked('mode: hitl') }, files: LISTED, started: 'unreachable' });
+      assert.deepEqual(unnamed.sessionsRead, [], 'a body naming no session asks the table nothing');
+    });
+
+    test('a record that cannot be read fails the review, rather than waive', async () => {
+      await assert.rejects(ask({ tickets: { 748: worked('mode: hitl') }, files: LISTED, started: 'AccessDeniedException' }), /AccessDeniedException/);
+    });
+
+    test('where no label waives a listed path, the table is not read, and a read that would fail fails nothing', async () => {
+      const unlisted = await ask({ tickets: { 748: worked('mode: hitl') }, files: [{ filename: 'src/app.ts', status: 'modified' }], started: 'AccessDeniedException' });
+      assert.deepEqual(unlisted.sessionsRead, [], 'no listed path: nothing to waive');
+      assert.equal(unlisted.answer.answer, 'pass');
+      const afk = await ask({ tickets: { 748: worked('mode: afk') }, files: LISTED, started: 'AccessDeniedException' });
+      assert.deepEqual(afk.sessionsRead, [], 'an afk ticket waives nothing');
+      assert.match(afk.text, /\(test 7\)/);
     });
 
     test('still `ready for development`, it is told to claim it, and test 7 is not named', async () => {

@@ -31,6 +31,7 @@
  * repo's code.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { DEPENDABOT } from './webhook/fire.mjs';
 
@@ -266,14 +267,16 @@ const ruleBroken = (ticket, { require, forbid }) => {
  * Whether every ticket the PR closes carries one of `unless` and meets test
  * 1, or waits only on its claim: the human-only entry it waives
  * holds nothing back. An afk ticket beside them is work nobody watched, so
- * it waives nothing, and closing none waives nothing.
+ * it waives nothing, and closing none waives nothing. Nor does a PR from a
+ * session governor started: the label says who should work the ticket,
+ * not who did, and nobody watched that session.
  *
  * @param {ClosedTicket[]} tickets
  * @param {Set<number>} unmet
  * @param {string[]} unless
+ * @param {boolean} unattended
  */
-// Known gap: a hitl or human label clears the human-only list, whether or not a person worked the ticket.
-const waivedBy = (tickets, unmet, unless) => unless.length > 0
+const waivedBy = (tickets, unmet, unless, unattended) => !unattended && unless.length > 0
   && tickets.length > 0 && tickets.every((t) => !('missing' in t) && !unmet.has(t.number) && t.labels.some((l) => unless.includes(l)));
 
 const LIVES_AT = /^Constraint now lives at (.+)$/;
@@ -489,7 +492,7 @@ export const checksFailure = (red) => (red.length === 0 ? null : {
  * (`constraintsLeft`); any other change on the list waits for a
  * person. A human-only entry with `unless` labels holds nothing back from
  * a PR whose every closing ticket carries one and passes test 1 on its own
- * or waits only on its claim.
+ * or waits only on its claim, unless governor started the PR's session.
  *
  * Then the owners: a test-5 or test-6 fail an edit meets, the
  * author session's to meet first beside a test 7 no edit meets. Then the
@@ -503,10 +506,11 @@ export const checksFailure = (red) => (red.length === 0 ? null : {
  *   owners?: { verification: ClosedTicket[], later: ClosedTicket[] },
  *   prose?: Array<{ number: number, text: string }>,
  *   red?: string[],
- * }} facts `tickets`: the body's closing tickets, in its order. `others`: the other open PRs and the tickets each closes. `owners`: the tickets `namedOwners` read, as read. `prose`: the body's `proseClosings`. `red`: the required checks red on the head.
+ *   unattended?: boolean,
+ * }} facts `tickets`: the body's closing tickets, in its order. `others`: the other open PRs and the tickets each closes. `owners`: the tickets `namedOwners` read, as read. `prose`: the body's `proseClosings`. `red`: the required checks red on the head. `unattended`: governor started the session the body names.
  * @returns {Answer | null}
  */
-export const decideInCode = ({ files, tickets, rules, others = [], owners = { verification: [], later: [] }, prose = [], red = [] }) => {
+export const decideInCode = ({ files, tickets, rules, others = [], owners = { verification: [], later: [] }, prose = [], red = [], unattended = false }) => {
   const failures = ticketFailures(tickets, others, rules);
   const ticket = ticketFailure([...failures, ...proseFailure(prose)]);
   // Each ticket that passes test 1 on its own decides its quoted files,
@@ -515,7 +519,7 @@ export const decideInCode = ({ files, tickets, rules, others = [], owners = { ve
   // claiming it must not leave a test 7 behind.
   const unmet = new Set(failures.filter((f) => !f.claim).map((f) => f.number));
   const decided = adrDecided(tickets, rules, unmet);
-  const listed = listFailure(files, rules, decided, (entry) => waivedBy(tickets, unmet, entry.unless));
+  const listed = listFailure(files, rules, decided, (entry) => waivedBy(tickets, unmet, entry.unless, unattended));
   if (ticket && !ticket.editable) {
     return listed
       ? { answer: 'fail', test: 1, reason: `${ticket.reason}, and test 7 fails whatever the description says: ${listed}`, editable: false }
@@ -681,9 +685,10 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  *   prose: Array<{ number: number, text: string }>,
  *   red?: string[],
  *   constraintTexts: (paths: string[]) => Promise<ConstraintTexts>,
+ *   unattended: () => Promise<boolean>,
  *   held?: string | null,
  *   rules: Rules,
- * }} Facts `decideInCode`'s facts, and: `constraintTexts`, the read of the quoted files the model is to read, made only when it is asked; `held`, the reason of a pass whose merge a promotion held, kept in place of a new judgement; `rules`, the repo's review settings and labels.
+ * }} Facts `decideInCode`'s facts, and: `constraintTexts`, the read of the quoted files the model is to read, made only when it is asked; `unattended`, the read of whether governor started the PR's session, made only where a label's waiver changes the answer; `held`, the reason of a pass whose merge a promotion held, kept in place of a new judgement; `rules`, the repo's review settings and labels.
  */
 
 /**
@@ -698,8 +703,13 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  * @param {Judge} judge
  * @returns {Promise<Answer>}
  */
-export const checklist = async ({ pull, files, tickets, others, owners, prose, red = [], constraintTexts, held = null, rules }, judge) => {
-  const decided = decideInCode({ files, tickets, rules, others, owners, prose, red });
+export const checklist = async ({ pull, files, tickets, others, owners, prose, red = [], constraintTexts, unattended, held = null, rules }, judge) => {
+  const decide = (/** @type {boolean} */ unwatched) => decideInCode({ files, tickets, rules, others, owners, prose, red, unattended: unwatched });
+  // The table is read only where a label's waiver changes the answer: a
+  // read that fails then fails no review it could not change.
+  const waived = decide(false);
+  const unwaived = decide(true);
+  const decided = isDeepStrictEqual(waived, unwaived) || !await unattended() ? waived : unwaived;
   if (decided !== null) return decided;
   if (held !== null) return { answer: 'pass', reason: held };
   const left = constraintsLeft(files, tickets, rules);

@@ -73,6 +73,8 @@ const harness = (over: {
   checks?: Array<{ name: string, state: 'red' | 'green' | 'pending' }>,
   /** The PR's submitted reviews. */
   reviews?: Array<{ id: number, state: string, body: string, bot: boolean }>,
+  /** The sessions the state table says governor started; a string is the error its read fails with. */
+  started?: string[] | string,
 } = {}) => {
   const dismissals: Array<{ pr: number, id: number }> = [];
   const approvals: Array<{ pr: number, sha: string, body: string }> = [];
@@ -89,6 +91,7 @@ const harness = (over: {
   const baseReads: Array<[string, string]> = [];
   const fileReads: string[] = [];
   const readerApps: number[] = [];
+  const sessionsRead: string[] = [];
   const pulls = over.pulls ?? { 767: pullRow() };
   const answers = over.answers ?? [PASS];
   let judgedCount = 0;
@@ -165,8 +168,15 @@ const harness = (over: {
     },
     transcript: async (t: { sessionId: string, pr: number }) => { transcripts.push(t); return { key: `drop/dispatch/2026-09-26/pr-review-${t.pr}-${t.sessionId}.jsonl.gz` }; },
     sleep: async () => {},
+    state: {
+      startedSession: async (session: string) => {
+        sessionsRead.push(session);
+        if (typeof over.started === 'string') throw new Error(over.started);
+        return (over.started ?? []).includes(session);
+      },
+    },
   };
-  return { deps, approvals, dismissals, comments, commentEdits, merges, judged, transcripts, messages, launches, logged, reads, requiredReads, baseReads, fileReads, readerApps };
+  return { deps, sessionsRead, approvals, dismissals, comments, commentEdits, merges, judged, transcripts, messages, launches, logged, reads, requiredReads, baseReads, fileReads, readerApps };
 };
 
 type Review = { pr: number, outcome: string, reason?: string | null, error?: string | null, test?: number };
@@ -254,6 +264,35 @@ describe('run — a review fire, end to end', () => {
         assert.doesNotMatch(body, /claude\.ai\/code\/session_/);
       }
     }
+  });
+});
+
+describe('run — a human-only path a ticket\'s mode label waives', () => {
+  const OWNER = 'https://claude.ai/code/session_01OWNER';
+  const hitl = { 748: { labels: ['mode: hitl', 'type: bug', 'workflow: under development'] } };
+  const files = [{ filename: 'CLAUDE.md', status: 'modified' }];
+
+  test('from a session a person started, the label waives it and the PR merges', async () => {
+    const h = harness({ tickets: hitl, files });
+    const result = await review({ kind: 'review', pr: 767 }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
+    assert.deepEqual(h.sessionsRead, [OWNER]);
+  });
+
+  test('from a session governor started, it waits for a person and nothing merges', async () => {
+    const h = harness({ tickets: hitl, files, started: [OWNER] });
+    const result = await review({ kind: 'review', pr: 767 }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['commented']);
+    assert.deepEqual(h.merges, []);
+    assert.deepEqual(h.judged, []);
+    assert.match(h.comments[0]!.body, /^Waits for a person: `CLAUDE\.md` is on the human-only list[\s\S]*\(test 7\)/);
+  });
+
+  test('a record that cannot be read fails the review: nothing merges and nothing is said', async () => {
+    const h = harness({ tickets: hitl, files, started: 'AccessDeniedException: dynamodb:GetItem' });
+    const result = await review({ kind: 'review', pr: 767 }, h);
+    assert.deepEqual(result.reviews.map((r) => [r.outcome, r.error]), [['failed', 'AccessDeniedException: dynamodb:GetItem']]);
+    assert.deepEqual([h.merges, h.comments], [[], []]);
   });
 });
 

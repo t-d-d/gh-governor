@@ -57,6 +57,7 @@ import { DEPENDABOT, SUMMONERS } from './webhook/fire.mjs';
 import { REVIEW_MARKER, commentKey, commentText, heldPassReason } from './webhook/review-comment.mjs';
 import { checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
 import { bodyDigest, closedBy, closingTickets, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
+import { sessionNamedIn } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /**
@@ -145,14 +146,17 @@ const constraintTexts = async (reader, pull, paths) => {
  * tickets its top lines close, the other open PRs closing any of them, the
  * owners its Verification table and Left for later name, and its prose
  * closings. The quoted files' texts are read only if the checklist asks
- * for them. A number no issue answers to, or one moved to another
- * repository's issue, is a missing ticket.
+ * for them, and so is whether governor started the session the body
+ * names: a body naming none is no session of governor's. A number no
+ * issue answers to, or one moved to another repository's issue, is a
+ * missing ticket.
  *
  * @param {ReviewReader} reader
  * @param {PullRequestRow} pull
+ * @param {(session: string) => Promise<boolean>} started Whether governor started `session`; a read that fails throws.
  * @returns {Promise<Omit<Facts, 'held' | 'rules' | 'red'>>}
  */
-export const readFacts = async (reader, pull) => {
+export const readFacts = async (reader, pull, started) => {
   /** @type {Map<number, Promise<ClosedTicket>>} */
   const reads = new Map();
   // A moved issue's read follows GitHub's redirect to another
@@ -187,6 +191,10 @@ export const readFacts = async (reader, pull) => {
   return {
     pull, files, tickets, others, owners: { verification, later }, prose: proseClosings(pull.body, repo),
     constraintTexts: (paths) => constraintTexts(reader, pull, paths),
+    unattended: async () => {
+      const session = sessionNamedIn(pull.body);
+      return session !== null && started(session);
+    },
   };
 };
 
@@ -219,10 +227,11 @@ const bumpAnswer = async (reader, pull, list, red) => {
  *   review: Omit<import('./repo-config.mjs').Review, 'checklist'>,
  *   labels: import('./checklist.mjs').Rules['labels'],
  *   base: string,
- * }} args
+ *   started: (session: string) => Promise<boolean>,
+ * }} args `started`: whether governor started a session, from its state table.
  * @returns {Promise<Reviewed>}
  */
-export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base }) => {
+export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started }) => {
   /** @type {import('./checklist.mjs').Rules} */
   const rules = { humanOnly: review.humanOnly, tickets: review.tickets, quote: review.quote, decides: review.decides, labels };
   /** @type {Reviewed} */
@@ -257,7 +266,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // changed its labels since. Only the judgement is kept.
     const answer = bump
       ? await bumpAnswer(reader, pull, review.dependabot, checks.red)
-      : await checklist({ ...await readFacts(reader, pull), red: checks.red, held: heldReason, rules }, judge);
+      : await checklist({ ...await readFacts(reader, pull, started), red: checks.red, held: heldReason, rules }, judge);
     reviewed.answer = answer;
 
     let conflict = false;
