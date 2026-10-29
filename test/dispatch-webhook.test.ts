@@ -158,7 +158,7 @@ describe('routeEvent — the selection', () => {
   // session that finished starting two more.
   test('an issue closed is a schedule fire naming it as freed, and nothing wider', () => {
     const decision = route({ event: 'issues', payload: issuesEvent('closed'), owners: OWNERS });
-    assert.deepEqual(decision.fire, { kind: 'schedule', freed: 717, repo: REPO });
+    assert.deepEqual(decision.fire, { kind: 'schedule', freed: 717, counted: 'issuesClosed', repo: REPO });
     assert.match(decision.reason, /#717 closed/);
     const numberless = route({ event: 'issues', payload: issuesEvent('closed', { issue: { title: 'No number' } }), owners: OWNERS });
     assert.equal(numberless.fire, undefined, 'a close naming no issue must not fall back to the whole selection');
@@ -167,7 +167,6 @@ describe('routeEvent — the selection', () => {
   test('any other label, action or event starts nothing', () => {
     for (const [event, payload] of [
       ['issues', issuesEvent('labeled', { label: { name: 'type: bug' } })],
-      ['issues', issuesEvent('opened')],
       ['issues', issuesEvent('reopened')],
       ['issue_comment', commentEvent({}, { body: 'no mention here' })],
       ['push', { ref: 'refs/heads/main', repository: { full_name: REPO } }],
@@ -183,6 +182,62 @@ describe('routeEvent — the selection', () => {
     const decision = route({ event: 'issues', payload, owners: OWNERS });
     assert.equal(decision.fire, undefined);
     assert.match(decision.reason, /someone\/else/);
+  });
+});
+
+/**
+ * The events a periodic counts (dispatch/periodics.mjs): a merge into the
+ * default branch, an issue opened, an issue closed. The receiver reads no
+ * config file, so it marks the event on a fire for any listed repo, and
+ * the turn checks the repo's periodics. Where the event already queues a
+ * turn, the mark rides it; only an event that queues none gets a fire of
+ * its own.
+ */
+describe('routeEvent — what a periodic counts', () => {
+  const SHA = '3333333333333333333333333333333333333333';
+  const counted = (event: string, payload: unknown) => routeEvent({ event, payload, owners: OWNERS, selectLabels: SELECT_LABELS }).fires
+    .filter((f) => (f.fire as { counted?: string }).counted !== undefined)
+    .map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted, f.key]);
+  const mergedPr = (over: Record<string, unknown> = {}) => ({
+    action: 'closed',
+    pull_request: { ...pullRequest, body: 'No session named.', merged: true, merge_commit_sha: SHA, base: { ref: 'main' }, ...over },
+    sender: member,
+    repository: { full_name: REPO, default_branch: 'main' },
+  });
+
+  test('a merge into the default branch rides its conflicts fire, and one with no merge commit named gets a fire of its own', () => {
+    assert.deepEqual(counted('pull_request', mergedPr()), [['conflicts', 'merges', 'conflicts']]);
+    assert.deepEqual(counted('pull_request', mergedPr({ merge_commit_sha: null })), [['periodics', 'merges', 'periodics']]);
+  });
+
+  test('a merge into another branch, or a close unmerged, counts nothing', () => {
+    assert.deepEqual(counted('pull_request', mergedPr({ base: { ref: 'claude/stacked' } })), []);
+    assert.deepEqual(counted('pull_request', mergedPr({ merged: false })), []);
+  });
+
+  test('an issue closed rides the fire that frees what it blocked', () => {
+    assert.deepEqual(counted('issues', issuesEvent('closed')), [['schedule', 'issuesClosed', undefined]]);
+  });
+
+  test('an issue opened, which queues nothing today, gets a fire of its own', () => {
+    const { fires } = routeEvent({ event: 'issues', payload: issuesEvent('opened'), owners: OWNERS });
+    assert.deepEqual(fires.map((f) => [f.fire, f.key]), [[{ kind: 'periodics', counted: 'issuesOpened', repo: REPO }, 'periodics']]);
+  });
+
+  test('an issue opened summoning a session rides the summons', () => {
+    const payload = issuesEvent('opened', { issue: { ...issuesEvent('opened').issue, body: '@claude what does the retry budget do?' } });
+    const { fires } = routeEvent({ event: 'issues', payload, owners: OWNERS });
+    assert.deepEqual(fires.map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted]), [['dispatch', 'issuesOpened']]);
+  });
+
+  test('a PR opened, an issue reopened or labelled counts nothing', () => {
+    assert.deepEqual(counted('pull_request', { action: 'opened', pull_request: { ...pullRequest, body: 'x', head: { ...pullRequest.head, sha: SHA } }, sender: member, repository: { full_name: REPO, default_branch: 'main' } }), []);
+    assert.deepEqual(counted('issues', issuesEvent('reopened')), []);
+    assert.deepEqual(counted('issues', issuesEvent('labeled', { label: { name: 'workflow: ready for development' } })), []);
+  });
+
+  test('a delivery for an unlisted owner counts nothing', () => {
+    assert.deepEqual(counted('issues', issuesEvent('opened', { repository: { full_name: 'someone/else' } })), []);
   });
 });
 
@@ -404,9 +459,9 @@ describe('routeEvent — a mention', () => {
   // nobody, as a footer would have said.
   test('an issue a session opened, its footer stripped to its link on the last line, summons nothing by naming @claude', () => {
     const body = 'A comment mentioning @claude on a PR a session owns should message the owner.\nhttps://claude.ai/code/session_01FILERBBB';
-    const decision = route({ event: 'issues', payload: issuesEvent('opened', { issue: { ...issuesEvent('opened').issue, body } }), owners: OWNERS });
-    assert.equal(decision.fire, undefined);
-    assert.match(String(decision.reason), /a session cannot summon another/);
+    const { fires, reason } = routeEvent({ event: 'issues', payload: issuesEvent('opened', { issue: { ...issuesEvent('opened').issue, body } }), owners: OWNERS });
+    assert.deepEqual(fires.map((f) => f.fire.kind), ['periodics'], 'counted, and no summons');
+    assert.match(reason, /a session cannot summon another/);
     const comment = route({ event: 'issue_comment', payload: commentEvent({}, { body: '@claude this one stalled:\nhttps://claude.ai/code/session_01FILERBBB' }), owners: OWNERS });
     assert.equal(comment.fire?.kind, 'dispatch', 'a person\'s comment ending in a session link is still a summons');
   });
@@ -416,7 +471,7 @@ describe('routeEvent — a mention', () => {
     const fires = [
       route({ event: 'issues', payload: issuesEvent('opened', { issue }), owners: OWNERS }),
       route({ event: 'issues', payload: issuesEvent('assigned', { issue, assignee: { login: 'claude' } }), owners: OWNERS }),
-    ].filter((d) => d.fire);
+    ].filter((d) => d.fire?.kind === 'dispatch');
     assert.equal(fires.length, 1);
   });
 
@@ -759,7 +814,7 @@ describe('routeEvent — subscribers', () => {
     });
     const { all } = messages('pull_request', mergedInto('main'));
     const checks = all.filter((f) => f.fire.kind === 'conflicts');
-    assert.deepEqual(checks.map((f) => [f.fire, f.key]), [[{ kind: 'conflicts', pr: 724, sha: '3333333333333333333333333333333333333333', base: 'main', repo: REPO }, 'conflicts']]);
+    assert.deepEqual(checks.map((f) => [f.fire, f.key]), [[{ kind: 'conflicts', pr: 724, sha: '3333333333333333333333333333333333333333', base: 'main', counted: 'merges', repo: REPO }, 'conflicts']]);
     for (const payload of [
       mergedInto('claude/stacked'),
       mergedInto('main', { merge_commit_sha: null }),
@@ -894,7 +949,7 @@ describe('routeEvent — subscribers', () => {
     assert.equal(ready.all[0]!.key, undefined, 'the schedule fire keys on the delivery alone, as before');
     assert.deepEqual(ready.sent.map((m) => m.event), ['labels']);
     const closed = messages('issues', { action: 'closed', issue: { ...issue(), state_reason: 'completed' }, sender: member, repository: { full_name: REPO } });
-    assert.deepEqual(closed.all[0]!.fire, { kind: 'schedule', freed: 717, repo: REPO });
+    assert.deepEqual(closed.all[0]!.fire, { kind: 'schedule', freed: 717, counted: 'issuesClosed', repo: REPO });
     assert.deepEqual(closed.sent.map((m) => [m.session, m.event, m.closing]), [[FILER, 'close', true]]);
     assert.match(closed.sent[0]!.text, /closed/);
   });
@@ -1255,7 +1310,7 @@ describe('handle', () => {
     const response = await handle(delivery('issues', issuesEvent('closed')), deps);
     assert.equal(response.statusCode, 202);
     assert.equal(queued.length, 1);
-    assert.deepEqual(queued[0]!.message.fire, { kind: 'schedule', freed: 717, repo: REPO });
+    assert.deepEqual(queued[0]!.message.fire, { kind: 'schedule', freed: 717, counted: 'issuesClosed', repo: REPO });
     assert.equal(queued[0]!.dedupId, 'd-1');
   });
 
@@ -1344,7 +1399,7 @@ describe('handle', () => {
 
   test('an event that routes nowhere is acknowledged and queues nothing', async () => {
     const { deps, queued } = harness();
-    const response = await handle(delivery('issues', issuesEvent('opened')), deps);
+    const response = await handle(delivery('issues', issuesEvent('reopened')), deps);
     assert.equal(response.statusCode, 200);
     assert.deepEqual(queued, []);
   });
@@ -1583,7 +1638,7 @@ describe('routeEvent — every served repo', () => {
 
   test('a close frees what the issue blocked, in its own repo', () => {
     const decision = firesOf('issues', issuesEvent('closed'));
-    assert.deepEqual(decision.fires.map((f) => f.fire), [{ kind: 'schedule', freed: 717, repo: ASKME }]);
+    assert.deepEqual(decision.fires.map((f) => f.fire), [{ kind: 'schedule', freed: 717, counted: 'issuesClosed', repo: ASKME }]);
   });
 
   const run = (over: Record<string, unknown>) => ({

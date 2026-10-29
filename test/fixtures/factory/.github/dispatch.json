@@ -40,6 +40,16 @@
       "name": "Ticket review",
       "prompt": "Review the open tickets labelled ready for development. Fix any whose spec the code has overtaken.",
       "days": 3
+    },
+    {
+      "name": "Code review",
+      "prompt": "Review the pull requests merged since the last review, and the issues closed. Raise an issue for each defect or drift worth fixing.",
+      "days": 7,
+      "counts": {
+        "merges": 20,
+        "issuesClosed": 10
+      },
+      "gapHours": 4
     }
   ],
   "workflows": {

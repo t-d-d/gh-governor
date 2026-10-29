@@ -42,6 +42,10 @@
  * event when that merge leaves another PR conflicted, so the task reads every
  * open PR's mergeable state and tells the conflicted ones' sessions
  * (dispatch/conflicts.mjs).
+ * A merge into the default branch, an issue opened and an issue closed are
+ * also counted for the repo's periodics: the fire the event queues carries
+ * it as `counted`, and an issue opened that queues none queues a
+ * `periodics` fire of its own ({@link counting}).
  * An issue closed queues a `schedule` fire naming it as `freed`, which the
  * task narrows to the issues it directly blocked, each dispatched if the
  * selection would. A close once ran the whole selection, cap included, and
@@ -359,10 +363,29 @@ const finishedRunReviews = (payload, main) => {
 };
 
 /**
+ * An event a periodic counts (dispatch/periodics.mjs): `counted` marked on
+ * the delivery's fire of the `carrier` kind, so the check rides the turn
+ * the event already queues, or a `periodics` fire of its own where it
+ * queues none. The receiver reads no config file, so it marks the event in
+ * every listed repo; the turn checks the repo's periodics under their own
+ * switch, whatever switch the carrying turn needs.
+ *
+ * @param {Decision} decision
+ * @param {import('./fire.mjs').Count} counted
+ * @param {Fire['kind']} carrier
+ * @returns {Decision}
+ */
+const counting = (decision, counted, carrier) => {
+  const at = decision.fires.findIndex((queued) => queued.fire.kind === carrier);
+  if (at === -1) return both(decision, one({ fire: build.periodics({ counted }), reason: `count it for the repo's periodics (${counted})`, key: 'periodics' }));
+  return { ...decision, fires: decision.fires.map((queued, i) => (i === at ? { ...queued, fire: { ...queued.fire, counted } } : queued)) };
+};
+
+/**
  * A PR merged into the default branch `main`: a `conflicts` fire naming
  * it, its merge commit and the branch, so every open PR the merge left
- * conflicted is told. Keyed apart from the subscribers' fires on the same
- * delivery.
+ * conflicted is told, carrying the merge for the periodics' count. Keyed
+ * apart from the subscribers' fires on the same delivery.
  *
  * @param {any} payload
  * @param {string} main The repo's default branch.
@@ -374,9 +397,9 @@ const mergedFire = (payload, main) => {
   if (pr?.base?.ref !== main) return nothing(`#${pr?.number} merged into ${pr?.base?.ref}, not ${main}: ${main} did not move`);
   const sha = pr?.merge_commit_sha;
   if (!Number.isInteger(pr?.number) || pr.number <= 0 || !isCommit(sha)) {
-    return nothing(`#${pr?.number} merged with no merge commit named: no conflict check`);
+    return counting(nothing(`#${pr?.number} merged with no merge commit named: no conflict check`), 'merges', 'conflicts');
   }
-  return one({ fire: build.conflicts({ pr: pr.number, sha, base: main }), reason: `#${pr.number} merged into ${main}: check the open PRs for conflicts`, key: 'conflicts' });
+  return counting(one({ fire: build.conflicts({ pr: pr.number, sha, base: main }), reason: `#${pr.number} merged into ${main}: check the open PRs for conflicts`, key: 'conflicts' }), 'merges', 'conflicts');
 };
 
 /**
@@ -438,14 +461,17 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
         ? one({ fire: build.schedule({ issue: number, label }), reason: `issue #${number} labelled ${label}: the turn checks it against the repo's ready labels` })
         : null;
     } else if (action === 'closed') {
+      // The close is counted on the fire that frees what it blocked.
       selection = typeof number === 'number'
-        ? one({ fire: build.schedule({ freed: number }), reason: `issue #${number} closed: dispatch what it freed` })
+        ? counting(one({ fire: build.schedule({ freed: number }), reason: `issue #${number} closed: dispatch what it freed` }), 'issuesClosed', 'schedule')
         : nothing('issue closed with no number: nothing to free');
     }
     // The selection's fire, where there is one, beside each subscriber's.
     if (selection !== null) return both(selection, issueEventFires(payload));
     if (action === 'labeled' || action === 'unlabeled' || action === 'reopened') return issueEventFires(payload);
-    return mentionFires({ event, payload, appId }) ?? nothing(`issues ${action}: nothing to select from`);
+    const mentioned = mentionFires({ event, payload, appId }) ?? nothing(`issues ${action}: nothing to select from`);
+    // An issue opened is counted on its summons, or on a fire of its own.
+    return action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened', 'dispatch') : mentioned;
   }
   if (event === 'pull_request') {
     const reviewed = both(pullRequestFires(payload), reviewFire(payload));

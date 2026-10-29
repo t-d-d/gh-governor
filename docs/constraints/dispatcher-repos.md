@@ -42,6 +42,12 @@ spends the one claude.ai login.
   and periodics (`GENERIC_SWITCHES`). What CI and a deploy are in a repo is
   dispatcher-workflows.md's, and the review's settings dispatcher-review.md's.
   The schema accepts no switch by repo.
+- A fire that counts an event for the periodics (`counted`: a merge into the
+  default branch, an issue opened or closed) has the repo's periodics
+  checked after its own work, under the periodics switch, whatever its own
+  kind's switch says. The check is the periodics switch's work, not the
+  carrying fire's, as the sign-off sweep runs on every turn. An event that
+  queues no other fire queues a `periodics` fire of its own.
 - A file turning the heartbeat on carries `heartbeat: { issue, marker }`, or
   is a schema fault. Only the bare schedule fire writes it, after a sweep in
   which not every claim or launch failed, and only into a body already
@@ -126,4 +132,4 @@ spends the one claude.ai login.
   then hold or redirect a dispatch.
 
 Judgment: that a new per-repo table record keys on its repo, and that a config file holds no secret, no check sees: a key is a string no schema reads, and a secret has no shape the schema can refuse.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17.
