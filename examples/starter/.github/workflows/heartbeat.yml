@@ -1,0 +1,21 @@
+# Checks governor's heartbeat issue every hour, and keeps an issue open for
+# pickup or any periodic that has stopped firing. The checker runs here, on
+# this repo's own token, pinned to a commit of gh-governor. To move to a
+# newer checker, change the commit after `@`.
+name: heartbeat
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    uses: t-d-d/gh-governor/.github/workflows/heartbeat-check.yml@9b376ad3ca40f5f8c2c7465fc125401cd4e29f4e
+    with:
+      tolerance-hours: 3
+      labels: heartbeat

@@ -46,6 +46,23 @@ The smallest useful file:
 }
 ```
 
+### The starter kit
+
+[examples/starter/](examples/starter/) is a starter kit a new repo copies into its own `.github/`, so it gets recurring work from day one. It holds two files:
+
+- `.github/dispatch.json` turns on pickup, summons, PR messages, subscriptions, the heartbeat and three periodics: a code review every 10 merges into the default branch, a ticket review every 5 issues opened, each also weekly when its count has counted anything, and a weekly review on its day limit alone. Each prompt is plain text that needs no skill, and acts on the window governor writes under it: the last fire's time, and what each count counted since. A repo can swap any prompt for one that calls its own skill.
+- `.github/workflows/heartbeat.yml` calls [the heartbeat checker](#the-heartbeat-checker) every hour, pinned to a commit of this repo.
+
+To use it:
+
+1. Create the heartbeat issue. Its body must carry governor's marker, `<!-- governor:heartbeat -->`, or governor writes nothing into it. Put the marker on a line of its own: governor writes its block after it. Anything else in the body stays yours.
+2. Copy both files into the repo's `.github/`.
+3. In `dispatch.json`, set `environment` to the repo's cloud environment, by name, in place of the `my-env` placeholder. Set `heartbeat.issue` to the issue's number, and the labels to the repo's own.
+4. Keep, edit or drop the periodics, and set the checker's labels in `heartbeat.yml`.
+5. Commit both to the default branch.
+
+Governor writes pickup's line after its next sweep. A periodic's line appears when it first fires, one day limit or one count after governor first reads it. Until then the checker measures from when `dispatch.json` last changed.
+
 ### The schema
 
 The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.mjs). An unknown key anywhere is a fault.
