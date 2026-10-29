@@ -29,7 +29,7 @@ import { UNATTENDED, dispatchMarker, parseFire } from '../dispatch/webhook/fire.
 import { WORKFLOW_PATHS, headMerge, workflowFile, workflowFile as workflowFixture } from './helpers/dispatch-workflows.ts';
 import { SIGN_OFF, SIGNOFF_LATEST_START_MS, SIGNOFF_PAGES, SIGNOFF_REPLY_POLL_MS, SIGNOFF_REPLY_WAIT_MS, SIGNOFF_WINDOW_MS, ARCHIVE_TIMEOUT_MS } from '../scripts/lib/session-signoff.mjs';
 import { LOGIN_EXPIRY_WARNING_MS, storedLogin } from '../scripts/lib/claude-login.mjs';
-import { readLastRun } from '../dispatch/heartbeat.mjs';
+import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, readLastRun } from '../dispatch/heartbeat.mjs';
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 
@@ -4587,6 +4587,188 @@ describe('fitness: the heartbeat writes only the issue the repo names, on the sc
     assert.equal(unwritten.level, 'error');
     assert.equal(unwritten.repo, REPO);
     assert.equal(unwritten.issue, BEAT.issue);
+  });
+});
+
+/**
+ * The heartbeat in the `{ issue }` shape (dispatch/heartbeat.mjs): governor
+ * keeps its own block under `<!-- governor:heartbeat -->`, one line for
+ * pickup and one per periodic. A line's fire time changes only on the fire
+ * that line reports: pickup's on the bare schedule fire's sweep, a
+ * periodic's on its own fire, whichever turn makes it. The sign-off sweep,
+ * on any turn, marks a periodic's session signed off and never moves the
+ * fire time. Nothing outside the block changes.
+ */
+describe('fitness: every fire is recorded on the governor heartbeat, and only by the fire it reports (dispatcher-repos.md)', () => {
+  const FACTORY_PERIODICS = JSON.parse(FACTORY_FILE).periodics as Array<{ name: string; days: number }>;
+  const RETRO = FACTORY_PERIODICS.find((p) => p.name === 'Weekly retro')!;
+  const REVIEW = FACTORY_PERIODICS.find((p) => p.name === 'Ticket review')!;
+  const CODE = FACTORY_PERIODICS.find((p) => p.name === 'Code review')!;
+  const DAY = 24 * 60 * 60 * 1000;
+  const HOUR = 60 * 60 * 1000;
+  const ago = (ms: number) => new Date(NOW - ms).toISOString();
+  const AT = new Date(NOW).toISOString();
+  const EARLIER = '2026-09-20T08:00:00.000Z';
+  const OLD = 'https://claude.ai/code/session_01OLD';
+  const NEW = 'https://claude.ai/code/session_01ABC';
+  const key = (name: string) => `${REPO}#${name}`;
+  const fired = (ms: number) => ({ at: ago(ms), session: OLD, baseline: false });
+  const BEFORE = 'The operator\'s words.\n\n';
+  const AFTER = '\n\nKeep this issue open.\n';
+  const BODY = `${BEFORE}${HEARTBEAT_MARKER}${AFTER}`;
+  const FILE = JSON.stringify({ ...JSON.parse(FACTORY_FILE), heartbeat: { issue: BEAT.issue } });
+  const SHA = 'c'.repeat(40);
+  const MERGE = { kind: 'conflicts', pr: 793, sha: SHA, base: 'main', counted: 'merges' };
+  const merged = (n: number) => Array.from({ length: n }, (_, i) => ({ number: 800 + i, title: `Merge ${i}`, at: ago(HOUR - i) }));
+
+  /** The factory in the `{ issue }` shape, its heartbeat issue's body kept across turns; every write. */
+  const beating = ({ body = BODY, merges = [] as unknown[], file = FILE, ...over }: { body?: string; merges?: unknown[]; file?: string; [key: string]: unknown } = {}) => {
+    const issue = { body };
+    const writes: string[] = [];
+    const base = harness();
+    const h = harness({
+      configFile: async (repo: string) => (repo === REPO ? file : null),
+      reader: (token: string) => ({
+        ...base.deps.reader(token),
+        openPulls: async () => [],
+        branchHead: async () => SHA,
+        mergedSince: async () => merges,
+        issue: async (n: number) => (n === BEAT.issue ? { number: n, body: issue.body, pull: false } : { number: n, body: 'someone\'s ticket', pull: false }),
+        updateIssue: async (n: number, { body: next }: { body: string }) => {
+          assert.equal(n, BEAT.issue, 'only the heartbeat issue is written');
+          issue.body = next;
+          writes.push(next);
+        },
+      }),
+      sleep: async () => {},
+      ...over,
+    });
+    // Every periodic inside its day limit unless a test says otherwise.
+    for (const p of FACTORY_PERIODICS) h.periodics.set(key(p.name), fired(HOUR));
+    return { ...h, writes, issue, read: () => readHeartbeat(issue.body), line: (name: string) => readHeartbeat(issue.body).periodics.find((l) => l.name === name) };
+  };
+
+  test('the bare schedule fire writes pickup\'s line: the sweep\'s time and the sessions it started, and no last-run line', async () => {
+    const h = beating();
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.equal(result.heartbeat, true);
+    assert.deepEqual(h.read(), { pickup: { at: AT, started: 2 }, periodics: [] });
+    assert.ok(!h.issue.body.includes('last-run:'));
+    assert.ok(h.issue.body.startsWith(`${BEFORE}${HEARTBEAT_MARKER}\n`), 'nothing before the block changes');
+    assert.ok(h.issue.body.endsWith(`${HEARTBEAT_END}${AFTER}`), 'nothing after the block changes');
+  });
+
+  test('a periodic\'s fire writes its line: the fire\'s time, its day limit or the count that reached its number, the session, open', async () => {
+    const h = beating({ merges: merged(20) });
+    h.periodics.set(key(RETRO.name), fired(7 * DAY));
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: AT, by: { days: 7 }, session: NEW, state: 'open' });
+    assert.deepEqual(h.line(CODE.name), { name: CODE.name, at: AT, by: { count: 'merges', number: 20 }, session: NEW, state: 'open' });
+    assert.equal(h.line(REVIEW.name), undefined, 'a periodic that did not fire gets no line');
+    assert.deepEqual(h.read().pickup, { at: AT, started: 2 }, 'pickup counts tickets, not periodics');
+  });
+
+  test('an unconfirmed launch records the fire with no session', async () => {
+    const h = beating({ launch: async () => ({ status: 3, output: 'timed out' }) });
+    h.periodics.set(key(RETRO.name), fired(7 * DAY));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: AT, by: { days: 7 }, session: null, state: 'open' });
+  });
+
+  test('a held fire says so, naming the open session, and leaves the fire time at the open run\'s start', async () => {
+    const base = harness().deps.sessions;
+    const sessions = { ...base, get: async (id: string, token: string) => (id === 'cse_01OLD' ? { id, session_status: 'SESSION_STATUS_IDLE' } : base.get(id, token)) };
+    const body = `${BEFORE}${HEARTBEAT_MARKER}\n- periodic "${RETRO.name}": last fire ${ago(7 * DAY)}, by its day limit of 7 days, session ${OLD}, open\n${HEARTBEAT_END}${AFTER}`;
+    const h = beating({ body, sessions });
+    h.periodics.set(key(RETRO.name), fired(7 * DAY));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: ago(7 * DAY), by: { days: 7 }, session: OLD, state: 'held' });
+  });
+
+  test('a day limit on empty windows records nothing to do, at the fire\'s time, with no session', async () => {
+    const h = beating();
+    h.periodics.set(key(CODE.name), fired(8 * DAY));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.line(CODE.name), { name: CODE.name, at: AT, by: { days: 7 }, session: null, state: 'nothing to do' });
+  });
+
+  test('a fire whose launches all failed leaves every line where it was', async () => {
+    const body = `${BEFORE}${HEARTBEAT_MARKER}\n- pickup: last sweep ${EARLIER}, started 1 session\n- periodic "${RETRO.name}": last fire ${EARLIER}, by its day limit of 7 days, session ${OLD}, signed off\n${HEARTBEAT_END}${AFTER}`;
+    const h = beating({ body, launch: async () => ({ status: 1, output: 'claude died' }) });
+    h.periodics.set(key(RETRO.name), fired(7 * DAY));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.issue.body, body);
+  });
+
+  test('a merge that brings a periodic due writes its line, and never pickup\'s', async () => {
+    const body = `${BEFORE}${HEARTBEAT_MARKER}\n- pickup: last sweep ${EARLIER}, started 1 session\n${HEARTBEAT_END}${AFTER}`;
+    const h = beating({ body, merges: merged(20) });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await run(MERGE, h.deps as never);
+    assert.deepEqual(h.read(), { pickup: { at: EARLIER, started: 1 }, periodics: [{ name: CODE.name, at: AT, by: { count: 'merges', number: 20 }, session: NEW, state: 'open' }] });
+  });
+
+  for (const fire of [{ kind: 'schedule', issue: 7 }, { kind: 'schedule', freed: 5 }, MERGE, { kind: 'message', session: 'session_01ABC', text: 'A comment.' }]) {
+    test(`${JSON.stringify(fire)} with no periodic fire and no sign-off writes nothing`, async () => {
+      const h = beating();
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.writes, []);
+    });
+  }
+
+  test('the sign-off sweep, on any turn, marks a periodic\'s session signed off and never moves its fire time', async () => {
+    const body = `${BEFORE}${HEARTBEAT_MARKER}\n- pickup: last sweep ${EARLIER}, started 1 session\n- periodic "${CODE.name}": last fire ${EARLIER}, by 20 merges, session https://claude.ai/code/session_01DONE, open\n${HEARTBEAT_END}${AFTER}`;
+    const h = beating({ body });
+    h.rows.push(sessionRow('cse_01DONE'));
+    h.pages.set('cse_01DONE', cloudSignedOff);
+    await run({ kind: 'message', session: 'session_01ABC', text: 'A comment.' }, h.deps as never);
+    assert.deepEqual(h.archives.map((a) => a.session), ['session_01DONE']);
+    assert.deepEqual(h.read(), { pickup: { at: EARLIER, started: 1 }, periodics: [{ name: CODE.name, at: EARLIER, by: { count: 'merges', number: 20 }, session: 'https://claude.ai/code/session_01DONE', state: 'signed off' }] });
+  });
+
+  test('a sign-off of a session no line names writes nothing', async () => {
+    const h = beating();
+    h.rows.push(sessionRow('cse_01DONE'));
+    h.pages.set('cse_01DONE', cloudSignedOff);
+    await run({ kind: 'message', session: 'session_01ABC', text: 'A comment.' }, h.deps as never);
+    assert.deepEqual(h.archives.map((a) => a.session), ['session_01DONE']);
+    assert.deepEqual(h.writes, []);
+  });
+
+  test('a body without governor\'s marker gets no write, and an error naming the repo and issue', async () => {
+    const h = beating({ body: `${BEAT.marker}\nlast-run: ${EARLIER}\n` });
+    const result = await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.writes, []);
+    const refused = h.logged.find((l) => l.event === 'dispatch-heartbeat-refused');
+    assert.ok(refused, JSON.stringify(h.logged));
+    assert.equal(refused.level, 'error');
+    assert.equal(refused.repo, REPO);
+    assert.equal(refused.issue, BEAT.issue);
+    assert.equal(exitCodeFor(result as never), 0, 'as today: the repo\'s own check reports the lapse');
+  });
+
+  test('a write that fails fails the turn, on an error naming the repo and issue', async () => {
+    const h = beating({ merges: merged(20) });
+    const failing = h.deps.reader;
+    h.deps.reader = ((...args: Parameters<typeof failing>) => ({ ...failing(...args), updateIssue: async () => { throw new Error('PATCH issues/412: 502'); } })) as typeof failing;
+    h.periodics.set(key(CODE.name), fired(DAY));
+    const result = await run(MERGE, h.deps as never);
+    const unwritten = h.logged.find((l) => l.event === 'dispatch-heartbeat-unwritten');
+    assert.ok(unwritten, JSON.stringify(h.logged));
+    assert.equal(unwritten.level, 'error');
+    assert.equal(unwritten.repo, REPO);
+    assert.equal(unwritten.issue, BEAT.issue);
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  test('a repo whose file turns the heartbeat off gets no line', async () => {
+    const file = JSON.parse(FILE);
+    file.features.heartbeat = false;
+    const h = beating({ file: JSON.stringify(file) });
+    h.periodics.set(key(RETRO.name), fired(7 * DAY));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.writes, []);
   });
 });
 

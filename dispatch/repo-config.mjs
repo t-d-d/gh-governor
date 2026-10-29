@@ -9,7 +9,7 @@
  * names the repo's CI workflow, its triage targets and the tag
  * each target's deploy moves (`workflows`), and holds the PR
  * review's checklist and lists (`review`), names the issue
- * the schedule fire writes its heartbeat into (`heartbeat`), and lists the
+ * governor records its fires on (`heartbeat`, dispatch/heartbeat.mjs), and lists the
  * recurring sessions the schedule fire starts (`periodics`, dispatch/periodics.mjs).
  * Every feature is a switch, off unless the file turns it on, and a turn
  * refuses a fire kind its repo's file does not turn on ({@link switchOf}).
@@ -149,13 +149,16 @@ export const NO_WORKFLOWS = Object.freeze({ triage: [], tags: {} });
 export const isCi = (run, workflows) => workflows.ci !== undefined && run.path === workflows.ci;
 
 /**
- * The issue the bare schedule fire stamps `last-run` into, and the marker its
- * body must already carry for the write to go: a wrong number
- * then refuses the write rather than overwrite someone's ticket.
+ * The issue governor records its fires on (dispatch/heartbeat.mjs). With a
+ * `marker`, the bare schedule fire stamps `last-run` under it; without one,
+ * governor keeps a line for pickup and one per periodic under its own
+ * `<!-- governor:heartbeat -->`. Either marker the body must already carry
+ * for a write to go: a wrong number then refuses the write rather than
+ * overwrite someone's ticket.
  */
 const heartbeatSchema = z.strictObject({
   issue: z.number().int().positive(),
-  marker: z.string().trim().regex(/^<!--[^\n]*-->$/, 'an HTML comment on one line, `<!-- … -->`'),
+  marker: z.string().trim().regex(/^<!--[^\n]*-->$/, 'an HTML comment on one line, `<!-- … -->`').optional(),
 });
 
 /**
@@ -202,7 +205,7 @@ export const configSchema = z.strictObject({
       }
     }),
 }).refine((c) => c.features.prReview !== true || c.review !== undefined, { message: 'prReview is on, so the file needs a review section with its checklist', path: ['review'] })
-  .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue and marker', path: ['heartbeat'] })
+  .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue', path: ['heartbeat'] })
   .refine((c) => c.features.periodics !== true || c.periodics.length > 0, { message: 'periodics is on, so the file lists at least one periodic', path: ['periodics'] });
 
 /**
@@ -221,7 +224,7 @@ export const configSchema = z.strictObject({
  *   merge: boolean,
  * }} Review The PR review's settings, its checklist read.
  * @typedef {{ file: string }} PromptFile
- * @typedef {{ issue: number, marker: string }} Heartbeat
+ * @typedef {{ issue: number, marker?: string }} Heartbeat
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number }} Periodic A recurring session, its prompt read.
  * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, periodics: Periodic[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
@@ -230,7 +233,8 @@ export const configSchema = z.strictObject({
  *   `prompts`: the repo's instruction for each message kind it replaces.
  *   `workflows`: what the repo's workflows are to the dispatcher.
  *   `review`: the PR review's settings, where the file has them.
- *   `heartbeat`: the issue the schedule fire's heartbeat goes into, and its marker.
+ *   `heartbeat`: the issue governor's heartbeat goes into, and the repo's
+ *   marker in the old shape.
  *   `periodics`: the recurring sessions the schedule fire starts.
  * @typedef {Omit<RepoConfig, 'prompts' | 'review' | 'periodics'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile }, periodics: Array<Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }> }} FileConfig
  *   The file as read, before {@link resolveFiles} reads the prompt files it names.

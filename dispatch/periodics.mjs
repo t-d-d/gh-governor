@@ -96,7 +96,9 @@ export const LISTED_MAX = 100;
  *   Whether the session a record names (its URL) is still open: not archived,
  *   and still there. A read that fails throws.
  * @typedef {Partial<Record<Count, Counted[]>>} Windows
- * @typedef {{ periodic: import('./repo-config.mjs').Periodic, read: PeriodicRecord, due: number, windows?: Windows, asOf?: string }} Due
+ * @typedef {{ periodic: import('./repo-config.mjs').Periodic, read: PeriodicRecord, due: number, by: import('./heartbeat.mjs').Limit, windows?: Windows, asOf?: string }} Due
+ *   `by`: the limit that brought it due, its day limit or the first count
+ *   that reached its number.
  *   `windows`: what each of its counts counted, for one that has counts.
  *   `asOf`: then the time the windows were read from, which its fire
  *   records in place of the launch's, so whatever lands between the read and
@@ -221,7 +223,9 @@ const inGap = (periodic, read, now) => {
  * `event` are read, and only against that count, so the event's turn starts
  * nothing the sweep would not; the rest of its counts are read for the
  * prompt once it is due. A due periodic whose last run is still `open` is
- * held, and is not due.
+ * held, and is not due. A held fire and a nothing-to-do come back as the
+ * heartbeat lines they change (dispatch/heartbeat.mjs): a held one keeps
+ * the open run's start and names its session.
  *
  * @param {{
  *   repo: string,
@@ -233,11 +237,13 @@ const inGap = (periodic, read, now) => {
  *   open?: Open,
  *   event?: Count,
  * }} args
- * @returns {Promise<{ due: Due[], unread: Array<{ repo: string, error: string }> }>}
+ * @returns {Promise<{ due: Due[], unread: Array<{ repo: string, error: string }>, beats: import('./heartbeat.mjs').PeriodicChange[] }>}
  */
 export const duePeriodics = async ({ repo, periodics, state, now, log, window = noWindow, open = noOpen, event }) => {
   /** @type {Due[]} */
   const due = [];
+  /** @type {import('./heartbeat.mjs').PeriodicChange[]} */
+  const beats = [];
   /** @type {Array<{ repo: string, error: string }>} */
   const unread = [];
   /** @param {string} name @param {unknown} error @param {string} reason */
@@ -262,6 +268,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       return true;
     }
     log('dispatch-periodic', { repo, periodic: name, outcome: 'held', session: read.session, at: read.at, reason: 'its last run\'s session is still open' });
+    beats.push({ name, at: read.at, session: read.session, state: 'held' });
     return true;
   };
   for (const periodic of periodics) {
@@ -296,15 +303,18 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     const limit = at + days * DAY_MS;
     const dayDue = event === undefined && now - at >= days * DAY_MS - SWEEP_GRACE_MS;
     if (counts.length === 0) {
-      if (dayDue && !(await held(name, read))) due.push({ periodic, read, due: limit });
+      if (dayDue && !(await held(name, read))) due.push({ periodic, read, due: limit, by: { days } });
       continue;
     }
     /** @type {Windows} */
     const windows = {};
     let reached = false;
+    /** @type {[Count, number] | undefined} */
+    let by;
     try {
       for (const [kind] of counts.filter(([kind]) => event === undefined || kind === event)) windows[kind] = await window(kind, read.at);
       reached = counts.some(([kind, n]) => (windows[kind]?.length ?? 0) >= n);
+      by = counts.find(([kind, n]) => (windows[kind]?.length ?? 0) >= n);
       if (!reached && !dayDue) continue;
       for (const [kind] of counts) windows[kind] ??= await window(kind, read.at);
     } catch (error) {
@@ -322,6 +332,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       try {
         const written = await state.recordPeriodic(repo, name, read, record);
         log('dispatch-periodic', { repo, periodic: name, outcome: written ? 'nothing to do' : 'nothing to do, and its record moved since the read', at: record.at });
+        if (written) beats.push({ name, at: record.at, by: { days }, session: null, state: 'nothing to do' });
       } catch (error) {
         const message = messageOf(error);
         log('dispatch-periodic-unrecorded', { level: 'error', repo, periodic: name, error: message, reason: 'its nothing-to-do could not be written, so the next fire reads its windows again' });
@@ -329,9 +340,9 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       }
       continue;
     }
-    due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, windows, asOf: new Date(now).toISOString() });
+    due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, by: by === undefined ? { days } : { count: by[0], number: by[1] }, windows, asOf: new Date(now).toISOString() });
   }
-  return { due, unread };
+  return { due, unread, beats };
 };
 
 /** @type {Open} */

@@ -48,13 +48,25 @@ spends the one claude.ai login.
   kind's switch says. The check is the periodics switch's work, not the
   carrying fire's, as the sign-off sweep runs on every turn. An event that
   queues no other fire queues a `periodics` fire of its own.
-- A file turning the heartbeat on carries `heartbeat: { issue, marker }`, or
-  is a schema fault. Only the bare schedule fire writes it, after a sweep in
-  which not every claim or launch failed, and only into a body already
-  carrying the marker; otherwise it logs an error naming the repo and issue,
-  so a wrong number never overwrites a ticket. The body keeps its own words
-  and gains or updates one `last-run: <ISO time>` line (`stampLastRun`,
-  dispatch/heartbeat.mjs). The marker is the repo's, whatever its prefix.
+- A file turning the heartbeat on names one heartbeat issue,
+  `heartbeat: { issue }`, or is a schema fault. Governor writes only into a
+  body already carrying `<!-- governor:heartbeat -->`; otherwise it logs an
+  error naming the repo and issue, so a wrong number never overwrites a
+  ticket. Under that marker it keeps its own block (`stampHeartbeat`,
+  dispatch/heartbeat.mjs): one line for pickup and one per periodic, each
+  saying when it last fired, the session, and whether that session signed
+  off, the fire was held, or there was nothing to do. A line's fire time
+  changes only on the fire that line reports: pickup's on the bare schedule
+  fire's sweep in which not every claim or launch failed, a periodic's on
+  its own fire, whichever turn makes it. A held fire leaves it at the open
+  run's start, and a fire whose launches all failed leaves it where it was. The sign-off sweep, on any turn,
+  may mark a line's session signed off, but never moves its fire time. The
+  body outside the block keeps its owner's words.
+- A file in the older shape, `heartbeat: { issue, marker }`, keeps its one
+  `last-run: <ISO time>` line (`stampLastRun`), which only the bare schedule
+  fire writes, after a sweep in which not every claim or launch failed, and
+  only into a body already carrying the marker. That marker is the repo's,
+  whatever its prefix.
 - The file may carry a `prompts` map, keyed by message kind (`PROMPTS`,
   dispatch/prompts.mjs). Each key replaces the instruction in that kind of
   message, or the opening prompt of that kind of session. Every kind has a
@@ -78,7 +90,7 @@ spends the one claude.ai login.
   keeps the repos whose file reads valid, and sweeps every served repo's
   sessions. Nothing falls back to a default repo.
 - Governor writes and reads only `governor:` markers: the dispatch marker,
-  the subscribe line and the review's marker. A marker of any other prefix
+  the subscribe line, the review's marker and the heartbeat block's. A marker of any other prefix
   is text.
 - A record the state table keeps per served repo carries the repo in its
   key, under the prefix rule in dispatcher-state.md: the workflow cursors
@@ -126,10 +138,12 @@ spends the one claude.ai login.
   number or the standing line, and no test could pin what a message holds.
 - Do not add a switch whose only job is to add or remove a sentence: that is
   a prompt.
-- Do not write the heartbeat on any turn but the bare schedule fire's: a
-  label or a merge would keep it fresh while the schedule was dead.
+- Do not move a heartbeat line's fire time on any fire but the one it
+  reports, nor pickup's line or a `last-run:` line on any turn but the bare
+  schedule fire's sweep: a label, a merge or a sign-off would keep a line
+  fresh while the thing it reports had stopped.
 - Do not read a marker of another prefix as governor's: a repo's text would
   then hold or redirect a dispatch.
 
 Judgment: that a new per-repo table record keys on its repo, and that a config file holds no secret, no check sees: a key is a string no schema reads, and a secret has no shape the schema can refuse.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17.
