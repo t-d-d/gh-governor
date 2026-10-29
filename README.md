@@ -133,6 +133,49 @@ A ready label listed in `SelectLabels`, and a close that frees tickets, pick a t
 
 The fire's clock is the deployment's, which the file cannot see, so a repo is swept at the first fire at or after its interval. An interval shorter than the clock's tick sweeps at every fire. Pickup's line on the heartbeat issue records each sweep.
 
+### The heartbeat checker
+
+Governor cannot report that it has stopped, so the check runs in the served repo, on GitHub Actions. The repo calls the reusable workflow [.github/workflows/heartbeat-check.yml](.github/workflows/heartbeat-check.yml) on a schedule of its own, pinned to a commit of this repo:
+
+```yaml
+name: heartbeat
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  check:
+    uses: t-d-d/gh-governor/.github/workflows/heartbeat-check.yml@<commit>
+    with:
+      tolerance-hours: 3
+      labels: heartbeat
+```
+
+What it reads:
+
+- `.github/dispatch.json` from the default branch. It reads only `features.heartbeat`, `features.pickup`, `features.periodics`, `heartbeat.issue`, `pickup.sweepHours` and each periodic's `name` and `days`, and ignores every other key. A file using a key added after the pinned commit still reads.
+- The heartbeat issue the file names, and the lines governor keeps under its `<!-- governor:heartbeat -->` marker.
+- When `.github/dispatch.json` last changed, only for a pickup sweep or periodic that has no line yet.
+
+The inputs:
+
+- `tolerance-hours`: how far past its limit a line may run before the check opens an issue. Default 3. Governor's schedule fires every two hours, so a line can run up to two hours past its limit when nothing is wrong. Set the tolerance above that.
+- `labels`: the labels the check's issues carry, separated by commas or new lines. Default none.
+
+What its issues say:
+
+- **Pickup's sweep is overdue.** Pickup's last sweep is older than `pickup.sweepHours`, or two hours when unset, plus the tolerance. The issue gives the last sweep's time.
+- **A periodic is overdue.** Its last fire is older than its `days` plus the tolerance. The issue names the periodic, gives its last fire time and state, and says whether governor holds it for an open session, with that session's link.
+- **No line.** The file lists pickup or a periodic with no line on the heartbeat issue, and the file last changed longer ago than its limit plus the tolerance.
+- **The heartbeat could not be read.** The config file is missing, unreadable, does not parse, or does not turn the heartbeat on in the `{ "issue": <number> }` shape, or the heartbeat issue cannot be read or lacks governor's marker. The issue says which.
+
+The check keeps one issue open for each of these and updates it on each run. It closes the issue, with a comment, once the line is fresh again, the heartbeat reads again, or the file no longer lists the line. While the heartbeat cannot be read, it leaves the other issues as they are. Runs in a repo queue rather than overlap, so two never open the same issue. A failure to list, open or close its issues fails the run.
+
+It runs on the caller's own token, `contents: read` and `issues: write`, and holds no secret or id. It uses no action. The step carries [checker/heartbeat-check.mjs](checker/heartbeat-check.mjs) and runs it on the runner's node.
+
 ## How governor runs
 
 - **One task on AWS.** Each turn is one ECS Fargate task, arm64, half a vCPU and a gigabyte, for a few minutes. It needs a pseudo-terminal to start a cloud session, which Lambda cannot give. Only one task runs at a time.
