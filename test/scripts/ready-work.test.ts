@@ -8,7 +8,6 @@
  *   2. `mode: afk` only; the repo's excluded labels (`type: prd` in the
  *      factory) and its claim label `workflow: under development` dropped
  *   3. anything with an OPEN native blocker dropped
- *   3b. a child of a PRD not `workflow: under development` dropped
  *   4. oldest first, then by number, whatever the type labels say
  *   5. the caller's cap, applied last
  *
@@ -127,56 +126,6 @@ describe('selectReadyWork — native blockers', () => {
   test('an empty blocker list is not blocked', () => {
     const blockers = new Map([[1, []]]);
     assert.deepEqual(numbers(selectReadyWork([issue(1)], { labels: FACTORY_LABELS, cap: 5, blockers })), [1]);
-  });
-});
-
-describe('selectReadyWork — parent PRD', () => {
-  // A PRD a human has taken back to no `workflow:` label is parked, and its
-  // children are parked with it whatever labels they still carry: a PRD
-  // parked on 2026-09-17 had its children re-readied two days later, and one
-  // was built that night.
-  const prd = (labels: string[]) => ({ number: 50, state: 'open', labels });
-
-  test('drops a ready child whose parent PRD has no workflow label', () => {
-    const parents = new Map([[1, prd(['type: prd'])]]);
-    assert.deepEqual(selectReadyWork([issue(1)], { labels: FACTORY_LABELS, cap: 5, parents }), []);
-  });
-
-  test('keeps a ready child whose parent PRD is under development', () => {
-    const parents = new Map([[1, prd(['type: prd', 'workflow: under development'])]]);
-    assert.deepEqual(numbers(selectReadyWork([issue(1)], { labels: FACTORY_LABELS, cap: 5, parents })), [1]);
-  });
-
-  test('drops a ready child whose parent PRD is only ready for development', () => {
-    // The train was filed without the PRD moving; the ambiguous case drops.
-    const parents = new Map([[1, prd(['type: prd', READY])]]);
-    assert.deepEqual(selectReadyWork([issue(1)], { labels: FACTORY_LABELS, cap: 5, parents }), []);
-  });
-
-  test('a parent that is not a PRD does not park its children', () => {
-    const parents = new Map([[1, { number: 50, state: 'open', labels: ['type: enhancement'] }]]);
-    assert.deepEqual(numbers(selectReadyWork([issue(1)], { labels: FACTORY_LABELS, cap: 5, parents })), [1]);
-  });
-
-  test('an issue with no parent entry is unaffected', () => {
-    const parents = new Map([[2, prd(['type: prd'])]]);
-    assert.deepEqual(numbers(selectReadyWork([issue(1)], { labels: FACTORY_LABELS, cap: 5, parents })), [1]);
-  });
-
-  test('a closed parent PRD parks its children whatever label it kept', () => {
-    // A PRD closes when every child is closed, so a closed PRD with an open
-    // child is a park, not a delivery. `under development` is kept through
-    // close on a delivered PRD, so the label alone would let this child
-    // through; the state is the second signal.
-    const parents = new Map([
-      [1, { ...prd(['type: prd', 'workflow: under development']), state: 'closed' }],
-    ]);
-    assert.deepEqual(selectReadyWork([issue(1)], { labels: FACTORY_LABELS, cap: 5, parents }), []);
-  });
-
-  test('a closed parent PRD with no label parks its children', () => {
-    const parents = new Map([[1, { ...prd(['type: prd']), state: 'closed' }]]);
-    assert.deepEqual(selectReadyWork([issue(1)], { labels: FACTORY_LABELS, cap: 5, parents }), []);
   });
 });
 

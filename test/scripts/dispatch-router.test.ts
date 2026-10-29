@@ -80,17 +80,28 @@ describe('planSchedule', () => {
     assert.equal(plan[0]?.sessionName, sessionName(5, 'Issue 5'));
   });
 
-  test('skips an issue with an open blocker or a parked parent, asking only as far as the cap needs', async () => {
+  test('skips an issue with an open blocker, asking only as far as the cap needs', async () => {
     const { reader, asked } = fakeReader({
-      issues: [issue(3, READY), issue(4, READY), issue(6, READY), issue(8, READY)],
+      issues: [issue(3, READY), issue(4, READY), issue(6, READY)],
       blockers: { 3: [{ number: 1, state: 'open', title: 'Blocker' }] },
+    });
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 1, now: NOW });
+    assert.deepEqual(plan.map((d) => d.issue), [4]);
+    // #6 is eligible and ranked after #4, so only an early stop at the cap
+    // leaves it unread.
+    assert.ok(!asked.some((a) => / 6\b/.test(a)), `asked about an issue past the cap: ${asked.join('; ')}`);
+  });
+
+  test('picks a ready child of a PRD with no workflow label, and never reads its parent', async () => {
+    // Whether a ticket is ready is the repo's own call, on the ticket's own
+    // labels: a repo pauses a PRD's work by taking the ready labels off.
+    const { reader, asked } = fakeReader({
+      issues: [issue(4, READY)],
       parents: { 4: { number: 2, state: 'open', labels: ['type: prd'] } },
     });
     const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 1, now: NOW });
-    assert.deepEqual(plan.map((d) => d.issue), [6]);
-    // #8 is eligible and ranked after #6, so only an early stop at the cap
-    // leaves it unread.
-    assert.ok(!asked.some((a) => / 8\b/.test(a)), `asked about an issue past the cap: ${asked.join('; ')}`);
+    assert.deepEqual(plan.map((d) => d.issue), [4]);
+    assert.ok(!asked.some((a) => a.startsWith('parent')), `read a parent: ${asked.join('; ')}`);
   });
 
   test('skips an issue dispatched inside the window, so a burst of fires starts one session', async () => {

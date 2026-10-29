@@ -4,7 +4,7 @@
  * (dispatch/webhook/fire.mjs reads the fire; dispatch/turn.mjs runs it).
  *
  * The selection walks `scripts/lib/ready-work.mjs`'s ordered candidates,
- * asking about blockers, parent and recent dispatches only as far as the cap
+ * asking about blockers and recent dispatches only as far as the cap
  * needs. A fire can follow another within minutes (a run by hand beside the
  * schedule, and webhook bursts later), reading the backlog before the first
  * has claimed its tickets, so an issue dispatched inside
@@ -29,7 +29,6 @@ import { byAge, selectReadyWork } from './ready-work.mjs';
  *   readyIssues: (labels: readonly string[]) => Promise<IssueRow[]>,
  *   blockers: (number: number) => Promise<import('./github-app.mjs').BlockerRow[]>,
  *   blocking: (number: number) => Promise<import('./github-app.mjs').BlockerRow[]>,
- *   parent: (number: number) => Promise<import('./github-app.mjs').ParentRow | null>,
  *   comments: (number: number, options?: { since?: string }) => Promise<import('./github-app.mjs').CommentRow[]>,
  * }} Reader
  *
@@ -40,7 +39,7 @@ import { byAge, selectReadyWork } from './ready-work.mjs';
 
 /**
  * The schedule's plan: eligible issues oldest first, up to the cap,
- * asking about blockers, parent and recent dispatches only as far as the cap
+ * asking about blockers and recent dispatches only as far as the cap
  * needs. The order runs over every source's tickets together:
  * oldest, then number, whichever repo each is in. With `only`, those issues
  * and no other, still in the selector's
@@ -101,8 +100,6 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     if (failed.has(repo)) continue;
     const blocking = await guarded(repo, () => reader.blockers(candidate.number));
     if (blocking === null || selectReadyWork([candidate], { cap: 1, blockers: new Map([[candidate.number, blocking]]), labels }).length === 0) continue;
-    const parent = await guarded(repo, () => reader.parent(candidate.number));
-    if (failed.has(repo) || selectReadyWork([candidate], { cap: 1, parents: new Map([[candidate.number, parent]]), labels }).length === 0) continue;
     const comments = await guarded(repo, () => reader.comments(candidate.number, { since }));
     if (comments === null || recentlyDispatched(comments, now, windowMs)) continue;
     plan.push({

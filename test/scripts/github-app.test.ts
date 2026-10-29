@@ -3,8 +3,8 @@
  * GitHub App the repository already carries (APP_ID, APP_PRIVATE_KEY), and a
  * small REST reader over `fetch`.
  *
- * The dispatcher's image has no `gh` and no `gh-deps`, so the ready issues,
- * an issue's blockers and an issue's parent are read here over fetch. The
+ * The dispatcher's image has no `gh` and no `gh-deps`, so the ready issues
+ * and an issue's blockers are read here over fetch. The
  * endpoints and the row shapes are pinned to what `gh api` and the shim
  * produce, so `scripts/lib/ready-work.mjs` sees the rows it was written for.
  */
@@ -174,32 +174,6 @@ describe('githubReader', () => {
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
     assert.deepEqual(await reader.blocking(10), [{ number: 11, state: 'open', title: 'Here' }]);
-  });
-
-  test('parent is null on a 404, and the parent row otherwise', async () => {
-    const { fetch } = fakeFetch({
-      'https://api.github.com/repos/acme/factory/issues/10/parent': new Response('{"message":"No parent issue found"}', { status: 404 }),
-      'https://api.github.com/repos/acme/factory/issues/12/parent': issueRow(1, ['type: prd', 'workflow: under development']),
-    });
-    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    assert.equal(await reader.parent(10), null);
-    assert.deepEqual(await reader.parent(12), {
-      number: 1,
-      state: 'open',
-      labels: ['type: prd', 'workflow: under development'],
-    });
-  });
-
-  /**
-   * The path carries the issue number, so a 404 read off the message would
-   * take issue #404's 502 for "no parent" and dispatch a parked child.
-   */
-  test('parent of issue #404 answered 502 is an error, not a missing parent', async () => {
-    const { fetch } = fakeFetch({
-      'https://api.github.com/repos/acme/factory/issues/404/parent': new Response('bad gateway', { status: 502, statusText: 'Bad Gateway' }),
-    });
-    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    await assert.rejects(reader.parent(404), /502/);
   });
 
   test('comment posts to the issue and returns nothing the caller must handle', async () => {

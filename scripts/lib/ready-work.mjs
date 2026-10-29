@@ -20,9 +20,6 @@
  * Unit-tested in `test/scripts/ready-work.test.ts`.
  */
 
-const PRD_LABEL = 'type: prd';
-export const UNDER_DEVELOPMENT_LABEL = 'workflow: under development';
-
 /**
  * @typedef {object} IssueRow
  * @property {number} number
@@ -67,39 +64,11 @@ const hasOpenBlocker = (number, blockers) =>
   (blockers.get(number) ?? []).some((b) => b.state === 'open');
 
 /**
- * Whether the issue's parent PRD parks it.
- *
- * A PRD's `workflow:` label is a human's call. A repo's tooling labels a
- * PRD `under development` when it files the PRD's tickets; a human taking
- * that label off parks them all, whatever labels the children kept. Reading
- * the child alone would dispatch a ticket of a parked PRD whose children
- * were readied again.
- *
- * Anything short of `under development` on the PRD parks the child: no
- * label, or `ready for development` with the train filed but the PRD never
- * moved. A closed PRD parks the child too, whatever label it kept: a PRD
- * closes when every child has, so a closed one with an open child is a park,
- * not a delivery, and `under development` stays on a closed PRD by
- * convention. A missing entry means no parent was fetched, which is the same
- * answer as no parent: not parked. A parent that is not a PRD says nothing.
- *
- * @param {number} number
- * @param {Map<number, IssueRow | null>} parents
- */
-const isParkedByParent = (number, parents) => {
-  const parent = parents.get(number);
-  if (!parent || !has(parent, PRD_LABEL)) return false;
-  if ((parent.state ?? 'open') !== 'open') return true;
-  return !has(parent, UNDER_DEVELOPMENT_LABEL);
-};
-
-/**
  * @param {IssueRow} issue
  * @param {Map<number, BlockerRow[]>} blockers
- * @param {Map<number, IssueRow | null>} parents
  * @param {Labels} labels
  */
-const isEligible = (issue, blockers, parents, labels) => {
+const isEligible = (issue, blockers, labels) => {
   // `state` is defensive: the caller queries open issues, but a stale page or
   // a hand-assembled list should not be able to put a closed ticket in front
   // of an agent.
@@ -111,7 +80,6 @@ const isEligible = (issue, blockers, parents, labels) => {
   if (has(issue, labels.claim)) return false;
   if (labels.exclude.some((label) => has(issue, label))) return false;
   if (hasOpenBlocker(issue.number, blockers)) return false;
-  if (isParkedByParent(issue.number, parents)) return false;
   return true;
 };
 
@@ -146,16 +114,14 @@ export const byAge = (a, b) => {
  * @param {number} [options.cap] Maximum to return. Defaults to 1; 0 selects
  *   nothing.
  * @param {Map<number, BlockerRow[]>} [options.blockers]
- * @param {Map<number, IssueRow | null>} [options.parents] Each issue's parent
- *   issue, or null for a top-level one.
  * @param {Labels} options.labels The repo's ready, claim and excluded labels.
  * @returns {IssueRow[]}
  */
 export const selectReadyWork = (
   issues,
-  { cap = 1, blockers = new Map(), parents = new Map(), labels },
+  { cap = 1, blockers = new Map(), labels },
 ) =>
   issues
-    .filter((issue) => isEligible(issue, blockers, parents, labels))
+    .filter((issue) => isEligible(issue, blockers, labels))
     .sort(byAge)
     .slice(0, Math.max(0, cap));

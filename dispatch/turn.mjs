@@ -1334,7 +1334,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         blocking,
         planned: planned.map((d) => d.issue),
         ...(blocking.length === 0 ? { reason: `#${invocation.freed} blocked nothing` }
-          : planned.length === 0 ? { reason: 'none of what it blocked is selectable: still blocked, not ready, parent parked, or dispatched inside the window' }
+          : planned.length === 0 ? { reason: 'none of what it blocked is selectable: still blocked, not ready, or dispatched inside the window' }
             : {}),
       });
     }

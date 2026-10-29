@@ -6,8 +6,8 @@
  *
  * The dispatcher's image has no `gh` and no `gh-deps` shim, so this reads the
  * endpoints directly and returns the row shapes `scripts/lib/ready-work.mjs`
- * selects over: `readyIssues(labels)` the issues carrying every ready label, `blockers(n)` what
- * `gh-deps list-blockers` emits, `parent(n)` the parent with its labels.
+ * selects over: `readyIssues(labels)` the issues carrying every ready label,
+ * and `blockers(n)` what `gh-deps list-blockers` emits.
  *
  * Node built-ins only: the dispatcher image carries this directory and no
  * `node_modules` for it.
@@ -220,7 +220,6 @@ const labelNames = (row) =>
 /**
  * @typedef {{ number: number, title: string, state: string, created_at: string, labels: string[] }} IssueRow
  * @typedef {{ number: number, state: string, title: string }} BlockerRow
- * @typedef {{ number: number, state: string, labels: string[] }} ParentRow
  * @typedef {{ id: number, body: string, created_at: string }} CommentRow
  * @typedef {{ number: number, title: string, html_url: string, body: string, merged_at: string | null, merge_commit_sha: string | null, head: string, author: string }} PullRow
  *   `head`: its head branch, '' for a fork's; `author`: the login that opened it.
@@ -431,17 +430,6 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       return rows
         .filter((row) => typeof row.repository_url !== 'string' || row.repository_url.toLowerCase().endsWith(here))
         .map((row) => ({ number: row.number, state: row.state, title: row.title }));
-    },
-
-    /** The parent issue, or null where there is none. @param {number} number @returns {Promise<ParentRow | null>} */
-    parent: async (number) => {
-      try {
-        const row = await call('GET', `/repos/${repo}/issues/${number}/parent`);
-        return { number: row.number, state: row.state, labels: labelNames(row) };
-      } catch (error) {
-        if (/** @type {{ status?: number }} */ (error)?.status === 404) return null;
-        throw error;
-      }
     },
 
     /** Post a comment. @param {number} number @param {string} body */
