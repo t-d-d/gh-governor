@@ -19,7 +19,10 @@ served repos have their owner merge, so a pass there must not merge.
     (dispatcher-repos.md). Its tests 2 to 6 are the model's.
   - `humanOnly`: globs, each with a reason and optional `unless` labels. A
     PR changing a matching path waits for a person, unless every ticket it
-    closes carries one of `unless` and meets test 1.
+    closes carries one of `unless` and meets test 1, and the session its
+    body names is not one governor started. Governor records every session
+    it starts (dispatcher-state.md); a body naming no session keeps the
+    label's waiver.
   - `tickets`: label rules every ticket the PR closes meets. `require`: it
     carries one of `labels`; `forbid`: none. Either is waived by an `unless`
     label, such as `type: adr` forbidden unless `workflow: ready for
@@ -70,6 +73,9 @@ served repos have their owner merge, so a pass there must not merge.
   that needs Administration permission on every installation.
 - Do not number a decided-in-code test into the model's schema: the model
   answering test 1 or 8 would overrule the code.
+- Do not let an `unless` label waive a path for a PR whose session
+  governor started: the label says who should work the ticket, not who did,
+  and nobody watched that session.
 
 Judgment: that a repo's checklist numbers its model tests 2 to 6, and that a `quote` glob reaches only rule files, no check sees: both are the repo's prose.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13.

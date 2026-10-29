@@ -123,6 +123,8 @@ const harness = (over: Record<string, unknown> = {}) => {
   const rows: Array<Record<string, unknown>> = [];
   const pages = new Map<string, unknown>();
   const eventsRead: Array<{ id: string; token: string }> = [];
+  // Each session the turn recorded as governor's own.
+  const recorded: string[] = [];
   let loginOnDisk: string | null = null;
   const accounts: unknown[] = [];
   const deps = {
@@ -284,10 +286,12 @@ const harness = (over: Record<string, unknown> = {}) => {
         periodicWrites.push({ repo, name, record });
         return true;
       },
+      recordSession: async (session: string) => { recorded.push(session); },
+      startedSession: async (session: string) => recorded.includes(session),
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, cursors, periodics, periodicWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, recorded, cursors, periodics, periodicWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -373,6 +377,55 @@ describe('run — one dispatch', () => {
     const { deps, launches } = harness({ secret: { get: async () => SETUP_TOKEN, put: async () => {} } });
     await assert.rejects(run({ kind: 'dispatch', prompt: 'hello' }, deps as never), /user:sessions:claude_code|refresh/);
     assert.deepEqual(launches, []);
+  });
+});
+
+/**
+ * Every session governor starts is recorded as its own, whatever started
+ * it: the review reads the record back, and a ticket's mode label then
+ * waives no human-only path for it.
+ */
+describe('run — governor records each session it starts', () => {
+  const ABC = 'https://claude.ai/code/session_01ABC';
+
+  test('a dispatch fire\'s session: a summons, or a red scheduled run\'s', async () => {
+    const h = harness();
+    await run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never);
+    assert.deepEqual(h.recorded, [ABC]);
+  });
+
+  test('each ticket the schedule picks up', async () => {
+    const h = harness();
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.recorded, [ABC, ABC]);
+  });
+
+  test('a launch that printed no session records nothing', async () => {
+    const h = harness({ launch: async () => ({ status: 3, output: 'timed out' }) });
+    await run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never);
+    assert.deepEqual(h.recorded, []);
+  });
+
+  test('a record that fails is an error logged, and the turn goes on: the session is running', async () => {
+    const h = harness({ state: { recordSession: async () => { throw new Error('ProvisionedThroughputExceededException'); } } });
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.deepEqual(result.dispatched.map((d) => d.outcome), ['dispatched', 'dispatched']);
+    assert.equal(h.comments.length, 2, 'each ticket still gets its marker');
+    const lines = h.logged.filter((l) => l.event === 'dispatch-session-unrecorded');
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0]!.level, 'error');
+    assert.equal(lines[0]!.sessionUrl, 'https://claude.ai/code/session_01ABC');
+    assert.match(String(lines[0]!.error), /ProvisionedThroughputExceededException/);
+  });
+
+  // A launch that started is not refused as late because its record was slow:
+  // a failed launch is tried again, and that starts a second session.
+  test('a slow record spends none of the launch\'s budget, and the turn waits for it', async () => {
+    const slow: string[] = [];
+    const h = harness({ launchTimeoutMs: 20, state: { recordSession: async (session: string) => { await new Promise((r) => { setTimeout(r, 60); }); slow.push(session); } } });
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.deepEqual(result.dispatched.map((d) => d.outcome), ['dispatched', 'dispatched']);
+    assert.deepEqual(slow, [ABC, ABC]);
   });
 });
 
@@ -1278,6 +1331,7 @@ describe('run — periodics an event brings due', () => {
     assert.deepEqual(h.launches.map((l) => l.sessionName), [triage.name]);
     assert.ok(h.launches[0]!.prompt.endsWith(`Issues opened since ${ago(DAY)}: 2\n- #30 New one\n- #31 Newer`));
     assert.equal(result.kind, 'periodics');
+    assert.deepEqual(h.recorded, ['https://claude.ai/code/session_01ABC'], 'a periodic\'s session is governor\'s too');
   });
 
   test('a repo whose file turns periodics off reads no periodic on an event', async () => {
@@ -1565,6 +1619,7 @@ describe('run — the merge message lists what the closed issues blocked', () =>
     const h = merge({ refuse: true, body: 'Closes #919\nCloses #913', blocking: { 913: [ticket(961, 'Spec waits until #919 lands: the shape.')] } });
     await run(fire as never, h.deps as never);
     assert.equal(h.launches.length, 1, 'a waiting hand-off falls back');
+    assert.deepEqual(h.recorded, ['https://claude.ai/code/session_01ABC'], 'the fresh session replacing an archived owner is governor\'s');
     assert.match(h.launches[0]!.prompt, /#913 blocked:\n- Waiting on you[^\n]*\n\s+- #961\b/);
   });
 
@@ -3281,6 +3336,30 @@ describe('realDeps: the state table', () => {
     assert.equal(await state.recordConflict('acme/factory', 804, 'a'.repeat(40)), false, 'a record standing is no fault: the PR was told');
     const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
     await assert.rejects(failing.recordConflict('acme/factory', 804, 'a'.repeat(40)), /AccessDeniedException/);
+  });
+  // The review reads it back for every PR its session opens, so it never expires.
+  test('a session governor started is one item per session id, under no repo, put with no expiry, and read consistently', async () => {
+    const sent: Array<{ name: string; input: Record<string, any> }> = [];
+    const client = {
+      send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
+        sent.push({ name: command.constructor.name, input: command.input });
+        if (command.constructor.name !== 'GetItemCommand') return {};
+        return command.input.Key.pk.S === 'session#session_01ABC' ? { Item: { pk: { S: 'session#session_01ABC' }, sk: { S: 'started' } } } : {};
+      },
+    };
+    const state = dynamoState(client as never, 'T');
+    await state.recordSession('https://claude.ai/code/session_01ABC');
+    const put = sent[0]!;
+    assert.equal(put.name, 'PutItemCommand');
+    assert.deepEqual({ pk: put.input.Item.pk, sk: put.input.Item.sk }, { pk: { S: 'session#session_01ABC' }, sk: { S: 'started' } });
+    assert.equal(put.input.Item.ttl, undefined, 'a lost record would waive: it outlasts every PR it guards');
+    assert.equal(await state.startedSession('https://claude.ai/code/session_01ABC'), true);
+    assert.equal(await state.startedSession('session_01ABC'), true, 'by URL or by id');
+    assert.equal(await state.startedSession('https://claude.ai/code/session_01PERSON'), false);
+    assert.equal(sent[1]?.input.ConsistentRead, true);
+    const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
+    await assert.rejects(failing.startedSession('session_01ABC'), /AccessDeniedException/);
+    await assert.rejects(failing.recordSession('session_01ABC'), /AccessDeniedException/);
   });
   // A periodic's last fire, per repo and name, survives a lost item: no record is the baseline.
   test('a periodic\'s record is one item per repo and name, read consistently, written only over the record the turn read, and never expires', async () => {

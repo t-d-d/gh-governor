@@ -148,6 +148,12 @@ export const HEARTBEAT_REFUSED = 'dispatch-heartbeat-refused';
 export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
 
 /**
+ * A session governor started that its state table does not record: the
+ * PR review would let a ticket's mode label waive a human-only path for it.
+ */
+export const SESSION_UNRECORDED = 'dispatch-session-unrecorded';
+
+/**
  * A claim's key, `owner/name#number`, as the repo and issue it names.
  *
  * @param {string} key
@@ -261,6 +267,8 @@ export const sessionUrlFrom = (output) => {
  *   delivered: (repo: string, workflow: string, label: string | null, from: number | null) => Promise<Delivered>,
  *   record: (repo: string, workflow: string, label: string | null, from: number | null, delivered: Delivered) => Promise<void>,
  *   recordConflict: (repo: string, pr: number, merge: string) => Promise<boolean>,
+ *   recordSession: (session: string) => Promise<void>,
+ *   startedSession: (session: string) => Promise<boolean>,
  * } & import('./periodics.mjs').PeriodicState} DispatchState
  *   Each label's cursor, by its repo, its workflow's file name and the
  *   label (null for CI's, which earns none): read (null when it has none),
@@ -271,6 +279,8 @@ export const sessionUrlFrom = (output) => {
  *   merge `merge` left it in: recorded, false where a record stood.
  *   A periodic's record (dispatch/periodics.mjs): read, and written over
  *   the record the turn read, false where another stood.
+ *   A session governor started, by URL or id: recorded, and read back by
+ *   the PR review (dispatch/review.mjs), whichever repo its PR is in.
  *   A read or write that fails throws.
  *
  * @typedef {{ told: string[], failed: string[] }} Delivered
@@ -475,6 +485,29 @@ export const run = async (event, deps) => {
     if (find === undefined) finders.set(token, find = branchFinder({ list: (after) => deps.sessions.list(token, after), get: async (id) => sessionRecord(await deps.sessions.get(id, token)) }, repo, { log: deps.log }));
     return find;
   };
+  /** Each launch's record, awaited before the turn ends. @type {Promise<void>[]} */
+  const records = [];
+  /**
+   * Every launch, recorded as governor's own session wherever the launcher
+   * printed one, whatever outcome it reported: the PR review reads the
+   * record back, and a ticket's mode label waives no human-only path for a
+   * session nobody watched. A record that fails is an error, not a turn
+   * that fails: the session is running either way. The record spends none
+   * of the launch's budget, so a slow one never turns a launch that started
+   * into one tried again; the turn waits for every record before it ends.
+   *
+   * @type {Deps['launch']}
+   */
+  const launch = async (begin) => {
+    const launched = await deps.launch(begin);
+    const sessionUrl = sessionUrlFrom(launched.output);
+    if (sessionUrl !== null) {
+      records.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
+        deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl, error: messageOf(error), reason: 'its PRs may clear a human-only path on a ticket\'s mode label' });
+      }));
+    }
+    return launched;
+  };
   /** What the turn changes in each repo's governor heartbeat block, written below. @type {RepoBeat[]} */
   const turnBeats = [];
   /** @type {Awaited<ReturnType<typeof turnFor>>} */
@@ -484,6 +517,7 @@ export const run = async (event, deps) => {
       ...deps,
       secret,
       githubToken: tokenFor,
+      launch,
       message: async (message) => {
         const session = sessionId(message.session);
         if (!woken.has(session)) woken.set(session, deps.now());
@@ -498,6 +532,7 @@ export const run = async (event, deps) => {
     // A periodic that launched has moved its record, so no later fire
     // writes its line: it goes before the turn fails.
     await writeBeats(deps, tokenFor, served, turnBeats);
+    await Promise.all(records);
     throw error;
   }
   // An event a periodic counts: the repo's periodics are checked after the
@@ -511,7 +546,7 @@ export const run = async (event, deps) => {
     base: invocation.kind === 'conflicts' ? invocation.base : undefined,
     started,
     carried: 'dispatched' in turned && Array.isArray(turned.dispatched) ? turned.dispatched.filter((d) => d.repo.toLowerCase() === repo.toLowerCase()) : [],
-    deps: { ...deps, secret, githubToken: tokenFor },
+    deps: { ...deps, secret, githubToken: tokenFor, launch },
   });
   const eventBeats = checked?.beats ?? [];
   const periodics = checked === null ? null : { dispatched: checked.dispatched, unread: checked.unread };
@@ -537,6 +572,7 @@ export const run = async (event, deps) => {
   // Only a periodic's line names a session, so only those repos are read.
   const marked = signoffs.archived.length === 0 ? { written: [], unwritten: [] } : await writeBeats(deps, tokenFor, served, served.filter((s) => turnsOn(s.config, 'periodics')).map((s) => ({ repo: s.repo, beat: { signedOff: signoffs.archived } })));
   const heartbeatUnwritten = [...beaten.unwritten, ...marked.unwritten];
+  await Promise.all(records);
   const left = [...unread, ...('unread' in turned && Array.isArray(turned.unread) ? turned.unread : [])];
   return {
     ...turned,
@@ -1210,7 +1246,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           deps.log('dispatch-review', { unreviewed: targets.slice(i).map((t) => t.number), reason: `out of time: past ${REVIEW_WINDOW_MS} ms, another review might outrun the deadline; each is reviewed on its next push or edit` });
           break;
         }
-        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base });
+        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession });
         deps.log('dispatch-review', { ...reviewed });
         reviews.push(reviewed);
       }
@@ -1819,7 +1855,11 @@ export const cliEnv = (env, home, account) => ({
  * item `conflicts#<repo>` / `<pr>#<merge sha>`, put only where none stands
  * and expired by `ttl`. A periodic's record is the item `periodic#<repo>` /
  * `<name>`, put only over the record the turn read, and never expired: a
- * lost one costs a late run.
+ * lost one costs a late run. A session governor started is the item
+ * `session#<session id>` / `started`, under no repo, since a session may
+ * open its PR in another served repo, and put with no expiry, since the
+ * review reads it for every PR the session opens and a lost one lets a
+ * mode label waive a human-only path.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -1829,6 +1869,7 @@ export const dynamoState = (client, table) => {
   const pk = (/** @type {string} */ repo, /** @type {string} */ workflow) => ({ S: `workflow#${repo}#${workflow}` });
   const key = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label) => ({ pk: pk(repo, workflow), sk: { S: label === null ? 'cursor' : `cursor#${label}` } });
   const periodicKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `periodic#${repo}` }, sk: { S: name } });
+  const sessionKey = (/** @type {string} */ session) => ({ pk: { S: `session#${sessionId(session)}` }, sk: { S: 'started' } });
   const sent = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label, /** @type {number | null} */ from) => ({ pk: pk(repo, workflow), sk: { S: `delivered#${label === null ? '' : `${label}#`}${from ?? 'none'}` } });
   return {
     cursor: async (repo, workflow, label) => {
@@ -1879,6 +1920,14 @@ export const dynamoState = (client, table) => {
         if (error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException') return false;
         throw error;
       }
+    },
+    // The same put twice is one record: no condition, nothing to race.
+    recordSession: async (session) => {
+      await client.send(new PutItemCommand({ TableName: table, Item: { ...sessionKey(session), at: { S: new Date().toISOString() } } }));
+    },
+    startedSession: async (session) => {
+      const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: sessionKey(session), ConsistentRead: true }));
+      return item !== undefined;
     },
     periodic: async (repo, name) => {
       const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: periodicKey(repo, name), ConsistentRead: true }));
@@ -2140,7 +2189,7 @@ export const realDeps = () => {
     },
     sleep: (ms) => new Promise((resolveSleep) => { setTimeout(resolveSleep, ms); }),
     fires: env.DISPATCH_FIRES_QUEUE_URL ? sqsFires(new SQSClient({}), env.DISPATCH_FIRES_QUEUE_URL) : undefined,
-    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, and no periodic starts, rather than guess.
+    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, no periodic starts, and a review a label's waiver would pass fails, rather than guess.
     state: env.DISPATCH_STATE_TABLE
       ? dynamoState(new DynamoDBClient({}), env.DISPATCH_STATE_TABLE)
       : {
@@ -2151,6 +2200,8 @@ export const realDeps = () => {
         recordPeriodic: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         record: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordConflict: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        startedSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
       },
     sessions: {
       list: (token, after) => sessionsCall(`${ARCHIVE_API}?limit=100${after === undefined ? '' : `&after_id=${encodeURIComponent(after)}`}`, token),
