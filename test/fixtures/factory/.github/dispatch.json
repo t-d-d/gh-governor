@@ -23,12 +23,25 @@
     "conflicts": true,
     "deployedLabels": true,
     "mergeHandoff": true,
-    "heartbeat": true
+    "heartbeat": true,
+    "periodics": true
   },
   "heartbeat": {
     "issue": 412,
     "marker": "<!-- factory:routine-heartbeat:auto-develop -->"
   },
+  "periodics": [
+    {
+      "name": "Weekly retro",
+      "prompt": "Run a retro over the week's merged pull requests and closed issues. Raise an issue for each lesson worth acting on.",
+      "days": 7
+    },
+    {
+      "name": "Ticket review",
+      "prompt": "Review the open tickets labelled ready for development. Fix any whose spec the code has overtaken.",
+      "days": 3
+    }
+  ],
   "workflows": {
     "ci": ".github/workflows/ci.yml",
     "triage": [

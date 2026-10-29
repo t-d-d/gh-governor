@@ -38,8 +38,8 @@ spends the one claude.ai login.
   refuses a fire kind its repo's file does not turn on. The switches are
   pickup, summons, PR messages, subscribe messages, the red scheduled run,
   the merge hand-off, CI and deploy messages, branch-run messages, the
-  conflicts check, deployed-label job fires, the PR review and the heartbeat
-  (`GENERIC_SWITCHES`). What CI and a deploy are in a repo is
+  conflicts check, deployed-label job fires, the PR review, the heartbeat
+  and periodics (`GENERIC_SWITCHES`). What CI and a deploy are in a repo is
   dispatcher-workflows.md's, and the review's settings dispatcher-review.md's.
   The schema accepts no switch by repo.
 - A file turning the heartbeat on carries `heartbeat: { issue, marker }`, or
@@ -59,7 +59,8 @@ spends the one claude.ai login.
   itself: what happened, the PR or issue, the run and commit, the session's
   standing line. No repo can drop or reword them. A prompt may name a fact
   its kind has (`{pr}`), and the dispatcher writes it in.
-- Every prompt value, each in `prompts` and the review's `checklist`, is the
+- Every prompt value, each in `prompts`, the review's `checklist` and each
+  periodic's `prompt`, is the
   text or `{ "file": "<path>" }`: a file in the repo, from its root, read
   from the default branch with the config file (`resolveFiles`). A missing
   or empty file, or one naming a fact its kind lacks, makes the config file
@@ -75,8 +76,9 @@ spends the one claude.ai login.
   is text.
 - A record the state table keeps per served repo carries the repo in its
   key, under the prefix rule in dispatcher-state.md: the workflow cursors
-  and their delivered records (`workflow#<repo>#<file>`) and the conflicts
-  records (`conflicts#<repo>`) among them.
+  and their delivered records (`workflow#<repo>#<file>`), the conflicts
+  records (`conflicts#<repo>`) and each periodic's record
+  (`periodic#<repo>`) among them.
 
 ## Examples
 
@@ -124,4 +126,4 @@ spends the one claude.ai login.
   then hold or redirect a dispatch.
 
 Judgment: that a new per-repo table record keys on its repo, and that a config file holds no secret, no check sees: a key is a string no schema reads, and a secret has no shape the schema can refuse.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17.
