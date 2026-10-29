@@ -35,6 +35,7 @@
  */
 
 import { COUNTS } from './webhook/fire.mjs';
+import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** An hour, in milliseconds. */
 export const HOUR_MS = 60 * 60 * 1000;
@@ -60,11 +61,13 @@ export const LISTED_MAX = 100;
 
 /**
  * @typedef {import('./webhook/fire.mjs').Count} Count
- * @typedef {{ at: string, session: string | null, baseline: boolean, nothing?: true }} PeriodicRecord
+ * @typedef {{ at: string, session: string | null, baseline: boolean, nothing?: true, lastRun?: string }} PeriodicRecord
  *   `at`: the last fire's time, or the baseline's. `session`: the session the
  *   fire started, null for an unconfirmed launch, the baseline or nothing to do.
  *   `baseline`: governor wrote it with no record to go on, and started nothing.
- *   `nothing`: the day limit came due on empty windows, and started nothing.
+ *   `nothing`: the day limit came due on empty windows, and started nothing;
+ *   `lastRun` then keeps the time of the last fire that ran, if any, which
+ *   the minimum gap runs from.
  * @typedef {{
  *   periodic: (repo: string, name: string) => Promise<PeriodicRecord | null>,
  *   recordPeriodic: (repo: string, name: string, read: PeriodicRecord | null, record: PeriodicRecord) => Promise<boolean>,
@@ -77,8 +80,11 @@ export const LISTED_MAX = 100;
  *   What of `kind` happened after `since`, oldest first, read afresh; a read
  *   that fails throws.
  * @typedef {Partial<Record<Count, Counted[]>>} Windows
- * @typedef {{ periodic: import('./repo-config.mjs').Periodic, read: PeriodicRecord, due: number, windows?: Windows }} Due
+ * @typedef {{ periodic: import('./repo-config.mjs').Periodic, read: PeriodicRecord, due: number, windows?: Windows, asOf?: string }} Due
  *   `windows`: what each of its counts counted, for one that has counts.
+ *   `asOf`: then the time the windows were read from, which its fire
+ *   records in place of the launch's, so whatever lands between the read and
+ *   the launch is in the next window rather than neither.
  */
 
 /** What the prompt calls each kind. */
@@ -168,15 +174,25 @@ const countsOf = (periodic) => COUNTS.flatMap((kind) => {
 });
 
 /**
- * Whether a periodic is inside its minimum gap since its last run. A
- * baseline and a day limit with nothing to do ran nothing, so they open none.
+ * The time of the last fire that ran, if the record knows one: a baseline
+ * ran nothing, and a day limit with nothing to do keeps the run before it.
+ *
+ * @param {PeriodicRecord} read
+ * @returns {string | undefined}
+ */
+const lastRunOf = (read) => (read.baseline ? undefined : read.nothing === true ? read.lastRun : read.at);
+
+/**
+ * Whether a periodic is inside its minimum gap since its last run.
  *
  * @param {import('./repo-config.mjs').Periodic} periodic
  * @param {PeriodicRecord} read
  * @param {number} now
  */
-const inGap = (periodic, read, now) => periodic.gapHours !== undefined && !read.baseline && read.nothing !== true
-  && now - Date.parse(read.at) < periodic.gapHours * HOUR_MS;
+const inGap = (periodic, read, now) => {
+  const ran = lastRunOf(read);
+  return periodic.gapHours !== undefined && ran !== undefined && now - Date.parse(ran) < periodic.gapHours * HOUR_MS;
+};
 
 /**
  * A repo's due periodics, each with the record the turn read, when it came
@@ -208,7 +224,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
   const unread = [];
   /** @param {string} name @param {unknown} error @param {string} reason */
   const refuse = (name, error, reason) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = messageOf(error);
     log('dispatch-periodic-unread', { level: 'error', repo, periodic: name, error: message, reason });
     unread.push({ repo, error: `periodic ${name}: ${message}` });
   };
@@ -230,7 +246,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
         const written = await state.recordPeriodic(repo, name, null, { at, session: null, baseline: true });
         log('dispatch-periodic', { repo, periodic: name, outcome: written ? 'baseline' : 'baseline already written', at });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = messageOf(error);
         log('dispatch-periodic-unrecorded', { level: 'error', repo, periodic: name, error: message, reason: 'its baseline could not be written' });
         unread.push({ repo, error: `periodic ${name}: ${message}` });
       }
@@ -262,18 +278,19 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     if (!reached && Object.values(windows).every((items) => items.length === 0)) {
       // The day limit came due on empty windows: nothing to review, and the
       // next day limit counts from now.
-      const record = { at: new Date(now).toISOString(), session: null, baseline: false, nothing: /** @type {const} */ (true) };
+      const ran = lastRunOf(read);
+      const record = { at: new Date(now).toISOString(), session: null, baseline: false, nothing: /** @type {const} */ (true), ...(ran === undefined ? {} : { lastRun: ran }) };
       try {
         const written = await state.recordPeriodic(repo, name, read, record);
         log('dispatch-periodic', { repo, periodic: name, outcome: written ? 'nothing to do' : 'nothing to do, and its record moved since the read', at: record.at });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = messageOf(error);
         log('dispatch-periodic-unrecorded', { level: 'error', repo, periodic: name, error: message, reason: 'its nothing-to-do could not be written, so the next fire reads its windows again' });
         unread.push({ repo, error: `periodic ${name}: ${message}` });
       }
       continue;
     }
-    due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, windows });
+    due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, windows, asOf: new Date(now).toISOString() });
   }
   return { due, unread };
 };

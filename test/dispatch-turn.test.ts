@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { STALE_RUNS_PAUSES_MS } from '../dispatch/runs.mjs';
 import { RUNS_PER_PAGE } from '../scripts/lib/github-app.mjs';
 import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed, sessionUrlFrom } from '../dispatch/turn.mjs';
-import { DISPATCHER_LABEL, fromDispatcher, standingLine } from '../dispatch/deliveries.mjs';
+import { DEFAULT_SESSION_NAME, DISPATCHER_LABEL, fromDispatcher, standingLine } from '../dispatch/deliveries.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { handoffFallback, handoffText } from '../dispatch/handoff.mjs';
 import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
@@ -1239,6 +1239,41 @@ describe('run — periodics an event brings due', () => {
     assert.equal(exitCodeFor(result as never), 1);
   });
 
+  test('a fire is recorded as of its windows\' read, so a merge that lands before the launch counts next time', async () => {
+    let clock = NOW;
+    const h = counting({ merges: merged(20) }, {
+      now: () => clock,
+      launch: async (launch: Launch) => { h.launches.push(launch); clock += 3 * 60 * 1000; return { status: 0, output: CONFIRMED }; },
+    });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await run(MERGE, h.deps as never);
+    assert.equal(h.periodics.get(key(CODE.name))?.at, new Date(NOW).toISOString());
+  });
+
+  test('a read before any launch that fails is the check\'s fault, and the turn still sweeps', async () => {
+    let asked = 0;
+    const h = counting({ merges: merged(20) }, { appId: async () => { asked += 1; throw new Error('the App key is unreadable'); } });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    const result = await run({ kind: 'periodics', counted: 'issuesOpened' }, h.deps as never) as Record<string, any>;
+    assert.ok(asked > 0);
+    assert.match(String(result.periodics?.unread[0]?.error), /App key/);
+    assert.ok('signoffs' in result, 'the sign-off sweep still ran');
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  test('when the carrying turn\'s own launch in the repo started nothing, its periodics wait for the next fire', async () => {
+    const triage = { name: 'Ticket triage', prompt: 'Triage the new issues.', days: 7, counts: { issuesOpened: 1 } };
+    const configFile = async (repo: string) => (repo === REPO ? fileWith({}, { periodics: [triage] }) : null);
+    const h = counting({ issuesOpened: [{ number: 30, title: 'New one', at: ago(HOUR) }] }, {
+      configFile,
+      launch: async (launch: Launch) => { h.launches.push(launch); return { status: 1, output: 'claude died' }; },
+    });
+    h.periodics.set(key(triage.name), fired(DAY));
+    await run({ kind: 'dispatch', prompt: '@claude look', counted: 'issuesOpened' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [DEFAULT_SESSION_NAME]);
+    assert.deepEqual(h.periodics.get(key(triage.name)), fired(DAY));
+  });
+
   test('a cap of 0 starts nothing on an event either', async () => {
     const h = counting({ merges: merged(20) }, { cap: 0 });
     h.periodics.set(key(CODE.name), fired(DAY));
@@ -1260,7 +1295,7 @@ describe('run — periodics an event brings due', () => {
     h.periodics.set(key(CODE.name), fired(7 * DAY));
     await run({ source: 'aws.events' }, h.deps as never);
     assert.ok(!h.launches.some((l) => l.sessionName === CODE.name));
-    assert.deepEqual(h.periodics.get(key(CODE.name)), { at: new Date(NOW).toISOString(), session: null, baseline: false, nothing: true });
+    assert.deepEqual(h.periodics.get(key(CODE.name)), { at: new Date(NOW).toISOString(), session: null, baseline: false, nothing: true, lastRun: ago(7 * DAY) });
   });
 
   test('on the sweep at its day limit, a short window still starts it, listing what was counted', async () => {
@@ -3182,18 +3217,19 @@ describe('realDeps: the state table', () => {
 
   // A day limit with nothing to do is its fire, and opens no minimum gap:
   // the record says so, and reads back the same.
-  test('a periodic\'s nothing-to-do record is written and read back as such', async () => {
+  test('a periodic\'s nothing-to-do record, and the last run it keeps, are written and read back as such', async () => {
     const AT = '2026-10-27T12:00:00.000Z';
+    const RAN = '2026-10-20T12:00:00.000Z';
     const sent: Array<Record<string, any>> = [];
     const state = dynamoState({
       send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
         sent.push(command.input);
-        return command.constructor.name === 'GetItemCommand' ? { Item: { pk: { S: 'periodic#acme/factory' }, sk: { S: 'Code review' }, at: { S: AT }, nothing: { BOOL: true } } } : {};
+        return command.constructor.name === 'GetItemCommand' ? { Item: { pk: { S: 'periodic#acme/factory' }, sk: { S: 'Code review' }, at: { S: AT }, nothing: { BOOL: true }, lastRun: { S: RAN } } } : {};
       },
     } as never, 'T');
-    await state.recordPeriodic(REPO, 'Code review', null, { at: AT, session: null, baseline: false, nothing: true });
-    assert.deepEqual(sent[0]?.Item, { pk: { S: 'periodic#acme/factory' }, sk: { S: 'Code review' }, at: { S: AT }, nothing: { BOOL: true } });
-    assert.deepEqual(await state.periodic(REPO, 'Code review'), { at: AT, session: null, baseline: false, nothing: true });
+    await state.recordPeriodic(REPO, 'Code review', null, { at: AT, session: null, baseline: false, nothing: true, lastRun: RAN });
+    assert.deepEqual(sent[0]?.Item, { pk: { S: 'periodic#acme/factory' }, sk: { S: 'Code review' }, at: { S: AT }, nothing: { BOOL: true }, lastRun: { S: RAN } });
+    assert.deepEqual(await state.periodic(REPO, 'Code review'), { at: AT, session: null, baseline: false, nothing: true, lastRun: RAN });
   });
 });
 

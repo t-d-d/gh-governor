@@ -497,6 +497,7 @@ export const run = async (event, deps) => {
     counted: invocation.counted,
     base: invocation.kind === 'conflicts' ? invocation.base : undefined,
     started,
+    carried: 'dispatched' in result && Array.isArray(result.dispatched) ? result.dispatched.filter((d) => d.repo.toLowerCase() === repo.toLowerCase()) : [],
     deps: { ...deps, secret, githubToken: tokenFor },
   });
   // Read when called: a turn whose sweep skips never touches `sessions`.
@@ -561,25 +562,43 @@ const recordFire = async ({ state, log }, repo, { name, read }, at, sessionUrl) 
  *   counted: import('./webhook/fire.mjs').Count,
  *   base: string | undefined,
  *   started: number,
+ *   carried: Dispatched[],
  *   deps: Deps,
  * }} args `base`: the default branch, where the fire names it.
+ *   `carried`: the carrying turn's own launches in the repo.
  * @returns {Promise<{ dispatched: Dispatched[], unread: Array<{ repo: string, error: string }> }>}
  */
-const eventPeriodics = async ({ repo, config, counted, base, started, deps }) => {
-  const reader = deps.reader(await deps.githubToken(repo), await deps.appId(), repo);
-  const { due, unread } = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(reader, base), event: counted });
+const eventPeriodics = async ({ repo, config, counted, base, started, carried, deps }) => {
   /** @type {Dispatched[]} */
   const dispatched = [];
+  /** @type {import('./periodics.mjs').Due[]} */
+  let due;
+  /** @type {Array<{ repo: string, error: string }>} */
+  let unread;
+  /** @type {import('../scripts/lib/claude-login.mjs').LoginAccount | null} */
+  let account;
+  // A read before any launch that fails is the check's fault alone: the
+  // carrying turn's result and the sign-off sweep still stand.
+  try {
+    const reader = deps.reader(await deps.githubToken(repo), await deps.appId(), repo);
+    ({ due, unread } = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(reader, base), event: counted }));
+    ({ account } = readStoredLogin(await deps.secret.get()));
+  } catch (error) {
+    deps.log('dispatch-periodic-unread', { level: 'error', repo, counted, error: messageOf(error), reason: 'the periodics could not be checked: they wait for the next event or sweep' });
+    return { dispatched, unread: [{ repo, error: `periodics: ${messageOf(error)}` }] };
+  }
   if (due.length === 0) return { dispatched, unread };
-  if (deps.cap === 0) {
-    deps.log('dispatch-periodic', { repo, periodics: due.map((d) => d.periodic.name), outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' });
+  const why = deps.cap === 0 ? 'DispatchCap is 0: no fire starts anything'
+    : carried.length > 0 && carried.every((d) => d.outcome === 'failed') ? 'the turn\'s own launch in this repo started nothing, and a periodic\'s would fail the same way: each stays due for the next event or sweep'
+      : null;
+  if (why !== null) {
+    deps.log('dispatch-periodic', { repo, periodics: due.map((d) => d.periodic.name), outcome: 'not started', reason: why });
     return { dispatched, unread };
   }
-  const { account } = readStoredLogin(await deps.secret.get());
   const before = deps.workspace.readLogin();
   try {
     const ordered = due.sort((a, b) => a.due - b.due);
-    for (const [i, { periodic, read, windows }] of ordered.entries()) {
+    for (const [i, { periodic, read, windows, asOf }] of ordered.entries()) {
       if (deps.now() - started > EVENT_PERIODIC_WINDOW_MS) {
         deps.log('dispatch-periodic', { repo, periodics: ordered.slice(i).map((d) => d.periodic.name), outcome: 'not started', reason: `out of time: past ${EVENT_PERIODIC_WINDOW_MS} ms into the turn, a launch might outrun the deadline; each stays due for the next event or sweep` });
         break;
@@ -596,7 +615,7 @@ const eventPeriodics = async ({ repo, config, counted, base, started, deps }) =>
         deps.log(REPO_SKIPPED, { level: 'error', repo, issue: null, periodic: periodic.name, status, reason: 'its launch started nothing: the rest of its periodics wait for the next fire' });
         break;
       }
-      const unrecorded = await recordFire(deps, repo, { name: periodic.name, read }, firedAt, sessionUrl);
+      const unrecorded = await recordFire(deps, repo, { name: periodic.name, read }, asOf ?? firedAt, sessionUrl);
       if (unrecorded !== null) unread.push(unrecorded);
     }
   } finally {
@@ -1047,7 +1066,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
   }
 
   const started = deps.now();
-  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord } }>} */
+  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, asOf?: string } }>} */
   const plan = [];
   /** The issues a targeted schedule fire limits the plan to; undefined for the sweep. @type {number[] | undefined} */
   let only;
@@ -1112,13 +1131,13 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
         periodicsUnread.push(...read.unread);
       }
       if (deps.cap > 0) {
-        plan.unshift(...due.sort((a, b) => a.due - b.due).map(({ repo, periodic, read, windows }) => ({
+        plan.unshift(...due.sort((a, b) => a.due - b.due).map(({ repo, periodic, read, windows, asOf }) => ({
           issue: null,
           repo,
           prompt: periodicPrompt(periodic.prompt, read, windows),
           sessionName: periodic.name,
           model: DEFAULT_MODEL,
-          periodic: { name: periodic.name, read },
+          periodic: { name: periodic.name, read, ...(asOf === undefined ? {} : { asOf }) },
         })));
       }
     }
@@ -1234,7 +1253,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
       // or may have, and only over the record the turn read. A failed launch
       // writes nothing, so the periodic stays due.
       if (entry.periodic !== undefined && outcome !== 'failed') {
-        const unrecorded = await recordFire(deps, entry.repo, entry.periodic, firedAt, sessionUrl);
+        const unrecorded = await recordFire(deps, entry.repo, entry.periodic, entry.periodic.asOf ?? firedAt, sessionUrl);
         // The turn fails, so the alarm says a periodic may start twice.
         if (unrecorded !== null) periodicsUnread.push(unrecorded);
       }
@@ -1702,13 +1721,19 @@ export const dynamoState = (client, table) => {
       if (at === undefined || Number.isNaN(Date.parse(at)) || (item.session !== undefined && item.session.S === undefined)) {
         throw new Error(`the periodic item for ${repo} ${name} is malformed: ${JSON.stringify(item)}`);
       }
-      return { at, session: item.session?.S ?? null, baseline: item.baseline?.BOOL === true, ...(item.nothing?.BOOL === true ? { nothing: /** @type {const} */ (true) } : {}) };
+      return {
+        at,
+        session: item.session?.S ?? null,
+        baseline: item.baseline?.BOOL === true,
+        ...(item.nothing?.BOOL === true ? { nothing: /** @type {const} */ (true) } : {}),
+        ...(item.lastRun?.S === undefined ? {} : { lastRun: item.lastRun.S }),
+      };
     },
-    recordPeriodic: async (repo, name, read, { at, session, baseline, nothing }) => {
+    recordPeriodic: async (repo, name, read, { at, session, baseline, nothing, lastRun }) => {
       try {
         await client.send(new PutItemCommand({
           TableName: table,
-          Item: { ...periodicKey(repo, name), at: { S: at }, ...(session === null ? {} : { session: { S: session } }), ...(baseline ? { baseline: { BOOL: true } } : {}), ...(nothing === true ? { nothing: { BOOL: true } } : {}) },
+          Item: { ...periodicKey(repo, name), at: { S: at }, ...(session === null ? {} : { session: { S: session } }), ...(baseline ? { baseline: { BOOL: true } } : {}), ...(nothing === true ? { nothing: { BOOL: true } } : {}), ...(lastRun === undefined ? {} : { lastRun: { S: lastRun } }) },
           ...(read === null
             ? { ConditionExpression: 'attribute_not_exists(pk)' }
             : { ConditionExpression: '#at = :read', ExpressionAttributeNames: { '#at': 'at' }, ExpressionAttributeValues: { ':read': { S: read.at } } }),

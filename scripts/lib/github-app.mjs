@@ -270,6 +270,7 @@ const allPages = async (call, path, query, pages = 30) => {
 /**
  * The pages of a list read newest first, up to `pages` of them, until one
  * ends short or its last row is `past` the window: every row after it is too.
+ * Thirty pages hold three thousand rows, past any count a periodic sets.
  *
  * @param {(method: string, path: string, body?: unknown) => Promise<any>} call
  * @param {string} path
