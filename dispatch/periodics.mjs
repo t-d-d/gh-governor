@@ -27,8 +27,11 @@
  * last fire started is still open is held ({@link Open}): the turn starts
  * nothing and logs the fire held, naming that session, and writes nothing,
  * so its count keeps growing from the fire before and the first check after
- * the run ends fires it. A run is finished once its session is archived,
- * whether by the sign-off sweep or by hand, or no longer exists; a record
+ * the run ends fires it. A day limit on empty windows is held the same
+ * way: its nothing-to-do record names no session, so it would let the next
+ * count start a second run over the open one. A run is finished once its
+ * session is archived, whether by the sign-off sweep or by hand, or no
+ * longer exists; a record
  * with no session, from an unconfirmed launch, is a finished run. A session
  * that cannot be read refuses the periodic for the turn, and is never a
  * finished run.
@@ -308,6 +311,9 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       refuse(name, error, 'what it counts could not be read, so it is refused this turn');
       continue;
     }
+    // Held before a nothing-to-do too: its record names no session, so the
+    // next count would start a second run over the open one.
+    if (await held(name, read)) continue;
     if (!reached && Object.values(windows).every((items) => items.length === 0)) {
       // The day limit came due on empty windows: nothing to review, and the
       // next day limit counts from now.
@@ -323,7 +329,6 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       }
       continue;
     }
-    if (await held(name, read)) continue;
     due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, windows, asOf: new Date(now).toISOString() });
   }
   return { due, unread };

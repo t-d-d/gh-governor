@@ -1210,6 +1210,31 @@ describe('run — periodics an event brings due', () => {
     assert.ok(h.launches[0]!.prompt.includes(`Pull requests merged into the default branch since ${ago(DAY)}: 20`));
   });
 
+  test('a login refreshed to read the last run\'s session whose write-back failed is written back before the turn ends', async () => {
+    const expired = LOGIN.replace(String(NOW + 3_600_000), String(NOW - 1));
+    let secret = storedLogin(expired, ACCOUNT);
+    let puts = 0;
+    const h = counting({ merges: merged(20) }, {
+      secret: {
+        get: async () => secret,
+        put: async (text: string) => {
+          puts += 1;
+          if (puts === 1) throw new Error('PutSecretValue: 500');
+          secret = text;
+        },
+      },
+      refreshLogin: async () => {
+        h.setLoginOnDisk(REFRESHED);
+        return { status: 0, output: '{"result":"OK"}' };
+      },
+    });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    const result = await run(MERGE, h.deps as never);
+    assert.equal(h.launches.length, 0);
+    assert.equal(secret, SECRET_REFRESHED, 'the rotated login is not lost with the task');
+    assert.equal(exitCodeFor(result as never), 1, 'the periodic was refused');
+  });
+
   test('short of its number, nothing starts and the record stays', async () => {
     const h = counting({ merges: merged(19) });
     h.periodics.set(key(CODE.name), fired(DAY));
@@ -4063,6 +4088,25 @@ describe('run — every served repo', () => {
     assert.match(h.launches[0]!.prompt, new RegExp(`in ${ASKME}`));
     assert.deepEqual(result.dispatched.map((d) => d.issue), [2, 7, 9]);
     assert.ok(h.read.includes(`${ASKME} ready mode: afk as ghs_${ASKME}`), h.read.join('; '));
+  });
+
+  test('the periodics\' last runs are read under one login refresh a turn, whichever served repo they are in', async () => {
+    const expired = LOGIN.replace(String(NOW + 3_600_000), String(NOW - 1));
+    const askmeFile = JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: true, periodics: true }, periodics: [{ name: 'Askme retro', prompt: 'Look back.', days: 7 }] });
+    const h = twoRepos({
+      askmeFile,
+      secret: { get: async () => storedLogin(expired, ACCOUNT), put: async (text: string) => { h.stored.push(text); } },
+      refreshLogin: async () => {
+        h.calls.push('refreshLogin');
+        return { status: 1, output: 'refresh refused' };
+      },
+    });
+    const fired = { at: new Date(NOW - 7 * 24 * 60 * 60 * 1000).toISOString(), session: 'https://claude.ai/code/session_01RUN', baseline: false };
+    h.periodics.set(`${REPO}#Weekly retro`, fired);
+    h.periodics.set(`${ASKME}#Askme retro`, fired);
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.calls.filter((c) => c === 'refreshLogin').length, 1, h.calls.join('; '));
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic-unread' && l.periodic === 'Askme retro'), JSON.stringify(h.logged));
   });
 
   test('a ticket in a repo with its own claim label is claimed with it, the label made first, its ready label left on', async () => {
