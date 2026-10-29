@@ -48,18 +48,19 @@ The smallest useful file:
 
 ### The starter kit
 
-[examples/starter/](examples/starter/) is a starter kit a new repo copies into its own `.github/`, so it gets recurring work from day one. It holds two files:
+[examples/starter/](examples/starter/) is a starter kit a new repo copies into its own `.github/`, so it gets recurring work from day one. It holds three files:
 
 - `.github/dispatch.json` turns on pickup, summons, PR messages, subscriptions, the heartbeat and three periodics: a code review every 10 merges into the default branch, a ticket review every 5 issues opened, each also weekly when its count has counted anything, and a weekly review on its day limit alone. Each prompt is plain text that needs no skill, and acts on the window governor writes under it: the last fire's time, and what each count counted since. A repo can swap any prompt for one that calls its own skill.
 - `.github/workflows/heartbeat.yml` calls [the heartbeat checker](#the-heartbeat-checker) every hour, pinned to a commit of this repo.
+- `.github/workflows/config-check.yml` calls [the config check](#the-config-check) on each pull request that changes `dispatch.json`, pinned to a commit of this repo.
 
 To use it:
 
 1. Create the heartbeat issue. Its body must carry governor's marker, `<!-- governor:heartbeat -->`, or governor writes nothing into it. Put the marker on a line of its own: governor writes its block after it. Anything else in the body stays yours.
-2. Copy both files into the repo's `.github/`.
+2. Copy the three files into the repo's `.github/`.
 3. In `dispatch.json`, set `environment` to the repo's cloud environment, by name, in place of the `my-env` placeholder. Set `heartbeat.issue` to the issue's number, and the labels to the repo's own.
 4. Keep, edit or drop the periodics, and set the checker's labels in `heartbeat.yml`.
-5. Commit both to the default branch.
+5. Merge them into the default branch through a pull request. The config check runs on it.
 
 Governor writes pickup's line after its next sweep. A periodic's line appears when it first fires, one day limit or one count after governor first reads it. Until then the checker measures from when `dispatch.json` last changed.
 
@@ -193,6 +194,50 @@ What its issues say:
 The check keeps one issue open for each of these and updates it on each run. It closes the issue, with a comment, once the line is fresh again, the heartbeat reads again, or the file no longer lists the line. While the heartbeat cannot be read, it leaves the other issues as they are. Runs in a repo queue rather than overlap, so two never open the same issue. A failure to list, open or close its issues fails the run.
 
 It runs on the caller's own token, `contents: read` and `issues: write`, and holds no secret or id. It uses no action. The step carries [checker/heartbeat-check.mjs](checker/heartbeat-check.mjs) and runs it on the runner's node.
+
+### The config check
+
+Governor reads `.github/dispatch.json` from the default branch only, so a bad file shows up only after it merges. The repo then goes unserved, and the alarm pages the operator, not the repo. The config check catches the file on the pull request instead. The repo calls the reusable workflow [.github/workflows/config-check.yml](.github/workflows/config-check.yml) on pull requests that change the file, pinned to a commit of this repo. It passes the same commit as `commit`, because a called workflow cannot learn which commit it runs from:
+
+```yaml
+name: config check
+on:
+  pull_request:
+    paths:
+      - .github/dispatch.json
+permissions:
+  contents: read
+jobs:
+  check:
+    uses: t-d-d/gh-governor/.github/workflows/config-check.yml@<commit>
+    with:
+      commit: <commit>
+```
+
+A repo whose prompts live in files adds their paths under `paths:`, so a change to a prompt file runs the check too.
+
+The workflow fetches this repo at `commit` with git, installs the task's dependencies in `dispatch/`, and runs [checker/config-check.mjs](checker/config-check.mjs). It reads the pull request's head: the config file and every prompt file the file names. It runs governor's own `readConfig` and `resolveFiles` over them, so the check and governor share one schema.
+
+The run fails, with governor's fault text, on:
+
+- a file that is not JSON, or that the schema refuses, a rule across keys included, such as a claim label that is also a ready label or `prReview` on with no `review` section;
+- a prompt file that is missing or empty, or that names a fact its kind lacks.
+
+It warns, without failing, on a file governor reads but that cannot work:
+
+- a ready label the repo does not have;
+- a `workflows.ci` file that is not in the repo;
+- a heartbeat issue that does not exist or lacks its marker, `<!-- governor:heartbeat -->`, or the repo's own in the older shape;
+- a `review.humanOnly` or `review.quote` glob that matches no path.
+
+A pull request that deletes the file gets a warning that governor will stop serving the repo.
+
+It runs on the caller's own token, `contents: read` alone, and holds no secret or id. It uses no action. Where that token may not read the repo's labels or the heartbeat issue, as can happen in a private repo, the check warns that it could not, and leaves that part undone.
+
+What it cannot see:
+
+- **Whether `environment` resolves.** Only governor can check that, because it needs the claude.ai login.
+- **A rule newer than the pin.** A pinned check refuses a key governor added after its commit, so the repo bumps the pin. A rule governor tightened after the pin lets a file through that governor then refuses, and the alarm still catches that.
 
 ## How governor runs
 

@@ -1,0 +1,23 @@
+# Checks .github/dispatch.json on each pull request that changes it, with
+# the code governor runs, so a file governor would refuse fails here rather
+# than unserving the repo once it merges. The check runs here, on this
+# repo's own token, pinned to a commit of gh-governor. To move to a newer
+# check, change the commit after `@` and in `commit:` together.
+#
+# If your prompts live in files ({ "file": "<path>" } in dispatch.json),
+# add their paths under `paths:` too, so a change to one runs the check.
+name: config check
+
+on:
+  pull_request:
+    paths:
+      - .github/dispatch.json
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    uses: t-d-d/gh-governor/.github/workflows/config-check.yml@71b38b26b5d94e66da9969ccfa4490a2c6c01889
+    with:
+      commit: 71b38b26b5d94e66da9969ccfa4490a2c6c01889
