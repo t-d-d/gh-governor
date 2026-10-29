@@ -5,12 +5,11 @@
  * load-bearing and each step is tested here:
  *
  *   1. open + `workflow: ready for development`
- *   2. `mode: afk` only; `type: prd` and `workflow: under development`
- *      dropped
+ *   2. `mode: afk` only; the repo's excluded labels (`type: prd` in the
+ *      factory) and its claim label `workflow: under development` dropped
  *   3. anything with an OPEN native blocker dropped
  *   3b. a child of a PRD not `workflow: under development` dropped
- *   4. by type — bug, qa, nfr, refactor, other, enhancement last; oldest
- *      first within each
+ *   4. oldest first, then by number, whatever the type labels say
  *   5. the caller's cap, applied last
  *
  * The asymmetry that decides every ambiguous case: dispatching a ticket that
@@ -32,8 +31,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { selectReadyWork } from '../../scripts/lib/ready-work.mjs';
 
-/** The factory's labels: two ready labels, and the claim. */
-const FACTORY_LABELS = { ready: ['workflow: ready for development', 'mode: afk'], claim: 'workflow: under development' };
+/** The factory's labels: two ready labels, the claim, and the default exclude. */
+const FACTORY_LABELS = { ready: ['workflow: ready for development', 'mode: afk'], claim: 'workflow: under development', exclude: ['type: prd'] };
 
 type Issue = {
   number: number;
@@ -93,7 +92,7 @@ describe('selectReadyWork — eligibility', () => {
     assert.deepEqual(selectReadyWork([claimed], { labels: FACTORY_LABELS, cap: 5 }), []);
   });
 
-  test('drops type: prd even when it is labelled afk', () => {
+  test('drops type: prd, the factory\'s excluded label, even when it is labelled afk', () => {
     const prd = issue(1, { labels: [READY, 'mode: afk', 'type: prd'] });
     assert.deepEqual(selectReadyWork([prd], { labels: FACTORY_LABELS, cap: 5 }), []);
   });
@@ -182,68 +181,26 @@ describe('selectReadyWork — parent PRD', () => {
 });
 
 describe('selectReadyWork — ordering', () => {
-  test('bugs come before everything else', () => {
+  test('a bug and an enhancement dispatch oldest first', () => {
     const rows = [
-      issue(1, { labels: [READY, 'mode: afk', 'type: enhancement'] }),
-      issue(2, { labels: [READY, 'mode: afk', 'type: bug'] }),
+      issue(1, { labels: [READY, 'mode: afk', 'type: bug'], created_at: '2026-02-01T00:00:00Z' }),
+      issue(2, { labels: [READY, 'mode: afk', 'type: enhancement'], created_at: '2026-01-01T00:00:00Z' }),
     ];
     assert.deepEqual(numbers(selectReadyWork(rows, { labels: FACTORY_LABELS, cap: 5 })), [2, 1]);
   });
 
-  test('oldest first within the bug group', () => {
-    const bug = (n: number, created_at: string) =>
-      issue(n, { labels: [READY, 'mode: afk', 'type: bug'], created_at });
+  test('oldest first', () => {
     const rows = [
-      bug(1, '2026-03-01T00:00:00Z'),
-      bug(2, '2026-01-01T00:00:00Z'),
-      bug(3, '2026-02-01T00:00:00Z'),
+      issue(1, { created_at: '2026-03-01T00:00:00Z' }),
+      issue(2, { created_at: '2026-01-01T00:00:00Z' }),
+      issue(3, { created_at: '2026-02-01T00:00:00Z' }),
     ];
     assert.deepEqual(numbers(selectReadyWork(rows, { labels: FACTORY_LABELS, cap: 5 })), [2, 3, 1]);
   });
 
-  test('oldest first within the non-bug group, after every bug', () => {
-    const rows = [
-      issue(1, { created_at: '2026-03-01T00:00:00Z' }),
-      issue(2, { created_at: '2026-01-01T00:00:00Z' }),
-      issue(3, { labels: [READY, 'mode: afk', 'type: bug'], created_at: '2026-04-01T00:00:00Z' }),
-    ];
-    // #3 is the newest of the three and still sorts first: it is the only bug.
-    assert.deepEqual(numbers(selectReadyWork(rows, { labels: FACTORY_LABELS, cap: 5 })), [3, 2, 1]);
-  });
-
-  test('type decides before age: bug, qa, nfr, refactor, then enhancement', () => {
-    // Created newest-first by rank, so oldest-first alone would reverse it.
-    const typed = (n: number, type: string, created_at: string) =>
-      issue(n, { labels: [READY, 'mode: afk', type], created_at });
-    const rows = [
-      typed(1, 'type: enhancement', '2026-01-01T00:00:00Z'),
-      typed(2, 'type: refactor', '2026-02-01T00:00:00Z'),
-      typed(3, 'type: nfr', '2026-03-01T00:00:00Z'),
-      typed(4, 'type: qa', '2026-04-01T00:00:00Z'),
-      typed(5, 'type: bug', '2026-05-01T00:00:00Z'),
-    ];
-    assert.deepEqual(numbers(selectReadyWork(rows, { labels: FACTORY_LABELS, cap: 5 })), [5, 4, 3, 2, 1]);
-  });
-
-  test('an adr or an untyped issue sorts after refactors and before enhancements', () => {
-    const rows = [
-      issue(1, { created_at: '2026-01-01T00:00:00Z' }),
-      issue(2, { labels: [READY, 'mode: afk', 'type: adr'], created_at: '2026-02-01T00:00:00Z' }),
-      issue(3, { labels: [READY, 'mode: afk'], created_at: '2026-03-01T00:00:00Z' }),
-      issue(4, { labels: [READY, 'mode: afk', 'type: refactor'], created_at: '2026-04-01T00:00:00Z' }),
-    ];
-    assert.deepEqual(numbers(selectReadyWork(rows, { labels: FACTORY_LABELS, cap: 5 })), [4, 2, 3, 1]);
-  });
-
-  test('an issue carrying two type labels ranks by the higher one', () => {
-    const rows = [
-      issue(1, { labels: [READY, 'mode: afk', 'type: nfr'], created_at: '2026-01-01T00:00:00Z' }),
-      issue(2, {
-        labels: [READY, 'mode: afk', 'type: enhancement', 'type: qa'],
-        created_at: '2026-02-01T00:00:00Z',
-      }),
-    ];
-    assert.deepEqual(numbers(selectReadyWork(rows, { labels: FACTORY_LABELS, cap: 5 })), [2, 1]);
+  test('two issues filed in the same second go by number', () => {
+    const rows = [issue(9), issue(4), issue(6)];
+    assert.deepEqual(numbers(selectReadyWork(rows, { labels: FACTORY_LABELS, cap: 5 })), [4, 6, 9]);
   });
 
   test('ordering does not depend on input order', () => {
@@ -255,17 +212,17 @@ describe('selectReadyWork — ordering', () => {
     const forward = numbers(selectReadyWork(rows, { labels: FACTORY_LABELS, cap: 5 }));
     const reversed = numbers(selectReadyWork([...rows].reverse(), { labels: FACTORY_LABELS, cap: 5 }));
     assert.deepEqual(forward, reversed);
-    assert.deepEqual(forward, [2, 3, 1]);
+    assert.deepEqual(forward, [3, 1, 2]);
   });
 });
 
 describe('selectReadyWork — cap', () => {
   test('applies the cap after ordering, not before', () => {
     const rows = [
-      issue(1, { created_at: '2026-01-01T00:00:00Z' }),
-      issue(2, { labels: [READY, 'mode: afk', 'type: bug'], created_at: '2026-09-01T00:00:00Z' }),
+      issue(1, { created_at: '2026-09-01T00:00:00Z' }),
+      issue(2, { created_at: '2026-01-01T00:00:00Z' }),
     ];
-    // Capping before the sort would keep #1; the bug has to win.
+    // Capping before the sort would keep #1; the older ticket has to win.
     assert.deepEqual(numbers(selectReadyWork(rows, { labels: FACTORY_LABELS, cap: 1 })), [2]);
   });
 
@@ -288,11 +245,17 @@ describe('selectReadyWork — cap', () => {
 });
 
 describe('selectReadyWork — a repo\'s own labels', () => {
-  const labels = { ready: ['mode: afk'], claim: 'claimed' };
+  const labels = { ready: ['mode: afk'], claim: 'claimed', exclude: ['epic', 'blocked'] };
 
   test('a ticket carrying every ready label the repo names is ready, and its claim label drops it', () => {
     assert.deepEqual(numbers(selectReadyWork([issue(1, { labels: ['mode: afk'] })], { cap: 5, labels })), [1]);
     assert.deepEqual(selectReadyWork([issue(1, { labels: ['mode: afk', 'claimed'] })], { cap: 5, labels }), []);
     assert.deepEqual(selectReadyWork([issue(1, { labels: ['bug'] })], { cap: 5, labels }), []);
+  });
+
+  test('a ticket carrying any label the repo excludes is dropped, and only those', () => {
+    assert.deepEqual(selectReadyWork([issue(1, { labels: ['mode: afk', 'epic'] })], { cap: 5, labels }), []);
+    assert.deepEqual(selectReadyWork([issue(1, { labels: ['mode: afk', 'blocked'] })], { cap: 5, labels }), []);
+    assert.deepEqual(numbers(selectReadyWork([issue(1, { labels: ['mode: afk', 'type: prd'] })], { cap: 5, labels })), [1], 'type: prd is only the default');
   });
 });

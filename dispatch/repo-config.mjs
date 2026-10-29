@@ -3,8 +3,8 @@
  * repo, written and reviewed in that repo.
  *
  * The file is `.github/dispatch.json` on the repo's default branch. It names
- * the repo's cloud environment, by ID or by name, the labels that mark a ticket ready and the
- * label that claims it, turns each feature on, may replace the
+ * the repo's cloud environment, by ID or by name, the labels that mark a ticket ready, the
+ * label that claims it and the labels that keep a ticket out, turns each feature on, may replace the
  * instruction in each message kind (`prompts`, dispatch/prompts.mjs),
  * names the repo's CI workflow, its triage targets and the tag
  * each target's deploy moves (`workflows`), and holds the PR
@@ -199,8 +199,12 @@ export const configSchema = z.strictObject({
     ready: z.array(label).min(1),
     claim: label,
     claimRemoves: z.array(label).default([]),
+    exclude: z.array(label).default(['type: prd']),
   }).refine((l) => !l.ready.includes(l.claim), 'the claim label cannot be a ready label')
-    .refine((l) => l.claimRemoves.every((r) => l.ready.includes(r)), 'claimRemoves names only ready labels'),
+    .refine((l) => l.claimRemoves.every((r) => l.ready.includes(r)), 'claimRemoves names only ready labels')
+    // A ready ticket carries every ready label, so excluding one would
+    // keep every ticket out.
+    .refine((l) => !l.exclude.some((e) => l.ready.includes(e)), 'exclude cannot name a ready label'),
   features: z.strictObject(Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, z.boolean().optional()]))),
   prompts: z.strictObject(Object.fromEntries(Object.keys(PROMPTS).map((kind) => [kind, prompt(kind).optional()]))).default({}),
   workflows: workflowsSchema,
@@ -238,10 +242,12 @@ export const configSchema = z.strictObject({
  * @typedef {{ issue: number, marker?: string }} Heartbeat
  * @typedef {{ sweepHours?: number }} Pickup
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number }} Periodic A recurring session, its prompt read.
- * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, pickup?: Pickup, periodics: Periodic[] }} RepoConfig
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, pickup?: Pickup, periodics: Periodic[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
  *   ready labels the claim takes off, and a failed launch puts back.
+ *   `labels.exclude`: the labels that keep a ticket out; `type: prd`
+ *   when the file names none.
  *   `prompts`: the repo's instruction for each message kind it replaces.
  *   `workflows`: what the repo's workflows are to the dispatcher.
  *   `review`: the PR review's settings, where the file has them.

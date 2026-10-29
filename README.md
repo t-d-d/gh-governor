@@ -73,6 +73,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.
 | `labels.ready` | yes | Every label a ready ticket carries. |
 | `labels.claim` | yes | The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up. |
 | `labels.claimRemoves` | no | The ready labels the claim takes off, and a failed launch puts back. Default none. |
+| `labels.exclude` | no | Labels that keep a ticket out: a ticket carrying any of them is never picked up. It cannot name a ready label. Default `["type: prd"]`. |
 | `features` | yes | The switches below, each `true` or `false`. A switch left out is off. |
 | `workflows` | no | What the repo's workflows are to governor: `ci`, `triage` and `tags`. |
 | `review` | when `prReview` is on | The PR review's settings. |

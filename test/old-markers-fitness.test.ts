@@ -24,7 +24,7 @@ const old = (text: string) => text.replaceAll('governor:', OLD);
 const REPO = 'acme/factory';
 const NOW = Date.parse('2026-10-28T12:00:00Z');
 const AT = '2026-10-28T11:30:00.000Z';
-const LABELS = { ready: ['mode: afk'], claim: 'claimed' };
+const LABELS = { ready: ['mode: afk'], claim: 'claimed', exclude: ['type: prd'] };
 const SESSION = 'https://claude.ai/code/session_01OTHER';
 const OWNER = 'https://claude.ai/code/session_01OWNER';
 const FOOTER = `🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${OWNER}`;
