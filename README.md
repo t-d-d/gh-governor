@@ -172,7 +172,7 @@ What its issues say:
 - **No line.** The file lists pickup or a periodic with no line on the heartbeat issue, and the file last changed longer ago than its limit plus the tolerance.
 - **The heartbeat could not be read.** The config file is missing, unreadable, does not parse, or does not turn the heartbeat on in the `{ "issue": <number> }` shape, or the heartbeat issue cannot be read or lacks governor's marker. The issue says which.
 
-The check keeps one issue open for each of these and updates it on each run. It closes the issue, with a comment, once the line is fresh again or the heartbeat reads again. While the heartbeat cannot be read, it leaves the other issues as they are. Runs in a repo queue rather than overlap, so two never open the same issue. A failure to list, open or close its issues fails the run.
+The check keeps one issue open for each of these and updates it on each run. It closes the issue, with a comment, once the line is fresh again, the heartbeat reads again, or the file no longer lists the line. While the heartbeat cannot be read, it leaves the other issues as they are. Runs in a repo queue rather than overlap, so two never open the same issue. A failure to list, open or close its issues fails the run.
 
 It runs on the caller's own token, `contents: read` and `issues: write`, and holds no secret or id. It uses no action. The step carries [checker/heartbeat-check.mjs](checker/heartbeat-check.mjs) and runs it on the runner's node.
 

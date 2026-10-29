@@ -371,6 +371,47 @@ describe('checking the heartbeat', () => {
     assert.ok(old.open().every((i) => /no line/.test(String(i.body))), JSON.stringify(old.open()));
   });
 
+  test('a periodic name with spaces around it is matched trimmed, as governor stores it', async () => {
+    const file = factory();
+    file.periodics = file.periodics.map((p: { name: string }) => (p.name === 'Ticket review' ? { ...p, name: ' Ticket review ' } : p));
+    const gh = github({ config: file, heartbeat: fresh() });
+    await run(gh);
+    assert.deepEqual(gh.open(), []);
+  });
+
+  test('closes its issue for a line the file no longer lists', async () => {
+    const gh = github({ heartbeat: stampHeartbeat(fresh(), { pickup: { at: iso(NOW - 6 * HOUR), started: 1 } }) });
+    await run(gh);
+    assert.equal(gh.open().length, 1);
+    const file = factory();
+    file.features = { ...file.features, pickup: false };
+    const off = github({ config: file, heartbeat: fresh(), issues: gh.issues });
+    await run(off);
+    assert.deepEqual(off.open(), []);
+  });
+
+  test('leaves alone an issue that only quotes its marker', async () => {
+    const quoting = { number: 5, state: 'open', title: 'How the check works', body: 'Its issues start with `<!-- governor:heartbeat-check pickup -->`.' };
+    const gh = github({ heartbeat: stampHeartbeat(fresh(), { pickup: { at: iso(NOW - 6 * HOUR), started: 1 } }), issues: [quoting] });
+    await run(gh);
+    assert.equal(gh.open().length, 2);
+    assert.equal(quoting.title, 'How the check works');
+  });
+
+  test('a periodic the file lists twice gets one issue', async () => {
+    const file = factory();
+    file.periodics = [...file.periodics, file.periodics[0]];
+    const gh = github({ config: file, heartbeat: stampHeartbeat(fresh(), { periodics: [{ name: 'Weekly retro', at: iso(NOW - 9 * DAY), session: null, state: 'nothing to do' }] }) });
+    await run(gh);
+    assert.equal(gh.open().length, 1);
+  });
+
+  test('reads when the config file last changed once a run', async () => {
+    const gh = github({ heartbeat: BODY });
+    await run(gh);
+    assert.equal(gh.calls.filter((c) => c.path.startsWith(`/repos/${REPO}/commits`)).length, 1);
+  });
+
   test('periodics in the block the file no longer lists are not checked', async () => {
     const gh = github({ heartbeat: stampHeartbeat(fresh(), { periodics: [{ name: 'Gone', at: iso(NOW - 90 * DAY), by: { days: 1 }, session: null, state: 'nothing to do' }] }) });
     await run(gh);

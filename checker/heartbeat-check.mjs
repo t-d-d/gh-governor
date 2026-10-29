@@ -166,9 +166,11 @@ export const readConfig = (text) => {
   if (features.periodics === true) {
     if (!Array.isArray(file.periodics)) return { ok: false, fault: `${CONFIG_PATH}'s periodics is not a list` };
     for (const [i, p] of file.periodics.entries()) {
-      if (!isObject(p) || typeof p.name !== 'string' || p.name === '') return { ok: false, fault: `${CONFIG_PATH}'s periodics[${i}] has no name` };
-      if (!positive(p.days)) return { ok: false, fault: `${CONFIG_PATH}'s periodic "${p.name}" has no days` };
-      periodics.push({ name: p.name, days: /** @type {number} */ (p.days) });
+      // Governor trims a periodic's name, and keys its line by the trimmed name.
+      const name = typeof p?.name === 'string' ? p.name.trim() : '';
+      if (!isObject(p) || name === '') return { ok: false, fault: `${CONFIG_PATH}'s periodics[${i}] has no name` };
+      if (!positive(p.days)) return { ok: false, fault: `${CONFIG_PATH}'s periodic "${name}" has no days` };
+      if (!periodics.some((q) => q.name === name)) periodics.push({ name, days: /** @type {number} */ (p.days) });
     }
   }
   return { ok: true, config: { issue: /** @type {number} */ (issue), pickupHours, periodics } };
@@ -185,7 +187,9 @@ const markerOf = (/** @type {string} */ key) => `<!-- governor:heartbeat-check $
 const FAULT_KEY = 'fault';
 const PICKUP_KEY = 'pickup';
 const periodicKey = (/** @type {string} */ name) => `periodic ${encodeURIComponent(name)}`;
-const KEYED = /<!-- governor:heartbeat-check (\S+(?: \S+)?) -->/;
+// Anchored: the check's issues start with their marker, and an issue that
+// only quotes one is someone else's.
+const KEYED = /^<!-- governor:heartbeat-check (\S+(?: \S+)?) -->/;
 
 /**
  * @typedef {{ key: string, title: string, body: string }} Overdue
@@ -216,6 +220,8 @@ export const judge = async ({ config, beat, now, toleranceHours, configChanged }
   const tail = `This issue closes itself once the line is fresh again.`;
   /** @type {Array<Overdue | Fresh>} */
   const out = [];
+  /** @type {Promise<number> | undefined} */
+  let changedOnce;
   /**
    * @param {string} key
    * @param {string | undefined} at
@@ -229,7 +235,8 @@ export const judge = async ({ config, beat, now, toleranceHours, configChanged }
       out.push(Number.isFinite(late) && late <= limit + tolerance ? { key, fresh: at } : overdue(hoursText(late)));
       return;
     }
-    const changed = await configChanged();
+    changedOnce ??= configChanged();
+    const changed = await changedOnce;
     const late = now - changed;
     if (late > limit + tolerance) out.push(missing(new Date(changed).toISOString(), hoursText(late)));
     else out.push({ key, fresh: 'no line yet' });
@@ -304,6 +311,7 @@ export const check = async ({ api, repo, now, toleranceHours, labels, log }) => 
     const had = kept.get(o.key);
     if (had === undefined) {
       const made = await api('POST', `/repos/${repo}/issues`, { title: o.title, body: o.body, labels });
+      kept.set(o.key, { number: made.number, title: o.title, body: o.body });
       log(`${o.key}: opened #${made.number}`);
     } else if (had.title !== o.title || had.body !== o.body) {
       await api('PATCH', `/repos/${repo}/issues/${had.number}`, { title: o.title, body: o.body });
@@ -314,6 +322,7 @@ export const check = async ({ api, repo, now, toleranceHours, labels, log }) => 
   const close = async (key, why) => {
     const had = kept.get(key);
     if (had === undefined) return;
+    kept.delete(key);
     await api('POST', `/repos/${repo}/issues/${had.number}/comments`, { body: why });
     await api('PATCH', `/repos/${repo}/issues/${had.number}`, { state: 'closed', state_reason: 'completed' });
     log(`${key}: closed #${had.number}`);
@@ -369,6 +378,12 @@ export const check = async ({ api, repo, now, toleranceHours, labels, log }) => 
       log(`${j.key}: fresh (${j.fresh})`);
       await close(j.key, `The line is fresh again: ${j.fresh}.`);
     } else await keep(j);
+  }
+  // A line the file no longer lists, or a feature turned off, has no one
+  // left to close its issue but this.
+  const judgedKeys = new Set(judged.map((j) => j.key));
+  for (const key of [...kept.keys()]) {
+    if (key !== FAULT_KEY && !judgedKeys.has(key)) await close(key, `${CONFIG_PATH} no longer lists this line, so the check no longer watches it.`);
   }
 };
 
