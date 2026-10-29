@@ -15,6 +15,7 @@ import {
   parseFire as parseNamed,
   recentlyDispatched,
   shippingJob,
+  build,
 } from '../dispatch/webhook/fire.mjs';
 
 const NOW = Date.parse('2026-09-25T12:00:00Z');
@@ -533,5 +534,32 @@ describe('a subscribed message invocation', () => {
     const fire = { kind: 'message', session: 'session_01ABC', text: 'hi', subscribed: true, repo: 'acme/factory' };
     assert.deepEqual(parseNamed(fire), fire);
     assert.throws(() => parseNamed({ ...fire, subscribed: 'yes' }), /subscribed/);
+  });
+});
+
+describe('a fire that counts for the periodics', () => {
+  test('any fire naming its repo may carry the event it counts', () => {
+    for (const fire of [
+      { kind: 'schedule', freed: 717, counted: 'issuesClosed' },
+      { kind: 'conflicts', pr: 724, sha: 'c'.repeat(40), base: 'main', counted: 'merges' },
+      { kind: 'dispatch', prompt: 'Look.', counted: 'issuesOpened' },
+      { kind: 'periodics', counted: 'issuesOpened' },
+    ]) {
+      assert.deepEqual(parseNamed({ ...fire, repo: 'acme/factory' }), { ...fire, repo: 'acme/factory' });
+    }
+  });
+
+  test('an event no periodic counts is refused, and so is a periodics fire counting none', () => {
+    assert.throws(() => parseNamed({ kind: 'schedule', freed: 717, counted: 'pushes', repo: 'acme/factory' }), /counted/);
+    assert.throws(() => parseNamed({ kind: 'periodics', repo: 'acme/factory' }), /counted/);
+  });
+
+  test('a fire naming no repo counts nothing', () => {
+    assert.throws(() => parseNamed({ kind: 'periodics', counted: 'merges' }), /names its repo/);
+    assert.throws(() => parseNamed({ kind: 'schedule', counted: 'merges' }), /repo/);
+  });
+
+  test('the builder spells it', () => {
+    assert.deepEqual(build.periodics({ counted: 'merges' }), { kind: 'periodics', counted: 'merges' });
   });
 });

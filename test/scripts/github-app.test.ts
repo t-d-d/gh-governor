@@ -524,6 +524,66 @@ describe('githubReader', () => {
     assert.equal(new URL(calls[0]!.url).searchParams.get('state'), 'open');
   });
 
+  // A periodic's windows (dispatch/periodics.mjs): counted by when each
+  // thing happened, never by comparing commits, which stops at 250.
+  const SINCE = '2026-10-20T00:00:00Z';
+  const page = (url: string) => Number(new URL(url).searchParams.get('page'));
+
+  test('mergedSince lists the PRs merged into a base after a time, oldest first, reading closed PRs newest updated first until they predate it', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({ number: 300 + i, title: `PR ${i}`, merged_at: i % 2 === 0 ? `2026-10-2${1 + (i % 5)}T00:00:00Z` : null, updated_at: '2026-10-26T00:00:00Z' }));
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/pulls': (_init: RequestInit | undefined, url: string) => (page(url) === 1 ? full : [
+        { number: 12, title: 'Merged just after', merged_at: '2026-10-20T00:00:01Z', updated_at: '2026-10-20T00:00:02Z' },
+        { number: 11, title: 'Merged before', merged_at: '2026-10-19T00:00:00Z', updated_at: '2026-10-19T23:00:00Z' },
+        { number: 10, title: 'Updated after, merged before', merged_at: '2026-10-18T00:00:00Z', updated_at: '2026-10-21T00:00:00Z' },
+      ]),
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    const merged = await reader.mergedSince('trunk', SINCE);
+    assert.equal(merged.length, 51);
+    assert.deepEqual(merged[0], { number: 12, title: 'Merged just after', at: '2026-10-20T00:00:01Z' });
+    assert.ok(merged.every((m, i) => i === 0 || merged[i - 1]!.at <= m.at), 'oldest first');
+    assert.equal(calls.length, 2, 'a page whose last PR predates the window ends the read');
+    const query = new URL(calls[0]!.url).searchParams;
+    assert.deepEqual([query.get('state'), query.get('base'), query.get('sort'), query.get('direction')], ['closed', 'trunk', 'updated', 'desc']);
+  });
+
+  test('issuesOpenedSince lists the issues opened after a time, PRs dropped, oldest first, reading newest created first until they predate it', async () => {
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues': [
+        { number: 9, title: 'Newest', created_at: '2026-10-22T00:00:00Z' },
+        { number: 8, title: 'A PR', created_at: '2026-10-21T00:00:00Z', pull_request: {} },
+        { number: 7, title: 'Older', created_at: '2026-10-21T00:00:00Z' },
+        { number: 6, title: 'Before', created_at: '2026-10-19T00:00:00Z' },
+      ],
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual(await reader.issuesOpenedSince(SINCE), [
+      { number: 7, title: 'Older', at: '2026-10-21T00:00:00Z' },
+      { number: 9, title: 'Newest', at: '2026-10-22T00:00:00Z' },
+    ]);
+    const query = new URL(calls[0]!.url).searchParams;
+    assert.deepEqual([query.get('state'), query.get('sort'), query.get('direction')], ['all', 'created', 'desc']);
+  });
+
+  test('issuesClosedSince lists the issues closed after a time, PRs and earlier closes dropped, oldest first', async () => {
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues': [
+        { number: 9, title: 'Closed late', closed_at: '2026-10-23T00:00:00Z' },
+        { number: 8, title: 'A PR', closed_at: '2026-10-22T00:00:00Z', pull_request: {} },
+        { number: 7, title: 'Closed before, commented after', closed_at: '2026-10-10T00:00:00Z' },
+        { number: 6, title: 'Closed early', closed_at: '2026-10-21T00:00:00Z' },
+      ],
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual(await reader.issuesClosedSince(SINCE), [
+      { number: 6, title: 'Closed early', at: '2026-10-21T00:00:00Z' },
+      { number: 9, title: 'Closed late', at: '2026-10-23T00:00:00Z' },
+    ]);
+    const query = new URL(calls[0]!.url).searchParams;
+    assert.deepEqual([query.get('state'), query.get('since')], ['closed', SINCE]);
+  });
+
   test('branchHead reads the commit a branch is at', async () => {
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/git/ref/heads/main': { ref: 'refs/heads/main', object: { sha: 'a'.repeat(40), type: 'commit' } },

@@ -61,7 +61,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.
 | `review` | when `prReview` is on | The PR review's settings. |
 | `heartbeat` | when `heartbeat` is on | `{ "issue": <number>, "marker": "<!-- … -->" }`: the issue whose `last-run:` line the two-hourly sweep updates. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
-| `periodics` | when `periodics` is on | The recurring sessions the two-hourly sweep starts. At least one when the switch is on. |
+| `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the switch is on. |
 
 The switches in `features`:
 
@@ -80,7 +80,7 @@ The switches in `features`:
 | `deployedLabels` | A shipping job labels the tickets it shipped `deployed: <target>`. Needs `deployMessages`. |
 | `prReview` | The PR review, run from the `review` section. |
 | `heartbeat` | The two-hourly sweep stamps the issue `heartbeat` names. |
-| `periodics` | A session per periodic in the `periodics` list, each time its day limit passes. |
+| `periodics` | A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached. |
 
 `workflows`:
 
@@ -100,13 +100,19 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 - `dependabot`: the manifests a Dependabot PR may change and pass with no model.
 - `merge`: whether a pass merges. Default `true`. With `false`, a pass approves and the owner merges.
 
-`periodics`: a list of recurring sessions, each `{ "name", "prompt", "days" }`.
+`periodics`: a list of recurring sessions, each `{ "name", "prompt", "days" }`, with `counts` and `gapHours` if wanted.
 
 - `name`: one line, unique in the file. The session is named after it.
-- `prompt`: what the session runs, as text or `{ "file": "<path>" }` read from the default branch. Governor adds a line under it giving the last fire's time, or saying this is the first run.
-- `days`: the day limit, in whole days, at least one. The periodic is due on the sweep nearest that many days after its last fire.
+- `prompt`: what the session runs, as text or `{ "file": "<path>" }` read from the default branch. Governor adds a line under it giving the last fire's time, or saying this is the first run, and lists what each count counted since then, by number and title.
+- `days` (required): the day limit, in whole days, at least one. The periodic is due on the sweep nearest that many days after its last fire.
+- `counts`: any of `merges` (pull requests merged into the default branch), `issuesOpened` and `issuesClosed`, each a whole number of at least one. The periodic is also due once that many have happened since its last fire, whichever limit comes first. At its day limit, a periodic with counts that counted nothing starts no session, and its next day limit counts from then.
+- `gapHours`: the fewest whole hours between two runs, at least one. A count reached inside the gap fires on the first event or sweep after it.
 
-A new periodic starts its first session one day limit after the first sweep that reads it. How governor keeps each one's record is in [docs/how-it-works.md](docs/how-it-works.md#periodics).
+```json
+{ "name": "Code review", "prompt": "Review what merged since the last review.", "days": 7, "counts": { "merges": 20 }, "gapHours": 4 }
+```
+
+A new periodic starts its first session one day limit, or one count, after the first fire that reads it. How governor keeps each one's record is in [docs/how-it-works.md](docs/how-it-works.md#periodics).
 
 `prompts`: each value is text, or `{ "file": "<path>" }` read from the default branch. The kinds, and the facts each may name as `{fact}`, are in [docs/how-it-works.md](docs/how-it-works.md#prompts).
 

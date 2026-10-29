@@ -28,7 +28,7 @@
  */
 
 import { z } from 'zod';
-import { WORKFLOW_PATH } from './webhook/fire.mjs';
+import { COUNTS, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, unknownFills } from './prompts.mjs';
 
 /** Where the file lives, on the repo's default branch. */
@@ -161,12 +161,19 @@ const heartbeatSchema = z.strictObject({
 /**
  * A recurring session: `name`, unique in the file, which the session is
  * named after and its record keyed by; `prompt`, what it runs; `days`, how
- * many whole days after its last fire it comes due.
+ * many whole days after its last fire it comes due. `counts`, each of
+ * merges into the default branch, issues opened and issues closed it names,
+ * brings it due sooner, once that many have happened since its last fire.
+ * `gapHours`: the fewest whole hours between two of its runs.
  */
 const periodicSchema = z.strictObject({
   name: z.string().trim().min(1).max(100).regex(/^[^\n]*$/, 'a name is one line'),
   prompt: z.union([z.string().trim().min(1), promptFile]),
   days: z.number().int().min(1),
+  counts: z.strictObject(Object.fromEntries(COUNTS.map((kind) => [kind, z.number().int().min(1).optional()])))
+    .refine((c) => Object.values(c).some((n) => n !== undefined), 'counts names at least one of merges, issuesOpened and issuesClosed')
+    .optional(),
+  gapHours: z.number().int().min(1).optional(),
 });
 
 /**
@@ -215,7 +222,7 @@ export const configSchema = z.strictObject({
  * }} Review The PR review's settings, its checklist read.
  * @typedef {{ file: string }} PromptFile
  * @typedef {{ issue: number, marker: string }} Heartbeat
- * @typedef {{ name: string, prompt: string, days: number }} Periodic A recurring session, its prompt read.
+ * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number }} Periodic A recurring session, its prompt read.
  * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, periodics: Periodic[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
@@ -383,6 +390,7 @@ export const switchOf = (fire, workflows = NO_WORKFLOWS) => {
     case 'branch-run': return 'branchRunMessages';
     case 'conflicts': return 'conflicts';
     case 'review': return 'prReview';
+    case 'periodics': return 'periodics';
     default: return null;
   }
 };

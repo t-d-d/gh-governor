@@ -11,7 +11,7 @@
  * where a field is spelled, so a new kind of fire, or a new field, is one
  * edit here and one test.
  *
- * Nine kinds. A `schedule` fire (EventBridge, every two hours) selects
+ * Ten kinds. A `schedule` fire (EventBridge, every two hours) selects
  * ready work up to the cap; one naming an `issue` (an issue just given a
  * label on the stack's SelectLabels) selects that issue alone, if the label
  * is one of the repo's ready labels and the selection would; one naming a
@@ -36,7 +36,9 @@
  * queued for, or no PR for every open one (dispatch/review.mjs); a
  * `conflicts` a PR merged into the default branch and its merge commit
  * (dispatch/conflicts.mjs). Each of those names the default branch its
- * payload did: no fire takes it for `main`.
+ * payload did: no fire takes it for `main`. A `periodics` fire names an
+ * event a periodic counts that queued no other fire; any fire may carry one
+ * as `counted` (dispatch/periodics.mjs).
  *
  * Pure, and a leaf: the Lambda packages dispatch/webhook/ whole, and the
  * task image copies this file (dispatch/Dockerfile).
@@ -59,6 +61,16 @@ export const SUBSCRIPTION_EVENTS = /** @type {const} */ (['comments', 'reviews',
 /** @typedef {typeof SUBSCRIPTION_EVENTS[number]} SubscriptionEvent */
 
 const EVENTS = /** @type {ReadonlySet<string>} */ (new Set(SUBSCRIPTION_EVENTS));
+
+/**
+ * The events a periodic can count (dispatch/periodics.mjs): a merge into
+ * the default branch, an issue opened, an issue closed. A fire for one of
+ * them carries it as `counted`, and the turn runs the repo's periodic check
+ * on it, whatever else the fire is for.
+ */
+export const COUNTS = /** @type {const} */ (['merges', 'issuesOpened', 'issuesClosed']);
+
+/** @typedef {typeof COUNTS[number]} Count */
 
 /** A run's conclusions that mean it went red; a cancelled one was stopped by someone. */
 export const RED = new Set(['failure', 'timed_out', 'startup_failure']);
@@ -248,10 +260,15 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  *   one its name carries, else the head.
  * @typedef {{ kind: 'review', pr?: number, headSha?: string }} ReviewFire
  * @typedef {{ kind: 'conflicts', pr: number, sha: string, base: string }} ConflictsFire A PR merged into the default branch, `base`, and its merge commit.
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire) & { repo?: string }} Fire
+ * @typedef {{ kind: 'periodics' }} PeriodicsFire An event a periodic counts, which queued no other fire: the turn checks the repo's periodics alone.
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
+ *   `counted`: the event a periodic counts that the fire is for ({@link COUNTS}),
+ *   so the turn checks the repo's periodics after its own work, under the
+ *   repo's periodics switch whatever switch its own work needs. A
+ *   `periodics` fire always carries one.
  *
  * @typedef {{ workflowId: number, runId: number, branch: string }} ScheduledRun A scheduled run on the default branch, `branch`, gone red, and its workflow.
  * @typedef {{ prompt: string, sessionName?: string, issue?: number }} Fallback
@@ -329,6 +346,9 @@ export const build = Object.freeze({
 
   /** @param {{ pr: number, sha: string, base: string }} args @returns {ConflictsFire} */
   conflicts: ({ pr, sha, base }) => ({ kind: 'conflicts', pr, sha, base }),
+
+  /** @param {{ counted: Count }} args @returns {PeriodicsFire & { counted: Count }} */
+  periodics: ({ counted }) => ({ kind: 'periodics', counted }),
 });
 
 // ── The container override ───────────────────────────────────────────────
@@ -476,14 +496,19 @@ export const REPO_NAME = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
  */
 export const parseFire = (event) => {
   const fire = parseKind(event);
-  const repo = /** @type {Record<string, unknown> | null} */ (event)?.repo;
+  const { repo, counted } = /** @type {Record<string, unknown> | null} */ (event) ?? {};
   if (fire.kind === 'probe') return fire;
   if (repo === undefined) {
-    if (fire.kind === 'schedule' && fire.issue === undefined && fire.freed === undefined) return fire;
+    if (fire.kind === 'schedule' && fire.issue === undefined && fire.freed === undefined && counted === undefined) return fire;
     throw new Error(`a ${fire.kind} fire names its repo, and this one names none: ${JSON.stringify(event)?.slice(0, 300)}`);
   }
   if (typeof repo !== 'string' || !REPO_NAME.test(repo)) throw new Error(`a fire's repo is an owner/name, got: ${JSON.stringify(repo)}`);
-  return { ...fire, repo };
+  if (counted === undefined) {
+    if (fire.kind === 'periodics') throw new Error(`a periodics fire names the event it counted, and this one names none: ${JSON.stringify(event)?.slice(0, 300)}`);
+    return { ...fire, repo };
+  }
+  if (!COUNTS.includes(/** @type {Count} */ (counted))) throw new Error(`a fire's counted is one of ${COUNTS.join(', ')}, got: ${JSON.stringify(counted)}`);
+  return { ...fire, repo, counted: /** @type {Count} */ (counted) };
 };
 
 /**
@@ -541,6 +566,7 @@ const parseKind = (event) => {
       ...(e?.headSha === undefined ? {} : { headSha: /** @type {string} */ (e.headSha) }),
     };
   }
+  if (kind === 'periodics') return { kind };
   if (kind === 'conflicts') {
     if (!isPositiveInt(e?.pr)) {
       throw new Error(`a conflicts invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);

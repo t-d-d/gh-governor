@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { STALE_RUNS_PAUSES_MS } from '../dispatch/runs.mjs';
 import { RUNS_PER_PAGE } from '../scripts/lib/github-app.mjs';
-import { DELIVER_BUDGET_MS, LAUNCH_TIMEOUT_MS, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed, sessionUrlFrom } from '../dispatch/turn.mjs';
+import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed, sessionUrlFrom } from '../dispatch/turn.mjs';
 import { DISPATCHER_LABEL, fromDispatcher, standingLine } from '../dispatch/deliveries.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { handoffFallback, handoffText } from '../dispatch/handoff.mjs';
@@ -191,6 +191,11 @@ const harness = (over: Record<string, unknown> = {}) => {
       pullFiles: async () => [],
       // A job fire's run: of the one delivery workflow unless a test says otherwise.
       run: async (id: number) => ({ id, path: WORKFLOW_PATHS.Deliver, status: 'completed', conclusion: 'success', event: 'workflow_run', head_branch: 'main', head_sha: SHA_MAIN, html_url: `https://github.com/${REPO}/actions/runs/${id}`, created_at: new Date(NOW).toISOString(), run_attempt: 1 }),
+      // A periodic's windows: nothing merged, opened or closed unless a test says otherwise.
+      defaultBranch: async () => 'main',
+      mergedSince: async () => [],
+      issuesOpenedSince: async () => [],
+      issuesClosedSince: async () => [],
     }),
     workspace: {
       prepare: () => {
@@ -886,6 +891,7 @@ describe('run — periodics', () => {
   const FACTORY_PERIODICS = JSON.parse(FACTORY_FILE).periodics as Array<{ name: string; prompt: string; days: number }>;
   const RETRO = FACTORY_PERIODICS.find((p) => p.name === 'Weekly retro')!;
   const REVIEW = FACTORY_PERIODICS.find((p) => p.name === 'Ticket review')!;
+  const CODE = FACTORY_PERIODICS.find((p) => p.name === 'Code review')!;
   const DAY = 24 * 60 * 60 * 1000;
   const ago = (days: number) => new Date(NOW - days * DAY).toISOString();
   const fired = (days: number, session: string | null = 'https://claude.ai/code/session_01OLD') => ({ at: ago(days), session, baseline: false });
@@ -899,6 +905,7 @@ describe('run — periodics', () => {
     assert.deepEqual(periodicWrites.map((w) => [w.name, w.record]), [
       [RETRO.name, { at: new Date(NOW).toISOString(), session: null, baseline: true }],
       [REVIEW.name, { at: new Date(NOW).toISOString(), session: null, baseline: true }],
+      [CODE.name, { at: new Date(NOW).toISOString(), session: null, baseline: true }],
     ]);
   });
 
@@ -944,6 +951,7 @@ describe('run — periodics', () => {
     const h = harness({ cap: 0 });
     h.periodics.set(key(RETRO.name), fired(8));
     h.periodics.set(key(REVIEW.name), fired(5));
+    h.periodics.set(key(CODE.name), fired(1));
     await run({ source: 'aws.events' }, h.deps as never);
     assert.deepEqual(h.launches, []);
     assert.deepEqual(h.periodicWrites, []);
@@ -961,6 +969,7 @@ describe('run — periodics', () => {
     const h = harness({ launch: async () => ({ status: 1, output: 'claude died' }) });
     h.periodics.set(key(RETRO.name), fired(7));
     h.periodics.set(key(REVIEW.name), fired(1));
+    h.periodics.set(key(CODE.name), fired(1));
     const result = turn(await run({ source: 'aws.events' }, h.deps as never));
     assert.deepEqual(h.periodicWrites, []);
     assert.equal(result.dispatched[0]?.outcome, 'failed');
@@ -1048,6 +1057,218 @@ describe('run — periodics', () => {
     await run({ source: 'aws.events' }, h.deps as never);
     assert.equal(read, 0);
     assert.deepEqual(h.launches.map((l) => l.sessionName), TICKETS);
+  });
+});
+
+/**
+ * Periodics an event brings due (dispatch/periodics.mjs): a merge into the
+ * default branch, an issue opened or closed. The fire for it carries the
+ * kind as `counted`; after the turn's own work, the turn reads each
+ * periodic's count of that kind since its last fire afresh, and starts
+ * the ones whose count reached their number, under the repo's periodics
+ * switch whatever switch the carrying turn needed.
+ */
+describe('run — periodics an event brings due', () => {
+  const FACTORY_PERIODICS = JSON.parse(FACTORY_FILE).periodics as Array<{ name: string; prompt: string; days: number; counts?: Record<string, number>; gapHours?: number }>;
+  const CODE = FACTORY_PERIODICS.find((p) => p.name === 'Code review')!;
+  const RETRO = FACTORY_PERIODICS.find((p) => p.name === 'Weekly retro')!;
+  const REVIEW = FACTORY_PERIODICS.find((p) => p.name === 'Ticket review')!;
+  const DAY = 24 * 60 * 60 * 1000;
+  const HOUR = 60 * 60 * 1000;
+  const ago = (ms: number) => new Date(NOW - ms).toISOString();
+  const fired = (ms: number) => ({ at: ago(ms), session: 'https://claude.ai/code/session_01OLD', baseline: false });
+  const key = (name: string) => `${REPO}#${name}`;
+  const SHA = 'c'.repeat(40);
+  const MERGE = { kind: 'conflicts', pr: 793, sha: SHA, base: 'main', counted: 'merges' };
+  const merged = (n: number) => Array.from({ length: n }, (_, i) => ({ number: 800 + i, title: `Merge ${i}`, at: ago(HOUR - i) }));
+  /** The factory's file with its switches changed. */
+  const fileWith = (features: Record<string, boolean>, over: Record<string, unknown> = {}) => {
+    const file = JSON.parse(FACTORY_FILE);
+    Object.assign(file.features, features);
+    return JSON.stringify({ ...file, ...over });
+  };
+  /** A harness whose reader answers the windows given, and records each window read. */
+  const counting = (windows: { merges?: unknown[]; issuesOpened?: unknown[]; issuesClosed?: unknown[] }, over: Record<string, unknown> = {}) => {
+    const reads: string[] = [];
+    const base = harness().deps.reader('');
+    const reader = () => ({
+      ...base,
+      openPulls: async () => [],
+      branchHead: async () => SHA,
+      mergedSince: async (branch: string, since: string) => { reads.push(`merges ${branch} ${since}`); return windows.merges ?? []; },
+      issuesOpenedSince: async (since: string) => { reads.push(`issuesOpened ${since}`); return windows.issuesOpened ?? []; },
+      issuesClosedSince: async (since: string) => { reads.push(`issuesClosed ${since}`); return windows.issuesClosed ?? []; },
+    });
+    const h = harness({ reader, sleep: async () => {}, ...over });
+    h.periodics.set(key(RETRO.name), fired(DAY));
+    h.periodics.set(key(REVIEW.name), fired(DAY));
+    return { ...h, reads };
+  };
+
+  test('a merge rides the conflicts turn, and starts a periodic whose merges since its last fire reached its number, its prompt listing them', async () => {
+    const h = counting({ merges: merged(20) });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    const result = await run(MERGE, h.deps as never) as Record<string, any>;
+    assert.equal(result.kind, 'conflicts');
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [CODE.name]);
+    const prompt = h.launches[0]!.prompt;
+    assert.ok(prompt.startsWith(`${CODE.prompt}\n\nThis periodic last fired at ${ago(DAY)}.`), prompt);
+    assert.ok(prompt.includes(`Pull requests merged into the default branch since ${ago(DAY)}: 20\n- #800 Merge 0\n`), prompt);
+    assert.ok(prompt.includes(`Issues closed since ${ago(DAY)}: none`), 'every count it keeps');
+    assert.ok(h.reads.includes(`merges main ${ago(DAY)}`), 'merges into the branch the fire names, read afresh since the last fire');
+    assert.deepEqual(h.periodics.get(key(CODE.name)), { at: new Date(NOW).toISOString(), session: 'https://claude.ai/code/session_01ABC', baseline: false });
+    assert.deepEqual(result.periodics?.dispatched, [{ repo: REPO, issue: null, outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01ABC' }]);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('short of its number, nothing starts and the record stays', async () => {
+    const h = counting({ merges: merged(19) });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await run(MERGE, h.deps as never);
+    assert.deepEqual(h.launches, []);
+    assert.deepEqual(h.periodics.get(key(CODE.name)), fired(DAY));
+    assert.deepEqual(h.reads, [`merges main ${ago(DAY)}`], 'only the merges are read for a merge');
+  });
+
+  test('an event starts no periodic on its day limit alone', async () => {
+    const h = counting({ merges: merged(1) });
+    h.periodics.set(key(CODE.name), fired(8 * DAY));
+    h.periodics.set(key(RETRO.name), fired(8 * DAY));
+    await run(MERGE, h.deps as never);
+    assert.deepEqual(h.launches, []);
+  });
+
+  test('the check runs under the periodics switch, whatever the carrying turn needs: a repo with conflicts and pickup off', async () => {
+    const configFile = async (repo: string) => (repo === REPO ? fileWith({ conflicts: false, pickup: false }) : null);
+    const h = counting({ merges: merged(20), issuesClosed: [{ number: 5, title: 'Done', at: ago(HOUR) }] }, { configFile });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    const merge = await run(MERGE, h.deps as never) as Record<string, any>;
+    assert.match(String(merge.refusal), /does not turn conflicts on/);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [CODE.name]);
+    assert.equal(merge.periodics?.dispatched.length, 1);
+
+    const h2 = counting({ issuesClosed: Array.from({ length: 10 }, (_, i) => ({ number: i + 1, title: `Closed ${i}`, at: ago(HOUR) })) }, { configFile });
+    h2.periodics.set(key(CODE.name), fired(DAY));
+    const close = await run({ kind: 'schedule', freed: 717, counted: 'issuesClosed' }, h2.deps as never) as Record<string, any>;
+    assert.match(String(close.refusal), /does not turn pickup on/);
+    assert.deepEqual(h2.launches.map((l) => l.sessionName), [CODE.name]);
+    assert.deepEqual(h2.reads.slice(0, 1), [`issuesClosed ${ago(DAY)}`]);
+  });
+
+  test('an issue opened, on a fire of its own, starts a periodic that counts it', async () => {
+    const triage = { name: 'Ticket triage', prompt: 'Triage the new issues.', days: 7, counts: { issuesOpened: 2 } };
+    const configFile = async (repo: string) => (repo === REPO ? fileWith({}, { periodics: [triage] }) : null);
+    const h = counting({ issuesOpened: [{ number: 30, title: 'New one', at: ago(HOUR) }, { number: 31, title: 'Newer', at: ago(1) }] }, { configFile });
+    h.periodics.set(key(triage.name), fired(DAY));
+    const result = await run({ kind: 'periodics', counted: 'issuesOpened' }, h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [triage.name]);
+    assert.ok(h.launches[0]!.prompt.endsWith(`Issues opened since ${ago(DAY)}: 2\n- #30 New one\n- #31 Newer`));
+    assert.equal(result.kind, 'periodics');
+  });
+
+  test('a repo whose file turns periodics off reads no periodic on an event', async () => {
+    let read = 0;
+    const configFile = async (repo: string) => (repo === REPO ? fileWith({ periodics: false }) : null);
+    const h = counting({ merges: merged(20) }, { configFile, state: { periodic: async () => { read += 1; return null; } } });
+    const own = await run({ kind: 'periodics', counted: 'issuesOpened' }, h.deps as never) as Record<string, any>;
+    assert.match(String(own.refusal), /does not turn periodics on/);
+    await run(MERGE, h.deps as never);
+    assert.equal(read, 0);
+    assert.deepEqual(h.launches, []);
+  });
+
+  test('inside its minimum gap nothing starts, and the next event after it does', async () => {
+    const h = counting({ merges: merged(25) });
+    h.periodics.set(key(CODE.name), fired((CODE.gapHours! - 1) * HOUR));
+    await run(MERGE, h.deps as never);
+    assert.equal(h.launches.length, 0);
+    assert.deepEqual(h.reads, [], 'nothing read inside the gap');
+    h.periodics.set(key(CODE.name), fired(CODE.gapHours! * HOUR));
+    await run(MERGE, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [CODE.name]);
+  });
+
+  test('a periodic launched on an event\'s turn starts inside EVENT_PERIODIC_WINDOW_MS of the turn\'s start, or stays due', async () => {
+    let clock = NOW;
+    const h = counting({ merges: merged(20) }, {
+      now: () => clock,
+      // The carrying turn's own work takes the window.
+      reader: () => ({ ...harness().deps.reader(''), branchHead: async () => SHA, openPulls: async () => { clock += EVENT_PERIODIC_WINDOW_MS + 1; return []; }, mergedSince: async () => merged(20) }),
+    });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    const result = await run(MERGE, h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.launches, []);
+    assert.deepEqual(h.periodics.get(key(CODE.name)), fired(DAY), 'still due for the next event or sweep');
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic' && /out of time/.test(String(l.reason))), JSON.stringify(h.logged));
+    assert.equal(exitCodeFor(result as never), 0);
+    assert.equal(EVENT_PERIODIC_WINDOW_MS + LAUNCH_TIMEOUT_MS < DEADLINE_MS, true, 'one launch from the window\'s end ends inside the deadline');
+  });
+
+  test('each launch runs under the launch budget', async () => {
+    const h = counting({ merges: merged(20) }, { launchTimeoutMs: 5, launch: () => new Promise(() => {}) });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await assert.rejects(run(MERGE, h.deps as never), /ran past 5 ms/);
+  });
+
+  test('a login the launch refreshed goes back to the secret', async () => {
+    const h = counting({ merges: merged(20) }, {
+      launch: async (launch: Launch) => {
+        h.launches.push(launch);
+        h.setLoginOnDisk(REFRESHED);
+        return { status: 0, output: CONFIRMED };
+      },
+    });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await run(MERGE, h.deps as never);
+    assert.deepEqual(h.stored, [SECRET_REFRESHED]);
+  });
+
+  test('a failed launch writes nothing, the periodic stays due, and the turn fails', async () => {
+    const h = counting({ merges: merged(20) }, { launch: async () => ({ status: 1, output: 'claude died' }) });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    const result = await run(MERGE, h.deps as never);
+    assert.deepEqual(h.periodics.get(key(CODE.name)), fired(DAY));
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  test('a window that cannot be read fails the turn, and starts nothing', async () => {
+    const h = counting({}, { reader: () => ({ ...harness().deps.reader(''), branchHead: async () => SHA, openPulls: async () => [], mergedSince: async () => { throw new Error('502'); } }) });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    const result = await run(MERGE, h.deps as never);
+    assert.deepEqual(h.launches, []);
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  test('a cap of 0 starts nothing on an event either', async () => {
+    const h = counting({ merges: merged(20) }, { cap: 0 });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await run(MERGE, h.deps as never);
+    assert.deepEqual(h.launches, []);
+    assert.deepEqual(h.periodics.get(key(CODE.name)), fired(DAY));
+  });
+
+  test('on the sweep, a count reached before the day limit starts it', async () => {
+    const h = counting({ merges: merged(20) });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.launches[0]?.sessionName, CODE.name);
+    assert.ok(h.reads.includes(`merges main ${ago(DAY)}`), 'the default branch read for the sweep');
+  });
+
+  test('on the sweep at its day limit, empty windows start no session and record nothing to do', async () => {
+    const h = counting({});
+    h.periodics.set(key(CODE.name), fired(7 * DAY));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.ok(!h.launches.some((l) => l.sessionName === CODE.name));
+    assert.deepEqual(h.periodics.get(key(CODE.name)), { at: new Date(NOW).toISOString(), session: null, baseline: false, nothing: true });
+  });
+
+  test('on the sweep at its day limit, a short window still starts it, listing what was counted', async () => {
+    const h = counting({ merges: merged(2) });
+    h.periodics.set(key(CODE.name), fired(7 * DAY));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.launches[0]?.sessionName, CODE.name);
+    assert.ok(h.launches[0]!.prompt.includes(`since ${ago(7 * DAY)}: 2\n- #800 Merge 0\n- #801 Merge 1`));
   });
 });
 
@@ -2957,6 +3178,22 @@ describe('realDeps: the state table', () => {
     await assert.rejects(failing.recordPeriodic(REPO, 'Weekly retro', read, next), /AccessDeniedException/);
     const malformed = dynamoState({ send: async () => ({ Item: { pk: { S: 'periodic#acme/factory' }, sk: { S: 'Weekly retro' }, at: { S: 'yesterday' } } }) } as never, 'T');
     await assert.rejects(malformed.periodic(REPO, 'Weekly retro'), /malformed/);
+  });
+
+  // A day limit with nothing to do is its fire, and opens no minimum gap:
+  // the record says so, and reads back the same.
+  test('a periodic\'s nothing-to-do record is written and read back as such', async () => {
+    const AT = '2026-10-27T12:00:00.000Z';
+    const sent: Array<Record<string, any>> = [];
+    const state = dynamoState({
+      send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
+        sent.push(command.input);
+        return command.constructor.name === 'GetItemCommand' ? { Item: { pk: { S: 'periodic#acme/factory' }, sk: { S: 'Code review' }, at: { S: AT }, nothing: { BOOL: true } } } : {};
+      },
+    } as never, 'T');
+    await state.recordPeriodic(REPO, 'Code review', null, { at: AT, session: null, baseline: false, nothing: true });
+    assert.deepEqual(sent[0]?.Item, { pk: { S: 'periodic#acme/factory' }, sk: { S: 'Code review' }, at: { S: AT }, nothing: { BOOL: true } });
+    assert.deepEqual(await state.periodic(REPO, 'Code review'), { at: AT, session: null, baseline: false, nothing: true });
   });
 });
 

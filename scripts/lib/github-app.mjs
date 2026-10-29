@@ -268,6 +268,49 @@ const allPages = async (call, path, query, pages = 30) => {
 };
 
 /**
+ * The pages of a list read newest first, up to `pages` of them, until one
+ * ends short or its last row is `past` the window: every row after it is too.
+ *
+ * @param {(method: string, path: string, body?: unknown) => Promise<any>} call
+ * @param {string} path
+ * @param {Record<string, string>} query
+ * @param {(row: any) => boolean} past
+ * @param {number} [pages]
+ * @returns {Promise<any[]>}
+ */
+const pagesUntil = async (call, path, query, past, pages = 30) => {
+  /** @type {any[]} */
+  const rows = [];
+  for (let page = 1; page <= pages; page += 1) {
+    /** @type {any[]} */
+    const batch = await call('GET', `${path}?${new URLSearchParams({ ...query, per_page: '100', page: String(page) })}`);
+    rows.push(...batch);
+    if (batch.length < 100 || past(batch[batch.length - 1])) break;
+  }
+  return rows;
+};
+
+/**
+ * Rows whose time `field` is after `since`, as a periodic's window counts
+ * them (dispatch/periodics.mjs), oldest first. Pull requests are dropped
+ * from an issues list.
+ *
+ * @param {any[]} rows
+ * @param {string} field
+ * @param {string} since
+ * @returns {CountedRow[]}
+ */
+const after = (rows, field, since) => {
+  const from = Date.parse(since);
+  return rows
+    .filter((row) => !row.pull_request && typeof row[field] === 'string' && Date.parse(row[field]) > from)
+    .map((row) => ({ number: row.number, title: String(row.title ?? ''), at: row[field] }))
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+};
+
+/** @typedef {{ number: number, title: string, at: string }} CountedRow One merge or issue in a periodic's window, and its time. */
+
+/**
  * The reads the dispatcher makes, and its writes: a comment, a PR body a
  * fallback points at the session it started, and a body a refusing
  * subscriber is dropped from. Four reads are the workflow turn's: a run's
@@ -330,6 +373,40 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         if (batch.length < 100) return rows;
       }
     },
+
+    /**
+     * The PRs merged into `base` after `since`, by their merge time: closed
+     * PRs, newest updated first, read until a page's last predates it, since
+     * a PR's merge never postdates its last update.
+     *
+     * @param {string} base
+     * @param {string} since
+     * @returns {Promise<CountedRow[]>}
+     */
+    mergedSince: async (base, since) => {
+      const rows = await pagesUntil(call, `/repos/${repo}/pulls`, { state: 'closed', base, sort: 'updated', direction: 'desc' }, (row) => Date.parse(row.updated_at) <= Date.parse(since));
+      return after(rows, 'merged_at', since);
+    },
+
+    /**
+     * The issues opened after `since`, newest first until a page's last predates it.
+     *
+     * @param {string} since
+     * @returns {Promise<CountedRow[]>}
+     */
+    issuesOpenedSince: async (since) => {
+      const rows = await pagesUntil(call, `/repos/${repo}/issues`, { state: 'all', sort: 'created', direction: 'desc' }, (row) => Date.parse(row.created_at) <= Date.parse(since));
+      return after(rows, 'created_at', since);
+    },
+
+    /**
+     * The issues closed after `since`: the closed ones updated since, a
+     * close being an update, kept where the close itself is after it.
+     *
+     * @param {string} since
+     * @returns {Promise<CountedRow[]>}
+     */
+    issuesClosedSince: async (since) => after(await allPages(call, `/repos/${repo}/issues`, { state: 'closed', since, sort: 'updated', direction: 'desc' }), 'closed_at', since),
 
     /** The native `blocked by` relationships. @param {number} number @returns {Promise<BlockerRow[]>} */
     blockers: async (number) => {

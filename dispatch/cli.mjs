@@ -49,13 +49,19 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  *   was read. A fire with nothing to start is a success, as the heartbeat
  *   rule says;
  * - a turn its repo's config file refused: not served, or a switch turned
- *   off, is as designed.
+ *   off, is as designed;
+ * and in any of them, when the fire counted an event for the periodics,
+ * every periodic's record and window was read and every periodic it
+ * brought due that started launched.
  *
- * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[] }} result
+ * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null }} result
  * @returns {0 | 1}
  */
 export const exitCodeFor = (result) => {
   if (result.kind === 'probe') return result.ok ? 0 : 1;
+  // The periodics an event brought due are checked under their own switch,
+  // so a fault there fails a turn whose own work was refused or went well.
+  if (result.periodics != null && (result.periodics.unread.length > 0 || result.periodics.dispatched.some((d) => d.outcome === 'failed'))) return 1;
   if (typeof result.refusal === 'string') return 0;
   /** A send's fault: the CLI never answered, answered anything but the session gone, or its fallback started nothing. @param {{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }} d */
   const faultedSend = (d) => !d.ok && (!d.refused || d.fallback?.outcome === 'failed');
