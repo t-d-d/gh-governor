@@ -88,7 +88,6 @@ const fakeGitHub = (repo: string, file: string) => {
     if (rest === '/contents/.github/dispatch.json') return json({ type: 'file', encoding: 'base64', content: Buffer.from(file).toString('base64') });
     if (rest === '/issues' && method === 'GET') return json([{ number: 2, title: 'Issue 2', state: 'open', created_at: '2026-08-01T00:00:00Z', labels: JSON.parse(file).labels.ready.map((name: string) => ({ name })) }]);
     if (rest === '/issues/2' && method === 'GET') return json({ number: 2, title: 'Issue 2', state: 'open', body: '', labels: JSON.parse(file).labels.ready.map((name: string) => ({ name })) });
-    if (/^\/issues\/2\/(parent)$/.test(rest)) return json({ message: 'Not Found' }, 404);
     if (/^\/labels\//.test(rest)) return json({ message: 'Not Found' }, 404);
     if (method === 'GET') return json([]);
     return json({});

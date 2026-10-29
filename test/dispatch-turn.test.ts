@@ -163,7 +163,6 @@ const harness = (over: Record<string, unknown> = {}) => {
       readyIssues: async () => [issue(7), issue(9), issue(11)],
       blockers: async () => [],
       blocking: async () => [],
-      parent: async () => null,
       comments: async () => [],
       comment: async (n: number, body: string) => {
         comments.push({ issue: n, body });
@@ -515,7 +514,7 @@ describe('run — schedule', () => {
 
   test('a backlog it cannot read is an error, and no heartbeat', async () => {
     const { deps, calls } = harness({
-      reader: () => ({ readyIssues: async () => { throw new Error('GET /issues failed: 502'); }, blockers: async () => [], parent: async () => null, comments: async () => [], comment: async () => {} }),
+      reader: () => ({ readyIssues: async () => { throw new Error('GET /issues failed: 502'); }, blockers: async () => [], comments: async () => [], comment: async () => {} }),
     });
     await assert.rejects(run({ source: 'aws.events' }, deps as never), /502/);
     assert.ok(!calls.includes('heartbeat'));
@@ -794,7 +793,6 @@ describe('run — the login after the launch', () => {
       reader: () => ({
         readyIssues: async () => [issue(7)],
         blockers: async () => [],
-        parent: async () => null,
         comments: async () => [],
         comment: async () => { throw new Error('POST /comments failed: 502 Bad Gateway'); },
         addLabels: async () => {},

@@ -38,7 +38,6 @@ const plan = (marker: string) => planSchedule({
       readyIssues: async () => [{ number: 7, title: 'Seven', state: 'open', created_at: '2026-10-01T00:00:00Z', labels: ['mode: afk'] }],
       blockers: async () => [],
       blocking: async () => [],
-      parent: async () => null,
       comments: async () => [{ id: 1, body: marker, created_at: AT }],
     },
   }],
