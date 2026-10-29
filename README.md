@@ -59,7 +59,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.
 | `features` | yes | The switches below, each `true` or `false`. A switch left out is off. |
 | `workflows` | no | What the repo's workflows are to governor: `ci`, `triage` and `tags`. |
 | `review` | when `prReview` is on | The PR review's settings. |
-| `heartbeat` | when `heartbeat` is on | `{ "issue": <number>, "marker": "<!-- … -->" }`: the issue whose `last-run:` line the two-hourly sweep updates. |
+| `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the two-hourly sweep updates. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the switch is on. |
 
@@ -79,7 +79,7 @@ The switches in `features`:
 | `conflicts` | A merge into the default branch tells each PR it left conflicted. |
 | `deployedLabels` | A shipping job labels the tickets it shipped `deployed: <target>`. Needs `deployMessages`. |
 | `prReview` | The PR review, run from the `review` section. |
-| `heartbeat` | The two-hourly sweep stamps the issue `heartbeat` names. |
+| `heartbeat` | Governor records each fire on the issue `heartbeat` names: a line for pickup and one per periodic. In the older shape with a `marker`, the two-hourly sweep stamps the issue's `last-run:` line instead. |
 | `periodics` | A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached. |
 
 `workflows`:
