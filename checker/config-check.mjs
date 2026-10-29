@@ -24,6 +24,7 @@ import { pathToFileURL } from 'node:url';
 import { globMatches } from '../dispatch/checklist.mjs';
 import { HEARTBEAT_MARKER } from '../dispatch/heartbeat.mjs';
 import { CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
+import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /**
  * @typedef {{
@@ -43,9 +44,6 @@ import { CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.m
  * @typedef {(path: string) => Promise<any>} Api A GET on the REST API.
  */
 
-/** @param {unknown} error */
-const messageOf = (error) => (error instanceof Error ? error.message : String(error));
-
 /**
  * What a valid file names that cannot work. A read the token may not make
  * warns that its part went unchecked.
@@ -55,41 +53,48 @@ const messageOf = (error) => (error instanceof Error ? error.message : String(er
  * @returns {Promise<string[]>}
  */
 const warningsOf = async (config, reads) => {
-  /** @type {string[]} */
-  const warnings = [];
-  try {
-    const have = new Set((await reads.labels()).map((l) => l.toLowerCase()));
-    for (const ready of config.labels.ready) {
-      if (!have.has(ready.toLowerCase())) warnings.push(`labels.ready: the repo has no label "${ready}", so no ticket can carry it and pickup finds nothing`);
+  /** @returns {Promise<string[]>} */
+  const labels = async () => {
+    try {
+      const have = new Set((await reads.labels()).map((l) => l.toLowerCase()));
+      return config.labels.ready.filter((ready) => !have.has(ready.toLowerCase()))
+        .map((ready) => `labels.ready: the repo has no label "${ready}", so no ticket can carry it and pickup finds nothing`);
+    } catch (error) {
+      return [`labels.ready: could not read the repo's labels, so the ready labels went unchecked: ${messageOf(error)}`];
     }
-  } catch (error) {
-    warnings.push(`labels.ready: could not read the repo's labels, so the ready labels went unchecked: ${messageOf(error)}`);
-  }
-  const { ci } = config.workflows;
-  if (ci !== undefined && await reads.read(ci) === null) warnings.push(`workflows.ci: ${ci} is not in the repo, so no run counts as CI`);
-  if (config.features.heartbeat === true && config.heartbeat !== undefined) {
+  };
+  /** @returns {Promise<string[]>} */
+  const ci = async () => {
+    const { ci: path } = config.workflows;
+    return path !== undefined && await reads.read(path) === null ? [`workflows.ci: ${path} is not in the repo, so no run counts as CI`] : [];
+  };
+  /** @returns {Promise<string[]>} */
+  const heartbeat = async () => {
+    if (config.features.heartbeat !== true || config.heartbeat === undefined) return [];
     const { issue, marker = HEARTBEAT_MARKER } = config.heartbeat;
     try {
       const body = await reads.issueBody(issue);
-      if (body === null) warnings.push(`heartbeat.issue: #${issue} is not an issue in the repo`);
-      else if (!body.includes(marker)) warnings.push(`heartbeat.issue: #${issue} does not carry ${marker}, so governor writes nothing into it`);
+      if (body === null) return [`heartbeat.issue: #${issue} is not an issue in the repo`];
+      return body.includes(marker) ? [] : [`heartbeat.issue: #${issue} does not carry ${marker}, so governor writes nothing into it`];
     } catch (error) {
-      warnings.push(`heartbeat.issue: could not read #${issue}, so its marker went unchecked: ${messageOf(error)}`);
+      return [`heartbeat.issue: could not read #${issue}, so its marker went unchecked: ${messageOf(error)}`];
     }
-  }
-  const { review } = config;
-  if (review !== undefined && (review.humanOnly.length > 0 || review.quote.length > 0)) {
+  };
+  /** @returns {Promise<string[]>} */
+  const globs = async () => {
+    const { review } = config;
+    if (review === undefined || (review.humanOnly.length === 0 && review.quote.length === 0)) return [];
     const { paths, truncated } = await reads.paths();
-    if (truncated) {
-      warnings.push('review: the repo\'s tree is too large for GitHub to list whole, so the humanOnly and quote globs went unchecked');
-    } else {
-      /** @param {string} glob */
-      const none = (glob) => !paths.some((p) => globMatches(glob, p));
-      for (const { glob } of review.humanOnly) if (none(glob)) warnings.push(`review.humanOnly: ${glob} matches no path in the repo`);
-      for (const entry of review.quote) if (none(entry.replace(/^!/, ''))) warnings.push(`review.quote: ${entry} matches no path in the repo`);
-    }
-  }
-  return warnings;
+    if (truncated) return ['review: the repo\'s tree is too large for GitHub to list whole, so the humanOnly and quote globs went unchecked'];
+    /** @param {string} glob */
+    const none = (glob) => !paths.some((p) => globMatches(glob, p));
+    return [
+      ...review.humanOnly.filter(({ glob }) => none(glob)).map(({ glob }) => `review.humanOnly: ${glob} matches no path in the repo`),
+      ...review.quote.filter((entry) => none(entry.replace(/^!/, ''))).map((entry) => `review.quote: ${entry} matches no path in the repo`),
+    ];
+  };
+  // Independent reads, run together; the warnings keep this order.
+  return (await Promise.all([labels(), ci(), heartbeat(), globs()])).flat();
 };
 
 /**
@@ -105,8 +110,8 @@ export const check = async (reads) => {
   if (text === null) return { errors: [], warnings: [`the pull request leaves no ${CONFIG_PATH}, so governor will not serve this repo once it merges`] };
   const parsed = readConfig(text);
   if (!parsed.ok) return { errors: [parsed.fault], warnings: [] };
-  const resolved = await resolveFiles(parsed.config, reads.read);
-  return { errors: resolved.ok ? [] : [resolved.fault], warnings: await warningsOf(parsed.config, reads) };
+  const [resolved, warnings] = await Promise.all([resolveFiles(parsed.config, reads.read), warningsOf(parsed.config, reads)]);
+  return { errors: resolved.ok ? [] : [resolved.fault], warnings };
 };
 
 /**
@@ -175,7 +180,7 @@ export const run = async ({ env, reads, log }) => {
   const ref = String(env.CONFIG_CHECK_REF ?? '');
   if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error('CONFIG_CHECK_REF names no commit');
   const { errors, warnings } = await check(reads(repo, ref));
-  for (const e of errors) log(`::error file=${CONFIG_PATH},title=governor refuses this file::${escaped(e)}`);
+  for (const e of errors) log(`::error file=${CONFIG_PATH},title=governor would refuse this file once it merges::${escaped(e)}`);
   for (const w of warnings) log(`::warning file=${CONFIG_PATH},title=governor reads this file but it cannot work::${escaped(w)}`);
   log(errors.length > 0
     ? `${CONFIG_PATH} at ${ref}: governor would refuse it, and the repo would go unserved.`
@@ -193,7 +198,7 @@ export const run = async ({ env, reads, log }) => {
 const restApi = (base, token) => async (path) => {
   const res = await fetch(`${base}${path}`, {
     headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28' },
-  });
+  }).catch((error) => { throw new Error(`GET ${path}: ${messageOf(error)}`, { cause: error }); });
   if (!res.ok) throw Object.assign(new Error(`GET ${path}: HTTP ${res.status}`), { status: res.status });
   return res.json();
 };

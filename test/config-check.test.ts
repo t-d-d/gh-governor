@@ -226,7 +226,7 @@ describe('the run on the runner', () => {
     });
     assert.equal(code, 1);
     const error = lines.find((l) => l.startsWith('::error '));
-    assert.match(String(error), /^::error file=\.github\/dispatch\.json,title=governor refuses this file::not JSON/);
+    assert.match(String(error), /^::error file=\.github\/dispatch\.json,title=governor would refuse this file once it merges::not JSON/);
     assert.doesNotMatch(String(error), /\n/);
   });
 

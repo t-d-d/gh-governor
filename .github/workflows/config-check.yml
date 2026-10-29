@@ -40,8 +40,9 @@ jobs:
         env:
           GOVERNOR_COMMIT: ${{ inputs.commit }}
         run: |
-          if ! printf '%s' "$GOVERNOR_COMMIT" | grep -Eqx '[0-9a-f]{40}'; then
-            echo "::error title=config check::commit must be the 40-digit commit after @ in uses:, not \"$GOVERNOR_COMMIT\""
+          # A whole-string match: grep would pass a value with one good line.
+          if ! [[ "$GOVERNOR_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=config check::commit must be the 40-digit commit after @ in uses:"
             exit 1
           fi
           git init -q "$RUNNER_TEMP/governor"
