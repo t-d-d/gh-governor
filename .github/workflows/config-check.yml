@@ -1,0 +1,61 @@
+# The config check a served repo calls on its pull requests, pinned to a
+# commit of this repo, which it also passes as `commit`:
+#
+#   uses: t-d-d/gh-governor/.github/workflows/config-check.yml@<commit>
+#   with:
+#     commit: <commit>
+#
+# It reads the pull request's .github/dispatch.json and the prompt files it
+# names, and runs governor's own readConfig and resolveFiles over them
+# (checker/config-check.mjs). It fails with governor's fault text, and warns
+# on a file that is valid but cannot work. It runs in the served repo on the
+# caller's own token, never in governor, and holds no secret or id. It uses
+# no action: the steps fetch this repo at the commit with git and install
+# the task's dependencies with npm, so the check is that commit's code.
+#
+# A called workflow cannot learn which commit of this repo it runs from, so
+# the caller passes the commit as an input too. test/starter-kit.test.ts
+# checks that the starter kit's two agree.
+name: config check
+
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: The commit of gh-governor this workflow is pinned to, the same one as after `@` in `uses:`.
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  check:
+    name: config check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Fetch governor at the pinned commit
+        env:
+          GOVERNOR_COMMIT: ${{ inputs.commit }}
+        run: |
+          if ! printf '%s' "$GOVERNOR_COMMIT" | grep -Eqx '[0-9a-f]{40}'; then
+            echo "::error title=config check::commit must be the 40-digit commit after @ in uses:, not \"$GOVERNOR_COMMIT\""
+            exit 1
+          fi
+          git init -q "$RUNNER_TEMP/governor"
+          cd "$RUNNER_TEMP/governor"
+          git fetch -q --depth 1 https://github.com/t-d-d/gh-governor.git "$GOVERNOR_COMMIT"
+          git checkout -q FETCH_HEAD
+          cd dispatch
+          npm ci --ignore-scripts --omit=dev --no-audit --no-fund
+          # The task's image keeps its modules at the root, where both
+          # dispatch/ and scripts/lib/ find them.
+          mv node_modules ..
+
+      - name: Check .github/dispatch.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CONFIG_CHECK_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node "$RUNNER_TEMP/governor/checker/config-check.mjs"
