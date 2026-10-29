@@ -62,10 +62,22 @@ describe('readConfig', () => {
     assert.ok(GENERIC_SWITCHES.includes('heartbeat'));
   });
 
+  test('a file that names no excluded labels keeps type: prd out, so no served repo\'s file needs to change', () => {
+    const read = readConfig(ASKME_FILE);
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.config.labels.exclude, ['type: prd']);
+  });
+
+  test('a file names the labels that keep a ticket out, in place of the default', () => {
+    const read = readConfig(JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed', exclude: ['epic', 'needs design'] }, features: {} }));
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.config.labels.exclude, ['epic', 'needs design']);
+  });
+
   test('a generic file reads in any repo, with nothing the claim takes off by default', () => {
     const read = readConfig(ASKME_FILE);
     assert.ok(read.ok, JSON.stringify(read));
-    assert.deepEqual(read.config.labels, { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [] });
+    assert.deepEqual(read.config.labels, { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [], exclude: ['type: prd'] });
   });
 
   test('the red scheduled run and the merge hand-off are generic switches; the lessons ask is gone', () => {
@@ -192,6 +204,8 @@ describe('readConfig', () => {
     assert.match((readConfig(JSON.stringify({ labels: { ready: ['x'], claim: 'y' }, features: {} })) as { fault: string }).fault, /environment/);
     assert.match((readConfig(JSON.stringify({ environment: 'env_1', labels: { ready: ['x'], claim: 'y', claimRemoves: ['z'] }, features: {} })) as { fault: string }).fault, /claimRemoves/);
     assert.match((readConfig(JSON.stringify({ environment: 'env_1', labels: { ready: ['x'], claim: 'x' }, features: {} })) as { fault: string }).fault, /claim label/);
+    // A ticket would need the label to be ready and lack it to be picked up.
+    assert.match((readConfig(JSON.stringify({ environment: 'env_1', labels: { ready: ['x', 'afk'], claim: 'y', exclude: ['afk'] }, features: {} })) as { fault: string }).fault, /exclude cannot name a ready label/);
     // GitHub's issues query splits its labels on commas.
     assert.match((readConfig(JSON.stringify({ environment: 'env_1', labels: { ready: ['ready, afk'], claim: 'y' }, features: {} })) as { fault: string }).fault, /comma/);
   });

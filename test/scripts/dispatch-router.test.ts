@@ -16,7 +16,7 @@ import { planSchedule } from '../../scripts/lib/dispatch-router.mjs';
 import { promptFor, sessionName } from '../../scripts/lib/dispatch-prompt.mjs';
 
 /** The factory's labels: two ready labels, and the claim. */
-const FACTORY_LABELS = { ready: ['workflow: ready for development', 'mode: afk'], claim: 'workflow: under development' };
+const FACTORY_LABELS = { ready: ['workflow: ready for development', 'mode: afk'], claim: 'workflow: under development', exclude: ['type: prd'] };
 
 const REPO = 'acme/factory';
 const NOW = Date.parse('2026-09-25T12:00:00Z');
@@ -75,9 +75,9 @@ describe('planSchedule', () => {
       ],
     });
     const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW });
-    assert.deepEqual(plan.map((d) => d.issue), [7, 5]);
-    assert.equal(plan[0]?.prompt, promptFor(7, 'Issue 7', REPO, FACTORY_LABELS.claim));
-    assert.equal(plan[0]?.sessionName, sessionName(7, 'Issue 7'));
+    assert.deepEqual(plan.map((d) => d.issue), [5, 7], 'oldest first: the bug does not go ahead of an older enhancement');
+    assert.equal(plan[0]?.prompt, promptFor(5, 'Issue 5', REPO, FACTORY_LABELS.claim));
+    assert.equal(plan[0]?.sessionName, sessionName(5, 'Issue 5'));
   });
 
   test('skips an issue with an open blocker or a parked parent, asking only as far as the cap needs', async () => {
@@ -158,12 +158,12 @@ describe('a targeted schedule fire', () => {
 
 /**
  * Every served repo's ready tickets in one queue: the selector's
- * order (type, then oldest) runs over all of them, each repo's tickets read
+ * order (oldest, then number) runs over all of them, each repo's tickets read
  * with its own labels and reader.
  */
 describe('planSchedule over several repos', () => {
   const ASKME = 't-d-d/askme-mcp';
-  const askme = { ready: ['mode: afk'], claim: 'claimed' };
+  const askme = { ready: ['mode: afk'], claim: 'claimed', exclude: ['type: prd'] };
 
   test('ranks every repo\'s tickets together, each through its own reader and labels', async () => {
     const factory = fakeReader({ issues: [issue(5, ['workflow: ready for development', 'mode: afk', 'type: enhancement']), issue(7, READY)] });
@@ -175,7 +175,7 @@ describe('planSchedule over several repos', () => {
       cap: 3,
       now: NOW,
     });
-    assert.deepEqual(plan.map((d) => `${d.repo}#${d.issue}`), [`${ASKME}#2`, `${REPO}#7`, `${REPO}#5`], 'bugs first, oldest first, across repos; a ticket carrying its repo\'s claim label is dropped');
+    assert.deepEqual(plan.map((d) => `${d.repo}#${d.issue}`), [`${ASKME}#2`, `${REPO}#5`, `${REPO}#7`], 'oldest first, across repos; a ticket carrying its repo\'s claim label is dropped');
     assert.deepEqual(asked, [['mode: afk']]);
     assert.equal(plan[0]?.prompt, promptFor(2, 'Issue 2', ASKME, 'claimed'));
     assert.match(plan[0]!.prompt, /`claimed` for you/);

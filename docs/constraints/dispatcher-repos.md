@@ -34,7 +34,8 @@ spends the one claude.ai login.
   fails refuses that repo's part of the turn and is never taken for a
   missing file.
 - The file names the repo's cloud environment, by name or ID, its ready
-  labels and its claim label. The dispatcher claims a ticket with that label
+  labels, its claim label and the labels that keep a ticket out
+  (`labels.exclude`, `type: prd` when unset). The dispatcher claims a ticket with that label
   before it launches its session, and creates the label in a repo that
   lacks it. The file holds no secret: a served repo may be public.
 - Every feature is a switch, off unless the file turns it on, and a turn
@@ -150,4 +151,4 @@ spends the one claude.ai login.
   then hold or redirect a dispatch.
 
 Judgment: that a new per-repo table record keys on its repo, and that a config file holds no secret, no check sees: a key is a string no schema reads, and a secret has no shape the schema can refuse.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28.

@@ -20,20 +20,8 @@
  * Unit-tested in `test/scripts/ready-work.test.ts`.
  */
 
-export const READY_LABEL = 'workflow: ready for development';
-export const AFK_LABEL = 'mode: afk';
 const PRD_LABEL = 'type: prd';
 export const UNDER_DEVELOPMENT_LABEL = 'workflow: under development';
-const BUG_LABEL = 'type: bug';
-const ENHANCEMENT_LABEL = 'type: enhancement';
-
-/**
- * Type labels in dispatch order, highest first. Fix what is broken, then
- * verify what exists, then quality attributes, then tidy (Tidy First: the
- * refactor lands before the feature that builds on it). `type: enhancement`
- * is always last; any other type, or none, sits between it and this list.
- */
-const TYPE_PRIORITY = [BUG_LABEL, 'type: qa', 'type: nfr', 'type: refactor'];
 
 /**
  * @typedef {object} IssueRow
@@ -52,11 +40,11 @@ const TYPE_PRIORITY = [BUG_LABEL, 'type: qa', 'type: nfr', 'type: refactor'];
  */
 
 /**
- * The labels a repo marks a ticket ready with, and claims it with. A served
- * repo's come from its config file (dispatch/repo-config.mjs); no caller
- * has a default.
+ * The labels a repo marks a ticket ready with, claims it with, and keeps it
+ * out with. A served repo's come from its config file
+ * (dispatch/repo-config.mjs); no caller has a default.
  *
- * @typedef {{ ready: readonly string[], claim: string }} Labels
+ * @typedef {{ ready: readonly string[], claim: string, exclude: readonly string[] }} Labels
  */
 
 /** @param {IssueRow} issue @param {string} label */
@@ -121,27 +109,18 @@ const isEligible = (issue, blockers, parents, labels) => {
   // adds leaves both, and `ready` alone would re-dispatch it. A
   // repo whose claim leaves its ready label on is read the same way.
   if (has(issue, labels.claim)) return false;
-  if (has(issue, PRD_LABEL)) return false;
+  if (labels.exclude.some((label) => has(issue, label))) return false;
   if (hasOpenBlocker(issue.number, blockers)) return false;
   if (isParkedByParent(issue.number, parents)) return false;
   return true;
 };
 
 /**
- * An issue's type rank: its highest label in `TYPE_PRIORITY`, else the slot
- * after that list, else — for an enhancement — the slot after that. Two type
- * labels rank by the higher, so a mislabelled bug still goes first.
+ * Sort key: oldest first, then number.
  *
- * @param {IssueRow} issue
- */
-const typeRank = (issue) => {
-  const rank = TYPE_PRIORITY.findIndex((label) => has(issue, label));
-  if (rank !== -1) return rank;
-  return TYPE_PRIORITY.length + Number(has(issue, ENHANCEMENT_LABEL));
-};
-
-/**
- * Sort key: type rank, then oldest first, then number.
+ * No label ranks a ticket. The order matters only when more tickets are
+ * eligible than the cap allows, in the sweep whose queue spans every served
+ * repo, and a label scheme is one repo's, so it cannot rank that queue.
  *
  * The number is the final tiebreak so the order is total. Two issues filed in
  * the same second would otherwise sort by whatever order the API paged them
@@ -149,9 +128,7 @@ const typeRank = (issue) => {
  *
  * @param {IssueRow} a @param {IssueRow} b
  */
-export const byPriority = (a, b) => {
-  const type = typeRank(a) - typeRank(b);
-  if (type !== 0) return type;
+export const byAge = (a, b) => {
   const age = Date.parse(a.created_at ?? '') - Date.parse(b.created_at ?? '');
   if (Number.isFinite(age) && age !== 0) return age;
   return a.number - b.number;
@@ -171,7 +148,7 @@ export const byPriority = (a, b) => {
  * @param {Map<number, BlockerRow[]>} [options.blockers]
  * @param {Map<number, IssueRow | null>} [options.parents] Each issue's parent
  *   issue, or null for a top-level one.
- * @param {Labels} options.labels The repo's ready and claim labels.
+ * @param {Labels} options.labels The repo's ready, claim and excluded labels.
  * @returns {IssueRow[]}
  */
 export const selectReadyWork = (
@@ -180,5 +157,5 @@ export const selectReadyWork = (
 ) =>
   issues
     .filter((issue) => isEligible(issue, blockers, parents, labels))
-    .sort(byPriority)
+    .sort(byAge)
     .slice(0, Math.max(0, cap));

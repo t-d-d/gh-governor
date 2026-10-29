@@ -19,7 +19,7 @@
 
 import { DISPATCH_WINDOW_MS, recentlyDispatched } from '../../dispatch/webhook/fire.mjs';
 import { promptFor, sessionName } from './dispatch-prompt.mjs';
-import { byPriority, selectReadyWork } from './ready-work.mjs';
+import { byAge, selectReadyWork } from './ready-work.mjs';
 
 /**
  * @typedef {{ issue?: number, repo: string, prompt: string, sessionName: string }} Dispatch
@@ -34,15 +34,15 @@ import { byPriority, selectReadyWork } from './ready-work.mjs';
  * }} Reader
  *
  * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, prompts?: Record<string, string | undefined> }} Source
- *   A served repo's tickets: its reader, its config file's ready and claim
- *   labels, and its prompts.
+ *   A served repo's tickets: its reader, its config file's ready, claim and
+ *   excluded labels, and its prompts.
  */
 
 /**
- * The schedule's plan: eligible issues in priority order, up to the cap,
+ * The schedule's plan: eligible issues oldest first, up to the cap,
  * asking about blockers, parent and recent dispatches only as far as the cap
  * needs. The order runs over every source's tickets together:
- * type, then oldest, whichever repo each is in. With `only`, those issues
+ * oldest, then number, whichever repo each is in. With `only`, those issues
  * and no other, still in the selector's
  * order and under the cap: the fire for an issue just labelled ready
  * dispatches it if the selection would, and the fire for an issue just
@@ -86,7 +86,7 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     const ready = selectReadyWork(rows, { cap: Number.MAX_SAFE_INTEGER, labels });
     tagged.push(...ready.map((row) => ({ ...row, source })));
   }
-  const ranked = tagged.sort(byPriority);
+  const ranked = tagged.sort(byAge);
   const named = only && new Set(only);
   const candidates = named ? ranked.filter((c) => named.has(c.number)) : ranked;
   // Only the window's comments: a marker older than the window would not
