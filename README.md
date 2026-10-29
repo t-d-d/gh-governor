@@ -104,7 +104,7 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 
 - `name`: one line, unique in the file. The session is named after it.
 - `prompt`: what the session runs, as text or `{ "file": "<path>" }` read from the default branch. Governor adds a line under it giving the last fire's time, or saying this is the first run.
-- `days`: the day limit, in whole days, at least one. The periodic is due once that many days have passed since its last fire.
+- `days`: the day limit, in whole days, at least one. The periodic is due on the sweep nearest that many days after its last fire.
 
 A new periodic starts its first session one day limit after the first sweep that reads it. How governor keeps each one's record is in [docs/how-it-works.md](docs/how-it-works.md#periodics).
 

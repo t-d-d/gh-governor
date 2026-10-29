@@ -202,12 +202,12 @@ A value is the text, or `{ "file": "<path>" }`, read from the default branch bes
 
 A periodic is a recurring session a repo lists in its config file, with a name, a prompt and a day limit in whole days (`dispatch/periodics.mjs`). Only the bare two-hourly fire starts one.
 
-- **When it is due.** Governor keeps each periodic's record in the state table, under `periodic#<repo>` / `<name>`: the time of its last fire, and the session it started, or none for an unconfirmed launch. A periodic is due once its day limit has passed since that time.
+- **When it is due.** Governor keeps each periodic's record in the state table, under `periodic#<repo>` / `<name>`: the time of its last fire, and the session it started, or none for an unconfirmed launch. A periodic is due once its day limit has passed since that time, or will within the hour: the record holds the launch's time, a little after the sweep read it, so the sweep nearest the limit fires it rather than every run slipping a sweep.
 - **No record.** A new periodic, or one whose record was lost, has none. The fire writes now as the baseline and starts nothing, so the first run comes one day limit later. A lost record costs at most one late run, never a burst of runs.
 - **The launch.** Due periodics go into the fire's launch plan ahead of the tickets, the one that came due first going first. They do not count against `DispatchCap`, but a cap of 0 still starts nothing. They share the fire's seven-minute launch window, and one left unlaunched stays due for the next fire.
 - **The session.** It is named after the periodic, in the repo's environment. Its prompt is the periodic's, then a line governor writes: `This periodic last fired at <time>.`, or `This is the first run of this periodic that governor has a record of.` after a baseline. No repo can drop or reword that line.
-- **The record.** A launch that started, or may have, writes the new record, and only over the record the fire read, so two turns never both fire one periodic. A failed launch writes nothing, and the periodic stays due.
-- **A failed read.** A record that cannot be read refuses that periodic for the turn, and is never taken for a missing one. The turn logs `dispatch-periodic-unread` and exits 1. A record that could not be written after a launch logs `dispatch-periodic-unrecorded`.
+- **The record.** A launch that started, or may have, writes the new record, and only over the record the fire read, so two turns never both record one fire. The write comes after the launch, so it is the one task at a time that keeps two turns from both starting a periodic. A failed launch writes nothing, the periodic stays due, and the rest of its repo waits for the next fire (`dispatch-repo-skipped`), as after a ticket's failed launch.
+- **A failed read.** A record that cannot be read refuses that periodic for the turn, and is never taken for a missing one. The turn logs `dispatch-periodic-unread` and exits 1. A record that could not be written after a launch logs `dispatch-periodic-unrecorded` and exits 1, since the next fire may start the periodic again.
 
 ## When a repo's file goes wrong
 

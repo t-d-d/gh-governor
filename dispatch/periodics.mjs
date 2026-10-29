@@ -4,11 +4,14 @@
  *
  * The bare schedule fire reads each periodic's record from the state table
  * ({@link duePeriodics}): the time of its last fire and the session it
- * started. One whose day limit has passed since is due, and the turn
+ * started. One whose day limit has passed since, or will within the hour
+ * ({@link SWEEP_GRACE_MS}), is due, and the turn
  * (dispatch/turn.mjs) starts a session on its prompt, ahead of the tickets,
  * with a line governor writes under it ({@link periodicPrompt}). The turn
  * writes the record only for a launch that started or may have, and only
- * over the record it read, so two turns never both fire one periodic.
+ * over the record it read, so two turns never both record one fire. The
+ * write comes after the launch: it is the one task at a time that keeps two
+ * turns from both starting it.
  *
  * With no record, for a new periodic or a lost item, the turn writes now as
  * the baseline and starts nothing: the first run comes one day limit later,
@@ -18,6 +21,15 @@
 
 /** A day, in milliseconds. */
 export const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How far short of its day limit a periodic may be read and still be due:
+ * half the schedule's two-hour interval, so the sweep nearest the limit
+ * fires it. The record holds the launch's time, minutes after the sweep
+ * read it, so the sweep a day limit later reads it a little short. Without
+ * this, every run would slip to the sweep after, and the slips add up.
+ */
+export const SWEEP_GRACE_MS = 60 * 60 * 1000;
 
 /**
  * @typedef {{ at: string, session: string | null, baseline: boolean }} PeriodicRecord
@@ -96,7 +108,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log }) => {
       continue;
     }
     const at = Date.parse(read.at);
-    if (now - at >= days * DAY_MS) due.push({ periodic, read, due: at + days * DAY_MS });
+    if (now - at >= days * DAY_MS - SWEEP_GRACE_MS) due.push({ periodic, read, due: at + days * DAY_MS });
   }
   return { due, unread };
 };

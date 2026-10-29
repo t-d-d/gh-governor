@@ -966,6 +966,30 @@ describe('run — periodics', () => {
     assert.equal(result.dispatched[0]?.outcome, 'failed');
   });
 
+  test('a periodic\'s failed launch skips the rest of its repo, as a ticket\'s does', async () => {
+    const h = harness({
+      launch: async (launch: Launch) => {
+        h.launches.push(launch);
+        return launch.sessionName === RETRO.name ? { status: 1, output: 'claude died' } : { status: 0, output: CONFIRMED };
+      },
+    });
+    h.periodics.set(key(RETRO.name), fired(7));
+    h.periodics.set(key(REVIEW.name), fired(1));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [RETRO.name]);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-repo-skipped' && l.level === 'error' && l.repo === REPO && l.periodic === RETRO.name), JSON.stringify(h.logged));
+  });
+
+  test('a record that could not be written after the launch fails the turn', async () => {
+    const h = harness({ state: { recordPeriodic: async () => { throw new Error('ProvisionedThroughputExceededException'); } } });
+    h.periodics.set(key(RETRO.name), fired(7));
+    h.periodics.set(key(REVIEW.name), fired(1));
+    const result = await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [RETRO.name, ...TICKETS]);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic-unrecorded' && l.level === 'error' && l.periodic === RETRO.name));
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
   test('a read that fails refuses that periodic for the turn, never taken for a missing record, and fails the turn', async () => {
     const h = harness({
       state: {

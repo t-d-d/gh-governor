@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG_PATH, GENERIC_SWITCHES, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
-import { DAY_MS, duePeriodics, periodicPrompt } from '../dispatch/periodics.mjs';
+import { DAY_MS, SWEEP_GRACE_MS, duePeriodics, periodicPrompt } from '../dispatch/periodics.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 const BASE = { environment: 'env_01ASK', labels: { ready: ['mode: afk'], claim: 'claimed' } };
@@ -142,6 +142,20 @@ describe('duePeriodics', () => {
     assert.equal(due[0]?.due, NOW);
     assert.deepEqual(unread, []);
     assert.deepEqual(state.writes, []);
+  });
+
+  // The record holds the launch's time, minutes after the sweep read it.
+  // The sweep a day limit later reads it a little short of the limit, and
+  // must still fire it, or each run slips a sweep and the slips add up.
+  test('the sweep nearest the day limit fires it: within half the two-hourly interval, never earlier', async () => {
+    const minutes = (n: number) => n * 60 * 1000;
+    const near = store({ 'Weekly retro': { at: new Date(NOW - 7 * DAY_MS + minutes(5)).toISOString(), session: 's', baseline: false } });
+    assert.equal((await duePeriodics({ repo: REPO, periodics: [RETRO], state: near, now: NOW, log })).due.length, 1);
+    const edge = store({ 'Weekly retro': { at: new Date(NOW - 7 * DAY_MS + minutes(60)).toISOString(), session: 's', baseline: false } });
+    assert.equal((await duePeriodics({ repo: REPO, periodics: [RETRO], state: edge, now: NOW, log })).due.length, 1);
+    const early = store({ 'Weekly retro': { at: new Date(NOW - 7 * DAY_MS + minutes(61)).toISOString(), session: 's', baseline: false } });
+    assert.equal((await duePeriodics({ repo: REPO, periodics: [RETRO], state: early, now: NOW, log })).due.length, 0, 'the sweep after is nearer');
+    assert.equal(SWEEP_GRACE_MS, minutes(60));
   });
 
   test('with no record, the baseline is now, and nothing is due', async () => {

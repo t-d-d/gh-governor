@@ -949,7 +949,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
   let only;
   /** The served repos whose backlog the bare fire could not read. @type {Array<{ repo: string, error: string }>} */
   const unread = [];
-  /** The periodics whose record the bare fire could not read or baseline. @type {Array<{ repo: string, error: string }>} */
+  /** The periodics whose record the bare fire could not read, baseline, or write after a launch. @type {Array<{ repo: string, error: string }>} */
   const periodicsUnread = [];
   if (invocation.kind === 'schedule') {
     // Every served repo's ready tickets in one queue; a repo
@@ -1105,7 +1105,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
 
   /** @type {Dispatched[]} */
   const dispatched = [];
-  /** The repos whose launch started nothing: the rest of their tickets wait for the next fire. @type {Set<string>} */
+  /** The repos whose launch started nothing: the rest of their tickets and periodics wait for the next fire. @type {Set<string>} */
   const skipped = new Set();
   let heartbeat = false;
   let loginStored = false;
@@ -1116,7 +1116,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
         break;
       }
       const ticket = entry.issue === null ? null : { repo: entry.repo, issue: entry.issue };
-      if (ticket !== null && skipped.has(ticket.repo)) continue;
+      if (skipped.has(entry.repo)) continue;
       const claimed = ticket === null ? 'claimed' : await claim(ticket);
       if (claimed === 'taken') continue;
       if (claimed === 'failed') {
@@ -1139,14 +1139,16 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
           }
         } catch (error) {
           deps.log('dispatch-periodic-unrecorded', { level: 'error', repo: entry.repo, periodic: name, sessionUrl, error: messageOf(error), reason: 'its record could not be written, so the next fire may start it again' });
+          // The turn fails, so the alarm says a periodic may start twice.
+          periodicsUnread.push({ repo: entry.repo, error: `periodic ${name}: its record could not be written: ${messageOf(error)}` });
         }
       }
-      if (ticket !== null && outcome === 'failed') {
-        await release(ticket);
+      if ((ticket !== null || entry.periodic !== undefined) && outcome === 'failed') {
+        if (ticket !== null) await release(ticket);
         // A launch that started nothing is the repo's environment or the
-        // login: the repo's next ticket would fail the same way.
-        skipped.add(ticket.repo);
-        deps.log(REPO_SKIPPED, { level: 'error', repo: ticket.repo, issue: ticket.issue, status, reason: 'its launch started nothing: the rest of its tickets wait for the next fire' });
+        // login: the repo's next ticket or periodic would fail the same way.
+        skipped.add(entry.repo);
+        deps.log(REPO_SKIPPED, { level: 'error', repo: entry.repo, issue: entry.issue, ...(entry.periodic === undefined ? {} : { periodic: entry.periodic.name }), status, reason: 'its launch started nothing: the rest of its tickets and periodics wait for the next fire' });
       } else if (ticket !== null) {
         const at = new Date(deps.now()).toISOString();
         await (await readerFor(ticket.repo)).comment(ticket.issue, dispatchMarker({ at, sessionUrl }));
