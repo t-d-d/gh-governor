@@ -4205,6 +4205,17 @@ describe('run — every served repo', () => {
     return { ...h, read };
   };
 
+  test('one due repo\'s backlog that cannot be read does not fail the turn while another repo was not due: the rest goes on, and the turn exits 1', async () => {
+    const gone = { then: (_: unknown, reject: (e: Error) => void) => reject(new Error('GET /issues failed: 410 Gone')) };
+    const h = twoRepos({ askmeIssues: gone as never });
+    h.sweeps.set(REPO, new Date(NOW - 30 * 60 * 1000).toISOString());
+    const result = await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches, []);
+    assert.ok(h.calls.includes('heartbeat'), 'the factory\'s heartbeat is still written');
+    assert.deepEqual((result as { unread?: Array<{ repo: string }> }).unread?.map((u) => u.repo), [ASKME]);
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
   test('the bare schedule fire ranks every served repo\'s ready tickets together and dispatches each in its own repo', async () => {
     const h = twoRepos({ cap: 3 });
     const result = turn(await run({ source: 'aws.events' }, h.deps as never));
@@ -5046,6 +5057,51 @@ describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval 
     const base = harness();
     const h = sweeping({ sweepHours: 6 }, { reader: (token: string) => ({ ...base.deps.reader(token), readyIssues: async () => { throw new Error('GET /issues failed: 410 Gone'); } }) });
     await assert.rejects(run({ source: 'aws.events' }, h.deps as never), /410/);
+    assert.deepEqual(h.sweepWrites, []);
+  });
+
+  test('a sweep the launch window cut short records no sweep, so the next fire picks up what it left', async () => {
+    let clock = NOW;
+    const h = sweeping({ sweepHours: 6 }, {
+      now: () => clock,
+      launch: async (launch: Launch) => {
+        h.launches.push(launch);
+        clock += SCHEDULE_LAUNCH_WINDOW_MS + 1;
+        return { status: 0, output: CONFIRMED };
+      },
+    });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.tickets().length, 1);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-launch' && /out of time/.test(String(l.reason))));
+    assert.deepEqual(h.sweepWrites, []);
+  });
+
+  test('a sweep whose repo was skipped after a failed launch records no sweep, so the next fire picks up what it left', async () => {
+    let launches = 0;
+    const h = sweeping({ sweepHours: 6 }, {
+      cap: 3,
+      launch: async (launch: Launch) => {
+        h.launches.push(launch);
+        launches += 1;
+        return launches === 1 ? { status: 0, output: CONFIRMED } : { status: 1, output: 'claude died' };
+      },
+    });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-repo-skipped' && l.repo === REPO), JSON.stringify(h.logged));
+    assert.deepEqual(h.sweepWrites, []);
+  });
+
+  test('a sweep with one failed ticket launch among good ones records no sweep, so the next fire tries that ticket again', async () => {
+    let launches = 0;
+    const h = sweeping({ sweepHours: 6 }, {
+      launch: async (launch: Launch) => {
+        h.launches.push(launch);
+        launches += 1;
+        return launches === 1 ? { status: 0, output: CONFIRMED } : { status: 1, output: 'claude died' };
+      },
+    });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.launches.length, 2);
     assert.deepEqual(h.sweepWrites, []);
   });
 

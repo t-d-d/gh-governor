@@ -1270,8 +1270,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const periodicsUnread = [];
   /** The served repos whose last sweep the bare fire could not read, or whose sweep it could not record. @type {Array<{ repo: string, error: string }>} */
   const sweepsUnread = [];
-  /** The repos the bare fire sweeps, each with the time it read their last sweep, which it records. @type {Map<string, string>} */
+  /** The repos the bare fire sweeps, each with the time the turn read their last sweep, which it records. @type {Map<string, string>} */
   const swept = new Map();
+  /** The served repos turning pickup on that the bare fire left out of this sweep: not due, or their last sweep unread. */
+  let held = 0;
   if (invocation.kind === 'schedule') {
     // Every served repo's ready tickets in one queue; a repo
     // whose file turns pickup off is still swept, and its backlog unread.
@@ -1285,7 +1287,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       // The bare fire sweeps a repo once its interval has passed since its
       // last sweep; a fire for a label or a close picks up at once.
       if (bare) {
-        const at = new Date(deps.now()).toISOString();
+        const now = deps.now();
         const sweepHours = sweepHoursOf(config);
         /** @type {string | null} */
         let last;
@@ -1294,13 +1296,15 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         } catch (error) {
           deps.log('dispatch-pickup-unread', { level: 'error', repo, error: messageOf(error), reason: 'its last sweep could not be read, so it is not swept this turn' });
           sweepsUnread.push({ repo, error: `pickup sweep: ${messageOf(error)}` });
+          held += 1;
           continue;
         }
-        if (!sweepDue(last, sweepHours, deps.now())) {
+        if (!sweepDue(last, sweepHours, now)) {
           deps.log('dispatch-pickup', { level: 'info', repo, outcome: 'not due', last, sweepHours });
+          held += 1;
           continue;
         }
-        swept.set(repo, at);
+        swept.set(repo, new Date(now).toISOString());
       }
       sources.push({ repo, reader: await readerFor(repo), labels: config.labels, prompts: config.prompts });
     }
@@ -1319,7 +1323,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       ...(bare ? { unread } : {}),
     });
     for (const { repo, error } of unread) deps.log('dispatch-backlog-unread', { level: 'error', repo, error });
-    if (sources.length > 0 && new Set(unread.map((u) => u.repo)).size === sources.length) {
+    // Only when no repo was left out of the sweep: one due repo failing
+    // while the others were not due is that repo's fault, not the turn's.
+    if (sources.length > 0 && held === 0 && new Set(unread.map((u) => u.repo)).size === sources.length) {
       throw new Error(`no served repo's backlog could be read: ${unread.map((u) => `${u.repo}: ${u.error}`).join('; ')}`);
     }
     if (blocking !== undefined) {
@@ -1451,16 +1457,24 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const dispatched = [];
   /** The repos whose launch started nothing: the rest of their tickets and periodics wait for the next fire. @type {Set<string>} */
   const skipped = new Set();
+  /** The repos whose planned tickets a failed launch, the launch window or a skip left for the next fire. @type {Set<string>} */
+  const leftOver = new Set();
+  /** How many ticket sessions a repo's own entries started. @param {Dispatched[]} own */
+  const startedOf = (own) => own.filter((d) => d.issue !== null && d.outcome !== 'failed').length;
   let heartbeat = false;
   let loginStored = false;
   try {
     for (const [i, entry] of plan.entries()) {
       if (deps.now() - started > SCHEDULE_LAUNCH_WINDOW_MS) {
         deps.log('dispatch-launch', { undispatched: plan.slice(i).map((e) => ({ repo: e.repo, issue: e.issue })), reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, another launch might outrun the deadline; each is left unmarked for the next fire` });
+        for (const e of plan.slice(i)) if (e.issue !== null) leftOver.add(e.repo);
         break;
       }
       const ticket = entry.issue === null ? null : { repo: entry.repo, issue: entry.issue };
-      if (skipped.has(entry.repo)) continue;
+      if (skipped.has(entry.repo)) {
+        if (ticket !== null) leftOver.add(entry.repo);
+        continue;
+      }
       const claimed = ticket === null ? 'claimed' : await claim(ticket);
       if (claimed === 'taken') continue;
       if (claimed === 'failed') {
@@ -1480,7 +1494,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         beats.push({ repo: entry.repo, beat: { periodics: [{ name: entry.periodic.name, at: entry.periodic.asOf ?? firedAt, by: entry.periodic.by, session: sessionUrl, state: 'open' }] } });
       }
       if ((ticket !== null || entry.periodic !== undefined) && outcome === 'failed') {
-        if (ticket !== null) await release(ticket);
+        if (ticket !== null) {
+          await release(ticket);
+          leftOver.add(ticket.repo);
+        }
         // A launch that started nothing is the repo's environment or the
         // login: the repo's next ticket or periodic would fail the same way.
         skipped.add(entry.repo);
@@ -1495,16 +1512,23 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
 
     // A repo's sweep is recorded once its backlog was read and not every
     // claim or launch failed, as pickup's heartbeat line is: a sweep that
-    // started nothing it planned is tried again at the next fire.
+    // started nothing it planned is tried again at the next fire. A sweep
+    // that left planned tickets to a failed launch, the launch window or a
+    // skip is not recorded either, so the next fire picks them up, not the
+    // next interval.
     for (const [repo, at] of swept) {
       const own = dispatched.filter((d) => d.repo === repo);
       if (unread.some((u) => u.repo === repo) || (own.length > 0 && own.every((d) => d.outcome === 'failed'))) {
         swept.delete(repo);
         continue;
       }
+      if (leftOver.has(repo)) {
+        deps.log('dispatch-pickup', { level: 'info', repo, outcome: 'swept, with tickets left for the next fire, so not recorded', at, started: startedOf(own) });
+        continue;
+      }
       try {
         const written = await deps.state.recordSweep(repo, at);
-        deps.log('dispatch-pickup', { level: 'info', repo, outcome: written ? 'swept' : 'swept, and a later sweep was already recorded', at, started: own.filter((d) => d.issue !== null && d.outcome !== 'failed').length });
+        deps.log('dispatch-pickup', { level: 'info', repo, outcome: written ? 'swept' : 'swept, and a later sweep was already recorded', at, started: startedOf(own) });
       } catch (error) {
         deps.log('dispatch-pickup-unrecorded', { level: 'error', repo, error: messageOf(error), reason: 'its sweep could not be recorded, so the next fire sweeps it again' });
         sweepsUnread.push({ repo, error: `pickup sweep: ${messageOf(error)}` });
@@ -1538,7 +1562,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         // The `{ issue }` shape: pickup's line, for a repo whose file turns
         // pickup on, written with the turn's other lines by `run`.
         if (marker === undefined) {
-          if (swept.has(repo)) beats.push({ repo, beat: { pickup: { at: new Date(deps.now()).toISOString(), started: own.filter((d) => d.issue !== null && d.outcome !== 'failed').length } } });
+          if (swept.has(repo)) beats.push({ repo, beat: { pickup: { at: new Date(deps.now()).toISOString(), started: startedOf(own) } } });
           continue;
         }
         try {
