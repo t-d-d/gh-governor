@@ -97,7 +97,7 @@ import { GetQueueAttributesCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { DEFAULT_MODEL, launchOutcome } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
-import { branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
+import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
@@ -581,7 +581,7 @@ const eventPeriodics = async ({ repo, config, counted, base, started, carried, d
   // carrying turn's result and the sign-off sweep still stand.
   try {
     const reader = deps.reader(await deps.githubToken(repo), await deps.appId(), repo);
-    ({ due, unread } = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(reader, base), event: counted }));
+    ({ due, unread } = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(reader, base), open: runOpen(deps), event: counted }));
     ({ account } = readStoredLogin(await deps.secret.get()));
   } catch (error) {
     deps.log('dispatch-periodic-unread', { level: 'error', repo, counted, error: messageOf(error), reason: 'the periodics could not be checked: they wait for the next event or sweep' });
@@ -639,6 +639,43 @@ const eventPeriodics = async ({ repo, config, counted, base, started, carried, d
 const sweepLookup = (deps) => async (id, token) => {
   const listed = await sessionRow((after) => deps.sessions.list(token, after), id);
   return listed === undefined ? { row: sessionRecord(await deps.sessions.get(id, token)), from: 'record' } : { row: listed, from: 'list' };
+};
+
+/**
+ * Whether a periodic's last run is still open (dispatch/periodics.mjs): its
+ * session's own record, read under the login's token, is neither archived,
+ * by the sign-off sweep or by hand, nor gone (null, as a 404 answers).
+ * The sweep's candidates are idle, unarchived sessions only, so the hold
+ * reads the session's state itself rather than wait for the sweep. An
+ * expired token is refreshed once a turn, as for the environment list: a
+ * quiet repo may launch nothing that would refresh it. A record that
+ * carries no status, or a refresh that fails, throws: the periodic is
+ * refused, never taken for a finished run.
+ *
+ * @param {Deps} deps
+ * @returns {import('./periodics.mjs').Open}
+ */
+const runOpen = (deps) => {
+  /** @type {Promise<string> | null} */
+  let token = null;
+  const tokenOf = () => (token ??= (async () => {
+    let usable = accessToken(deps.workspace.readLogin(), deps.now());
+    if ('reason' in usable) {
+      const { credentials, account } = readStoredLogin(await deps.secret.get());
+      usable = await refreshedLogin(deps, credentials, account);
+    }
+    if ('reason' in usable) throw new Error(`cannot read the last run's session: ${usable.reason}`);
+    return usable.token;
+  })());
+  return async (session) => {
+    const id = /\bsession_([A-Za-z0-9]+)$/.exec(session)?.[1];
+    if (id === undefined) throw new Error(`the last run's session is not a session link: ${session}`);
+    const row = sessionRecord(await deps.sessions.get(`cse_${id}`, await tokenOf()));
+    if (row === null) return false;
+    const status = typeof row === 'object' ? /** @type {Record<string, unknown>} */ (row).session_status ?? /** @type {Record<string, unknown>} */ (row).status : undefined;
+    if (typeof status !== 'string') throw new Error(`the last run's session record carries no status: it has ${typeof row === 'object' ? Object.keys(row).join(', ') : typeof row}`);
+    return !archived(row);
+  };
 };
 
 /**
@@ -1126,7 +1163,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
       const due = [];
       for (const { repo, config } of served) {
         if (!turnsOn(config, 'periodics')) continue;
-        const read = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(await readerFor(repo)) });
+        const read = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(await readerFor(repo)), open: runOpen(deps) });
         due.push(...read.due.map((d) => ({ ...d, repo })));
         periodicsUnread.push(...read.unread);
       }

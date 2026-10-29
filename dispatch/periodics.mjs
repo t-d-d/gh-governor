@@ -23,6 +23,16 @@
  * event or sweep. A periodic never fires inside its minimum gap; a count
  * reached there fires on the first event or sweep after it.
  *
+ * A periodic never overlaps itself. One that comes due while the session its
+ * last fire started is still open is held ({@link Open}): the turn starts
+ * nothing and logs the fire held, naming that session, and writes nothing,
+ * so its count keeps growing from the fire before and the first check after
+ * the run ends fires it. A run is finished once its session is archived,
+ * whether by the sign-off sweep or by hand, or no longer exists; a record
+ * with no session, from an unconfirmed launch, is a finished run. A session
+ * that cannot be read refuses the periodic for the turn, and is never a
+ * finished run.
+ *
  * At its day limit, a periodic with counts whose window is empty starts no
  * session: governor records "nothing to do" as its fire, so its next day
  * limit counts from then. A periodic with only a day limit always starts.
@@ -79,6 +89,9 @@ export const LISTED_MAX = 100;
  * @typedef {(kind: Count, since: string) => Promise<Counted[]>} Window
  *   What of `kind` happened after `since`, oldest first, read afresh; a read
  *   that fails throws.
+ * @typedef {(session: string) => Promise<boolean>} Open
+ *   Whether the session a record names (its URL) is still open: not archived,
+ *   and still there. A read that fails throws.
  * @typedef {Partial<Record<Count, Counted[]>>} Windows
  * @typedef {{ periodic: import('./repo-config.mjs').Periodic, read: PeriodicRecord, due: number, windows?: Windows, asOf?: string }} Due
  *   `windows`: what each of its counts counted, for one that has counts.
@@ -204,7 +217,8 @@ const inGap = (periodic, read, now) => {
  * limit and its counts. On an event's turn, only the periodics that count
  * `event` are read, and only against that count, so the event's turn starts
  * nothing the sweep would not; the rest of its counts are read for the
- * prompt once it is due.
+ * prompt once it is due. A due periodic whose last run is still `open` is
+ * held, and is not due.
  *
  * @param {{
  *   repo: string,
@@ -213,11 +227,12 @@ const inGap = (periodic, read, now) => {
  *   now: number,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  *   window?: Window,
+ *   open?: Open,
  *   event?: Count,
  * }} args
  * @returns {Promise<{ due: Due[], unread: Array<{ repo: string, error: string }> }>}
  */
-export const duePeriodics = async ({ repo, periodics, state, now, log, window = noWindow, event }) => {
+export const duePeriodics = async ({ repo, periodics, state, now, log, window = noWindow, open = noOpen, event }) => {
   /** @type {Due[]} */
   const due = [];
   /** @type {Array<{ repo: string, error: string }>} */
@@ -227,6 +242,24 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     const message = messageOf(error);
     log('dispatch-periodic-unread', { level: 'error', repo, periodic: name, error: message, reason });
     unread.push({ repo, error: `periodic ${name}: ${message}` });
+  };
+  /**
+   * Whether a due periodic is held for its last run: logged, or refused
+   * where the session cannot be read.
+   *
+   * @param {string} name
+   * @param {PeriodicRecord} read
+   */
+  const held = async (name, read) => {
+    if (read.session === null) return false;
+    try {
+      if (!(await open(read.session))) return false;
+    } catch (error) {
+      refuse(name, error, 'its last run\'s session could not be read, so it is refused this turn');
+      return true;
+    }
+    log('dispatch-periodic', { repo, periodic: name, outcome: 'held', session: read.session, at: read.at, reason: 'its last run\'s session is still open' });
+    return true;
   };
   for (const periodic of periodics) {
     const { name, days } = periodic;
@@ -260,7 +293,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     const limit = at + days * DAY_MS;
     const dayDue = event === undefined && now - at >= days * DAY_MS - SWEEP_GRACE_MS;
     if (counts.length === 0) {
-      if (dayDue) due.push({ periodic, read, due: limit });
+      if (dayDue && !(await held(name, read))) due.push({ periodic, read, due: limit });
       continue;
     }
     /** @type {Windows} */
@@ -290,9 +323,15 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       }
       continue;
     }
+    if (await held(name, read)) continue;
     due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, windows, asOf: new Date(now).toISOString() });
   }
   return { due, unread };
+};
+
+/** @type {Open} */
+const noOpen = async (session) => {
+  throw new Error(`no reader for ${session} was given`);
 };
 
 /** @type {Window} */
