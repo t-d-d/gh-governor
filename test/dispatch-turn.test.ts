@@ -1201,7 +1201,7 @@ describe('run — periodics an event brings due', () => {
     const h = counting({ merges: merged(20) }, { sessions });
     h.periodics.set(key(CODE.name), fired(DAY));
     await run(MERGE, h.deps as never);
-    assert.deepEqual(h.launches, []);
+    assert.equal(h.launches.length, 0);
     assert.deepEqual(h.periodics.get(key(CODE.name)), fired(DAY));
     assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic' && l.outcome === 'held' && l.session === 'https://claude.ai/code/session_01OLD'), JSON.stringify(h.logged));
     open = false;
