@@ -30,6 +30,9 @@
     "issue": 412,
     "marker": "<!-- factory:routine-heartbeat:auto-develop -->"
   },
+  "pickup": {
+    "sweepHours": 2
+  },
   "periodics": [
     {
       "name": "Weekly retro",

@@ -118,6 +118,9 @@ const harness = (over: Record<string, unknown> = {}) => {
   // Each periodic's record, keyed `<repo>#<name>`, and every write to one.
   const periodics = new Map<string, { at: string; session: string | null; baseline: boolean }>();
   const periodicWrites: Array<{ repo: string; name: string; record: { at: string; session: string | null; baseline: boolean } }> = [];
+  // Each repo's last pickup sweep, and every write to one.
+  const sweeps = new Map<string, string>();
+  const sweepWrites: Array<{ repo: string; at: string }> = [];
   // The login's sessions, as the sessions list answers them, and each one's
   // events page, by `cse_` id; and every events read, with its token.
   const rows: Array<Record<string, unknown>> = [];
@@ -284,10 +287,19 @@ const harness = (over: Record<string, unknown> = {}) => {
         periodicWrites.push({ repo, name, record });
         return true;
       },
+      sweep: async (repo: string) => sweeps.get(repo) ?? null,
+      // A conditional write, as the table's: never back to an older sweep.
+      recordSweep: async (repo: string, at: string) => {
+        const held = sweeps.get(repo);
+        if (held !== undefined && Date.parse(held) >= Date.parse(at)) return false;
+        sweeps.set(repo, at);
+        sweepWrites.push({ repo, at });
+        return true;
+      },
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, cursors, periodics, periodicWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, cursors, periodics, periodicWrites, sweeps, sweepWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -3329,6 +3341,43 @@ describe('realDeps: the state table', () => {
     await assert.rejects(malformed.periodic(REPO, 'Weekly retro'), /malformed/);
   });
 
+  // A repo's last pickup sweep survives a lost item: no record means sweep now.
+  test('a repo\'s last sweep is one item per repo, read consistently, never moved back, and never expires', async () => {
+    const sent: Array<{ name: string; input: Record<string, any> }> = [];
+    let refuse = false;
+    const AT = '2026-10-20T12:17:00.000Z';
+    const client = {
+      send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
+        sent.push({ name: command.constructor.name, input: command.input });
+        if (refuse) throw Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' });
+        if (command.constructor.name !== 'GetItemCommand') return {};
+        return command.input.Key.pk.S === 'pickup#acme/factory' ? { Item: { pk: { S: 'pickup#acme/factory' }, sk: { S: 'sweep' }, at: { S: AT } } } : {};
+      },
+    };
+    const state = dynamoState(client as never, 'T');
+    assert.equal(await state.sweep(REPO), AT);
+    assert.deepEqual(sent[0]?.input.Key, { pk: { S: 'pickup#acme/factory' }, sk: { S: 'sweep' } });
+    assert.equal(sent[0]?.input.ConsistentRead, true);
+    assert.equal(await state.sweep('t-d-d/askme-mcp'), null);
+
+    sent.length = 0;
+    const next = '2026-10-20T14:17:00.000Z';
+    assert.equal(await state.recordSweep(REPO, next), true);
+    const put = sent[0]!;
+    assert.equal(put.name, 'PutItemCommand', 'one conditional put, never a read then a write');
+    assert.deepEqual(put.input.Item, { pk: { S: 'pickup#acme/factory' }, sk: { S: 'sweep' }, at: { S: next } });
+    assert.match(String(put.input.ConditionExpression), /attribute_not_exists\(pk\) OR #at < :at/);
+    assert.deepEqual(put.input.ExpressionAttributeValues[':at'], { S: next });
+
+    refuse = true;
+    assert.equal(await state.recordSweep(REPO, next), false, 'a later sweep standing is no fault');
+    const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
+    await assert.rejects(failing.sweep(REPO), /AccessDeniedException/);
+    await assert.rejects(failing.recordSweep(REPO, next), /AccessDeniedException/);
+    const malformed = dynamoState({ send: async () => ({ Item: { pk: { S: 'pickup#acme/factory' }, sk: { S: 'sweep' }, at: { S: 'yesterday' } } }) } as never, 'T');
+    await assert.rejects(malformed.sweep(REPO), /malformed/);
+  });
+
   // A day limit with nothing to do is its fire, and opens no minimum gap:
   // the record says so, and reads back the same.
   test('a periodic\'s nothing-to-do record, and the last run it keeps, are written and read back as such', async () => {
@@ -4789,6 +4838,144 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
     h.periodics.set(key(RETRO.name), fired(7 * DAY));
     await run({ source: 'aws.events' }, h.deps as never);
     assert.deepEqual(h.writes, []);
+  });
+});
+
+/**
+ * Pickup's sweep interval (dispatch/pickup.mjs): the bare schedule fire
+ * sweeps a repo's ready tickets once the interval its file sets, two hours
+ * when unset, has passed since that repo's last sweep. The last sweep lives
+ * in the state table under `pickup#<repo>`, and a lost item means sweep now.
+ * A ready label and a close that frees tickets still pick up at once, so a
+ * repo whose ready label `SelectLabels` does not list waits for its sweep.
+ * Pickup's heartbeat line records each sweep, and only a sweep.
+ */
+describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval its file sets (dispatcher-repos.md)', () => {
+  const HOUR = 60 * 60 * 1000;
+  const ago = (ms: number) => new Date(NOW - ms).toISOString();
+  const AT = new Date(NOW).toISOString();
+  const EARLIER = '2026-09-20T08:00:00.000Z';
+  const BODY = `${HEARTBEAT_MARKER}\n- pickup: last sweep ${EARLIER}, started 1 session\n${HEARTBEAT_END}\n`;
+
+  /** The factory with pickup's section as given (none when undefined), its heartbeat in the `{ issue }` shape, its body kept. */
+  const sweeping = (pickup: unknown, over: Record<string, unknown> = {}) => {
+    const file = JSON.parse(FACTORY_FILE);
+    delete file.pickup;
+    if (pickup !== undefined) file.pickup = pickup;
+    file.heartbeat = { issue: BEAT.issue };
+    const issue = { body: BODY };
+    let backlogReads = 0;
+    const base = harness();
+    const h = harness({
+      configFile: async (repo: string) => (repo === REPO ? JSON.stringify(file) : null),
+      reader: (token: string) => ({
+        ...base.deps.reader(token),
+        readyIssues: async () => {
+          backlogReads += 1;
+          return base.deps.reader(token).readyIssues();
+        },
+        blocking: async () => [{ number: 9, state: 'open', title: 'Issue 9' }],
+        issue: async (n: number) => (n === BEAT.issue ? { number: n, body: issue.body, pull: false } : { number: n, body: 'someone\'s ticket', pull: false }),
+        updateIssue: async (n: number, { body }: { body: string }) => {
+          assert.equal(n, BEAT.issue, 'only the heartbeat issue is written');
+          issue.body = body;
+        },
+      }),
+      ...over,
+    });
+    return { ...h, issue, backlogReads: () => backlogReads, tickets: () => h.launches.map((l) => l.sessionName).filter((n) => /^#\d+/.test(n)) };
+  };
+
+  test('with no interval set, the two-hourly fire sweeps, and records the sweep under the repo', async () => {
+    const h = sweeping(undefined);
+    h.sweeps.set(REPO, ago(2 * HOUR));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.tickets().length, 2);
+    assert.deepEqual(h.sweepWrites, [{ repo: REPO, at: AT }]);
+  });
+
+  test('a repo with no record of a sweep is swept now', async () => {
+    const h = sweeping({ sweepHours: 6 });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.tickets().length, 2);
+    assert.deepEqual(h.sweepWrites, [{ repo: REPO, at: AT }]);
+  });
+
+  test('a fire before the repo\'s interval has passed reads no backlog, starts no ticket, records no sweep and leaves pickup\'s line alone', async () => {
+    const h = sweeping({ sweepHours: 6 });
+    h.sweeps.set(REPO, ago(4 * HOUR));
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.equal(h.backlogReads(), 0);
+    assert.deepEqual(h.tickets(), []);
+    assert.deepEqual(h.sweepWrites, []);
+    assert.equal(h.issue.body, BODY);
+    assert.equal(result.heartbeat, false);
+    const skipped = h.logged.find((l) => l.event === 'dispatch-pickup' && l.repo === REPO);
+    assert.ok(skipped, JSON.stringify(h.logged));
+    assert.equal(skipped.outcome, 'not due');
+    assert.equal(skipped.sweepHours, 6);
+    assert.equal(skipped.last, ago(4 * HOUR));
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('the first fire at or after the interval sweeps, and pickup\'s line records the sweep', async () => {
+    const h = sweeping({ sweepHours: 6 });
+    h.sweeps.set(REPO, ago(6 * HOUR - 10 * 60 * 1000));
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.equal(h.tickets().length, 2);
+    assert.deepEqual(h.sweepWrites, [{ repo: REPO, at: AT }]);
+    assert.deepEqual(readHeartbeat(h.issue.body).pickup, { at: AT, started: 2 });
+    assert.equal(result.heartbeat, true);
+  });
+
+  test('an interval shorter than the clock\'s tick sweeps at every fire', async () => {
+    const h = sweeping({ sweepHours: 1 });
+    h.sweeps.set(REPO, ago(2 * HOUR));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.tickets().length, 2);
+  });
+
+  for (const fire of [{ kind: 'schedule', issue: 7 }, { kind: 'schedule', freed: 5 }]) {
+    test(`${JSON.stringify(fire)} picks up at once, inside the interval, and records no sweep`, async () => {
+      const h = sweeping({ sweepHours: 6 });
+      h.sweeps.set(REPO, ago(HOUR));
+      await run(fire, h.deps as never);
+      assert.equal(h.tickets().length, 1);
+      assert.deepEqual(h.sweepWrites, []);
+      assert.equal(h.issue.body, BODY, 'a label or a close never freshens pickup\'s line');
+    });
+  }
+
+  test('a last sweep that cannot be read is no missing one: the repo is not swept, and the turn fails', async () => {
+    const h = sweeping({ sweepHours: 6 }, { state: { sweep: async () => { throw new Error('AccessDeniedException'); } } });
+    const result = await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.backlogReads(), 0);
+    assert.deepEqual(h.tickets(), []);
+    assert.equal(h.issue.body, BODY);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-pickup-unread' && l.level === 'error' && l.repo === REPO), JSON.stringify(h.logged));
+    assert.deepEqual((result as { unread?: unknown }).unread, [{ repo: REPO, error: 'pickup sweep: AccessDeniedException' }]);
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  test('a sweep whose launches all failed records no sweep, so the next fire sweeps again', async () => {
+    const h = sweeping({ sweepHours: 6 }, { launch: async () => ({ status: 1, output: 'claude died' }) });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.sweepWrites, []);
+  });
+
+  test('a sweep whose backlog could not be read records no sweep', async () => {
+    const base = harness();
+    const h = sweeping({ sweepHours: 6 }, { reader: (token: string) => ({ ...base.deps.reader(token), readyIssues: async () => { throw new Error('GET /issues failed: 410 Gone'); } }) });
+    await assert.rejects(run({ source: 'aws.events' }, h.deps as never), /410/);
+    assert.deepEqual(h.sweepWrites, []);
+  });
+
+  test('a sweep that cannot be recorded fails the turn, after its launches', async () => {
+    const h = sweeping({ sweepHours: 6 }, { state: { recordSweep: async () => { throw new Error('ProvisionedThroughputExceededException'); } } });
+    const result = await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.tickets().length, 2);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-pickup-unrecorded' && l.level === 'error' && l.repo === REPO), JSON.stringify(h.logged));
+    assert.equal(exitCodeFor(result as never), 1);
   });
 });
 

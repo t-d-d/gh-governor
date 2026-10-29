@@ -60,6 +60,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.
 | `workflows` | no | What the repo's workflows are to governor: `ci`, `triage` and `tags`. |
 | `review` | when `prReview` is on | The PR review's settings. |
 | `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the two-hourly sweep updates. |
+| `pickup` | no | `{ "sweepHours": <number> }`: how many whole hours the two-hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default two, which sweeps at every fire. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the switch is on. |
 
@@ -67,7 +68,7 @@ The switches in `features`:
 
 | Switch | What it turns on |
 |---|---|
-| `pickup` | A session per ready ticket. |
+| `pickup` | A session per ready ticket, picked up on its label, on the close that frees it, and on the sweep at the interval `pickup.sweepHours` sets. |
 | `summons` | A session per `@claude` remark, and a dispatch started by hand. |
 | `prMessages` | Messages into the session a PR names, or the local session holding its branch. |
 | `subscribeMessages` | Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. |
@@ -120,14 +121,24 @@ A new periodic starts its first session one day limit, or one count, after the f
 
 ### Immediate pickup needs the ready label in `SelectLabels`
 
-A label added to an issue starts a selection at once only if the deployment's `SelectLabels` parameter lists it, or is empty. A repo whose ready label is not listed is still served: its tickets wait for the two-hourly sweep. To have a new ready label picked up at once, add it to `SelectLabels` (the `SELECT_LABELS` repository variable) and deploy.
+A label added to an issue starts a selection at once only if the deployment's `SelectLabels` parameter lists it, or is empty. A repo whose ready label is not listed is still served: its tickets wait for the repo's pickup sweep. To have a new ready label picked up at once, add it to `SelectLabels` (the `SELECT_LABELS` repository variable) and deploy.
+
+### Pickup's sweep interval
+
+A ready label listed in `SelectLabels`, and a close that frees tickets, pick a ticket up at once. The sweep catches what those miss: a lost event, a close that freed more tickets than the cap, a label `SelectLabels` does not list. It runs at the two-hourly fire, once `pickup.sweepHours` have passed since the repo's last sweep, and every two hours when the file sets none. A repo that trusts its events can sweep less often:
+
+```json
+"pickup": { "sweepHours": 6 }
+```
+
+The fire's clock is the deployment's, which the file cannot see, so a repo is swept at the first fire at or after its interval. An interval shorter than the clock's tick sweeps at every fire. Pickup's line on the heartbeat issue records each sweep.
 
 ## How governor runs
 
 - **One task on AWS.** Each turn is one ECS Fargate task, arm64, half a vCPU and a gigabyte, for a few minutes. It needs a pseudo-terminal to start a cloud session, which Lambda cannot give. Only one task runs at a time.
 - **A webhook receiver.** The App's webhook posts every installation's events to one Lambda Function URL. The receiver checks the signature, routes the event from its payload, and queues a fire on a FIFO queue. A starter Lambda drains the queue and runs one task per fire, never two at once.
 - **One claude.ai login.** The task creates sessions with a stored claude.ai login, kept in Secrets Manager. Each turn refreshes it and writes it back. The login's refresh expiry is fixed when it is minted, about two weeks on, so it must be minted again before then; an alarm warns three days ahead.
-- **A two-hourly schedule.** EventBridge fires the receiver every two hours. That fire sweeps every served repo: it starts due periodics, picks up ready tickets, writes heartbeats, and archives signed-off sessions.
+- **A two-hourly schedule.** EventBridge fires the receiver every two hours. That fire sweeps every served repo: it starts due periodics, picks up ready tickets in each repo whose pickup interval has passed, writes heartbeats, and archives signed-off sessions.
 
 Governor runs from one CloudFormation stack, `governor` ([infra/governor.cfn.yml](infra/governor.cfn.yml)). A second stack, `governor-bootstrap` ([infra/bootstrap.cfn.yml](infra/bootstrap.cfn.yml)), holds the deploy's role and the secrets the operator writes. [.github/workflows/deploy.yml](.github/workflows/deploy.yml) applies both on a green push to `main`. A fire costs a fraction of a cent, and no GitHub Actions minutes.
 

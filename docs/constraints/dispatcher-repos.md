@@ -20,7 +20,10 @@ spends the one claude.ai login.
 - A label added to an issue queues a selection fire only if the stack's
   `SelectLabels` (`selectLabelsOf`) lists it or is empty, and no bot added it
   (the dispatcher's own claim or release). A repo whose ready label is not
-  listed waits for the two-hourly schedule fire. A new ready label needs
+  listed waits for its pickup sweep: the bare schedule fire sweeps a repo's
+  ready tickets once the interval its file sets (`pickup.sweepHours`,
+  dispatch/pickup.mjs), two hours when unset, has passed since that repo's
+  last sweep. A new ready label needs
   adding to `SelectLabels`, a deploy, for immediate pickup; onboarding needs
   no deploy.
 - The config file is `.github/dispatch.json` (`CONFIG_PATH`), read from the
@@ -95,8 +98,9 @@ spends the one claude.ai login.
 - A record the state table keeps per served repo carries the repo in its
   key, under the prefix rule in dispatcher-state.md: the workflow cursors
   and their delivered records (`workflow#<repo>#<file>`), the conflicts
-  records (`conflicts#<repo>`) and each periodic's record
-  (`periodic#<repo>`) among them.
+  records (`conflicts#<repo>`), each periodic's record
+  (`periodic#<repo>`) and each repo's last pickup sweep (`pickup#<repo>`)
+  among them.
 
 ## Examples
 
@@ -146,4 +150,4 @@ spends the one claude.ai login.
   then hold or redirect a dispatch.
 
 Judgment: that a new per-repo table record keys on its repo, and that a config file holds no secret, no check sees: a key is a string no schema reads, and a secret has no shape the schema can refuse.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17.

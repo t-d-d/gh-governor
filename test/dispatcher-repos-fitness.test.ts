@@ -122,7 +122,7 @@ const depsOver = (fetch: typeof globalThis.fetch) => {
     transcript: async () => ({ skipped: 'none' }),
     archive: async () => ({ status: 200, body: '{}' }),
     sessions: { list: async () => ({ data: [] }), get: async () => null, events: async () => ({ data: [] }) },
-    state: { cursor: async () => null, advance: async () => true, delivered: async () => ({ told: [], failed: [] }), record: async () => {} },
+    state: { cursor: async () => null, advance: async () => true, delivered: async () => ({ told: [], failed: [] }), record: async () => {}, sweep: async () => null, recordSweep: async () => true },
   };
 };
 
