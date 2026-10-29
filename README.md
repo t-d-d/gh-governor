@@ -112,7 +112,7 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 { "name": "Code review", "prompt": "Review what merged since the last review.", "days": 7, "counts": { "merges": 20 }, "gapHours": 4 }
 ```
 
-A new periodic starts its first session one day limit, or one count, after the first fire that reads it. How governor keeps each one's record is in [docs/how-it-works.md](docs/how-it-works.md#periodics).
+A new periodic starts its first session one day limit, or one count, after the first fire that reads it. A periodic never overlaps itself: while the session its last fire started is still open, a due periodic is held. Governor starts nothing, logs the fire as held with that session's link, and leaves the last fire's time alone, so the count keeps growing and the first check after the session is archived fires it. Archived by the sign-off sweep or by hand, or deleted, the run is finished. How governor keeps each one's record is in [docs/how-it-works.md](docs/how-it-works.md#periodics).
 
 `prompts`: each value is text, or `{ "file": "<path>" }` read from the default branch. The kinds, and the facts each may name as `{fact}`, are in [docs/how-it-works.md](docs/how-it-works.md#prompts).
 

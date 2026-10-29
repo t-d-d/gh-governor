@@ -235,10 +235,11 @@ const harness = (over: Record<string, unknown> = {}) => {
     // no session holds any branch and the sweep has no candidate. Every
     // session's own record reads idle unless a test says otherwise; a test
     // that needs one the API does not have answers null, as realDeps answers
-    // a 404.
+    // a 404. The run a periodic's record names, `session_01OLD`, reads
+    // archived: its run is over, so the periodic is not held for it.
     sessions: {
       list: async (_token: string) => ({ data: [...rows] }),
-      get: async (id: string, _token: string) => ({ id, session_status: 'SESSION_STATUS_IDLE' }),
+      get: async (id: string, _token: string) => ({ id, session_status: id === 'cse_01OLD' ? 'SESSION_STATUS_ARCHIVED' : 'SESSION_STATUS_IDLE' }),
       events: async (id: string, token: string) => {
         eventsRead.push({ id, token });
         return (pages.get(id) ?? { data: [] }) as unknown;
@@ -1041,6 +1042,78 @@ describe('run — periodics', () => {
     assert.deepEqual(h.periodics.get(key(RETRO.name)), fired(8), 'unlaunched: due for the next fire');
   });
 
+  /** The harness's sessions API, with `cse_01OLD`'s record answered by `old`. */
+  const oldSession = (old: (token: string) => Promise<unknown>) => {
+    const base = harness().deps.sessions;
+    return { ...base, get: async (id: string, token: string) => (id === 'cse_01OLD' ? old(token) : base.get(id, token)) };
+  };
+
+  test('a due periodic whose last run\'s session is still open is held: nothing starts, the fire is logged held naming that session, and the record stays', async () => {
+    const tokens: string[] = [];
+    const h = harness({ sessions: oldSession(async (token) => { tokens.push(token); return { id: 'cse_01OLD', session_status: 'SESSION_STATUS_IDLE' }; }) });
+    h.periodics.set(key(RETRO.name), fired(7));
+    h.periodics.set(key(REVIEW.name), fired(1));
+    const result = await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), TICKETS);
+    assert.deepEqual(h.periodics.get(key(RETRO.name)), fired(7), 'a held fire does not move the last fire\'s time');
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic' && l.outcome === 'held' && l.periodic === RETRO.name && l.session === 'https://claude.ai/code/session_01OLD'), JSON.stringify(h.logged));
+    assert.deepEqual(tokens, ['sk-ant-oat01-a'], 'read under the login\'s token');
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('a run whose session was archived with no sign-off line, by hand, counts as finished', async () => {
+    const h = harness({ sessions: oldSession(async () => ({ response_shape: { id: 'cse_01OLD', session_status: 'SESSION_STATUS_ARCHIVED' } })) });
+    h.periodics.set(key(RETRO.name), fired(7));
+    h.periodics.set(key(REVIEW.name), fired(1));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [RETRO.name, ...TICKETS]);
+    assert.deepEqual(h.eventsRead, [], 'no reply read: archived is finished, signed off or not');
+  });
+
+  test('an expired access token is refreshed through the CLI, once a turn, and stored, before the session is read', async () => {
+    const expired = LOGIN.replace(String(NOW + 3_600_000), String(NOW - 1));
+    let secret = storedLogin(expired, ACCOUNT);
+    const tokens: string[] = [];
+    const h = harness({
+      secret: { get: async () => secret, put: async (text: string) => { h.stored.push(text); secret = text; } },
+      sessions: oldSession(async (token) => { tokens.push(token); return { id: 'cse_01OLD', session_status: 'SESSION_STATUS_ARCHIVED' }; }),
+      refreshLogin: async () => {
+        h.calls.push('refreshLogin');
+        h.setLoginOnDisk(REFRESHED);
+        return { status: 0, output: '{"result":"OK"}' };
+      },
+    });
+    h.periodics.set(key(RETRO.name), fired(7));
+    h.periodics.set(key(REVIEW.name), fired(7));
+    const result = await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(tokens, ['sk-ant-oat01-b', 'sk-ant-oat01-b'], 'read under the refreshed token');
+    assert.equal(h.calls.filter((c) => c === 'refreshLogin').length, 1);
+    assert.equal(h.stored[0], SECRET_REFRESHED, 'the refreshed login goes back to the secret');
+    assert.deepEqual(h.launches.map((l) => l.sessionName).slice(0, 2).sort(), [REVIEW.name, RETRO.name].sort());
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('a run whose session no longer exists counts as finished', async () => {
+    const h = harness({ sessions: oldSession(async () => null) });
+    h.periodics.set(key(RETRO.name), fired(7));
+    h.periodics.set(key(REVIEW.name), fired(1));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [RETRO.name, ...TICKETS]);
+  });
+
+  test('a session that cannot be read, or reads no status, refuses that periodic for the turn, never taken for a finished run, and fails the turn', async () => {
+    for (const old of [async () => { throw new Error('GET /v1/code/sessions/cse_01OLD: 503'); }, async () => ({ id: 'cse_01OLD' })]) {
+      const h = harness({ sessions: oldSession(old) });
+      h.periodics.set(key(RETRO.name), fired(7));
+      h.periodics.set(key(REVIEW.name), fired(1));
+      const result = await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(h.launches.map((l) => l.sessionName), TICKETS);
+      assert.deepEqual(h.periodics.get(key(RETRO.name)), fired(7));
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic-unread' && l.level === 'error' && l.periodic === RETRO.name), JSON.stringify(h.logged));
+      assert.equal(exitCodeFor(result as never), 1);
+    }
+  });
+
   test('a fire naming an issue starts no periodic', async () => {
     const h = harness();
     h.periodics.set(key(RETRO.name), fired(8));
@@ -1119,6 +1192,47 @@ describe('run — periodics an event brings due', () => {
     assert.deepEqual(h.periodics.get(key(CODE.name)), { at: new Date(NOW).toISOString(), session: 'https://claude.ai/code/session_01ABC', baseline: false });
     assert.deepEqual(result.periodics?.dispatched, [{ repo: REPO, issue: null, outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01ABC' }]);
     assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('a merge that brings a periodic due while its last run\'s session is open starts nothing, and the next merge after the run ends fires it over the whole count', async () => {
+    let open = true;
+    const base = harness().deps.sessions;
+    const sessions = { ...base, get: async (id: string, token: string) => (id === 'cse_01OLD' ? { id, session_status: open ? 'SESSION_STATUS_RUNNING' : 'SESSION_STATUS_ARCHIVED' } : base.get(id, token)) };
+    const h = counting({ merges: merged(20) }, { sessions });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await run(MERGE, h.deps as never);
+    assert.equal(h.launches.length, 0);
+    assert.deepEqual(h.periodics.get(key(CODE.name)), fired(DAY));
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic' && l.outcome === 'held' && l.session === 'https://claude.ai/code/session_01OLD'), JSON.stringify(h.logged));
+    open = false;
+    await run(MERGE, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [CODE.name]);
+    assert.ok(h.launches[0]!.prompt.includes(`Pull requests merged into the default branch since ${ago(DAY)}: 20`));
+  });
+
+  test('a login refreshed to read the last run\'s session whose write-back failed is written back before the turn ends', async () => {
+    const expired = LOGIN.replace(String(NOW + 3_600_000), String(NOW - 1));
+    let secret = storedLogin(expired, ACCOUNT);
+    let puts = 0;
+    const h = counting({ merges: merged(20) }, {
+      secret: {
+        get: async () => secret,
+        put: async (text: string) => {
+          puts += 1;
+          if (puts === 1) throw new Error('PutSecretValue: 500');
+          secret = text;
+        },
+      },
+      refreshLogin: async () => {
+        h.setLoginOnDisk(REFRESHED);
+        return { status: 0, output: '{"result":"OK"}' };
+      },
+    });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    const result = await run(MERGE, h.deps as never);
+    assert.equal(h.launches.length, 0);
+    assert.equal(secret, SECRET_REFRESHED, 'the rotated login is not lost with the task');
+    assert.equal(exitCodeFor(result as never), 1, 'the periodic was refused');
   });
 
   test('short of its number, nothing starts and the record stays', async () => {
@@ -3974,6 +4088,25 @@ describe('run — every served repo', () => {
     assert.match(h.launches[0]!.prompt, new RegExp(`in ${ASKME}`));
     assert.deepEqual(result.dispatched.map((d) => d.issue), [2, 7, 9]);
     assert.ok(h.read.includes(`${ASKME} ready mode: afk as ghs_${ASKME}`), h.read.join('; '));
+  });
+
+  test('the periodics\' last runs are read under one login refresh a turn, whichever served repo they are in', async () => {
+    const expired = LOGIN.replace(String(NOW + 3_600_000), String(NOW - 1));
+    const askmeFile = JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: true, periodics: true }, periodics: [{ name: 'Askme retro', prompt: 'Look back.', days: 7 }] });
+    const h = twoRepos({
+      askmeFile,
+      secret: { get: async () => storedLogin(expired, ACCOUNT), put: async (text: string) => { h.stored.push(text); } },
+      refreshLogin: async () => {
+        h.calls.push('refreshLogin');
+        return { status: 1, output: 'refresh refused' };
+      },
+    });
+    const fired = { at: new Date(NOW - 7 * 24 * 60 * 60 * 1000).toISOString(), session: 'https://claude.ai/code/session_01RUN', baseline: false };
+    h.periodics.set(`${REPO}#Weekly retro`, fired);
+    h.periodics.set(`${ASKME}#Askme retro`, fired);
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.calls.filter((c) => c === 'refreshLogin').length, 1, h.calls.join('; '));
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic-unread' && l.periodic === 'Askme retro'), JSON.stringify(h.logged));
   });
 
   test('a ticket in a repo with its own claim label is claimed with it, the label made first, its ready label left on', async () => {
