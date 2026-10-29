@@ -475,21 +475,31 @@ export const run = async (event, deps) => {
     if (find === undefined) finders.set(token, find = branchFinder({ list: (after) => deps.sessions.list(token, after), get: async (id) => sessionRecord(await deps.sessions.get(id, token)) }, repo, { log: deps.log }));
     return find;
   };
-  const result = await turnFor(invocation, {
-    ...deps,
-    secret,
-    githubToken: tokenFor,
-    message: async (message) => {
-      const session = sessionId(message.session);
-      if (!woken.has(session)) woken.set(session, deps.now());
-      const sent = await deps.message(message);
-      // An archived session cannot reply: neither wait for it nor defer it.
-      // A resend counts too: the first send may have blipped.
-      if (refusedAsArchived(sent)) woken.delete(session);
-      return sent;
-    },
-  }, finder, { served, bare, refusal, repo });
-  const { beats: turnBeats = [], ...turned } = /** @type {typeof result & { beats?: RepoBeat[] }} */ (result);
+  /** What the turn changes in each repo's governor heartbeat block, written below. @type {RepoBeat[]} */
+  const turnBeats = [];
+  /** @type {Awaited<ReturnType<typeof turnFor>>} */
+  let turned;
+  try {
+    turned = await turnFor(invocation, {
+      ...deps,
+      secret,
+      githubToken: tokenFor,
+      message: async (message) => {
+        const session = sessionId(message.session);
+        if (!woken.has(session)) woken.set(session, deps.now());
+        const sent = await deps.message(message);
+        // An archived session cannot reply: neither wait for it nor defer it.
+        // A resend counts too: the first send may have blipped.
+        if (refusedAsArchived(sent)) woken.delete(session);
+        return sent;
+      },
+    }, finder, { served, bare, refusal, repo, beats: turnBeats });
+  } catch (error) {
+    // A periodic that launched has moved its record, so no later fire
+    // writes its line: it goes before the turn fails.
+    await writeBeats(deps, tokenFor, served, turnBeats);
+    throw error;
+  }
   // An event a periodic counts: the repo's periodics are checked after the
   // turn's own work, under their own switch, whatever switch that work
   // needed (dispatch/periodics.mjs), as the sweep below runs on every turn.
@@ -500,7 +510,7 @@ export const run = async (event, deps) => {
     counted: invocation.counted,
     base: invocation.kind === 'conflicts' ? invocation.base : undefined,
     started,
-    carried: 'dispatched' in result && Array.isArray(result.dispatched) ? result.dispatched.filter((d) => d.repo.toLowerCase() === repo.toLowerCase()) : [],
+    carried: 'dispatched' in turned && Array.isArray(turned.dispatched) ? turned.dispatched.filter((d) => d.repo.toLowerCase() === repo.toLowerCase()) : [],
     deps: { ...deps, secret, githubToken: tokenFor },
   });
   const eventBeats = checked?.beats ?? [];
@@ -524,12 +534,13 @@ export const run = async (event, deps) => {
     lookup: sweepLookup(deps),
     events,
   });
-  const marked = signoffs.archived.length === 0 ? { written: [], unwritten: [] } : await writeBeats(deps, tokenFor, served, served.map((s) => ({ repo: s.repo, beat: { signedOff: signoffs.archived } })));
+  // Only a periodic's line names a session, so only those repos are read.
+  const marked = signoffs.archived.length === 0 ? { written: [], unwritten: [] } : await writeBeats(deps, tokenFor, served, served.filter((s) => turnsOn(s.config, 'periodics')).map((s) => ({ repo: s.repo, beat: { signedOff: signoffs.archived } })));
   const heartbeatUnwritten = [...beaten.unwritten, ...marked.unwritten];
   const left = [...unread, ...('unread' in turned && Array.isArray(turned.unread) ? turned.unread : [])];
   return {
     ...turned,
-    ...('heartbeat' in turned && bare && beaten.written.length > 0 ? { heartbeat: true } : {}),
+    ...('heartbeat' in turned && beaten.written.some((r) => turnBeats.some((b) => b.repo === r && b.beat.pickup !== undefined)) ? { heartbeat: true } : {}),
     ...(left.length === 0 ? {} : { unread: left }),
     ...(periodics === null ? {} : { periodics }),
     ...(heartbeatUnwritten.length === 0 ? {} : { heartbeatUnwritten }),
@@ -790,10 +801,12 @@ const runOpen = (deps) => {
  * @param {import('./webhook/fire.mjs').Fire} invocation
  * @param {Deps} deps
  * @param {(token: string) => import('../scripts/lib/session-branch.mjs').FindOnBranch} finder
- * @param {{ served: import('./repos.mjs').Served[], bare: boolean, refusal: string | null, repo: string | undefined }} scope
- *   `repo`: the fire's, none for the bare schedule fire.
+ * @param {{ served: import('./repos.mjs').Served[], bare: boolean, refusal: string | null, repo: string | undefined, beats: RepoBeat[] }} scope
+ *   `repo`: the fire's, none for the bare schedule fire. `beats`: where the
+ *   bare fire adds what it changes in each repo's governor heartbeat block,
+ *   for `run` to write, whether the turn returns or throws.
  */
-const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }) => {
+const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, beats }) => {
   if (invocation.kind === 'probe') throw new Error('a probe is not a turn: run answers it');
   /**
    * The fire's repo. The bare schedule fire names none, and reads
@@ -1216,8 +1229,6 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
   const unread = [];
   /** The periodics whose record the bare fire could not read, baseline, or write after a launch. @type {Array<{ repo: string, error: string }>} */
   const periodicsUnread = [];
-  /** What the bare fire changes in each repo's governor heartbeat block, written by `run`. @type {RepoBeat[]} */
-  const beats = [];
   if (invocation.kind === 'schedule') {
     // Every served repo's ready tickets in one queue; a repo
     // whose file turns pickup off is still swept, and its backlog unread.
@@ -1479,7 +1490,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
     loginStored = await storeIfRefreshed(deps, original, account);
   }
   const left = [...unread, ...periodicsUnread];
-  return { kind: invocation.kind, dispatched, heartbeat, loginStored, ...(left.length === 0 ? {} : { unread: left }), ...(beats.length === 0 ? {} : { beats }) };
+  return { kind: invocation.kind, dispatched, heartbeat, loginStored, ...(left.length === 0 ? {} : { unread: left }) };
 };
 
 /**

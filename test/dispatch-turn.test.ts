@@ -4762,6 +4762,26 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
     assert.equal(exitCodeFor(result as never), 1);
   });
 
+  test('a turn that throws after a periodic launched still writes its line, since its record has moved', async () => {
+    const h = beating();
+    const reading = h.deps.reader;
+    h.deps.reader = ((...args: Parameters<typeof reading>) => ({ ...reading(...args), comment: async () => { throw new Error('POST issues/7/comments: 502'); } })) as typeof reading;
+    h.periodics.set(key(RETRO.name), fired(7 * DAY));
+    await assert.rejects(run({ source: 'aws.events' }, h.deps as never), /502/);
+    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: AT, by: { days: 7 }, session: NEW, state: 'open' });
+  });
+
+  test('a sweep that writes no pickup line, in a repo whose file turns pickup off, reports no heartbeat', async () => {
+    const file = JSON.parse(FILE);
+    file.features.pickup = false;
+    const h = beating({ file: JSON.stringify(file) });
+    h.periodics.set(key(RETRO.name), fired(7 * DAY));
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.equal(h.read().pickup, undefined);
+    assert.equal(h.line(RETRO.name)?.state, 'open', 'the periodic\'s fire is still recorded');
+    assert.equal(result.heartbeat, false);
+  });
+
   test('a repo whose file turns the heartbeat off gets no line', async () => {
     const file = JSON.parse(FILE);
     file.features.heartbeat = false;
