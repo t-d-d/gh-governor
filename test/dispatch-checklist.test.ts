@@ -458,6 +458,15 @@ describe('tests 1 and 7, decided in code before any model call', () => {
       await assert.rejects(ask({ tickets: { 748: worked('mode: hitl') }, files: LISTED, started: 'AccessDeniedException' }), /AccessDeniedException/);
     });
 
+    test('where no label waives a listed path, the table is not read, and a read that would fail fails nothing', async () => {
+      const unlisted = await ask({ tickets: { 748: worked('mode: hitl') }, files: [{ filename: 'src/app.ts', status: 'modified' }], started: 'AccessDeniedException' });
+      assert.deepEqual(unlisted.sessionsRead, [], 'no listed path: nothing to waive');
+      assert.equal(unlisted.answer.answer, 'pass');
+      const afk = await ask({ tickets: { 748: worked('mode: afk') }, files: LISTED, started: 'AccessDeniedException' });
+      assert.deepEqual(afk.sessionsRead, [], 'an afk ticket waives nothing');
+      assert.match(afk.text, /\(test 7\)/);
+    });
+
     test('still `ready for development`, it is told to claim it, and test 7 is not named', async () => {
       const h = await ask({ tickets: { 748: worked('mode: human', 'workflow: ready for development') }, files: LISTED });
       const reason = h.text;

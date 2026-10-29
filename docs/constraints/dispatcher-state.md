@@ -41,9 +41,9 @@ group.
   put only over the record the turn read, and never expired. A missing one
   is the baseline, and a failed read refuses the periodic
   (dispatch/periodics.mjs).
-- A session governor started: `session#<repo>` / `<session id>` in
-  `dynamoState`, put after every launch that printed one, and never
-  expired. The PR review reads it, and a failed read fails the review. A
+- A session governor started: `session#<session id>` / `started` in
+  `dynamoState`, under no repo, put after every launch that printed one,
+  and never expired. The PR review reads it, and a failed read fails the review. A
   lost item lets a ticket's mode label waive a human-only path, so the item
   outlasts every PR it guards (dispatcher-review.md).
 

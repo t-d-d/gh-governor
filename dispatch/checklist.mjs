@@ -31,6 +31,7 @@
  * repo's code.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { DEPENDABOT } from './webhook/fire.mjs';
 
@@ -687,7 +688,7 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  *   unattended: () => Promise<boolean>,
  *   held?: string | null,
  *   rules: Rules,
- * }} Facts `decideInCode`'s facts, and: `constraintTexts`, the read of the quoted files the model is to read, made only when it is asked; `unattended`, the read of whether governor started the PR's session, made only where a human-only entry has `unless` labels; `held`, the reason of a pass whose merge a promotion held, kept in place of a new judgement; `rules`, the repo's review settings and labels.
+ * }} Facts `decideInCode`'s facts, and: `constraintTexts`, the read of the quoted files the model is to read, made only when it is asked; `unattended`, the read of whether governor started the PR's session, made only where a label's waiver changes the answer; `held`, the reason of a pass whose merge a promotion held, kept in place of a new judgement; `rules`, the repo's review settings and labels.
  */
 
 /**
@@ -703,8 +704,12 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  * @returns {Promise<Answer>}
  */
 export const checklist = async ({ pull, files, tickets, others, owners, prose, red = [], constraintTexts, unattended, held = null, rules }, judge) => {
-  const waives = rules.humanOnly.some((e) => e.unless.length > 0);
-  const decided = decideInCode({ files, tickets, rules, others, owners, prose, red, unattended: waives && await unattended() });
+  const decide = (/** @type {boolean} */ unwatched) => decideInCode({ files, tickets, rules, others, owners, prose, red, unattended: unwatched });
+  // The table is read only where a label's waiver changes the answer: a
+  // read that fails then fails no review it could not change.
+  const waived = decide(false);
+  const unwaived = decide(true);
+  const decided = isDeepStrictEqual(waived, unwaived) || !await unattended() ? waived : unwaived;
   if (decided !== null) return decided;
   if (held !== null) return { answer: 'pass', reason: held };
   const left = constraintsLeft(files, tickets, rules);

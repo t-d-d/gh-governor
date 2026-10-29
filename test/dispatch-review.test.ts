@@ -91,7 +91,7 @@ const harness = (over: {
   const baseReads: Array<[string, string]> = [];
   const fileReads: string[] = [];
   const readerApps: number[] = [];
-  const sessionsRead: Array<[string, string]> = [];
+  const sessionsRead: string[] = [];
   const pulls = over.pulls ?? { 767: pullRow() };
   const answers = over.answers ?? [PASS];
   let judgedCount = 0;
@@ -169,8 +169,8 @@ const harness = (over: {
     transcript: async (t: { sessionId: string, pr: number }) => { transcripts.push(t); return { key: `drop/dispatch/2026-09-26/pr-review-${t.pr}-${t.sessionId}.jsonl.gz` }; },
     sleep: async () => {},
     state: {
-      startedSession: async (repo: string, session: string) => {
-        sessionsRead.push([repo, session]);
+      startedSession: async (session: string) => {
+        sessionsRead.push(session);
         if (typeof over.started === 'string') throw new Error(over.started);
         return (over.started ?? []).includes(session);
       },
@@ -267,15 +267,6 @@ describe('run — a review fire, end to end', () => {
   });
 });
 
-/**
- * The review wakes the PR's session only when it has something
- * to do, and the comment is how it does. The receiver queues an owner-only
- * `message` fire, with the fallback any comment carries, for a fail an edit
- * meets and a conflict; a pass is followed by the merge's own message, and a
- * fail no edit meets waits for a person. The fire runs in its own task, so
- * the send and its fallback have their own deadline, however late in the
- * review turn (a Deploy Prod sweep included) the comment was posted.
- */
 describe('run — a human-only path a ticket\'s mode label waives', () => {
   const OWNER = 'https://claude.ai/code/session_01OWNER';
   const hitl = { 748: { labels: ['mode: hitl', 'type: bug', 'workflow: under development'] } };
@@ -285,7 +276,7 @@ describe('run — a human-only path a ticket\'s mode label waives', () => {
     const h = harness({ tickets: hitl, files });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
-    assert.deepEqual(h.sessionsRead, [[REPO, OWNER]]);
+    assert.deepEqual(h.sessionsRead, [OWNER]);
   });
 
   test('from a session governor started, it waits for a person and nothing merges', async () => {
@@ -305,6 +296,15 @@ describe('run — a human-only path a ticket\'s mode label waives', () => {
   });
 });
 
+/**
+ * The review wakes the PR's session only when it has something
+ * to do, and the comment is how it does. The receiver queues an owner-only
+ * `message` fire, with the fallback any comment carries, for a fail an edit
+ * meets and a conflict; a pass is followed by the merge's own message, and a
+ * fail no edit meets waits for a person. The fire runs in its own task, so
+ * the send and its fallback have their own deadline, however late in the
+ * review turn (a Deploy Prod sweep included) the comment was posted.
+ */
 describe('run — what reaches the owner session', () => {
   const OWNER = 'https://claude.ai/code/session_01OWNER';
   const REVIEWER = 'https://claude.ai/code/session_01REVIEWER';

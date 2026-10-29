@@ -265,8 +265,8 @@ export const sessionUrlFrom = (output) => {
  *   delivered: (repo: string, workflow: string, label: string | null, from: number | null) => Promise<Delivered>,
  *   record: (repo: string, workflow: string, label: string | null, from: number | null, delivered: Delivered) => Promise<void>,
  *   recordConflict: (repo: string, pr: number, merge: string) => Promise<boolean>,
- *   recordSession: (repo: string, session: string) => Promise<void>,
- *   startedSession: (repo: string, session: string) => Promise<boolean>,
+ *   recordSession: (session: string) => Promise<void>,
+ *   startedSession: (session: string) => Promise<boolean>,
  * } & import('./periodics.mjs').PeriodicState} DispatchState
  *   Each label's cursor, by its repo, its workflow's file name and the
  *   label (null for CI's, which earns none): read (null when it has none),
@@ -277,8 +277,8 @@ export const sessionUrlFrom = (output) => {
  *   merge `merge` left it in: recorded, false where a record stood.
  *   A periodic's record (dispatch/periodics.mjs): read, and written over
  *   the record the turn read, false where another stood.
- *   A session governor started in `repo`, by URL or id: recorded, and
- *   read back by the PR review (dispatch/review.mjs).
+ *   A session governor started, by URL or id: recorded, and read back by
+ *   the PR review (dispatch/review.mjs), whichever repo its PR is in.
  *   A read or write that fails throws.
  *
  * @typedef {{ told: string[], failed: string[] }} Delivered
@@ -483,12 +483,16 @@ export const run = async (event, deps) => {
     if (find === undefined) finders.set(token, find = branchFinder({ list: (after) => deps.sessions.list(token, after), get: async (id) => sessionRecord(await deps.sessions.get(id, token)) }, repo, { log: deps.log }));
     return find;
   };
+  /** Each launch's record, awaited before the turn ends. @type {Promise<void>[]} */
+  const records = [];
   /**
    * Every launch, recorded as governor's own session wherever the launcher
    * printed one, whatever outcome it reported: the PR review reads the
    * record back, and a ticket's mode label waives no human-only path for a
    * session nobody watched. A record that fails is an error, not a turn
-   * that fails: the session is running either way.
+   * that fails: the session is running either way. The record spends none
+   * of the launch's budget, so a slow one never turns a launch that started
+   * into one tried again; the turn waits for every record before it ends.
    *
    * @type {Deps['launch']}
    */
@@ -496,11 +500,9 @@ export const run = async (event, deps) => {
     const launched = await deps.launch(begin);
     const sessionUrl = sessionUrlFrom(launched.output);
     if (sessionUrl !== null) {
-      try {
-        await deps.state.recordSession(begin.repo, sessionUrl);
-      } catch (error) {
+      records.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
         deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl, error: messageOf(error), reason: 'its PRs may clear a human-only path on a ticket\'s mode label' });
-      }
+      }));
     }
     return launched;
   };
@@ -548,6 +550,7 @@ export const run = async (event, deps) => {
     lookup: sweepLookup(deps),
     events,
   });
+  await Promise.all(records);
   const left = [...unread, ...('unread' in result && Array.isArray(result.unread) ? result.unread : [])];
   return { ...result, ...(left.length === 0 ? {} : { unread: left }), ...(periodics === null ? {} : { periodics }), signoffs };
 };
@@ -1148,7 +1151,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
           deps.log('dispatch-review', { unreviewed: targets.slice(i).map((t) => t.number), reason: `out of time: past ${REVIEW_WINDOW_MS} ms, another review might outrun the deadline; each is reviewed on its next push or edit` });
           break;
         }
-        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: (session) => deps.state.startedSession(fireRepo(), session) });
+        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession });
         deps.log('dispatch-review', { ...reviewed });
         reviews.push(reviewed);
       }
@@ -1748,9 +1751,10 @@ export const cliEnv = (env, home, account) => ({
  * and expired by `ttl`. A periodic's record is the item `periodic#<repo>` /
  * `<name>`, put only over the record the turn read, and never expired: a
  * lost one costs a late run. A session governor started is the item
- * `session#<repo>` / `<session id>`, the repo in lower case, put with no
- * expiry: the review reads it for every PR the session opens, and a lost
- * one lets a mode label waive a human-only path.
+ * `session#<session id>` / `started`, under no repo, since a session may
+ * open its PR in another served repo, and put with no expiry, since the
+ * review reads it for every PR the session opens and a lost one lets a
+ * mode label waive a human-only path.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -1760,7 +1764,7 @@ export const dynamoState = (client, table) => {
   const pk = (/** @type {string} */ repo, /** @type {string} */ workflow) => ({ S: `workflow#${repo}#${workflow}` });
   const key = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label) => ({ pk: pk(repo, workflow), sk: { S: label === null ? 'cursor' : `cursor#${label}` } });
   const periodicKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `periodic#${repo}` }, sk: { S: name } });
-  const sessionKey = (/** @type {string} */ repo, /** @type {string} */ session) => ({ pk: { S: `session#${repo.toLowerCase()}` }, sk: { S: sessionId(session) } });
+  const sessionKey = (/** @type {string} */ session) => ({ pk: { S: `session#${sessionId(session)}` }, sk: { S: 'started' } });
   const sent = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label, /** @type {number | null} */ from) => ({ pk: pk(repo, workflow), sk: { S: `delivered#${label === null ? '' : `${label}#`}${from ?? 'none'}` } });
   return {
     cursor: async (repo, workflow, label) => {
@@ -1813,11 +1817,11 @@ export const dynamoState = (client, table) => {
       }
     },
     // The same put twice is one record: no condition, nothing to race.
-    recordSession: async (repo, session) => {
-      await client.send(new PutItemCommand({ TableName: table, Item: { ...sessionKey(repo, session), at: { S: new Date().toISOString() } } }));
+    recordSession: async (session) => {
+      await client.send(new PutItemCommand({ TableName: table, Item: { ...sessionKey(session), at: { S: new Date().toISOString() } } }));
     },
-    startedSession: async (repo, session) => {
-      const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: sessionKey(repo, session), ConsistentRead: true }));
+    startedSession: async (session) => {
+      const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: sessionKey(session), ConsistentRead: true }));
       return item !== undefined;
     },
     periodic: async (repo, name) => {
@@ -2080,7 +2084,7 @@ export const realDeps = () => {
     },
     sleep: (ms) => new Promise((resolveSleep) => { setTimeout(resolveSleep, ms); }),
     fires: env.DISPATCH_FIRES_QUEUE_URL ? sqsFires(new SQSClient({}), env.DISPATCH_FIRES_QUEUE_URL) : undefined,
-    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, no periodic starts, and a review whose repo has `unless` labels fails, rather than guess.
+    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, no periodic starts, and a review a label's waiver would pass fails, rather than guess.
     state: env.DISPATCH_STATE_TABLE
       ? dynamoState(new DynamoDBClient({}), env.DISPATCH_STATE_TABLE)
       : {
