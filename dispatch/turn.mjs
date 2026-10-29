@@ -9,7 +9,9 @@
  * (dispatch/launch-session.py, the same pseudo-terminal launcher the
  * Mac runs), claiming each ticket before its launch, leave a marker
  * comment with the session URL on each ticket,
- * write each served repo's heartbeat, and put the login back in the secret if
+ * record each fire on the served repo's heartbeat issue (dispatch/heartbeat.mjs:
+ * the bare fire's sweep and every periodic fire, held or nothing to do
+ * included, and the sign-off sweep's marks), and put the login back in the secret if
  * the CLI refreshed it. A `message` turn restores the login the same way
  * and sends text into a cloud session that already exists (`claude -p
  * --cloud <session>`, the text on stdin), which needs no pseudo-terminal;
@@ -115,7 +117,7 @@ import { sessionId } from './webhook/subscribe.mjs';
 import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
 import { RED, dispatchMarker, ownersOf, parseFire } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
-import { stampLastRun } from './heartbeat.mjs';
+import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -506,34 +508,51 @@ export const run = async (event, deps) => {
     }
     return launched;
   };
-  const result = await turnFor(invocation, {
-    ...deps,
-    secret,
-    githubToken: tokenFor,
-    launch,
-    message: async (message) => {
-      const session = sessionId(message.session);
-      if (!woken.has(session)) woken.set(session, deps.now());
-      const sent = await deps.message(message);
-      // An archived session cannot reply: neither wait for it nor defer it.
-      // A resend counts too: the first send may have blipped.
-      if (refusedAsArchived(sent)) woken.delete(session);
-      return sent;
-    },
-  }, finder, { served, bare, refusal, repo });
+  /** What the turn changes in each repo's governor heartbeat block, written below. @type {RepoBeat[]} */
+  const turnBeats = [];
+  /** @type {Awaited<ReturnType<typeof turnFor>>} */
+  let turned;
+  try {
+    turned = await turnFor(invocation, {
+      ...deps,
+      secret,
+      githubToken: tokenFor,
+      launch,
+      message: async (message) => {
+        const session = sessionId(message.session);
+        if (!woken.has(session)) woken.set(session, deps.now());
+        const sent = await deps.message(message);
+        // An archived session cannot reply: neither wait for it nor defer it.
+        // A resend counts too: the first send may have blipped.
+        if (refusedAsArchived(sent)) woken.delete(session);
+        return sent;
+      },
+    }, finder, { served, bare, refusal, repo, beats: turnBeats });
+  } catch (error) {
+    // A periodic that launched has moved its record, so no later fire
+    // writes its line: it goes before the turn fails.
+    await writeBeats(deps, tokenFor, served, turnBeats);
+    await Promise.all(records);
+    throw error;
+  }
   // An event a periodic counts: the repo's periodics are checked after the
   // turn's own work, under their own switch, whatever switch that work
   // needed (dispatch/periodics.mjs), as the sweep below runs on every turn.
   const config = served[0]?.config;
-  const periodics = invocation.counted === undefined || repo === undefined || config === undefined || !turnsOn(config, 'periodics') ? null : await eventPeriodics({
+  const checked = invocation.counted === undefined || repo === undefined || config === undefined || !turnsOn(config, 'periodics') ? null : await eventPeriodics({
     repo,
     config,
     counted: invocation.counted,
     base: invocation.kind === 'conflicts' ? invocation.base : undefined,
     started,
-    carried: 'dispatched' in result && Array.isArray(result.dispatched) ? result.dispatched.filter((d) => d.repo.toLowerCase() === repo.toLowerCase()) : [],
+    carried: 'dispatched' in turned && Array.isArray(turned.dispatched) ? turned.dispatched.filter((d) => d.repo.toLowerCase() === repo.toLowerCase()) : [],
     deps: { ...deps, secret, githubToken: tokenFor, launch },
   });
+  const eventBeats = checked?.beats ?? [];
+  const periodics = checked === null ? null : { dispatched: checked.dispatched, unread: checked.unread };
+  // The fires' lines go before the replies and the sweep, which may run
+  // into the deadline; the sign-offs' marks after the sweep.
+  const beaten = await writeBeats(deps, tokenFor, served, [...turnBeats, ...eventBeats]);
   // Read when called: a turn whose sweep skips never touches `sessions`.
   /** @type {import('../scripts/lib/session-signoff.mjs').Events} */
   const events = (id, token, cursor) => deps.sessions.events(id, token, cursor);
@@ -550,9 +569,77 @@ export const run = async (event, deps) => {
     lookup: sweepLookup(deps),
     events,
   });
+  // Only a periodic's line names a session, so only those repos are read.
+  const marked = signoffs.archived.length === 0 ? { written: [], unwritten: [] } : await writeBeats(deps, tokenFor, served, served.filter((s) => turnsOn(s.config, 'periodics')).map((s) => ({ repo: s.repo, beat: { signedOff: signoffs.archived } })));
+  const heartbeatUnwritten = [...beaten.unwritten, ...marked.unwritten];
   await Promise.all(records);
-  const left = [...unread, ...('unread' in result && Array.isArray(result.unread) ? result.unread : [])];
-  return { ...result, ...(left.length === 0 ? {} : { unread: left }), ...(periodics === null ? {} : { periodics }), signoffs };
+  const left = [...unread, ...('unread' in turned && Array.isArray(turned.unread) ? turned.unread : [])];
+  return {
+    ...turned,
+    ...('heartbeat' in turned && beaten.written.some((r) => turnBeats.some((b) => b.repo === r && b.beat.pickup !== undefined)) ? { heartbeat: true } : {}),
+    ...(left.length === 0 ? {} : { unread: left }),
+    ...(periodics === null ? {} : { periodics }),
+    ...(heartbeatUnwritten.length === 0 ? {} : { heartbeatUnwritten }),
+    signoffs,
+  };
+};
+
+/**
+ * @typedef {{ repo: string, beat: import('./heartbeat.mjs').Beat }} RepoBeat
+ *   What a turn changes in one repo's governor heartbeat block.
+ */
+
+/**
+ * Write each repo's changes into its governor heartbeat block
+ * (dispatch/heartbeat.mjs), one read and at most one write a repo: only in a
+ * repo whose file turns the heartbeat on in the `{ issue }` shape, and only
+ * where what the block records changes. A body without governor's marker
+ * gets no write and an error naming the repo and issue, so a wrong number
+ * never overwrites a ticket. A read or write that fails is logged, leaves
+ * the other repos to go, and comes back so the turn fails.
+ *
+ * @param {Deps} deps
+ * @param {(repo: string) => Promise<string>} tokenFor
+ * @param {import('./repos.mjs').Served[]} served
+ * @param {RepoBeat[]} beats
+ * @returns {Promise<{ written: string[], unwritten: string[] }>}
+ */
+const writeBeats = async (deps, tokenFor, served, beats) => {
+  /** @type {string[]} */
+  const written = [];
+  /** @type {string[]} */
+  const unwritten = [];
+  for (const { repo, config } of served) {
+    const heartbeat = config.heartbeat;
+    if (!turnsOn(config, 'heartbeat') || heartbeat === undefined || heartbeat.marker !== undefined) continue;
+    const own = beats.filter((b) => b.repo.toLowerCase() === repo.toLowerCase()).map((b) => b.beat);
+    if (own.length === 0) continue;
+    /** @type {import('./heartbeat.mjs').Beat} */
+    const beat = {
+      ...own.reduce((/** @type {{ pickup?: import('./heartbeat.mjs').PickupLine }} */ p, b) => (b.pickup === undefined ? p : { pickup: b.pickup }), {}),
+      periodics: own.flatMap((b) => b.periodics ?? []),
+      signedOff: own.flatMap((b) => b.signedOff ?? []),
+    };
+    const { issue } = heartbeat;
+    try {
+      const github = deps.reader(await tokenFor(repo), await deps.appId(), repo);
+      const { body } = await github.issue(issue);
+      if (!body.includes(HEARTBEAT_MARKER)) {
+        deps.log(HEARTBEAT_REFUSED, { level: 'error', repo, issue, marker: HEARTBEAT_MARKER, reason: `the issue's body has no ${HEARTBEAT_MARKER} marker, so the heartbeat is not written: fix the issue number in the repo's .github/dispatch.json, or add the marker to the issue` });
+        continue;
+      }
+      const next = stampHeartbeat(body, beat);
+      if (JSON.stringify(readHeartbeat(next)) === JSON.stringify(readHeartbeat(body))) continue;
+      await github.updateIssue(issue, { body: next });
+    } catch (error) {
+      deps.log(HEARTBEAT_UNWRITTEN, { level: 'error', repo, issue, error: messageOf(error) });
+      unwritten.push(`${repo}#${issue}: ${messageOf(error)}`);
+      continue;
+    }
+    deps.log('dispatch-heartbeat', { repo, issue, ...(beat.pickup === undefined ? {} : { pickup: beat.pickup }), periodics: beat.periodics?.map((p) => p.name), signedOff: beat.signedOff });
+    written.push(repo);
+  }
+  return { written, unwritten };
 };
 
 /**
@@ -601,7 +688,8 @@ const recordFire = async ({ state, log }, repo, { name, read }, at, sessionUrl) 
  *   deps: Deps,
  * }} args `base`: the default branch, where the fire names it.
  *   `carried`: the carrying turn's own launches in the repo.
- * @returns {Promise<{ dispatched: Dispatched[], unread: Array<{ repo: string, error: string }> }>}
+ * @returns {Promise<{ dispatched: Dispatched[], unread: Array<{ repo: string, error: string }>, beats: RepoBeat[] }>}
+ *   `beats`: the heartbeat lines its fires, held fires and nothing-to-dos change.
  */
 const eventPeriodics = async ({ repo, config, counted, base, started, carried, deps }) => {
   /** @type {Dispatched[]} */
@@ -610,6 +698,8 @@ const eventPeriodics = async ({ repo, config, counted, base, started, carried, d
   let due;
   /** @type {Array<{ repo: string, error: string }>} */
   let unread;
+  /** @type {import('./heartbeat.mjs').PeriodicChange[]} */
+  let lines;
   /** @type {import('../scripts/lib/claude-login.mjs').LoginAccount | null} */
   let account;
   /** The login the secret holds once the periodics are read. @type {string} */
@@ -618,17 +708,17 @@ const eventPeriodics = async ({ repo, config, counted, base, started, carried, d
   // carrying turn's result and the sign-off sweep still stand.
   try {
     const reader = deps.reader(await deps.githubToken(repo), await deps.appId(), repo);
-    ({ due, unread } = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(reader, base), open: runOpen(deps), event: counted }));
+    ({ due, unread, beats: lines } = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(reader, base), open: runOpen(deps), event: counted }));
     ({ credentials: stored, account } = readStoredLogin(await deps.secret.get()));
   } catch (error) {
     deps.log('dispatch-periodic-unread', { level: 'error', repo, counted, error: messageOf(error), reason: 'the periodics could not be checked: they wait for the next event or sweep' });
-    return { dispatched, unread: [{ repo, error: `periodics: ${messageOf(error)}` }] };
+    return { dispatched, unread: [{ repo, error: `periodics: ${messageOf(error)}` }], beats: [] };
   }
   // A login on disk the secret does not hold goes back to it, whatever
   // starts: a refresh to read a last run's session (`runOpen`) may have
   // rotated it and failed to write it back.
   try {
-    return await startPeriodics({ repo, config, counted, started, carried, deps, due, unread, dispatched });
+    return await startPeriodics({ repo, config, counted, started, carried, deps, due, unread, dispatched, lines });
   } finally {
     await storeIfRefreshed(deps, stored, account);
   }
@@ -647,20 +737,22 @@ const eventPeriodics = async ({ repo, config, counted, base, started, carried, d
  *   due: import('./periodics.mjs').Due[],
  *   unread: Array<{ repo: string, error: string }>,
  *   dispatched: Dispatched[],
- * }} args
- * @returns {Promise<{ dispatched: Dispatched[], unread: Array<{ repo: string, error: string }> }>}
+ *   lines: import('./heartbeat.mjs').PeriodicChange[],
+ * }} args `lines`: the heartbeat lines the read changed, which each fire adds to.
+ * @returns {Promise<{ dispatched: Dispatched[], unread: Array<{ repo: string, error: string }>, beats: RepoBeat[] }>}
  */
-const startPeriodics = async ({ repo, config, counted, started, carried, deps, due, unread, dispatched }) => {
-  if (due.length === 0) return { dispatched, unread };
+const startPeriodics = async ({ repo, config, counted, started, carried, deps, due, unread, dispatched, lines }) => {
+  const beats = () => (lines.length === 0 ? [] : [{ repo, beat: { periodics: lines } }]);
+  if (due.length === 0) return { dispatched, unread, beats: beats() };
   const why = deps.cap === 0 ? 'DispatchCap is 0: no fire starts anything'
     : carried.length > 0 && carried.every((d) => d.outcome === 'failed') ? 'the turn\'s own launch in this repo started nothing, and a periodic\'s would fail the same way: each stays due for the next event or sweep'
       : null;
   if (why !== null) {
     deps.log('dispatch-periodic', { repo, periodics: due.map((d) => d.periodic.name), outcome: 'not started', reason: why });
-    return { dispatched, unread };
+    return { dispatched, unread, beats: beats() };
   }
   const ordered = due.sort((a, b) => a.due - b.due);
-  for (const [i, { periodic, read, windows, asOf }] of ordered.entries()) {
+  for (const [i, { periodic, read, by, windows, asOf }] of ordered.entries()) {
     if (deps.now() - started > EVENT_PERIODIC_WINDOW_MS) {
       deps.log('dispatch-periodic', { repo, periodics: ordered.slice(i).map((d) => d.periodic.name), outcome: 'not started', reason: `out of time: past ${EVENT_PERIODIC_WINDOW_MS} ms into the turn, a launch might outrun the deadline; each stays due for the next event or sweep` });
       break;
@@ -679,8 +771,9 @@ const startPeriodics = async ({ repo, config, counted, started, carried, deps, d
     }
     const unrecorded = await recordFire(deps, repo, { name: periodic.name, read }, asOf ?? firedAt, sessionUrl);
     if (unrecorded !== null) unread.push(unrecorded);
+    lines.push({ name: periodic.name, at: asOf ?? firedAt, by, session: sessionUrl, state: 'open' });
   }
-  return { dispatched, unread };
+  return { dispatched, unread, beats: beats() };
 };
 
 /**
@@ -744,10 +837,12 @@ const runOpen = (deps) => {
  * @param {import('./webhook/fire.mjs').Fire} invocation
  * @param {Deps} deps
  * @param {(token: string) => import('../scripts/lib/session-branch.mjs').FindOnBranch} finder
- * @param {{ served: import('./repos.mjs').Served[], bare: boolean, refusal: string | null, repo: string | undefined }} scope
- *   `repo`: the fire's, none for the bare schedule fire.
+ * @param {{ served: import('./repos.mjs').Served[], bare: boolean, refusal: string | null, repo: string | undefined, beats: RepoBeat[] }} scope
+ *   `repo`: the fire's, none for the bare schedule fire. `beats`: where the
+ *   bare fire adds what it changes in each repo's governor heartbeat block,
+ *   for `run` to write, whether the turn returns or throws.
  */
-const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }) => {
+const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, beats }) => {
   if (invocation.kind === 'probe') throw new Error('a probe is not a turn: run answers it');
   /**
    * The fire's repo. The bare schedule fire names none, and reads
@@ -1162,7 +1257,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
   }
 
   const started = deps.now();
-  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, asOf?: string } }>} */
+  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string } }>} */
   const plan = [];
   /** The issues a targeted schedule fire limits the plan to; undefined for the sweep. @type {number[] | undefined} */
   let only;
@@ -1227,15 +1322,16 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
         const read = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(await readerFor(repo)), open });
         due.push(...read.due.map((d) => ({ ...d, repo })));
         periodicsUnread.push(...read.unread);
+        if (read.beats.length > 0) beats.push({ repo, beat: { periodics: read.beats } });
       }
       if (deps.cap > 0) {
-        plan.unshift(...due.sort((a, b) => a.due - b.due).map(({ repo, periodic, read, windows, asOf }) => ({
+        plan.unshift(...due.sort((a, b) => a.due - b.due).map(({ repo, periodic, read, by, windows, asOf }) => ({
           issue: null,
           repo,
           prompt: periodicPrompt(periodic.prompt, read, windows),
           sessionName: periodic.name,
           model: DEFAULT_MODEL,
-          periodic: { name: periodic.name, read, ...(asOf === undefined ? {} : { asOf }) },
+          periodic: { name: periodic.name, read, by, ...(asOf === undefined ? {} : { asOf }) },
         })));
       }
     }
@@ -1354,6 +1450,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
         const unrecorded = await recordFire(deps, entry.repo, entry.periodic, entry.periodic.asOf ?? firedAt, sessionUrl);
         // The turn fails, so the alarm says a periodic may start twice.
         if (unrecorded !== null) periodicsUnread.push(unrecorded);
+        beats.push({ repo: entry.repo, beat: { periodics: [{ name: entry.periodic.name, at: entry.periodic.asOf ?? firedAt, by: entry.periodic.by, session: sessionUrl, state: 'open' }] } });
       }
       if ((ticket !== null || entry.periodic !== undefined) && outcome === 'failed') {
         if (ticket !== null) await release(ticket);
@@ -1381,6 +1478,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
     // carries the marker: a wrong number refuses
     // the write rather than overwrite someone's ticket, and the repo's
     // watchdog then reports the lapse.
+    // A file in the `{ issue }` shape gets pickup's line in governor's own
+    // block instead, beside the turn's periodic lines, which `run` writes.
     // One repo's read or write that fails leaves the rest to go, then fails
     // the turn.
     if (bare) {
@@ -1391,6 +1490,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo }
         const own = dispatched.filter((d) => d.repo === repo);
         if (own.length > 0 && own.every((d) => d.outcome === 'failed')) continue;
         const { issue, marker } = config.heartbeat;
+        // The `{ issue }` shape: pickup's line, for a repo whose file turns
+        // pickup on, written with the turn's other lines by `run`.
+        if (marker === undefined) {
+          if (turnsOn(config, 'pickup')) beats.push({ repo, beat: { pickup: { at: new Date(deps.now()).toISOString(), started: own.filter((d) => d.issue !== null && d.outcome !== 'failed').length } } });
+          continue;
+        }
         try {
           const github = await readerFor(repo);
           const { body } = await github.issue(issue);

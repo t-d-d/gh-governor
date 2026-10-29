@@ -53,12 +53,16 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * and in any of them, when the fire counted an event for the periodics,
  * every periodic's record and window was read and every periodic it
  * brought due that started launched.
+ * In any kind, every governor heartbeat block the turn changed was read and
+ * written (`heartbeatUnwritten`).
  *
- * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null }} result
+ * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null }} result
  * @returns {0 | 1}
  */
 export const exitCodeFor = (result) => {
   if (result.kind === 'probe') return result.ok ? 0 : 1;
+  // A heartbeat line the turn could not write goes stale, whatever the turn's own work.
+  if ((result.heartbeatUnwritten?.length ?? 0) > 0) return 1;
   // The periodics an event brought due are checked under their own switch,
   // so a fault there fails a turn whose own work was refused or went well.
   if (result.periodics != null && (result.periodics.unread.length > 0 || result.periodics.dispatched.some((d) => d.outcome === 'failed'))) return 1;

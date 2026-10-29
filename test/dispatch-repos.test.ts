@@ -85,13 +85,17 @@ describe('readConfig', () => {
     assert.ok(read.ok, JSON.stringify(read));
   });
 
-  // The heartbeat is any served repo's, written into the issue its file names.
-  test('heartbeat: any repo may turn it on, naming the issue and marker; on without them is a fault', () => {
+  // The heartbeat is any served repo's, written into the issue its file names:
+  // under the repo's own marker in today's shape, or governor's with no marker.
+  test('heartbeat: any repo may turn it on, naming the issue, and its marker or none; on without an issue is a fault', () => {
     const on = (heartbeat: unknown) => readConfig(JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { heartbeat: true }, ...(heartbeat === undefined ? {} : { heartbeat }) }));
     const read = on({ issue: 12, marker: '<!-- askme:heartbeat -->' });
     assert.ok(read.ok, JSON.stringify(read));
     assert.deepEqual(read.config.heartbeat, { issue: 12, marker: '<!-- askme:heartbeat -->' });
-    for (const bad of [undefined, { issue: 12 }, { marker: '<!-- askme:heartbeat -->' }, { issue: 0, marker: '<!-- a -->' }, { issue: 12, marker: 'not a comment' }, { issue: 12, marker: '<!-- a -->', extra: 1 }]) {
+    const governor = on({ issue: 12 });
+    assert.ok(governor.ok, JSON.stringify(governor));
+    assert.deepEqual(governor.config.heartbeat, { issue: 12 });
+    for (const bad of [undefined, {}, { issue: 0 }, { marker: '<!-- askme:heartbeat -->' }, { issue: 0, marker: '<!-- a -->' }, { issue: 12, marker: 'not a comment' }, { issue: 12, marker: '<!-- a -->', extra: 1 }]) {
       const refused = on(bad);
       assert.ok(!refused.ok && /heartbeat/.test(refused.fault), `${JSON.stringify(bad)}: ${JSON.stringify(refused)}`);
     }

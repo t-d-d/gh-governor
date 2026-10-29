@@ -41,7 +41,7 @@ A task has no timeout of its own, so the entrypoint ends the turn after eighteen
 
 **Pickup.** The selection (`scripts/lib/ready-work.mjs`) takes open tickets carrying the repo's ready labels, with no open blocker and no parked parent, and orders them bugs first, then by type, then oldest first. It skips a ticket dispatched within the last two hours. Every served repo's tickets go into one queue, under the stack's `DispatchCap` (two by default). For each ticket governor adds the claim label, takes off `claimRemoves`, starts the session, and comments a `<!-- governor:dispatched <session URL> -->` marker with the session's link. If the launch started nothing, it puts the labels back. A schedule fire starts no launch past seven minutes into the turn, and logs the rest as `undispatched` for the next fire.
 
-**Which fire picks up what.** A ready label added by a person, and listed in `SelectLabels`, queues a fire for that one issue. An issue closing queues a fire for the issues it directly blocked, up to the cap: a close never runs the whole selection, so one finished session cannot start a cascade. The two-hourly fire runs the whole selection over every served repo. Only the two-hourly fire writes a heartbeat.
+**Which fire picks up what.** A ready label added by a person, and listed in `SelectLabels`, queues a fire for that one issue. An issue closing queues a fire for the issues it directly blocked, up to the cap: a close never runs the whole selection, so one finished session cannot start a cascade. The two-hourly fire runs the whole selection over every served repo. Only the two-hourly fire writes pickup's heartbeat line ([The heartbeat](#the-heartbeat)).
 
 **Periodics.** The two-hourly fire also starts each periodic that is due, ahead of the tickets. A merge, an issue opened or an issue closed can bring one due too ([Periodics](#periodics)).
 
@@ -215,6 +215,25 @@ A periodic is a recurring session a repo lists in its config file, with a name, 
 - **The session.** It is named after the periodic, in the repo's environment. Its prompt is the periodic's, then a line governor writes: `This periodic last fired at <time>.`, `This is the first run of this periodic that governor has a record of.` after a baseline, or that its last day limit found nothing to do. For a periodic with counts, governor then lists what each count counted since that time, each item by number and title, up to a hundred of each kind. No repo can drop or reword these lines.
 - **The record.** A launch that started, or may have, writes the new record, and only over the record the fire read, so two turns never both record one fire. The write comes after the launch, so it is the one task at a time that keeps two turns from both starting a periodic. A failed launch writes nothing, the periodic stays due, and the rest of its repo waits for the next fire (`dispatch-repo-skipped`), as after a ticket's failed launch.
 - **A failed read.** A record or a count that cannot be read refuses that periodic for the turn, and is never taken for a missing record or an empty count. The turn logs `dispatch-periodic-unread` and exits 1. A record that could not be written after a launch logs `dispatch-periodic-unrecorded` and exits 1, since the next fire may start the periodic again.
+
+## The heartbeat
+
+A repo turns the heartbeat on and names one issue, `"heartbeat": { "issue": <number> }`, so a check outside governor can read when each thing governor runs for it last ran and how it ended (`dispatch/heartbeat.mjs`). The issue's body must already carry `<!-- governor:heartbeat -->`. Governor keeps its own block under that marker, ended by `<!-- governor:heartbeat-end -->`, and changes nothing else in the body:
+
+```
+<!-- governor:heartbeat -->
+- pickup: last sweep 2026-10-29T20:00:00.000Z, started 2 sessions
+- periodic "Code review": last fire 2026-10-29T18:04:11.000Z, by 20 merges, session https://claude.ai/code/session_…, open
+- periodic "Weekly retro": last fire 2026-10-27T20:00:00.000Z, by its day limit of 7 days, session none, nothing to do
+<!-- governor:heartbeat-end -->
+```
+
+- **Pickup's line** gives the last two-hourly sweep's time and how many ticket sessions it started. Only the bare two-hourly fire writes it, in a repo whose file turns pickup on, whose backlog it read, and where not every claim or launch failed. A label or a close never freshens it.
+- **A periodic's line** gives its last fire's time, which limit fired it (its day limit, or the count that reached its number), the session, and its state: `open`, `signed off`, `held while that session is open`, or `nothing to do`. Its own fire writes it, on the two-hourly fire or on the event that brought it due. A held fire leaves the time at the open run's start and names that session. A failed launch leaves the line where it was.
+- **Signed off.** When the sign-off sweep, on any turn, archives the session an open or held line names, it marks that line `signed off`. It never moves the line's fire time.
+- **A wrong issue.** A body without the marker gets no write, and `dispatch-heartbeat-refused` names the repo and issue. A read or write that fails logs `dispatch-heartbeat-unwritten` and the turn exits 1.
+
+A file in the older shape, `"heartbeat": { "issue": <number>, "marker": "<!-- … -->" }`, keeps what it had: the two-hourly sweep adds or updates one `last-run: <time>` line under the repo's own marker, after a sweep in which not every claim or launch failed. Nothing writes a line per periodic there.
 
 ## When a repo's file goes wrong
 
