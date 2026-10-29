@@ -41,7 +41,9 @@ A task has no timeout of its own, so the entrypoint ends the turn after eighteen
 
 **Pickup.** The selection (`scripts/lib/ready-work.mjs`) takes open tickets carrying the repo's ready labels, with no open blocker and no parked parent, and orders them bugs first, then by type, then oldest first. It skips a ticket dispatched within the last two hours. Every served repo's tickets go into one queue, under the stack's `DispatchCap` (two by default). For each ticket governor adds the claim label, takes off `claimRemoves`, starts the session, and comments a `<!-- governor:dispatched <session URL> -->` marker with the session's link. If the launch started nothing, it puts the labels back. A schedule fire starts no launch past seven minutes into the turn, and logs the rest as `undispatched` for the next fire.
 
-**Which fire picks up what.** A ready label added by a person, and listed in `SelectLabels`, queues a fire for that one issue. An issue closing queues a fire for the issues it directly blocked, up to the cap: a close never runs the whole selection, so one finished session cannot start a cascade. The two-hourly fire runs the whole selection over every served repo. Only the two-hourly fire writes pickup's heartbeat line ([The heartbeat](#the-heartbeat)).
+**Which fire picks up what.** A ready label added by a person, and listed in `SelectLabels`, queues a fire for that one issue. An issue closing queues a fire for the issues it directly blocked, up to the cap: a close never runs the whole selection, so one finished session cannot start a cascade. The two-hourly fire runs the whole selection over every served repo whose sweep is due. Only that sweep writes pickup's heartbeat line ([The heartbeat](#the-heartbeat)).
+
+**Pickup's sweep interval.** A repo's file may set `"pickup": { "sweepHours": <n> }`, whole hours of at least one; unset is two (`dispatch/pickup.mjs`). Governor keeps each repo's last sweep in the state table, under `pickup#<repo>` / `sweep`. The two-hourly fire sweeps a repo once its interval has passed since that time, and records the sweep after its launches, unless the repo's backlog could not be read, every claim or launch failed, or a failed launch or the launch window left some of its planned tickets, so the next fire tries again. The fire's clock is the stack's `ScheduleExpression`, which the file cannot see, so the turn applies the floor: the first fire at or after the interval sweeps, and an interval shorter than the tick sweeps at every fire. The record holds the time the turn ran, which can lag its fire when the fire waited behind another turn, so a sweep up to half an hour short of its interval still counts as due. A repo not yet due logs `dispatch-pickup` with outcome `not due`. A missing record, for a new repo or a lost item, means sweep now. A record that cannot be read refuses the repo's sweep for the turn (`dispatch-pickup-unread`, and the turn exits 1), and one that cannot be written logs `dispatch-pickup-unrecorded` and exits 1. A label or a close picks up at once whatever the interval, so a repo whose ready label `SelectLabels` does not list waits for its sweep.
 
 **Periodics.** The two-hourly fire also starts each periodic that is due, ahead of the tickets. A merge, an issue opened or an issue closed can bring one due too ([Periodics](#periodics)).
 
@@ -55,7 +57,7 @@ The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`) queu
 |---|---|---|---|
 | Issue labelled | A ready label, added by a person, listed in `SelectLabels` | That issue is picked up, if the selection would take it | `pickup` |
 | Issue closed | It blocked open ready tickets | Those tickets are picked up, up to the cap | `pickup` |
-| Two-hourly schedule | Always | Every served repo: pickup, heartbeat, sign-off sweep | `pickup`, `heartbeat` |
+| Two-hourly schedule | Always; pickup once the repo's sweep interval has passed | Every served repo: pickup, heartbeat, sign-off sweep | `pickup`, `heartbeat` |
 | Two-hourly schedule | A periodic's day limit has passed since its last fire, or one of its counts is reached, and its last run's session is not open | One session on the periodic's prompt, or none and a "nothing to do" record when its counts counted nothing | `periodics` |
 | PR merged into the default branch, issue opened, issue closed | A periodic counts that kind, and its count since its last fire is reached, and its last run's session is not open | One session on the periodic's prompt, after the carrying turn's own work | `periodics` |
 | Comment, issue or review with `@claude` | By an owner, member or collaborator; no session owns the PR | One session, pointed at the remark | `summons` |
@@ -228,7 +230,7 @@ A repo turns the heartbeat on and names one issue, `"heartbeat": { "issue": <num
 <!-- governor:heartbeat-end -->
 ```
 
-- **Pickup's line** gives the last two-hourly sweep's time and how many ticket sessions it started. Only the bare two-hourly fire writes it, in a repo whose file turns pickup on, whose backlog it read, and where not every claim or launch failed. A label or a close never freshens it.
+- **Pickup's line** gives the last sweep's time and how many ticket sessions it started. Only the bare two-hourly fire writes it, on a fire that swept the repo at its interval, in a repo whose file turns pickup on, whose backlog it read, and where not every claim or launch failed. A label or a close never freshens it.
 - **A periodic's line** gives its last fire's time, which limit fired it (its day limit, or the count that reached its number), the session, and its state: `open`, `signed off`, `held while that session is open`, or `nothing to do`. Its own fire writes it, on the two-hourly fire or on the event that brought it due. A held fire leaves the time at the open run's start and names that session. A failed launch leaves the line where it was.
 - **Signed off.** When the sign-off sweep, on any turn, archives the session an open or held line names, it marks that line `signed off`. It never moves the line's fire time.
 - **A wrong issue.** A body without the marker gets no write, and `dispatch-heartbeat-refused` names the repo and issue. A read or write that fails logs `dispatch-heartbeat-unwritten` and the turn exits 1.
@@ -275,7 +277,7 @@ The App's **Advanced → Recent Deliveries** shows each answer:
 
 ```bash
 node scripts/run-turn.mjs --kind probe                                     # check the runtime; exits with what it proved
-node scripts/run-turn.mjs --kind schedule                                  # a sweep of every served repo, now
+node scripts/run-turn.mjs --kind schedule                                  # a sweep of every served repo whose interval has passed, now
 node scripts/run-turn.mjs --kind schedule --repo owner/name                # one repo's pickup and sweep
 node scripts/run-turn.mjs --kind dispatch --repo owner/name --prompt '…' --session-name '…'   # one session, no ticket
 node scripts/run-turn.mjs --kind message --repo owner/name --session <session_… or URL> --text '…'  # text into a session

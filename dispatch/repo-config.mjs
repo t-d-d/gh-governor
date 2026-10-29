@@ -9,7 +9,8 @@
  * names the repo's CI workflow, its triage targets and the tag
  * each target's deploy moves (`workflows`), and holds the PR
  * review's checklist and lists (`review`), names the issue
- * governor records its fires on (`heartbeat`, dispatch/heartbeat.mjs), and lists the
+ * governor records its fires on (`heartbeat`, dispatch/heartbeat.mjs), sets how
+ * often pickup sweeps its ready tickets (`pickup`, dispatch/pickup.mjs), and lists the
  * recurring sessions the schedule fire starts (`periodics`, dispatch/periodics.mjs).
  * Every feature is a switch, off unless the file turns it on, and a turn
  * refuses a fire kind its repo's file does not turn on ({@link switchOf}).
@@ -162,6 +163,15 @@ const heartbeatSchema = z.strictObject({
 });
 
 /**
+ * Pickup's settings (dispatch/pickup.mjs). `sweepHours`: how many whole
+ * hours the bare schedule fire leaves between two sweeps of the repo's ready
+ * tickets, two when unset.
+ */
+const pickupSchema = z.strictObject({
+  sweepHours: z.number().int().min(1).optional(),
+});
+
+/**
  * A recurring session: `name`, unique in the file, which the session is
  * named after and its record keyed by; `prompt`, what it runs; `days`, how
  * many whole days after its last fire it comes due. `counts`, each of
@@ -196,6 +206,7 @@ export const configSchema = z.strictObject({
   workflows: workflowsSchema,
   review: reviewSchema.optional(),
   heartbeat: heartbeatSchema.optional(),
+  pickup: pickupSchema.optional(),
   periodics: z.array(periodicSchema).default([])
     .superRefine((list, ctx) => {
       const seen = new Set();
@@ -225,8 +236,9 @@ export const configSchema = z.strictObject({
  * }} Review The PR review's settings, its checklist read.
  * @typedef {{ file: string }} PromptFile
  * @typedef {{ issue: number, marker?: string }} Heartbeat
+ * @typedef {{ sweepHours?: number }} Pickup
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number }} Periodic A recurring session, its prompt read.
- * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, periodics: Periodic[] }} RepoConfig
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, pickup?: Pickup, periodics: Periodic[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
  *   ready labels the claim takes off, and a failed launch puts back.
@@ -235,6 +247,7 @@ export const configSchema = z.strictObject({
  *   `review`: the PR review's settings, where the file has them.
  *   `heartbeat`: the issue governor's heartbeat goes into, and the repo's
  *   marker in the old shape.
+ *   `pickup`: pickup's sweep interval, where the file sets one.
  *   `periodics`: the recurring sessions the schedule fire starts.
  * @typedef {Omit<RepoConfig, 'prompts' | 'review' | 'periodics'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile }, periodics: Array<Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }> }} FileConfig
  *   The file as read, before {@link resolveFiles} reads the prompt files it names.

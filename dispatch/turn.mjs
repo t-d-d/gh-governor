@@ -118,6 +118,7 @@ import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, deliveries as turn
 import { RED, dispatchMarker, ownersOf, parseFire } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
+import { sweepDue, sweepHoursOf } from './pickup.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -269,7 +270,7 @@ export const sessionUrlFrom = (output) => {
  *   recordConflict: (repo: string, pr: number, merge: string) => Promise<boolean>,
  *   recordSession: (session: string) => Promise<void>,
  *   startedSession: (session: string) => Promise<boolean>,
- * } & import('./periodics.mjs').PeriodicState} DispatchState
+ * } & import('./periodics.mjs').PeriodicState & import('./pickup.mjs').PickupState} DispatchState
  *   Each label's cursor, by its repo, its workflow's file name and the
  *   label (null for CI's, which earns none): read (null when it has none),
  *   and moved forward (false when a cursor at or past it already stood).
@@ -279,6 +280,8 @@ export const sessionUrlFrom = (output) => {
  *   merge `merge` left it in: recorded, false where a record stood.
  *   A periodic's record (dispatch/periodics.mjs): read, and written over
  *   the record the turn read, false where another stood.
+ *   A repo's last pickup sweep (dispatch/pickup.mjs): read, and written
+ *   unless a later one stood, false then.
  *   A session governor started, by URL or id: recorded, and read back by
  *   the PR review (dispatch/review.mjs), whichever repo its PR is in.
  *   A read or write that fails throws.
@@ -1265,6 +1268,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const unread = [];
   /** The periodics whose record the bare fire could not read, baseline, or write after a launch. @type {Array<{ repo: string, error: string }>} */
   const periodicsUnread = [];
+  /** The served repos whose last sweep the bare fire could not read, or whose sweep it could not record. @type {Array<{ repo: string, error: string }>} */
+  const sweepsUnread = [];
+  /** The repos the bare fire sweeps, each with the time the turn read their last sweep, which it records. @type {Map<string, string>} */
+  const swept = new Map();
+  /** The served repos turning pickup on that the bare fire left out of this sweep: not due, or their last sweep unread. */
+  let held = 0;
   if (invocation.kind === 'schedule') {
     // Every served repo's ready tickets in one queue; a repo
     // whose file turns pickup off is still swept, and its backlog unread.
@@ -1274,6 +1283,28 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       if (!turnsOn(config, 'pickup')) {
         deps.log('dispatch-refused', { level: 'info', repo, kind: 'schedule', reason: `${repo}'s ${CONFIG_PATH} does not turn pickup on` });
         continue;
+      }
+      // The bare fire sweeps a repo once its interval has passed since its
+      // last sweep; a fire for a label or a close picks up at once.
+      if (bare) {
+        const now = deps.now();
+        const sweepHours = sweepHoursOf(config);
+        /** @type {string | null} */
+        let last;
+        try {
+          last = await deps.state.sweep(repo);
+        } catch (error) {
+          deps.log('dispatch-pickup-unread', { level: 'error', repo, error: messageOf(error), reason: 'its last sweep could not be read, so it is not swept this turn' });
+          sweepsUnread.push({ repo, error: `pickup sweep: ${messageOf(error)}` });
+          held += 1;
+          continue;
+        }
+        if (!sweepDue(last, sweepHours, now)) {
+          deps.log('dispatch-pickup', { level: 'info', repo, outcome: 'not due', last, sweepHours });
+          held += 1;
+          continue;
+        }
+        swept.set(repo, new Date(now).toISOString());
       }
       sources.push({ repo, reader: await readerFor(repo), labels: config.labels, prompts: config.prompts });
     }
@@ -1292,7 +1323,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       ...(bare ? { unread } : {}),
     });
     for (const { repo, error } of unread) deps.log('dispatch-backlog-unread', { level: 'error', repo, error });
-    if (sources.length > 0 && new Set(unread.map((u) => u.repo)).size === sources.length) {
+    // Only when no repo was left out of the sweep: one due repo failing
+    // while the others were not due is that repo's fault, not the turn's.
+    if (sources.length > 0 && held === 0 && new Set(unread.map((u) => u.repo)).size === sources.length) {
       throw new Error(`no served repo's backlog could be read: ${unread.map((u) => `${u.repo}: ${u.error}`).join('; ')}`);
     }
     if (blocking !== undefined) {
@@ -1424,16 +1457,24 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const dispatched = [];
   /** The repos whose launch started nothing: the rest of their tickets and periodics wait for the next fire. @type {Set<string>} */
   const skipped = new Set();
+  /** The repos whose planned tickets a failed launch, the launch window or a skip left for the next fire. @type {Set<string>} */
+  const leftOver = new Set();
+  /** How many ticket sessions a repo's own entries started. @param {Dispatched[]} own */
+  const startedOf = (own) => own.filter((d) => d.issue !== null && d.outcome !== 'failed').length;
   let heartbeat = false;
   let loginStored = false;
   try {
     for (const [i, entry] of plan.entries()) {
       if (deps.now() - started > SCHEDULE_LAUNCH_WINDOW_MS) {
         deps.log('dispatch-launch', { undispatched: plan.slice(i).map((e) => ({ repo: e.repo, issue: e.issue })), reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, another launch might outrun the deadline; each is left unmarked for the next fire` });
+        for (const e of plan.slice(i)) if (e.issue !== null) leftOver.add(e.repo);
         break;
       }
       const ticket = entry.issue === null ? null : { repo: entry.repo, issue: entry.issue };
-      if (skipped.has(entry.repo)) continue;
+      if (skipped.has(entry.repo)) {
+        if (ticket !== null) leftOver.add(entry.repo);
+        continue;
+      }
       const claimed = ticket === null ? 'claimed' : await claim(ticket);
       if (claimed === 'taken') continue;
       if (claimed === 'failed') {
@@ -1453,7 +1494,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         beats.push({ repo: entry.repo, beat: { periodics: [{ name: entry.periodic.name, at: entry.periodic.asOf ?? firedAt, by: entry.periodic.by, session: sessionUrl, state: 'open' }] } });
       }
       if ((ticket !== null || entry.periodic !== undefined) && outcome === 'failed') {
-        if (ticket !== null) await release(ticket);
+        if (ticket !== null) {
+          await release(ticket);
+          leftOver.add(ticket.repo);
+        }
         // A launch that started nothing is the repo's environment or the
         // login: the repo's next ticket or periodic would fail the same way.
         skipped.add(entry.repo);
@@ -1464,6 +1508,31 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         if (sessionUrl !== null) claims.delete(keyOf(ticket));
       }
       dispatched.push({ repo: entry.repo, issue: entry.issue, outcome, sessionUrl });
+    }
+
+    // A repo's sweep is recorded once its backlog was read and not every
+    // claim or launch failed, as pickup's heartbeat line is: a sweep that
+    // started nothing it planned is tried again at the next fire. A sweep
+    // that left planned tickets to a failed launch, the launch window or a
+    // skip is not recorded either, so the next fire picks them up, not the
+    // next interval.
+    for (const [repo, at] of swept) {
+      const own = dispatched.filter((d) => d.repo === repo);
+      if (unread.some((u) => u.repo === repo) || (own.length > 0 && own.every((d) => d.outcome === 'failed'))) {
+        swept.delete(repo);
+        continue;
+      }
+      if (leftOver.has(repo)) {
+        deps.log('dispatch-pickup', { level: 'info', repo, outcome: 'swept, with tickets left for the next fire, so not recorded', at, started: startedOf(own) });
+        continue;
+      }
+      try {
+        const written = await deps.state.recordSweep(repo, at);
+        deps.log('dispatch-pickup', { level: 'info', repo, outcome: written ? 'swept' : 'swept, and a later sweep was already recorded', at, started: startedOf(own) });
+      } catch (error) {
+        deps.log('dispatch-pickup-unrecorded', { level: 'error', repo, error: messageOf(error), reason: 'its sweep could not be recorded, so the next fire sweeps it again' });
+        sweepsUnread.push({ repo, error: `pickup sweep: ${messageOf(error)}` });
+      }
     }
 
     // The heartbeat says the sweep ran, runs with nothing to dispatch or
@@ -1493,7 +1562,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         // The `{ issue }` shape: pickup's line, for a repo whose file turns
         // pickup on, written with the turn's other lines by `run`.
         if (marker === undefined) {
-          if (turnsOn(config, 'pickup')) beats.push({ repo, beat: { pickup: { at: new Date(deps.now()).toISOString(), started: own.filter((d) => d.issue !== null && d.outcome !== 'failed').length } } });
+          if (swept.has(repo)) beats.push({ repo, beat: { pickup: { at: new Date(deps.now()).toISOString(), started: startedOf(own) } } });
           continue;
         }
         try {
@@ -1525,7 +1594,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // the copy from before it would hold a dead refresh token.
     loginStored = await storeIfRefreshed(deps, original, account);
   }
-  const left = [...unread, ...periodicsUnread];
+  const left = [...unread, ...sweepsUnread, ...periodicsUnread];
   return { kind: invocation.kind, dispatched, heartbeat, loginStored, ...(left.length === 0 ? {} : { unread: left }) };
 };
 
@@ -1859,7 +1928,9 @@ export const cliEnv = (env, home, account) => ({
  * `session#<session id>` / `started`, under no repo, since a session may
  * open its PR in another served repo, and put with no expiry, since the
  * review reads it for every PR the session opens and a lost one lets a
- * mode label waive a human-only path.
+ * mode label waive a human-only path. A repo's last pickup sweep is
+ * the item `pickup#<repo>` / `sweep`, put only where none or an earlier
+ * one stands, and never expired: a lost one means sweep now.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -1869,6 +1940,7 @@ export const dynamoState = (client, table) => {
   const pk = (/** @type {string} */ repo, /** @type {string} */ workflow) => ({ S: `workflow#${repo}#${workflow}` });
   const key = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label) => ({ pk: pk(repo, workflow), sk: { S: label === null ? 'cursor' : `cursor#${label}` } });
   const periodicKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `periodic#${repo}` }, sk: { S: name } });
+  const sweepKey = (/** @type {string} */ repo) => ({ pk: { S: `pickup#${repo}` }, sk: { S: 'sweep' } });
   const sessionKey = (/** @type {string} */ session) => ({ pk: { S: `session#${sessionId(session)}` }, sk: { S: 'started' } });
   const sent = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label, /** @type {number | null} */ from) => ({ pk: pk(repo, workflow), sk: { S: `delivered#${label === null ? '' : `${label}#`}${from ?? 'none'}` } });
   return {
@@ -1953,6 +2025,29 @@ export const dynamoState = (client, table) => {
           ...(read === null
             ? { ConditionExpression: 'attribute_not_exists(pk)' }
             : { ConditionExpression: '#at = :read', ExpressionAttributeNames: { '#at': 'at' }, ExpressionAttributeValues: { ':read': { S: read.at } } }),
+        }));
+        return true;
+      } catch (error) {
+        if (error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException') return false;
+        throw error;
+      }
+    },
+    sweep: async (repo) => {
+      const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: sweepKey(repo), ConsistentRead: true }));
+      if (item === undefined) return null;
+      const at = item.at?.S;
+      // A malformed item is a failed read, never a missing one.
+      if (at === undefined || Number.isNaN(Date.parse(at))) throw new Error(`the pickup sweep item for ${repo} is malformed: ${JSON.stringify(item)}`);
+      return at;
+    },
+    recordSweep: async (repo, at) => {
+      try {
+        await client.send(new PutItemCommand({
+          TableName: table,
+          Item: { ...sweepKey(repo), at: { S: at } },
+          ConditionExpression: 'attribute_not_exists(pk) OR #at < :at',
+          ExpressionAttributeNames: { '#at': 'at' },
+          ExpressionAttributeValues: { ':at': { S: at } },
         }));
         return true;
       } catch (error) {
@@ -2189,7 +2284,7 @@ export const realDeps = () => {
     },
     sleep: (ms) => new Promise((resolveSleep) => { setTimeout(resolveSleep, ms); }),
     fires: env.DISPATCH_FIRES_QUEUE_URL ? sqsFires(new SQSClient({}), env.DISPATCH_FIRES_QUEUE_URL) : undefined,
-    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, no periodic starts, and a review a label's waiver would pass fails, rather than guess.
+    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, no periodic starts, no repo is swept, and a review a label's waiver would pass fails, rather than guess.
     state: env.DISPATCH_STATE_TABLE
       ? dynamoState(new DynamoDBClient({}), env.DISPATCH_STATE_TABLE)
       : {
@@ -2198,6 +2293,8 @@ export const realDeps = () => {
         delivered: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         periodic: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordPeriodic: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        sweep: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordSweep: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         record: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordConflict: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },

@@ -41,6 +41,10 @@ group.
   put only over the record the turn read, and never expired. A missing one
   is the baseline, and a failed read refuses the periodic
   (dispatch/periodics.mjs).
+- A repo's last pickup sweep: `pickup#<repo>` / `sweep` in `dynamoState`,
+  put only where none or an earlier sweep stands, and never expired. A
+  missing one means sweep now, and a failed read refuses the repo's sweep
+  (dispatch/pickup.mjs).
 - A session governor started: `session#<session id>` / `started` in
   `dynamoState`, under no repo, put after every launch that printed one,
   and never expired. The PR review reads it, and a failed read fails the review. A
