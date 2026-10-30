@@ -82,7 +82,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.
 | `pickup` | no | `{ "sweepHours": <number> }`: how many whole hours the two-hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default two, which sweeps at every fire. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the switch is on. |
-| `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request ([Hooks](#hooks)). At least one when the switch is on. |
+| `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request ([Hooks](#hooks)), each with an optional `perHour` cap on fires. At least one when the switch is on. |
 
 The switches in `features`:
 
@@ -136,14 +136,15 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 
 A new periodic starts its first session one day limit, or one count, after the first fire that reads it. A periodic never overlaps itself: while the session its last fire started is still open, a due periodic is held. Governor starts nothing, logs the fire as held with that session's link, and leaves the last fire's time alone, so the count keeps growing and the first check after the session is archived fires it. Archived by the sign-off sweep or by hand, or deleted, the run is finished. How governor keeps each one's record is in [docs/how-it-works.md](docs/how-it-works.md#periodics).
 
-`hooks`: a list of hooks, each `{ "name", "prompt", "keyVersion" }`.
+`hooks`: a list of hooks, each `{ "name", "prompt", "keyVersion" }`, with `perHour` if wanted.
 
 - `name`: lower-case letters, digits and hyphens, unique in the file. It ends the hook's URL, and the session is named after it.
 - `prompt`: what the session runs, as text or `{ "file": "<path>" }` read from the default branch. Governor adds lines under it saying which hook fired and when, and quoting the caller's text as the caller's data.
 - `keyVersion` (required): the version of the hook's key a request must be signed with, a positive whole number of at most nine digits. It is not a secret.
+- `perHour`: the most fires governor queues for the hook in one clock hour, a positive whole number. Default 20. A fire past it gets `429`, so a leaked key cannot flood the queue every repo shares.
 
 ```json
-{ "name": "operator-prod", "prompt": { "file": "ops/prod-alarm.md" }, "keyVersion": 1 }
+{ "name": "operator-prod", "prompt": { "file": "ops/prod-alarm.md" }, "keyVersion": 1, "perHour": 20 }
 ```
 
 `prompts`: each value is text, or `{ "file": "<path>" }` read from the default branch. The kinds, and the facts each may name as `{fact}`, are in [docs/how-it-works.md](docs/how-it-works.md#prompts).
@@ -211,9 +212,10 @@ The known answer in test/dispatch-hook.test.ts checks a caller's code: under the
 | `401` | The header is missing or malformed, the signature does not match, or `t` is more than five minutes from governor's clock. Also a hook the repo's file did not list when governor last read it, or a key version older than the one it named. |
 | `404` | The path under `/hooks/` names no repo and hook. |
 | `413` | The text is over 32 KiB, or too long to start a task with. |
-| `503` | Governor could not read what it knows of the repo's hooks. Nothing was queued: send it again. |
+| `429` | The hook has had its `perHour` fires this clock hour. Nothing was queued: send it next hour, or not at all. |
+| `503` | Governor could not read what it knows of the repo's hooks, or could not count the fire. Nothing was queued: send it again. |
 
-Governor reads the repo's file on its own schedule and on GitHub events, and keeps the list of hooks and key versions it last read where the receiver can check it. So a new hook answers `401` until governor next reads the file, and a raised `keyVersion` turns the old key away at the receiver from then on. Before governor has read the file at all, every signed request is queued.
+Governor reads the repo's file on its own schedule and on GitHub events, and keeps the list of hooks, key versions and caps it last read where the receiver can check it. So a new hook answers `401` until governor next reads the file, a raised `keyVersion` turns the old key away at the receiver from then on, and a changed `perHour` holds from then on. Before governor has read the file at all, every signed request is queued, up to 20 an hour per hook.
 
 A `202` means queued, not started. The task then refuses a fire whose repo turns `hooks` off or lists no hook of that name, logged at warn, and one signed with a key version other than the hook's `keyVersion`, which pages as `governor-hook-key-stale`. Otherwise it starts one session in the repo's environment. Each fire starts a new session.
 

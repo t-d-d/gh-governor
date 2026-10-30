@@ -194,10 +194,10 @@ describe('fitness: the dispatcher keeps its state in one table, and the receiver
     assert.equal(onState.length + onHooks.length, grants.length, 'the task reaches no other table');
   });
 
-  test('the receiver holds GetItem on the hook table, and nothing on the state table', () => {
+  test('the receiver holds GetItem and UpdateItem on the hook table, and nothing on the state table', () => {
     const grants = dynamoGrants(receiverStatements);
-    assert.deepEqual(grants.flatMap(actionsOf), ['dynamodb:GetItem']);
-    assert.deepEqual(grants.flatMap(resourcesOf), ['${DispatchHookTable.Arn}']);
+    assert.deepEqual(grants.flatMap(actionsOf).sort(), ['dynamodb:GetItem', 'dynamodb:UpdateItem']);
+    assert.deepEqual([...new Set(grants.flatMap(resourcesOf))], ['${DispatchHookTable.Arn}']);
     assert.ok(!JSON.stringify(receiverStatements).includes('DispatchStateTable'));
   });
 
@@ -612,7 +612,7 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
 
   test('may read its two keys and queue a fire, and starts nothing itself', () => {
     const allowed = new Set(statements.flatMap(actionsOf));
-    assert.deepEqual([...allowed].sort(), ['dynamodb:GetItem', 'logs:CreateLogStream', 'logs:PutLogEvents', 'secretsmanager:GetSecretValue', 'sqs:SendMessage']);
+    assert.deepEqual([...allowed].sort(), ['dynamodb:GetItem', 'dynamodb:UpdateItem', 'logs:CreateLogStream', 'logs:PutLogEvents', 'secretsmanager:GetSecretValue', 'sqs:SendMessage']);
     const key = statements.find((s) => actionsOf(s).includes('secretsmanager:GetSecretValue'))!;
     assert.deepEqual(resourcesOf(key).sort(), ['${HookSecret}', '${WebhookSecret}'], 'the receiver can read a secret that is not one of its keys');
     const send = statements.find((s) => actionsOf(s).includes('sqs:SendMessage'))!;

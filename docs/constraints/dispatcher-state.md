@@ -1,6 +1,6 @@
 # Dispatcher state
 Relevance: State a turn keeps for a later turn, a cursor, record or lease it reads back: dispatch/**, infra/governor.cfn.yml, or a new store for the dispatcher
-Decision: A turn's record for a later turn lives in the stack's one DynamoDB table, keyed pk/sk; the receiver reads only its own hook table; logs are not state.
+Decision: A turn's record for a later turn lives in the stack's one DynamoDB table, keyed pk/sk; the receiver reads and counts only in its own hook table; logs are not state.
 
 Why: A refused workflow turn left nothing behind, so the next turn could not
 tell its merges were untold. Reading the refusal back from the log group was
@@ -17,11 +17,14 @@ group.
 - The one other table is `DispatchHookTable`, under the different-access-
   boundary exception below: the webhook receiver is internet-facing, and
   the state table holds records other checks trust. It is built the same
-  way. It holds only what the receiver reads: one item per served repo,
-  `hooks#<repo>` / `listed`, each hook's name and `keyVersion`, which the
-  task puts each time it reads the repo's file. The receiver holds
-  `GetItem` on it and nothing on the state table; the task holds only the
-  item actions it calls on it. The receiver finds it through `HOOK_TABLE`,
+  way. It holds only what the receiver reads and counts: one item per served
+  repo, `hooks#<repo>` / `listed`, each hook's name, `keyVersion` and
+  `perHour`, which the task puts each time it reads the repo's file; and one
+  item per hook and clock hour, `fires#<repo>#<hook>` / `<hour>`, the
+  receiver's count of that hook's fires, raised by one conditional
+  `UpdateItem` while under the cap and expired by `ttl`. The receiver holds
+  `GetItem` and `UpdateItem` on it and nothing on the state table; the task
+  holds only the item actions it calls on it. The receiver finds it through `HOOK_TABLE`,
   the task through `DISPATCH_HOOK_TABLE`.
 - A record two turns can race is written conditionally
   (`ConditionExpression`), never read then written.
@@ -65,6 +68,11 @@ group.
   over an item from an earlier read of the file, and never expired. A
   missing one queues the fire for the task to judge, and a failed read
   answers `503` (dispatch/webhook/route.mjs).
+- A hook's fires this hour: `fires#<repo>#<hook>` / `<hour>` in the hook
+  table, raised by the receiver in one `UpdateItem` conditioned on the count
+  being under the hook's cap, never read then written, and expired by `ttl`
+  when the hour ends. A count at the cap answers `429`; any other failure
+  answers `503`. A lost item lets at most one more hour's cap through.
 
 ## Do not
 
@@ -77,4 +85,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53.
