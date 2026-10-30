@@ -19,7 +19,11 @@ import { appIdOf, cachedSecret, handle, handleSchedule } from './route.mjs';
 const env = process.env;
 const secrets = new SecretsManagerClient({});
 const sqs = new SQSClient({});
-const hooks = hookTable(new DynamoDBClient({}), String(env.HOOK_TABLE));
+// No table named: every hook request's read fails, answered 503 and logged
+// at error, never queued as if the repo had no item.
+const hooks = env.HOOK_TABLE
+  ? hookTable(new DynamoDBClient({}), env.HOOK_TABLE)
+  : { listed: async () => { throw new Error('HOOK_TABLE is unset'); } };
 
 /** @type {import('./route.mjs').Deps} */
 const deps = {
@@ -50,7 +54,9 @@ const deps = {
     }));
     return String(sent.MessageId ?? '');
   },
-  log: (event, context = {}) => console.log(JSON.stringify({ event, ...context })),
+  // One object, which Lambda's JSON log format nests under `message`, so a
+  // metric filter can match the event field and nothing a caller wrote.
+  log: (event, context = {}) => console.log({ event, ...context }),
 };
 
 /**

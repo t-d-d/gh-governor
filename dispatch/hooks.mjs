@@ -18,7 +18,7 @@
  * it ({@link hookPrompt}).
  */
 
-import { HOOK_KEY_STALE } from './webhook/hook-table.mjs';
+import { HOOK_KEY_STALE } from './webhook/fire.mjs';
 
 /** The event a fire signed with a stale key version logs, at error, here or at the receiver. */
 export { HOOK_KEY_STALE };

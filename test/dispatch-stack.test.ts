@@ -654,15 +654,18 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
   });
 
   // The receiver refuses a key older than the hook table's (route.mjs), so
-  // the same alarm hears its line too. Lambda's JSON log format carries the
-  // receiver's own JSON as the text of `message`, so the filter matches the
-  // event's name as a term, not a JSON field.
-  test('a stale key the receiver refused pages through the same alarm, read off the receiver\'s log group', () => {
+  // the same alarm hears its line too. Lambda's JSON log format nests a line
+  // logged as one object under `message`, so the filter matches that field.
+  // A bare term would not do: an unsigned request's path and headers are
+  // logged too, and a stranger could write the event's name into them.
+  test('a stale key the receiver refused pages through the same alarm, read off the event field of the receiver\'s line', () => {
     const task = template.Resources.HookKeyStaleFilter?.Properties?.MetricTransformations?.[0];
     const filter = template.Resources.WebhookHookKeyStaleFilter;
     assert.equal(filter?.Type, 'AWS::Logs::MetricFilter');
     assert.equal(filter?.Properties?.LogGroupName, '${WebhookLogGroup}');
-    assert.equal(filter?.Properties?.FilterPattern, `"${HOOK_KEY_STALE}"`);
+    assert.equal(filter?.Properties?.FilterPattern, `{ $.message.event = "${HOOK_KEY_STALE}" }`);
+    const handler = readFileSync(resolve(ROOT, 'dispatch/webhook/handler.mjs'), 'utf8');
+    assert.match(handler, /log: \(event, context = \{\}\) => console\.log\(\{ event, \.\.\.context \}\)/, 'the receiver logs each line as one object, which Lambda nests under message');
     const published = filter?.Properties?.MetricTransformations?.[0];
     assert.equal(published?.MetricNamespace, task?.MetricNamespace);
     assert.equal(published?.MetricName, task?.MetricName);

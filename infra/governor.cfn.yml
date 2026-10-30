@@ -554,13 +554,15 @@ Resources:
 
   # The receiver refuses a key version older than the hook table's
   # (dispatch/webhook/route.mjs) and logs the same event, which pages the
-  # same alarm. Lambda's JSON log format carries the receiver's own JSON line
-  # as the text of `message`, so this matches the event's name as a term.
+  # same alarm. The receiver logs each line as one object, which Lambda's
+  # JSON log format nests under `message`. Matched on that field alone: an
+  # unsigned request's path and headers are logged too, and a term anywhere
+  # in the line would let a stranger page the operator.
   WebhookHookKeyStaleFilter:
     Type: AWS::Logs::MetricFilter
     Properties:
       LogGroupName: !Ref WebhookLogGroup
-      FilterPattern: '"hook-key-stale"'
+      FilterPattern: '{ $.message.event = "hook-key-stale" }'
       MetricTransformations:
         - MetricNamespace: governor
           MetricName: HookKeysStale

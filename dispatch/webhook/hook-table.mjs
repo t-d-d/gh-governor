@@ -25,8 +25,8 @@
 
 import { ConditionalCheckFailedException, GetItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
 
-/** The event a fire signed with a stale key version logs, at error, at the receiver or the task; `governor-hook-key-stale` pages on it. */
-export const HOOK_KEY_STALE = 'hook-key-stale';
+// Defined in the pure leaf fire.mjs, so route.mjs need not load the SDK for it.
+export { HOOK_KEY_STALE } from './fire.mjs';
 
 /**
  * A repo's one item. GitHub's repo names are not case-sensitive, so a path

@@ -235,7 +235,7 @@ describe('handle — a hook fire', () => {
  * never reaches the queue. A repo with no item yet is queued: the task
  * decides.
  */
-describe('handle — the hook table', () => {
+describe('handle: the hook table', () => {
   const listed = (hooks: Record<string, number>) => async () => new Map(Object.entries(hooks));
 
   test('a repo with no item yet is queued, and the read names the repo', async () => {

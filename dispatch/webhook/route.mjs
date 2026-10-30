@@ -71,9 +71,8 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
+import { HOOK_KEY_STALE, OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
 import { HOOK_CLOCK_SKEW_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
-import { HOOK_KEY_STALE } from './hook-table.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 
 /**

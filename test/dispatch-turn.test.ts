@@ -5309,7 +5309,7 @@ describe('run — hooks', () => {
  * or a removed hook before the queue. A repo that is not served keeps its
  * last item.
  */
-describe('run — the hook table', () => {
+describe('run: the hook table', () => {
   const FACTORY_HOOKS = (JSON.parse(FACTORY_FILE).hooks as Array<{ name: string; keyVersion: number }>).map(({ name, keyVersion }) => ({ name, keyVersion }));
   const fileWith = (over: Record<string, unknown>) => async (repo: string) => (repo === REPO ? JSON.stringify({ ...JSON.parse(FACTORY_FILE), ...over }) : null);
   const hookFire = { kind: 'hook', hook: FACTORY_HOOKS[0]!.name, keyVersion: FACTORY_HOOKS[0]!.keyVersion, text: 'ALARM', at: '2026-09-25T11:58:00.000Z', repo: REPO };

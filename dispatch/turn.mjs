@@ -462,17 +462,18 @@ export const run = async (event, deps) => {
    * @returns {Promise<Array<{ repo: string, error: string }>>} The repos whose list was not written.
    */
   const publishHooks = async (list) => {
-    const unwritten = [];
-    for (const { repo: served, config } of list) {
+    // One item per repo, so the writes are independent: each goes at once.
+    const written = await Promise.all(list.map(async ({ repo: served, config }) => {
       const hooks = turnsOn(config, 'hooks') ? config.hooks.map(({ name, keyVersion }) => ({ name, keyVersion })) : [];
       try {
         await deps.hookTable.publish(served, hooks, readAt);
+        return null;
       } catch (error) {
         deps.log('hook-table-unwritten', { level: 'error', repo: served, error: messageOf(error) });
-        unwritten.push({ repo: served, error: `hook table: ${messageOf(error)}` });
+        return { repo: served, error: `hook table: ${messageOf(error)}` };
       }
-    }
-    return unwritten;
+    }));
+    return written.filter((w) => w !== null);
   };
   // The bare schedule fire names no repo: it serves every repo it finds.
   // Any other fire names its repo, or parseFire refused it.
