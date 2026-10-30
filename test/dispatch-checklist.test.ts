@@ -194,6 +194,34 @@ describe('tests 1 and 7, decided in code before any model call', () => {
     assert.ok(reason.includes('`fixed #840`') && reason.includes('`fixes #847`'), reason);
   });
 
+  test('a body closing another repo\'s issue fails test 1 for an edit, naming each reference and both fixes, and the owner session hears it', async () => {
+    const url = 'https://github.com/other/repo/issues/9';
+    for (const [refs, body] of [
+      [['other/repo#9'], 'Closes other/repo#9\n\nhttps://claude.ai/code/session_01OWNER'],
+      [['other/repo#9'], `Closes ${url}\n\nhttps://claude.ai/code/session_01OWNER`],
+      [['other/repo#9', 'else/where#3'], `Closes #748\nCloses ${url}\n\nThis also fixes else/where#3.\n\nhttps://claude.ai/code/session_01OWNER`],
+    ] as Array<[string[], string]>) {
+      const h = await ask({ body });
+      assert.deepEqual(h.judged, [], body);
+      const text = h.text;
+      assert.match(text, edit, text);
+      assert.match(text, /\(test 1\)/, text);
+      for (const ref of refs) assert.ok(text.includes(ref), text);
+      assert.ok(text.includes('close it from a PR in its own repo'), text);
+      assert.ok(text.includes('open an issue here and mark it as blocked by that issue'), text);
+      assert.deepEqual(receiverFires(text, body).map((f) => f.kind), ['message'], 'the owner session hears it');
+    }
+  });
+
+  test('this repo\'s own issue closed by `owner/repo#N` or by URL is a closing ticket, as before', async () => {
+    for (const body of [`Closes ${REPO}#748`, `Closes https://github.com/${REPO}/issues/748`]) {
+      const h = await ask({ body });
+      assert.equal(h.judged.length, 1, body);
+      assert.match(h.judged[0]!.prompt, /#### #748: /);
+      assert.equal(h.answer.answer, 'pass');
+    }
+  });
+
   test('a closing keyword in prose fails for an edit even beside a ticket the top lines close', async () => {
     const h = await ask({ body: 'Closes #748\n\nThe new fire fixes #748 by reading the body.' });
     assert.deepEqual(h.judged, []);

@@ -10,7 +10,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { bodyDigest, closingTickets, lastReview, namedOwners, proseClosings, reviewMarker } from '../dispatch/pr-body.mjs';
+import { bodyDigest, closingTickets, foreignClosings, lastReview, namedOwners, proseClosings, reviewMarker } from '../dispatch/pr-body.mjs';
 
 const REPO = 'acme/factory';
 const HEAD = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
@@ -66,6 +66,16 @@ describe('the PR body\'s grammar', () => {
     const body = 'Closes #1\n\nThe regex now matches `fixes #2` only on its own line.\n\n```\nfixes #3\n```';
     assert.deepEqual(closingTickets(body), [1]);
     assert.deepEqual(proseClosings(body).map((r) => r.number), [2, 3]);
+  });
+
+  test('foreignClosings reads each closing reference to another repo\'s issue, at the top or below it, once each, as written', () => {
+    const url = 'https://github.com/other/repo/issues/9';
+    assert.deepEqual(foreignClosings(`Closes ${url}\nfixes Other/Repo#10\n\nIt also closes other/repo#9 and fixes ${REPO}#5 and #6.`, REPO), [
+      { repo: 'other/repo', number: 9, text: `Closes ${url}` },
+      { repo: 'Other/Repo', number: 10, text: 'fixes Other/Repo#10' },
+    ]);
+    assert.deepEqual(foreignClosings(`Closes #1 and fixes ${REPO}#2 and resolves https://github.com/${REPO.toUpperCase()}/issues/3`, REPO), []);
+    assert.deepEqual(foreignClosings('Closes other/repo#9'), [], 'without this repo, nothing reads as another\'s');
   });
 
   test('proseClosings reads each closing reference below the top lines, once each, as written, a ticket the top closes included', () => {

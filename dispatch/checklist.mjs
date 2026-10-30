@@ -364,6 +364,28 @@ const proseFailure = (prose) => {
 };
 
 /**
+ * Test 1's fail for the closing references to another repo's issue, an
+ * edit, naming them all so one edit meets it; none when there are none. A
+ * PR closes tickets in its own repo only: the review cannot read the other
+ * repo's ticket to hold it to test 1, and work spanning repos links them
+ * with `blocked by`.
+ *
+ * @param {Array<{ repo: string, number: number, text: string }>} foreign The body's `foreignClosings`.
+ * @returns {Array<{ number: number, reason: string, editable: boolean }>}
+ */
+const foreignFailure = (foreign) => {
+  const [first] = foreign;
+  if (first === undefined) return [];
+  const named = foreign.map(({ repo, number, text }) => `${repo}#${number} (\`${text}\`)`).join(', ');
+  const many = foreign.length > 1;
+  return [{
+    number: first.number,
+    reason: `the body closes ${named}, ${many ? 'issues' : 'an issue'} in another repo, and a PR closes tickets in its own repo only: for each, close it from a PR in its own repo, or open an issue here and mark it as blocked by that issue, then take the reference out of this body`,
+    editable: true,
+  }];
+};
+
+/**
  * Test 1 from the tickets' own fails; null when there are none. A fail no
  * edit meets comes first, since it makes the whole answer not editable,
  * then one an edit meets; a claim only when claims are all that is left,
@@ -505,14 +527,15 @@ export const checksFailure = (red) => (red.length === 0 ? null : {
  *   others?: Array<{ number: number, closes: number[] }>,
  *   owners?: { verification: ClosedTicket[], later: ClosedTicket[] },
  *   prose?: Array<{ number: number, text: string }>,
+ *   foreign?: Array<{ repo: string, number: number, text: string }>,
  *   red?: string[],
  *   unattended?: boolean,
- * }} facts `tickets`: the body's closing tickets, in its order. `others`: the other open PRs and the tickets each closes. `owners`: the tickets `namedOwners` read, as read. `prose`: the body's `proseClosings`. `red`: the required checks red on the head. `unattended`: governor started the session the body names.
+ * }} facts `tickets`: the body's closing tickets, in its order. `others`: the other open PRs and the tickets each closes. `owners`: the tickets `namedOwners` read, as read. `prose`: the body's `proseClosings`. `foreign`: its `foreignClosings`. `red`: the required checks red on the head. `unattended`: governor started the session the body names.
  * @returns {Answer | null}
  */
-export const decideInCode = ({ files, tickets, rules, others = [], owners = { verification: [], later: [] }, prose = [], red = [], unattended = false }) => {
+export const decideInCode = ({ files, tickets, rules, others = [], owners = { verification: [], later: [] }, prose = [], foreign = [], red = [], unattended = false }) => {
   const failures = ticketFailures(tickets, others, rules);
-  const ticket = ticketFailure([...failures, ...proseFailure(prose)]);
+  const ticket = ticketFailure([...failures, ...proseFailure(prose), ...foreignFailure(foreign)]);
   // Each ticket that passes test 1 on its own decides its quoted files,
   // whatever the other tickets do. A claim is the one test-1 fail the
   // author session meets, so a ready ticket's files are its own already:
@@ -683,6 +706,7 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  *   others: Array<{ number: number, closes: number[] }>,
  *   owners: { verification: ClosedTicket[], later: ClosedTicket[] },
  *   prose: Array<{ number: number, text: string }>,
+ *   foreign?: Array<{ repo: string, number: number, text: string }>,
  *   red?: string[],
  *   constraintTexts: (paths: string[]) => Promise<ConstraintTexts>,
  *   unattended: () => Promise<boolean>,
@@ -703,8 +727,8 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  * @param {Judge} judge
  * @returns {Promise<Answer>}
  */
-export const checklist = async ({ pull, files, tickets, others, owners, prose, red = [], constraintTexts, unattended, held = null, rules }, judge) => {
-  const decide = (/** @type {boolean} */ unwatched) => decideInCode({ files, tickets, rules, others, owners, prose, red, unattended: unwatched });
+export const checklist = async ({ pull, files, tickets, others, owners, prose, foreign = [], red = [], constraintTexts, unattended, held = null, rules }, judge) => {
+  const decide = (/** @type {boolean} */ unwatched) => decideInCode({ files, tickets, rules, others, owners, prose, foreign, red, unattended: unwatched });
   // The table is read only where a label's waiver changes the answer: a
   // read that fails then fails no review it could not change.
   const waived = decide(false);

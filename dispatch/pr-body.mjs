@@ -160,7 +160,7 @@ const onlyReferences = (line, matches) => {
  * is on one of the body's top `Closes #N` lines: `#N`, a colon after the
  * keyword included, and this repository's issue by its URL or
  * `owner/repo#N`, which GitHub closes too. Another repository's issue is
- * none of this one's. Code is read like the rest: nothing says GitHub
+ * none of this one's: `foreignClosings` reads those. Code is read like the rest: nothing says GitHub
  * skips a reference in it.
  *
  * The top is the body's opening lines, blank lines and HTML comments
@@ -173,18 +173,24 @@ const onlyReferences = (line, matches) => {
  * @param {string} [repo] This repository, `owner/repo`; without it only `#N` counts.
  * @returns {Array<{ number: number, text: string, top: boolean }>}
  */
-const closingReferences = (body, repo) => {
-  /** @type {Array<{ number: number, text: string, top: boolean }>} */
+const closingReferences = (body, repo) => everyClosing(body).filter((r) => r.slug === undefined || r.slug.toLowerCase() === repo?.toLowerCase());
+
+/**
+ * Every closing reference in a body, whatever repository it names: `slug`
+ * is the `owner/repo` it names, undefined for a bare `#N`.
+ *
+ * @param {string} body
+ * @returns {Array<{ slug: string | undefined, number: number, text: string, top: boolean }>}
+ */
+const everyClosing = (body) => {
+  /** @type {Array<{ slug: string | undefined, number: number, text: string, top: boolean }>} */
   const refs = [];
   let inTop = true;
   for (const line of withoutQuietComments(body).split('\n')) {
     const matches = [...line.matchAll(CLOSING)];
     const top = inTop && matches.length > 0 && onlyReferences(line, matches);
     if (!top && line.trim() !== '') inTop = false;
-    for (const m of matches) {
-      const slug = m[1] ?? m[2];
-      if (slug === undefined || slug.toLowerCase() === repo?.toLowerCase()) refs.push({ number: Number(m[3]), text: m[0], top });
-    }
+    for (const m of matches) refs.push({ slug: m[1] ?? m[2], number: Number(m[3]), text: m[0], top });
   }
   return refs;
 };
@@ -225,5 +231,28 @@ export const proseClosings = (body, repo) => {
     if (top || seen.has(number)) return [];
     seen.add(number);
     return [{ number, text }];
+  });
+};
+
+/**
+ * The closing references to another repository's issue, at the top or
+ * below it, once each by issue, as written. GitHub closes them when the PR
+ * merges, but a PR closes tickets in its own repo only: the review cannot
+ * read another repo's ticket, nor would this repo's deploy labels speak
+ * for it.
+ *
+ * @param {string} body
+ * @param {string} [repo] This repository, `owner/repo`; without it none is read as another's.
+ * @returns {Array<{ repo: string, number: number, text: string }>}
+ */
+export const foreignClosings = (body, repo) => {
+  if (repo === undefined) return [];
+  const seen = new Set();
+  return everyClosing(body).flatMap(({ slug, number, text }) => {
+    if (slug === undefined || slug.toLowerCase() === repo.toLowerCase()) return [];
+    const key = `${slug.toLowerCase()}#${number}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ repo: slug, number, text }];
   });
 };
