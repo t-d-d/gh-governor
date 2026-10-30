@@ -95,24 +95,42 @@ export function dispatchWebhookFindings({ url, answer, stackName = 'the dispatch
 }
 
 /**
+ * Runs the aws CLI and answers its stdout, throwing on a failed call.
+ *
+ * @param {string[]} argv
+ * @returns {string}
+ */
+const awsCli = (argv) => execFileSync('aws', argv, { encoding: 'utf-8' });
+
+/**
  * The stack's `URL_OUTPUT`, or undefined when the stack has no such output.
+ * scripts/hook-key.mjs reads it too, with the identity it reads the hook
+ * secret with.
  *
  * @param {string} stackName
+ * @param {string} [profile] - The aws CLI profile, when not the default.
+ * @param {(argv: string[]) => string} [aws]
  * @returns {string | undefined}
  */
-function readWebhookUrl(stackName) {
-  const json = execFileSync(
-    'aws',
-    [
-      'cloudformation', 'describe-stacks', '--stack-name', stackName,
-      '--query', `Stacks[0].Outputs[?OutputKey=='${URL_OUTPUT}'].OutputValue`, '--output', 'json',
-    ],
-    { encoding: 'utf-8' },
-  );
+export function readWebhookUrl(stackName, profile, aws = awsCli) {
+  const json = aws([
+    'cloudformation', 'describe-stacks', '--stack-name', stackName,
+    '--query', `Stacks[0].Outputs[?OutputKey=='${URL_OUTPUT}'].OutputValue`, '--output', 'json',
+    ...(profile ? ['--profile', profile] : []),
+  ]);
   // A stack with no Outputs projects to null, not to an empty list.
   const [value] = JSON.parse(json) ?? [];
   return typeof value === 'string' ? value : undefined;
 }
+
+/**
+ * A path under the receiver's URL, with exactly one slash between them,
+ * whether or not the output ends in one.
+ *
+ * @param {string} base
+ * @param {string} path - Relative, with no leading slash.
+ */
+export const urlUnder = (base, path) => `${base.replace(/\/+$/, '')}/${path}`;
 
 /**
  * One unsigned POST of an empty object, the shape of a delivery with no
@@ -140,7 +158,7 @@ async function postUnsigned(url) {
  *
  * @param {{
  *   env: Readonly<Record<string, string | undefined>>,
- *   readUrl?: typeof readWebhookUrl,
+ *   readUrl?: (stackName: string) => string | undefined,
  *   post?: typeof postUnsigned,
  * }} options - `env` from the runner; the io from this member's own tests.
  * @returns {Promise<import('../conformance.mjs').CheckOutcome>}
@@ -187,7 +205,7 @@ export function hookUrlFindings({ url, answer, stackName = 'the dispatch stack' 
  *
  * @param {{
  *   env: Readonly<Record<string, string | undefined>>,
- *   readUrl?: typeof readWebhookUrl,
+ *   readUrl?: (stackName: string) => string | undefined,
  *   post?: typeof postUnsigned,
  * }} options
  * @returns {Promise<import('../conformance.mjs').CheckOutcome>}
@@ -195,7 +213,7 @@ export function hookUrlFindings({ url, answer, stackName = 'the dispatch stack' 
 export async function checkHookUrl({ env, ...io }) {
   const stackName = /** @type {string} */ (env[STACK_VAR]);
   const base = (io.readUrl ?? readWebhookUrl)(stackName);
-  const url = base === undefined ? undefined : `${base.endsWith('/') ? base : `${base}/`}${HOOK_PROBE_PATH}`;
+  const url = base === undefined ? undefined : urlUnder(base, HOOK_PROBE_PATH);
   const answer = url === undefined ? undefined : await (io.post ?? postUnsigned)(url);
   return {
     findings: hookUrlFindings({ url, answer, stackName }),
