@@ -201,6 +201,18 @@ describe('githubReader', () => {
     assert.ok(calls.every((c) => c.url.startsWith('https://api.github.com/repos/acme/factory/')), calls.map((c) => c.url).join('; '));
   });
 
+  // A commit pushed to the default branch can also sit in an older merged
+  // PR: only the PR whose merge made the commit closed the issue.
+  test('closure names no PR when no merged PR\'s merge commit is the closing commit', async () => {
+    const SHA = 'a'.repeat(40);
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/10/events': [{ event: 'closed', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/factory/commits/${SHA}` }],
+      'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'The parser', state: 'closed', state_reason: 'completed' },
+      [`https://api.github.com/repos/acme/factory/commits/${SHA}/pulls`]: [{ number: 40, title: 'Back-merge', html_url: 'https://github.com/acme/factory/pull/40', merged_at: '2026-09-01T00:00:00Z', merge_commit_sha: 'd'.repeat(40) }],
+    });
+    assert.deepEqual(await githubReader({ token: 't', repo: 'acme/factory', fetch }).closure(10), { title: 'The parser', reason: 'completed', pr: null });
+  });
+
   test('closure names no PR for a close by hand, or by a commit in another repository', async () => {
     const SHA = 'a'.repeat(40);
     for (const events of [

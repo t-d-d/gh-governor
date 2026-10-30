@@ -437,10 +437,11 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
 
     /**
      * How an issue closed: its title, GitHub's `state_reason` (null where
-     * it gave none), and the PR whose merge closed it, read from the
-     * commit its last `closed` event names. A close by hand, or by a commit
-     * in another repository, names no PR, and nothing outside this
-     * repository is read.
+     * it gave none), and the PR whose merge closed it: the merged PR whose
+     * merge commit is the one its last `closed` event names. A close by
+     * hand, by a commit pushed straight to the branch (which an older PR
+     * may also hold), or by a commit in another repository names no PR,
+     * and nothing outside this repository is read.
      *
      * @param {number} number
      * @returns {Promise<{ title: string, reason: string | null, pr: { number: number, title: string, url: string } | null }>}
@@ -456,8 +457,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       if (typeof sha === 'string' && /^[0-9a-f]{40}$/.test(sha) && here) {
         /** @type {any[]} */
         const pulls = await call('GET', `/repos/${repo}/commits/${sha}/pulls?per_page=100`);
-        const merged = pulls.filter((p) => p.merged_at);
-        const row = merged.find((p) => p.merge_commit_sha === sha) ?? merged[0];
+        const row = pulls.find((p) => p.merged_at && p.merge_commit_sha === sha);
         if (row !== undefined) pr = { number: row.number, title: row.title ?? '', url: row.html_url };
       }
       return { title: issue.title ?? '', reason: typeof issue.state_reason === 'string' ? issue.state_reason : null, pr };

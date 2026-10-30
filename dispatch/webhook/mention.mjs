@@ -408,7 +408,7 @@ const prClosedPrompt = ({ pull_request: pr, sender }, role) => {
     `PR #${pr?.number}: ${oneLine(pr?.title)} (${pr?.html_url}), by ${sender?.login}`,
     '',
     pr?.merged
-      ? 'Its change reaches dev and prod through the deploys, which its subscribers to deploys hear of. Nothing else on it is left to do unless its thread, or this message below, says so.'
+      ? 'Its change reaches dev and prod through the deploys, which its subscribers to deploys hear of. Nothing else on it is left to do unless its thread says so.'
       : 'Nothing on it is left to do unless its thread says so.',
   ].join('\n');
 };

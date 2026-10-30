@@ -96,6 +96,7 @@ describe('the texts', () => {
   test('the facts name the blocker, how it closed and the PR, by its repo where that is not the ticket\'s', () => {
     assert.equal(unblockedFacts(fire), '#41 (The parser) closed as completed, by PR #52 (Parse it, https://github.com/acme/factory/pull/52). It blocked #7.');
     assert.equal(unblockedFacts(across), 'acme/factory#41 (The parser) closed, with no PR. It blocked #7.');
+    assert.equal(unblockedFacts({ ...across, pr }), 'acme/factory#41 (The parser) closed, by PR acme/factory#52 (Parse it, https://github.com/acme/factory/pull/52). It blocked #7.');
   });
 
   test('a ready ticket\'s prompt is pickup\'s, then the facts and the ask to check the spec first', () => {
@@ -119,6 +120,14 @@ describe('the texts', () => {
 
   test('a not-planned close leaves a comment naming the blocker', () => {
     const text = notPlannedComment({ kind: 'unblocked', repo: FACTORY, issue: 7, blocker: { ...closed, reason: 'not_planned' } }, {});
-    assert.match(text, /#41 \(The parser\) closed as not planned/);
+    assert.match(text, /#41 \(`The parser`\) closed as not planned/);
+  });
+
+  // A comment GitHub renders: a title's @handle or #N must not notify or link.
+  test('the comment quotes each title as code, so a mention in it notifies nobody', () => {
+    const text = notPlannedComment({ kind: 'unblocked', repo: FACTORY, issue: 7, blocker: { ...closed, title: 'Ask @alice about `#9`', reason: 'not_planned' }, pr: { ...pr, title: 'Ping @team' } }, {});
+    assert.match(text, /\(`Ask @alice about '#9'`\)/);
+    assert.match(text, /\(`Ping @team`, https/);
+    assert.doesNotMatch(text.replace(/`[^`]*`/g, ''), /@/);
   });
 });

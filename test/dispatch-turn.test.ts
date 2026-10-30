@@ -982,9 +982,30 @@ describe('run — a schedule fire for a closed issue', () => {
     assert.match(String(line?.reason), /no open ticket/);
   });
 
-  test('a fire the lane refuses fails the turn, so the close is tried again', async () => {
-    const h = closing({ blocking: [{ repo: REPO, number: 7 }], refuse: true });
-    await assert.rejects(run({ kind: 'schedule', freed: 41 }, h.deps as never), /throttled/);
+  // A failed turn is not tried again (dispatch/webhook/retry.mjs retries
+  // only a task that never ran), so one refusal must not cost the rest.
+  test('a fire the lane refuses is logged at error by its ticket, the rest still go, and the turn exits 1', async () => {
+    let calls = 0;
+    const h = closing({ blocking: [{ repo: REPO, number: 7 }, { repo: REPO, number: 8 }, { repo: REPO, number: 9 }] });
+    const enqueue = async (message: { fire: Record<string, unknown> }) => {
+      calls += 1;
+      if (message.fire.issue === 8) throw new Error('SQS throttled');
+      h.queued.push({ message: message as never, dedupId: '' });
+      return 'm';
+    };
+    const result = await run({ kind: 'schedule', freed: 41 }, { ...h.deps, enqueue } as never) as Record<string, unknown>;
+    assert.equal(calls, 3);
+    assert.deepEqual(result.queued, [`${REPO}#7`, `${REPO}#9`]);
+    assert.deepEqual(result.unread, [{ repo: REPO, error: `unblocked fire for ${REPO}#8 not queued: SQS throttled` }]);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-unblocked-unqueued' && l.level === 'error' && l.ticket === `${REPO}#8`), JSON.stringify(h.logged));
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  test('a close whose open tickets are all strangers\' reads no closure', async () => {
+    const h = closing({ blocking: [{ repo: 'stranger/repo', number: 3 }] });
+    await run({ kind: 'schedule', freed: 41 }, h.deps as never);
+    assert.deepEqual(h.queued, []);
+    assert.ok(!h.asked.some((a) => a.includes('closure')), h.asked.join('; '));
   });
 });
 
@@ -1051,7 +1072,7 @@ describe('run — an unblocked fire', () => {
     const result = await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never) as Record<string, unknown>;
     assert.equal(result.row, 'not-planned');
     assert.deepEqual(h.comments.map((c) => c.issue), [7]);
-    assert.match(h.comments[0]!.body, /acme\/tools#41 \(The parser\) closed as not planned/);
+    assert.match(h.comments[0]!.body, /acme\/tools#41 \(`The parser`\) closed as not planned/);
     assert.deepEqual([h.launches, h.messages, labelCalls(h.calls)], [[], [], []]);
   });
 
@@ -1076,7 +1097,7 @@ describe('run — an unblocked fire', () => {
     const result = await run(fire(), h.deps as never) as Record<string, unknown>;
     assert.equal(result.row, 'claimed');
     assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK']);
-    assert.match(h.messages[0]!.text, /acme\/tools#41 \(The parser\) closed as completed, by PR #52/);
+    assert.match(h.messages[0]!.text, /acme\/tools#41 \(The parser\) closed as completed, by PR acme\/tools#52/);
     assert.match(h.messages[0]!.text, /against what merged/);
     assert.deepEqual([h.launches, h.comments, labelCalls(h.calls)], [[], [], []]);
   });
@@ -1095,7 +1116,7 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
     const prompt = h.launches[0]!.prompt;
     assert.ok(prompt.startsWith(promptFor(7, 'Issue 7', REPO, CLAIM, FACTORY_PROMPTS)), prompt);
-    assert.match(prompt, /acme\/tools#41 \(The parser\) closed as completed, by PR #52 \(Parse it, https:\/\/github\.com\/acme\/tools\/pull\/52\)/);
+    assert.match(prompt, /acme\/tools#41 \(The parser\) closed as completed, by PR acme\/tools#52 \(Parse it, https:\/\/github\.com\/acme\/tools\/pull\/52\)/);
     assert.match(prompt, /Before you build, check the spec against what merged/);
     assert.ok(h.calls.includes(`label #7 +${CLAIM}`), h.calls.join('; '));
     assert.deepEqual(h.comments.map((c) => c.issue), [7]);
@@ -1115,7 +1136,7 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
     const prompt = h.launches[0]!.prompt;
     assert.match(prompt, /^Spec #7 'Issue 7'/);
-    assert.match(prompt, /acme\/tools#41 \(The parser\) closed as completed, by PR #52/);
+    assert.match(prompt, /acme\/tools#41 \(The parser\) closed as completed, by PR acme\/tools#52/);
     assert.match(prompt, new RegExp(`add \`${CLAIM}\` to it first`));
     assert.match(prompt, /as a question/);
     assert.deepEqual(labelCalls(h.calls), [], 'governor claims nothing');

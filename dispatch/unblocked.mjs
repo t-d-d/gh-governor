@@ -124,16 +124,20 @@ export const ticketRow = ({ ticket, blockers, fire, labels }) => {
 };
 
 /**
- * What closed and how: the blocker, by its repo where that is not the
- * ticket's, its close reason, and the PR that closed it.
+ * What closed and how: the blocker and the PR that closed it, each by the
+ * blocker's repo where that is not the ticket's, and its close reason.
+ * `quote`: each title as code, for a comment GitHub renders, so an
+ * `@handle` or `#N` in a title neither notifies nor links.
  *
  * @param {UnblockedFire & { repo?: string }} fire
+ * @param {{ quote?: boolean }} [options]
  */
-export const unblockedFacts = ({ repo, issue, blocker, pr }) => {
-  const name = repo !== undefined && sameRepo(repo, blocker.repo) ? `#${blocker.number}` : `${blocker.repo}#${blocker.number}`;
+export const unblockedFacts = ({ repo, issue, blocker, pr }, { quote = false } = {}) => {
+  const ref = repo !== undefined && sameRepo(repo, blocker.repo) ? '#' : `${blocker.repo}#`;
+  const title = (/** @type {string} */ t) => (quote ? `\`${t.replace(/`/g, "'")}\`` : t);
   const how = blocker.reason === undefined ? 'closed' : `closed as ${blocker.reason.replace(/_/g, ' ')}`;
-  const by = pr === undefined ? 'with no PR' : `by PR #${pr.number} (${pr.title}, ${pr.url})`;
-  return `${name} (${blocker.title}) ${how}, ${by}. It blocked #${issue}.`;
+  const by = pr === undefined ? 'with no PR' : `by PR ${ref}${pr.number} (${title(pr.title)}, ${pr.url})`;
+  return `${ref}${blocker.number} (${title(blocker.title)}) ${how}, ${by}. It blocked #${issue}.`;
 };
 
 /**
@@ -178,4 +182,4 @@ export const unblockedMessage = (fire, prompts) => `${unblockedFacts(fire)}\n\n$
  * @param {UnblockedFire & { repo?: string }} fire
  * @param {Record<string, string | undefined>} prompts
  */
-export const notPlannedComment = (fire, prompts) => `${unblockedFacts(fire)}\n\n${instruction(prompts, 'unblockedNotPlanned')}`;
+export const notPlannedComment = (fire, prompts) => `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}`;

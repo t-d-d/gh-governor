@@ -98,12 +98,11 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import { ConditionalCheckFailedException, DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
-import { DEFAULT_MODEL, launchOutcome } from '../scripts/lib/dispatch-prompt.mjs';
+import { DEFAULT_MODEL, launchOutcome, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
-import { sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
@@ -120,7 +119,7 @@ import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
-import { DISPATCH_WINDOW_MS, HOOK_PER_HOUR, LANE, RED, dispatchMarker, lastDispatch, ownersOf, parseFire, recentlyDispatched } from './webhook/fire.mjs';
+import { DISPATCH_WINDOW_MS, HOOK_PER_HOUR, LANE, RED, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, recentlyDispatched } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -1330,14 +1329,15 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   // A close: one `unblocked` fire for each open ticket the issue blocked,
   // in whichever repo, for that repo's own turn (dispatch/unblocked.mjs).
   // It starts nothing, so DispatchCap does not hold it, and calls GitHub
-  // only under the closed issue's repo. A fire the lane refuses fails the
-  // turn, and the retry's deduplication ids drop what was already queued.
+  // only under the closed issue's repo. No failed turn is tried again
+  // (dispatch/webhook/retry.mjs), so a fire the lane refuses is logged at
+  // error by its ticket, the rest still go, and the turn exits 1.
   if (invocation.kind === 'schedule' && invocation.freed !== undefined) {
     const freed = invocation.freed;
     const reader = await getReader();
     const rows = await reader.blocking(freed);
-    if (!rows.some((r) => r.state === 'open')) {
-      deps.log('dispatch-unblocked', { repo: fireRepo(), closed: freed, queued: [], reason: `#${freed} blocked no open ticket` });
+    if (!rows.some((r) => r.state === 'open' && ownerListed(deps.owners, r.repo.split('/')[0] ?? ''))) {
+      deps.log('dispatch-unblocked', { repo: fireRepo(), closed: freed, queued: [], reason: `#${freed} blocked no open ticket in a listed owner's repo` });
       return { kind: invocation.kind, freed, queued: [], passedOver: [] };
     }
     const { title, reason, pr } = await reader.closure(freed);
@@ -1349,13 +1349,24 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       owners: deps.owners,
       ownOff: !turnsOn(config, 'pickup') && !turnsOn(config, 'unblocked'),
     });
-    if (queue.length > 0 && deps.enqueue === undefined) throw new Error(`#${freed} blocked open tickets, and this turn has no fire lane to queue them on`);
+    const enqueue = deps.enqueue;
+    if (queue.length > 0 && enqueue === undefined) throw new Error(`#${freed} blocked open tickets, and this turn has no fire lane to queue them on`);
+    /** @type {string[]} */
+    const queued = [];
+    /** @type {Array<{ repo: string, error: string }>} */
+    const unqueued = [];
     for (const { fire, dedupId } of queue) {
-      await /** @type {NonNullable<Deps['enqueue']>} */ (deps.enqueue)({ fire, reason: `${fireRepo()}#${freed} closed, which blocked ${fire.repo}#${fire.issue}` }, dedupId);
+      const ticket = `${fire.repo}#${fire.issue}`;
+      try {
+        await /** @type {NonNullable<Deps['enqueue']>} */ (enqueue)({ fire, reason: `${fireRepo()}#${freed} closed, which blocked ${ticket}` }, dedupId);
+        queued.push(ticket);
+      } catch (error) {
+        deps.log('dispatch-unblocked-unqueued', { level: 'error', repo: fireRepo(), closed: freed, ticket, error: messageOf(error), reason: 'its fire is lost: the ticket waits for its repo\'s sweep, or a fire by hand' });
+        unqueued.push({ repo: fireRepo(), error: `unblocked fire for ${ticket} not queued: ${messageOf(error)}` });
+      }
     }
-    const queued = queue.map((q) => `${q.fire.repo}#${q.fire.issue}`);
     deps.log('dispatch-unblocked', { repo: fireRepo(), closed: freed, reason, pr: pr?.number ?? null, queued, passedOver: skipped });
-    return { kind: invocation.kind, freed, queued, passedOver: skipped };
+    return { kind: invocation.kind, freed, queued, passedOver: skipped, ...(unqueued.length === 0 ? {} : { unread: unqueued }) };
   }
 
   const started = deps.now();
@@ -1509,8 +1520,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     if (row === 'not-planned' || row === 'claimed') {
       /** @type {boolean} */
       let commented = false;
-      if (row === 'not-planned') {
-        await reader.comment(issue, notPlannedComment(invocation, prompts));
+      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts) : null;
+      if (notPlanned !== null) {
+        await reader.comment(issue, notPlanned);
         commented = true;
       }
       if (!ticket.labels.includes(config.labels.claim)) {
@@ -1524,7 +1536,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         deps.log('dispatch-unblocked', { ...about, outcome: 'nobody told: no dispatch marker on the ticket names its session' });
         return { kind: invocation.kind, row, commented, messaged: null, dispatched: [] };
       }
-      const text = row === 'not-planned' ? notPlannedComment(invocation, prompts) : unblockedMessage(invocation, prompts);
+      const text = notPlanned ?? unblockedMessage(invocation, prompts);
       /** @type {import('./deliveries.mjs').Delivery} */
       let told;
       let loginStored = false;
@@ -2334,6 +2346,8 @@ export const realDeps = () => {
   /** The restored login's account, which every CLI call is handed. @type {import('../scripts/lib/claude-login.mjs').LoginAccount | null} */
   let account = null;
   const secrets = new SecretsManagerClient({});
+  // The fire lane: counted by the sign-off wait, and sent to by a close.
+  const sqs = new SQSClient({});
   const secretText = async (/** @type {string} */ id) =>
     (await secrets.send(new GetSecretValueCommand({ SecretId: id }))).SecretString ?? '';
   const log = (/** @type {string} */ event, /** @type {Record<string, unknown>} */ context = {}) =>
@@ -2528,8 +2542,8 @@ export const realDeps = () => {
       return { key };
     },
     sleep: (ms) => new Promise((resolveSleep) => { setTimeout(resolveSleep, ms); }),
-    fires: env.DISPATCH_FIRES_QUEUE_URL ? sqsFires(new SQSClient({}), env.DISPATCH_FIRES_QUEUE_URL) : undefined,
-    enqueue: env.DISPATCH_FIRES_QUEUE_URL ? sqsEnqueue(new SQSClient({}), env.DISPATCH_FIRES_QUEUE_URL) : undefined,
+    fires: env.DISPATCH_FIRES_QUEUE_URL ? sqsFires(sqs, env.DISPATCH_FIRES_QUEUE_URL) : undefined,
+    enqueue: env.DISPATCH_FIRES_QUEUE_URL ? sqsEnqueue(sqs, env.DISPATCH_FIRES_QUEUE_URL) : undefined,
     // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, no periodic starts, no repo is swept, and a review a label's waiver would pass fails, rather than guess.
     state: env.DISPATCH_STATE_TABLE
       ? dynamoState(new DynamoDBClient({}), env.DISPATCH_STATE_TABLE)
