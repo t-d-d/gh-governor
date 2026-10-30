@@ -41,17 +41,28 @@ export const PROMPTS = Object.freeze({
     text: `Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make \`${SIGN_OFF}\` the last line of your reply, and the dispatcher archives the session.`,
     fills: [],
   },
-  // A merge's hand-off, after the tickets the closed issues blocked (dispatch/handoff.mjs).
-  mergeHandoff: {
-    text: [
-      'For each ticket waiting on you: rewrite what waited from the code that merged, drop the `Spec waits until` line and mark it ready. A decision only a person can make goes into its body as a question instead, and it stays not ready.',
-      "For each started or ready one: if the merge contradicts its spec, fix its body. If it is claimed, message its session too (the dispatcher's marker comment on the ticket names it).",
-    ].join('\n'),
+  // A blocker's close, in the blocked ticket's own repo (dispatch/unblocked.mjs).
+  // A ready ticket's pickup prompt, after the facts of the close.
+  unblockedReady: {
+    text: "Before you build, check the spec against what merged, and fix the ticket's body where the merge changed what it builds on.",
     fills: [],
   },
-  // The hand-off when the blocked tickets could not be read.
-  mergeHandoffUnread: {
-    text: 'Read them yourself, and for each ticket waiting on you rewrite what waited from the code that merged.',
+  // A ticket not ready to pick up: a fresh session with no claim.
+  unblockedSpec: {
+    text: [
+      "Rewrite #{issue}'s spec from what merged. If it needs a decision only a person can make, write that into its body as a question and stop.",
+      'Otherwise label it {ready} and stop, or build it: add `{claim}` to it first, then take it through to a reviewable PR, `Closes #{issue}`.',
+    ].join('\n'),
+    fills: ['issue', 'ready', 'claim'],
+  },
+  // A claimed ticket's session, told its blocker closed.
+  unblockedClaimed: {
+    text: 'Check your work on #{issue} against what merged, and change it where the merge calls for that.',
+    fills: ['issue'],
+  },
+  // A blocker closed as not planned: a comment on the ticket, and its session's message if it is claimed.
+  unblockedNotPlanned: {
+    text: 'Its work will not land as planned. Decide whether this ticket still stands, and what it needs instead.',
     fills: [],
   },
   // The red scheduled run's fresh session (dispatch/webhook/route.mjs gives the facts).
@@ -103,6 +114,15 @@ export const PROMPTS = Object.freeze({
     fills: ['base'],
   },
 });
+
+/**
+ * Prompt keys a served file may still set, though governor sends no
+ * message of their kind: the schema is strict, and a file the change made
+ * invalid would stop its repo being served (dispatch/repo-config.mjs).
+ * The merge hand-off's two went when a blocker's close came to be handled
+ * in each blocked ticket's own repo (dispatch/unblocked.mjs).
+ */
+export const RETIRED_PROMPTS = Object.freeze(['mergeHandoff', 'mergeHandoffUnread']);
 
 /** A fact a prompt names. */
 const PLACEHOLDER = /\{([A-Za-z]+)\}/g;

@@ -22,7 +22,7 @@
     "branchRunMessages": true,
     "conflicts": true,
     "deployedLabels": true,
-    "mergeHandoff": true,
+    "unblocked": true,
     "heartbeat": true,
     "periodics": true,
     "hooks": true
@@ -418,8 +418,7 @@
   },
   "prompts": {
     "signOff": "Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make `Signing off.` the last line of your reply, and the dispatcher archives the session. Above it, write any `Lesson:` lines CLAUDE.md § Lessons calls for; usually there are none.",
-    "mergeHandoff": "For each ticket waiting on you (CLAUDE.md § After your PR merges): rewrite what waited from the code that merged, drop the `Spec waits until` line and mark it `workflow: ready for development`. A decision only a person can make goes into its body as a question instead, and it stays unlabelled.\nFor each started or ready one: if the merge contradicts its spec, fix its body. If it is `workflow: under development`, message its session too (the dispatcher's marker comment on the ticket names it).",
-    "mergeHandoffUnread": "Read them yourself (`gh-deps list-blocking <n>`, the issue-dependencies skill) and follow CLAUDE.md § After your PR merges.",
+    "unblockedSpec": "Rewrite #{issue}'s spec from what merged (CLAUDE.md § After your PR merges). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it {ready} and stop, or add `{claim}` to it first and take it through to a PR, `Closes #{issue}`.",
     "redScheduledRun": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. Read the docs/constraints/ files that name the workflow file before re-running it: some tiers limit how soon one run may follow another. First search the open issues and PRs for it: if one already covers this failure, comment this run on it and stop. If the fix is in the repo, push it on a new branch from origin/main with a new PR. If it is not (a lapsed credential, a third-party outage), raise an issue saying what failed and what it needs.",
     "ciBreaker": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If the cause is in your change, push the fix on a new branch from origin/main with a new PR: PR #{pr} is merged and its branch is done. If it is not, comment on PR #{pr} with what you found instead.",
     "ciTriage": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. Work out which merge caused it, and push the fix on a new branch from origin/main with a new PR naming that PR. Then comment on the culprit PR with what broke and a link to your fix.",

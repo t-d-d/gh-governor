@@ -11,12 +11,15 @@
  * where a field is spelled, so a new kind of fire, or a new field, is one
  * edit here and one test.
  *
- * Eleven kinds. A `schedule` fire (EventBridge, every two hours) selects
+ * Twelve kinds. A `schedule` fire (EventBridge, every two hours) selects
  * ready work up to the cap; one naming an `issue` (an issue just given a
  * label on the stack's SelectLabels) selects that issue alone, if the label
  * is one of the repo's ready labels and the selection would; one naming a
- * `freed` issue (an issue just closed) selects, the same way, the issues it
- * directly blocked. A `dispatch` fire carries one prompt, for a mention of
+ * `freed` issue (an issue just closed) selects nothing: its turn queues an
+ * `unblocked` fire for each open ticket the issue blocked, in whichever
+ * repo the ticket is (dispatch/unblocked.mjs). An `unblocked` fire names
+ * that ticket, in its own repo, the blocker and the PR that closed it; its
+ * turn acts on the ticket under its own repo's config. A `dispatch` fire carries one prompt, for a mention of
  * @claude, a scheduled run gone red, a probe run or an operator's one-off. A
  * `probe` proves the runtime can hold a pseudo-terminal and starts nothing.
  * A `message` carries text into a cloud session that already exists (its id
@@ -24,8 +27,7 @@
  * start a fresh session on, the name for it, and the PR it is on, should the
  * session refuse. A subscriber's names what it is `on`, the `event`,
  * a push's `commit`, and `closing` for a close; the owner's of a merge into
- * main carries `merged`, which the task adds the tickets the PR's closed
- * issues blocked to, with a fallback when one waits on the session.
+ * main carries `merged`.
  * One on a PR whose body names
  * no session carries `byBranch` in place of the session, and the `poster` to
  * skip. A `workflow` names a red run on the repo's default branch
@@ -246,7 +248,7 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, merged?: true, subscribed?: true }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
- *   `merged`: the owner's message of PR `on` merged into main (dispatch/handoff.mjs).
+ *   `merged`: the owner's message of PR `on` merged into main.
  *   `subscribed`: the session hears by subscription, a `governor:subscribe`
  *   line or as an issue's filer, which the repo's subscribe-messages switch
  *   turns on; without it, it is the PR's owner, whose is the PR-messages
@@ -267,7 +269,15 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  * @typedef {{ kind: 'hook', hook: string, keyVersion: number, text: string, at: string }} HookFire
  *   A hook an outside system fired: its name, the key version its request
  *   was signed with, the caller's text, and when the receiver took it.
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire) & { repo?: string, counted?: Count }} Fire
+ * @typedef {{ repo: string, number: number, title: string, reason?: string }} Blocker
+ *   An issue that closed: its repo, number and title, and GitHub's
+ *   `state_reason` for the close where it gave one.
+ * @typedef {{ number: number, title: string, url: string }} ClosingPull The PR whose merge closed a blocker, in the blocker's repo.
+ * @typedef {{ kind: 'unblocked', issue: number, blocker: Blocker, pr?: ClosingPull }} UnblockedFire
+ *   A ticket of the fire's repo that `blocker` blocked, which just closed,
+ *   by `pr` where a merge closed it. No body or diff: the fire must fit
+ *   the override ({@link OVERRIDE_BUDGET}).
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
@@ -358,7 +368,30 @@ export const build = Object.freeze({
 
   /** @param {Omit<HookFire, 'kind'>} args @returns {HookFire} */
   hook: ({ hook, keyVersion, text, at }) => ({ kind: 'hook', hook, keyVersion, text, at }),
+
+  /**
+   * Each title on one line and at most {@link TITLE_LIMIT} characters, so
+   * any title fits the override.
+   *
+   * @param {{ issue: number, blocker: Omit<Blocker, 'reason'> & { reason?: string | null | undefined }, pr?: ClosingPull | null | undefined }} args
+   * @returns {UnblockedFire}
+   */
+  unblocked: ({ issue, blocker, pr }) => ({
+    kind: 'unblocked',
+    issue,
+    blocker: { repo: blocker.repo, number: blocker.number, title: shortTitle(blocker.title), ...present({ reason: blocker.reason ?? undefined }) },
+    ...(pr === undefined || pr === null ? {} : { pr: { number: pr.number, title: shortTitle(pr.title), url: pr.url } }),
+  }),
 });
+
+/** The most characters of a title an `unblocked` fire carries. */
+export const TITLE_LIMIT = 200;
+
+/** @param {unknown} title */
+const shortTitle = (title) => {
+  const flat = String(title ?? '').replace(/\s+/g, ' ').trim();
+  return flat.length <= TITLE_LIMIT ? flat : `${flat.slice(0, TITLE_LIMIT - 1)}\u2026`;
+};
 
 // ── The container override ───────────────────────────────────────────────
 
@@ -592,6 +625,7 @@ const parseKind = (event) => {
   }
   if (kind === 'periodics') return { kind };
   if (kind === 'hook') return parseHook(e);
+  if (kind === 'unblocked') return parseUnblocked(e);
   if (kind === 'conflicts') {
     if (!isPositiveInt(e?.pr)) {
       throw new Error(`a conflicts invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);
@@ -783,6 +817,33 @@ const parseHook = (e) => {
   if (typeof e?.text !== 'string' || e.text.trim() === '') refuse('text must be the caller\'s');
   if (typeof e?.at !== 'string' || !Number.isFinite(Date.parse(e.at))) refuse('at must be when the receiver took it');
   return { kind: 'hook', hook: /** @type {string} */ (e?.hook), keyVersion: Number(e?.keyVersion), text: /** @type {string} */ (e?.text), at: /** @type {string} */ (e?.at) };
+};
+
+/** A title an `unblocked` fire carries: one line, not empty, short. @param {unknown} v @returns {v is string} */
+const isTitle = (v) => typeof v === 'string' && v.trim() !== '' && v.length <= TITLE_LIMIT && !/[\r\n]/.test(v);
+
+/**
+ * An unblocked fire, refused unless it names the ticket and the blocker
+ * whole, and the closing PR whole where it names one.
+ *
+ * @param {Record<string, unknown> | null} e
+ * @returns {UnblockedFire}
+ */
+const parseUnblocked = (e) => {
+  const refuse = (/** @type {string} */ what) => { throw new Error(`an unblocked invocation's ${what}, got: ${JSON.stringify(e)?.slice(0, 300)}`); };
+  if (!isPositiveInt(e?.issue)) refuse('issue must be a positive integer');
+  const b = /** @type {Record<string, unknown> | null} */ (e?.blocker ?? null);
+  if (b === null || typeof b !== 'object' || typeof b.repo !== 'string' || !REPO_NAME.test(b.repo) || !isPositiveInt(b.number) || !isTitle(b.title)) refuse('blocker must name its repo, number and title');
+  if (b?.reason !== undefined && !(typeof b.reason === 'string' && /^[a-z_]{1,40}$/.test(b.reason))) refuse('blocker reason must be a close reason');
+  const p = /** @type {Record<string, unknown> | null | undefined} */ (e?.pr);
+  if (p !== undefined && (p === null || typeof p !== 'object' || !isPositiveInt(p.number) || !isTitle(p.title) || typeof p.url !== 'string' || !/^https:\/\/github\.com\/\S+$/.test(p.url))) refuse('pr must name its number, title and github.com url');
+  const blocker = /** @type {Record<string, unknown>} */ (b);
+  return {
+    kind: 'unblocked',
+    issue: Number(e?.issue),
+    blocker: { repo: String(blocker.repo), number: Number(blocker.number), title: String(blocker.title), ...(blocker.reason === undefined ? {} : { reason: String(blocker.reason) }) },
+    ...(p === undefined ? {} : { pr: { number: Number(p?.number), title: String(p?.title), url: String(p?.url) } }),
+  };
 };
 
 /**

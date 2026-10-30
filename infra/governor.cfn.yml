@@ -183,7 +183,7 @@ Resources:
   #
   # The task role: what the turn itself may do. The login read and written,
   # the App key and the drop-box writer read, the state table's items, the
-  # fire lane counted, nothing else; the logs are the execution role's.
+  # fire lane counted and sent to, nothing else; the logs are the execution role's.
   DispatchRole:
     Type: AWS::IAM::Role
     Properties:
@@ -220,6 +220,13 @@ Resources:
               - Sid: CountTheFires
                 Effect: Allow
                 Action: sqs:GetQueueAttributes
+                Resource: !GetAtt DispatchFiresQueue.Arn
+              # An issue closing queues one `unblocked` fire for each open
+              # ticket it blocked, for the ticket's own repo's turn
+              # (dispatch/unblocked.mjs). It takes nothing off the lane.
+              - Sid: QueueTheUnblockedFires
+                Effect: Allow
+                Action: sqs:SendMessage
                 Resource: !GetAtt DispatchFiresQueue.Arn
               # Each label's cursor under its workflow (dispatch/turn.mjs
               # dynamoState): read once a turn, written forward
@@ -329,7 +336,8 @@ Resources:
               Value: !Ref DispatchStateTable
             - Name: DISPATCH_HOOK_TABLE
               Value: !Ref DispatchHookTable
-            # The fire lane the sign-off wait counts (scripts/lib/session-signoff.mjs).
+            # The fire lane the sign-off wait counts (scripts/lib/session-signoff.mjs),
+            # and a close's unblocked fires go on (dispatch/unblocked.mjs).
             - Name: DISPATCH_FIRES_QUEUE_URL
               Value: !Ref DispatchFiresQueue
           LogConfiguration:

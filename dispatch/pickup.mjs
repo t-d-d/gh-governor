@@ -1,8 +1,8 @@
 /**
  * Pickup's sweep: how often the bare schedule fire reads a served repo's
- * ready tickets. A ready label and a close that frees tickets pick up at
- * once, each on its own fire; the sweep is what catches a ticket whose event
- * was lost, or that a close freed past the cap. A repo whose ready label the
+ * ready tickets. A ready label, and a close that leaves a ready ticket
+ * unblocked (dispatch/unblocked.mjs), pick up at once, each on its own
+ * fire; the sweep is what catches a ticket whose event was lost. A repo whose ready label the
  * stack's `SelectLabels` does not list waits for it too.
  *
  * A repo's config file may set the interval in whole hours (`pickup`,

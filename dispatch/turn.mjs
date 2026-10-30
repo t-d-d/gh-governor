@@ -15,9 +15,6 @@
  * the CLI refreshed it. A `message` turn restores the login the same way
  * and sends text into a cloud session that already exists (`claude -p
  * --cloud <session>`, the text on stdin), which needs no pseudo-terminal;
- * the owner's message of a merge into main first gains the tickets the PR's
- * closed issues blocked, and a fallback when one waits on it
- * (dispatch/handoff.mjs);
  * a session that refuses (the CLI answers it archived) gets
  * the message's fallback, if it carries one, started as a fresh session
  * through the launcher, which rewrites the PR body's session link to it and
@@ -46,6 +43,11 @@
  * mergeable state and messages each conflicted one's owner session, with
  * the fallback, naming the merge and main's commit; a conditional record in
  * the state table tells each PR of a merge once (dispatch/conflicts.mjs).
+ * A `schedule` turn naming a `freed` issue, one just closed, starts
+ * nothing: it queues an `unblocked` fire for each open ticket the issue
+ * blocked, in whichever served repo it is, and an `unblocked` turn acts on
+ * that ticket under its own repo's config: a message, a comment, a pickup,
+ * or a session to rewrite its spec (dispatch/unblocked.mjs).
  * A `review` turn runs the repo's checklist (its file's `review.checklist`)
  * over a PR into its default branch, or every open one, as the
  * system prompt of a `claude -p` run under the same login, and merges,
@@ -95,8 +97,8 @@ import {
   SecretsManagerClient,
 } from '@aws-sdk/client-secrets-manager';
 import { ConditionalCheckFailedException, DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
-import { GetQueueAttributesCommand, SQSClient } from '@aws-sdk/client-sqs';
-import { DEFAULT_MODEL, launchOutcome } from '../scripts/lib/dispatch-prompt.mjs';
+import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import { DEFAULT_MODEL, launchOutcome, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
@@ -112,12 +114,12 @@ import { STALE_RUNS_PAUSES_MS, baselineIn, freshRuns } from './runs.mjs';
 import { coverageOf } from './coverage.mjs';
 import { planBranchRun } from './branch-run.mjs';
 import { checkConflicts } from './conflicts.mjs';
-import { blockedBy, handoffFallback, handoffText, unreadText } from './handoff.mjs';
+import { ROW_SWITCH, closingFires, notPlannedComment, readyPrompt, specPrompt, ticketRow, unblockedMessage } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
-import { HOOK_PER_HOUR, RED, dispatchMarker, ownersOf, parseFire } from './webhook/fire.mjs';
+import { DISPATCH_WINDOW_MS, HOOK_PER_HOUR, LANE, RED, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, recentlyDispatched } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -192,6 +194,9 @@ export const sessionUrlFrom = (output) => {
  * @typedef {{ status: number | null, output: string }} LaunchResult
  * @typedef {import('../scripts/lib/dispatch-router.mjs').Reader & import('./workflow.mjs').WorkflowReader & {
  *   comment: (n: number, body: string) => Promise<void>,
+ *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string }>>,
+ *   closure: (n: number) => Promise<{ title: string, reason: string | null, pr: import('./webhook/fire.mjs').ClosingPull | null }>,
+ *   ticket: (n: number) => Promise<import('../scripts/lib/github-app.mjs').TicketRow>,
  *   pull: (n: number) => Promise<{ number: number, body: string, head: string }>,
  *   updatePull: (n: number, change: { body: string }) => Promise<void>,
  *   issue: (n: number) => Promise<{ number: number, body: string, pull: boolean }>,
@@ -237,6 +242,7 @@ export const sessionUrlFrom = (output) => {
  *   sleep: (ms: number) => Promise<void>,
  *   archive: import('../scripts/lib/session-signoff.mjs').Archive,
  *   fires?: import('../scripts/lib/session-signoff.mjs').Fires | undefined,
+ *   enqueue?: ((message: import('./webhook/fire.mjs').FireMessage, dedupId: string) => Promise<string>) | undefined,
  *   sessions: { list: (token: string, after?: string) => Promise<unknown>, get: (id: string, token: string) => Promise<unknown>, events: import('../scripts/lib/session-signoff.mjs').Events },
  *   state: DispatchState,
  *   hookTable: Pick<import('./webhook/hook-table.mjs').HookTable, 'publish'>,
@@ -266,6 +272,9 @@ export const sessionUrlFrom = (output) => {
  *   nothing and logs what is left in it.
  *   `fires`: the fire lane ({@link sqsFires}); without it, a turn never
  *   waits for replies.
+ *   `enqueue`: a fire onto that lane, deduplicated by the id given
+ *   ({@link sqsEnqueue}): a close's `unblocked` fires. Without it, a close
+ *   that blocked an open ticket fails.
  *
  * @typedef {{
  *   cursor: (repo: string, workflow: string, label: string | null) => Promise<import('./runs.mjs').Cursor | null>,
@@ -506,8 +515,11 @@ export const run = async (event, deps) => {
     }
     served = [one];
     const name = switchOf(invocation, one.config.workflows);
-    if (name !== null && !turnsOn(one.config, name)) {
-      refusal = `${repo}'s ${CONFIG_PATH} does not turn ${name} on`;
+    // An unblocked fire's switch is its ticket's state's (dispatch/unblocked.mjs):
+    // with both off, no row acts, and the ticket is not read.
+    const neither = invocation.kind === 'unblocked' && !turnsOn(one.config, 'pickup') && !turnsOn(one.config, 'unblocked');
+    if ((name !== null && !turnsOn(one.config, name)) || neither) {
+      refusal = name === null ? `${repo}'s ${CONFIG_PATH} turns neither pickup nor unblocked on` : `${repo}'s ${CONFIG_PATH} does not turn ${name} on`;
       // A hook fired into a repo that turned hooks off is a caller someone
       // forgot: worth a look, not a page.
       deps.log('dispatch-refused', { level: invocation.kind === 'hook' ? 'warn' : 'info', repo, kind: invocation.kind, reason: refusal });
@@ -1045,24 +1057,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   }));
 
   if (invocation.kind === 'message') {
-    const { on, event, commit, closing } = invocation;
-    let { text, fallback } = invocation;
-    // The owner's message of a merge into main lists what the PR's closed
-    // issues blocked, and a waiting hand-off falls back to a fresh session.
-    // A read that fails still sends the message, saying so.
-    if (invocation.merged === true && on !== undefined && turnsOn(configOf(fireRepo()), 'mergeHandoff')) {
-      try {
-        const { title, blocked } = await blockedBy({ pr: on, reader: await getReader(), repo: fireRepo() });
-        const listed = handoffText(blocked, fireRepo(), prompts, configOf(fireRepo()).labels);
-        const waiting = blocked.flatMap((b) => b.waiting.map((t) => t.number));
-        deps.log('dispatch-handoff', { pr: on, closes: blocked.map((b) => b.closed), waiting, freed: blocked.flatMap((b) => b.freed.map((t) => t.number)) });
-        if (listed !== null) text = `${text}\n\n${listed}`;
-        if (waiting.length > 0 && fallback === undefined) fallback = handoffFallback({ pr: on, title, text, deploys: turnsOn(configOf(fireRepo()), 'deployMessages') });
-      } catch (error) {
-        deps.log('dispatch-handoff', { pr: on, error: messageOf(error) });
-        text = `${text}\n\n${unreadText(messageOf(error), prompts)}`;
-      }
-    }
+    const { on, event, commit, closing, text, fallback } = invocation;
     /** @type {import('./deliveries.mjs').Delivery} */
     let told = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: null };
     let loginStored = false;
@@ -1331,8 +1326,51 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     return { kind: 'review', reviews, loginStored };
   }
 
+  // A close: one `unblocked` fire for each open ticket the issue blocked,
+  // in whichever repo, for that repo's own turn (dispatch/unblocked.mjs).
+  // It starts nothing, so DispatchCap does not hold it, and calls GitHub
+  // only under the closed issue's repo. No failed turn is tried again
+  // (dispatch/webhook/retry.mjs), so a fire the lane refuses is logged at
+  // error by its ticket, the rest still go, and the turn exits 1.
+  if (invocation.kind === 'schedule' && invocation.freed !== undefined) {
+    const freed = invocation.freed;
+    const reader = await getReader();
+    const rows = await reader.blocking(freed);
+    if (!rows.some((r) => r.state === 'open' && ownerListed(deps.owners, r.repo.split('/')[0] ?? ''))) {
+      deps.log('dispatch-unblocked', { repo: fireRepo(), closed: freed, queued: [], reason: `#${freed} blocked no open ticket in a listed owner's repo` });
+      return { kind: invocation.kind, freed, queued: [], passedOver: [] };
+    }
+    const { title, reason, pr } = await reader.closure(freed);
+    const config = configOf(fireRepo());
+    const { queue, skipped } = closingFires({
+      closed: { repo: fireRepo(), number: freed, title, ...(reason === null ? {} : { reason }) },
+      pr,
+      rows,
+      owners: deps.owners,
+      ownOff: !turnsOn(config, 'pickup') && !turnsOn(config, 'unblocked'),
+    });
+    const enqueue = deps.enqueue;
+    if (queue.length > 0 && enqueue === undefined) throw new Error(`#${freed} blocked open tickets, and this turn has no fire lane to queue them on`);
+    /** @type {string[]} */
+    const queued = [];
+    /** @type {Array<{ repo: string, error: string }>} */
+    const unqueued = [];
+    for (const { fire, dedupId } of queue) {
+      const ticket = `${fire.repo}#${fire.issue}`;
+      try {
+        await /** @type {NonNullable<Deps['enqueue']>} */ (enqueue)({ fire, reason: `${fireRepo()}#${freed} closed, which blocked ${ticket}` }, dedupId);
+        queued.push(ticket);
+      } catch (error) {
+        deps.log('dispatch-unblocked-unqueued', { level: 'error', repo: fireRepo(), closed: freed, ticket, error: messageOf(error), reason: 'its fire is lost: the ticket waits for its repo\'s sweep, or a fire by hand' });
+        unqueued.push({ repo: fireRepo(), error: `unblocked fire for ${ticket} not queued: ${messageOf(error)}` });
+      }
+    }
+    deps.log('dispatch-unblocked', { repo: fireRepo(), closed: freed, reason, pr: pr?.number ?? null, queued, passedOver: skipped });
+    return { kind: invocation.kind, freed, queued, passedOver: skipped, ...(unqueued.length === 0 ? {} : { unread: unqueued }) };
+  }
+
   const started = deps.now();
-  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, hook?: { name: string, read: import('./hooks.mjs').HookRecord | null } }>} */
+  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, unclaimed?: true, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, hook?: { name: string, read: import('./hooks.mjs').HookRecord | null } }>} */
   const plan = [];
   /** The issues a targeted schedule fire limits the plan to; undefined for the sweep. @type {number[] | undefined} */
   let only;
@@ -1348,6 +1386,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const swept = new Map();
   /** The served repos turning pickup on that the bare fire left out of this sweep: not due, or their last sweep unread. */
   let held = 0;
+  /** An unblocked fire's row of the table (dispatch/unblocked.mjs). @type {import('./unblocked.mjs').Row | undefined} */
+  let row;
   if (invocation.kind === 'schedule') {
     // Every served repo's ready tickets in one queue; a repo
     // whose file turns pickup off is still swept, and its backlog unread.
@@ -1359,7 +1399,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         continue;
       }
       // The bare fire sweeps a repo once its interval has passed since its
-      // last sweep; a fire for a label or a close picks up at once.
+      // last sweep; a fire for a label picks up at once.
       if (bare) {
         const now = deps.now();
         const sweepHours = sweepHoursOf(config);
@@ -1382,14 +1422,11 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       }
       sources.push({ repo, reader: await readerFor(repo), labels: config.labels, prompts: config.prompts });
     }
-    // A close frees what it blocked and nothing else: the plan is those
-    // issues, each through the selection's own checks, so one another open
-    // issue still blocks stays put. A fire naming issues names one repo.
-    const blocking = invocation.freed === undefined ? undefined : (await (await getReader()).blocking(invocation.freed)).map((row) => row.number);
-    only = invocation.issue === undefined ? blocking : [invocation.issue];
+    // A fire naming its issue plans it alone, through the selection's own checks.
+    only = invocation.issue === undefined ? undefined : [invocation.issue];
     // In the bare fire one repo's refusal leaves the others to go; a fire
     // naming its repo throws on its own.
-    const planned = blocking?.length === 0 ? [] : await planSchedule({
+    const planned = await planSchedule({
       sources,
       cap: deps.cap,
       now: deps.now(),
@@ -1401,16 +1438,6 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // while the others were not due is that repo's fault, not the turn's.
     if (sources.length > 0 && held === 0 && new Set(unread.map((u) => u.repo)).size === sources.length) {
       throw new Error(`no served repo's backlog could be read: ${unread.map((u) => `${u.repo}: ${u.error}`).join('; ')}`);
-    }
-    if (blocking !== undefined) {
-      deps.log('dispatch-plan', {
-        freed: invocation.freed,
-        blocking,
-        planned: planned.map((d) => d.issue),
-        ...(blocking.length === 0 ? { reason: `#${invocation.freed} blocked nothing` }
-          : planned.length === 0 ? { reason: 'none of what it blocked is selectable: still blocked, not ready, or dispatched inside the window' }
-            : {}),
-      });
     }
     for (const d of planned) {
       plan.push({ issue: d.issue ?? null, repo: d.repo, prompt: d.prompt, sessionName: d.sessionName, model: DEFAULT_MODEL });
@@ -1470,6 +1497,76 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       if (!told.refused) return { kind: invocation.kind, dispatched: [], messaged: told, loginStored };
     }
     plan.push({ issue: null, repo: fireRepo(), prompt: hookPrompt(found.hook.prompt, invocation), sessionName: name, model: DEFAULT_MODEL, hook: { name, read } });
+  } else if (invocation.kind === 'unblocked') {
+    // A ticket whose blocker closed, under its own repo's config: the first
+    // row of the table that fits (dispatch/unblocked.mjs). Its repo's
+    // switch for that row decides whether the turn acts.
+    const { issue, blocker } = invocation;
+    const config = configOf(fireRepo());
+    const reader = await getReader();
+    const [ticket, blockers] = await Promise.all([reader.ticket(issue), reader.blockers(issue)]);
+    row = ticketRow({ ticket, blockers, fire: invocation, labels: config.labels });
+    const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row };
+    const governs = ROW_SWITCH[row];
+    if (governs === undefined) {
+      deps.log('dispatch-unblocked', { ...about, outcome: 'nothing to do' });
+      return { kind: invocation.kind, row, dispatched: [] };
+    }
+    if (!turnsOn(config, governs)) {
+      const why = `${fireRepo()}'s ${CONFIG_PATH} does not turn ${governs} on`;
+      deps.log('dispatch-refused', { level: 'info', ...about, kind: invocation.kind, reason: why });
+      return { kind: invocation.kind, row, refusal: why, dispatched: [] };
+    }
+    if (row === 'not-planned' || row === 'claimed') {
+      /** @type {boolean} */
+      let commented = false;
+      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts) : null;
+      if (notPlanned !== null) {
+        await reader.comment(issue, notPlanned);
+        commented = true;
+      }
+      if (!ticket.labels.includes(config.labels.claim)) {
+        deps.log('dispatch-unblocked', { ...about, outcome: 'commented' });
+        return { kind: invocation.kind, row, commented, dispatched: [] };
+      }
+      // The claimed ticket's session: the newest dispatch marker names it,
+      // whatever its age, since the session builds for as long as it takes.
+      const session = lastDispatch(await reader.comments(issue), deps.now(), Infinity)?.sessionUrl ?? null;
+      if (session === null) {
+        deps.log('dispatch-unblocked', { ...about, outcome: 'nobody told: no dispatch marker on the ticket names its session' });
+        return { kind: invocation.kind, row, commented, messaged: null, dispatched: [] };
+      }
+      const text = notPlanned ?? unblockedMessage(invocation, prompts);
+      /** @type {import('./deliveries.mjs').Delivery} */
+      let told;
+      let loginStored = false;
+      try {
+        told = await delivery().deliver({ session }, text, { on: [issue] });
+      } finally {
+        loginStored = await storeIfRefreshed(deps, original, account);
+      }
+      deps.log('dispatch-unblocked', { ...about, session, outcome: told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged' });
+      return { kind: invocation.kind, row, commented, messaged: told, dispatched: [], loginStored };
+    }
+    if (deps.cap === 0) {
+      deps.log('dispatch-unblocked', { ...about, outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' });
+    } else if (row === 'ready') {
+      // As pickup does: the selection's own checks, the window included.
+      const planned = await planSchedule({ sources: [{ repo: fireRepo(), reader, labels: config.labels, prompts }], cap: 1, now: deps.now(), only: [issue] });
+      for (const d of planned) plan.push({ issue, repo: d.repo, prompt: readyPrompt(d.prompt, invocation, prompts), sessionName: d.sessionName, model: DEFAULT_MODEL });
+      deps.log('dispatch-unblocked', { ...about, outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, or no longer ready' : 'picking up' });
+    } else {
+      // The spec session is not claimed: its marker keeps the sweep off the
+      // ticket inside the window, and the claim it adds before it builds
+      // keeps it off after.
+      const since = new Date(deps.now() - DISPATCH_WINDOW_MS).toISOString();
+      if (recentlyDispatched(await reader.comments(issue, { since }), deps.now())) {
+        deps.log('dispatch-unblocked', { ...about, outcome: 'not started: dispatched inside the window' });
+      } else {
+        plan.push({ issue, repo: fireRepo(), prompt: specPrompt({ fire: invocation, title: ticket.title, labels: config.labels, prompts }), sessionName: ticketSessionName(issue, ticket.title), model: DEFAULT_MODEL, unclaimed: true });
+        deps.log('dispatch-unblocked', { ...about, outcome: 'starting a spec session' });
+      }
+    }
   } else if (!(invocation.kind === 'dispatch' && invocation.scheduled !== undefined && await redBefore(invocation.scheduled, getReader, deps))) {
     // Not a scheduled red after a red: that one plans nothing, since the red before started the session that is on it.
     plan.push({
@@ -1584,7 +1681,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         if (ticket !== null) leftOver.add(entry.repo);
         continue;
       }
-      const claimed = ticket === null ? 'claimed' : await claim(ticket);
+      // A spec session's ticket is not claimed: the session claims it before it builds.
+      const claimed = ticket === null || entry.unclaimed === true ? 'claimed' : await claim(ticket);
       if (claimed === 'taken') continue;
       if (claimed === 'failed') {
         dispatched.push({ repo: entry.repo, issue: entry.issue, outcome: 'failed', sessionUrl: null });
@@ -1610,7 +1708,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       }
       if ((ticket !== null || entry.periodic !== undefined) && outcome === 'failed') {
         if (ticket !== null) {
-          await release(ticket);
+          if (entry.unclaimed !== true) await release(ticket);
           leftOver.add(ticket.repo);
         }
         // A launch that started nothing is the repo's environment or the
@@ -1652,8 +1750,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
 
     // The heartbeat says the sweep ran, runs with nothing to dispatch or
     // nothing left to claim included, unless every claim or launch failed. A
-    // fire naming its repo or its issues (one labelled, or what a close
-    // freed) is not the sweep: one per label or per merge would keep the
+    // fire naming its repo or its issue (one labelled, or one a close left
+    // unblocked) is not the sweep: one per label or per merge would keep the
     // heartbeat fresh while the schedule was dead, and the watchdog reads
     // the heartbeat as the schedule's. It is written in each repo whose file
     // turns it on, into the issue the file names, judged on that
@@ -1710,7 +1808,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     loginStored = await storeIfRefreshed(deps, original, account);
   }
   const left = [...unread, ...sweepsUnread, ...periodicsUnread, ...hooksUnrecorded];
-  return { kind: invocation.kind, dispatched, heartbeat, loginStored, ...(left.length === 0 ? {} : { unread: left }) };
+  return { kind: invocation.kind, ...(row === undefined ? {} : { row }), dispatched, heartbeat, loginStored, ...(left.length === 0 ? {} : { unread: left }) };
 };
 
 /**
@@ -1966,6 +2064,21 @@ export const sqsFires = (client, url) => ({
     }, 0);
   },
 });
+
+/**
+ * A fire onto the dispatcher's fire lane, on its one message group, as the
+ * receiver queues one (dispatch/webhook/handler.mjs): a close's
+ * `unblocked` fires (dispatch/unblocked.mjs). The deduplication id drops
+ * one a retried close queues again.
+ *
+ * @param {Pick<SQSClient, 'send'>} client
+ * @param {string} url
+ * @returns {NonNullable<Deps['enqueue']>}
+ */
+export const sqsEnqueue = (client, url) => async (message, dedupId) => {
+  const sent = await client.send(new SendMessageCommand({ QueueUrl: url, MessageBody: JSON.stringify(message), MessageGroupId: LANE, MessageDeduplicationId: dedupId }));
+  return String(sent.MessageId ?? '');
+};
 
 /**
  * The sessions API the CLI archives a cloud session through (its
@@ -2233,6 +2346,8 @@ export const realDeps = () => {
   /** The restored login's account, which every CLI call is handed. @type {import('../scripts/lib/claude-login.mjs').LoginAccount | null} */
   let account = null;
   const secrets = new SecretsManagerClient({});
+  // The fire lane: counted by the sign-off wait, and sent to by a close.
+  const sqs = new SQSClient({});
   const secretText = async (/** @type {string} */ id) =>
     (await secrets.send(new GetSecretValueCommand({ SecretId: id }))).SecretString ?? '';
   const log = (/** @type {string} */ event, /** @type {Record<string, unknown>} */ context = {}) =>
@@ -2427,7 +2542,8 @@ export const realDeps = () => {
       return { key };
     },
     sleep: (ms) => new Promise((resolveSleep) => { setTimeout(resolveSleep, ms); }),
-    fires: env.DISPATCH_FIRES_QUEUE_URL ? sqsFires(new SQSClient({}), env.DISPATCH_FIRES_QUEUE_URL) : undefined,
+    fires: env.DISPATCH_FIRES_QUEUE_URL ? sqsFires(sqs, env.DISPATCH_FIRES_QUEUE_URL) : undefined,
+    enqueue: env.DISPATCH_FIRES_QUEUE_URL ? sqsEnqueue(sqs, env.DISPATCH_FIRES_QUEUE_URL) : undefined,
     // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, no periodic starts, no repo is swept, and a review a label's waiver would pass fails, rather than guess.
     state: env.DISPATCH_STATE_TABLE
       ? dynamoState(new DynamoDBClient({}), env.DISPATCH_STATE_TABLE)

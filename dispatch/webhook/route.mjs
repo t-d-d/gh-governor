@@ -46,12 +46,17 @@
  * also counted for the repo's periodics: the fire the event queues carries
  * it as `counted`, and an issue opened that queues none queues a
  * `periodics` fire of its own ({@link counting}).
- * An issue closed queues a `schedule` fire naming it as `freed`, which the
- * task narrows to the issues it directly blocked, each dispatched if the
- * selection would. A close once ran the whole selection, cap included, and
- * every session that finished started two more; bounded to what the close
- * blocked, a chain advances one link per merge and cannot fan out past the
- * dependency graph.
+ * An issue closed queues a `schedule` fire naming it as `freed`. Its turn
+ * starts nothing: it queues one `unblocked` fire for each open ticket the
+ * issue directly blocked, in whichever listed owner's repo the ticket is,
+ * and each runs in that repo's own turn under its own config
+ * (dispatch/unblocked.mjs). A close once ran the whole selection, cap
+ * included, and every session that finished started two more; bounded to
+ * what the close blocked, a chain advances one link per merge and cannot
+ * fan out past the dependency graph.
+ * A PR merged into the default branch tells its owner session, as any close
+ * does, and lists no blocked ticket: the merging session has no step left
+ * after the merge, and can sign off.
  *
  * One task at a time is the starter's to keep: a dispatcher turn refreshes
  * the stored login, and two turns refreshing one login leave one of them
@@ -470,9 +475,9 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
         ? one({ fire: build.schedule({ issue: number, label }), reason: `issue #${number} labelled ${label}: the turn checks it against the repo's ready labels` })
         : null;
     } else if (action === 'closed') {
-      // The close is counted on the fire that frees what it blocked.
+      // The close is counted on the fire that queues what it blocked.
       selection = typeof number === 'number'
-        ? counting(one({ fire: build.schedule({ freed: number }), reason: `issue #${number} closed: dispatch what it freed` }), 'issuesClosed', 'schedule')
+        ? counting(one({ fire: build.schedule({ freed: number }), reason: `issue #${number} closed: queue what it blocked` }), 'issuesClosed', 'schedule')
         : nothing('issue closed with no number: nothing to free');
     }
     // The selection's fire, where there is one, beside each subscriber's.

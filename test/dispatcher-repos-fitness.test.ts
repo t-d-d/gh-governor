@@ -25,7 +25,7 @@ import { createHmac } from 'node:crypto';
 import { HOOK_EVENTS, handle, routeEvent } from '../dispatch/webhook/route.mjs';
 import { PROMPTS, instruction } from '../dispatch/prompts.mjs';
 import { planWorkflow, redRunPrompt } from '../dispatch/workflow.mjs';
-import { handoffText, unreadText } from '../dispatch/handoff.mjs';
+import { notPlannedComment, readyPrompt, specPrompt, unblockedMessage } from '../dispatch/unblocked.mjs';
 import { standingLine } from '../dispatch/deliveries.mjs';
 import { promptFor } from '../scripts/lib/dispatch-prompt.mjs';
 import { DEPENDABOT, UNATTENDED } from '../dispatch/webhook/fire.mjs';
@@ -71,7 +71,7 @@ describe('fitness: a repo without the file, or with a file that fails the schema
  * A fake GitHub over fetch: every path under a repo but `repo` fails and is
  * recorded; the rest answer as an empty repo with one ready ticket.
  */
-const fakeGitHub = (repo: string, file: string) => {
+const fakeGitHub = (repo: string, file: string, routes: Record<string, unknown> = {}) => {
   const strays: string[] = [];
   const seen: string[] = [];
   const fetch = async (url: string, init?: RequestInit) => {
@@ -85,6 +85,7 @@ const fakeGitHub = (repo: string, file: string) => {
     }
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
     const rest = pathname.slice(`/repos/${repo}`.length);
+    if (method === 'GET' && rest in routes) return json(routes[rest]);
     if (rest === '/contents/.github/dispatch.json') return json({ type: 'file', encoding: 'base64', content: Buffer.from(file).toString('base64') });
     if (rest === '/issues' && method === 'GET') return json([{ number: 2, title: 'Issue 2', state: 'open', created_at: '2026-08-01T00:00:00Z', labels: JSON.parse(file).labels.ready.map((name: string) => ({ name })) }]);
     if (rest === '/issues/2' && method === 'GET') return json({ number: 2, title: 'Issue 2', state: 'open', body: '', labels: JSON.parse(file).labels.ready.map((name: string) => ({ name })) });
@@ -154,6 +155,32 @@ describe('fitness: a turn calls GitHub only for its fire\'s repo (dispatcher-rep
       launch: async ({ repo }: { repo: string }) => { launched.push(repo); return { status: 0, output: 'https://claude.ai/code/session_01ABC' }; },
     } as never);
     assert.deepEqual(github.strays, []);
+    assert.deepEqual(launched, [ASKME]);
+  });
+
+  // A close can block a ticket in another repo: the closing turn reads only
+  // its own repo and queues that ticket's fire for its repo's own turn.
+  test('a close that blocks another repo\'s ticket calls nothing under that repo, and queues its fire', async () => {
+    const github = fakeGitHub(FACTORY, FACTORY_FILE, {
+      '/issues/41/dependencies/blocking': [{ number: 2, state: 'open', title: 'Issue 2', repository_url: `https://api.github.com/repos/${ASKME}` }],
+      '/issues/41': { number: 41, title: 'The parser', state: 'closed', state_reason: 'completed' },
+    });
+    const queued: Array<{ fire: Record<string, unknown> }> = [];
+    await run({ kind: 'schedule', repo: FACTORY, freed: 41 }, { ...depsOver(github.fetch), enqueue: async (message: { fire: Record<string, unknown> }) => { queued.push(message); return 'm'; } } as never);
+    assert.deepEqual(github.strays, []);
+    assert.ok(github.seen.includes(`GET /repos/${FACTORY}/issues/41/dependencies/blocking`), github.seen.join('; '));
+    assert.deepEqual(queued.map((q) => [q.fire.kind, q.fire.repo, q.fire.issue]), [['unblocked', ASKME, 2]]);
+  });
+
+  test('an unblocked fire calls nothing under the blocker\'s repo', async () => {
+    const github = fakeGitHub(ASKME, ASKME_FILE, { '/issues/2/dependencies/blocked_by': [{ number: 41, state: 'closed', title: 'The parser', repository_url: `https://api.github.com/repos/${FACTORY}` }] });
+    const launched: string[] = [];
+    await run({ kind: 'unblocked', repo: ASKME, issue: 2, blocker: { repo: FACTORY, number: 41, title: 'The parser', reason: 'completed' }, pr: { number: 52, title: 'Parse it', url: `https://github.com/${FACTORY}/pull/52` } }, {
+      ...depsOver(github.fetch),
+      launch: async ({ repo }: { repo: string }) => { launched.push(repo); return { status: 0, output: 'https://claude.ai/code/session_01ABC' }; },
+    } as never);
+    assert.deepEqual(github.strays, []);
+    assert.ok(github.seen.includes(`GET /repos/${ASKME}/issues/2`), github.seen.join('; '));
     assert.deepEqual(launched, [ASKME]);
   });
 
@@ -275,15 +302,18 @@ const shipped = { kind: 'job', name: 'Publish', workflow: 'Deliver', branch: 'ma
 const plan = async (invocation: unknown, coverage: unknown, prompts: Record<string, string>) => planWorkflow({ invocation: invocation as never, coverage: coverage as never, prompts, workflows: FACTORY_WORKFLOWS });
 const note = async (invocation: unknown, coverage: unknown, prompts: Record<string, string>) => (await plan(invocation, coverage, prompts)).notes[0]!.text;
 const triage = async (invocation: unknown, coverage: unknown, prompts: Record<string, string>) => (await plan(invocation, coverage, prompts)).triage!.prompt;
-const ticket = (number: number) => ({ number, title: `Ticket ${number}`, state: 'open', body: '', labels: [], pull: false });
+const UNBLOCKED = { kind: 'unblocked' as const, repo: FACTORY, issue: 7, blocker: { repo: ASKME, number: 41, title: 'The parser', reason: 'completed' }, pr: { number: 52, title: 'Parse it', url: 'https://github.com/t-d-d/askme-mcp/pull/52' } };
+const CLOSE_FACTS = ['t-d-d/askme-mcp#41 (The parser) closed as completed', 'PR t-d-d/askme-mcp#52 (Parse it', 'It blocked #7.'];
 const RUN_FACTS = [RUN_URL, 'backend'];
 
 /** Every kind: the message built with `prompts`, and the facts it carries whatever the prompt. */
 const KINDS: Record<string, { build: (prompts: Record<string, string>) => Promise<string> | string, facts: string[] }> = {
   pickup: { build: (p) => promptFor(7, 'Title', FACTORY, 'claimed', p), facts: ["Pickup #7 'Title'"] },
   signOff: { build: (p) => standingLine([], { repo: FACTORY, closing: true, prompts: p }), facts: ['No other open PR or issue in acme/factory names this session.'] },
-  mergeHandoff: { build: (p) => String(handoffText([{ closed: 5, waiting: [ticket(6)], freed: [ticket(8)] }], FACTORY, p, JSON.parse(FACTORY_FILE).labels)), facts: ['#5 blocked:', '#6: Ticket 6', '#8: Ticket 8'] },
-  mergeHandoffUnread: { build: (p) => unreadText('HTTP 502', p), facts: ['HTTP 502'] },
+  unblockedReady: { build: (p) => readyPrompt(promptFor(7, 'Title', FACTORY, 'claimed'), UNBLOCKED, p), facts: ["Pickup #7 'Title'", ...CLOSE_FACTS] },
+  unblockedSpec: { build: (p) => specPrompt({ fire: UNBLOCKED, title: 'Title', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: p }), facts: ["Spec #7 'Title'", ...CLOSE_FACTS, UNATTENDED] },
+  unblockedClaimed: { build: (p) => unblockedMessage(UNBLOCKED, p), facts: CLOSE_FACTS },
+  unblockedNotPlanned: { build: (p) => notPlannedComment({ ...UNBLOCKED, blocker: { ...UNBLOCKED.blocker, reason: 'not_planned' } }, p), facts: ['t-d-d/askme-mcp#41 (`The parser`) closed as not planned'] },
   redScheduledRun: { build: (p) => redRunPrompt('A scheduled run of Emulator on main ended failure.', p), facts: ['A scheduled run of Emulator on main ended failure.', UNATTENDED] },
   ciBreaker: { build: (p) => note(red('CI'), coverageOf([pull(1)]), p), facts: [...RUN_FACTS, 'PR #1: PR 1'] },
   ciTriage: { build: (p) => triage(red('CI'), coverageOf([pull(1), pull(2)]), p), facts: [...RUN_FACTS, 'PR #1: PR 1', 'PR #2: PR 2', UNATTENDED] },
@@ -337,8 +367,10 @@ const FACTORY_LOGS = "Read the failed jobs' logs (the ops-tooling skill says how
 const FACTORY_TEXTS: Record<string, [Record<string, string | number>, string]> = {
   pickup: [{ issue: 7, repo: FACTORY, claim: 'workflow: under development' }, 'Implement GitHub issue #7 in acme/factory through to a reviewable PR.\nThe dispatcher claimed #7 for this session: it is `workflow: under development` for you, so proceed on it.\nUnattended session: push and raise the PR without asking, `Closes #7`.'],
   signOff: [{}, 'Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make `Signing off.` the last line of your reply, and the dispatcher archives the session. Above it, write any `Lesson:` lines CLAUDE.md § Lessons calls for; usually there are none.'],
-  mergeHandoff: [{}, "For each ticket waiting on you (CLAUDE.md § After your PR merges): rewrite what waited from the code that merged, drop the `Spec waits until` line and mark it `workflow: ready for development`. A decision only a person can make goes into its body as a question instead, and it stays unlabelled.\nFor each started or ready one: if the merge contradicts its spec, fix its body. If it is `workflow: under development`, message its session too (the dispatcher's marker comment on the ticket names it)."],
-  mergeHandoffUnread: [{}, 'Read them yourself (`gh-deps list-blocking <n>`, the issue-dependencies skill) and follow CLAUDE.md § After your PR merges.'],
+  unblockedReady: [{}, "Before you build, check the spec against what merged, and fix the ticket's body where the merge changed what it builds on."],
+  unblockedSpec: [{ issue: 7, ready: '`workflow: ready for development` and `mode: afk`', claim: 'workflow: under development' }, "Rewrite #7's spec from what merged (CLAUDE.md § After your PR merges). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it `workflow: ready for development` and `mode: afk` and stop, or add `workflow: under development` to it first and take it through to a PR, `Closes #7`."],
+  unblockedClaimed: [{ issue: 7 }, 'Check your work on #7 against what merged, and change it where the merge calls for that.'],
+  unblockedNotPlanned: [{}, 'Its work will not land as planned. Decide whether this ticket still stands, and what it needs instead.'],
   redScheduledRun: [{}, `${FACTORY_LOGS} Read the docs/constraints/ files that name the workflow file before re-running it: some tiers limit how soon one run may follow another. First search the open issues and PRs for it: if one already covers this failure, comment this run on it and stop. If the fix is in the repo, push it on a new branch from origin/main with a new PR. If it is not (a lapsed credential, a third-party outage), raise an issue saying what failed and what it needs.`],
   ciBreaker: [{ pr: 9 }, `${FACTORY_LOGS} If the cause is in your change, push the fix on a new branch from origin/main with a new PR: PR #9 is merged and its branch is done. If it is not, comment on PR #9 with what you found instead.`],
   ciTriage: [{}, `${FACTORY_LOGS} Work out which merge caused it, and push the fix on a new branch from origin/main with a new PR naming that PR. Then comment on the culprit PR with what broke and a link to your fix.`],

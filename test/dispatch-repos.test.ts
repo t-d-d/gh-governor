@@ -80,13 +80,31 @@ describe('readConfig', () => {
     assert.deepEqual(read.config.labels, { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [], exclude: ['type: prd'] });
   });
 
-  test('the red scheduled run and the merge hand-off are generic switches; the lessons ask is gone', () => {
-    const read = readConfig(JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: true, redScheduledRun: true, mergeHandoff: true } }));
+  test('the red scheduled run and unblocked are generic switches; the lessons ask is gone', () => {
+    const read = readConfig(JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: true, redScheduledRun: true, unblocked: true } }));
     assert.ok(read.ok, JSON.stringify(read));
     assert.equal(read.config.features.redScheduledRun, true);
-    assert.equal(read.config.features.mergeHandoff, true);
+    assert.equal(read.config.features.unblocked, true);
     const lessons = readConfig(JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: true, lessonsAsk: true } }));
     assert.ok(!lessons.ok && /lessonsAsk/.test(lessons.fault), JSON.stringify(lessons));
+  });
+
+  // `unblocked` took over the merge hand-off's work, and a served file
+  // written before it must stay valid, or the repo stops being served.
+  test('a file that still sets mergeHandoff reads it as unblocked, and stays valid', () => {
+    for (const [mergeHandoff, unblocked, want] of [[true, undefined, true], [false, undefined, false], [true, false, false], [false, true, true]] as const) {
+      const read = readConfig(JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: true, mergeHandoff, ...(unblocked === undefined ? {} : { unblocked }) } }));
+      assert.ok(read.ok, JSON.stringify(read));
+      assert.equal(read.config.features.unblocked, want, `${mergeHandoff} ${unblocked}`);
+      assert.equal('mergeHandoff' in read.config.features, false);
+    }
+    assert.ok(!GENERIC_SWITCHES.includes('mergeHandoff'));
+  });
+
+  test('a file that still sets the hand-off prompts stays valid, and they are dropped unread', async () => {
+    const read = readConfig(JSON.stringify({ ...JSON.parse(ASKME_FILE), prompts: { mergeHandoff: 'Old steps.', mergeHandoffUnread: { file: 'gone.md' } } }));
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.config.prompts, {});
   });
 
   // CI, deploy, branch-run, conflicts and deployed-label
@@ -244,6 +262,13 @@ describe('switchOf', () => {
     assert.equal(switchOf({ kind: 'message', session: 'session_1', text: 't' }), 'prMessages');
     assert.equal(switchOf({ kind: 'message', byBranch: true, on: 3, text: 't' }), 'prMessages');
     assert.equal(switchOf({ kind: 'message', session: 'session_1', text: 't', subscribed: true }), 'subscribeMessages');
+  });
+
+  // A close starts nothing: it queues a fire per ticket it blocked, which
+  // the ticket's own repo's switches govern, by the ticket's state.
+  test('a close and an unblocked fire need no one switch: the ticket\'s state picks it', () => {
+    assert.equal(switchOf({ kind: 'schedule', freed: 3 }), null);
+    assert.equal(switchOf({ kind: 'unblocked', issue: 3, blocker: { repo: 'acme/tools', number: 4, title: 't' } }), null);
   });
 
   test('a red run of the repo\'s CI needs CI messages; a red deploy, like a green shipping job, deploy messages', () => {

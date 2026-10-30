@@ -416,20 +416,51 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
-     * The native `blocking` relationships, the reverse of `blockers`, this
-     * repository's only: a dependency can cross repositories, and the caller
-     * plans by number, so another repo's #12 would read as this one's.
+     * The native `blocking` relationships, the reverse of `blockers`, each
+     * naming its repo: a dependency can cross repositories, so a number
+     * alone would read another repo's #12 as this one's. A row naming no
+     * repository is this one's.
      *
      * @param {number} number
-     * @returns {Promise<BlockerRow[]>}
+     * @returns {Promise<Array<BlockerRow & { repo: string }>>}
      */
     blocking: async (number) => {
       /** @type {any[]} */
       const rows = await call('GET', `/repos/${repo}/issues/${number}/dependencies/blocking?per_page=100`);
-      const here = `/repos/${repo}`.toLowerCase();
-      return rows
-        .filter((row) => typeof row.repository_url !== 'string' || row.repository_url.toLowerCase().endsWith(here))
-        .map((row) => ({ number: row.number, state: row.state, title: row.title }));
+      return rows.map((row) => ({
+        number: row.number,
+        state: row.state,
+        title: row.title,
+        repo: /\/repos\/([^/]+\/[^/]+)$/.exec(String(row.repository_url ?? ''))?.[1] ?? repo,
+      }));
+    },
+
+    /**
+     * How an issue closed: its title, GitHub's `state_reason` (null where
+     * it gave none), and the PR whose merge closed it: the merged PR whose
+     * merge commit is the one its last `closed` event names. A close by
+     * hand, by a commit pushed straight to the branch (which an older PR
+     * may also hold), or by a commit in another repository names no PR,
+     * and nothing outside this repository is read.
+     *
+     * @param {number} number
+     * @returns {Promise<{ title: string, reason: string | null, pr: { number: number, title: string, url: string } | null }>}
+     */
+    closure: async (number) => {
+      const issue = await call('GET', `/repos/${repo}/issues/${number}`);
+      const events = await allPages(call, `/repos/${repo}/issues/${number}/events`, {});
+      const closed = events.filter((e) => e.event === 'closed').at(-1);
+      const sha = closed?.commit_id;
+      const here = typeof closed?.commit_url !== 'string' || closed.commit_url.toLowerCase().startsWith(`https://api.github.com/repos/${repo}/commits/`.toLowerCase());
+      /** @type {{ number: number, title: string, url: string } | null} */
+      let pr = null;
+      if (typeof sha === 'string' && /^[0-9a-f]{40}$/.test(sha) && here) {
+        /** @type {any[]} */
+        const pulls = await call('GET', `/repos/${repo}/commits/${sha}/pulls?per_page=100`);
+        const row = pulls.find((p) => p.merged_at && p.merge_commit_sha === sha);
+        if (row !== undefined) pr = { number: row.number, title: row.title ?? '', url: row.html_url };
+      }
+      return { title: issue.title ?? '', reason: typeof issue.state_reason === 'string' ? issue.state_reason : null, pr };
     },
 
     /** Post a comment. @param {number} number @param {string} body */

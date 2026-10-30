@@ -31,23 +31,49 @@
 
 import { z } from 'zod';
 import { COUNTS, HOOK_NAME, WORKFLOW_PATH } from './webhook/fire.mjs';
-import { PROMPTS, unknownFills } from './prompts.mjs';
+import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
 
 /** Where the file lives, on the repo's default branch. */
 export const CONFIG_PATH = '.github/dispatch.json';
 
 /**
  * The switches any served repo may turn on: pickup, summons, PR and
- * subscribe messages, the red scheduled run, the merge hand-off, CI and
+ * subscribe messages, the red scheduled run, what a blocker's close does to
+ * a ticket that is not ready to pick up (`unblocked`, dispatch/unblocked.mjs), CI and
  * deploy messages, branch-run messages, the conflicts check,
  * deployed-label job fires, the PR review, the heartbeat, periodics and
  * hooks. Every switch there is.
  */
 export const GENERIC_SWITCHES = Object.freeze([
-  'pickup', 'summons', 'prMessages', 'subscribeMessages', 'redScheduledRun', 'mergeHandoff',
+  'pickup', 'summons', 'prMessages', 'subscribeMessages', 'redScheduledRun', 'unblocked',
   'ciMessages', 'deployMessages', 'branchRunMessages', 'conflicts', 'deployedLabels', 'prReview',
   'heartbeat', 'periodics', 'hooks',
 ]);
+
+/**
+ * Switches a served file may still set, each read as the switch that took
+ * its work over: the schema is strict, and a file the change made invalid
+ * would stop its repo being served. The merge hand-off's work is
+ * `unblocked`'s; a file setting both reads `unblocked`.
+ */
+export const RETIRED_SWITCHES = Object.freeze({ mergeHandoff: 'unblocked' });
+
+/**
+ * The `features` section: every generic switch, and the retired ones read
+ * as theirs.
+ */
+const featuresSchema = z.strictObject({
+  ...Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, z.boolean().optional()])),
+  ...Object.fromEntries(Object.entries(RETIRED_SWITCHES).map(([old, now]) => [old, z.boolean().optional().meta({ deprecated: true, description: `Retired: read as ${now}.` })])),
+}).transform((features) => {
+  /** @type {Record<string, boolean | undefined>} */
+  const read = { ...features };
+  for (const [old, now] of Object.entries(RETIRED_SWITCHES)) {
+    if (read[now] === undefined && read[old] !== undefined) read[now] = read[old];
+    delete read[old];
+  }
+  return read;
+});
 
 // GitHub's issues query splits its `labels` on commas, so a ready label
 // holding one would match nothing.
@@ -224,8 +250,13 @@ export const configSchema = z.strictObject({
     // A ready ticket carries every ready label, so excluding one would
     // keep every ticket out.
     .refine((l) => !l.exclude.some((e) => l.ready.includes(e)), 'exclude cannot name a ready label'),
-  features: z.strictObject(Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, z.boolean().optional()]))),
-  prompts: z.strictObject(Object.fromEntries(Object.keys(PROMPTS).map((kind) => [kind, prompt(kind).optional()]))).default({}),
+  features: featuresSchema,
+  // A retired prompt is still valid, and dropped unread: governor sends
+  // no message of its kind, so its file is never read.
+  prompts: z.strictObject({
+    ...Object.fromEntries(Object.keys(PROMPTS).map((kind) => [kind, prompt(kind).optional()])),
+    ...Object.fromEntries(RETIRED_PROMPTS.map((kind) => [kind, z.union([z.string(), promptFile]).optional().meta({ deprecated: true, description: 'Retired: governor sends no message of this kind, so it is never read.' })])),
+  }).transform((prompts) => Object.fromEntries(Object.entries(prompts).filter(([kind]) => !RETIRED_PROMPTS.includes(kind)))).default({}),
   workflows: workflowsSchema,
   review: reviewSchema.optional(),
   heartbeat: heartbeatSchema.optional(),
@@ -436,6 +467,9 @@ export const turnsOn = (config, name) => config.features[name] === true;
  * dispatch is a summons unless it is the red scheduled run's. A red run of
  * the repo's CI needs CI messages; a red deploy, like a green shipping job,
  * deploy messages. The bare schedule fire's heartbeat is read on its own.
+ * A close needs none: it starts nothing, and queues an `unblocked` fire per
+ * ticket it blocked, whose switch the ticket's own state picks in its own
+ * repo, `pickup` or `unblocked` (dispatch/unblocked.mjs).
  *
  * @param {import('./webhook/fire.mjs').Fire} fire
  * @param {Workflows} [workflows] The repo's config file's.
@@ -443,7 +477,7 @@ export const turnsOn = (config, name) => config.features[name] === true;
  */
 export const switchOf = (fire, workflows = NO_WORKFLOWS) => {
   switch (fire.kind) {
-    case 'schedule': return 'pickup';
+    case 'schedule': return fire.freed === undefined ? 'pickup' : null;
     case 'dispatch': return fire.scheduled === undefined ? 'summons' : 'redScheduledRun';
     case 'message': return fire.subscribed === true ? 'subscribeMessages' : 'prMessages';
     case 'workflow': return isCi(fire, workflows) ? 'ciMessages' : 'deployMessages';
