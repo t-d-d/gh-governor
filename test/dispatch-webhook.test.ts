@@ -155,9 +155,9 @@ describe('routeEvent — the selection', () => {
     assert.match(decision.reason, /#717 labelled workflow: ready for development/);
   });
 
-  // A close frees what it blocked, and nothing else: the fire names the
-  // closed issue, and the task dispatches only what that issue blocked. A
-  // fire that ran the whole selection on every close cascaded, every
+  // A close names the closed issue, and the task queues an `unblocked`
+  // fire for each open ticket that issue blocked (dispatch/unblocked.mjs).
+  // A fire that ran the whole selection on every close cascaded, every
   // session that finished starting two more.
   test('an issue closed is a schedule fire naming it as freed, and nothing wider', () => {
     const decision = route({ event: 'issues', payload: issuesEvent('closed'), owners: OWNERS });
@@ -795,9 +795,7 @@ describe('routeEvent — subscribers', () => {
     assert.ok(abandoned.sent.every((m) => m.closing === true));
   });
 
-  // The owner's message of a merge into main is marked, so the task
-  // lists the tickets the PR's closed issues blocked and can start a fresh
-  // session for a waiting hand-off.
+  // The owner's message of a merge into main is marked merged.
   test('a PR merged into main marks its owner\'s message merged, and no subscriber\'s; a merge elsewhere or a close marks none', () => {
     const closedWith = (over: Record<string, unknown>) => pullRequestEvent('closed', { pull_request: { ...pullRequestEvent('closed').pull_request, ...over } });
     const merged = messages('pull_request', closedWith({ merged: true, base: { ref: 'main' } }));
@@ -1720,12 +1718,12 @@ describe('routeEvent — every served repo', () => {
     assert.deepEqual(onMain.map((f) => f.fire.kind), ['branch-run'], 'main is a branch like any other in a repo whose default is trunk');
   });
 
-  test('a merge in another repo still tells the PR\'s sessions; its hand-off is the turn\'s to refuse', () => {
+  test('a merge in another repo still tells the PR\'s sessions', () => {
     const { fires } = firesOf('pull_request', { action: 'closed', pull_request: { ...pr, merged: true, merge_commit_sha: SHA }, sender: member });
     assert.deepEqual(fires.map((f) => (f.fire as { session: string }).session).sort(), [OWNER, WATCHER].sort());
   });
 
-  // The red scheduled run and the merge hand-off are generic switches:
+  // The red scheduled run is a generic switch:
   // the receiver queues them in any served repo, on its default
   // branch, and the turn applies the repo's file.
   test('a red scheduled run on another repo\'s default branch queues a dispatch fire naming it', () => {

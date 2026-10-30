@@ -223,12 +223,13 @@ describe('infra/governor.cfn.yml — the grants', () => {
   });
 
   // The sign-off sweep waits for replies only while no fire is queued
-  // (scripts/lib/session-signoff.mjs): it counts the lane, and takes nothing off it.
-  test('the task counts the fire lane and does nothing else to it', () => {
+  // (scripts/lib/session-signoff.mjs): it counts the lane. A close queues
+  // an `unblocked` fire per ticket it blocked (dispatch/unblocked.mjs). It
+  // takes nothing off the lane.
+  test('the task counts the fire lane and sends to it, and does nothing else to it', () => {
     const sqs = taskStatements.filter((s) => actionsOf(s).some((a) => a.startsWith('sqs:')));
-    assert.equal(sqs.length, 1);
-    assert.deepEqual(actionsOf(sqs[0]!), ['sqs:GetQueueAttributes']);
-    assert.deepEqual(resourcesOf(sqs[0]!), ['${DispatchFiresQueue.Arn}']);
+    assert.deepEqual(sqs.flatMap(actionsOf).sort(), ['sqs:GetQueueAttributes', 'sqs:SendMessage']);
+    for (const statement of sqs) assert.deepEqual(resourcesOf(statement), ['${DispatchFiresQueue.Arn}']);
     const container = template.Resources.DispatchTaskDefinition?.Properties?.ContainerDefinitions?.[0];
     const env = new Map<string, unknown>((container?.Environment ?? []).map((e: { Name: string; Value: unknown }) => [e.Name, e.Value]));
     assert.equal(env.get('DISPATCH_FIRES_QUEUE_URL'), '${DispatchFiresQueue}');
@@ -237,7 +238,7 @@ describe('infra/governor.cfn.yml — the grants', () => {
   test('the task reads its three secrets, writes the login alone, and nothing else', () => {
     assert.deepEqual(
       [...new Set(taskStatements.flatMap(actionsOf))].sort(),
-      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'secretsmanager:GetSecretValue', 'secretsmanager:PutSecretValue', 'sqs:GetQueueAttributes'],
+      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'secretsmanager:GetSecretValue', 'secretsmanager:PutSecretValue', 'sqs:GetQueueAttributes', 'sqs:SendMessage'],
     );
     const puts = taskStatements.filter((s) => actionsOf(s).includes('secretsmanager:PutSecretValue'));
     assert.equal(puts.length, 1);

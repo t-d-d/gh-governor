@@ -533,7 +533,7 @@ describe('the config file\'s hooks', () => {
     assert.ok(read.ok);
     assert.equal(read.config.features.hooks, true);
     assert.equal(read.config.hooks.length, 1);
-    assert.ok(configSchema.shape.features.shape.hooks);
+    assert.ok(configSchema.shape.features.in.shape.hooks);
   });
 
   test('with the switch on, the file lists at least one hook', () => {

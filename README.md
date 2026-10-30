@@ -74,7 +74,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.
 | `labels.ready` | yes | Every label a ready ticket carries. |
 | `labels.claim` | yes | The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up. |
 | `labels.claimRemoves` | no | The ready labels the claim takes off, and a failed launch puts back. Default none. |
-| `labels.exclude` | no | Labels that keep a ticket out: a ticket carrying any of them is never picked up. It cannot name a ready label. Default `["type: prd"]`. |
+| `labels.exclude` | no | Labels that keep a ticket out: a ticket carrying any of them is never picked up, and a blocker's close starts no session for it. It cannot name a ready label. Default `["type: prd"]`. A hold label, one that marks a ticket as needing a person or staying not ready (`mode: human`, say), belongs here, or a blocker's close starts a session to rewrite that ticket's spec. |
 | `features` | yes | The switches below, each `true` or `false`. A switch left out is off. |
 | `workflows` | no | What the repo's workflows are to governor: `ci`, `triage` and `tags`. |
 | `review` | when `prReview` is on | The PR review's settings. |
@@ -88,12 +88,12 @@ The switches in `features`:
 
 | Switch | What it turns on |
 |---|---|
-| `pickup` | A session per ready ticket, picked up on its label, on the close that frees it, and on the sweep at the interval `pickup.sweepHours` sets. |
+| `pickup` | A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `pickup.sweepHours` sets. |
 | `summons` | A session per `@claude` remark, and a dispatch started by hand. |
 | `prMessages` | Messages into the session a PR names, or the local session holding its branch. |
 | `subscribeMessages` | Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. |
 | `redScheduledRun` | A fresh session on a scheduled run on the default branch that went red. |
-| `mergeHandoff` | A merge's message lists the open tickets that the PR's closed issues blocked. |
+| `unblocked` | What a blocker's close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket's session, and a session to rewrite a not-ready ticket's spec from what merged. A file that still sets the older `mergeHandoff` reads as this. |
 | `ciMessages` | A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`. |
 | `deployMessages` | A shipping job, or a red deploy, tells the sessions of the merges it shipped. |
 | `branchRunMessages` | A run dispatched on a branch tells the session that wrote its commit. |
@@ -244,7 +244,7 @@ A label added to an issue starts a selection at once only if the deployment's `S
 
 ### Pickup's sweep interval
 
-A ready label listed in `SelectLabels`, and a close that frees tickets, pick a ticket up at once. The sweep catches what those miss: a lost event, a close that freed more tickets than the cap, a label `SelectLabels` does not list. It runs at the two-hourly fire, once `pickup.sweepHours` have passed since the repo's last sweep, and every two hours when the file sets none. A repo that trusts its events can sweep less often:
+A ready label listed in `SelectLabels`, and the close of a ready ticket's last open blocker, pick a ticket up at once. The sweep catches what those miss: a lost event, a label `SelectLabels` does not list. It runs at the two-hourly fire, once `pickup.sweepHours` have passed since the repo's last sweep, and every two hours when the file sets none. A repo that trusts its events can sweep less often:
 
 ```json
 "pickup": { "sweepHours": 6 }

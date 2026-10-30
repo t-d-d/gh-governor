@@ -41,6 +41,14 @@ const dispatched = (...outcomes: string[]) => ({
 });
 
 describe('exitCodeFor', () => {
+  // An unblocked fire for a claimed ticket: the message to its session is the turn.
+  test('an unblocked message that failed is a fault; one a gone session refused, or a close that queued its fires, is not', () => {
+    assert.equal(exitCodeFor({ kind: 'unblocked', messaged: { ok: true, refused: false }, dispatched: [] }), 0);
+    assert.equal(exitCodeFor({ kind: 'unblocked', messaged: { ok: false, refused: true }, dispatched: [] }), 0);
+    assert.equal(exitCodeFor({ kind: 'unblocked', messaged: { ok: false, refused: false }, dispatched: [] }), 1);
+    assert.equal(exitCodeFor({ kind: 'schedule', queued: ['acme/factory#7'], passedOver: [] } as never), 0);
+  });
+
   test('a message is the CLI\'s answer: 0 delivered, 1 refused', () => {
     assert.equal(exitCodeFor({ kind: 'message', ok: true, sessionUrl: 'https://claude.ai/code/session_01ABC', error: null, loginStored: false }), 0);
     assert.equal(exitCodeFor({ kind: 'message', ok: false, sessionUrl: null, error: 'archived', loginStored: false }), 1);

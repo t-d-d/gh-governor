@@ -74,7 +74,7 @@
         "redScheduledRun": {
           "type": "boolean"
         },
-        "mergeHandoff": {
+        "unblocked": {
           "type": "boolean"
         },
         "ciMessages": {
@@ -103,12 +103,16 @@
         },
         "hooks": {
           "type": "boolean"
+        },
+        "mergeHandoff": {
+          "deprecated": true,
+          "description": "Retired: read as unblocked.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
     },
     "prompts": {
-      "default": {},
       "type": "object",
       "properties": {
         "pickup": {
@@ -153,7 +157,7 @@
             }
           ]
         },
-        "mergeHandoff": {
+        "unblockedReady": {
           "anyOf": [
             {
               "type": "string",
@@ -174,7 +178,49 @@
             }
           ]
         },
-        "mergeHandoffUnread": {
+        "unblockedSpec": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "unblockedClaimed": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "unblockedNotPlanned": {
           "anyOf": [
             {
               "type": "string",
@@ -410,6 +456,50 @@
             {
               "type": "string",
               "minLength": 1
+            },
+            {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "mergeHandoff": {
+          "deprecated": true,
+          "description": "Retired: governor sends no message of this kind, so it is never read.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "mergeHandoffUnread": {
+          "deprecated": true,
+          "description": "Retired: governor sends no message of this kind, so it is never read.",
+          "anyOf": [
+            {
+              "type": "string"
             },
             {
               "type": "object",

@@ -114,9 +114,8 @@ describe('a targeted schedule fire', () => {
 });
 
 /**
- * A close frees what it blocked: the fire names the closed issue, and
- * the turn plans only the issues it directly blocked, each through the
- * selection's own checks, so one still blocked by another stays put.
+ * A close names the closed issue: its turn queues an `unblocked` fire for
+ * each open ticket the issue directly blocked (dispatch/unblocked.mjs).
  */
 describe('a freed schedule fire', () => {
   test('parseFire keeps the closed issue a schedule fire names as freed, and refuses a bad one', () => {
@@ -124,6 +123,39 @@ describe('a freed schedule fire', () => {
     assert.throws(() => parseFire({ kind: 'schedule', freed: 'x' }), /freed/);
     assert.throws(() => parseFire({ kind: 'schedule', freed: -1 }), /freed/);
     assert.throws(() => parseFire({ kind: 'schedule', freed: 1, issue: 2 }), /both/);
+  });
+});
+
+/**
+ * A blocker closed: the closing turn queues one `unblocked` fire for each
+ * open ticket it blocked, in the ticket's own repo, carrying the blocker and
+ * the PR that closed it, and no body.
+ */
+describe('an unblocked fire', () => {
+  const blocker = { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' };
+  const pr = { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' };
+
+  test('parseFire reads back the ticket, the blocker and the PR', () => {
+    assert.deepEqual(parseNamed({ kind: 'unblocked', repo: 'acme/factory', issue: 7, blocker, pr }), { kind: 'unblocked', repo: 'acme/factory', issue: 7, blocker, pr });
+    assert.deepEqual(parseNamed({ kind: 'unblocked', repo: 'acme/factory', issue: 7, blocker: { ...blocker, reason: undefined } }), { kind: 'unblocked', repo: 'acme/factory', issue: 7, blocker: { repo: 'acme/tools', number: 41, title: 'The parser' } });
+  });
+
+  test('parseFire refuses one with no repo, ticket or blocker, or a malformed one', () => {
+    assert.throws(() => parseNamed({ kind: 'unblocked', issue: 7, blocker }), /repo/);
+    assert.throws(() => parseNamed({ kind: 'unblocked', repo: 'acme/factory', blocker }), /issue/);
+    assert.throws(() => parseNamed({ kind: 'unblocked', repo: 'acme/factory', issue: 7 }), /blocker/);
+    assert.throws(() => parseNamed({ kind: 'unblocked', repo: 'acme/factory', issue: 7, blocker: { ...blocker, repo: 'nope' } }), /blocker/);
+    assert.throws(() => parseNamed({ kind: 'unblocked', repo: 'acme/factory', issue: 7, blocker: { ...blocker, number: 0 } }), /blocker/);
+    assert.throws(() => parseNamed({ kind: 'unblocked', repo: 'acme/factory', issue: 7, blocker: { ...blocker, reason: 'not planned\n' } }), /reason/);
+    assert.throws(() => parseNamed({ kind: 'unblocked', repo: 'acme/factory', issue: 7, blocker, pr: { ...pr, url: 'http://evil' } }), /pr/);
+    assert.throws(() => parseNamed({ kind: 'unblocked', repo: 'acme/factory', issue: 7, blocker, pr: { ...pr, number: -1 } }), /pr/);
+  });
+
+  test('the builder puts a title on one line and cuts it short, so a fire stays small', () => {
+    const long = build.unblocked({ issue: 7, blocker: { ...blocker, title: `A\nB ${'x'.repeat(1000)}` }, pr: { ...pr, title: 'y'.repeat(1000) } });
+    assert.ok(long.blocker.title.length <= 200 && !long.blocker.title.includes('\n'), long.blocker.title);
+    assert.ok((long.pr?.title.length ?? 0) <= 200);
+    assert.deepEqual(parseNamed({ ...long, repo: 'acme/factory' }), { ...long, repo: 'acme/factory' });
   });
 });
 
@@ -386,6 +418,8 @@ describe('the builders', () => {
       build.review({}),
       build.review({ pr: 724, headSha: SHA }),
       build.conflicts({ pr: 793, sha: SHA, base: 'main' }),
+      build.unblocked({ issue: 7, blocker: { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'not_planned' } }),
+      build.unblocked({ issue: 7, blocker: { repo: 'acme/tools', number: 41, title: 'The parser', reason: undefined }, pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' } }),
     ];
     for (const fire of built) {
       assert.equal(JSON.stringify(fire).includes('undefined'), false);

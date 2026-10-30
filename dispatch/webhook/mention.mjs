@@ -97,7 +97,6 @@ export const defaultBranch = (payload) => (isBranch(payload?.repository?.default
  * What the fallback's prompt adds: the fresh session takes the PR over. The
  * turn points the PR body's footer at it (`relinkSession`); the session
  * does so itself where that rewrite failed, and keeps the link there.
- * dispatch/handoff.mjs's merge fallback says the same.
  */
 export const HANDOFF = 'The session that wrote this PR is gone; it is yours now. The dispatcher points the PR description\'s session link at you; if it still names another session, put your own link in its place, and keep it there, so later remarks reach you.';
 

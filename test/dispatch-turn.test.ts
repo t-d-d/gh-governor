@@ -21,7 +21,6 @@ import { RUNS_PER_PAGE } from '../scripts/lib/github-app.mjs';
 import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed, sessionUrlFrom } from '../dispatch/turn.mjs';
 import { DEFAULT_SESSION_NAME, DISPATCHER_LABEL, fromDispatcher, standingLine } from '../dispatch/deliveries.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
-import { handoffFallback, handoffText } from '../dispatch/handoff.mjs';
 import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { promptFor, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
@@ -94,7 +93,7 @@ const issue = (number: number) => ({
   labels: ['workflow: ready for development', 'mode: afk', 'type: bug'],
 });
 
-type Launch = { prompt: string; sessionName: string; model: string };
+type Launch = { prompt: string; sessionName: string; model: string; repo?: string; environment?: string };
 
 /** Every dependency, recording what it saw; each can be overridden. */
 const harness = (over: Record<string, unknown> = {}) => {
@@ -257,6 +256,8 @@ const harness = (over: Record<string, unknown> = {}) => {
     },
     // The fire lane: a fire waits on it unless a test says it is quiet.
     fires: { waiting: async () => 1 },
+    // A fire a turn queues on the lane: none unless a test says otherwise.
+    enqueue: async () => { throw new Error('this test queues no fire'); },
     hookTable: {
       publish: async (repo: string, hooks: Array<{ name: string; keyVersion: number; perHour: number }>, at: string) => {
         published.push({ repo, hooks, at });
@@ -889,71 +890,294 @@ describe('run — a schedule fire for one issue', () => {
 });
 
 /**
- * A close frees what it blocked. The turn dispatches the issues the closed
- * one directly blocked, each only if the selection would take it, and
- * nothing else; like the fire for one issue, it is not the sweep, so it
- * writes no heartbeat.
+ * A close queues one `unblocked` fire for each open ticket it blocked, in
+ * whichever repo the ticket is, for that repo's own turn to judge
+ * (dispatch/unblocked.mjs). The closing turn starts nothing, reads only its
+ * own repo, and is not held to DispatchCap; like the fire for one issue, it
+ * is not the sweep, so it writes no heartbeat.
  */
 describe('run — a schedule fire for a closed issue', () => {
-  const freeing = (blocking: Record<number, number[]>, blockers: Record<number, Array<{ number: number; state: string; title: string }>> = {}) => {
+  const PULL = { number: 52, title: 'Parse it', url: `https://github.com/${REPO}/pull/52` };
+  const closing = ({ blocking = [] as Array<{ repo: string; number: number; state?: string }>, reason = 'completed' as string | null, pr = PULL as typeof PULL | null, file = FACTORY_FILE, refuse = false } = {}) => {
     const asked: string[] = [];
+    const queued: Array<{ message: { fire: Record<string, unknown>; reason: string }; dedupId: string }> = [];
     const h = harness({
-      reader: () => ({
+      configFile: async (repo: string) => (repo === REPO ? file : null),
+      reader: (_t: string, _a: number, repo: string) => ({
         ...harness().deps.reader(''),
+        blocking: async (n: number) => {
+          asked.push(`${repo} blocking ${n}`);
+          return blocking.map((b) => ({ repo: b.repo, number: b.number, state: b.state ?? 'open', title: `Ticket ${b.number}` }));
+        },
+        closure: async (n: number) => {
+          asked.push(`${repo} closure ${n}`);
+          return { title: 'The parser', reason, pr };
+        },
+      }),
+      enqueue: async (message: { fire: Record<string, unknown>; reason: string }, dedupId: string) => {
+        if (refuse) throw new Error('SQS throttled');
+        queued.push({ message, dedupId });
+        return `m-${queued.length}`;
+      },
+    });
+    return { ...h, asked, queued };
+  };
+
+  test('queues one unblocked fire per open blocked ticket in a listed owner\'s repo, with the blocker and its PR, and starts nothing', async () => {
+    const h = closing({ blocking: [{ repo: REPO, number: 7 }, { repo: 't-d-d/askme', number: 9 }, { repo: 'stranger/repo', number: 3 }, { repo: REPO, number: 8, state: 'closed' }] });
+    const result = await run({ kind: 'schedule', freed: 41 }, h.deps as never) as Record<string, unknown>;
+    const blocker = { repo: REPO, number: 41, title: 'The parser', reason: 'completed' };
+    assert.deepEqual(h.queued.map((q) => q.message.fire), [
+      { kind: 'unblocked', repo: REPO, issue: 7, blocker, pr: PULL },
+      { kind: 'unblocked', repo: 't-d-d/askme', issue: 9, blocker, pr: PULL },
+    ]);
+    for (const { message } of h.queued) assert.deepEqual(parseFire(message.fire), message.fire);
+    assert.equal(new Set(h.queued.map((q) => q.dedupId)).size, 2);
+    assert.deepEqual(h.launches, []);
+    assert.deepEqual(h.comments, []);
+    assert.ok(!h.calls.includes('heartbeat'), 'a close is not the sweep');
+    assert.ok(h.asked.every((a) => a.startsWith(`${REPO} `)), h.asked.join('; '));
+    assert.deepEqual(result.queued, [`${REPO}#7`, 't-d-d/askme#9']);
+    const line = h.logged.find((l) => l.event === 'dispatch-unblocked');
+    assert.ok(line, JSON.stringify(h.logged));
+    assert.deepEqual(line.queued, [`${REPO}#7`, 't-d-d/askme#9']);
+  });
+
+  test('a close by hand carries no PR, and one with no reason none either', async () => {
+    const h = closing({ blocking: [{ repo: REPO, number: 7 }], reason: null, pr: null });
+    await run({ kind: 'schedule', freed: 41 }, h.deps as never);
+    assert.deepEqual(h.queued.map((q) => q.message.fire), [{ kind: 'unblocked', repo: REPO, issue: 7, blocker: { repo: REPO, number: 41, title: 'The parser' } }]);
+  });
+
+  // Each fire starts at most one session and queues nothing.
+  test('is not held to DispatchCap', async () => {
+    const h = closing({ blocking: Array.from({ length: 5 }, (_, i) => ({ repo: REPO, number: i + 1 })) });
+    await run({ kind: 'schedule', freed: 41 }, { ...h.deps, cap: 0 } as never);
+    assert.equal(h.queued.length, 5);
+  });
+
+  test('a retried close queues the same deduplication ids, so the lane takes nothing twice', async () => {
+    const once = closing({ blocking: [{ repo: REPO, number: 7 }, { repo: 't-d-d/askme', number: 9 }] });
+    await run({ kind: 'schedule', freed: 41 }, once.deps as never);
+    const again = closing({ blocking: [{ repo: 't-d-d/askme', number: 9 }, { repo: REPO, number: 7 }] });
+    await run({ kind: 'schedule', freed: 41 }, again.deps as never);
+    assert.deepEqual(again.queued.map((q) => q.dedupId).sort(), once.queued.map((q) => q.dedupId).sort());
+  });
+
+  test('its own repo\'s ticket is skipped where its file turns neither pickup nor unblocked on; another repo\'s is queued', async () => {
+    const off = JSON.parse(FACTORY_FILE);
+    off.features = { ...off.features, pickup: false, unblocked: false };
+    delete off.features.mergeHandoff;
+    const h = closing({ blocking: [{ repo: REPO, number: 7 }, { repo: 't-d-d/askme', number: 9 }], file: JSON.stringify(off) });
+    await run({ kind: 'schedule', freed: 41 }, h.deps as never);
+    assert.deepEqual(h.queued.map((q) => `${q.message.fire.repo}#${q.message.fire.issue}`), ['t-d-d/askme#9']);
+  });
+
+  test('a close that blocked no open ticket queues nothing, reads no closure, and logs why', async () => {
+    const h = closing({ blocking: [{ repo: REPO, number: 8, state: 'closed' }] });
+    await run({ kind: 'schedule', freed: 41 }, h.deps as never);
+    assert.deepEqual(h.queued, []);
+    assert.ok(!h.asked.some((a) => a.includes('closure')), h.asked.join('; '));
+    const line = h.logged.find((l) => l.event === 'dispatch-unblocked');
+    assert.match(String(line?.reason), /no open ticket/);
+  });
+
+  test('a fire the lane refuses fails the turn, so the close is tried again', async () => {
+    const h = closing({ blocking: [{ repo: REPO, number: 7 }], refuse: true });
+    await assert.rejects(run({ kind: 'schedule', freed: 41 }, h.deps as never), /throttled/);
+  });
+});
+
+/**
+ * An `unblocked` fire: a ticket's blocker closed, and the ticket's own repo's
+ * turn acts on the first row of the table that fits (dispatch/unblocked.mjs).
+ * Each row is pinned here, and each switch.
+ */
+describe('run — an unblocked fire', () => {
+  const READY = ['workflow: ready for development', 'mode: afk'];
+  const CLAIM = 'workflow: under development';
+  const OLD_MARKER = dispatchMarker({ at: new Date(NOW - 3 * 24 * 60 * 60 * 1000).toISOString(), sessionUrl: 'https://claude.ai/code/session_01WORK' });
+  const blocker = { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' };
+  const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' }, ...over });
+  const ticketTurn = ({ labels = READY, state = 'open', blockers = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, features = {} as Record<string, boolean> } = {}) => {
+    const asked: string[] = [];
+    const file = JSON.parse(FACTORY_FILE);
+    file.features = { ...file.features, ...features };
+    const h = harness({
+      configFile: async (repo: string) => (repo === REPO ? JSON.stringify(file) : null),
+      reader: (_t: string, _a: number, repo: string) => ({
+        ...harness().deps.reader(''),
+        ticket: async (n: number) => {
+          asked.push(`${repo} ticket ${n}`);
+          // A claim re-reads the ticket; once claimed, it reads claimed.
+          return { number: n, title: `Issue ${n}`, body: '', state, labels, pull: false };
+        },
+        blockers: async (n: number) => {
+          asked.push(`${repo} blockers ${n}`);
+          return blockers;
+        },
+        readyIssues: async () => (labels.every((l) => READY.includes(l)) && READY.every((l) => labels.includes(l)) ? [{ ...issue(7), labels }] : []),
+        comments: async (n: number) => {
+          asked.push(`${repo} comments ${n}`);
+          return comments;
+        },
         comment: async (n: number, body: string) => {
           h.comments.push({ issue: n, body });
         },
-        blocking: async (n: number) => {
-          asked.push(`blocking ${n}`);
-          return (blocking[n] ?? []).map((number) => ({ number, state: 'open', title: `Issue ${number}` }));
-        },
-        blockers: async (n: number) => {
-          asked.push(`blockers ${n}`);
-          return blockers[n] ?? [{ number: 4334, state: 'closed', title: 'Closed' }];
-        },
+        addLabels: async (n: number, on: string[]) => { h.calls.push(`label #${n} +${on.join(', ')}`); },
+        removeLabel: async (n: number, label: string) => { h.calls.push(`label #${n} -${label}`); },
+        ensureLabel: async (name: string) => { h.calls.push(`ensure ${name}`); },
       }),
     });
     return { ...h, asked };
   };
+  const labelCalls = (calls: string[]) => calls.filter((c) => c.startsWith('label '));
 
-  test('launches what the closed issue blocked, in the selector\'s order, and writes no heartbeat', async () => {
-    const { deps, launches, comments, calls, asked } = freeing({ 4334: [11, 7] });
-    const result = turn(await run({ kind: 'schedule', freed: 4334 }, deps as never));
-    assert.deepEqual(launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7'), sessionName(11, 'Issue 11')]);
-    assert.deepEqual(comments.map((c) => c.issue), [7, 11]);
-    assert.ok(asked.includes('blocking 4334'), asked.join('; '));
-    assert.ok(!launches.some((l) => l.sessionName === sessionName(9, 'Issue 9')), 'a ready issue the close did not free was started');
-    assert.ok(!calls.includes('heartbeat'), 'a freed fire is not the sweep');
-    assert.equal(result.heartbeat, false);
+  test('still blocked by another open issue: nothing', async () => {
+    const h = ticketTurn({ blockers: [{ number: 41, state: 'closed', title: 'x' }, { number: 43, state: 'open', title: 'y' }] });
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'blocked');
+    assert.deepEqual([h.launches, h.messages, h.comments, labelCalls(h.calls)], [[], [], [], []]);
   });
 
-  test('an issue still blocked by another stays put: the blocker check runs on each freed issue', async () => {
-    const { deps, launches, asked } = freeing({ 4334: [7, 9] }, { 7: [{ number: 4334, state: 'closed', title: 'Closed' }, { number: 4363, state: 'open', title: 'Still open' }] });
-    await run({ kind: 'schedule', freed: 4334 }, deps as never);
-    assert.deepEqual(launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9')]);
-    assert.ok(!asked.includes('blockers 4334'), 'the closed issue\'s own blockers decide nothing');
+  test('closed: nothing', async () => {
+    const h = ticketTurn({ state: 'closed' });
+    await run(fire(), h.deps as never);
+    assert.deepEqual([h.launches, h.messages, h.comments], [[], [], []]);
   });
 
-  test('a close that blocked nothing starts nothing, writes no heartbeat, and logs why', async () => {
-    const { deps, launches, calls, logged } = freeing({});
-    const result = turn(await run({ kind: 'schedule', freed: 4334 }, deps as never));
-    assert.deepEqual(launches, []);
-    assert.deepEqual(result.dispatched, []);
-    assert.ok(!calls.includes('heartbeat'));
-    const plan = logged.find((l) => l.event === 'dispatch-plan');
-    assert.ok(plan, JSON.stringify(logged));
-    assert.equal(plan.freed, 4334);
-    assert.match(String(plan.reason), /blocked nothing/);
+  test('its blocker closed as not planned: a comment naming the blocker, and nothing starts', async () => {
+    const h = ticketTurn();
+    const result = await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'not-planned');
+    assert.deepEqual(h.comments.map((c) => c.issue), [7]);
+    assert.match(h.comments[0]!.body, /acme\/tools#41 \(The parser\) closed as not planned/);
+    assert.deepEqual([h.launches, h.messages, labelCalls(h.calls)], [[], [], []]);
   });
 
-  test('a close whose freed issues are not selectable starts nothing and logs which it passed over', async () => {
-    const { deps, launches, calls, logged } = freeing({ 4334: [711] });
-    await run({ kind: 'schedule', freed: 4334 }, deps as never);
-    assert.deepEqual(launches, []);
-    assert.ok(!calls.includes('heartbeat'));
-    const plan = logged.find((l) => l.event === 'dispatch-plan');
-    assert.deepEqual(plan?.blocking, [711]);
-    assert.match(String(plan?.reason), /selectable/);
+  test('not planned, and claimed: the comment, and its session hears it too', async () => {
+    const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }] });
+    await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never);
+    assert.deepEqual(h.comments.map((c) => c.issue), [7]);
+    assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK']);
+    assert.match(h.messages[0]!.text, /closed as not planned/);
+    assert.deepEqual(h.launches, []);
+  });
+
+  test('carries an exclude label: nothing', async () => {
+    const h = ticketTurn({ labels: [...READY, 'type: prd'] });
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'excluded');
+    assert.deepEqual([h.launches, h.messages, h.comments, labelCalls(h.calls)], [[], [], [], []]);
+  });
+
+  test('claimed: the session its dispatch marker names hears the blocker closed and by which PR, however old the marker', async () => {
+    const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }] });
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'claimed');
+    assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK']);
+    assert.match(h.messages[0]!.text, /acme\/tools#41 \(The parser\) closed as completed, by PR #52/);
+    assert.match(h.messages[0]!.text, /against what merged/);
+    assert.deepEqual([h.launches, h.comments, labelCalls(h.calls)], [[], [], []]);
+  });
+
+  test('claimed, with no marker naming a session: nobody to tell, and it says so', async () => {
+    const h = ticketTurn({ labels: [CLAIM] });
+    await run(fire(), h.deps as never);
+    assert.deepEqual([h.messages, h.launches], [[], []]);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-unblocked' && /no dispatch marker/.test(String(l.outcome))), JSON.stringify(h.logged));
+  });
+
+  test('ready: picked up as pickup does, claimed and marked, the close\'s facts and the check in its prompt', async () => {
+    const h = ticketTurn();
+    const result = turn(await run(fire(), h.deps as never));
+    assert.equal((result as unknown as Record<string, unknown>).row, 'ready');
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
+    const prompt = h.launches[0]!.prompt;
+    assert.ok(prompt.startsWith(promptFor(7, 'Issue 7', REPO, CLAIM, FACTORY_PROMPTS)), prompt);
+    assert.match(prompt, /acme\/tools#41 \(The parser\) closed as completed, by PR #52 \(Parse it, https:\/\/github\.com\/acme\/tools\/pull\/52\)/);
+    assert.match(prompt, /Before you build, check the spec against what merged/);
+    assert.ok(h.calls.includes(`label #7 +${CLAIM}`), h.calls.join('; '));
+    assert.deepEqual(h.comments.map((c) => c.issue), [7]);
+    assert.ok(!h.calls.includes('heartbeat'));
+  });
+
+  test('ready, but dispatched inside the window: nothing starts', async () => {
+    const h = ticketTurn({ comments: [{ body: dispatchMarker({ at: new Date(NOW - 60_000).toISOString(), sessionUrl: null }) }] });
+    await run(fire(), h.deps as never);
+    assert.deepEqual(h.launches, []);
+  });
+
+  test('not ready: a spec session with a dispatch marker and no claim, told to add the claim label before it builds', async () => {
+    const h = ticketTurn({ labels: ['enhancement'] });
+    const result = turn(await run(fire(), h.deps as never));
+    assert.equal((result as unknown as Record<string, unknown>).row, 'not-ready');
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
+    const prompt = h.launches[0]!.prompt;
+    assert.match(prompt, /^Spec #7 'Issue 7'/);
+    assert.match(prompt, /acme\/tools#41 \(The parser\) closed as completed, by PR #52/);
+    assert.match(prompt, new RegExp(`add \`${CLAIM}\` to it first`));
+    assert.match(prompt, /as a question/);
+    assert.deepEqual(labelCalls(h.calls), [], 'governor claims nothing');
+    assert.deepEqual(h.comments.map((c) => c.issue), [7]);
+    assert.match(h.comments[0]!.body, /governor:dispatched/);
+    assert.equal(result.dispatched[0]?.sessionUrl, 'https://claude.ai/code/session_01ABC');
+  });
+
+  test('not ready, but dispatched inside the window: nothing starts', async () => {
+    const h = ticketTurn({ labels: [], comments: [{ body: dispatchMarker({ at: new Date(NOW - 60_000).toISOString(), sessionUrl: null }) }] });
+    await run(fire(), h.deps as never);
+    assert.deepEqual(h.launches, []);
+  });
+
+  test('DispatchCap 0 starts no session from a ready or not-ready ticket', async () => {
+    for (const labels of [READY, ['enhancement']]) {
+      const h = ticketTurn({ labels });
+      await run(fire(), { ...h.deps, cap: 0 } as never);
+      assert.deepEqual(h.launches, [], labels.join(', '));
+    }
+  });
+
+  test('pickup governs the ready row, and unblocked the not-planned, claimed and not-ready rows', async () => {
+    const cases: Array<[string, string[], Record<string, unknown>, Record<string, boolean>]> = [
+      ['ready', READY, {}, { pickup: false, unblocked: true }],
+      ['claimed', [CLAIM], {}, { pickup: true, unblocked: false }],
+      ['not-ready', ['enhancement'], {}, { pickup: true, unblocked: false }],
+      ['not-planned', READY, { blocker: { ...blocker, reason: 'not_planned' } }, { pickup: true, unblocked: false }],
+    ];
+    for (const [row, labels, over, features] of cases) {
+      const off = ticketTurn({ labels, features, comments: [{ body: OLD_MARKER }] });
+      const result = await run(fire(over), off.deps as never) as Record<string, unknown>;
+      assert.equal(result.row, row);
+      assert.deepEqual([off.launches, off.messages, off.comments, labelCalls(off.calls)], [[], [], [], []], row);
+      assert.match(String(result.refusal), new RegExp(features.pickup ? 'unblocked' : 'pickup'), row);
+    }
+    // The other switch of each pair on alone still acts.
+    const ready = ticketTurn({ features: { pickup: true, unblocked: false } });
+    await run(fire(), ready.deps as never);
+    assert.equal(ready.launches.length, 1);
+    const spec = ticketTurn({ labels: ['enhancement'], features: { pickup: false, unblocked: true } });
+    await run(fire(), spec.deps as never);
+    assert.equal(spec.launches.length, 1);
+  });
+
+  test('a file turning neither pickup nor unblocked on refuses the fire before it reads the ticket', async () => {
+    const h = ticketTurn({ features: { pickup: false, unblocked: false, mergeHandoff: false } });
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.match(String(result.refusal), /neither pickup nor unblocked/);
+    assert.deepEqual(h.asked, []);
+  });
+
+  test('a file that still sets mergeHandoff turns unblocked on', async () => {
+    const h = ticketTurn({ labels: ['enhancement'], features: { unblocked: undefined as unknown as boolean, mergeHandoff: true } });
+    await run(fire(), h.deps as never);
+    assert.equal(h.launches.length, 1);
+  });
+
+  test('reads the ticket and its blockers under its own repo, and nothing under the blocker\'s', async () => {
+    const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }] });
+    await run(fire(), h.deps as never);
+    assert.ok(h.asked.length > 0 && h.asked.every((a) => a.startsWith(`${REPO} `)), h.asked.join('; '));
   });
 });
 
@@ -1346,8 +1570,10 @@ describe('run — periodics an event brings due', () => {
 
     const h2 = counting({ issuesClosed: Array.from({ length: 10 }, (_, i) => ({ number: i + 1, title: `Closed ${i}`, at: ago(HOUR) })) }, { configFile });
     h2.periodics.set(key(CODE.name), fired(DAY));
+    // A close needs no switch of its own: it queues what it blocked, here nothing.
     const close = await run({ kind: 'schedule', freed: 717, counted: 'issuesClosed' }, h2.deps as never) as Record<string, any>;
-    assert.match(String(close.refusal), /does not turn pickup on/);
+    assert.equal(close.refusal, undefined);
+    assert.deepEqual(close.queued, []);
     assert.deepEqual(h2.launches.map((l) => l.sessionName), [CODE.name]);
     assert.deepEqual(h2.reads.slice(0, 1), [`issuesClosed ${ago(DAY)}`]);
   });
@@ -1542,170 +1768,37 @@ describe('run — a message into a session', () => {
 });
 
 /**
- * The owner's message of a merge into main lists the open tickets
- * each issue the PR closes blocked, split into those waiting on the session
- * (carrying `Spec waits until #<closed> lands`) and those started or ready,
- * with the steps. A waiting hand-off is never left unanswered: an owner that
- * refuses gets a fresh session on the same message.
+ * The owner's message of a merge into main lists no blocked tickets: a
+ * blocker's close is handled in each blocked ticket's own repo
+ * (dispatch/unblocked.mjs), so the merging session has no step left after
+ * the merge, and a refusal starts no hand-off session.
  */
-describe('run — the merge message lists what the closed issues blocked', () => {
+describe('run — the merge message', () => {
   const PR = 925;
   const MERGED = 'Your pull request was merged.\n\nPR #925: Order work with native blockers only (https://github.com/acme/factory/pull/925), by owner';
   const fire = { kind: 'message', session: 'https://claude.ai/code/session_01OLD', text: MERGED, on: PR, event: 'close', merged: true };
-  type Ticket = { number: number; title: string; body: string; state: string; labels: string[] };
-  const ticket = (number: number, body: string, labels: string[] = [], state = 'open'): Ticket => ({ number, title: `Ticket ${number}`, body, state, labels });
-  const merge = ({ body = 'Closes #919\n\nThe change.', blocking = {} as Record<number, Ticket[]>, refuse = false, failing = false } = {}) => {
+
+  test('goes as the receiver wrote it, reading nothing of what the PR\'s closed issues blocked', async () => {
     const asked: string[] = [];
     const h = harness({
-      ...(refuse ? { message: async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }) } : {}),
       reader: () => ({
         ...harness().deps.reader(''),
-        comment: async (n: number, b: string) => { h.comments.push({ issue: n, body: b }); },
-        updatePull: async (n: number, { body: b }: { body: string }) => { h.edits.push({ pr: n, body: b }); },
-        pullRequest: async (n: number) => {
-          asked.push(`pullRequest ${n}`);
-          if (failing) throw new Error('GET /pulls/925 failed: 502');
-          return { number: n, title: 'Order work with native blockers only', body, state: 'closed', draft: false, base: 'main', headSha: SHA_MAIN, mergeable: null, html_url: `https://github.com/${REPO}/pull/${n}`, association: 'OWNER' };
-        },
-        blocking: async (n: number) => {
-          asked.push(`blocking ${n}`);
-          return (blocking[n] ?? []).map((t) => ({ number: t.number, state: t.state, title: t.title }));
-        },
-        ticket: async (n: number) => {
-          asked.push(`ticket ${n}`);
-          const found = Object.values(blocking).flat().find((t) => t.number === n);
-          if (found === undefined) throw new Error(`ticket ${n} is not one the closed issues block`);
-          return { ...found, pull: false };
-        },
+        blocking: async (n: number) => { asked.push(`blocking ${n}`); return [{ number: 931, state: 'open', title: 'T', repo: REPO }]; },
+        pullRequest: async (n: number) => { asked.push(`pullRequest ${n}`); throw new Error('not read'); },
       }),
     });
-    return { ...h, asked };
-  };
-  const told = (h: ReturnType<typeof merge>) => {
-    assert.equal(h.messages.length >= 1, true, 'nothing was sent');
-    return h.messages[0]!.text;
-  };
+    await run(fire as never, h.deps as never);
+    assert.deepEqual(asked, []);
+    assert.equal(h.messages.length, 1);
+    assert.equal(h.messages[0]!.text, fromDispatcher(`${MERGED}\n\n${standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })}`));
+  });
 
-  test('splits each closed issue\'s open blocked tickets into waiting and started or ready, with the steps and the CLAUDE.md section', async () => {
-    const h = merge({
-      body: 'Closes #919\nCloses #913\n\nThe change.',
-      blocking: {
-        919: [
-          ticket(931, 'The step.\n\nSpec waits until #919 lands: the message shape.'),
-          ticket(937, 'Ready already.', ['workflow: under development']),
-          ticket(943, 'Done.', [], 'closed'),
-        ],
-        913: [ticket(949, 'Spec waits until #913 lands: the table.'), ticket(955, 'Spec waits until #711 lands: not this PR\'s.', ['workflow: ready for development'])],
-      },
+  test('an owner that refuses gets no hand-off session', async () => {
+    const h = harness({
+      message: async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }),
     });
     await run(fire as never, h.deps as never);
-    const text = told(h);
-    assert.ok(text.includes(MERGED), 'today\'s message is kept');
-    const section = (closed: number) => text.slice(text.indexOf(`#${closed} blocked`), text.indexOf('\n\n', text.indexOf(`#${closed} blocked`)) >>> 0);
-    const of5229 = section(919);
-    assert.match(of5229, /Waiting on you[^\n]*\n(?:\s+- [^\n]*\n)*?\s+- #931\b/);
-    assert.match(of5229, /Started or ready[^\n]*\n(?:\s+- [^\n]*\n)*?\s+- #937\b[^\n]*under development/);
-    assert.doesNotMatch(text, /#943\b/, 'a closed ticket is not listed');
-    const of5228 = section(913);
-    assert.match(of5228, /Waiting on you[^\n]*\n\s+- #949\b/);
-    assert.match(of5228, /Started or ready[^\n]*\n\s+- #955\b/, 'a line naming an issue this PR does not close does not wait on it');
-    assert.match(text, /CLAUDE\.md § After your PR merges/);
-    assert.match(text, /drop the `Spec waits until/i);
-    assert.match(text, /message its session/i);
-    assert.deepEqual(h.launches, [], 'a live owner needs no fresh session');
-  });
-
-  // The merge hand-off is a generic switch: a freed ticket's status
-  // reads the repo's own ready and claim labels, not the factory's.
-  test('a freed ticket\'s status is read off its repo\'s own labels', () => {
-    const askme = { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [] };
-    const freed = [ticket(8, '', ['claimed']), ticket(9, '', ['mode: afk']), ticket(10, '', ['workflow: under development'])].map((t) => ({ ...t, pull: false }));
-    const text = String(handoffText([{ closed: 5, waiting: [], freed }], 't-d-d/askme-mcp', {}, askme));
-    assert.match(text, /#8\b[^\n]*, under development/);
-    assert.match(text, /#9\b[^\n]*, ready/);
-    assert.match(text, /#10\b[^\n]*, not labelled ready/, 'the factory\'s claim label is no label of this repo\'s');
-    const factory = String(handoffText([{ closed: 5, waiting: [], freed: [ticket(11, '', ['workflow: ready for development']), ticket(12, '', ['workflow: under development'])].map((t) => ({ ...t, pull: false })) }], REPO, {}, FACTORY_CONFIG_LABELS));
-    assert.match(factory, /#11\b[^\n]*, ready/);
-    assert.match(factory, /#12\b[^\n]*, under development/);
-  });
-
-  // Deploy messages are the factory's alone: a fresh hand-off session elsewhere
-  // would wait for news that never comes.
-  test('the hand-off fallback waits for deploys only where its repo hears of them', () => {
-    const factory = handoffFallback({ pr: 7, title: 'T', text: 'steps', deploys: true }).prompt;
-    assert.match(factory, /Sign off once its deploys have reached you\./);
-    const other = handoffFallback({ pr: 7, title: 'T', text: 'steps', deploys: false }).prompt;
-    assert.doesNotMatch(other, /deploy/i, other);
-    assert.match(other, /Sign off once the steps are done\./);
-  });
-
-  test('a wait line hard-wrapped across lines still waits on the closed issue', async () => {
-    const h = merge({ blocking: { 919: [ticket(931, 'The step.\n\nSpec waits until\n#919 lands: the message shape.')] } });
-    await run(fire as never, h.deps as never);
-    assert.match(told(h), /Waiting on you[^\n]*\n\s+- #931\b/);
-  });
-
-  test('a ticket waiting on one issue the PR closes waits, whichever closed issue it is listed under', async () => {
-    const h = merge({ refuse: true, body: 'Closes #919\nCloses #913', blocking: { 913: [ticket(961, 'Spec waits until #919 lands: the shape.')] } });
-    await run(fire as never, h.deps as never);
-    assert.equal(h.launches.length, 1, 'a waiting hand-off falls back');
-    assert.deepEqual(h.recorded, ['https://claude.ai/code/session_01ABC'], 'the fresh session replacing an archived owner is governor\'s');
-    assert.match(h.launches[0]!.prompt, /#913 blocked:\n- Waiting on you[^\n]*\n\s+- #961\b/);
-  });
-
-  test('a merge whose closed issues block no open ticket sends the message as today', async () => {
-    for (const blocking of [{}, { 919: [ticket(943, 'Spec waits until #919 lands: x', [], 'closed')] }]) {
-      const h = merge({ blocking });
-      await run(fire as never, h.deps as never);
-      assert.equal(h.messages[0]!.text, fromDispatcher(`${MERGED}\n\n${standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })}`), JSON.stringify(blocking));
-    }
-    const none = merge({ body: 'No closing line.' });
-    await run(fire as never, none.deps as never);
-    assert.equal(none.messages[0]!.text, fromDispatcher(`${MERGED}\n\n${standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })}`));
-    assert.ok(!none.asked.some((a) => a.startsWith('blocking')), 'nothing closed, nothing to read');
-  });
-
-  test('an unmarked message reads nothing more: only the owner\'s merge into main is listed', async () => {
-    const h = merge({ blocking: { 919: [ticket(931, 'Spec waits until #919 lands: x')] } });
-    const { merged: _, ...plain } = fire;
-    await run(plain as never, h.deps as never);
-    assert.deepEqual(h.asked, []);
-    assert.doesNotMatch(told(h), /#931/);
-  });
-
-  test('an owner that refuses, with a ticket waiting, gets a fresh session on the same message, owning the merged PR', async () => {
-    const h = merge({ refuse: true, blocking: { 919: [ticket(931, 'Spec waits until #919 lands: x'), ticket(937, 'Ready.')] } });
-    const result = await run(fire as never, h.deps as never);
-    assert.equal(h.launches.length, 1, JSON.stringify(h.logged));
-    const [launch] = h.launches;
-    assert.ok(launch!.prompt.includes(MERGED), 'the same message');
-    assert.match(launch!.prompt, /Waiting on you[^\n]*\n\s+- #931\b/);
-    assert.match(launch!.prompt, /#925/);
-    assert.ok(launch!.prompt.includes(UNATTENDED));
-    // The relink can fail or find no URL: the fresh session is told to fix the link itself, as a remark's takeover is.
-    assert.match(launch!.prompt, /put your own link in its place/);
-    assert.match(launch!.sessionName, /#925/);
-    assert.deepEqual(h.comments.map((c) => c.issue), [PR], 'the dispatch marker goes on the merged PR');
-    assert.deepEqual(h.edits.map((e) => e.pr), [PR], 'the PR body points at the fresh session, which hears its deploys');
-    assert.deepEqual((result as { fallback: unknown }).fallback, { outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01ABC' });
-  });
-
-  test('an owner that refuses with nothing waiting starts nothing, as today', async () => {
-    const h = merge({ refuse: true, blocking: { 919: [ticket(937, 'Ready.', ['workflow: ready for development'])] } });
-    const result = await run(fire as never, h.deps as never);
     assert.deepEqual(h.launches, []);
-    assert.equal((result as { archived: boolean }).archived, true);
-  });
-
-  test('a read that fails still sends the message, saying what it could not list, and logs why', async () => {
-    const h = merge({ failing: true });
-    const result = await run(fire as never, h.deps as never);
-    const text = told(h);
-    assert.ok(text.includes(MERGED));
-    assert.match(text, /could not read[^\n]*502/i);
-    assert.match(text, /CLAUDE\.md § After your PR merges/);
-    assert.equal((result as { ok: boolean }).ok, true);
-    assert.ok(h.logged.some((l) => l.event === 'dispatch-handoff' && /502/.test(String(l.error))), JSON.stringify(h.logged));
   });
 });
 
@@ -4640,19 +4733,25 @@ describe('run — every served repo', () => {
     }
   });
 
-  test('a merge in another repo hands off only where its file turns the merge hand-off on', async () => {
+  test('a merge in another repo sends its message, the standing naming that repo', async () => {
     const h = twoRepos({ askmeFile: askmeWith({ prMessages: true }) });
     await run({ ...owners, event: 'close', merged: true }, h.deps as never);
     assert.equal(h.messages.length, 1);
-    assert.ok(!h.logged.some((l) => l.event === 'dispatch-handoff'), JSON.stringify(h.logged));
-    assert.ok(h.messages[0]!.text.endsWith(standingLine([], { repo: ASKME, closing: false })), `the standing names the fire's repo (#985): ${h.messages[0]!.text}`);
-    const on = twoRepos({ askmeFile: askmeWith({ prMessages: true, mergeHandoff: true }) });
-    await run({ ...owners, event: 'close', merged: true }, on.deps as never);
-    assert.ok(on.logged.some((l) => l.event === 'dispatch-handoff'), JSON.stringify(on.logged));
-    const factory = twoRepos();
-    await run({ ...owners, repo: REPO, event: 'close', merged: true }, factory.deps as never);
-    assert.ok(factory.logged.some((l) => l.event === 'dispatch-handoff'), 'the factory\'s merge reads what it freed');
-    assert.ok(factory.messages[0]!.text.endsWith(standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })), factory.messages[0]!.text);
+    assert.ok(h.messages[0]!.text.endsWith(standingLine([], { repo: ASKME, closing: false })), `the standing names the fire's repo: ${h.messages[0]!.text}`);
+  });
+
+  // A ticket in another repo whose blocker closed: its own repo's turn, its
+  // own file's labels, environment and switches.
+  test('an unblocked fire in another repo runs under that repo\'s config', async () => {
+    const fire = { kind: 'unblocked', repo: ASKME, issue: 2, blocker: { repo: REPO, number: 41, title: 'The parser', reason: 'completed' } };
+    const off = twoRepos({ askmeFile: askmeWith({ summons: true }) });
+    assert.match(String(((await run(fire, off.deps as never)) as { refusal?: string }).refusal), /neither pickup nor unblocked/);
+    assert.deepEqual(off.launches, []);
+    const h = twoRepos();
+    await run(fire, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => [l.repo, l.environment]), [[ASKME, 'env_01ASK']]);
+    assert.ok(h.calls.includes(`label ${ASKME}#2 +claimed`), h.calls.join('; '));
+    assert.match(h.launches[0]!.prompt, /acme\/factory#41 \(The parser\) closed as completed, with no PR\. It blocked #2\./);
   });
 
   test('a red scheduled run in another repo starts a session where its file turns it on, with its prompt or the default', async () => {
@@ -4995,7 +5094,7 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
  * sweeps a repo's ready tickets once the interval its file sets, two hours
  * when unset, has passed since that repo's last sweep. The last sweep lives
  * in the state table under `pickup#<repo>`, and a lost item means sweep now.
- * A ready label and a close that frees tickets still pick up at once, so a
+ * A ready label and a close that unblocks a ready ticket still pick up at once, so a
  * repo whose ready label `SelectLabels` does not list waits for its sweep.
  * Pickup's heartbeat line records each sweep, and only a sweep.
  */
@@ -5084,14 +5183,14 @@ describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval 
     assert.equal(h.tickets().length, 2);
   });
 
-  for (const fire of [{ kind: 'schedule', issue: 7 }, { kind: 'schedule', freed: 5 }]) {
+  for (const fire of [{ kind: 'schedule', issue: 7 }, { kind: 'unblocked', issue: 7, blocker: { repo: REPO, number: 5, title: 'Done', reason: 'completed' } }]) {
     test(`${JSON.stringify(fire)} picks up at once, inside the interval, and records no sweep`, async () => {
       const h = sweeping({ sweepHours: 6 });
       h.sweeps.set(REPO, ago(HOUR));
       await run(fire, h.deps as never);
       assert.equal(h.tickets().length, 1);
       assert.deepEqual(h.sweepWrites, []);
-      assert.equal(h.issue.body, BODY, 'a label or a close never freshens pickup\'s line');
+      assert.equal(h.issue.body, BODY, 'a label or an unblocked ticket never freshens pickup\'s line');
     });
   }
 

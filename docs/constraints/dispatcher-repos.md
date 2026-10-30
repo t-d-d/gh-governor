@@ -45,9 +45,12 @@ spends the one claude.ai login.
 - Every feature is a switch, off unless the file turns it on, and a turn
   refuses a fire kind its repo's file does not turn on. The switches are
   pickup, summons, PR messages, subscribe messages, the red scheduled run,
-  the merge hand-off, CI and deploy messages, branch-run messages, the
+  unblocked (what a blocker's close does to a ticket that is not ready to
+  pick up), CI and deploy messages, branch-run messages, the
   conflicts check, deployed-label job fires, the PR review, the heartbeat,
-  periodics and hooks (`GENERIC_SWITCHES`). What CI and a deploy are in a repo is
+  periodics and hooks (`GENERIC_SWITCHES`). A retired switch a file still
+  sets stays valid and reads as the switch that took its work over
+  (`RETIRED_SWITCHES`): `mergeHandoff` reads as `unblocked`. What CI and a deploy are in a repo is
   dispatcher-workflows.md's, and the review's settings dispatcher-review.md's.
   The schema accepts no switch by repo.
 - A fire that counts an event for the periodics (`counted`: a merge into the
@@ -99,11 +102,22 @@ spends the one claude.ai login.
   or empty file, or one naming a fact its kind lacks, makes the config file
   invalid (`dispatch-config-invalid`, naming the key and path); a read that
   fails refuses the repo's part of the turn.
-- Every fire names its repo, and a turn mints its GitHub token for that repo
-  and calls no other. The one exception is the bare EventBridge schedule
-  fire: it names no repo, lists the App's installations on listed owners,
-  keeps the repos whose file reads valid, and sweeps every served repo's
-  sessions. Nothing falls back to a default repo.
+- Every fire names its repo, and nothing falls back to a default repo. The
+  one exception is the bare EventBridge schedule fire: it names no repo,
+  lists the App's installations on listed owners, keeps the repos whose
+  file reads valid, and sweeps every served repo's sessions.
+- Every repo governor acts on has passed the served check (`repoServed`,
+  `servedRepos`).
+- Each repo's tickets are judged by its own config and recorded on its own
+  records: its labels, switches and prompts, its issues and comments.
+- A turn calls GitHub only for its fire's repo, under a token minted for
+  that repo, and may queue a fire that names another repo. An issue
+  closing queues one `unblocked` fire for each open ticket it blocked, in
+  every repo whose owner is listed, its own included, and starts nothing
+  itself. The ticket's own repo's turn reads the ticket and acts on it
+  under that repo's switches (`pickup` for a ready ticket, `unblocked` for
+  the rest), so the closing turn needs no switch, and skips a fire for its
+  own repo only where its file turns both off (dispatch/unblocked.mjs).
 - Governor writes and reads only `governor:` markers: the dispatch marker,
   the subscribe line, the review's marker and the heartbeat block's. A marker of any other prefix
   is text.
@@ -132,11 +146,18 @@ spends the one claude.ai login.
   and queues the fire; `hookFor` in dispatch/hooks.mjs checks it against the
   file; `HookKeyStaleAlarm` in infra/governor.cfn.yml pages on a stale key.
 - A full config file, every feature on: test/fixtures/factory/.github/dispatch.json.
+- A blocker's close: `closingFires` and `ticketRow` in dispatch/unblocked.mjs;
+  `fitness: a turn calls GitHub only for its fire's repo` covers a close
+  that blocks another repo's ticket, and an `unblocked` fire.
 
 ## Do not
 
 - Do not default a fire's repo: a stale or default repo acts on, and spends
   the login for, a repo the fire was not for.
+- Do not judge another repo's ticket in the turn of the repo whose issue
+  closed: that turn cannot read the other repo's config, and the
+  installation-wide token would let it act there unchecked. Queue the
+  ticket's repo a fire of its own.
 - Do not read the config file from any ref but the default branch: a PR head
   is unreviewed, and anyone who can open a PR could turn features on.
 - Do not put a secret in the config file: the repo may be public.
@@ -165,4 +186,4 @@ spends the one claude.ai login.
   then hold or redirect a dispatch.
 
 Judgment: that a new per-repo table record keys on its repo, and that a config file holds no secret, no check sees: a key is a string no schema reads, and a secret has no shape the schema can refuse.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28. A hook fire arrives at the receiver on its own path, signed with its hook key, and the switch list gains hooks, since #55, under PRD #53.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28. A hook fire arrives at the receiver on its own path, signed with its hook key, and the switch list gains hooks, since #55, under PRD #53. A turn may queue a fire naming another repo, a blocker's close is handled in each blocked ticket's own repo, and `unblocked` replaces the merge hand-off, since #72.

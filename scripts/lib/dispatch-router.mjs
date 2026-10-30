@@ -1,7 +1,8 @@
 /**
  * What a `schedule` fire starts: the ready issues, up to the cap, or the
- * one issue (`issue`) or the issues a close freed (`freed`) the fire names
- * (dispatch/webhook/fire.mjs reads the fire; dispatch/turn.mjs runs it).
+ * one issue (`issue`) the fire names (dispatch/webhook/fire.mjs reads the
+ * fire; dispatch/turn.mjs runs it), and what an `unblocked` fire for a
+ * ready ticket starts (dispatch/unblocked.mjs).
  *
  * The selection walks `scripts/lib/ready-work.mjs`'s ordered candidates,
  * asking about blockers and recent dispatches only as far as the cap
@@ -28,7 +29,6 @@ import { byAge, selectReadyWork } from './ready-work.mjs';
  * @typedef {{
  *   readyIssues: (labels: readonly string[]) => Promise<IssueRow[]>,
  *   blockers: (number: number) => Promise<import('./github-app.mjs').BlockerRow[]>,
- *   blocking: (number: number) => Promise<import('./github-app.mjs').BlockerRow[]>,
  *   comments: (number: number, options?: { since?: string }) => Promise<import('./github-app.mjs').CommentRow[]>,
  * }} Reader
  *
@@ -43,11 +43,10 @@ import { byAge, selectReadyWork } from './ready-work.mjs';
  * needs. The order runs over every source's tickets together:
  * oldest, then number, whichever repo each is in. With `only`, those issues
  * and no other, still in the selector's
- * order and under the cap: the fire for an issue just labelled ready
- * dispatches it if the selection would, and the fire for an issue just
- * closed dispatches what it blocked, leaving the rest of the backlog to the
- * sweep, so a batch of labels is a session each and not the cap's worth per
- * label, and a close cannot cascade past what it blocked. A fire naming
+ * order and under the cap: the fire for an issue just labelled ready, or
+ * a ready ticket whose blocker just closed, dispatches it if the selection
+ * would, leaving the rest of the backlog to the sweep, so a batch of labels
+ * is a session each and not the cap's worth per label. A fire naming
  * issues names one repo, so `only` is for one source.
  *
  * With `unread`, a source whose read fails is recorded there and left out

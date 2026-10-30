@@ -159,21 +159,71 @@ describe('githubReader', () => {
       ],
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    assert.deepEqual(await reader.blocking(10), [{ number: 11, state: 'open', title: 'Waits on 10' }]);
+    assert.deepEqual(await reader.blocking(10), [{ number: 11, state: 'open', title: 'Waits on 10', repo: 'acme/factory' }]);
     assert.equal(new URL(calls[0]!.url).searchParams.get('per_page'), '100');
   });
 
-  // A dependency can cross repositories, and the caller plans by number
-  // alone: another repo's #12 would dispatch this repo's #12.
-  test('blocking drops an issue in another repository', async () => {
+  // A dependency can cross repositories: each row names its repo, so
+  // another repo's #12 is never read as this repo's #12.
+  test('blocking keeps an issue in another repository, naming its repo', async () => {
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues/10/dependencies/blocking': [
         { number: 11, state: 'open', title: 'Here', repository_url: 'https://api.github.com/repos/Acme/Factory' },
         { number: 12, state: 'open', title: 'Elsewhere', repository_url: 'https://api.github.com/repos/acme/other' },
+        { number: 13, state: 'open', title: 'Unsaid' },
       ],
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    assert.deepEqual(await reader.blocking(10), [{ number: 11, state: 'open', title: 'Here' }]);
+    assert.deepEqual(await reader.blocking(10), [
+      { number: 11, state: 'open', title: 'Here', repo: 'Acme/Factory' },
+      { number: 12, state: 'open', title: 'Elsewhere', repo: 'acme/other' },
+      { number: 13, state: 'open', title: 'Unsaid', repo: 'acme/factory' },
+    ]);
+  });
+
+  test('closure reads how an issue closed: its reason, and the PR whose merge closed it', async () => {
+    const SHA = 'a'.repeat(40);
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/10/events': [
+        { event: 'labeled' },
+        { event: 'closed', commit_id: 'b'.repeat(40), commit_url: 'https://api.github.com/repos/acme/factory/commits/' + 'b'.repeat(40) },
+        { event: 'reopened' },
+        { event: 'closed', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/factory/commits/${SHA}` },
+      ],
+      'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'The parser', state: 'closed', state_reason: 'completed' },
+      [`https://api.github.com/repos/acme/factory/commits/${SHA}/pulls`]: [
+        { number: 50, title: 'Open one', html_url: 'https://github.com/acme/factory/pull/50', merged_at: null, merge_commit_sha: 'c'.repeat(40) },
+        { number: 52, title: 'Parse it', html_url: 'https://github.com/acme/factory/pull/52', merged_at: '2026-10-01T00:00:00Z', merge_commit_sha: SHA },
+      ],
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual(await reader.closure(10), { title: 'The parser', reason: 'completed', pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/factory/pull/52' } });
+    assert.ok(calls.every((c) => c.url.startsWith('https://api.github.com/repos/acme/factory/')), calls.map((c) => c.url).join('; '));
+  });
+
+  test('closure names no PR for a close by hand, or by a commit in another repository', async () => {
+    const SHA = 'a'.repeat(40);
+    for (const events of [
+      [{ event: 'closed', commit_id: null }],
+      [{ event: 'closed', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/other/commits/${SHA}` }],
+      [],
+    ]) {
+      const { fetch, calls } = fakeFetch({
+        'https://api.github.com/repos/acme/factory/issues/10/events': events,
+        'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'The parser', state: 'closed', state_reason: 'not_planned' },
+      });
+      const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+      assert.deepEqual(await reader.closure(10), { title: 'The parser', reason: 'not_planned', pr: null }, JSON.stringify(events));
+      assert.ok(!calls.some((c) => c.url.includes('/commits/')), JSON.stringify(events));
+    }
+  });
+
+  test('closure reads a missing reason as none', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/10/events': [],
+      'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'Old', state: 'closed', state_reason: null },
+    });
+    assert.deepEqual(await githubReader({ token: 't', repo: 'acme/factory', fetch }).closure(10), { title: 'Old', reason: null, pr: null });
   });
 
   test('comment posts to the issue and returns nothing the caller must handle', async () => {
