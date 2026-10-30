@@ -56,7 +56,7 @@
 import { DEPENDABOT, SUMMONERS } from './webhook/fire.mjs';
 import { REVIEW_MARKER, commentKey, commentText, heldPassReason } from './webhook/review-comment.mjs';
 import { checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
-import { bodyDigest, closedBy, closingTickets, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
+import { bodyDigest, closedBy, closingTickets, foreignClosings, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
@@ -144,10 +144,11 @@ const constraintTexts = async (reader, pull, paths) => {
 /**
  * A PR's facts for the checklist, read from GitHub: its changed files, the
  * tickets its top lines close, the other open PRs closing any of them, the
- * owners its Verification table and Left for later name, and its prose
- * closings. The quoted files' texts are read only if the checklist asks
- * for them, and so is whether governor started the session the body
- * names: a body naming none is no session of governor's. A number no
+ * owners its Verification table and Left for later name, its prose
+ * closings, and its closings of another repo's issue. The quoted files'
+ * texts are read only if the checklist asks for them, and so is whether
+ * governor started the session the body names: a body naming none is no
+ * session of governor's. A number no
  * issue answers to, or one moved to another repository's issue, is a
  * missing ticket.
  *
@@ -189,7 +190,7 @@ export const readFacts = async (reader, pull, started) => {
     .map((p) => ({ number: p.number, closes: closedBy(p.body ?? '', repo) }))
     .filter((p) => p.closes.some((n) => closing.includes(n)));
   return {
-    pull, files, tickets, others, owners: { verification, later }, prose: proseClosings(pull.body, repo),
+    pull, files, tickets, others, owners: { verification, later }, prose: proseClosings(pull.body, repo), foreign: foreignClosings(pull.body, repo),
     constraintTexts: (paths) => constraintTexts(reader, pull, paths),
     unattended: async () => {
       const session = sessionNamedIn(pull.body);

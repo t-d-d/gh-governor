@@ -175,7 +175,7 @@ The review runs in each served repo whose file turns `prReview` on, from that re
 
 **Decided in code.** Three tests are decided before the model is asked, and a PR failing one is commented on without a model run:
 
-- Test 1, the tickets: each ticket the PR closes is open, meets `review.tickets`, and carries the claim label. A ticket not yet claimed gets a comment the author session hears.
+- Test 1, the tickets: each ticket the PR closes is open, meets `review.tickets`, and carries the claim label. A ticket not yet claimed gets a comment the author session hears. A PR closes tickets in its own repo only: a body that closes another repo's issue, by `owner/repo#N` or by its URL, fails for an edit, as does a closing reference below the body's top `Closes #N` lines. Work spanning repos links the tickets with `blocked by`: the other repo's ticket is blocked by an issue here, a PR here closes that issue, and its close unblocks the other ticket.
 - Test 7, the human-only list: no changed path, or path a rename left, matches `review.humanOnly`, unless every ticket carries one of the entry's `unless` labels. A modified file matching `review.quote` goes to the model instead, quoted whole at the merge base and at the head. A `decides` ticket's first line, `Constraint now lives at <path>, …`, passes the quoted files it names.
 - Test 8, required checks: no status check the default branch requires is red on the head. A check still running skips the review; the run finishing queues a new one.
 
