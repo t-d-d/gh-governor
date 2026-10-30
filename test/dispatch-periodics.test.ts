@@ -224,6 +224,23 @@ describe('duePeriodics', () => {
     assert.deepEqual(state.writes, [{ name: 'Weekly retro', record: { at: new Date(NOW).toISOString(), session: null, baseline: true } }]);
   });
 
+  test('a baseline written comes back as a first-read heartbeat line, with no session; one another turn wrote first does not', async () => {
+    const { beats } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: store(), now: NOW, log });
+    assert.deepEqual(beats, [{ name: 'Weekly retro', at: new Date(NOW).toISOString(), session: null, state: 'not fired' }]);
+    const raced = { ...store(), recordPeriodic: async () => false };
+    assert.deepEqual((await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: raced, now: NOW, log })).beats, []);
+  });
+
+  test('on the sweep, a baseline not yet due comes back as its first-read line again, at the baseline\'s time; an event\'s turn does not resend it', async () => {
+    const baseline = { at: ago(2), session: null, baseline: true };
+    const { due, beats } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: store({ 'Weekly retro': baseline }), now: NOW, log });
+    assert.deepEqual(due, []);
+    assert.deepEqual(beats, [{ name: 'Weekly retro', at: baseline.at, session: null, state: 'not fired' }]);
+    const counted = { ...RETRO, counts: { merges: 3 } };
+    const event = await duePeriodics({ repo: REPO, open: finished, periodics: [counted], state: store({ 'Weekly retro': baseline }), now: NOW, log, window: async () => [], event: 'merges' });
+    assert.deepEqual(event.beats, []);
+  });
+
   test('a read that fails refuses that periodic, and is never a missing record', async () => {
     const state = store({ 'Weekly retro': new Error('AccessDeniedException'), Daily: { at: ago(2), session: 's', baseline: false } });
     const { due, unread } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO, { name: 'Daily', prompt: 'x', days: 1 }], state, now: NOW, log });
@@ -368,6 +385,12 @@ describe('duePeriodics — counts and the minimum gap', () => {
     const { due } = await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state, now: NOW, log, window: read.window, event: 'merges' });
     assert.deepEqual(due, []);
     assert.deepEqual(state.writes, [{ name: 'Code review', record: { at: new Date(NOW).toISOString(), session: null, baseline: true } }]);
+  });
+
+  test('an event\'s baseline comes back as a first-read heartbeat line too', async () => {
+    const read = windows({});
+    const { beats } = await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state: store(), now: NOW, log, window: read.window, event: 'merges' });
+    assert.deepEqual(beats, [{ name: 'Code review', at: new Date(NOW).toISOString(), session: null, state: 'not fired' }]);
   });
 
   test('a window that cannot be read refuses that periodic for the turn, and is never an empty window', async () => {

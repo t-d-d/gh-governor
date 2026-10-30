@@ -120,6 +120,7 @@ describe('the checker reads exactly what governor writes', () => {
     { name: 'Daily', at: AT, by: { days: 1 }, session: SESSION, state: 'open' },
     { name: 'Held, no limit', at: AT, session: OTHER, state: 'held' },
     { name: 'Rétro: été', at: AT, by: { days: 2 }, session: SESSION, state: 'signed off' },
+    { name: 'Not fired yet', at: AT, session: null, state: 'not fired' },
   ];
 
   test('every kind of line governor writes reads back the same', () => {
@@ -140,6 +141,12 @@ describe('the checker reads exactly what governor writes', () => {
   test('a body with only the marker reads as nothing recorded, and one without it is refused', () => {
     assert.deepEqual(checker.readHeartbeat(BODY), readHeartbeat(BODY));
     assert.throws(() => checker.readHeartbeat('someone\'s ticket'), /governor:heartbeat/);
+  });
+
+  test('a line pairing first read with a fire\'s state, or last fire with not fired yet, is not governor\'s, as governor reads it', () => {
+    const body = BODY.replace(HEARTBEAT_MARKER, `${HEARTBEAT_MARKER}\n- periodic "A": first read ${AT}, session ${SESSION}, open\n- periodic "B": last fire ${AT}, session none, not fired yet\n${HEARTBEAT_END}`);
+    assert.deepEqual(checker.readHeartbeat(body).periodics, []);
+    assert.deepEqual(checker.readHeartbeat(body), readHeartbeat(body));
   });
 
   test('it uses governor\'s markers', () => {
@@ -328,6 +335,23 @@ describe('checking the heartbeat', () => {
     const [issue] = gh.open();
     assert.match(String(issue?.body), /session_01RUN/);
     assert.match(String(issue?.body), /has not signed off/);
+  });
+
+  test('a periodic governor has read but never fired is measured from its first read, and its issue says it has never fired', async () => {
+    const at = iso(NOW - 8 * DAY);
+    const unfired = (when: string) => stampHeartbeat(BODY, { ...readHeartbeat(fresh()), periodics: [...readHeartbeat(fresh()).periodics.filter((p) => p.name !== 'Weekly retro'), { name: 'Weekly retro', at: when, session: null, state: 'not fired' }] } as never);
+    const gh = github({ heartbeat: unfired(at) });
+    await run(gh);
+    const [issue, ...rest] = gh.open();
+    assert.deepEqual(rest, []);
+    assert.match(String(issue?.title), /"Weekly retro"/);
+    const text = String(issue?.body);
+    assert.match(text, new RegExp(`first read .*${at.replaceAll('.', '\\.')}`));
+    assert.match(text, /never fired/);
+    assert.doesNotMatch(text, /last fired/);
+    const read = github({ heartbeat: unfired(iso(NOW - 2 * DAY)) });
+    await run(read);
+    assert.deepEqual(read.open(), [], 'inside its day limit since the first read');
   });
 
   test('keeps one issue per line: a second run updates it, never opens another', async () => {

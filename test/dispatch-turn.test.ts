@@ -5026,6 +5026,45 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
     assert.deepEqual(h.line(CODE.name), { name: CODE.name, at: AT, by: { days: 7 }, session: null, state: 'nothing to do' });
   });
 
+  test('a periodic governor first reads gets a line at the baseline\'s time, with no session, not fired yet', async () => {
+    const h = beating();
+    h.periodics.delete(key(RETRO.name));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.periodics.get(key(RETRO.name)), { at: AT, session: null, baseline: true });
+    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: AT, session: null, state: 'not fired' });
+    assert.equal(h.line(REVIEW.name), undefined, 'a periodic with a record and no fire gets no line');
+  });
+
+  test('a counted event\'s baseline writes the line too, and never pickup\'s', async () => {
+    const h = beating();
+    h.periodics.delete(key(CODE.name));
+    await run(MERGE, h.deps as never);
+    assert.deepEqual(h.read(), { periodics: [{ name: CODE.name, at: AT, session: null, state: 'not fired' }] });
+  });
+
+  test('a sweep writes a baseline\'s line that an earlier turn failed to write, at the baseline\'s time', async () => {
+    const h = beating();
+    h.periodics.set(key(RETRO.name), { at: ago(DAY), session: null, baseline: true });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: ago(DAY), session: null, state: 'not fired' });
+  });
+
+  test('a baseline after a lost record keeps the line\'s last real fire, so the late run still shows', async () => {
+    const body = `${BEFORE}${HEARTBEAT_MARKER}\n- periodic "${RETRO.name}": last fire ${EARLIER}, by its day limit of 7 days, session ${OLD}, signed off\n${HEARTBEAT_END}${AFTER}`;
+    const h = beating({ body });
+    h.periodics.delete(key(RETRO.name));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: EARLIER, by: { days: 7 }, session: OLD, state: 'signed off' });
+  });
+
+  test('the periodic\'s first real fire replaces its first-read line', async () => {
+    const body = `${BEFORE}${HEARTBEAT_MARKER}\n- periodic "${RETRO.name}": first read ${ago(7 * DAY)}, session none, not fired yet\n${HEARTBEAT_END}${AFTER}`;
+    const h = beating({ body });
+    h.periodics.set(key(RETRO.name), { at: ago(7 * DAY), session: null, baseline: true });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: AT, by: { days: 7 }, session: NEW, state: 'open' });
+  });
+
   test('a fire whose launches all failed leaves every line where it was', async () => {
     const body = `${BEFORE}${HEARTBEAT_MARKER}\n- pickup: last sweep ${EARLIER}, started 1 session\n- periodic "${RETRO.name}": last fire ${EARLIER}, by its day limit of 7 days, session ${OLD}, signed off\n${HEARTBEAT_END}${AFTER}`;
     const h = beating({ body, launch: async () => ({ status: 1, output: 'claude died' }) });
@@ -5167,6 +5206,8 @@ describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval 
       }),
       ...over,
     });
+    // Every periodic read before and inside its day limit, so no baseline adds its line.
+    for (const p of file.periodics as Array<{ name: string }>) h.periodics.set(`${REPO}#${p.name}`, { at: ago(HOUR), session: 'https://claude.ai/code/session_01OLD', baseline: false });
     return { ...h, issue, backlogReads: () => backlogReads, tickets: () => h.launches.map((l) => l.sessionName).filter((n) => /^#\d+/.test(n)) };
   };
 
