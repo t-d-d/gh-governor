@@ -1,7 +1,8 @@
 /**
  * The starter kit a new repo copies into its own `.github/` (examples/starter/):
- * a config file with pickup, the heartbeat and three periodics, and the
- * workflow that calls the heartbeat checker. Its prompts are plain text that
+ * a config file with pickup, the heartbeat and three periodics, the
+ * workflow that calls the heartbeat checker, and the workflow that calls
+ * the config check on pull requests. Its prompts are plain text that
  * works without any skill, and each acts on the window governor writes under
  * it (dispatch/periodics.mjs).
  */
@@ -95,6 +96,51 @@ describe('the starter kit\'s workflow', () => {
     assert.ok('schedule' in workflow.on);
     assert.deepEqual(workflow.permissions, { contents: 'read', issues: 'write' });
   });
+});
+
+describe('the starter kit\'s config check', () => {
+  const text = read(`${STARTER}.github/workflows/config-check.yml`);
+  const workflow = yaml.load(text) as {
+    on: { pull_request?: { paths?: string[] } },
+    permissions: Record<string, string>,
+    jobs: Record<string, { uses?: string, with?: Record<string, unknown> }>,
+  };
+  const check = yaml.load(read('.github/workflows/config-check.yml')) as {
+    on: { workflow_call: { inputs: Record<string, unknown> } },
+  };
+
+  test('calls the check pinned to a commit of gh-governor, and passes that same commit', () => {
+    const jobs = Object.values(workflow.jobs);
+    assert.equal(jobs.length, 1);
+    const m = /^t-d-d\/gh-governor\/\.github\/workflows\/config-check\.yml@([0-9a-f]{40})$/.exec(String(jobs[0]?.uses));
+    assert.ok(m !== null, String(jobs[0]?.uses));
+    assert.equal(jobs[0]?.with?.commit, m[1], 'the commit input is the commit after @');
+  });
+
+  test('passes only inputs the check takes, with contents: read alone', () => {
+    const inputs = Object.keys(check.on.workflow_call.inputs);
+    for (const job of Object.values(workflow.jobs)) {
+      for (const key of Object.keys(job.with ?? {})) assert.ok(inputs.includes(key), `the check takes no input ${key}`);
+    }
+    assert.deepEqual(workflow.permissions, { contents: 'read' });
+  });
+
+  test('runs on pull requests that change the config file, and tells a repo with prompt files to add their paths', () => {
+    assert.deepEqual(Object.keys(workflow.on), ['pull_request']);
+    assert.ok(workflow.on.pull_request?.paths?.includes(CONFIG_PATH));
+    assert.match(text, /# .*prompts? (live )?in files[\s\S]*paths/i);
+  });
+});
+
+test('the README describes the config check beside the heartbeat checker', () => {
+  const readme = read('README.md');
+  const at = readme.indexOf('### The config check');
+  assert.ok(at > readme.indexOf('### The heartbeat checker'), 'a section of its own after the heartbeat checker\'s');
+  const section = readme.slice(at, readme.indexOf('\n## ', at));
+  assert.match(section, /\.github\/workflows\/config-check\.yml/);
+  assert.match(section, /commit: <commit>/);
+  const optIn = readme.slice(readme.indexOf('## How a repo opts in'), readme.indexOf('### The schema'));
+  assert.match(optIn, /config-check\.yml/);
 });
 
 test('the README\'s "How a repo opts in" points at the starter kit and the heartbeat issue\'s marker', () => {
