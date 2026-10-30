@@ -15,7 +15,7 @@
 
 import { isCliEntry } from './lib/cli-entry.mjs';
 import { APP_SLUG_VAR, checkDispatchAppEvents } from './lib/conformance-app-events.mjs';
-import { STACK_VAR, checkDispatchWebhookUrl } from './lib/conformance-webhook-url.mjs';
+import { STACK_VAR, checkDispatchWebhookUrl, checkHookUrl } from './lib/conformance-webhook-url.mjs';
 
 /**
  * A check's findings, and what it read, said out loud under its own line
@@ -36,6 +36,7 @@ import { STACK_VAR, checkDispatchWebhookUrl } from './lib/conformance-webhook-ur
 export const CHECKS = Object.freeze([
   { id: 'app-events', env: [APP_SLUG_VAR], run: checkDispatchAppEvents },
   { id: 'webhook-url', env: [STACK_VAR], run: checkDispatchWebhookUrl },
+  { id: 'hook-url', env: [STACK_VAR], run: checkHookUrl },
 ]);
 
 /**

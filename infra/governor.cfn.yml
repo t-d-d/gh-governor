@@ -503,6 +503,36 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertsTopic]
 
+  # A hook fire signed with a key version other than the one the repo's file
+  # names (dispatch/hooks.mjs) starts nothing and logs `hook-key-stale`. Only
+  # someone who once held a valid key can sign one, so the key may have
+  # leaked. A stranger's unsigned post is the receiver's 401, and pages nobody.
+  HookKeyStaleFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "hook-key-stale" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: HookKeysStale
+          MetricValue: '1'
+          DefaultValue: 0
+
+  HookKeyStaleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-hook-key-stale
+      AlarmDescription: '[tripwire] A hook fire was signed with a key version its repo''s .github/dispatch.json has moved past, so it started nothing. Read /governor for the hook-key-stale line; it names the repo, the hook and the version. Whoever sent it holds an old key: if the owner did not raise the version for a caller still to be moved, treat that key as leaked.'
+      Namespace: governor
+      MetricName: HookKeysStale
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
   # A launch in a served repo that started nothing (a cloud environment the
   # file names wrongly, a login refused) skips the rest of that repo's
   # tickets for the fire, and logs `dispatch-repo-skipped` naming the repo
@@ -781,13 +811,31 @@ Resources:
         PasswordLength: 48
         ExcludePunctuation: true
 
+  # Every hook key's root. A served repo's file lists its hooks, each with a
+  # key version, and a hook's key is the HMAC of its repo, name and version
+  # under this secret (dispatch/webhook/hook.mjs), so governor stores no key.
+  # The owner mints one with scripts/hook-key.mjs. Generated here, read by the
+  # receiver and by the owner's own AWS identity; rotating it revokes every
+  # hook's key at once.
+  HookSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: governor/hook-secret
+      Description: >-
+        The root every hook key is derived from. Generated here, read by the
+        webhook receiver to verify a hook request, and by the owner's key
+        script to mint a key. Never written by anything.
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+
   WebhookLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /aws/lambda/governor-webhook
       RetentionInDays: 30
 
-  # What the receiver may do: read its key, queue a fire. Nothing else: the
+  # What the receiver may do: read its two keys, queue a fire. Nothing else: the
   # starter below is the one thing that starts a task.
   WebhookRole:
     Type: AWS::IAM::Role
@@ -805,10 +853,12 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Sid: ReadTheKey
+              - Sid: ReadTheKeys
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource: !Ref WebhookSecret
+                Resource:
+                  - !Ref WebhookSecret
+                  - !Ref HookSecret
               - Sid: QueueAFire
                 Effect: Allow
                 Action: sqs:SendMessage
@@ -824,7 +874,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: governor-webhook
-      Description: Queues a dispatcher fire from a GitHub delivery
+      Description: Queues a dispatcher fire from a GitHub delivery or a signed hook
       Runtime: nodejs22.x
       Architectures: [arm64]
       Handler: handler.handler
@@ -842,6 +892,7 @@ Resources:
       Environment:
         Variables:
           WEBHOOK_SECRET_ID: !Ref WebhookSecret
+          HOOK_SECRET_ID: !Ref HookSecret
           DISPATCH_OWNERS: !Ref DispatchOwners
           SELECT_LABELS: !Ref SelectLabels
           FIRES_QUEUE_URL: !Ref DispatchFiresQueue

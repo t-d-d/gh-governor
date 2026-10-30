@@ -60,11 +60,17 @@
  * subscribers is three fires, one after another. The schedule fire itself
  * comes through here too ({@link handleSchedule}) and joins the same lane.
  *
+ * A hook is the one request not GitHub's: an outside system posts signed
+ * text to `/hooks/<owner>/<repo>/<hook>` (hook.mjs), and the receiver queues
+ * a `hook` fire naming the hook, the key version and the text
+ * ({@link handleHook}). Every other path is a GitHub delivery.
+ *
  * Pure: `handle` takes its I/O as `deps`. handler.mjs binds the real ones.
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, shippingJob } from './fire.mjs';
+import { OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
+import { HOOK_CLOCK_SKEW_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 
 /**
@@ -492,14 +498,20 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
 /**
  * @typedef {{
  *   secret: () => Promise<string>,
+ *   hookSecret: () => Promise<string>,
+ *   now?: () => number,
  *   owners: readonly string[],
  *   selectLabels?: readonly string[] | undefined,
  *   appId: number | undefined,
  *   enqueue: (message: FireMessage, dedupId?: string) => Promise<string>,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  * }} Deps
+ *   `secret`: GitHub's webhook key. `hookSecret`: the stack's hook secret,
+ *   every hook key's root (hook.mjs). `now`: the receiver's clock, which a
+ *   hook's timestamp is held to.
  *
- * @typedef {{ headers: Record<string, string | undefined>, body?: string | undefined, isBase64Encoded?: boolean | undefined }} Request
+ * @typedef {{ path?: string | undefined, headers: Record<string, string | undefined>, body?: string | undefined, isBase64Encoded?: boolean | undefined }} Request
+ *   `path`: the Function URL's raw path, a hook's (`/hooks/…`) or GitHub's.
  */
 
 /**
@@ -539,7 +551,9 @@ const queueFire = async (message, dedupId, deps) => {
 };
 
 /**
- * One delivery. The status is what GitHub records against it: 401 for a
+ * One request: a hook's, on a `/hooks/` path ({@link handleHook}; 404 for
+ * one under it that names no repo and hook), or else one delivery. A
+ * delivery's status is what GitHub records against it: 401 for a
  * delivery that is not GitHub's, 400 for one it could not read, 200 for one
  * that changes nothing, 202 for one that queued a fire. A queue that refused
  * the fire leaves as a throw, and GitHub records the 502 the Function URL
@@ -552,6 +566,9 @@ const queueFire = async (message, dedupId, deps) => {
 export const handle = async (request, deps) => {
   const headers = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   const raw = request.isBase64Encoded ? Buffer.from(request.body ?? '', 'base64') : Buffer.from(request.body ?? '', 'utf8');
+  const hook = hookPath(request.path);
+  if (hook === null) return { statusCode: 404, body: 'a hook path is /hooks/<owner>/<repo>/<hook>' };
+  if (hook !== undefined) return handleHook(hook, headers[HOOK_HEADER], raw, deps);
   if (!verifySignature(await deps.secret(), raw, headers['x-hub-signature-256'])) {
     deps.log('webhook-refused', { delivery: headers['x-github-delivery'] ?? null });
     return { statusCode: 401, body: 'signature does not match' };
@@ -583,6 +600,66 @@ export const handle = async (request, deps) => {
     }, delivery && dedupId(delivery, key), deps));
   }
   return { statusCode: 202, body: `queued ${queued.join(', ')}: ${decision.reason}` };
+};
+
+/**
+ * One hook request. 401 for one whose signature is missing, malformed, does
+ * not match the key for its path's repo, hook and version, or was made more
+ * than five minutes from the receiver's clock; 200 for one whose owner is not
+ * on the list; 400 for a body that holds no text; 413 for text too long; 202
+ * for one that queued its fire. Nothing but a 202 queues anything, and no
+ * line logs the signature or a key. The fire's deduplication id is the
+ * signature, so a replay inside the queue's window is not a second fire.
+ *
+ * @param {{ repo: string, hook: string }} target
+ * @param {string | undefined} header The `Governor-Signature` header.
+ * @param {Buffer} raw The raw body the caller signed.
+ * @param {Deps} deps
+ * @returns {Promise<{ statusCode: number, body: string }>}
+ */
+const handleHook = async ({ repo, hook }, header, raw, deps) => {
+  const about = { repo, hook };
+  const signature = readSignature(header);
+  if (signature === null) {
+    deps.log('hook-refused', { ...about, reason: 'no Governor-Signature header of the form v=<version>,t=<unix seconds>,sha256=<hex>' });
+    return { statusCode: 401, body: 'Governor-Signature is missing or malformed' };
+  }
+  if (!verifyHook(await deps.hookSecret(), { repo, hook }, signature, raw)) {
+    deps.log('hook-refused', { ...about, keyVersion: signature.version, reason: 'the signature does not match the key for this repo, hook and version' });
+    return { statusCode: 401, body: 'signature does not match' };
+  }
+  const now = (deps.now ?? Date.now)();
+  if (Math.abs(now - signature.t * 1000) > HOOK_CLOCK_SKEW_MS) {
+    deps.log('hook-refused', { ...about, keyVersion: signature.version, t: signature.t, reason: 'the signature\'s time is more than five minutes from the receiver\'s clock' });
+    return { statusCode: 401, body: 'signature time is more than five minutes from the receiver\'s clock' };
+  }
+  const owner = repo.slice(0, repo.indexOf('/'));
+  if (!ownerListed(deps.owners, owner)) {
+    // Never an error: a stranger with a key of their own must not page anyone.
+    deps.log('hook-ignored', { level: 'info', ...about, reason: `${repo}'s owner ${owner} is not on the owner list` });
+    return { statusCode: 200, body: `${repo}'s owner is not on the owner list: nothing queued` };
+  }
+  // The caller signed it, so the operator may need to see why it went nowhere.
+  const unread = (/** @type {number} */ statusCode, /** @type {string} */ body) => {
+    deps.log('hook-refused', { ...about, keyVersion: signature.version, status: statusCode, reason: body });
+    return { statusCode, body };
+  };
+  /** @type {any} */
+  let body;
+  try {
+    body = JSON.parse(raw.toString('utf8'));
+  } catch {
+    return unread(400, 'body is not JSON');
+  }
+  const text = body !== null && typeof body === 'object' ? body.text : undefined;
+  if (typeof text !== 'string' || text.trim() === '') return unread(400, 'body holds no text: send {"text": "..."}');
+  if (Buffer.byteLength(text) > HOOK_TEXT_LIMIT) return unread(413, `text is over ${HOOK_TEXT_LIMIT} bytes`);
+  const fire = { ...build.hook({ hook, keyVersion: signature.version, text, at: new Date(now).toISOString() }), repo };
+  // The fire rides to the task in its container override: one too heavy
+  // for it would fail at the starter on every attempt, where no caller hears.
+  if (overrideWeight(fire) > OVERRIDE_BUDGET) return unread(413, 'text is too long to start a task with: send less');
+  const messageId = await queueFire({ fire, reason: `hook ${hook} fired in ${repo}` }, signature.hex, deps);
+  return { statusCode: 202, body: `queued ${messageId}: hook ${hook} fired in ${repo}` };
 };
 
 /**

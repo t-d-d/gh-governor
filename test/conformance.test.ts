@@ -9,8 +9,8 @@ import { CHECKS, runAll, runCheck } from '../scripts/conformance.mjs';
 const check = (id: string, findings: string[], env = ['X']) => ({ id, env, run: async () => ({ findings }) });
 
 describe('the conformance runner', () => {
-  test('runs the two read-backs the deploy names, each by its own variable', () => {
-    assert.deepEqual(CHECKS.map((c) => [c.id, c.env]), [['app-events', ['GOVERNOR_APP_SLUG']], ['webhook-url', ['GOVERNOR_STACK']]]);
+  test('runs the three read-backs the deploy names, each by its own variable', () => {
+    assert.deepEqual(CHECKS.map((c) => [c.id, c.env]), [['app-events', ['GOVERNOR_APP_SLUG']], ['webhook-url', ['GOVERNOR_STACK']], ['hook-url', ['GOVERNOR_STACK']]]);
   });
 
   test('a check whose variable is unset is not applicable, out loud, and runs nothing', async () => {

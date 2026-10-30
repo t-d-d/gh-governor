@@ -10,15 +10,16 @@
  * each target's deploy moves (`workflows`), and holds the PR
  * review's checklist and lists (`review`), names the issue
  * governor records its fires on (`heartbeat`, dispatch/heartbeat.mjs), sets how
- * often pickup sweeps its ready tickets (`pickup`, dispatch/pickup.mjs), and lists the
- * recurring sessions the schedule fire starts (`periodics`, dispatch/periodics.mjs).
+ * often pickup sweeps its ready tickets (`pickup`, dispatch/pickup.mjs), lists the
+ * recurring sessions the schedule fire starts (`periodics`, dispatch/periodics.mjs),
+ * and lists the hooks an outside system fires (`hooks`, dispatch/hooks.mjs).
  * Every feature is a switch, off unless the file turns it on, and a turn
  * refuses a fire kind its repo's file does not turn on ({@link switchOf}).
  * Every switch is generic: the schema accepts none by repo. The file holds
  * no secret: a served repo may be public.
  *
- * Every prompt value, each in `prompts`, the review's `checklist` and each
- * periodic's `prompt`, is the
+ * Every prompt value, each in `prompts`, the review's `checklist`, each
+ * periodic's `prompt` and each hook's, is the
  * text or `{ "file": "<path>" }`, a file in the repo read from the default
  * branch beside the config file ({@link resolveFiles}).
  *
@@ -29,7 +30,7 @@
  */
 
 import { z } from 'zod';
-import { COUNTS, WORKFLOW_PATH } from './webhook/fire.mjs';
+import { COUNTS, HOOK_NAME, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, unknownFills } from './prompts.mjs';
 
 /** Where the file lives, on the repo's default branch. */
@@ -39,13 +40,13 @@ export const CONFIG_PATH = '.github/dispatch.json';
  * The switches any served repo may turn on: pickup, summons, PR and
  * subscribe messages, the red scheduled run, the merge hand-off, CI and
  * deploy messages, branch-run messages, the conflicts check,
- * deployed-label job fires, the PR review, the heartbeat and periodics.
- * Every switch there is.
+ * deployed-label job fires, the PR review, the heartbeat, periodics and
+ * hooks. Every switch there is.
  */
 export const GENERIC_SWITCHES = Object.freeze([
   'pickup', 'summons', 'prMessages', 'subscribeMessages', 'redScheduledRun', 'mergeHandoff',
   'ciMessages', 'deployMessages', 'branchRunMessages', 'conflicts', 'deployedLabels', 'prReview',
-  'heartbeat', 'periodics',
+  'heartbeat', 'periodics', 'hooks',
 ]);
 
 // GitHub's issues query splits its `labels` on commas, so a ready label
@@ -190,6 +191,21 @@ const periodicSchema = z.strictObject({
 });
 
 /**
+ * A hook an outside system fires (dispatch/hooks.mjs): `name`, unique in the
+ * file and safe in a URL path, which the hook's URL ends in and its session
+ * is named after; `prompt`, what the session runs; `keyVersion`, the version
+ * of the hook's key a fire must be signed with. Raising it revokes the key
+ * before it. A version is not a secret: the key is derived from the stack's.
+ */
+const hookSchema = z.strictObject({
+  name: z.string().regex(HOOK_NAME, 'lower-case letters, digits and hyphens, safe in a URL path'),
+  prompt: z.union([z.string().trim().min(1), promptFile]),
+  // At most nine digits, as a request's `v=` and scripts/hook-key.mjs take:
+  // a larger version could never be signed.
+  keyVersion: z.number().int().positive().max(999_999_999),
+});
+
+/**
  * The file's schema. It is the same in every repo: no switch is any one
  * repo's.
  */
@@ -219,9 +235,18 @@ export const configSchema = z.strictObject({
         seen.add(name);
       }
     }),
+  hooks: z.array(hookSchema).default([])
+    .superRefine((list, ctx) => {
+      const seen = new Set();
+      for (const { name } of list) {
+        if (seen.has(name)) ctx.addIssue({ code: 'custom', message: `two hooks are named "${name}": a name is unique in the file` });
+        seen.add(name);
+      }
+    }),
 }).refine((c) => c.features.prReview !== true || c.review !== undefined, { message: 'prReview is on, so the file needs a review section with its checklist', path: ['review'] })
   .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue', path: ['heartbeat'] })
-  .refine((c) => c.features.periodics !== true || c.periodics.length > 0, { message: 'periodics is on, so the file lists at least one periodic', path: ['periodics'] });
+  .refine((c) => c.features.periodics !== true || c.periodics.length > 0, { message: 'periodics is on, so the file lists at least one periodic', path: ['periodics'] })
+  .refine((c) => c.features.hooks !== true || c.hooks.length > 0, { message: 'hooks is on, so the file lists at least one hook', path: ['hooks'] });
 
 /**
  * @typedef {{ ci?: string, triage: string[], tags: Record<string, string> }} Workflows
@@ -242,7 +267,8 @@ export const configSchema = z.strictObject({
  * @typedef {{ issue: number, marker?: string }} Heartbeat
  * @typedef {{ sweepHours?: number }} Pickup
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number }} Periodic A recurring session, its prompt read.
- * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, pickup?: Pickup, periodics: Periodic[] }} RepoConfig
+ * @typedef {{ name: string, prompt: string, keyVersion: number }} Hook A hook an outside system fires, its prompt read.
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, pickup?: Pickup, periodics: Periodic[], hooks: Hook[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
  *   ready labels the claim takes off, and a failed launch puts back.
@@ -255,7 +281,8 @@ export const configSchema = z.strictObject({
  *   marker in the old shape.
  *   `pickup`: pickup's sweep interval, where the file sets one.
  *   `periodics`: the recurring sessions the schedule fire starts.
- * @typedef {Omit<RepoConfig, 'prompts' | 'review' | 'periodics'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile }, periodics: Array<Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }> }} FileConfig
+ *   `hooks`: the hooks an outside system fires.
+ * @typedef {Omit<RepoConfig, 'prompts' | 'review' | 'periodics' | 'hooks'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile }, periodics: Array<Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }>, hooks: Array<Omit<Hook, 'prompt'> & { prompt: string | PromptFile }> }} FileConfig
  *   The file as read, before {@link resolveFiles} reads the prompt files it names.
  */
 
@@ -327,10 +354,11 @@ export const resolveFiles = async (config, read) => {
   /** @type {string[]} */
   const faults = [];
   const entries = Object.entries(config.prompts).filter(/** @returns {e is [string, string | PromptFile]} */ (e) => e[1] !== undefined);
-  const [texts, checklist, periodicTexts] = await Promise.all([
+  const [texts, checklist, periodicTexts, hookTexts] = await Promise.all([
     Promise.all(entries.map(([kind, value]) => textOf(`prompts.${kind}`, value))),
     config.review === undefined ? null : textOf('review.checklist', config.review.checklist),
     Promise.all(config.periodics.map((p) => textOf(`periodics.${p.name}.prompt`, p.prompt))),
+    Promise.all(config.hooks.map((h) => textOf(`hooks.${h.name}.prompt`, h.prompt))),
   ]);
   entries.forEach(([kind], i) => {
     const got = /** @type {{ text: string } | { fault: string }} */ (texts[i]);
@@ -347,10 +375,17 @@ export const resolveFiles = async (config, read) => {
     if ('fault' in got) faults.push(got.fault);
     else periodics.push({ ...p, prompt: got.text });
   });
+  /** @type {Hook[]} */
+  const hooks = [];
+  config.hooks.forEach((h, i) => {
+    const got = /** @type {{ text: string } | { fault: string }} */ (hookTexts[i]);
+    if ('fault' in got) faults.push(got.fault);
+    else hooks.push({ ...h, prompt: got.text });
+  });
   if (faults.length > 0) return { ok: false, fault: faults.join('; ') };
   const review = config.review === undefined || checklist === null || 'fault' in checklist ? undefined : { ...config.review, checklist: checklist.text };
   const { review: _file, ...rest } = config;
-  return { ok: true, config: { ...rest, prompts, periodics, ...(review === undefined ? {} : { review }) } };
+  return { ok: true, config: { ...rest, prompts, periodics, hooks, ...(review === undefined ? {} : { review }) } };
 };
 
 /** A cloud environment ID: anything else in `environment` is a name. */
@@ -414,6 +449,7 @@ export const switchOf = (fire, workflows = NO_WORKFLOWS) => {
     case 'conflicts': return 'conflicts';
     case 'review': return 'prReview';
     case 'periodics': return 'periodics';
+    case 'hook': return 'hooks';
     default: return null;
   }
 };

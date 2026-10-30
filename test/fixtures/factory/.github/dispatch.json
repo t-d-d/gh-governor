@@ -24,7 +24,8 @@
     "deployedLabels": true,
     "mergeHandoff": true,
     "heartbeat": true,
-    "periodics": true
+    "periodics": true,
+    "hooks": true
   },
   "heartbeat": {
     "issue": 412,
@@ -53,6 +54,13 @@
         "issuesClosed": 10
       },
       "gapHours": 4
+    }
+  ],
+  "hooks": [
+    {
+      "name": "operator-prod",
+      "prompt": "A prod alarm fired. Read the alarm's text below, find the cause in the logs, and fix it or raise an issue saying what broke.",
+      "keyVersion": 1
     }
   ],
   "workflows": {

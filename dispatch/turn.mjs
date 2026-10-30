@@ -102,6 +102,7 @@ import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '..
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
+import { hookFor, hookPrompt } from './hooks.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
 import { repoServed, servedRepos } from './repos.mjs';
 import { CONFIG_PATH, switchOf, turnsOn } from './repo-config.mjs';
@@ -473,7 +474,17 @@ export const run = async (event, deps) => {
     const name = switchOf(invocation, one.config.workflows);
     if (name !== null && !turnsOn(one.config, name)) {
       refusal = `${repo}'s ${CONFIG_PATH} does not turn ${name} on`;
-      deps.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, reason: refusal });
+      // A hook fired into a repo that turned hooks off is a caller someone
+      // forgot: worth a look, not a page.
+      deps.log('dispatch-refused', { level: invocation.kind === 'hook' ? 'warn' : 'info', repo, kind: invocation.kind, reason: refusal });
+    } else if (invocation.kind === 'hook') {
+      // The receiver read no file: a hook it lists no more, or a key version
+      // it has moved past, is refused here (dispatch/hooks.mjs).
+      const found = hookFor(one.config, invocation);
+      if ('refusal' in found) {
+        refusal = found.refusal;
+        deps.log(found.event, { level: found.level, repo, kind: invocation.kind, hook: invocation.hook, keyVersion: invocation.keyVersion, reason: refusal });
+      }
     }
   }
   /** The sessions this turn messaged, and when: a result from before is not the reply. @type {Map<string, number>} */
@@ -1368,8 +1379,13 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         })));
       }
     }
-    // A scheduled red after a red plans nothing: the red before started the session that is on it.
+  } else if (invocation.kind === 'hook') {
+    // `run` refused a hook the file does not list at this key version.
+    const found = hookFor(configOf(fireRepo()), invocation);
+    if ('refusal' in found) throw new Error(found.refusal);
+    plan.push({ issue: null, repo: fireRepo(), prompt: hookPrompt(found.hook.prompt, invocation), sessionName: found.hook.name, model: DEFAULT_MODEL });
   } else if (!(invocation.kind === 'dispatch' && invocation.scheduled !== undefined && await redBefore(invocation.scheduled, getReader, deps))) {
+    // Not a scheduled red after a red: that one plans nothing, since the red before started the session that is on it.
     plan.push({
       issue: null,
       repo: fireRepo(),
