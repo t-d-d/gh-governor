@@ -172,8 +172,10 @@ const shellWord = (word) => (/^[A-Za-z0-9_./:@=,+-]+$/.test(word) ? word : `'${w
 
 /**
  * The two commands that save the key and the URL, for an owner who runs them
- * by hand. The secret's comes through a pipe, so the key is in no command
- * line, and its run repeats the flags this one was given.
+ * by hand. The secret's run repeats the flags this one was given. Its key goes
+ * to a shell variable and from there to gh's stdin through printf, a shell
+ * builtin, so the key is in no command line. A plain pipe would start gh even
+ * when the run fails, and gh would save the empty stdin over a working key.
  *
  * @param {Args} args
  * @param {string} url
@@ -187,7 +189,7 @@ export const saveCommands = (args, url) => {
   ].map(shellWord).join(' ');
   const scope = `--repo ${shellWord(args.repo)} --env <environment>`;
   return [
-    `${run} | gh secret set ${args.keyName} ${scope}`,
+    `key="$(${run})" && printf '%s' "$key" | gh secret set ${args.keyName} ${scope}`,
     `gh variable set ${args.urlName} ${scope} --body ${shellWord(url)}`,
   ];
 };

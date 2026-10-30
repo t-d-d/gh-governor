@@ -227,10 +227,10 @@ node scripts/hook-key.mjs --repo acme/factory --hook operator-prod --env prod [-
 
 The `prod` environment of `acme/factory` then holds the secret `GOVERNOR_HOOK_KEY`, the key as `v<version>.<hex>`, and the variable `GOVERNOR_HOOK_URL`, the hook's full URL. The key never appears on screen. The script reads the key version from the hook's `keyVersion` in the file on the default branch, and the URL from the stack's `WebhookUrl` output. It writes to an environment that exists and creates none: a name it cannot find fails the run and lists the ones there are. `--key-name` and `--url-name` change the two names. `--version <n>` mints that version without reading the file.
 
-An owner who is not an admin of the repo leaves out `--env`. The script then prints the key alone on stdout, and on stderr the hook's URL and the two commands that save both values. Whoever runs them needs admin on the repo and the same AWS access, since the first runs the script again:
+An owner who is not an admin of the repo leaves out `--env`. The script then prints the key alone on stdout, and on stderr the hook's URL and the two commands that save both values. Whoever runs them needs admin on the repo and the same AWS access, since the first runs the script again. The first saves the key only when that run succeeds, so an expired AWS session cannot replace a working key with an empty one:
 
 ```bash
-node scripts/hook-key.mjs --repo acme/factory --hook operator-prod | gh secret set GOVERNOR_HOOK_KEY --repo acme/factory --env <environment>
+key="$(node scripts/hook-key.mjs --repo acme/factory --hook operator-prod)" && printf '%s' "$key" | gh secret set GOVERNOR_HOOK_KEY --repo acme/factory --env <environment>
 gh variable set GOVERNOR_HOOK_URL --repo acme/factory --env <environment> --body <hook URL>
 ```
 
