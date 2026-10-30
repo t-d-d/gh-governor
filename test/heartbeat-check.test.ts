@@ -143,6 +143,12 @@ describe('the checker reads exactly what governor writes', () => {
     assert.throws(() => checker.readHeartbeat('someone\'s ticket'), /governor:heartbeat/);
   });
 
+  test('a line pairing first read with a fire\'s state, or last fire with not fired yet, is not governor\'s, as governor reads it', () => {
+    const body = BODY.replace(HEARTBEAT_MARKER, `${HEARTBEAT_MARKER}\n- periodic "A": first read ${AT}, session ${SESSION}, open\n- periodic "B": last fire ${AT}, session none, not fired yet\n${HEARTBEAT_END}`);
+    assert.deepEqual(checker.readHeartbeat(body).periodics, []);
+    assert.deepEqual(checker.readHeartbeat(body), readHeartbeat(body));
+  });
+
   test('it uses governor\'s markers', () => {
     assert.equal(checker.HEARTBEAT_MARKER, HEARTBEAT_MARKER);
     assert.equal(checker.HEARTBEAT_END, HEARTBEAT_END);

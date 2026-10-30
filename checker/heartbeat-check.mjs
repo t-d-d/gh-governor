@@ -12,8 +12,9 @@
  * is older than its limit (pickup's sweep interval, a periodic's day limit)
  * plus the caller's tolerance gets one open issue, which closes once the
  * line is fresh again. A periodic governor has read but not fired yet has a
- * line at its first read, and its day limit runs from then. A check that cannot read the file or the issue keeps
- * one issue open saying why, so a broken check is never silence.
+ * line at its first read, and its day limit runs from then. A check that
+ * cannot read the file or the issue keeps one issue open saying why, so a
+ * broken check is never silence.
  *
  * It reads only the keys it needs, without governor's strict schema, so a
  * file using a key added after the caller's pinned commit still reads. It
@@ -68,7 +69,7 @@ const STATES = /** @type {Record<RunState, string>} */ ({
 
 const PICKUP = /^- pickup: last sweep (\S+), started (\d+) sessions?$/;
 const PERIODIC = new RegExp([
-  '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (?:last fire|first read) (\\S+)',
+  '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (last fire|first read) (\\S+)',
   '(?:, by (?:its day limit of (\\d+) days?|(\\d+) (merges?|issues? opened|issues? closed)))?',
   `, session (\\S+), (${Object.values(STATES).join('|')})$`,
 ].join(''));
@@ -84,7 +85,10 @@ const lineOf = (text) => {
   if (pickup !== null) return { pickup: { at: String(pickup[1]), started: Number(pickup[2]) } };
   const m = PERIODIC.exec(text);
   if (m === null) return null;
-  const [, name, at, days, number, counted, session, state] = m;
+  const [, name, read, at, days, number, counted, session, state] = m;
+  // Governor writes `first read` only with `not fired yet`, and `last fire`
+  // only with a fire's state: a line mixing them is not governor's.
+  if ((read === 'first read') !== (state === STATES['not fired'])) return null;
   const count = /** @type {Count | undefined} */ (Object.keys(COUNTED).find((k) => COUNTED[/** @type {Count} */ (k)].includes(String(counted))));
   /** @type {Limit | undefined} */
   const by = days !== undefined ? { days: Number(days) } : count !== undefined ? { count, number: Number(number) } : undefined;
@@ -266,7 +270,7 @@ export const judge = async ({ config, beat, now, toleranceHours, configChanged }
         if (l.state === 'not fired') return { key, title, body: `${markerOf(key)}\nGovernor's heartbeat issue ${issue} says governor first read the periodic ${JSON.stringify(name)} at ${l.at}, ${late} ago, and has never fired it. That is older than ${limitText}.\n\n${tail}\n` };
         return { key, title, body: `${markerOf(key)}\nGovernor's heartbeat issue ${issue} says the periodic ${JSON.stringify(name)} last fired at ${l.at}, ${late} ago. That is older than ${limitText}.\n\nIts state: ${STATES[l.state]}${l.session === null ? '' : `, session ${l.session}`}.\n\n${holdText(l)}\n\n${tail}\n` };
       },
-      (changed, late) => ({ key, title, body: `${markerOf(key)}\nGovernor's heartbeat issue ${issue} has no line for the periodic ${JSON.stringify(name)}, and ${CONFIG_PATH} last changed at ${changed}, ${late} ago. That is older than ${limitText}. Governor has not fired it since the file listed it.\n\n${tail}\n` }));
+      (changed, late) => ({ key, title, body: `${markerOf(key)}\nGovernor's heartbeat issue ${issue} has no line for the periodic ${JSON.stringify(name)}, and ${CONFIG_PATH} last changed at ${changed}, ${late} ago. That is older than ${limitText}. Governor writes a periodic's line when it first reads it, so either governor has not read it since the file listed it, or it could not write the line.\n\n${tail}\n` }));
   }
   return out;
 };

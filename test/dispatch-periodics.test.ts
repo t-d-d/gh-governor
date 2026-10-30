@@ -231,6 +231,16 @@ describe('duePeriodics', () => {
     assert.deepEqual((await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: raced, now: NOW, log })).beats, []);
   });
 
+  test('on the sweep, a baseline not yet due comes back as its first-read line again, at the baseline\'s time; an event\'s turn does not resend it', async () => {
+    const baseline = { at: ago(2), session: null, baseline: true };
+    const { due, beats } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: store({ 'Weekly retro': baseline }), now: NOW, log });
+    assert.deepEqual(due, []);
+    assert.deepEqual(beats, [{ name: 'Weekly retro', at: baseline.at, session: null, state: 'not fired' }]);
+    const counted = { ...RETRO, counts: { merges: 3 } };
+    const event = await duePeriodics({ repo: REPO, open: finished, periodics: [counted], state: store({ 'Weekly retro': baseline }), now: NOW, log, window: async () => [], event: 'merges' });
+    assert.deepEqual(event.beats, []);
+  });
+
   test('a read that fails refuses that periodic, and is never a missing record', async () => {
     const state = store({ 'Weekly retro': new Error('AccessDeniedException'), Daily: { at: ago(2), session: 's', baseline: false } });
     const { due, unread } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO, { name: 'Daily', prompt: 'x', days: 1 }], state, now: NOW, log });

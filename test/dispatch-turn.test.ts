@@ -5042,6 +5042,13 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
     assert.deepEqual(h.read(), { periodics: [{ name: CODE.name, at: AT, session: null, state: 'not fired' }] });
   });
 
+  test('a sweep writes a baseline\'s line that an earlier turn failed to write, at the baseline\'s time', async () => {
+    const h = beating();
+    h.periodics.set(key(RETRO.name), { at: ago(DAY), session: null, baseline: true });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: ago(DAY), session: null, state: 'not fired' });
+  });
+
   test('a baseline after a lost record keeps the line\'s last real fire, so the late run still shows', async () => {
     const body = `${BEFORE}${HEARTBEAT_MARKER}\n- periodic "${RETRO.name}": last fire ${EARLIER}, by its day limit of 7 days, session ${OLD}, signed off\n${HEARTBEAT_END}${AFTER}`;
     const h = beating({ body });

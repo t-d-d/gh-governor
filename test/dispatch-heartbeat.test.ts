@@ -158,4 +158,9 @@ describe('the governor block: a line for pickup and one per periodic', () => {
     assert.ok(!stamped.includes('something typed here'));
     assert.deepEqual(readHeartbeat(stamped).pickup, { at: EARLIER, started: 1 });
   });
+
+  test('a first read pairs only with not fired yet, and a last fire never with it: a mixed line is not governor\'s', () => {
+    const body = BODY.replace(HEARTBEAT_MARKER, `${HEARTBEAT_MARKER}\n- periodic "A": first read ${EARLIER}, session ${SESSION}, open\n- periodic "B": last fire ${EARLIER}, session none, not fired yet\n${HEARTBEAT_END}`);
+    assert.deepEqual(readHeartbeat(body).periodics, []);
+  });
 });

@@ -103,7 +103,7 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 const PICKUP = /^- pickup: last sweep (\S+), started (\d+) sessions?$/;
 const PERIODIC = new RegExp([
-  '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (?:last fire|first read) (\\S+)',
+  '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (last fire|first read) (\\S+)',
   '(?:, by (?:its day limit of (\\d+) days?|(\\d+) (merges?|issues? opened|issues? closed)))?',
   `, session (\\S+), (${Object.values(STATES).join('|')})$`,
 ].join(''));
@@ -129,7 +129,10 @@ const lineOf = (text) => {
   if (pickup !== null) return { pickup: { at: String(pickup[1]), started: Number(pickup[2]) } };
   const m = PERIODIC.exec(text);
   if (m === null) return null;
-  const [, name, at, days, number, counted, session, state] = m;
+  const [, name, read, at, days, number, counted, session, state] = m;
+  // Governor writes `first read` only with `not fired yet`, and `last fire`
+  // only with a fire's state: a line mixing them is not governor's.
+  if ((read === 'first read') !== (state === STATES['not fired'])) return null;
   const count = /** @type {Count | undefined} */ (Object.keys(COUNTED).find((k) => COUNTED[/** @type {Count} */ (k)].includes(String(counted))));
   /** @type {Limit | undefined} */
   const by = days !== undefined ? { days: Number(days) } : count !== undefined ? { count, number: Number(number) } : undefined;
@@ -188,10 +191,11 @@ export const readHeartbeat = (body) => {
  * `body` with governor's block changed by `beat`: pickup's line replaced,
  * each periodic's line given the fields its change names (a periodic with
  * no line and no fire time gets none; a `not fired` change, from a baseline,
- * only adds a missing line and never replaces one), then each open or held line whose
- * session signed off marked so, its fire time kept. Lines the change does
- * not name stay; a line in the block governor did not write is dropped.
- * Nothing outside the block changes. Throws where the body lacks the marker.
+ * only adds a missing line and never replaces one), then each open or held
+ * line whose session signed off marked so, its fire time kept. Lines the
+ * change does not name stay; a line in the block governor did not write is
+ * dropped. Nothing outside the block changes. Throws where the body lacks
+ * the marker.
  *
  * @param {string | null | undefined} body
  * @param {Beat} beat
