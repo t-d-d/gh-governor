@@ -111,8 +111,8 @@ spends the one claude.ai login.
   key, under the prefix rule in dispatcher-state.md: the workflow cursors
   and their delivered records (`workflow#<repo>#<file>`), the conflicts
   records (`conflicts#<repo>`), each periodic's record
-  (`periodic#<repo>`) and each repo's last pickup sweep (`pickup#<repo>`)
-  among them.
+  (`periodic#<repo>`), each hook's last session (`hook#<repo>`) and each
+  repo's last pickup sweep (`pickup#<repo>`) among them.
 
 ## Examples
 

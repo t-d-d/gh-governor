@@ -302,9 +302,9 @@ const harness = (over: Record<string, unknown> = {}) => {
         return true;
       },
       hookSession: async (repo: string, name: string) => hooks.get(`${repo}#${name}`) ?? null,
-      // A conditional write, as the table's: only over the record the turn read.
+      // A conditional write, as the table's: only over the session the turn read.
       recordHookSession: async (repo: string, name: string, read: unknown, record: { session: string; at: string }) => {
-        if (JSON.stringify(hooks.get(`${repo}#${name}`) ?? null) !== JSON.stringify(read)) return false;
+        if ((hooks.get(`${repo}#${name}`)?.session ?? null) !== ((read as { session: string } | null)?.session ?? null)) return false;
         hooks.set(`${repo}#${name}`, record);
         hookWrites.push({ repo, name, record });
         return true;
@@ -5391,6 +5391,25 @@ describe('run — hooks', () => {
     assert.equal(h.launches[0]!.prompt, hookPrompt(FACTORY_HOOK.prompt, parseFire(hookFire()) as never));
     assert.equal(h.hooks.get(key())?.session, 'https://claude.ai/code/session_01ABC');
     assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('a refused send that ran past the launch window starts nothing, and fails the turn, so the fire never goes quietly unanswered', async () => {
+    let clock = NOW;
+    const h = harness({
+      now: () => clock,
+      message: async ({ session }: { session: string }) => {
+        clock += SCHEDULE_LAUNCH_WINDOW_MS + 1;
+        return { status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session.replace(/^.*\//, '')} is archived and cannot accept new messages` }) };
+      },
+    });
+    h.hooks.set(key(), lastSession('session_01OPEN'));
+    const result = turn(await run(hookFire(), h.deps as never));
+    assert.deepEqual(h.launches, []);
+    assert.deepEqual(h.hookWrites, []);
+    const line = h.logged.find((l) => l.event === 'dispatch-hook-unstarted');
+    assert.equal(line?.level, 'error');
+    assert.equal(line?.hook, FACTORY_HOOK.name);
+    assert.equal(exitCodeFor(result as never), 1);
   });
 
   test('a send that fails without a refusal starts nothing beside the session, which may be live, and fails the turn', async () => {

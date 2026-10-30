@@ -1308,7 +1308,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const unread = [];
   /** The periodics whose record the bare fire could not read, baseline, or write after a launch. @type {Array<{ repo: string, error: string }>} */
   const periodicsUnread = [];
-  /** The hooks whose session the turn started and could not record. @type {Array<{ repo: string, error: string }>} */
+  /** The hooks whose session the turn started and could not record, or ran out of time to start. @type {Array<{ repo: string, error: string }>} */
   const hooksUnrecorded = [];
   /** The served repos whose last sweep the bare fire could not read, or whose sweep it could not record. @type {Array<{ repo: string, error: string }>} */
   const sweepsUnread = [];
@@ -1419,14 +1419,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // message. A read that fails, of the record or of the session, throws:
     // the fire is refused, never taken for no record or a closed session.
     const read = await deps.state.hookSession(fireRepo(), name);
-    let open = false;
-    if (read !== null) {
-      try {
-        open = await runOpen(deps)(read.session);
-      } catch (error) {
-        throw new Error(`hook ${name}: its last session ${read.session} could not be read: ${messageOf(error)}`);
-      }
-    }
+    const open = read !== null && await runOpen(deps)(read.session).catch((error) => {
+      throw new Error(`hook ${name}: its last session ${read.session} could not be read: ${messageOf(error)}`);
+    });
     if (read !== null && open) {
       /** @type {import('./deliveries.mjs').Delivery} */
       let told;
@@ -1543,6 +1538,13 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       if (deps.now() - started > SCHEDULE_LAUNCH_WINDOW_MS) {
         deps.log('dispatch-launch', { undispatched: plan.slice(i).map((e) => ({ repo: e.repo, issue: e.issue })), reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, another launch might outrun the deadline; each is left unmarked for the next fire` });
         for (const e of plan.slice(i)) if (e.issue !== null) leftOver.add(e.repo);
+        // A hook fire is not tried again: one left unstarted fails the turn,
+        // so the alarm it carried is not lost quietly.
+        for (const e of plan.slice(i)) {
+          if (e.hook === undefined) continue;
+          deps.log('dispatch-hook-unstarted', { level: 'error', repo: e.repo, hook: e.hook.name, reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, its session was not started and the fire is not tried again` });
+          hooksUnrecorded.push({ repo: e.repo, error: `hook ${e.hook.name}: out of time, its session was not started` });
+        }
         break;
       }
       const ticket = entry.issue === null ? null : { repo: entry.repo, issue: entry.issue };
