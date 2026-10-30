@@ -192,12 +192,12 @@ In Node:
 
 ```js
 import { createHmac } from 'node:crypto';
-const [version, key] = process.env.HOOK_KEY.slice(1).split('.'); // the stored value, v<version>.<hex>
-const url = process.env.HOOK_RECEIVER_URL; // the stack's WebhookUrl, ending in a slash
+const [version, key] = process.env.GOVERNOR_HOOK_KEY.slice(1).split('.'); // the stored value, v<version>.<hex>
+const url = process.env.GOVERNOR_HOOK_URL; // the hook's full URL, as scripts/hook-key.mjs saved it
 const body = JSON.stringify({ text });
 const t = Math.floor(Date.now() / 1000);
 const sha256 = createHmac('sha256', key).update(`${t}.${body}`).digest('hex');
-await fetch(new URL('hooks/acme/factory/operator-prod', url), { method: 'POST', body, headers: { 'content-type': 'application/json', 'governor-signature': `v=${version},t=${t},sha256=${sha256}` } });
+await fetch(url, { method: 'POST', body, headers: { 'content-type': 'application/json', 'governor-signature': `v=${version},t=${t},sha256=${sha256}` } });
 ```
 
 The known answer in test/dispatch-hook.test.ts checks a caller's code: under the hook secret `hook-secret-fake`, `acme/factory`'s `operator-prod` at version 1 has the key `205f2b1f…`, and that test gives the header for one body and time.
@@ -219,13 +219,22 @@ Governor reads the repo's file on its own schedule and on GitHub events, and kee
 
 A `202` means queued, not started. The task then refuses a fire whose repo turns `hooks` off or lists no hook of that name, logged at warn, and one signed with a key version other than the hook's `keyVersion`, which pages as `governor-hook-key-stale`. Otherwise it starts one session in the repo's environment. Each fire starts a new session.
 
-**Minting a key.** Each hook's key is derived from the stack's secret `governor/hook-secret`, the repo, the hook's name and its key version, so governor stores no key. The owner mints one with an AWS identity that may read that secret:
+**Minting a key.** Each hook's key is derived from the stack's secret `governor/hook-secret`, the repo, the hook's name and its key version, so governor stores no key. The owner runs the key script once per hook, after the pull request that adds the hook has merged. It needs an AWS identity that may read that secret and the stack's outputs, and the `gh` CLI logged in as an admin of the repo:
 
 ```bash
-node scripts/hook-key.mjs --repo acme/factory --hook operator-prod --version 1 [--profile <p>]
+node scripts/hook-key.mjs --repo acme/factory --hook operator-prod --env prod [--profile <p>] [--stack governor]
 ```
 
-It prints `v1.<hex>` and nothing else. That is the one value the caller stores, as a secret on its side. Rotating `governor/hook-secret` replaces every hook's key at once.
+The `prod` environment of `acme/factory` then holds the secret `GOVERNOR_HOOK_KEY`, the key as `v<version>.<hex>`, and the variable `GOVERNOR_HOOK_URL`, the hook's full URL. The key never appears on screen. The script reads the key version from the hook's `keyVersion` in the file on the default branch, and the URL from the stack's `WebhookUrl` output. It writes to an environment that exists and creates none: a name it cannot find fails the run and lists the ones there are. `--key-name` and `--url-name` change the two names. `--version <n>` mints that version without reading the file.
+
+An owner who is not an admin of the repo leaves out `--env`. The script then prints the key alone on stdout, and on stderr the hook's URL and the two commands that save both values, for an admin to run:
+
+```bash
+node scripts/hook-key.mjs --repo acme/factory --hook operator-prod | gh secret set GOVERNOR_HOOK_KEY --repo acme/factory --env <environment>
+gh variable set GOVERNOR_HOOK_URL --repo acme/factory --env <environment> --body <hook URL>
+```
+
+Rotating `governor/hook-secret` replaces every hook's key at once.
 
 **Revoking a key.** Raise the hook's `keyVersion` in the file in a pull request and merge it. Until governor next reads the file, the task refuses each fire signed with the old key. After that read, the receiver answers each one `401` before it reaches the queue. Either way each one logs `hook-key-stale` and pages as `governor-hook-key-stale`. Then mint the new version's key and give it to the caller. The repo's other hooks keep working throughout. To retire a hook, remove it from the file: once governor has read the file, the receiver answers its caller `401` and logs it at warn, which pages nobody.
 
