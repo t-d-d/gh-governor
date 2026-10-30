@@ -42,7 +42,9 @@
  *
  * With no record, for a new periodic or a lost item, the turn writes now as
  * the baseline and starts nothing: the first run comes one day limit later,
- * and a lost record costs at most one late run, never a burst. A read that
+ * and a lost record costs at most one late run, never a burst. The baseline
+ * writes the periodic's heartbeat line where it has none, so the repo can
+ * see governor has read it. A read that
  * fails refuses the periodic for the turn, and is never a missing record;
  * so does a window that cannot be read, which is never an empty one.
  */
@@ -223,9 +225,11 @@ const inGap = (periodic, read, now) => {
  * `event` are read, and only against that count, so the event's turn starts
  * nothing the sweep would not; the rest of its counts are read for the
  * prompt once it is due. A due periodic whose last run is still `open` is
- * held, and is not due. A held fire and a nothing-to-do come back as the
- * heartbeat lines they change (dispatch/heartbeat.mjs): a held one keeps
- * the open run's start and names its session.
+ * held, and is not due. A held fire, a nothing-to-do and a baseline this
+ * turn wrote come back as the heartbeat lines they change
+ * (dispatch/heartbeat.mjs): a held one keeps the open run's start and names
+ * its session, and a baseline's says it has not fired yet, which the block
+ * takes only where it has no line for the periodic.
  *
  * @param {{
  *   repo: string,
@@ -288,6 +292,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       try {
         const written = await state.recordPeriodic(repo, name, null, { at, session: null, baseline: true });
         log('dispatch-periodic', { repo, periodic: name, outcome: written ? 'baseline' : 'baseline already written', at });
+        if (written) beats.push({ name, at, session: null, state: 'not fired' });
       } catch (error) {
         const message = messageOf(error);
         log('dispatch-periodic-unrecorded', { level: 'error', repo, periodic: name, error: message, reason: 'its baseline could not be written' });

@@ -104,6 +104,25 @@ describe('the governor block: a line for pickup and one per periodic', () => {
     assert.deepEqual(readHeartbeat(body).periodics, [{ name: 'Code review', at: EARLIER, session: SESSION, state: 'held' }]);
   });
 
+  test('a periodic governor has read but not fired gets a first-read line, with no session, and reads back', () => {
+    const body = stampHeartbeat(BODY, { periodics: [{ name: 'Weekly retro', at: EARLIER, session: null, state: 'not fired' }] });
+    assert.match(body, /^- periodic "Weekly retro": first read 2026-10-28T08:00:00\.000Z, session none, not fired yet$/m);
+    assert.deepEqual(readHeartbeat(body).periodics, [{ name: 'Weekly retro', at: EARLIER, session: null, state: 'not fired' }]);
+  });
+
+  test('a first read only adds a missing line, and never replaces one', () => {
+    const fired = stampHeartbeat(BODY, { periodics: [{ name: 'Weekly retro', at: EARLIER, by: { days: 7 }, session: SESSION, state: 'signed off' }] });
+    assert.equal(stampHeartbeat(fired, { periodics: [{ name: 'Weekly retro', at: AT, session: null, state: 'not fired' }] }), fired);
+    const read = stampHeartbeat(BODY, { periodics: [{ name: 'Weekly retro', at: EARLIER, session: null, state: 'not fired' }] });
+    assert.equal(stampHeartbeat(read, { periodics: [{ name: 'Weekly retro', at: AT, session: null, state: 'not fired' }] }), read, 'a second first read keeps the first');
+  });
+
+  test('the first real fire replaces a first-read line', () => {
+    const read = stampHeartbeat(BODY, { periodics: [{ name: 'Weekly retro', at: EARLIER, session: null, state: 'not fired' }] });
+    const fired = stampHeartbeat(read, { periodics: [{ name: 'Weekly retro', at: AT, by: { days: 7 }, session: SESSION, state: 'open' }] });
+    assert.deepEqual(readHeartbeat(fired).periodics, [{ name: 'Weekly retro', at: AT, by: { days: 7 }, session: SESSION, state: 'open' }]);
+  });
+
   test('a periodic change with no line and no fire time writes nothing', () => {
     assert.deepEqual(readHeartbeat(stampHeartbeat(BODY, { periodics: [{ name: 'Code review', state: 'held' }] })).periodics, []);
   });

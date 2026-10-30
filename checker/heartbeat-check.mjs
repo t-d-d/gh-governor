@@ -11,7 +11,8 @@
  * and one per periodic (dispatch/heartbeat.mjs). Each line whose last fire
  * is older than its limit (pickup's sweep interval, a periodic's day limit)
  * plus the caller's tolerance gets one open issue, which closes once the
- * line is fresh again. A check that cannot read the file or the issue keeps
+ * line is fresh again. A periodic governor has read but not fired yet has a
+ * line at its first read, and its day limit runs from then. A check that cannot read the file or the issue keeps
  * one issue open saying why, so a broken check is never silence.
  *
  * It reads only the keys it needs, without governor's strict schema, so a
@@ -40,7 +41,7 @@ const DAY_MS = 24 * HOUR_MS;
 /**
  * @typedef {'merges' | 'issuesOpened' | 'issuesClosed'} Count
  * @typedef {{ days: number } | { count: Count, number: number }} Limit
- * @typedef {'open' | 'signed off' | 'held' | 'nothing to do'} RunState
+ * @typedef {'open' | 'signed off' | 'held' | 'nothing to do' | 'not fired'} RunState
  * @typedef {{ at: string, started: number }} PickupLine
  * @typedef {{ name: string, at: string, by?: Limit, session: string | null, state: RunState }} PeriodicLine
  * @typedef {{ pickup?: PickupLine, periodics: PeriodicLine[] }} Heartbeat
@@ -62,11 +63,12 @@ const STATES = /** @type {Record<RunState, string>} */ ({
   'signed off': 'signed off',
   held: 'held while that session is open',
   'nothing to do': 'nothing to do',
+  'not fired': 'not fired yet',
 });
 
 const PICKUP = /^- pickup: last sweep (\S+), started (\d+) sessions?$/;
 const PERIODIC = new RegExp([
-  '^- periodic ("(?:[^"\\\\]|\\\\.)*"): last fire (\\S+)',
+  '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (?:last fire|first read) (\\S+)',
   '(?:, by (?:its day limit of (\\d+) days?|(\\d+) (merges?|issues? opened|issues? closed)))?',
   `, session (\\S+), (${Object.values(STATES).join('|')})$`,
 ].join(''));
@@ -259,6 +261,9 @@ export const judge = async ({ config, beat, now, toleranceHours, configChanged }
     await judgeLine(key, line?.at, limit,
       (late) => {
         const l = /** @type {PeriodicLine} */ (line);
+        // A line from the baseline: governor has read the periodic and never
+        // fired it, so its day limit runs from that first read.
+        if (l.state === 'not fired') return { key, title, body: `${markerOf(key)}\nGovernor's heartbeat issue ${issue} says governor first read the periodic ${JSON.stringify(name)} at ${l.at}, ${late} ago, and has never fired it. That is older than ${limitText}.\n\n${tail}\n` };
         return { key, title, body: `${markerOf(key)}\nGovernor's heartbeat issue ${issue} says the periodic ${JSON.stringify(name)} last fired at ${l.at}, ${late} ago. That is older than ${limitText}.\n\nIts state: ${STATES[l.state]}${l.session === null ? '' : `, session ${l.session}`}.\n\n${holdText(l)}\n\n${tail}\n` };
       },
       (changed, late) => ({ key, title, body: `${markerOf(key)}\nGovernor's heartbeat issue ${issue} has no line for the periodic ${JSON.stringify(name)}, and ${CONFIG_PATH} last changed at ${changed}, ${late} ago. That is older than ${limitText}. Governor has not fired it since the file listed it.\n\n${tail}\n` }));

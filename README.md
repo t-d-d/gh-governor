@@ -62,7 +62,7 @@ To use it:
 4. Keep, edit or drop the periodics, and set the checker's labels in `heartbeat.yml`.
 5. Merge them into the default branch through a pull request. The config check runs on it.
 
-Governor writes pickup's line after its next sweep. A periodic's line appears when it first fires, one day limit or one count after governor first reads it. Until then the checker measures from when `dispatch.json` last changed.
+Governor writes pickup's line after its next sweep. A periodic's line appears when governor first reads it, on the next sweep or counted event, and says it has not fired yet. Its first fire comes one day limit or one count later, and replaces the line. Until a line appears, the checker measures from when `dispatch.json` last changed.
 
 ### The schema
 
@@ -287,8 +287,8 @@ The inputs:
 What its issues say:
 
 - **Pickup's sweep is overdue.** Pickup's last sweep is older than `pickup.sweepHours`, or two hours when unset, plus the tolerance. The issue gives the last sweep's time.
-- **A periodic is overdue.** Its last fire is older than its `days` plus the tolerance. The issue names the periodic, gives its last fire time and state, and says whether governor holds it for an open session, with that session's link.
-- **No line.** The file lists pickup or a periodic with no line on the heartbeat issue, and the file last changed longer ago than its limit plus the tolerance.
+- **A periodic is overdue.** Its last fire is older than its `days` plus the tolerance. The issue names the periodic, gives its last fire time and state, and says whether governor holds it for an open session, with that session's link. A periodic governor has read but never fired is measured from when governor first read it, and its issue says it has never fired.
+- **No line.** The file lists pickup or a periodic with no line on the heartbeat issue, and the file last changed longer ago than its limit plus the tolerance. A checker pinned to a commit older than the `not fired yet` state skips such a line, and treats the periodic as having none.
 - **The heartbeat could not be read.** The config file is missing, unreadable, does not parse, or does not turn the heartbeat on in the `{ "issue": <number> }` shape, or the heartbeat issue cannot be read or lacks governor's marker. The issue says which.
 
 The check keeps one issue open for each of these and updates it on each run. It closes the issue, with a comment, once the line is fresh again, the heartbeat reads again, or the file no longer lists the line. While the heartbeat cannot be read, it leaves the other issues as they are. Runs in a repo queue rather than overlap, so two never open the same issue. A failure to list, open or close its issues fails the run.

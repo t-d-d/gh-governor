@@ -66,7 +66,10 @@ spends the one claude.ai login.
   ticket. Under that marker it keeps its own block (`stampHeartbeat`,
   dispatch/heartbeat.mjs): one line for pickup and one per periodic, each
   saying when it last fired, the session, and whether that session signed
-  off, the fire was held, or there was nothing to do. A line's fire time
+  off, the fire was held, or there was nothing to do. A periodic governor
+  has read but not fired yet has a line from its baseline instead: the
+  baseline's time, no session, and `not fired yet`. A baseline only adds a
+  line where none exists, and never replaces one. A line's fire time
   changes only on the fire that line reports: pickup's on the bare schedule
   fire's sweep in which not every claim or launch failed, a periodic's on
   its own fire, whichever turn makes it. A held fire leaves it at the open
@@ -186,4 +189,4 @@ spends the one claude.ai login.
   then hold or redirect a dispatch.
 
 Judgment: that a new per-repo table record keys on its repo, and that a config file holds no secret, no check sees: a key is a string no schema reads, and a secret has no shape the schema can refuse.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28. A hook fire arrives at the receiver on its own path, signed with its hook key, and the switch list gains hooks, since #55, under PRD #53. A turn may queue a fire naming another repo, a blocker's close is handled in each blocked ticket's own repo, and `unblocked` replaces the merge hand-off, since #72.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28. A hook fire arrives at the receiver on its own path, signed with its hook key, and the switch list gains hooks, since #55, under PRD #53. A turn may queue a fire naming another repo, a blocker's close is handled in each blocked ticket's own repo, and `unblocked` replaces the merge hand-off, since #72. A periodic's baseline adds its heartbeat line, in the `not fired yet` state, where it has none, since #52.

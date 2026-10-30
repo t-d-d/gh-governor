@@ -10,7 +10,9 @@
  * block under {@link HEARTBEAT_MARKER}, which the body must already carry,
  * ended by {@link HEARTBEAT_END}: one line for pickup and one per periodic
  * ({@link stampHeartbeat}), each changed only by the fire it reports, and a
- * periodic's state by the sign-off sweep.
+ * periodic's state by the sign-off sweep. A periodic governor has read but
+ * not fired yet gets a line at its baseline's time, which only a missing line
+ * takes.
  */
 
 import { sessionId } from './webhook/subscribe.mjs';
@@ -62,12 +64,15 @@ export const HEARTBEAT_END = '<!-- governor:heartbeat-end -->';
  * @typedef {import('./webhook/fire.mjs').Count} Count
  * @typedef {{ days: number } | { count: Count, number: number }} Limit
  *   What fired a periodic: its day limit, or the count that reached its number.
- * @typedef {'open' | 'signed off' | 'held' | 'nothing to do'} RunState
+ * @typedef {'open' | 'signed off' | 'held' | 'nothing to do' | 'not fired'} RunState
  *   `held`: the fire came due while the session the line names was still open.
+ *   `not fired`: governor wrote the periodic's baseline and has not fired it
+ *   since; the line's time is the baseline's, not a fire's.
  * @typedef {{ at: string, started: number }} PickupLine
  *   The last sweep's time, and how many ticket sessions it started.
  * @typedef {{ name: string, at: string, by?: Limit, session: string | null, state: RunState }} PeriodicLine
- *   `at`: the last fire's time. `by`: the limit that fired it, where known.
+ *   `at`: the last fire's time, or the baseline's while `not fired`. `by`: the
+ *   limit that fired it, where known.
  *   `session`: the session the fire started, null where none did.
  * @typedef {{ pickup?: PickupLine, periodics: PeriodicLine[] }} Heartbeat
  * @typedef {Partial<PeriodicLine> & { name: string }} PeriodicChange
@@ -90,6 +95,7 @@ const STATES = /** @type {Record<RunState, string>} */ ({
   'signed off': 'signed off',
   held: 'held while that session is open',
   'nothing to do': 'nothing to do',
+  'not fired': 'not fired yet',
 });
 
 /** @param {number} n @param {string} one @param {string} many */
@@ -97,7 +103,7 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 const PICKUP = /^- pickup: last sweep (\S+), started (\d+) sessions?$/;
 const PERIODIC = new RegExp([
-  '^- periodic ("(?:[^"\\\\]|\\\\.)*"): last fire (\\S+)',
+  '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (?:last fire|first read) (\\S+)',
   '(?:, by (?:its day limit of (\\d+) days?|(\\d+) (merges?|issues? opened|issues? closed)))?',
   `, session (\\S+), (${Object.values(STATES).join('|')})$`,
 ].join(''));
@@ -110,7 +116,7 @@ const pickupText = ({ at, started }) => `- pickup: last sweep ${at}, started ${p
 
 /** @param {PeriodicLine} line */
 const periodicText = ({ name, at, by, session, state }) =>
-  `- periodic ${JSON.stringify(name)}: last fire ${at}${by === undefined ? '' : `, by ${limitText(by)}`}, session ${session ?? 'none'}, ${STATES[state]}`;
+  `- periodic ${JSON.stringify(name)}: ${state === 'not fired' ? 'first read' : 'last fire'} ${at}${by === undefined ? '' : `, by ${limitText(by)}`}, session ${session ?? 'none'}, ${STATES[state]}`;
 
 /**
  * One line of the block, read; null for a line governor did not write.
@@ -181,7 +187,8 @@ export const readHeartbeat = (body) => {
 /**
  * `body` with governor's block changed by `beat`: pickup's line replaced,
  * each periodic's line given the fields its change names (a periodic with
- * no line and no fire time gets none), then each open or held line whose
+ * no line and no fire time gets none; a `not fired` change, from a baseline,
+ * only adds a missing line and never replaces one), then each open or held line whose
  * session signed off marked so, its fire time kept. Lines the change does
  * not name stay; a line in the block governor did not write is dropped.
  * Nothing outside the block changes. Throws where the body lacks the marker.
@@ -196,6 +203,9 @@ export const stampHeartbeat = (body, beat) => {
   const periodics = [...read.periodics];
   for (const change of beat.periodics ?? []) {
     const i = periodics.findIndex((p) => p.name === change.name);
+    // A baseline is not a fire: after a lost record, the line keeps its last
+    // real fire, so a check still sees the late run.
+    if (change.state === 'not fired' && i !== -1) continue;
     const line = { ...periodics[i], ...change };
     if (line.at === undefined || line.session === undefined || line.state === undefined) continue;
     const full = /** @type {PeriodicLine} */ (line);
