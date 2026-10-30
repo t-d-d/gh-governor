@@ -57,8 +57,8 @@ const has = (issue, label) => (issue.labels ?? []).includes(label);
  * included, so "has blockers" is not "is blocked". Reading it that way would
  * strand a ticket for good the moment anything was ever linked to it — the
  * kind of filter that looks like it is working because it only ever removes
- * rows. A missing entry means nothing was fetched for that issue, which is
- * the same answer as no blockers: not blocked.
+ * rows. No rows means nothing was fetched for that issue, which is the
+ * same answer as no blockers: not blocked.
  *
  * @param {ReadonlyArray<{ state?: string }> | undefined} rows
  */

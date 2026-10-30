@@ -9,8 +9,9 @@
  * nothing and calls GitHub only under the closed issue's repo.
  *
  * Each `unblocked` fire runs in the ticket's repo's own turn, under that
- * repo's config. The turn reads the ticket and its `blocked_by` list there,
- * and acts on the first row of the table that fits ({@link ticketRow}):
+ * repo's config. The turn reads the ticket there, and its `blocked_by` list
+ * only where the ticket carries no dependency summary, and acts on the
+ * first row of the table that fits ({@link ticketRow}):
  *
  * | The ticket | The turn | Switch |
  * |---|---|---|

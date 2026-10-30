@@ -20,7 +20,7 @@
 
 import { DISPATCH_WINDOW_MS, recentlyDispatched } from '../../dispatch/webhook/fire.mjs';
 import { promptFor, sessionName } from './dispatch-prompt.mjs';
-import { byAge, selectReadyWork } from './ready-work.mjs';
+import { byAge, isBlocked, selectReadyWork } from './ready-work.mjs';
 
 /**
  * @typedef {{ issue?: number, repo: string, prompt: string, sessionName: string }} Dispatch
@@ -101,7 +101,7 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     // pass, so only a row without one asks for its `blocked_by` rows.
     if (candidate.openBlockers === undefined) {
       const blocking = await guarded(repo, () => reader.blockers(candidate.number));
-      if (blocking === null || selectReadyWork([candidate], { cap: 1, blockers: new Map([[candidate.number, blocking]]), labels }).length === 0) continue;
+      if (blocking === null || isBlocked(candidate, blocking)) continue;
     }
     const comments = await guarded(repo, () => reader.comments(candidate.number, { since }));
     if (comments === null || recentlyDispatched(comments, now, windowMs)) continue;

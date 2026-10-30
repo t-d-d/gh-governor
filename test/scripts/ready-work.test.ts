@@ -136,7 +136,7 @@ describe('selectReadyWork — native blockers', () => {
  * it. The summary's open count, `openBlockers` on the row, decides where
  * the row carries one.
  */
-describe('selectReadyWork — the dependency summary', () => {
+describe('selectReadyWork: the dependency summary', () => {
   test('drops an issue whose summary counts an open blocker, with no rows', () => {
     assert.deepEqual(selectReadyWork([issue(1, { openBlockers: 1 })], { labels: FACTORY_LABELS, cap: 5 }), []);
   });
