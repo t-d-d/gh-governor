@@ -11,6 +11,7 @@ The README says what governor does, how a repo opts in, and how to deploy it. Th
 - [Conflicts after a merge](#conflicts-after-a-merge)
 - [The PR review](#the-pr-review)
 - [Prompts](#prompts)
+- [Hooks](#hooks)
 - [When a repo's file goes wrong](#when-a-repos-file-goes-wrong)
 - [The webhook](#the-webhook)
 - [Invoking by hand](#invoking-by-hand)
@@ -73,7 +74,7 @@ The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`, `hoo
 | Dispatched run on another branch finished | Any outcome | A message to the session that wrote its commit | `branchRunMessages` |
 | PR opened, ready, pushed to, or its body or base edited | Not a draft; by an owner, member or collaborator | The PR review | `prReview` |
 | Workflow run finished on a PR's head | The PR is open | The PR review, at that head | `prReview` |
-| A signed `POST /hooks/<owner>/<repo>/<hook>` | The signature matches the hook's key, within five minutes; the file lists the hook at that key version | One session on the hook's prompt, with the caller's text below it | `hooks` |
+| A signed `POST /hooks/<owner>/<repo>/<hook>` | The signature matches the hook's key, within five minutes; the file lists the hook at that key version | One session on the hook's prompt, with the caller's text below it, or a message into the hook's last session while it is open | `hooks` |
 
 A mention starts a session only from someone with a say in the repo. A bot cannot, and neither can a session, whose posts end in the Claude Code footer. On a PR a session owns, a mention starts nobody: the owner is messaged instead.
 
@@ -219,6 +220,18 @@ A periodic is a recurring session a repo lists in its config file, with a name, 
 - **The record.** A launch that started, or may have, writes the new record, and only over the record the fire read, so two turns never both record one fire. The write comes after the launch, so it is the one task at a time that keeps two turns from both starting a periodic. A failed launch writes nothing, the periodic stays due, and the rest of its repo waits for the next fire (`dispatch-repo-skipped`), as after a ticket's failed launch.
 - **A failed read.** A record or a count that cannot be read refuses that periodic for the turn, and is never taken for a missing record or an empty count. The turn logs `dispatch-periodic-unread` and exits 1. A record that could not be written after a launch logs `dispatch-periodic-unrecorded` and exits 1, since the next fire may start the periodic again.
 
+## Hooks
+
+A hook is a session an outside system starts with a signed request ([Hooks](../README.md#hooks), `dispatch/hooks.mjs`). The receiver checks the signature and queues a `hook` fire. The task checks the file lists the hook at that key version, then decides whether the fire starts a session or goes into one.
+
+- **The record.** Governor keeps each hook's last session in the state table, under `hook#<repo>` / `<name>`: the session its last launch started, and when. The receiver cannot reach that table.
+- **An open session.** When the record names a session that is neither archived nor gone, the fire goes into it as a message. The message starts with governor's relay line, says which hook fired again and when, quotes the caller's text line by line as the caller's data, and ends with the session's standing line, like every other message. It does not repeat the hook's prompt, which the session already has. Nothing starts, and the record stays. Governor reads the session's state the way the periodics' hold does: its own record over the sessions API, under the login's token, refreshed first if it has expired.
+- **A closed session, or none.** When the session is archived, by the sign-off sweep or by hand, or the API no longer has it, or there is no record, the fire starts a new session on the hook's prompt, named after the hook, in the repo's environment. A session archived between the read and the send refuses the message, and the fire starts a new one the same way. A send that fails any other way starts nothing, since the session may be live, and the turn exits 1.
+- **Writing the record.** A launch that printed a session writes the record naming it, only over the record the turn read, so two turns never both start a session for one hook. Another record standing, or a write that fails, logs `dispatch-hook-unrecorded` at error and the turn exits 1, since the next fire may start a second session.
+- **A failed read.** A record, or a session's state, that cannot be read refuses the fire, and the turn exits 1. It is never taken for a missing record or a closed session.
+- **A lost record.** With no record, the next fire starts one session and records it. The fires after it go into that session, so a lost record costs at most one extra session, never a burst.
+- **Two hooks.** Each hook has its own record, so a fire for one hook never messages another hook's session.
+
 ## The heartbeat
 
 A repo turns the heartbeat on and names one issue, `"heartbeat": { "issue": <number> }`, so a check outside governor can read when each thing governor runs for it last ran and how it ended (`dispatch/heartbeat.mjs`). The issue's body must already carry `<!-- governor:heartbeat -->`. Governor keeps its own block under that marker, ended by `<!-- governor:heartbeat-end -->`, and changes nothing else in the body:
@@ -249,6 +262,7 @@ A file in the older shape, `"heartbeat": { "issue": <number>, "marker": "<!-- â€
 | A repo's launch started nothing | `dispatch-repo-skipped` | `governor-repo-skipped` |
 | A hook fire for a repo whose file turns `hooks` off, or lists no hook of that name | `dispatch-refused`, at warn | none |
 | A hook fire signed with a key version other than the hook's `keyVersion` | `hook-key-stale`, at error, naming the repo, hook and version | `governor-hook-key-stale` |
+| A hook's record, or its last session, could not be read, or its record written after a launch | the turn throws, or `dispatch-hook-unrecorded`; the turn exits 1 | `governor-errors` |
 | A periodic's record, or its last run's session, could not be read, or its baseline written | `dispatch-periodic-unread` or `dispatch-periodic-unrecorded`; that periodic waits and the turn exits 1 | `governor-errors` |
 | The installation list or a token mint failed | `dispatch-failed` | `governor-errors` |
 

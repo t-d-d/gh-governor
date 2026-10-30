@@ -41,6 +41,10 @@ group.
   put only over the record the turn read, and never expired. A missing one
   is the baseline, and a failed read refuses the periodic
   (dispatch/periodics.mjs).
+- A hook's last session: `hook#<repo>` / `<name>` in `dynamoState`, put
+  after a launch that printed a session, only over the record the turn read,
+  and never expired. A missing one starts a session, and a failed read
+  refuses the fire (dispatch/hooks.mjs).
 - A repo's last pickup sweep: `pickup#<repo>` / `sweep` in `dynamoState`,
   put only where none or an earlier sweep stands, and never expired. A
   missing one means sweep now, and a failed read refuses the repo's sweep

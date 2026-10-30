@@ -102,7 +102,7 @@ The switches in `features`:
 | `prReview` | The PR review, run from the `review` section. |
 | `heartbeat` | Governor records each fire on the issue `heartbeat` names: a line for pickup and one per periodic. In the older shape with a `marker`, the two-hourly sweep stamps the issue's `last-run:` line instead. |
 | `periodics` | A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached. |
-| `hooks` | A session per signed request to one of the `hooks` listed, on that hook's prompt. |
+| `hooks` | A session on a hook's prompt when a signed request fires one of the `hooks` listed. A fire while the hook's last session is open goes into that session as a message. |
 
 `workflows`:
 
@@ -212,7 +212,7 @@ The known answer in test/dispatch-hook.test.ts checks a caller's code: under the
 | `404` | The path under `/hooks/` names no repo and hook. |
 | `413` | The text is over 32 KiB, or too long to start a task with. |
 
-A `202` means queued, not started. The task then refuses a fire whose repo turns `hooks` off or lists no hook of that name, logged at warn, and one signed with a key version other than the hook's `keyVersion`, which pages as `governor-hook-key-stale`. Otherwise it starts one session in the repo's environment. Each fire starts a new session.
+A `202` means queued, not started. The task then refuses a fire whose repo turns `hooks` off or lists no hook of that name, logged at warn, and one signed with a key version other than the hook's `keyVersion`, which pages as `governor-hook-key-stale`. Otherwise, if the hook's last session is still open, the fire goes into it as a message: governor's relay line, then which hook fired and when, the caller's text quoted as the caller's data, and the session's standing line. So one session covers a burst of alarms. Once that session has signed off and been archived, or archived by hand, the next fire starts a new session in the repo's environment. A fire for one hook never reaches another hook's session.
 
 **Minting a key.** Each hook's key is derived from the stack's secret `governor/hook-secret`, the repo, the hook's name and its key version, so governor stores no key. The owner mints one with an AWS identity that may read that secret:
 
