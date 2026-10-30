@@ -227,7 +227,7 @@ node scripts/hook-key.mjs --repo acme/factory --hook operator-prod --env prod [-
 
 The `prod` environment of `acme/factory` then holds the secret `GOVERNOR_HOOK_KEY`, the key as `v<version>.<hex>`, and the variable `GOVERNOR_HOOK_URL`, the hook's full URL. The key never appears on screen. The script reads the key version from the hook's `keyVersion` in the file on the default branch, and the URL from the stack's `WebhookUrl` output. It writes to an environment that exists and creates none: a name it cannot find fails the run and lists the ones there are. `--key-name` and `--url-name` change the two names. `--version <n>` mints that version without reading the file.
 
-An owner who is not an admin of the repo leaves out `--env`. The script then prints the key alone on stdout, and on stderr the hook's URL and the two commands that save both values, for an admin to run:
+An owner who is not an admin of the repo leaves out `--env`. The script then prints the key alone on stdout, and on stderr the hook's URL and the two commands that save both values. Whoever runs them needs admin on the repo and the same AWS access, since the first runs the script again:
 
 ```bash
 node scripts/hook-key.mjs --repo acme/factory --hook operator-prod | gh secret set GOVERNOR_HOOK_KEY --repo acme/factory --env <environment>

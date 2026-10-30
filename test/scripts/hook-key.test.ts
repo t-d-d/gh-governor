@@ -190,6 +190,8 @@ describe('scripts/hook-key.mjs', () => {
 
     test('a missing config file fails the run, naming the repo and the hook', () => {
       noVersion(new Error('gh: Not Found (HTTP 404)'));
+      const f = fakes({ config: new Error('gh: Not Found (HTTP 404)') });
+      assert.throws(() => run(parseArgs(['--repo', 'acme/factory', '--hook', 'operator-prod']), f.io), /cannot see/, 'a private repo gh cannot read answers 404 too');
     });
 
     test('an invalid config file fails the run', () => {
@@ -278,6 +280,13 @@ describe('scripts/hook-key.mjs', () => {
       );
       assert.deepEqual(f.gh.filter((c) => c.argv[0] !== 'api'), []);
       assert.deepEqual(f.out, []);
+      assert.equal(f.aws.some((c) => c.argv[0] === 'secretsmanager'), false, 'the hook secret is not read for a run that writes nothing');
+    });
+
+    test('matches the environment\'s name in any case, as GitHub does', () => {
+      const f = fakes({ pages: [['dev', 'prod']] });
+      run(parseArgs(['--repo', 'acme/factory', '--hook', 'operator-prod', '--env', 'Prod']), f.io);
+      assert.deepEqual(f.gh.filter((c) => c.argv[0] !== 'api').map((c) => c.argv[0]), ['secret', 'variable']);
     });
 
     test('a repo with no environments fails the run and writes nothing', () => {
@@ -291,6 +300,11 @@ describe('scripts/hook-key.mjs', () => {
         const f = fakes({ failSet });
         assert.throws(() => run(parseArgs(['--repo', 'acme/factory', '--hook', 'operator-prod', '--env', 'prod']), f.io), /Resource not accessible/);
       }
+    });
+
+    test('a variable write that fails after the secret saved says the secret is saved', () => {
+      const f = fakes({ failSet: 'variable' });
+      assert.throws(() => run(parseArgs(['--repo', 'acme/factory', '--hook', 'operator-prod', '--env', 'prod']), f.io), /holds the secret GOVERNOR_HOOK_KEY.*GOVERNOR_HOOK_URL failed/);
     });
   });
 });

@@ -135,7 +135,7 @@ const configuredVersion = ({ repo, hook }, gh) => {
     text = gh(['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${CONFIG_PATH}`]);
   } catch (error) {
     const message = /** @type {Error} */ (error).message;
-    if (/HTTP 404/.test(message)) throw refuse(`${repo} has no ${CONFIG_PATH} on its default branch`);
+    if (/HTTP 404/.test(message)) throw refuse(`${repo} has no ${CONFIG_PATH} on its default branch, or gh cannot see the repo`);
     throw new Error(`gh could not read ${CONFIG_PATH} from ${repo} for hook ${hook}: ${message}`);
   }
   const read = readConfig(text);
@@ -205,6 +205,16 @@ export const run = (args, io) => {
   if (base === undefined) throw new Error(`stack ${stack} has no ${URL_OUTPUT} output, so there is no URL for the hook`);
   const url = hookUrl(base, args.repo, args.hook);
   const version = args.version ?? configuredVersion(args, io.gh);
+  if (args.env !== undefined) {
+    // GitHub matches an environment's name in any case. Checked before the
+    // hook secret is read, so a run that can write nothing never reads it.
+    const wanted = args.env.toLowerCase();
+    const names = environmentsOf(args.repo, io.gh);
+    if (!names.some((name) => name.toLowerCase() === wanted)) {
+      throw new Error(`${args.repo} has no environment named ${args.env}, and this script creates none. `
+        + (names.length === 0 ? `${args.repo} has no environments.` : `Its environments: ${names.join(', ')}.`));
+    }
+  }
   const key = keyLine({ repo: args.repo, hook: args.hook, version, ...(args.profile ? { profile: args.profile } : {}) }, (secretId, profile) => io.aws([
     'secretsmanager', 'get-secret-value', '--secret-id', secretId, '--query', 'SecretString', '--output', 'text',
     ...(profile ? ['--profile', profile] : []),
@@ -218,14 +228,13 @@ export const run = (args, io) => {
     return;
   }
 
-  const names = environmentsOf(args.repo, io.gh);
-  if (!names.includes(args.env)) {
-    throw new Error(`${args.repo} has no environment named ${args.env}, and this script creates none. `
-      + (names.length === 0 ? `${args.repo} has no environments.` : `Its environments: ${names.join(', ')}.`));
-  }
   const scope = ['--repo', args.repo, '--env', args.env];
   io.gh(['secret', 'set', args.keyName, ...scope], key);
-  io.gh(['variable', 'set', args.urlName, ...scope, '--body', url]);
+  try {
+    io.gh(['variable', 'set', args.urlName, ...scope, '--body', url]);
+  } catch (error) {
+    throw new Error(`${args.repo}'s ${args.env} environment now holds the secret ${args.keyName}, but saving the variable ${args.urlName} failed: ${/** @type {Error} */ (error).message}`);
+  }
   io.out(`${args.repo}, environment ${args.env}:`);
   io.out(`  secret ${args.keyName}: the hook's key, version ${version}`);
   io.out(`  variable ${args.urlName}: ${url}`);
