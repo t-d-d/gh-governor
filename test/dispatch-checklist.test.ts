@@ -213,6 +213,15 @@ describe('tests 1 and 7, decided in code before any model call', () => {
     }
   });
 
+  test('a body closing another repo\'s issue and closing one below its top names both in the one fail, so one edit meets it', async () => {
+    const h = await ask({ body: 'Closes #748\nCloses other/repo#9\n\nThis fixes #840 and fixes else/where#3.' });
+    const text = h.text;
+    assert.match(text, edit, text);
+    assert.ok(text.includes('`fixes #840`'), text);
+    assert.ok(text.includes('other/repo#9') && text.includes('else/where#3'), text);
+    assert.ok(text.includes('outside this repo'), text);
+  });
+
   test('this repo\'s own issue closed by `owner/repo#N` or by URL is a closing ticket, as before', async () => {
     for (const body of [`Closes ${REPO}#748`, `Closes https://github.com/${REPO}/issues/748`]) {
       const h = await ask({ body });

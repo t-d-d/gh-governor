@@ -377,12 +377,27 @@ const foreignFailure = (foreign) => {
   const [first] = foreign;
   if (first === undefined) return [];
   const named = foreign.map(({ repo, number, text }) => `${repo}#${number} (\`${text}\`)`).join(', ');
-  const many = foreign.length > 1;
   return [{
     number: first.number,
-    reason: `the body closes ${named}, ${many ? 'issues' : 'an issue'} in another repo, and a PR closes tickets in its own repo only: for each, close it from a PR in its own repo, or open an issue here and mark it as blocked by that issue, then take the reference out of this body`,
+    reason: `the body closes ${named}, ${foreign.length > 1 ? 'issues' : 'an issue'} outside this repo, and a PR closes tickets in its own repo only: for each, close it from a PR in its own repo, or open an issue here and mark it as blocked by that issue, then take the reference out of this body`,
     editable: true,
   }];
+};
+
+/**
+ * Test 1's fail for the body's own closing references, below its top
+ * (`proseFailure`) and to another repo's issue (`foreignFailure`), as one
+ * fail naming both, so one edit meets it; none when there are none.
+ *
+ * @param {Array<{ number: number, text: string }>} prose
+ * @param {Array<{ repo: string, number: number, text: string }>} foreign
+ * @returns {Array<{ number: number, reason: string, editable: boolean }>}
+ */
+const referenceFailure = (prose, foreign) => {
+  const failures = [...proseFailure(prose), ...foreignFailure(foreign)];
+  const [first] = failures;
+  if (first === undefined || failures.length === 1) return failures;
+  return [{ number: first.number, reason: failures.map((f) => f.reason).join('; and '), editable: true }];
 };
 
 /**
@@ -535,7 +550,7 @@ export const checksFailure = (red) => (red.length === 0 ? null : {
  */
 export const decideInCode = ({ files, tickets, rules, others = [], owners = { verification: [], later: [] }, prose = [], foreign = [], red = [], unattended = false }) => {
   const failures = ticketFailures(tickets, others, rules);
-  const ticket = ticketFailure([...failures, ...proseFailure(prose), ...foreignFailure(foreign)]);
+  const ticket = ticketFailure([...failures, ...referenceFailure(prose, foreign)]);
   // Each ticket that passes test 1 on its own decides its quoted files,
   // whatever the other tickets do. A claim is the one test-1 fail the
   // author session meets, so a ready ticket's files are its own already:
@@ -706,7 +721,7 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  *   others: Array<{ number: number, closes: number[] }>,
  *   owners: { verification: ClosedTicket[], later: ClosedTicket[] },
  *   prose: Array<{ number: number, text: string }>,
- *   foreign?: Array<{ repo: string, number: number, text: string }>,
+ *   foreign: Array<{ repo: string, number: number, text: string }>,
  *   red?: string[],
  *   constraintTexts: (paths: string[]) => Promise<ConstraintTexts>,
  *   unattended: () => Promise<boolean>,
@@ -727,7 +742,7 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  * @param {Judge} judge
  * @returns {Promise<Answer>}
  */
-export const checklist = async ({ pull, files, tickets, others, owners, prose, foreign = [], red = [], constraintTexts, unattended, held = null, rules }, judge) => {
+export const checklist = async ({ pull, files, tickets, others, owners, prose, foreign, red = [], constraintTexts, unattended, held = null, rules }, judge) => {
   const decide = (/** @type {boolean} */ unwatched) => decideInCode({ files, tickets, rules, others, owners, prose, foreign, red, unattended: unwatched });
   // The table is read only where a label's waiver changes the answer: a
   // read that fails then fails no review it could not change.

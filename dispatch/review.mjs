@@ -145,9 +145,10 @@ const constraintTexts = async (reader, pull, paths) => {
  * A PR's facts for the checklist, read from GitHub: its changed files, the
  * tickets its top lines close, the other open PRs closing any of them, the
  * owners its Verification table and Left for later name, its prose
- * closings, and its closings of another repo's issue. The quoted files' texts are read only if the checklist asks
- * for them, and so is whether governor started the session the body
- * names: a body naming none is no session of governor's. A number no
+ * closings, and its closings of another repo's issue. The quoted files'
+ * texts are read only if the checklist asks for them, and so is whether
+ * governor started the session the body names: a body naming none is no
+ * session of governor's. A number no
  * issue answers to, or one moved to another repository's issue, is a
  * missing ticket.
  *

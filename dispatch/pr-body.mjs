@@ -160,8 +160,8 @@ const onlyReferences = (line, matches) => {
  * is on one of the body's top `Closes #N` lines: `#N`, a colon after the
  * keyword included, and this repository's issue by its URL or
  * `owner/repo#N`, which GitHub closes too. Another repository's issue is
- * none of this one's: `foreignClosings` reads those. Code is read like the rest: nothing says GitHub
- * skips a reference in it.
+ * none of this one's: `foreignClosings` reads those. Code is read like
+ * the rest: nothing says GitHub skips a reference in it.
  *
  * The top is the body's opening lines, blank lines and HTML comments
  * holding no closing reference aside (`withoutQuietComments`), each holding
