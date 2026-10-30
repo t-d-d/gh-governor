@@ -145,6 +145,33 @@ Resources:
         AttributeName: ttl
         Enabled: true
 
+  # The receiver's own table (dispatch/webhook/hook-table.mjs): one item per
+  # served repo, listing each hook's name, key version and hourly cap, which
+  # the task writes each time it reads the repo's file and the receiver reads
+  # before it queues a hook fire; and one item per hook and clock hour, the
+  # receiver's count of that hook's fires, expired by ttl. Apart from the
+  # state table because the receiver is internet-facing and the state table
+  # holds records other checks trust (docs/constraints/dispatcher-state.md).
+  # Built the same way; no point-in-time recovery: a lost item costs task
+  # starts, and the task still refuses a stale key.
+  DispatchHookTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
   DispatchCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -205,6 +232,12 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
                 Resource: !GetAtt DispatchStateTable.Arn
+              # Each served repo's hooks, put each time the turn reads its
+              # file (dispatch/webhook/hook-table.mjs); never read back.
+              - Sid: WriteTheHookTable
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt DispatchHookTable.Arn
 
   # The execution role: what ECS does on the task's behalf before and around
   # it. Pull the one image, write the one log group.
@@ -294,6 +327,8 @@ Resources:
             # Where each label's cursor under its workflow lives.
             - Name: DISPATCH_STATE_TABLE
               Value: !Ref DispatchStateTable
+            - Name: DISPATCH_HOOK_TABLE
+              Value: !Ref DispatchHookTable
             # The fire lane the sign-off wait counts (scripts/lib/session-signoff.mjs).
             - Name: DISPATCH_FIRES_QUEUE_URL
               Value: !Ref DispatchFiresQueue
@@ -518,11 +553,28 @@ Resources:
           MetricValue: '1'
           DefaultValue: 0
 
+  # The receiver refuses a key version older than the hook table's
+  # (dispatch/webhook/route.mjs) and logs the same event, which pages the
+  # same alarm. The receiver logs each line as one object, which Lambda's
+  # JSON log format nests under `message`. Matched on that field alone: an
+  # unsigned request's path and headers are logged too, and a term anywhere
+  # in the line would let a stranger page the operator.
+  WebhookHookKeyStaleFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref WebhookLogGroup
+      FilterPattern: '{ $.message.event = "hook-key-stale" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: HookKeysStale
+          MetricValue: '1'
+          DefaultValue: 0
+
   HookKeyStaleAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-hook-key-stale
-      AlarmDescription: '[tripwire] A hook fire was signed with a key version its repo''s .github/dispatch.json has moved past, so it started nothing. Read /governor for the hook-key-stale line; it names the repo, the hook and the version. Whoever sent it holds an old key: if the owner did not raise the version for a caller still to be moved, treat that key as leaked.'
+      AlarmDescription: '[tripwire] A hook fire was signed with a key version its repo''s .github/dispatch.json has moved past, so it started nothing. Read /governor, or /aws/lambda/governor-webhook if the receiver refused it, for the hook-key-stale line; it names the repo, the hook and the version. Whoever sent it holds an old key: if the owner did not raise the version for a caller still to be moved, treat that key as leaked.'
       Namespace: governor
       MetricName: HookKeysStale
       Statistic: Sum
@@ -835,7 +887,8 @@ Resources:
       LogGroupName: /aws/lambda/governor-webhook
       RetentionInDays: 30
 
-  # What the receiver may do: read its two keys, queue a fire. Nothing else: the
+  # What the receiver may do: read its two keys and the hook table, queue a
+  # fire. Nothing else: the
   # starter below is the one thing that starts a task.
   WebhookRole:
     Type: AWS::IAM::Role
@@ -863,6 +916,15 @@ Resources:
                 Effect: Allow
                 Action: sqs:SendMessage
                 Resource: !GetAtt DispatchFiresQueue.Arn
+              # A repo's listed hooks, read before a hook fire is queued, and
+              # each hook's count of fires this hour, raised under its cap.
+              # Nothing on the state table: the receiver faces the internet.
+              - Sid: ReadAndCountTheHookTable
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt DispatchHookTable.Arn
               - Sid: Logs
                 Effect: Allow
                 Action:
@@ -893,6 +955,7 @@ Resources:
         Variables:
           WEBHOOK_SECRET_ID: !Ref WebhookSecret
           HOOK_SECRET_ID: !Ref HookSecret
+          HOOK_TABLE: !Ref DispatchHookTable
           DISPATCH_OWNERS: !Ref DispatchOwners
           SELECT_LABELS: !Ref SelectLabels
           FIRES_QUEUE_URL: !Ref DispatchFiresQueue

@@ -101,6 +101,8 @@ const harness = (over: Record<string, unknown> = {}) => {
   const deps = {
     secret: async () => SECRET,
     hookSecret: async () => 'hook-secret-test',
+    listedHooks: async () => null,
+    countFire: async () => true,
     owners: OWNERS,
     selectLabels: SELECT_LABELS,
     appId: APP_ID,
@@ -1046,7 +1048,7 @@ describe('routeEvent — a workflow job', () => {
     assert.equal((queued[0]!.message.fire as { kind: string }).kind, 'job');
     assert.equal(queued[0]!.message.github, 'workflow_job');
     assert.ok(logged.some((l) => l.event === 'webhook-queued' && l.kind === 'job'), JSON.stringify(logged));
-    assert.deepEqual(Object.keys(deps).sort(), ['appId', 'enqueue', 'hookSecret', 'log', 'owners', 'secret', 'selectLabels'], 'the receiver holds no GitHub reader');
+    assert.deepEqual(Object.keys(deps).sort(), ['appId', 'countFire', 'enqueue', 'hookSecret', 'listedHooks', 'log', 'owners', 'secret', 'selectLabels'], 'the receiver holds no GitHub reader');
   });
 });
 

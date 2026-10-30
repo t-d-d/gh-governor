@@ -63,13 +63,16 @@
  * A hook is the one request not GitHub's: an outside system posts signed
  * text to `/hooks/<owner>/<repo>/<hook>` (hook.mjs), and the receiver queues
  * a `hook` fire naming the hook, the key version and the text
- * ({@link handleHook}). Every other path is a GitHub delivery.
+ * ({@link handleHook}), unless the hook table says the repo's file lists no
+ * such hook or has moved past that key version, or the hook has had its
+ * hourly cap of fires (hook-table.mjs). Every other path is a GitHub
+ * delivery.
  *
  * Pure: `handle` takes its I/O as `deps`. handler.mjs binds the real ones.
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
+import { HOOK_KEY_STALE, HOOK_PER_HOUR, OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
 import { HOOK_CLOCK_SKEW_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 
@@ -499,6 +502,8 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
  * @typedef {{
  *   secret: () => Promise<string>,
  *   hookSecret: () => Promise<string>,
+ *   listedHooks: import('./hook-table.mjs').HookTable['listed'],
+ *   countFire: import('./hook-table.mjs').HookTable['count'],
  *   now?: () => number,
  *   owners: readonly string[],
  *   selectLabels?: readonly string[] | undefined,
@@ -507,8 +512,11 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
  *   log: (event: string, context?: Record<string, unknown>) => void,
  * }} Deps
  *   `secret`: GitHub's webhook key. `hookSecret`: the stack's hook secret,
- *   every hook key's root (hook.mjs). `now`: the receiver's clock, which a
- *   hook's timestamp is held to.
+ *   every hook key's root (hook.mjs). `listedHooks`: the repo's item in the
+ *   hook table (hook-table.mjs), the hooks its file listed when the task last
+ *   read it. `countFire`: one more fire of a hook in the clock hour, taken
+ *   only under its cap (hook-table.mjs). `now`: the receiver's clock, which a
+ *   hook's timestamp is held to and an hour's count is kept by.
  *
  * @typedef {{ path?: string | undefined, headers: Record<string, string | undefined>, body?: string | undefined, isBase64Encoded?: boolean | undefined }} Request
  *   `path`: the Function URL's raw path, a hook's (`/hooks/…`) or GitHub's.
@@ -606,8 +614,12 @@ export const handle = async (request, deps) => {
  * One hook request. 401 for one whose signature is missing, malformed, does
  * not match the key for its path's repo, hook and version, or was made more
  * than five minutes from the receiver's clock; 200 for one whose owner is not
- * on the list; 400 for a body that holds no text; 413 for text too long; 202
- * for one that queued its fire. Nothing but a 202 queues anything, and no
+ * on the list; 401 for a hook the hook table's item does not list, or a key
+ * version older than the item's; 503 for an item that could not be read; 400
+ * for a body that holds no text; 413 for text too long; 429 for a fire past
+ * the hook's hourly cap; 503 for a count that could not be taken; 202 for one
+ * that queued its fire. A repo with no item yet is queued, under the default
+ * cap, and the task decides. Nothing but a 202 queues anything, and no
  * line logs the signature or a key. The fire's deduplication id is the
  * signature, so a replay inside the queue's window is not a second fire.
  *
@@ -639,6 +651,26 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
     deps.log('hook-ignored', { level: 'info', ...about, reason: `${repo}'s owner ${owner} is not on the owner list` });
     return { statusCode: 200, body: `${repo}'s owner is not on the owner list: nothing queued` };
   }
+  /** @type {ReadonlyMap<string, import('./hook-table.mjs').Listed> | null} */
+  let listed;
+  try {
+    listed = await deps.listedHooks(repo);
+  } catch (error) {
+    // Never taken for a missing item: that would queue a revoked key.
+    deps.log('hook-table-unread', { level: 'error', ...about, error: String(/** @type {any} */ (error)?.message ?? error) });
+    return { statusCode: 503, body: 'could not read the hook table: try again' };
+  }
+  const current = listed?.get(hook);
+  if (listed !== null && current === undefined) {
+    // A caller someone forgot: worth a look, not a page.
+    deps.log('hook-refused', { level: 'warn', ...about, keyVersion: signature.version, reason: `${repo}'s config file, as governor last read it, lists no hook ${hook}` });
+    return { statusCode: 401, body: `${repo} lists no hook ${hook}` };
+  }
+  if (current !== undefined && signature.version < current.keyVersion) {
+    // Only a holder of a once-valid key can sign one: the key may have leaked.
+    deps.log(HOOK_KEY_STALE, { level: 'error', ...about, keyVersion: signature.version, reason: `hook ${hook} in ${repo} was fired with key version ${signature.version}, and its file names version ${current.keyVersion}` });
+    return { statusCode: 401, body: `key version ${signature.version} is revoked` };
+  }
   // The caller signed it, so the operator may need to see why it went nowhere.
   const unread = (/** @type {number} */ statusCode, /** @type {string} */ body) => {
     deps.log('hook-refused', { ...about, keyVersion: signature.version, status: statusCode, reason: body });
@@ -658,6 +690,20 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
   // The fire rides to the task in its container override: one too heavy
   // for it would fail at the starter on every attempt, where no caller hears.
   if (overrideWeight(fire) > OVERRIDE_BUDGET) return unread(413, 'text is too long to start a task with: send less');
+  // Counted last, so only a fire that would otherwise queue takes a place.
+  const cap = current?.perHour ?? HOOK_PER_HOUR;
+  let counted;
+  try {
+    counted = await deps.countFire(repo, hook, now, cap);
+  } catch (error) {
+    deps.log('hook-table-uncounted', { level: 'error', ...about, error: String(/** @type {any} */ (error)?.message ?? error) });
+    return { statusCode: 503, body: 'could not count the hook\'s fires: try again' };
+  }
+  if (!counted) {
+    // A flood from a valid key: worth a look, not a page.
+    deps.log('hook-refused', { level: 'warn', ...about, keyVersion: signature.version, status: 429, reason: `hook ${hook} in ${repo} has had its ${cap} fires this hour` });
+    return { statusCode: 429, body: `hook ${hook} takes at most ${cap} fires an hour: try again next hour` };
+  }
   const messageId = await queueFire({ fire, reason: `hook ${hook} fired in ${repo}` }, signature.hex, deps);
   return { statusCode: 202, body: `queued ${messageId}: hook ${hook} fired in ${repo}` };
 };

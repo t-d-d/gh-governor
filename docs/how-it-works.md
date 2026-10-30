@@ -264,6 +264,7 @@ A file in the older shape, `"heartbeat": { "issue": <number>, "marker": "<!-- â€
 | A hook fire for a repo whose file turns `hooks` off, or lists no hook of that name | `dispatch-refused`, at warn | none |
 | A hook fire signed with a key version other than the hook's `keyVersion` | `hook-key-stale`, at error, naming the repo, hook and version | `governor-hook-key-stale` |
 | A hook's record, or its last session, could not be read, its record written after a launch, or its session started inside the launch window | the turn throws, or `dispatch-hook-unrecorded` or `dispatch-hook-unstarted`; the turn exits 1 | `governor-errors` |
+| The repo's hooks could not be written to the hook table | `hook-table-unwritten`, at error; the receiver keeps the last list, and the repo counts as unread | `governor-errors` on a turn that dispatches |
 | A periodic's record, or its last run's session, could not be read, or its baseline written | `dispatch-periodic-unread` or `dispatch-periodic-unrecorded`; that periodic waits and the turn exits 1 | `governor-errors` |
 | The installation list or a token mint failed | `dispatch-failed` | `governor-errors` |
 
@@ -277,7 +278,7 @@ GitHub posts every installation's events to one Lambda Function URL (`governor-w
 - A label added by a bot queues no selection, since governor's own claim and release are a bot's. Subscribers still hear it.
 - A delivery's id is its deduplication id on the queue, so a redelivery is not a second fire.
 
-A request on a `/hooks/<owner>/<repo>/<hook>` path is a hook's, not GitHub's ([Hooks](../README.md#hooks)). The receiver derives the hook's key from `governor/hook-secret`, the repo, the hook and the version the `Governor-Signature` header names, and checks the signature in constant time. It reads no config file, so it does not know whether the repo lists the hook or which version is current: the task checks both (`dispatch/hooks.mjs`). A hook fire's deduplication id is its signature, so a replay inside the queue's five-minute window is not a second fire. No line logs a signature or a key.
+A request on a `/hooks/<owner>/<repo>/<hook>` path is a hook's, not GitHub's ([Hooks](../README.md#hooks)). The receiver derives the hook's key from `governor/hook-secret`, the repo, the hook and the version the `Governor-Signature` header names, and checks the signature in constant time. It reads no config file. What it knows of the repo's hooks is the repo's item in its own table, `DispatchHookTable` (`dispatch/webhook/hook-table.mjs`): each hook's name, `keyVersion` and `perHour`, as the task last read the file. The task writes the item each time it reads a served repo's file, with an empty list when the file turns `hooks` off or lists none. A write that fails logs `hook-table-unwritten` at error. A repo that stops being served keeps its last item. After the signature, the clock and the owner check, the receiver reads the item. A hook it does not list is refused, and so is a key version older than the item's. A repo with no item yet is queued. The task still checks every fire against the file (`dispatch/hooks.mjs`), so a fire queued before the item changed, or after an item was lost, is still refused. Last, the receiver counts the fire against the hook's cap: one item per hook and clock hour in the same table, raised by one conditional `UpdateItem` only while the count is under the hook's `perHour`, or 20 for a repo with no item yet, and expired when the hour ends. Only a request that passed every check before it is counted, so a request with a bad signature, a stale key or no text takes no place in the hour. A fire past the cap is refused, so a leaked key can put at most one hour's cap on the queue every repo shares. The receiver holds `GetItem` and `UpdateItem` on this table and nothing on the state table, since it faces the internet and the state table holds records the PR review trusts. A hook fire's deduplication id is its signature, so a replay inside the queue's five-minute window is not a second fire. No line logs a signature or a key.
 
 Every fire, the schedule's included, goes on `governor-fires.fifo`. The starter (`governor-starter`, `dispatch/webhook/starter.mjs`) runs one task per fire, never beside a running one. A fire that finds a task running goes back on the queue for ten seconds. After half an hour of attempts it goes to the dead-letter queue, and `governor-fires-dead` pages. A task that fails to start (an image pull refused, no placement) is put back on the queue by `governor-retrier`, for three attempts in all.
 
@@ -301,8 +302,13 @@ A hook request's answers, which only its caller sees:
 | `200` | The repo's owner is not on `DispatchOwners`: `hook-ignored` at info, nothing queued. |
 | `400` | The body is not JSON, or holds no string `text`: `hook-refused`, nothing queued. |
 | `401` | The header is missing or malformed, the signature does not match, or `t` is more than five minutes from the receiver's clock: `hook-refused`, nothing queued. |
+| `401` | The hook table's item for the repo does not list the hook: `hook-refused` at warn, nothing queued. |
+| `401` | The key version is older than the one the item names: `hook-key-stale` at error, which pages `governor-hook-key-stale`, nothing queued. |
 | `404` | A path under `/hooks/` that names no repo and hook. |
 | `413` | The text is over 32 KiB, or the fire would not fit the task's container override: `hook-refused`, nothing queued. |
+| `429` | The hook has had its `perHour` fires this clock hour: `hook-refused` at warn, nothing queued. |
+| `503` | The hook table's item could not be read: `hook-table-unread` at error, nothing queued, so the caller sends it again. A failed read is never taken for a missing item. |
+| `503` | The hook's count for the hour could not be raised: `hook-table-uncounted` at error, nothing queued, so the caller sends it again. |
 
 ## Invoking by hand
 
@@ -349,7 +355,7 @@ Every alarm publishes to the `governor-alerts` topic, which emails the address i
 | `governor-claim-stranded` | A ticket was claimed but no marker names its session. It stays claimed; if no session is working on it, put the ready label back. |
 | `governor-config-invalid` | A served repo's file fails the schema. |
 | `governor-repo-skipped` | A repo's launch started nothing; its tickets wait for the next fire. |
-| `governor-hook-key-stale` | A hook fire was signed with a key version the repo's file has moved past (`hook-key-stale`). Unless a caller is still to be moved to the new key, treat the old key as leaked. |
+| `governor-hook-key-stale` | A hook fire was signed with a key version the repo's file has moved past (`hook-key-stale`), refused by the task or, once the hook table has the new version, by the receiver. Unless a caller is still to be moved to the new key, treat the old key as leaked. |
 | `governor-not-started` | EventBridge could not invoke the receiver on the schedule. |
 | `governor-not-run` | Tasks repeatedly failed to start their container. The stop event in `/governor` says why. |
 | `governor-not-run-undelivered` | A stop event could not reach the retrier. Its fire needs sending again by hand. |

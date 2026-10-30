@@ -12,8 +12,9 @@
  * either outside the clock window or carries the same signature, which is
  * the fire's deduplication id on the queue.
  *
- * The receiver reads no config file, so it cannot tell whether the repo lists
- * the hook or which key version is current: the task does
+ * The receiver reads no config file. What it knows of a repo's hooks is the
+ * repo's item in the hook table, which the task writes as it reads the file
+ * (hook-table.mjs). The task still checks every fire against the file
  * (dispatch/hooks.mjs).
  *
  * Pure, and a leaf beside fire.mjs: the Lambda packages dispatch/webhook/

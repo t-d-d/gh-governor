@@ -132,6 +132,8 @@ const harness = (over: Record<string, unknown> = {}) => {
   const eventsRead: Array<{ id: string; token: string }> = [];
   // Each session the turn recorded as governor's own.
   const recorded: string[] = [];
+  // Each write to the receiver's hook table: a repo's hooks as its file was read.
+  const published: Array<{ repo: string; hooks: Array<{ name: string; keyVersion: number; perHour: number }>; at: string }> = [];
   let loginOnDisk: string | null = null;
   const accounts: unknown[] = [];
   const deps = {
@@ -255,6 +257,12 @@ const harness = (over: Record<string, unknown> = {}) => {
     },
     // The fire lane: a fire waits on it unless a test says it is quiet.
     fires: { waiting: async () => 1 },
+    hookTable: {
+      publish: async (repo: string, hooks: Array<{ name: string; keyVersion: number; perHour: number }>, at: string) => {
+        published.push({ repo, hooks, at });
+        return true;
+      },
+    },
     ...over,
     // A conditional write, as the table's: a cursor never moves to an older run.
     // The delivered record merges, as the table's update does. A test's
@@ -314,7 +322,7 @@ const harness = (over: Record<string, unknown> = {}) => {
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, recorded, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, recorded, published, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -5484,5 +5492,73 @@ describe('run — hooks', () => {
     assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01DEV', 'https://claude.ai/code/session_01PROD']);
     assert.match(h.messages[0]!.text, new RegExp(`Hook ${DEV.name} fired again`));
     assert.match(h.messages[1]!.text, new RegExp(`Hook ${FACTORY_HOOK.name} fired again`));
+  });
+});
+
+/**
+ * The receiver's hook table (dispatch/webhook/hook-table.mjs): each time the
+ * task reads a served repo's file, it writes the repo's one item, listing
+ * each hook's name and key version, so the receiver refuses a revoked key
+ * or a removed hook before the queue. A repo that is not served keeps its
+ * last item.
+ */
+describe('run: the hook table', () => {
+  const FACTORY_HOOKS = (JSON.parse(FACTORY_FILE).hooks as Array<{ name: string; keyVersion: number; perHour?: number }>).map(({ name, keyVersion, perHour }) => ({ name, keyVersion, perHour: perHour ?? 20 }));
+  const fileWith = (over: Record<string, unknown>) => async (repo: string) => (repo === REPO ? JSON.stringify({ ...JSON.parse(FACTORY_FILE), ...over }) : null);
+  const hookFire = { kind: 'hook', hook: FACTORY_HOOKS[0]!.name, keyVersion: FACTORY_HOOKS[0]!.keyVersion, text: 'ALARM', at: '2026-09-25T11:58:00.000Z', repo: REPO };
+
+  test('a fire naming its repo writes that repo\'s hooks, their key versions and their caps, stamped with the turn\'s time', async () => {
+    const h = harness();
+    await run(hookFire, h.deps as never);
+    assert.deepEqual(h.published, [{ repo: REPO, hooks: FACTORY_HOOKS, at: new Date(NOW).toISOString() }]);
+  });
+
+  test('the bare schedule fire writes every served repo\'s, and none for a repo it does not serve', async () => {
+    const h = harness({ installations: async () => [{ account: 'acme', repos: [REPO, 'acme/unserved'] }] });
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.published.map((p) => p.repo), [REPO]);
+    assert.deepEqual(h.published[0]!.hooks, FACTORY_HOOKS);
+  });
+
+  test('a file that turns hooks off, or lists none, writes an empty list', async () => {
+    for (const over of [{ features: { ...JSON.parse(FACTORY_FILE).features, hooks: false } }, { features: { ...JSON.parse(FACTORY_FILE).features, hooks: false }, hooks: [] }]) {
+      const h = harness({ configFile: fileWith(over) });
+      await run({ kind: 'schedule' }, h.deps as never);
+      assert.deepEqual(h.published.map((p) => p.hooks), [[]], JSON.stringify(over));
+    }
+  });
+
+  test('a raised key version is what the next read writes', async () => {
+    const h = harness({ configFile: fileWith({ hooks: [{ ...JSON.parse(FACTORY_FILE).hooks[0], keyVersion: 2 }] }) });
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.published[0]!.hooks, [{ name: FACTORY_HOOKS[0]!.name, keyVersion: 2, perHour: FACTORY_HOOKS[0]!.perHour }]);
+  });
+
+  test('a hook\'s perHour is what the read writes beside its key version, and 20 when the file leaves it out', async () => {
+    const { perHour: _p, ...unset } = JSON.parse(FACTORY_FILE).hooks[0];
+    const h = harness({ configFile: fileWith({ hooks: [{ ...unset, perHour: 5 }, { ...unset, name: 'operator-dev' }] }) });
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.published[0]!.hooks, [{ name: unset.name, keyVersion: unset.keyVersion, perHour: 5 }, { name: 'operator-dev', keyVersion: unset.keyVersion, perHour: 20 }]);
+  });
+
+  test('a write that fails is logged at error, and the turn goes on and exits 1: the task\'s own checks still hold', async () => {
+    const h = harness({ hookTable: { publish: async () => { throw new Error('AccessDeniedException'); } } });
+    const result = await run(hookFire, h.deps as never) as Record<string, any>;
+    turn(result as never);
+    assert.deepEqual(result.unread, [{ repo: REPO, error: 'hook table: AccessDeniedException' }]);
+    assert.equal(exitCodeFor(result as never), 1);
+    const line = h.logged.find((l) => l.event === 'hook-table-unwritten');
+    assert.equal(line?.level, 'error');
+    assert.equal(line?.repo, REPO);
+    assert.match(String(line?.error), /AccessDeniedException/);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [FACTORY_HOOKS[0]!.name]);
+  });
+
+  test('a write a later read beat is not a fault', async () => {
+    const h = harness({ hookTable: { publish: async () => false } });
+    const result = await run(hookFire, h.deps as never) as Record<string, any>;
+    turn(result as never);
+    assert.equal(result.unread, undefined);
+    assert.ok(!h.logged.some((l) => l.event === 'hook-table-unwritten'));
   });
 });

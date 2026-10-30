@@ -82,7 +82,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.
 | `pickup` | no | `{ "sweepHours": <number> }`: how many whole hours the two-hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default two, which sweeps at every fire. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the switch is on. |
-| `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request ([Hooks](#hooks)). At least one when the switch is on. |
+| `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request ([Hooks](#hooks)), each with an optional `perHour` cap on fires. At least one when the switch is on. |
 
 The switches in `features`:
 
@@ -136,14 +136,15 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 
 A new periodic starts its first session one day limit, or one count, after the first fire that reads it. A periodic never overlaps itself: while the session its last fire started is still open, a due periodic is held. Governor starts nothing, logs the fire as held with that session's link, and leaves the last fire's time alone, so the count keeps growing and the first check after the session is archived fires it. Archived by the sign-off sweep or by hand, or deleted, the run is finished. How governor keeps each one's record is in [docs/how-it-works.md](docs/how-it-works.md#periodics).
 
-`hooks`: a list of hooks, each `{ "name", "prompt", "keyVersion" }`.
+`hooks`: a list of hooks, each `{ "name", "prompt", "keyVersion" }`, with `perHour` if wanted.
 
 - `name`: lower-case letters, digits and hyphens, unique in the file. It ends the hook's URL, and the session is named after it.
 - `prompt`: what the session runs, as text or `{ "file": "<path>" }` read from the default branch. Governor adds lines under it saying which hook fired and when, and quoting the caller's text as the caller's data.
 - `keyVersion` (required): the version of the hook's key a request must be signed with, a positive whole number of at most nine digits. It is not a secret.
+- `perHour`: the most fires governor queues for the hook in one clock hour, a positive whole number. Default 20. A fire past it gets `429`, so a leaked key cannot flood the queue every repo shares.
 
 ```json
-{ "name": "operator-prod", "prompt": { "file": "ops/prod-alarm.md" }, "keyVersion": 1 }
+{ "name": "operator-prod", "prompt": { "file": "ops/prod-alarm.md" }, "keyVersion": 1, "perHour": 20 }
 ```
 
 `prompts`: each value is text, or `{ "file": "<path>" }` read from the default branch. The kinds, and the facts each may name as `{fact}`, are in [docs/how-it-works.md](docs/how-it-works.md#prompts).
@@ -191,12 +192,12 @@ In Node:
 
 ```js
 import { createHmac } from 'node:crypto';
-const [version, key] = process.env.HOOK_KEY.slice(1).split('.'); // the stored value, v<version>.<hex>
-const url = process.env.HOOK_RECEIVER_URL; // the stack's WebhookUrl, ending in a slash
+const [version, key] = process.env.GOVERNOR_HOOK_KEY.slice(1).split('.'); // the stored value, v<version>.<hex>
+const url = process.env.GOVERNOR_HOOK_URL; // the hook's full URL, as scripts/hook-key.mjs saved it
 const body = JSON.stringify({ text });
 const t = Math.floor(Date.now() / 1000);
 const sha256 = createHmac('sha256', key).update(`${t}.${body}`).digest('hex');
-await fetch(new URL('hooks/acme/factory/operator-prod', url), { method: 'POST', body, headers: { 'content-type': 'application/json', 'governor-signature': `v=${version},t=${t},sha256=${sha256}` } });
+await fetch(url, { method: 'POST', body, headers: { 'content-type': 'application/json', 'governor-signature': `v=${version},t=${t},sha256=${sha256}` } });
 ```
 
 The known answer in test/dispatch-hook.test.ts checks a caller's code: under the hook secret `hook-secret-fake`, `acme/factory`'s `operator-prod` at version 1 has the key `205f2b1f…`, and that test gives the header for one body and time.
@@ -208,19 +209,34 @@ The known answer in test/dispatch-hook.test.ts checks a caller's code: under the
 | `202` | The fire was queued. |
 | `200` | The repo's owner is not on the deployment's owner list. Nothing was queued. |
 | `400` | The body is not JSON, or holds no string `text`. |
-| `401` | The header is missing or malformed, the signature does not match, or `t` is more than five minutes from governor's clock. |
+| `401` | The header is missing or malformed, the signature does not match, or `t` is more than five minutes from governor's clock. Also a hook the repo's file did not list when governor last read it, or a key version older than the one it named. |
 | `404` | The path under `/hooks/` names no repo and hook. |
 | `413` | The text is over 32 KiB, or too long to start a task with. |
+| `429` | The hook has had its `perHour` fires this clock hour. Nothing was queued: send it next hour, or not at all. |
+| `503` | Governor could not read what it knows of the repo's hooks, or could not count the fire. Nothing was queued: send it again. |
+
+Governor reads the repo's file on its own schedule and on GitHub events, and keeps the list of hooks, key versions and caps it last read where the receiver can check it. So a new hook answers `401` until governor next reads the file, a raised `keyVersion` turns the old key away at the receiver from then on, and a changed `perHour` holds from then on. Before governor has read the file at all, every signed request is queued, up to 20 an hour per hook.
 
 A `202` means queued, not started. The task then refuses a fire whose repo turns `hooks` off or lists no hook of that name, logged at warn, and one signed with a key version other than the hook's `keyVersion`, which pages as `governor-hook-key-stale`. Otherwise, if the hook's last session is still open, the fire goes into it as a message: governor's relay line, then which hook fired and when, the caller's text quoted as the caller's data, and the session's standing line. So one session covers a burst of alarms. Once that session has signed off and been archived, or archived by hand, the next fire starts a new session in the repo's environment. A fire for one hook never reaches another hook's session.
 
-**Minting a key.** Each hook's key is derived from the stack's secret `governor/hook-secret`, the repo, the hook's name and its key version, so governor stores no key. The owner mints one with an AWS identity that may read that secret:
+**Minting a key.** Each hook's key is derived from the stack's secret `governor/hook-secret`, the repo, the hook's name and its key version, so governor stores no key. The owner runs the key script once per hook, after the pull request that adds the hook has merged. It needs an AWS identity that may read that secret and the stack's outputs, and the `gh` CLI logged in as an admin of the repo:
 
 ```bash
-node scripts/hook-key.mjs --repo acme/factory --hook operator-prod --version 1 [--profile <p>]
+node scripts/hook-key.mjs --repo acme/factory --hook operator-prod --env prod [--profile <p>] [--stack governor]
 ```
 
-It prints `v1.<hex>` and nothing else. That is the one value the caller stores, as a secret on its side. To replace a key, raise the hook's `keyVersion` in the file, merge it, mint the new version's key and give it to the caller. From then on the task refuses each fire signed with the old key, and each one pages. Rotating `governor/hook-secret` replaces every hook's key at once.
+The `prod` environment of `acme/factory` then holds the secret `GOVERNOR_HOOK_KEY`, the key as `v<version>.<hex>`, and the variable `GOVERNOR_HOOK_URL`, the hook's full URL. The key never appears on screen. The script reads the key version from the hook's `keyVersion` in the file on the default branch, and the URL from the stack's `WebhookUrl` output. It writes to an environment that exists and creates none: a name it cannot find fails the run and lists the ones there are. `--key-name` and `--url-name` change the two names. `--version <n>` mints that version without reading the file.
+
+An owner who is not an admin of the repo leaves out `--env`. The script then prints the key alone on stdout, and on stderr the hook's URL and the two commands that save both values. Whoever runs them needs admin on the repo and the same AWS access, since the first runs the script again:
+
+```bash
+node scripts/hook-key.mjs --repo acme/factory --hook operator-prod | gh secret set GOVERNOR_HOOK_KEY --repo acme/factory --env <environment>
+gh variable set GOVERNOR_HOOK_URL --repo acme/factory --env <environment> --body <hook URL>
+```
+
+Rotating `governor/hook-secret` replaces every hook's key at once.
+
+**Revoking a key.** Raise the hook's `keyVersion` in the file in a pull request and merge it. Until governor next reads the file, the task refuses each fire signed with the old key. After that read, the receiver answers each one `401` before it reaches the queue. Either way each one logs `hook-key-stale` and pages as `governor-hook-key-stale`. Then mint the new version's key and give it to the caller. The repo's other hooks keep working throughout. To retire a hook, remove it from the file: once governor has read the file, the receiver answers its caller `401` and logs it at warn, which pages nobody.
 
 ### Immediate pickup needs the ready label in `SelectLabels`
 
@@ -440,7 +456,7 @@ Confirm the alerts subscription from the email AWS sends to the alert address. U
 | Log group | What it holds |
 |---|---|
 | `/governor` | Each turn: one JSON line per decision, such as `dispatch-launch`, `dispatch-signoff`, `dispatch-review`, and `dispatch-failed` on a fault. |
-| `/aws/lambda/governor-webhook` | The receiver: `webhook-queued`, `webhook-ignored` with the reason, `webhook-refused`; for a hook, `hook-refused` with the reason and `hook-ignored`. |
+| `/aws/lambda/governor-webhook` | The receiver: `webhook-queued`, `webhook-ignored` with the reason, `webhook-refused`; for a hook, `hook-refused` with the reason, `hook-ignored`, `hook-key-stale`, `hook-table-unread` and `hook-table-uncounted`. |
 | `/aws/lambda/governor-starter` | The starter: `fire-started` with the task, `fire-deferred` while a task runs, `fire-failed`. |
 
 The App's **Advanced → Recent Deliveries** shows each delivery's answer: `202` queued a fire, `200` queued nothing and says why, `401` is a key that does not match.

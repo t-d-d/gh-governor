@@ -494,6 +494,15 @@ export const ownerListed = (owners, account) => owners.some((o) => o.toLowerCase
  */
 export const HOOK_NAME = /^[a-z0-9-]{1,64}$/;
 
+/**
+ * The most fires a hook takes in a clock hour when its file sets no
+ * `perHour`, and for a repo the hook table has no item for yet.
+ */
+export const HOOK_PER_HOUR = 20;
+
+/** The event a fire signed with a stale key version logs, at error, at the receiver or the task; `governor-hook-key-stale` pages on it. */
+export const HOOK_KEY_STALE = 'hook-key-stale';
+
 /** A repository's `owner/name`, as GitHub spells one. */
 export const REPO_NAME = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 

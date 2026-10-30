@@ -93,6 +93,8 @@ describe('webhook-url — REFUSAL is what the receiver answers an unsigned post'
     const answer = await handle({ headers: { 'content-type': 'application/json' }, body: '{}' }, {
       secret: async () => 'the-stack-key',
       hookSecret: async () => 'the-hook-secret',
+      listedHooks: async () => null,
+      countFire: async () => true,
       owners: ['acme'],
       appId: undefined,
       enqueue: async () => { queued++; return 'm-1'; },
@@ -202,6 +204,8 @@ describe('hook-url — an unsigned post to a hook path', () => {
     const answer = await handle({ path: `/${HOOK_PROBE_PATH}`, headers: { 'content-type': 'application/json' }, body: '{"text":"conformance"}' }, {
       secret: async () => 'the-stack-key',
       hookSecret: async () => 'the-hook-secret',
+      listedHooks: async () => null,
+      countFire: async () => true,
       owners: ['acme'],
       appId: undefined,
       enqueue: async () => { queued++; return 'm-1'; },
