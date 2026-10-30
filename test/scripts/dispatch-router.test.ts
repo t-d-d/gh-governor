@@ -92,6 +92,28 @@ describe('planSchedule', () => {
     assert.ok(!asked.some((a) => / 6\b/.test(a)), `asked about an issue past the cap: ${asked.join('; ')}`);
   });
 
+  test('reads a summary\'s open blocker count off the row, and asks for no blocked_by rows', async () => {
+    // #3's blocker is in a repo the App cannot see: its rows leave it out,
+    // and only the summary counts it.
+    const { reader, asked } = fakeReader({
+      issues: [issue(3, READY, { openBlockers: 1 }), issue(4, READY, { openBlockers: 0 })],
+      blockers: { 4: [{ number: 1, state: 'open', title: 'Blocker' }] },
+    });
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW });
+    assert.deepEqual(plan.map((d) => d.issue), [4]);
+    assert.ok(!asked.some((a) => a.startsWith('blockers')), `asked for blocked_by rows: ${asked.join('; ')}`);
+  });
+
+  test('a row with no summary is judged by its blocked_by rows', async () => {
+    const { reader, asked } = fakeReader({
+      issues: [issue(3, READY), issue(4, READY, { openBlockers: 0 })],
+      blockers: { 3: [{ number: 1, state: 'open', title: 'Blocker' }] },
+    });
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW });
+    assert.deepEqual(plan.map((d) => d.issue), [4]);
+    assert.deepEqual(asked.filter((a) => a.startsWith('blockers')), ['blockers 3']);
+  });
+
   test('picks a ready child of a PRD with no workflow label, and never reads its parent', async () => {
     // Whether a ticket is ready is the repo's own call, on the ticket's own
     // labels: a repo pauses a PRD's work by taking the ready labels off.

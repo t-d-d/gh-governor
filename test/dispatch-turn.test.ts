@@ -1020,7 +1020,7 @@ describe('run — an unblocked fire', () => {
   const OLD_MARKER = dispatchMarker({ at: new Date(NOW - 3 * 24 * 60 * 60 * 1000).toISOString(), sessionUrl: 'https://claude.ai/code/session_01WORK' });
   const blocker = { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' };
   const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' }, ...over });
-  const ticketTurn = ({ labels = READY, state = 'open', blockers = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, features = {} as Record<string, boolean> } = {}) => {
+  const ticketTurn = ({ labels = READY, state = 'open', blockers = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, features = {} as Record<string, boolean>, openBlockers = undefined as number | undefined } = {}) => {
     const asked: string[] = [];
     const file = JSON.parse(FACTORY_FILE);
     file.features = { ...file.features, ...features };
@@ -1031,13 +1031,13 @@ describe('run — an unblocked fire', () => {
         ticket: async (n: number) => {
           asked.push(`${repo} ticket ${n}`);
           // A claim re-reads the ticket; once claimed, it reads claimed.
-          return { number: n, title: `Issue ${n}`, body: '', state, labels, pull: false };
+          return { number: n, title: `Issue ${n}`, body: '', state, labels, pull: false, ...(openBlockers === undefined ? {} : { openBlockers }) };
         },
         blockers: async (n: number) => {
           asked.push(`${repo} blockers ${n}`);
           return blockers;
         },
-        readyIssues: async () => (labels.every((l) => READY.includes(l)) && READY.every((l) => labels.includes(l)) ? [{ ...issue(7), labels }] : []),
+        readyIssues: async () => (labels.every((l) => READY.includes(l)) && READY.every((l) => labels.includes(l)) ? [{ ...issue(7), labels, ...(openBlockers === undefined ? {} : { openBlockers }) }] : []),
         comments: async (n: number) => {
           asked.push(`${repo} comments ${n}`);
           return comments;
@@ -1059,6 +1059,21 @@ describe('run — an unblocked fire', () => {
     const result = await run(fire(), h.deps as never) as Record<string, unknown>;
     assert.equal(result.row, 'blocked');
     assert.deepEqual([h.launches, h.messages, h.comments, labelCalls(h.calls)], [[], [], [], []]);
+  });
+
+  test('a summary counting a blocker its rows leave out: nothing, and no blocked_by rows read', async () => {
+    const h = ticketTurn({ openBlockers: 1 });
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'blocked');
+    assert.deepEqual([h.launches, h.messages, h.comments, labelCalls(h.calls)], [[], [], [], []]);
+    assert.ok(!h.asked.some((a) => a.includes(' blockers ')), h.asked.join('; '));
+  });
+
+  test('a summary counting no open blocker: picked up, whatever the rows say', async () => {
+    const h = ticketTurn({ openBlockers: 0, blockers: [{ number: 43, state: 'open', title: 'y' }] });
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'ready');
+    assert.equal(h.launches.length, 1);
   });
 
   test('closed: nothing', async () => {

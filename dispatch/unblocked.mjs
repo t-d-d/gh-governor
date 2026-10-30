@@ -9,8 +9,9 @@
  * nothing and calls GitHub only under the closed issue's repo.
  *
  * Each `unblocked` fire runs in the ticket's repo's own turn, under that
- * repo's config. The turn reads the ticket and its `blocked_by` list there,
- * and acts on the first row of the table that fits ({@link ticketRow}):
+ * repo's config. The turn reads the ticket there, and its `blocked_by` list
+ * only where the ticket carries no dependency summary, and acts on the
+ * first row of the table that fits ({@link ticketRow}):
  *
  * | The ticket | The turn | Switch |
  * |---|---|---|
@@ -32,6 +33,7 @@ import { createHash } from 'node:crypto';
 import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
+import { isBlocked } from '../scripts/lib/ready-work.mjs';
 
 /**
  * @typedef {import('./webhook/fire.mjs').UnblockedFire} UnblockedFire
@@ -102,12 +104,14 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
 
 /**
  * The first row of the table that fits the ticket, read in its own repo.
- * The closed blocker reads closed in `blockers`, so any open one is
- * another.
+ * The closed blocker reads closed, so any open one is another. A ticket
+ * carrying its dependency summary is judged by it (`isBlocked`), since the
+ * rows leave out a blocker the App cannot see; `blockers` is read only for
+ * a ticket without one.
  *
  * @param {{
- *   ticket: { state: string, labels: readonly string[] },
- *   blockers: ReadonlyArray<{ state: string }>,
+ *   ticket: { state: string, labels: readonly string[], openBlockers?: number },
+ *   blockers: ReadonlyArray<{ state: string }> | undefined,
  *   fire: Pick<UnblockedFire, 'blocker'>,
  *   labels: { ready: readonly string[], claim: string, exclude: readonly string[] },
  * }} args
@@ -115,7 +119,7 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
  */
 export const ticketRow = ({ ticket, blockers, fire, labels }) => {
   if (ticket.state !== 'open') return 'closed';
-  if (blockers.some((b) => b.state === 'open')) return 'blocked';
+  if (isBlocked(ticket, blockers)) return 'blocked';
   if (fire.blocker.reason === NOT_PLANNED) return 'not-planned';
   if (labels.exclude.some((l) => ticket.labels.includes(l))) return 'excluded';
   if (ticket.labels.includes(labels.claim)) return 'claimed';

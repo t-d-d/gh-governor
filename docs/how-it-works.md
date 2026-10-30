@@ -40,7 +40,7 @@ A turn is one task, started for one fire (`dispatch/turn.mjs`, run by `dispatch/
 
 A task has no timeout of its own, so the entrypoint ends the turn after eighteen minutes and logs `dispatch-failed` with the reason `deadline`.
 
-**Pickup.** The selection (`scripts/lib/ready-work.mjs`) takes open tickets carrying the repo's ready labels and none of its `exclude` labels or its claim label, with no open blocker, and orders them oldest first, then by number. No label ranks a ticket, and a ticket's parent issue plays no part. It skips a ticket dispatched within the last two hours. Every served repo's tickets go into one queue, under the stack's `DispatchCap` (two by default). For each ticket governor adds the claim label, takes off `claimRemoves`, starts the session, and comments a `<!-- governor:dispatched <session URL> -->` marker with the session's link. If the launch started nothing, it puts the labels back. A schedule fire starts no launch past seven minutes into the turn, and logs the rest as `undispatched` for the next fire.
+**Pickup.** The selection (`scripts/lib/ready-work.mjs`) takes open tickets carrying the repo's ready labels and none of its `exclude` labels or its claim label, with no open blocker, and orders them oldest first, then by number. A ticket's open blockers are the count in its dependency summary, which the issues list returns on every row. The summary counts a blocker in a repo the App cannot see, which the `blocked_by` list leaves out. A ticket with no summary is judged by its `blocked_by` list. No label ranks a ticket, and a ticket's parent issue plays no part. It skips a ticket dispatched within the last two hours. Every served repo's tickets go into one queue, under the stack's `DispatchCap` (two by default). For each ticket governor adds the claim label, takes off `claimRemoves`, starts the session, and comments a `<!-- governor:dispatched <session URL> -->` marker with the session's link. If the launch started nothing, it puts the labels back. A schedule fire starts no launch past seven minutes into the turn, and logs the rest as `undispatched` for the next fire.
 
 **Which fire picks up what.** A ready label added by a person, and listed in `SelectLabels`, queues a fire for that one issue. An issue closing frees what it directly blocked, in every served repo ([A blocker's close](#a-blockers-close)): a close never runs the whole selection, so one finished session cannot start a cascade. The two-hourly fire runs the whole selection over every served repo whose sweep is due. Only that sweep writes pickup's heartbeat line ([The heartbeat](#the-heartbeat)).
 
@@ -50,7 +50,7 @@ Each `unblocked` fire runs in the ticket's repo's own turn, under that repo's co
 
 | The ticket | What the turn does | Switch |
 |---|---|---|
-| Is closed, or still blocked by another open issue | Nothing. That blocker's close sends its own fire. | |
+| Is closed, or still blocked by another open issue, by the same count pickup reads | Nothing. That blocker's close sends its own fire. | |
 | Lost its blocker to a "not planned" close | Comments on the ticket naming the blocker, and messages its session if it is claimed. Nothing starts. | `unblocked` |
 | Carries an `exclude` label | Nothing. | |
 | Is claimed | Messages the session the newest dispatch marker names: its blocker closed, and by which PR. | `unblocked` |
