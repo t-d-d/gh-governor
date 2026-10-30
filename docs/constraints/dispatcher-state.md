@@ -53,6 +53,10 @@ group.
   put only over the record the turn read, and never expired. A missing one
   is the baseline, and a failed read refuses the periodic
   (dispatch/periodics.mjs).
+- A hook's last session: `hook#<repo>` / `<name>` in `dynamoState`, put
+  after a launch that printed a session, only over the record the turn read,
+  and never expired. A missing one starts a session, and a failed read
+  refuses the fire (dispatch/hooks.mjs).
 - A repo's last pickup sweep: `pickup#<repo>` / `sweep` in `dynamoState`,
   put only where none or an earlier sweep stands, and never expired. A
   missing one means sweep now, and a failed read refuses the repo's sweep
@@ -85,4 +89,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53. The hook record was added in #56.

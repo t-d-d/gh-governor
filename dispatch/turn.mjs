@@ -102,7 +102,7 @@ import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '..
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
-import { hookFor, hookPrompt } from './hooks.mjs';
+import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
 import { repoServed, servedRepos } from './repos.mjs';
@@ -275,7 +275,7 @@ export const sessionUrlFrom = (output) => {
  *   recordConflict: (repo: string, pr: number, merge: string) => Promise<boolean>,
  *   recordSession: (session: string) => Promise<void>,
  *   startedSession: (session: string) => Promise<boolean>,
- * } & import('./periodics.mjs').PeriodicState & import('./pickup.mjs').PickupState} DispatchState
+ * } & import('./periodics.mjs').PeriodicState & import('./pickup.mjs').PickupState & import('./hooks.mjs').HookState} DispatchState
  *   Each label's cursor, by its repo, its workflow's file name and the
  *   label (null for CI's, which earns none): read (null when it has none),
  *   and moved forward (false when a cursor at or past it already stood).
@@ -287,6 +287,8 @@ export const sessionUrlFrom = (output) => {
  *   the record the turn read, false where another stood.
  *   A repo's last pickup sweep (dispatch/pickup.mjs): read, and written
  *   unless a later one stood, false then.
+ *   A hook's last session (dispatch/hooks.mjs): read, and written over the
+ *   record the turn read, false where another stood.
  *   A session governor started, by URL or id: recorded, and read back by
  *   the PR review (dispatch/review.mjs), whichever repo its PR is in.
  *   A read or write that fails throws.
@@ -712,6 +714,33 @@ const recordFire = async ({ state, log }, repo, { name, read }, at, sessionUrl) 
   } catch (error) {
     log('dispatch-periodic-unrecorded', { level: 'error', repo, periodic: name, sessionUrl, error: messageOf(error), reason: 'its record could not be written, so the next fire may start it again' });
     return { repo, error: `periodic ${name}: its record could not be written: ${messageOf(error)}` };
+  }
+};
+
+/**
+ * Write a hook's record to the session its launch started, over the record
+ * the turn read (dispatch/hooks.mjs). Another record standing, or a write
+ * that fails, is logged at error and comes back so the turn fails: the next
+ * fire may start a second session beside this one.
+ *
+ * @param {Deps} deps
+ * @param {string} repo
+ * @param {{ name: string, read: import('./hooks.mjs').HookRecord | null }} hook
+ * @param {import('./hooks.mjs').HookRecord} record
+ * @returns {Promise<{ repo: string, error: string } | null>}
+ */
+const recordHook = async ({ state, log }, repo, { name, read }, record) => {
+  const sessionUrl = record.session;
+  try {
+    if (await state.recordHookSession(repo, name, read, record)) {
+      log('dispatch-hook', { repo, hook: name, outcome: 'recorded', sessionUrl });
+      return null;
+    }
+    log('dispatch-hook-unrecorded', { level: 'error', repo, hook: name, sessionUrl, reason: `its record moved since this turn read it (${read === null ? 'none' : read.session}): another turn started a session for it too` });
+    return { repo, error: `hook ${name}: another turn recorded a session for it first` };
+  } catch (error) {
+    log('dispatch-hook-unrecorded', { level: 'error', repo, hook: name, sessionUrl, error: messageOf(error), reason: 'its record could not be written, so the next fire may start a second session' });
+    return { repo, error: `hook ${name}: its record could not be written: ${messageOf(error)}` };
   }
 };
 
@@ -1303,7 +1332,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   }
 
   const started = deps.now();
-  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string } }>} */
+  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, hook?: { name: string, read: import('./hooks.mjs').HookRecord | null } }>} */
   const plan = [];
   /** The issues a targeted schedule fire limits the plan to; undefined for the sweep. @type {number[] | undefined} */
   let only;
@@ -1311,6 +1340,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const unread = [];
   /** The periodics whose record the bare fire could not read, baseline, or write after a launch. @type {Array<{ repo: string, error: string }>} */
   const periodicsUnread = [];
+  /** The hooks whose session the turn started and could not record, or ran out of time to start. @type {Array<{ repo: string, error: string }>} */
+  const hooksUnrecorded = [];
   /** The served repos whose last sweep the bare fire could not read, or whose sweep it could not record. @type {Array<{ repo: string, error: string }>} */
   const sweepsUnread = [];
   /** The repos the bare fire sweeps, each with the time the turn read their last sweep, which it records. @type {Map<string, string>} */
@@ -1415,7 +1446,30 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // `run` refused a hook the file does not list at this key version.
     const found = hookFor(configOf(fireRepo()), invocation);
     if ('refusal' in found) throw new Error(found.refusal);
-    plan.push({ issue: null, repo: fireRepo(), prompt: hookPrompt(found.hook.prompt, invocation), sessionName: found.hook.name, model: DEFAULT_MODEL });
+    const { name } = found.hook;
+    // The hook's last session, while it is open, takes the fire as a
+    // message. A read that fails, of the record or of the session, throws:
+    // the fire is refused, never taken for no record or a closed session.
+    const read = await deps.state.hookSession(fireRepo(), name);
+    const open = read !== null && await runOpen(deps)(read.session).catch((error) => {
+      throw new Error(`hook ${name}: its last session ${read.session} could not be read: ${messageOf(error)}`);
+    });
+    if (read !== null && open) {
+      /** @type {import('./deliveries.mjs').Delivery} */
+      let told;
+      let loginStored = false;
+      try {
+        told = await delivery().deliver({ session: read.session }, hookMessage(invocation));
+      } finally {
+        loginStored = await storeIfRefreshed(deps, original, account);
+      }
+      deps.log('dispatch-hook', { repo: fireRepo(), hook: name, session: read.session, outcome: told.ok ? 'messaged' : told.refused ? 'archived since it was read' : 'not messaged' });
+      // Archived between the read and the send: a new session starts below.
+      // Any other failure says nothing of the session, which may be live, so
+      // nothing starts beside it and the turn fails.
+      if (!told.refused) return { kind: invocation.kind, dispatched: [], messaged: told, loginStored };
+    }
+    plan.push({ issue: null, repo: fireRepo(), prompt: hookPrompt(found.hook.prompt, invocation), sessionName: name, model: DEFAULT_MODEL, hook: { name, read } });
   } else if (!(invocation.kind === 'dispatch' && invocation.scheduled !== undefined && await redBefore(invocation.scheduled, getReader, deps))) {
     // Not a scheduled red after a red: that one plans nothing, since the red before started the session that is on it.
     plan.push({
@@ -1516,6 +1570,13 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       if (deps.now() - started > SCHEDULE_LAUNCH_WINDOW_MS) {
         deps.log('dispatch-launch', { undispatched: plan.slice(i).map((e) => ({ repo: e.repo, issue: e.issue })), reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, another launch might outrun the deadline; each is left unmarked for the next fire` });
         for (const e of plan.slice(i)) if (e.issue !== null) leftOver.add(e.repo);
+        // A hook fire is not tried again: one left unstarted fails the turn,
+        // so the alarm it carried is not lost quietly.
+        for (const e of plan.slice(i)) {
+          if (e.hook === undefined) continue;
+          deps.log('dispatch-hook-unstarted', { level: 'error', repo: e.repo, hook: e.hook.name, reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, its session was not started and the fire is not tried again` });
+          hooksUnrecorded.push({ repo: e.repo, error: `hook ${e.hook.name}: out of time, its session was not started` });
+        }
         break;
       }
       const ticket = entry.issue === null ? null : { repo: entry.repo, issue: entry.issue };
@@ -1540,6 +1601,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         // The turn fails, so the alarm says a periodic may start twice.
         if (unrecorded !== null) periodicsUnread.push(unrecorded);
         beats.push({ repo: entry.repo, beat: { periodics: [{ name: entry.periodic.name, at: entry.periodic.asOf ?? firedAt, by: entry.periodic.by, session: sessionUrl, state: 'open' }] } });
+      }
+      // A hook's record names a session only where the launch printed one,
+      // over the record the turn read.
+      if (entry.hook !== undefined && sessionUrl !== null) {
+        const unrecorded = await recordHook(deps, entry.repo, entry.hook, { session: sessionUrl, at: firedAt });
+        if (unrecorded !== null) hooksUnrecorded.push(unrecorded);
       }
       if ((ticket !== null || entry.periodic !== undefined) && outcome === 'failed') {
         if (ticket !== null) {
@@ -1642,7 +1709,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // the copy from before it would hold a dead refresh token.
     loginStored = await storeIfRefreshed(deps, original, account);
   }
-  const left = [...unread, ...sweepsUnread, ...periodicsUnread];
+  const left = [...unread, ...sweepsUnread, ...periodicsUnread, ...hooksUnrecorded];
   return { kind: invocation.kind, dispatched, heartbeat, loginStored, ...(left.length === 0 ? {} : { unread: left }) };
 };
 
@@ -1978,7 +2045,9 @@ export const cliEnv = (env, home, account) => ({
  * review reads it for every PR the session opens and a lost one lets a
  * mode label waive a human-only path. A repo's last pickup sweep is
  * the item `pickup#<repo>` / `sweep`, put only where none or an earlier
- * one stands, and never expired: a lost one means sweep now.
+ * one stands, and never expired: a lost one means sweep now. A hook's last
+ * session is the item `hook#<repo>` / `<name>`, put only over the record the
+ * turn read, and never expired: a lost one costs one extra session.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -1988,6 +2057,7 @@ export const dynamoState = (client, table) => {
   const pk = (/** @type {string} */ repo, /** @type {string} */ workflow) => ({ S: `workflow#${repo}#${workflow}` });
   const key = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label) => ({ pk: pk(repo, workflow), sk: { S: label === null ? 'cursor' : `cursor#${label}` } });
   const periodicKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `periodic#${repo}` }, sk: { S: name } });
+  const hookKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `hook#${repo}` }, sk: { S: name } });
   const sweepKey = (/** @type {string} */ repo) => ({ pk: { S: `pickup#${repo}` }, sk: { S: 'sweep' } });
   const sessionKey = (/** @type {string} */ session) => ({ pk: { S: `session#${sessionId(session)}` }, sk: { S: 'started' } });
   const sent = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label, /** @type {number | null} */ from) => ({ pk: pk(repo, workflow), sk: { S: `delivered#${label === null ? '' : `${label}#`}${from ?? 'none'}` } });
@@ -2073,6 +2143,32 @@ export const dynamoState = (client, table) => {
           ...(read === null
             ? { ConditionExpression: 'attribute_not_exists(pk)' }
             : { ConditionExpression: '#at = :read', ExpressionAttributeNames: { '#at': 'at' }, ExpressionAttributeValues: { ':read': { S: read.at } } }),
+        }));
+        return true;
+      } catch (error) {
+        if (error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException') return false;
+        throw error;
+      }
+    },
+    hookSession: async (repo, name) => {
+      const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: hookKey(repo, name), ConsistentRead: true }));
+      if (item === undefined) return null;
+      const session = item.session?.S;
+      const at = item.at?.S;
+      // A malformed item is a failed read, never a missing one.
+      if (session === undefined || at === undefined || Number.isNaN(Date.parse(at))) {
+        throw new Error(`the hook item for ${repo} ${name} is malformed: ${JSON.stringify(item)}`);
+      }
+      return { session, at };
+    },
+    recordHookSession: async (repo, name, read, { session, at }) => {
+      try {
+        await client.send(new PutItemCommand({
+          TableName: table,
+          Item: { ...hookKey(repo, name), session: { S: session }, at: { S: at } },
+          ...(read === null
+            ? { ConditionExpression: 'attribute_not_exists(pk)' }
+            : { ConditionExpression: '#session = :read', ExpressionAttributeNames: { '#session': 'session' }, ExpressionAttributeValues: { ':read': { S: read.session } } }),
         }));
         return true;
       } catch (error) {
@@ -2343,6 +2439,8 @@ export const realDeps = () => {
         recordPeriodic: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         sweep: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordSweep: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        hookSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordHookSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         record: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordConflict: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
