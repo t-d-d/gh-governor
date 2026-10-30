@@ -103,6 +103,7 @@ import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { hookFor, hookPrompt } from './hooks.mjs';
+import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
 import { repoServed, servedRepos } from './repos.mjs';
 import { CONFIG_PATH, switchOf, turnsOn } from './repo-config.mjs';
@@ -238,6 +239,7 @@ export const sessionUrlFrom = (output) => {
  *   fires?: import('../scripts/lib/session-signoff.mjs').Fires | undefined,
  *   sessions: { list: (token: string, after?: string) => Promise<unknown>, get: (id: string, token: string) => Promise<unknown>, events: import('../scripts/lib/session-signoff.mjs').Events },
  *   state: DispatchState,
+ *   hookTable: Pick<import('./webhook/hook-table.mjs').HookTable, 'publish'>,
  *   claims?: Set<string> | undefined,
  * }} Deps
  *   `owners`: the stack's owner list. The stack names no repo: every fire
@@ -257,6 +259,8 @@ export const sessionUrlFrom = (output) => {
  *   answer parsed; a session it does not have is null, any other refusal throws.
  *   `events` is a page of one session's events; any refusal throws.
  *   `state`: the dispatcher's state table ({@link dynamoState}).
+ *   `hookTable`: the receiver's hook table (webhook/hook-table.mjs), where
+ *   each served repo's hooks are written as its file was read.
  *   `claims`: the tickets the turn claimed that no marker naming a session
  *   covers yet, each `owner/name#number`, shared with dispatch/cli.mjs, whose deadline unwinds
  *   nothing and logs what is left in it.
@@ -445,6 +449,32 @@ export const run = async (event, deps) => {
     return deps.environments(usable.token, account?.organizationUuid ?? null);
   })());
   const reads = { owners: deps.owners, token: tokenFor, config: deps.configFile, environments, log: deps.log };
+  const readAt = new Date(deps.now()).toISOString();
+  /**
+   * Each served repo's hooks and key versions, as its file reads now, to the
+   * receiver's hook table, so the receiver refuses a revoked key or a removed
+   * hook before the queue. A write that fails is logged at error and counts
+   * the repo unread, and the turn goes on: the receiver queues on the last
+   * list meanwhile, and this turn's own checks still refuse a stale key
+   * (dispatch/hooks.mjs).
+   *
+   * @param {import('./repos.mjs').Served[]} list
+   * @returns {Promise<Array<{ repo: string, error: string }>>} The repos whose list was not written.
+   */
+  const publishHooks = async (list) => {
+    // One item per repo, so the writes are independent: each goes at once.
+    const written = await Promise.all(list.map(async ({ repo: served, config }) => {
+      const hooks = turnsOn(config, 'hooks') ? config.hooks.map(({ name, keyVersion }) => ({ name, keyVersion })) : [];
+      try {
+        await deps.hookTable.publish(served, hooks, readAt);
+        return null;
+      } catch (error) {
+        deps.log('hook-table-unwritten', { level: 'error', repo: served, error: messageOf(error) });
+        return { repo: served, error: `hook table: ${messageOf(error)}` };
+      }
+    }));
+    return written.filter((w) => w !== null);
+  };
   // The bare schedule fire names no repo: it serves every repo it finds.
   // Any other fire names its repo, or parseFire refused it.
   const bare = invocation.kind === 'schedule' && invocation.repo === undefined;
@@ -458,11 +488,13 @@ export const run = async (event, deps) => {
   if (bare) {
     ({ served, unread } = await servedRepos({ ...reads, installations: deps.installations }));
     if (refreshFailed !== null) throw refreshFailed;
+    unread.push(...await publishHooks(served));
   } else {
     if (repo === undefined) throw new Error(`a ${invocation.kind} fire names no repo`);
     const one = await repoServed({ ...reads, repo });
     if (refreshFailed !== null) throw refreshFailed;
     if (one === null) return { kind: invocation.kind, refusal: `${repo} is not served`, signoffs: null };
+    unread.push(...await publishHooks([one]));
     // A label the receiver could not judge: not one of the repo's
     // ready labels, the fire ends here, before the login and the sweep.
     if (invocation.kind === 'schedule' && invocation.label !== undefined && !one.config.labels.ready.includes(invocation.label)) {
@@ -2316,6 +2348,11 @@ export const realDeps = () => {
         recordSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         startedSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
       },
+    // No table named: every write fails and is logged at error, and the
+    // turn goes on, its own checks on a hook fire unchanged.
+    hookTable: env.DISPATCH_HOOK_TABLE
+      ? hookTable(new DynamoDBClient({}), env.DISPATCH_HOOK_TABLE)
+      : { publish: async () => { throw new Error('DISPATCH_HOOK_TABLE is unset'); } },
     sessions: {
       list: (token, after) => sessionsCall(`${ARCHIVE_API}?limit=100${after === undefined ? '' : `&after_id=${encodeURIComponent(after)}`}`, token),
       get: (id, token) => {

@@ -208,9 +208,12 @@ The known answer in test/dispatch-hook.test.ts checks a caller's code: under the
 | `202` | The fire was queued. |
 | `200` | The repo's owner is not on the deployment's owner list. Nothing was queued. |
 | `400` | The body is not JSON, or holds no string `text`. |
-| `401` | The header is missing or malformed, the signature does not match, or `t` is more than five minutes from governor's clock. |
+| `401` | The header is missing or malformed, the signature does not match, or `t` is more than five minutes from governor's clock. Also a hook the repo's file did not list when governor last read it, or a key version older than the one it named. |
 | `404` | The path under `/hooks/` names no repo and hook. |
 | `413` | The text is over 32 KiB, or too long to start a task with. |
+| `503` | Governor could not read what it knows of the repo's hooks. Nothing was queued: send it again. |
+
+Governor reads the repo's file on its own schedule and on GitHub events, and keeps the list of hooks and key versions it last read where the receiver can check it. So a new hook answers `401` until governor next reads the file, and a raised `keyVersion` turns the old key away at the receiver from then on. Before governor has read the file at all, every signed request is queued.
 
 A `202` means queued, not started. The task then refuses a fire whose repo turns `hooks` off or lists no hook of that name, logged at warn, and one signed with a key version other than the hook's `keyVersion`, which pages as `governor-hook-key-stale`. Otherwise it starts one session in the repo's environment. Each fire starts a new session.
 
@@ -220,7 +223,9 @@ A `202` means queued, not started. The task then refuses a fire whose repo turns
 node scripts/hook-key.mjs --repo acme/factory --hook operator-prod --version 1 [--profile <p>]
 ```
 
-It prints `v1.<hex>` and nothing else. That is the one value the caller stores, as a secret on its side. To replace a key, raise the hook's `keyVersion` in the file, merge it, mint the new version's key and give it to the caller. From then on the task refuses each fire signed with the old key, and each one pages. Rotating `governor/hook-secret` replaces every hook's key at once.
+It prints `v1.<hex>` and nothing else. That is the one value the caller stores, as a secret on its side. Rotating `governor/hook-secret` replaces every hook's key at once.
+
+**Revoking a key.** Raise the hook's `keyVersion` in the file in a pull request and merge it. Until governor next reads the file, the task refuses each fire signed with the old key. After that read, the receiver answers each one `401` before it reaches the queue. Either way each one logs `hook-key-stale` and pages as `governor-hook-key-stale`. Then mint the new version's key and give it to the caller. The repo's other hooks keep working throughout. To retire a hook, remove it from the file: once governor has read the file, the receiver answers its caller `401` and logs it at warn, which pages nobody.
 
 ### Immediate pickup needs the ready label in `SelectLabels`
 
@@ -440,7 +445,7 @@ Confirm the alerts subscription from the email AWS sends to the alert address. U
 | Log group | What it holds |
 |---|---|
 | `/governor` | Each turn: one JSON line per decision, such as `dispatch-launch`, `dispatch-signoff`, `dispatch-review`, and `dispatch-failed` on a fault. |
-| `/aws/lambda/governor-webhook` | The receiver: `webhook-queued`, `webhook-ignored` with the reason, `webhook-refused`; for a hook, `hook-refused` with the reason and `hook-ignored`. |
+| `/aws/lambda/governor-webhook` | The receiver: `webhook-queued`, `webhook-ignored` with the reason, `webhook-refused`; for a hook, `hook-refused` with the reason, `hook-ignored`, `hook-key-stale` and `hook-table-unread`. |
 | `/aws/lambda/governor-starter` | The starter: `fire-started` with the task, `fire-deferred` while a task runs, `fire-failed`. |
 
 The App's **Advanced → Recent Deliveries** shows each delivery's answer: `202` queued a fire, `200` queued nothing and says why, `401` is a key that does not match.

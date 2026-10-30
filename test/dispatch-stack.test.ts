@@ -32,6 +32,7 @@ import { STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
 import { DEFER_SECONDS } from '../dispatch/webhook/starter.mjs';
 import { MAX_START_ATTEMPTS } from '../dispatch/webhook/retry.mjs';
 import { HOOK_EVENTS } from '../dispatch/webhook/route.mjs';
+import { HOOK_KEY_STALE } from '../dispatch/webhook/hook-table.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const substitutions = { 'AWS::AccountId': ACCOUNT_ID_PLACEHOLDER, 'AWS::Region': 'us-east-1' };
@@ -145,34 +146,59 @@ describe('infra/governor.cfn.yml — the task', () => {
  * A record one dispatcher turn writes for a later one lives in
  * the stack's one table; logs are never read back as state.
  */
-describe('fitness: the dispatcher keeps its state in one table (dispatcher-state.md)', () => {
+describe('fitness: the dispatcher keeps its state in one table, and the receiver its own (dispatcher-state.md)', () => {
   const tables = Object.entries(template.Resources).filter(([, r]) => r?.Type === 'AWS::DynamoDB::Table');
   const taskStatements = inlinePolicyStatements(template, 'DispatchRole');
+  const receiverStatements = inlinePolicyStatements(template, 'WebhookRole');
+  const dynamoGrants = (statements: Statement[]) => statements.filter((s) => actionsOf(s).some((a) => a.startsWith('dynamodb:')));
+  const env = new Map<string, unknown>((container?.Environment ?? []).map((e: { Name: string; Value: unknown }) => [e.Name, e.Value]));
 
-  test('one on-demand table with a TTL, named by CloudFormation, which the task is handed', () => {
-    assert.equal(tables.length, 1, tables.map(([id]) => id).join());
-    const [id, table] = tables[0]!;
-    assert.equal(table.Properties?.BillingMode, 'PAY_PER_REQUEST');
-    assert.equal(table.Properties?.TableName, undefined, 'a named table cannot be re-created');
-    assert.equal(table.Properties?.TimeToLiveSpecification?.Enabled, true);
-    assert.equal(
-      table.Properties?.TimeToLiveSpecification?.AttributeName, STATE_TTL_ATTRIBUTE,
-      'the table expires the attribute the delivered records are stamped with',
-    );
-    assert.deepEqual(table.Properties?.KeySchema, [{ AttributeName: 'pk', KeyType: 'HASH' }, { AttributeName: 'sk', KeyType: 'RANGE' }]);
-    const env = new Map<string, unknown>((container?.Environment ?? []).map((e: { Name: string; Value: unknown }) => [e.Name, e.Value]));
-    assert.equal(env.get('DISPATCH_STATE_TABLE'), `\${${id}}`);
+  // The receiver is the internet-facing function: a different access
+  // boundary, the one exception the file names to a table per use.
+  test('two tables: the state table, and the hook table the receiver reads', () => {
+    assert.deepEqual(tables.map(([id]) => id).sort(), ['DispatchHookTable', 'DispatchStateTable']);
   });
 
-  test('the task reaches the table\'s items, and no other table', () => {
-    const [id] = tables[0]!;
+  test('each is on demand, keyed pk/sk, with a TTL, and named by CloudFormation', () => {
+    for (const [id, table] of tables) {
+      assert.equal(table.Properties?.BillingMode, 'PAY_PER_REQUEST', id);
+      assert.equal(table.Properties?.TableName, undefined, `${id}: a named table cannot be re-created`);
+      assert.equal(table.Properties?.TimeToLiveSpecification?.Enabled, true, id);
+      assert.equal(
+        table.Properties?.TimeToLiveSpecification?.AttributeName, STATE_TTL_ATTRIBUTE,
+        `${id} expires the attribute the delivered records are stamped with`,
+      );
+      assert.deepEqual(table.Properties?.KeySchema, [{ AttributeName: 'pk', KeyType: 'HASH' }, { AttributeName: 'sk', KeyType: 'RANGE' }], id);
+    }
+  });
+
+  test('the task is handed both, and the receiver the hook table alone', () => {
+    assert.equal(env.get('DISPATCH_STATE_TABLE'), '${DispatchStateTable}');
+    assert.equal(env.get('DISPATCH_HOOK_TABLE'), '${DispatchHookTable}');
+    const receiver = template.Resources.WebhookFunction?.Properties?.Environment?.Variables ?? {};
+    assert.equal(receiver.HOOK_TABLE, '${DispatchHookTable}');
+    assert.ok(!JSON.stringify(receiver).includes('DispatchStateTable'), 'the receiver is not told of the state table');
+  });
+
+  test('the task reaches the state table\'s items, and only puts the hook table\'s', () => {
     const items = new Set(['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query']);
-    const grants = taskStatements.filter((s) => actionsOf(s).some((a) => a.startsWith('dynamodb:')));
-    assert.ok(grants.length > 0);
+    const grants = dynamoGrants(taskStatements);
+    const onState = grants.filter((s) => resourcesOf(s).includes('${DispatchStateTable.Arn}'));
+    const onHooks = grants.filter((s) => resourcesOf(s).includes('${DispatchHookTable.Arn}'));
+    assert.ok(onState.length > 0);
     for (const s of grants) {
       for (const a of actionsOf(s)) assert.ok(items.has(a), `${a} is not an item action`);
-      assert.deepEqual(resourcesOf(s), [`\${${id}.Arn}`]);
+      assert.equal(resourcesOf(s).length, 1, 'one table per statement');
     }
+    assert.deepEqual(onHooks.flatMap(actionsOf), ['dynamodb:PutItem']);
+    assert.equal(onState.length + onHooks.length, grants.length, 'the task reaches no other table');
+  });
+
+  test('the receiver holds GetItem on the hook table, and nothing on the state table', () => {
+    const grants = dynamoGrants(receiverStatements);
+    assert.deepEqual(grants.flatMap(actionsOf), ['dynamodb:GetItem']);
+    assert.deepEqual(grants.flatMap(resourcesOf), ['${DispatchHookTable.Arn}']);
+    assert.ok(!JSON.stringify(receiverStatements).includes('DispatchStateTable'));
   });
 
   test('the task reads no log back', () => {
@@ -586,7 +612,7 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
 
   test('may read its two keys and queue a fire, and starts nothing itself', () => {
     const allowed = new Set(statements.flatMap(actionsOf));
-    assert.deepEqual([...allowed].sort(), ['logs:CreateLogStream', 'logs:PutLogEvents', 'secretsmanager:GetSecretValue', 'sqs:SendMessage']);
+    assert.deepEqual([...allowed].sort(), ['dynamodb:GetItem', 'logs:CreateLogStream', 'logs:PutLogEvents', 'secretsmanager:GetSecretValue', 'sqs:SendMessage']);
     const key = statements.find((s) => actionsOf(s).includes('secretsmanager:GetSecretValue'))!;
     assert.deepEqual(resourcesOf(key).sort(), ['${HookSecret}', '${WebhookSecret}'], 'the receiver can read a secret that is not one of its keys');
     const send = statements.find((s) => actionsOf(s).includes('sqs:SendMessage'))!;
@@ -625,6 +651,25 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
     assert.equal(alarm?.Properties?.TreatMissingData, 'notBreaching');
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\].*hook-key-stale/);
     assert.deepEqual(alarm?.Properties?.AlarmActions, template.Resources.DispatchErrorsAlarm?.Properties?.AlarmActions);
+  });
+
+  // The receiver refuses a key older than the hook table's (route.mjs), so
+  // the same alarm hears its line too. Lambda's JSON log format nests a line
+  // logged as one object under `message`, so the filter matches that field.
+  // A bare term would not do: an unsigned request's path and headers are
+  // logged too, and a stranger could write the event's name into them.
+  test('a stale key the receiver refused pages through the same alarm, read off the event field of the receiver\'s line', () => {
+    const task = template.Resources.HookKeyStaleFilter?.Properties?.MetricTransformations?.[0];
+    const filter = template.Resources.WebhookHookKeyStaleFilter;
+    assert.equal(filter?.Type, 'AWS::Logs::MetricFilter');
+    assert.equal(filter?.Properties?.LogGroupName, '${WebhookLogGroup}');
+    assert.equal(filter?.Properties?.FilterPattern, `{ $.message.event = "${HOOK_KEY_STALE}" }`);
+    const handler = readFileSync(resolve(ROOT, 'dispatch/webhook/handler.mjs'), 'utf8');
+    assert.match(handler, /log: \(event, context = \{\}\) => console\.log\(\{ event, \.\.\.context \}\)/, 'the receiver logs each line as one object, which Lambda nests under message');
+    const published = filter?.Properties?.MetricTransformations?.[0];
+    assert.equal(published?.MetricNamespace, task?.MetricNamespace);
+    assert.equal(published?.MetricName, task?.MetricName);
+    assert.equal(published?.MetricValue, '1');
   });
 
   test('outputs the URL and the secret the workflow points the App\'s webhook at', () => {

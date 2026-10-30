@@ -12,6 +12,8 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { HOOK_CLOCK_SKEW_MS, HOOK_TEXT_LIMIT, hookKey, hookPath, hookSignature, readSignature } from '../dispatch/webhook/hook.mjs';
 import { handle } from '../dispatch/webhook/route.mjs';
+import { hookTable } from '../dispatch/webhook/hook-table.mjs';
+import { HOOK_KEY_STALE } from '../dispatch/hooks.mjs';
 import { OVERRIDE_BUDGET, overrideWeight, parseFire } from '../dispatch/webhook/fire.mjs';
 import { configSchema, readConfig, resolveFiles, switchOf } from '../dispatch/repo-config.mjs';
 import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
@@ -35,6 +37,8 @@ const harness = (over: Record<string, unknown> = {}) => {
     selectLabels: [],
     appId: 5075844,
     now: () => NOW,
+    // The hook table's item for the repo: none unless a test says otherwise.
+    listedHooks: async (_repo: string): Promise<ReadonlyMap<string, number> | null> => null,
     enqueue: async (message: Record<string, unknown>, dedupId?: string) => {
       queued.push({ message, ...(dedupId === undefined ? {} : { dedupId }) });
       return `m-${queued.length}`;
@@ -221,6 +225,153 @@ describe('handle — a hook fire', () => {
     const response = await handle({ ...signed, body: Buffer.from(TEXT).toString('base64'), isBase64Encoded: true }, deps);
     assert.equal(response.statusCode, 202);
     assert.equal(queued.length, 1);
+  });
+});
+
+/**
+ * The hook table (dispatch/webhook/hook-table.mjs): the task writes, per
+ * repo, the hooks its file lists and each one's key version, and the
+ * receiver reads it after the signature, so a revoked key or a removed hook
+ * never reaches the queue. A repo with no item yet is queued: the task
+ * decides.
+ */
+describe('handle: the hook table', () => {
+  const listed = (hooks: Record<string, number>) => async () => new Map(Object.entries(hooks));
+
+  test('a repo with no item yet is queued, and the read names the repo', async () => {
+    const asked: string[] = [];
+    const { deps, queued } = harness({ listedHooks: async (repo: string) => { asked.push(repo); return null; } });
+    assert.equal((await handle(fire(TEXT), deps)).statusCode, 202);
+    assert.equal(queued.length, 1);
+    assert.deepEqual(asked, [REPO]);
+  });
+
+  test('an equal or a newer key version is queued', async () => {
+    for (const version of [2, 3]) {
+      const { deps, queued } = harness({ listedHooks: listed({ [HOOK]: 2 }) });
+      assert.equal((await handle(fire(TEXT, { version }), deps)).statusCode, 202, `v${version}`);
+      assert.equal(queued.length, 1);
+    }
+  });
+
+  test('a key version older than the item\'s gets 401, queues nothing, and logs hook-key-stale at error', async () => {
+    const { deps, queued, logged } = harness({ listedHooks: listed({ [HOOK]: 2 }) });
+    const response = await handle(fire(TEXT, { version: 1 }), deps);
+    assert.equal(response.statusCode, 401);
+    assert.equal(queued.length, 0);
+    const line = logged.find((l) => l.event === HOOK_KEY_STALE);
+    assert.equal(line?.level, 'error');
+    assert.equal(line?.repo, REPO);
+    assert.equal(line?.hook, HOOK);
+    assert.equal(line?.keyVersion, 1);
+  });
+
+  test('a hook the item does not list gets 401, queues nothing, and logs at warn', async () => {
+    for (const hooks of [{}, { 'operator-dev': 1 }]) {
+      const { deps, queued, logged } = harness({ listedHooks: listed(hooks) });
+      const response = await handle(fire(TEXT), deps);
+      assert.equal(response.statusCode, 401, JSON.stringify(hooks));
+      assert.equal(queued.length, 0);
+      const line = logged.find((l) => l.event === 'hook-refused');
+      assert.equal(line?.level, 'warn');
+      assert.equal(line?.hook, HOOK);
+      assert.ok(!logged.some((l) => l.level === 'error'), 'a forgotten caller pages nobody');
+    }
+  });
+
+  test('a name the item does not hold is not listed, whatever an object would inherit', async () => {
+    const { deps, queued } = harness({ listedHooks: listed({}) });
+    assert.equal((await handle(fire(TEXT, { hook: 'constructor' }), deps)).statusCode, 401);
+    assert.equal(queued.length, 0);
+  });
+
+  test('a failed read gets 503 and queues nothing, so the caller retries; it is never taken for a missing item', async () => {
+    const { deps, queued, logged } = harness({ listedHooks: async () => { throw new Error('ProvisionedThroughputExceededException'); } });
+    const response = await handle(fire(TEXT), deps);
+    assert.equal(response.statusCode, 503);
+    assert.equal(queued.length, 0);
+    const line = logged.find((l) => l.event === 'hook-table-unread');
+    assert.equal(line?.level, 'error');
+    assert.match(String(line?.error), /ProvisionedThroughputExceededException/);
+  });
+
+  test('the table is read only for a signed request, from a listed owner', async () => {
+    let reads = 0;
+    const counting = { listedHooks: async () => { reads += 1; return null; } };
+    const { deps } = harness(counting);
+    await handle(fire(TEXT, { header: `v=1,t=${T},sha256=${'0'.repeat(64)}` }), deps);
+    await handle(fire(TEXT, { t: T - 3600 }), deps);
+    await handle(fire(TEXT, { repo: 'stranger/repo' }), deps);
+    assert.equal(reads, 0);
+    await handle(fire(TEXT), deps);
+    assert.equal(reads, 1);
+  });
+});
+
+describe('the hook table', () => {
+  type Sent = { name: string; input: Record<string, any> };
+  const client = (answer: (command: Sent) => unknown) => {
+    const sent: Sent[] = [];
+    return {
+      sent,
+      send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
+        const one = { name: command.constructor.name, input: command.input };
+        sent.push(one);
+        return answer(one);
+      },
+    };
+  };
+  const ITEM = { pk: { S: 'hooks#acme/factory' }, sk: { S: 'listed' }, at: { S: '2026-09-21T12:00:00.000Z' }, hooks: { M: { 'operator-prod': { N: '2' }, 'operator-dev': { N: '1' } } } };
+
+  test('one item per repo, read consistently by its key: each listed hook and its key version', async () => {
+    const c = client(() => ({ Item: ITEM }));
+    const listed = await hookTable(c as never, 'governor-DispatchHookTable-X').listed(REPO);
+    assert.deepEqual(listed && [...listed].sort(), [['operator-dev', 1], ['operator-prod', 2]]);
+    assert.equal(c.sent[0]?.name, 'GetItemCommand');
+    assert.equal(c.sent[0]?.input.TableName, 'governor-DispatchHookTable-X');
+    assert.equal(c.sent[0]?.input.ConsistentRead, true);
+    assert.deepEqual(c.sent[0]?.input.Key, { pk: { S: 'hooks#acme/factory' }, sk: { S: 'listed' } });
+  });
+
+  test('a repo is one item whatever the case its path is written in', async () => {
+    const c = client(() => ({}));
+    await hookTable(c as never, 'T').listed('Acme/Factory');
+    assert.deepEqual(c.sent[0]?.input.Key, { pk: { S: 'hooks#acme/factory' }, sk: { S: 'listed' } });
+  });
+
+  test('no item is null; an empty list is a list', async () => {
+    assert.equal(await hookTable(client(() => ({})) as never, 'T').listed(REPO), null);
+    const empty = await hookTable(client(() => ({ Item: { ...ITEM, hooks: { M: {} } } })) as never, 'T').listed(REPO);
+    assert.equal(empty?.size, 0);
+  });
+
+  test('a read that fails, or a malformed item, throws: never a missing item', async () => {
+    await assert.rejects(hookTable(client(() => { throw new Error('AccessDeniedException'); }) as never, 'T').listed(REPO), /AccessDeniedException/);
+    for (const hooks of [undefined, { S: 'operator-prod' }, { M: { 'operator-prod': { S: '2' } } }, { M: { 'operator-prod': { N: '0' } } }, { M: { 'operator-prod': { N: '1.5' } } }]) {
+      const item = { ...ITEM, hooks };
+      if (hooks === undefined) delete (item as Record<string, unknown>).hooks;
+      await assert.rejects(hookTable(client(() => ({ Item: item })) as never, 'T').listed(REPO), /malformed/, JSON.stringify(hooks));
+    }
+  });
+
+  test('a write puts the repo\'s whole list, unless a later read of the file already stands', async () => {
+    const c = client(() => ({}));
+    const at = '2026-09-21T12:00:00.000Z';
+    assert.equal(await hookTable(c as never, 'T').publish('Acme/Factory', [{ name: 'operator-prod', keyVersion: 2 }, { name: 'operator-dev', keyVersion: 1 }], at), true);
+    const put = c.sent[0]!;
+    assert.equal(put.name, 'PutItemCommand');
+    assert.deepEqual(put.input.Item, ITEM);
+    assert.equal(put.input.ConditionExpression, 'attribute_not_exists(pk) OR #at <= :at');
+    assert.deepEqual(put.input.ExpressionAttributeNames, { '#at': 'at' });
+    assert.deepEqual(put.input.ExpressionAttributeValues, { ':at': { S: at } });
+    assert.equal('ttl' in put.input.Item, false, 'a repo that stops being served keeps its last item');
+  });
+
+  test('a write a later one beat is false; any other failure throws', async () => {
+    const beaten = client(() => { throw Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' }); });
+    assert.equal(await hookTable(beaten as never, 'T').publish(REPO, [], '2026-09-21T12:00:00.000Z'), false);
+    const failing = client(() => { throw new Error('AccessDeniedException'); });
+    await assert.rejects(hookTable(failing as never, 'T').publish(REPO, [], '2026-09-21T12:00:00.000Z'), /AccessDeniedException/);
   });
 });
 

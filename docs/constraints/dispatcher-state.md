@@ -1,6 +1,6 @@
 # Dispatcher state
 Relevance: State a turn keeps for a later turn, a cursor, record or lease it reads back: dispatch/**, infra/governor.cfn.yml, or a new store for the dispatcher
-Decision: A record one turn writes for a later turn lives in the stack's one DynamoDB table, keyed pk/sk; logs are never read back as state.
+Decision: A turn's record for a later turn lives in the stack's one DynamoDB table, keyed pk/sk; the receiver reads only its own hook table; logs are not state.
 
 Why: A refused workflow turn left nothing behind, so the next turn could not
 tell its merges were untold. Reading the refusal back from the log group was
@@ -14,6 +14,15 @@ group.
   (`workflow#<repo>#<file>` / `cursor`), not a new table.
 - The task role holds only the item actions its uses call, on that table
   only. The task finds it through `DISPATCH_STATE_TABLE`.
+- The one other table is `DispatchHookTable`, under the different-access-
+  boundary exception below: the webhook receiver is internet-facing, and
+  the state table holds records other checks trust. It is built the same
+  way. It holds only what the receiver reads: one item per served repo,
+  `hooks#<repo>` / `listed`, each hook's name and `keyVersion`, which the
+  task puts each time it reads the repo's file. The receiver holds
+  `GetItem` on it and nothing on the state table; the task holds only the
+  item actions it calls on it. The receiver finds it through `HOOK_TABLE`,
+  the task through `DISPATCH_HOOK_TABLE`.
 - A record two turns can race is written conditionally
   (`ConditionExpression`), never read then written.
 - A missing item means the use's fallback (the first turn after a deploy, a
@@ -51,6 +60,12 @@ group.
   lost item lets a ticket's mode label waive a human-only path, so the item
   outlasts every PR it guards (dispatcher-review.md).
 
+- What the receiver knows of a repo's hooks: `hooks#<repo>` / `listed` in
+  the hook table (dispatch/webhook/hook-table.mjs), put by the task only
+  over an item from an earlier read of the file, and never expired. A
+  missing one queues the fire for the task to judge, and a failed read
+  answers `503` (dispatch/webhook/route.mjs).
+
 ## Do not
 
 - Do not read the log group back as state (`FilterLogEvents` on
@@ -62,4 +77,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53.

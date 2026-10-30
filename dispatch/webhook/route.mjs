@@ -63,13 +63,15 @@
  * A hook is the one request not GitHub's: an outside system posts signed
  * text to `/hooks/<owner>/<repo>/<hook>` (hook.mjs), and the receiver queues
  * a `hook` fire naming the hook, the key version and the text
- * ({@link handleHook}). Every other path is a GitHub delivery.
+ * ({@link handleHook}), unless the hook table says the repo's file lists no
+ * such hook or has moved past that key version (hook-table.mjs). Every other
+ * path is a GitHub delivery.
  *
  * Pure: `handle` takes its I/O as `deps`. handler.mjs binds the real ones.
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
+import { HOOK_KEY_STALE, OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
 import { HOOK_CLOCK_SKEW_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 
@@ -499,6 +501,7 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
  * @typedef {{
  *   secret: () => Promise<string>,
  *   hookSecret: () => Promise<string>,
+ *   listedHooks: import('./hook-table.mjs').HookTable['listed'],
  *   now?: () => number,
  *   owners: readonly string[],
  *   selectLabels?: readonly string[] | undefined,
@@ -507,8 +510,9 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
  *   log: (event: string, context?: Record<string, unknown>) => void,
  * }} Deps
  *   `secret`: GitHub's webhook key. `hookSecret`: the stack's hook secret,
- *   every hook key's root (hook.mjs). `now`: the receiver's clock, which a
- *   hook's timestamp is held to.
+ *   every hook key's root (hook.mjs). `listedHooks`: the repo's item in the
+ *   hook table (hook-table.mjs), the hooks its file listed when the task last
+ *   read it. `now`: the receiver's clock, which a hook's timestamp is held to.
  *
  * @typedef {{ path?: string | undefined, headers: Record<string, string | undefined>, body?: string | undefined, isBase64Encoded?: boolean | undefined }} Request
  *   `path`: the Function URL's raw path, a hook's (`/hooks/…`) or GitHub's.
@@ -606,8 +610,10 @@ export const handle = async (request, deps) => {
  * One hook request. 401 for one whose signature is missing, malformed, does
  * not match the key for its path's repo, hook and version, or was made more
  * than five minutes from the receiver's clock; 200 for one whose owner is not
- * on the list; 400 for a body that holds no text; 413 for text too long; 202
- * for one that queued its fire. Nothing but a 202 queues anything, and no
+ * on the list; 401 for a hook the hook table's item does not list, or a key
+ * version older than the item's; 503 for an item that could not be read; 400
+ * for a body that holds no text; 413 for text too long; 202 for one that
+ * queued its fire. A repo with no item yet is queued, and the task decides. Nothing but a 202 queues anything, and no
  * line logs the signature or a key. The fire's deduplication id is the
  * signature, so a replay inside the queue's window is not a second fire.
  *
@@ -638,6 +644,26 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
     // Never an error: a stranger with a key of their own must not page anyone.
     deps.log('hook-ignored', { level: 'info', ...about, reason: `${repo}'s owner ${owner} is not on the owner list` });
     return { statusCode: 200, body: `${repo}'s owner is not on the owner list: nothing queued` };
+  }
+  /** @type {ReadonlyMap<string, number> | null} */
+  let listed;
+  try {
+    listed = await deps.listedHooks(repo);
+  } catch (error) {
+    // Never taken for a missing item: that would queue a revoked key.
+    deps.log('hook-table-unread', { level: 'error', ...about, error: String(/** @type {any} */ (error)?.message ?? error) });
+    return { statusCode: 503, body: 'could not read the hook table: try again' };
+  }
+  const current = listed?.get(hook);
+  if (listed !== null && current === undefined) {
+    // A caller someone forgot: worth a look, not a page.
+    deps.log('hook-refused', { level: 'warn', ...about, keyVersion: signature.version, reason: `${repo}'s config file, as governor last read it, lists no hook ${hook}` });
+    return { statusCode: 401, body: `${repo} lists no hook ${hook}` };
+  }
+  if (current !== undefined && signature.version < current) {
+    // Only a holder of a once-valid key can sign one: the key may have leaked.
+    deps.log(HOOK_KEY_STALE, { level: 'error', ...about, keyVersion: signature.version, reason: `hook ${hook} in ${repo} was fired with key version ${signature.version}, and its file names version ${current}` });
+    return { statusCode: 401, body: `key version ${signature.version} is revoked` };
   }
   // The caller signed it, so the operator may need to see why it went nowhere.
   const unread = (/** @type {number} */ statusCode, /** @type {string} */ body) => {
