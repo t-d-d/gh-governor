@@ -453,10 +453,10 @@ export const run = async (event, deps) => {
   /**
    * Each served repo's hooks, key versions and hourly caps, as its file reads
    * now, to the receiver's hook table, so the receiver refuses a revoked key,
-   * a removed hook or a fire past the cap before the queue. A write that fails is logged at error and counts
-   * the repo unread, and the turn goes on: the receiver queues on the last
-   * list meanwhile, and this turn's own checks still refuse a stale key
-   * (dispatch/hooks.mjs).
+   * a removed hook or a fire past the cap before the queue. A write that
+   * fails is logged at error and counts the repo unread, and the turn goes
+   * on: the receiver queues on the last list meanwhile, and this turn's own
+   * checks still refuse a stale key (dispatch/hooks.mjs).
    *
    * @param {import('./repos.mjs').Served[]} list
    * @returns {Promise<Array<{ repo: string, error: string }>>} The repos whose list was not written.

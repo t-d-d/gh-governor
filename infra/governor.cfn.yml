@@ -149,11 +149,11 @@ Resources:
   # served repo, listing each hook's name, key version and hourly cap, which
   # the task writes each time it reads the repo's file and the receiver reads
   # before it queues a hook fire; and one item per hook and clock hour, the
-  # receiver's count of that hook's fires, expired by ttl. Apart from the state table because the receiver is
-  # internet-facing and the state table holds records other checks trust
-  # (docs/constraints/dispatcher-state.md). Built the same way; no point-in-
-  # time recovery: a lost item costs task starts, and the task still refuses
-  # a stale key.
+  # receiver's count of that hook's fires, expired by ttl. Apart from the
+  # state table because the receiver is internet-facing and the state table
+  # holds records other checks trust (docs/constraints/dispatcher-state.md).
+  # Built the same way; no point-in-time recovery: a lost item costs task
+  # starts, and the task still refuses a stale key.
   DispatchHookTable:
     Type: AWS::DynamoDB::Table
     Properties:

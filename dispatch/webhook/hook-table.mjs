@@ -81,14 +81,16 @@ export const hookTable = (client, table) => ({
     const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: keyOf(repo), ConsistentRead: true }));
     if (item === undefined) return null;
     const map = item.hooks?.M;
-    const caps = item.perHour === undefined ? {} : item.perHour.M;
+    // Only an item written before hooks had a cap has no map of caps; a map
+    // that leaves a hook out is malformed, never a default.
+    const caps = item.perHour === undefined ? undefined : item.perHour.M ?? null;
     /** @type {Array<[string, Listed]>} */
     const entries = Object.entries(map ?? {}).map(([name, value]) => [name, {
       keyVersion: Number(value.N),
-      perHour: Object.hasOwn(caps ?? {}, name) ? Number(caps?.[name]?.N) : HOOK_PER_HOUR,
+      perHour: caps === undefined ? HOOK_PER_HOUR : Number(caps?.[name]?.N),
     }]);
     // A malformed item is a failed read, never a missing one.
-    if (map === undefined || caps === undefined || entries.some(([, { keyVersion, perHour }]) => !positive(keyVersion) || !positive(perHour))) {
+    if (map === undefined || caps === null || entries.some(([, { keyVersion, perHour }]) => !positive(keyVersion) || !positive(perHour))) {
       throw new Error(`the hook table's item for ${repo} is malformed: ${JSON.stringify(item)}`);
     }
     return new Map(entries);

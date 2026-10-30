@@ -447,7 +447,7 @@ Confirm the alerts subscription from the email AWS sends to the alert address. U
 | Log group | What it holds |
 |---|---|
 | `/governor` | Each turn: one JSON line per decision, such as `dispatch-launch`, `dispatch-signoff`, `dispatch-review`, and `dispatch-failed` on a fault. |
-| `/aws/lambda/governor-webhook` | The receiver: `webhook-queued`, `webhook-ignored` with the reason, `webhook-refused`; for a hook, `hook-refused` with the reason, `hook-ignored`, `hook-key-stale` and `hook-table-unread`. |
+| `/aws/lambda/governor-webhook` | The receiver: `webhook-queued`, `webhook-ignored` with the reason, `webhook-refused`; for a hook, `hook-refused` with the reason, `hook-ignored`, `hook-key-stale`, `hook-table-unread` and `hook-table-uncounted`. |
 | `/aws/lambda/governor-starter` | The starter: `fire-started` with the task, `fire-deferred` while a task runs, `fire-failed`. |
 
 The App's **Advanced → Recent Deliveries** shows each delivery's answer: `202` queued a fire, `200` queued nothing and says why, `401` is a key that does not match.

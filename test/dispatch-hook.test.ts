@@ -446,7 +446,7 @@ describe('the hook table', () => {
   });
 
   test('a malformed cap is a failed read', async () => {
-    for (const perHour of [{ S: '20' }, { M: { 'operator-prod': { N: '0' } } }, { M: { 'operator-prod': { N: '2.5' } } }, { M: { 'operator-prod': { S: '20' } } }]) {
+    for (const perHour of [{ S: '20' }, { M: { 'operator-prod': { N: '20' } } }, { M: { 'operator-prod': { N: '0' }, 'operator-dev': { N: '5' } } }, { M: { 'operator-prod': { N: '2.5' }, 'operator-dev': { N: '5' } } }, { M: { 'operator-prod': { S: '20' }, 'operator-dev': { N: '5' } } }]) {
       await assert.rejects(hookTable(client(() => ({ Item: { ...ITEM, perHour } })) as never, 'T').listed(REPO), /malformed/, JSON.stringify(perHour));
     }
   });
