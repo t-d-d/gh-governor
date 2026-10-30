@@ -84,6 +84,16 @@ describe('ticketRow', () => {
     test(`${name}: ${want}`, () => assert.equal(ticketRow({ ticket: t, blockers, fire, labels }), want));
   }
 
+  // The summary counts a blocker the rows leave out, one in a repo the App
+  // cannot see; where the ticket carries it, it decides.
+  test('a summary counting an open blocker the rows leave out: blocked', () => {
+    assert.equal(ticketRow({ ticket: { ...ticket(['mode: afk']), openBlockers: 1 }, blockers: closedBlocker, fire: done, labels }), 'blocked');
+  });
+
+  test('a summary counting no open blocker: not blocked, whatever the rows say', () => {
+    assert.equal(ticketRow({ ticket: { ...ticket(['mode: afk']), openBlockers: 0 }, blockers: stillBlocked, fire: done, labels }), 'ready');
+  });
+
   test('pickup governs the ready row, unblocked the not-planned, claimed and not-ready rows', () => {
     assert.deepEqual(ROW_SWITCH, { 'not-planned': 'unblocked', claimed: 'unblocked', ready: 'pickup', 'not-ready': 'unblocked' });
   });

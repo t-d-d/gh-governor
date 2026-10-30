@@ -1504,7 +1504,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const { issue, blocker } = invocation;
     const config = configOf(fireRepo());
     const reader = await getReader();
-    const [ticket, blockers] = await Promise.all([reader.ticket(issue), reader.blockers(issue)]);
+    // The ticket's dependency summary counts a blocker the rows leave out,
+    // so the rows are read only for a ticket without one.
+    const ticket = await reader.ticket(issue);
+    const blockers = ticket.openBlockers === undefined ? await reader.blockers(issue) : undefined;
     row = ticketRow({ ticket, blockers, fire: invocation, labels: config.labels });
     const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row };
     const governs = ROW_SWITCH[row];
