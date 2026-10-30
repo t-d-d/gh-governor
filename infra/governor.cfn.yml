@@ -146,13 +146,14 @@ Resources:
         Enabled: true
 
   # The receiver's own table (dispatch/webhook/hook-table.mjs): one item per
-  # served repo, listing each hook's name and key version, which the task
-  # writes each time it reads the repo's file and the receiver reads before
-  # it queues a hook fire. Apart from the state table because the receiver is
-  # internet-facing and the state table holds records other checks trust
-  # (docs/constraints/dispatcher-state.md). Built the same way; no point-in-
-  # time recovery: a lost item costs task starts, and the task still refuses
-  # a stale key.
+  # served repo, listing each hook's name, key version and hourly cap, which
+  # the task writes each time it reads the repo's file and the receiver reads
+  # before it queues a hook fire; and one item per hook and clock hour, the
+  # receiver's count of that hook's fires, expired by ttl. Apart from the
+  # state table because the receiver is internet-facing and the state table
+  # holds records other checks trust (docs/constraints/dispatcher-state.md).
+  # Built the same way; no point-in-time recovery: a lost item costs task
+  # starts, and the task still refuses a stale key.
   DispatchHookTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -915,11 +916,14 @@ Resources:
                 Effect: Allow
                 Action: sqs:SendMessage
                 Resource: !GetAtt DispatchFiresQueue.Arn
-              # A repo's listed hooks, read before a hook fire is queued.
+              # A repo's listed hooks, read before a hook fire is queued, and
+              # each hook's count of fires this hour, raised under its cap.
               # Nothing on the state table: the receiver faces the internet.
-              - Sid: ReadTheHookTable
+              - Sid: ReadAndCountTheHookTable
                 Effect: Allow
-                Action: dynamodb:GetItem
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
                 Resource: !GetAtt DispatchHookTable.Arn
               - Sid: Logs
                 Effect: Allow

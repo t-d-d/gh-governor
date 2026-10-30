@@ -117,7 +117,7 @@ import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
-import { RED, dispatchMarker, ownersOf, parseFire } from './webhook/fire.mjs';
+import { HOOK_PER_HOUR, RED, dispatchMarker, ownersOf, parseFire } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -451,12 +451,12 @@ export const run = async (event, deps) => {
   const reads = { owners: deps.owners, token: tokenFor, config: deps.configFile, environments, log: deps.log };
   const readAt = new Date(deps.now()).toISOString();
   /**
-   * Each served repo's hooks and key versions, as its file reads now, to the
-   * receiver's hook table, so the receiver refuses a revoked key or a removed
-   * hook before the queue. A write that fails is logged at error and counts
-   * the repo unread, and the turn goes on: the receiver queues on the last
-   * list meanwhile, and this turn's own checks still refuse a stale key
-   * (dispatch/hooks.mjs).
+   * Each served repo's hooks, key versions and hourly caps, as its file reads
+   * now, to the receiver's hook table, so the receiver refuses a revoked key,
+   * a removed hook or a fire past the cap before the queue. A write that
+   * fails is logged at error and counts the repo unread, and the turn goes
+   * on: the receiver queues on the last list meanwhile, and this turn's own
+   * checks still refuse a stale key (dispatch/hooks.mjs).
    *
    * @param {import('./repos.mjs').Served[]} list
    * @returns {Promise<Array<{ repo: string, error: string }>>} The repos whose list was not written.
@@ -464,7 +464,7 @@ export const run = async (event, deps) => {
   const publishHooks = async (list) => {
     // One item per repo, so the writes are independent: each goes at once.
     const written = await Promise.all(list.map(async ({ repo: served, config }) => {
-      const hooks = turnsOn(config, 'hooks') ? config.hooks.map(({ name, keyVersion }) => ({ name, keyVersion })) : [];
+      const hooks = turnsOn(config, 'hooks') ? config.hooks.map(({ name, keyVersion, perHour }) => ({ name, keyVersion, perHour: perHour ?? HOOK_PER_HOUR })) : [];
       try {
         await deps.hookTable.publish(served, hooks, readAt);
         return null;

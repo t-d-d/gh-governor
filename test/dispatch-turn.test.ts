@@ -130,7 +130,7 @@ const harness = (over: Record<string, unknown> = {}) => {
   // Each session the turn recorded as governor's own.
   const recorded: string[] = [];
   // Each write to the receiver's hook table: a repo's hooks as its file was read.
-  const published: Array<{ repo: string; hooks: Array<{ name: string; keyVersion: number }>; at: string }> = [];
+  const published: Array<{ repo: string; hooks: Array<{ name: string; keyVersion: number; perHour: number }>; at: string }> = [];
   let loginOnDisk: string | null = null;
   const accounts: unknown[] = [];
   const deps = {
@@ -255,7 +255,7 @@ const harness = (over: Record<string, unknown> = {}) => {
     // The fire lane: a fire waits on it unless a test says it is quiet.
     fires: { waiting: async () => 1 },
     hookTable: {
-      publish: async (repo: string, hooks: Array<{ name: string; keyVersion: number }>, at: string) => {
+      publish: async (repo: string, hooks: Array<{ name: string; keyVersion: number; perHour: number }>, at: string) => {
         published.push({ repo, hooks, at });
         return true;
       },
@@ -5310,11 +5310,11 @@ describe('run — hooks', () => {
  * last item.
  */
 describe('run: the hook table', () => {
-  const FACTORY_HOOKS = (JSON.parse(FACTORY_FILE).hooks as Array<{ name: string; keyVersion: number }>).map(({ name, keyVersion }) => ({ name, keyVersion }));
+  const FACTORY_HOOKS = (JSON.parse(FACTORY_FILE).hooks as Array<{ name: string; keyVersion: number; perHour?: number }>).map(({ name, keyVersion, perHour }) => ({ name, keyVersion, perHour: perHour ?? 20 }));
   const fileWith = (over: Record<string, unknown>) => async (repo: string) => (repo === REPO ? JSON.stringify({ ...JSON.parse(FACTORY_FILE), ...over }) : null);
   const hookFire = { kind: 'hook', hook: FACTORY_HOOKS[0]!.name, keyVersion: FACTORY_HOOKS[0]!.keyVersion, text: 'ALARM', at: '2026-09-25T11:58:00.000Z', repo: REPO };
 
-  test('a fire naming its repo writes that repo\'s hooks and their key versions, stamped with the turn\'s time', async () => {
+  test('a fire naming its repo writes that repo\'s hooks, their key versions and their caps, stamped with the turn\'s time', async () => {
     const h = harness();
     await run(hookFire, h.deps as never);
     assert.deepEqual(h.published, [{ repo: REPO, hooks: FACTORY_HOOKS, at: new Date(NOW).toISOString() }]);
@@ -5338,7 +5338,14 @@ describe('run: the hook table', () => {
   test('a raised key version is what the next read writes', async () => {
     const h = harness({ configFile: fileWith({ hooks: [{ ...JSON.parse(FACTORY_FILE).hooks[0], keyVersion: 2 }] }) });
     await run({ kind: 'schedule' }, h.deps as never);
-    assert.deepEqual(h.published[0]!.hooks, [{ name: FACTORY_HOOKS[0]!.name, keyVersion: 2 }]);
+    assert.deepEqual(h.published[0]!.hooks, [{ name: FACTORY_HOOKS[0]!.name, keyVersion: 2, perHour: FACTORY_HOOKS[0]!.perHour }]);
+  });
+
+  test('a hook\'s perHour is what the read writes beside its key version, and 20 when the file leaves it out', async () => {
+    const { perHour: _p, ...unset } = JSON.parse(FACTORY_FILE).hooks[0];
+    const h = harness({ configFile: fileWith({ hooks: [{ ...unset, perHour: 5 }, { ...unset, name: 'operator-dev' }] }) });
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.published[0]!.hooks, [{ name: unset.name, keyVersion: unset.keyVersion, perHour: 5 }, { name: 'operator-dev', keyVersion: unset.keyVersion, perHour: 20 }]);
   });
 
   test('a write that fails is logged at error, and the turn goes on and exits 1: the task\'s own checks still hold', async () => {

@@ -38,7 +38,9 @@ const harness = (over: Record<string, unknown> = {}) => {
     appId: 5075844,
     now: () => NOW,
     // The hook table's item for the repo: none unless a test says otherwise.
-    listedHooks: async (_repo: string): Promise<ReadonlyMap<string, number> | null> => null,
+    listedHooks: async (_repo: string): Promise<ReadonlyMap<string, { keyVersion: number, perHour: number }> | null> => null,
+    // The hour's count: always under the cap unless a test says otherwise.
+    countFire: async (_repo: string, _hook: string, _at: number, _cap: number) => true,
     enqueue: async (message: Record<string, unknown>, dedupId?: string) => {
       queued.push({ message, ...(dedupId === undefined ? {} : { dedupId }) });
       return `m-${queued.length}`;
@@ -236,7 +238,7 @@ describe('handle — a hook fire', () => {
  * decides.
  */
 describe('handle: the hook table', () => {
-  const listed = (hooks: Record<string, number>) => async () => new Map(Object.entries(hooks));
+  const listed = (hooks: Record<string, number>) => async () => new Map(Object.entries(hooks).map(([name, keyVersion]) => [name, { keyVersion, perHour: 20 }]));
 
   test('a repo with no item yet is queued, and the read names the repo', async () => {
     const asked: string[] = [];
@@ -308,6 +310,92 @@ describe('handle: the hook table', () => {
   });
 });
 
+/**
+ * The hourly cap: the receiver counts each hook's fires per clock hour in the
+ * hook table, and a fire past the hook's `perHour` gets 429, so a leaked key
+ * cannot flood the one queue every repo shares.
+ */
+describe('handle: the hourly cap', () => {
+  const counter = (over: Record<string, unknown> = {}) => {
+    const counts: Array<{ repo: string, hook: string, at: number, cap: number }> = [];
+    const { deps, queued, logged } = harness({
+      countFire: async (repo: string, hook: string, at: number, cap: number) => { counts.push({ repo, hook, at, cap }); return true; },
+      ...over,
+    });
+    return { deps, queued, logged, counts };
+  };
+
+  test('a queued fire is counted once, against the perHour the hook table\'s item names', async () => {
+    const { deps, queued, counts } = counter({ listedHooks: async () => new Map([[HOOK, { keyVersion: 1, perHour: 7 }]]) });
+    assert.equal((await handle(fire(TEXT), deps)).statusCode, 202);
+    assert.equal(queued.length, 1);
+    assert.deepEqual(counts, [{ repo: REPO, hook: HOOK, at: NOW, cap: 7 }]);
+  });
+
+  test('a repo with no item yet is capped at 20', async () => {
+    const { deps, counts } = counter();
+    assert.equal((await handle(fire(TEXT), deps)).statusCode, 202);
+    assert.deepEqual(counts.map((c) => c.cap), [20]);
+  });
+
+  test('a fire past the cap gets 429, queues nothing, and logs at warn', async () => {
+    const { deps, queued, logged } = counter({ countFire: async () => false });
+    const response = await handle(fire(TEXT), deps);
+    assert.equal(response.statusCode, 429);
+    assert.equal(queued.length, 0);
+    const line = logged.find((l) => l.event === 'hook-refused');
+    assert.equal(line?.level, 'warn');
+    assert.equal(line?.repo, REPO);
+    assert.equal(line?.hook, HOOK);
+    assert.ok(!logged.some((l) => l.level === 'error'), 'a flood is worth a look, not a page');
+  });
+
+  test('a count that fails gets 503 and queues nothing, so the caller retries', async () => {
+    const { deps, queued, logged } = counter({ countFire: async () => { throw new Error('ProvisionedThroughputExceededException'); } });
+    const response = await handle(fire(TEXT), deps);
+    assert.equal(response.statusCode, 503);
+    assert.equal(queued.length, 0);
+    const line = logged.find((l) => l.event === 'hook-table-uncounted');
+    assert.equal(line?.level, 'error');
+    assert.match(String(line?.error), /ProvisionedThroughputExceededException/);
+  });
+
+  test('only a request that passed the signature and key-version checks is counted', async () => {
+    const { deps, counts } = counter({ listedHooks: async () => new Map([[HOOK, { keyVersion: 2, perHour: 20 }]]) });
+    await handle(fire(TEXT, { header: `v=2,t=${T},sha256=${'0'.repeat(64)}` }), deps);
+    await handle(fire(TEXT, { version: 2, t: T - 3600 }), deps);
+    await handle(fire(TEXT, { version: 1 }), deps);
+    await handle(fire(TEXT, { hook: 'operator-dev', version: 2 }), deps);
+    await handle(fire(TEXT, { repo: 'stranger/repo', version: 2 }), deps);
+    assert.deepEqual(counts, []);
+    await handle(fire(TEXT, { version: 2 }), deps);
+    assert.equal(counts.length, 1);
+  });
+
+  test('a flood: 100 fires in ten minutes queue the first 20 and answer 429 to the rest', async () => {
+    const hour = new Map<string, number>();
+    let clock = NOW;
+    const { deps, queued } = harness({
+      now: () => clock,
+      countFire: async (repo: string, hook: string, at: number, cap: number) => {
+        const key = `${repo}|${hook}|${Math.floor(at / 3_600_000)}`;
+        const n = hour.get(key) ?? 0;
+        if (n >= cap) return false;
+        hour.set(key, n + 1);
+        return true;
+      },
+    });
+    const answers: number[] = [];
+    for (let i = 0; i < 100; i += 1) {
+      clock = NOW + i * 6000;
+      answers.push((await handle(fire(JSON.stringify({ text: `ALARM ${i}` }), { t: Math.floor(clock / 1000) }), deps)).statusCode);
+    }
+    assert.equal(queued.length, 20);
+    assert.deepEqual(answers.slice(0, 20), Array(20).fill(202));
+    assert.deepEqual(answers.slice(20), Array(80).fill(429));
+  });
+});
+
 describe('the hook table', () => {
   type Sent = { name: string; input: Record<string, any> };
   const client = (answer: (command: Sent) => unknown) => {
@@ -321,12 +409,18 @@ describe('the hook table', () => {
       },
     };
   };
-  const ITEM = { pk: { S: 'hooks#acme/factory' }, sk: { S: 'listed' }, at: { S: '2026-09-21T12:00:00.000Z' }, hooks: { M: { 'operator-prod': { N: '2' }, 'operator-dev': { N: '1' } } } };
+  const ITEM = {
+    pk: { S: 'hooks#acme/factory' },
+    sk: { S: 'listed' },
+    at: { S: '2026-09-21T12:00:00.000Z' },
+    hooks: { M: { 'operator-prod': { N: '2' }, 'operator-dev': { N: '1' } } },
+    perHour: { M: { 'operator-prod': { N: '20' }, 'operator-dev': { N: '5' } } },
+  };
 
-  test('one item per repo, read consistently by its key: each listed hook and its key version', async () => {
+  test('one item per repo, read consistently by its key: each listed hook, its key version and its cap', async () => {
     const c = client(() => ({ Item: ITEM }));
     const listed = await hookTable(c as never, 'governor-DispatchHookTable-X').listed(REPO);
-    assert.deepEqual(listed && [...listed].sort(), [['operator-dev', 1], ['operator-prod', 2]]);
+    assert.deepEqual(listed && [...listed].sort(), [['operator-dev', { keyVersion: 1, perHour: 5 }], ['operator-prod', { keyVersion: 2, perHour: 20 }]]);
     assert.equal(c.sent[0]?.name, 'GetItemCommand');
     assert.equal(c.sent[0]?.input.TableName, 'governor-DispatchHookTable-X');
     assert.equal(c.sent[0]?.input.ConsistentRead, true);
@@ -345,6 +439,18 @@ describe('the hook table', () => {
     assert.equal(empty?.size, 0);
   });
 
+  test('an item written before hooks had a cap reads each one as 20', async () => {
+    const { perHour: _caps, ...older } = ITEM;
+    const listed = await hookTable(client(() => ({ Item: older })) as never, 'T').listed(REPO);
+    assert.deepEqual(listed && [...listed].sort(), [['operator-dev', { keyVersion: 1, perHour: 20 }], ['operator-prod', { keyVersion: 2, perHour: 20 }]]);
+  });
+
+  test('a malformed cap is a failed read', async () => {
+    for (const perHour of [{ S: '20' }, { M: { 'operator-prod': { N: '20' } } }, { M: { 'operator-prod': { N: '0' }, 'operator-dev': { N: '5' } } }, { M: { 'operator-prod': { N: '2.5' }, 'operator-dev': { N: '5' } } }, { M: { 'operator-prod': { S: '20' }, 'operator-dev': { N: '5' } } }]) {
+      await assert.rejects(hookTable(client(() => ({ Item: { ...ITEM, perHour } })) as never, 'T').listed(REPO), /malformed/, JSON.stringify(perHour));
+    }
+  });
+
   test('a read that fails, or a malformed item, throws: never a missing item', async () => {
     await assert.rejects(hookTable(client(() => { throw new Error('AccessDeniedException'); }) as never, 'T').listed(REPO), /AccessDeniedException/);
     for (const hooks of [undefined, { S: 'operator-prod' }, { M: { 'operator-prod': { S: '2' } } }, { M: { 'operator-prod': { N: '0' } } }, { M: { 'operator-prod': { N: '1.5' } } }]) {
@@ -357,7 +463,7 @@ describe('the hook table', () => {
   test('a write puts the repo\'s whole list, unless a later read of the file already stands', async () => {
     const c = client(() => ({}));
     const at = '2026-09-21T12:00:00.000Z';
-    assert.equal(await hookTable(c as never, 'T').publish('Acme/Factory', [{ name: 'operator-prod', keyVersion: 2 }, { name: 'operator-dev', keyVersion: 1 }], at), true);
+    assert.equal(await hookTable(c as never, 'T').publish('Acme/Factory', [{ name: 'operator-prod', keyVersion: 2, perHour: 20 }, { name: 'operator-dev', keyVersion: 1, perHour: 5 }], at), true);
     const put = c.sent[0]!;
     assert.equal(put.name, 'PutItemCommand');
     assert.deepEqual(put.input.Item, ITEM);
@@ -372,6 +478,27 @@ describe('the hook table', () => {
     assert.equal(await hookTable(beaten as never, 'T').publish(REPO, [], '2026-09-21T12:00:00.000Z'), false);
     const failing = client(() => { throw new Error('AccessDeniedException'); });
     await assert.rejects(hookTable(failing as never, 'T').publish(REPO, [], '2026-09-21T12:00:00.000Z'), /AccessDeniedException/);
+  });
+
+  test('a fire is counted in its hook\'s item for the clock hour, only while under the cap, and expires when the hour ends', async () => {
+    const c = client(() => ({}));
+    const at = Date.parse('2026-09-21T12:34:56.789Z');
+    assert.equal(await hookTable(c as never, 'T').count('Acme/Factory', HOOK, at, 20), true);
+    const update = c.sent[0]!;
+    assert.equal(update.name, 'UpdateItemCommand');
+    assert.equal(update.input.TableName, 'T');
+    assert.deepEqual(update.input.Key, { pk: { S: 'fires#acme/factory#operator-prod' }, sk: { S: '2026-09-21T12' } });
+    assert.equal(update.input.UpdateExpression, 'ADD #fires :one SET #ttl = :ttl');
+    assert.equal(update.input.ConditionExpression, 'attribute_not_exists(#fires) OR #fires < :cap');
+    assert.deepEqual(update.input.ExpressionAttributeNames, { '#fires': 'fires', '#ttl': 'ttl' });
+    assert.deepEqual(update.input.ExpressionAttributeValues, { ':one': { N: '1' }, ':cap': { N: '20' }, ':ttl': { N: String(Date.parse('2026-09-21T13:00:00Z') / 1000) } });
+  });
+
+  test('a count at the cap is false; any other failure throws', async () => {
+    const full = client(() => { throw Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' }); });
+    assert.equal(await hookTable(full as never, 'T').count(REPO, HOOK, NOW, 20), false);
+    const failing = client(() => { throw new Error('AccessDeniedException'); });
+    await assert.rejects(hookTable(failing as never, 'T').count(REPO, HOOK, NOW, 20), /AccessDeniedException/);
   });
 });
 
@@ -415,11 +542,20 @@ describe('the config file\'s hooks', () => {
     assert.equal(fault(withHooks({ hooks: false })), null);
   });
 
+  test('a hook may set perHour, a positive whole number; a hook without it stays valid', () => {
+    const hook = { name: 'operator-prod', prompt: 'Look into the alarm.', keyVersion: 1 };
+    assert.equal(fault(withHooks({ hooks: true }, [hook])), null);
+    assert.equal(fault(withHooks({ hooks: true }, [{ ...hook, perHour: 5 }])), null);
+    for (const perHour of [0, -1, 1.5, '20', null]) {
+      assert.notEqual(fault(withHooks({ hooks: true }, [{ ...hook, perHour }])), null, JSON.stringify(perHour));
+    }
+  });
+
   test('each hook has a URL-safe name unique in the file, a prompt and a positive whole key version', () => {
     const hook = { name: 'operator-prod', prompt: 'Look into the alarm.', keyVersion: 1 };
     assert.equal(fault(withHooks({ hooks: true }, [hook, { ...hook, name: 'operator-dev', prompt: { file: 'ops/alarm.md' } }])), null);
     assert.match(String(fault(withHooks({ hooks: true }, [hook, hook]))), /operator-prod/);
-    for (const bad of [{ name: 'Operator' }, { name: 'op prod' }, { name: 'op_prod' }, { name: 'op/prod' }, { name: '' }, { prompt: '' }, { prompt: { file: '../x' } }, { keyVersion: 0 }, { keyVersion: 1.5 }, { keyVersion: '1' }, { keyVersion: 1_000_000_000 }, { perHour: 20 }]) {
+    for (const bad of [{ name: 'Operator' }, { name: 'op prod' }, { name: 'op_prod' }, { name: 'op/prod' }, { name: '' }, { prompt: '' }, { prompt: { file: '../x' } }, { keyVersion: 0 }, { keyVersion: 1.5 }, { keyVersion: '1' }, { keyVersion: 1_000_000_000 }, { perhour: 20 }]) {
       assert.notEqual(fault(withHooks({ hooks: true }, [{ ...hook, ...bad }])), null, JSON.stringify(bad));
     }
     const { keyVersion: _v, ...unversioned } = hook;

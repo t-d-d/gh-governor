@@ -196,6 +196,8 @@ const periodicSchema = z.strictObject({
  * is named after; `prompt`, what the session runs; `keyVersion`, the version
  * of the hook's key a fire must be signed with. Raising it revokes the key
  * before it. A version is not a secret: the key is derived from the stack's.
+ * `perHour`, the most fires the receiver queues for the hook in a clock hour,
+ * 20 when unset (`HOOK_PER_HOUR`, webhook/fire.mjs).
  */
 const hookSchema = z.strictObject({
   name: z.string().regex(HOOK_NAME, 'lower-case letters, digits and hyphens, safe in a URL path'),
@@ -203,6 +205,7 @@ const hookSchema = z.strictObject({
   // At most nine digits, as a request's `v=` and scripts/hook-key.mjs take:
   // a larger version could never be signed.
   keyVersion: z.number().int().positive().max(999_999_999),
+  perHour: z.number().int().positive().optional(),
 });
 
 /**
@@ -267,7 +270,7 @@ export const configSchema = z.strictObject({
  * @typedef {{ issue: number, marker?: string }} Heartbeat
  * @typedef {{ sweepHours?: number }} Pickup
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number }} Periodic A recurring session, its prompt read.
- * @typedef {{ name: string, prompt: string, keyVersion: number }} Hook A hook an outside system fires, its prompt read.
+ * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
  * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, pickup?: Pickup, periodics: Periodic[], hooks: Hook[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the

@@ -21,9 +21,10 @@ const secrets = new SecretsManagerClient({});
 const sqs = new SQSClient({});
 // No table named: every hook request's read fails, answered 503 and logged
 // at error, never queued as if the repo had no item.
+const unset = async () => { throw new Error('HOOK_TABLE is unset'); };
 const hooks = env.HOOK_TABLE
   ? hookTable(new DynamoDBClient({}), env.HOOK_TABLE)
-  : { listed: async () => { throw new Error('HOOK_TABLE is unset'); } };
+  : { listed: unset, count: unset };
 
 /** @type {import('./route.mjs').Deps} */
 const deps = {
@@ -39,6 +40,8 @@ const deps = {
   // The hooks each repo's file listed when the task last read it: read
   // after a hook request's signature, before it queues.
   listedHooks: hooks.listed,
+  // Each hook's fires this clock hour, counted under its cap before it queues.
+  countFire: hooks.count,
   now: Date.now,
   // The stack's owner list (DispatchOwners); unset is no owner, so nothing routes.
   owners: ownersOf(env.DISPATCH_OWNERS),

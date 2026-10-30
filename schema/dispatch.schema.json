@@ -773,6 +773,11 @@
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 999999999
+          },
+          "perHour": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
           }
         },
         "required": [
