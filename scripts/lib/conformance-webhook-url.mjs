@@ -13,6 +13,11 @@
 // proves AWS invoked it; anything else never reached it, or reached it and
 // failed. The post is the only write, and the receiver starts nothing for it.
 //
+// The hook-url check posts once, unsigned, to a hook path on the same URL.
+// A hook request is routed on its path before any GitHub check, so its own
+// 401 proves the path reaches the hook's signature check; anything else is a
+// receiver that took, ignored or never saw an unsigned hook.
+//
 // The `aws` CLI is the reader because governor carries no CloudFormation SDK
 // client. The stack arrives in GOVERNOR_STACK, which the deploy sets, so a
 // run that names none reports not-applicable out loud (scripts/conformance.mjs).
@@ -25,6 +30,13 @@ export const STACK_VAR = 'GOVERNOR_STACK';
 export const URL_OUTPUT = 'WebhookUrl';
 /** What dispatch/webhook/route.mjs answers a delivery it cannot verify. */
 export const REFUSAL = { status: 401, body: 'signature does not match' };
+
+/**
+ * The hook path the probe posts to, under the URL. A well-formed path, so the
+ * receiver reads it as a hook's, whose owner is no one's: a probe that got
+ * past the signature would still queue nothing.
+ */
+export const HOOK_PROBE_PATH = 'hooks/conformance/probe/conformance';
 
 /** Longer than the receiver's 20s Lambda timeout, so a slow receiver still answers. */
 const POST_TIMEOUT_MS = 30_000;
@@ -137,5 +149,48 @@ export async function checkDispatchWebhookUrl({ env, ...io }) {
     // operator reading the deploy compares with the hook's Recent Deliveries.
     notes: [`${stackName} ${URL_OUTPUT}: ${url ?? `(no ${URL_OUTPUT} output)`}`
       + (answer ? `; unsigned POST answered ${answer.status}${answer.errorType ? ` ${answer.errorType}` : ''}` : '')],
+  };
+}
+
+/**
+ * The findings on what a hook path answered an unsigned post: none for the
+ * receiver's 401, one for anything else.
+ *
+ * @param {object} sides
+ * @param {string | undefined} sides.url - The hook path's URL, or undefined
+ *   when the stack has no `URL_OUTPUT`.
+ * @param {Answer | undefined} sides.answer
+ * @param {string} [sides.stackName]
+ * @returns {string[]}
+ */
+export function hookUrlFindings({ url, answer, stackName = 'the dispatch stack' }) {
+  if (url === undefined || answer === undefined) return [`${stackName} has no ${URL_OUTPUT} output, so there is no hook path to post to`];
+  if (answer.status === 401) return [];
+  const said = `${answer.status}${answer.errorType ? ` ${answer.errorType}` : ''}: ${answer.body.slice(0, 200)}`;
+  if (answer.status >= 200 && answer.status < 300) {
+    return [`${url} answered an unsigned hook post ${said}, not 401: the receiver is not checking a hook's signature before it answers`];
+  }
+  return [`${url} answered an unsigned hook post ${said}, not the receiver's 401: a hook request does not reach its signature check. Read /aws/lambda/governor-webhook`];
+}
+
+/**
+ * The runner reports it not applicable, and never calls it, while
+ * GOVERNOR_STACK is unset.
+ *
+ * @param {{
+ *   env: Readonly<Record<string, string | undefined>>,
+ *   readUrl?: typeof readWebhookUrl,
+ *   post?: typeof postUnsigned,
+ * }} options
+ * @returns {Promise<import('../conformance.mjs').CheckOutcome>}
+ */
+export async function checkHookUrl({ env, ...io }) {
+  const stackName = /** @type {string} */ (env[STACK_VAR]);
+  const base = (io.readUrl ?? readWebhookUrl)(stackName);
+  const url = base === undefined ? undefined : `${base.endsWith('/') ? base : `${base}/`}${HOOK_PROBE_PATH}`;
+  const answer = url === undefined ? undefined : await (io.post ?? postUnsigned)(url);
+  return {
+    findings: hookUrlFindings({ url, answer, stackName }),
+    notes: [`unsigned POST to ${url ?? `(no ${URL_OUTPUT} output)`}${answer ? ` answered ${answer.status}` : ''}`],
   };
 }

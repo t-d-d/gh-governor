@@ -256,8 +256,8 @@ describe('infra/governor.cfn.yml — the grants', () => {
 
   // A failed first create is cleared by deleting this stack, which must not
   // take the login, the App key or the writer with it.
-  test('creates no secret the operator writes: its only secret is the webhook key', () => {
-    assert.deepEqual(resourcesOfType(template, 'AWS::SecretsManager::Secret').map(([id]) => id), ['WebhookSecret']);
+  test('creates no secret the operator writes: its only secrets are the webhook key and the hook secret, each generated', () => {
+    assert.deepEqual(resourcesOfType(template, 'AWS::SecretsManager::Secret').map(([id]) => id).sort(), ['HookSecret', 'WebhookSecret']);
   });
 });
 
@@ -584,11 +584,11 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
     assert.equal(fn?.Properties?.ReservedConcurrentExecutions, undefined);
   });
 
-  test('may read its key and queue a fire, and starts nothing itself', () => {
+  test('may read its two keys and queue a fire, and starts nothing itself', () => {
     const allowed = new Set(statements.flatMap(actionsOf));
     assert.deepEqual([...allowed].sort(), ['logs:CreateLogStream', 'logs:PutLogEvents', 'secretsmanager:GetSecretValue', 'sqs:SendMessage']);
     const key = statements.find((s) => actionsOf(s).includes('secretsmanager:GetSecretValue'))!;
-    assert.deepEqual(resourcesOf(key), ['${WebhookSecret}'], 'the receiver can read a secret that is not its key');
+    assert.deepEqual(resourcesOf(key).sort(), ['${HookSecret}', '${WebhookSecret}'], 'the receiver can read a secret that is not one of its keys');
     const send = statements.find((s) => actionsOf(s).includes('sqs:SendMessage'))!;
     assert.deepEqual(resourcesOf(send), ['${DispatchFiresQueue.Arn}']);
   });
@@ -598,6 +598,33 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
     assert.equal(alarm?.Properties?.Namespace, 'AWS/Lambda');
     assert.equal(alarm?.Properties?.MetricName, 'Errors');
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
+  });
+
+  // A hook's key is derived from this one secret (dispatch/webhook/hook.mjs),
+  // generated as the webhook key is, and read by the operator's key script
+  // (scripts/hook-key.mjs) by its name.
+  test('generates the hook secret under governor/, which the receiver is told of', () => {
+    const secret = template.Resources.HookSecret;
+    assert.equal(secret?.Type, 'AWS::SecretsManager::Secret');
+    assert.equal(secret?.Properties?.Name, 'governor/hook-secret');
+    assert.equal(secret?.Properties?.GenerateSecretString?.GenerateStringKey, undefined);
+    assert.ok(Number(secret?.Properties?.GenerateSecretString?.PasswordLength) >= 32);
+    assert.equal(fn?.Properties?.Environment?.Variables?.HOOK_SECRET_ID, '${HookSecret}');
+  });
+
+  test('a fire signed with a stale hook key pages, read off its own event', () => {
+    const filter = template.Resources.HookKeyStaleFilter;
+    assert.equal(filter?.Properties?.LogGroupName, '${DispatchLogGroup}');
+    assert.match(filter?.Properties?.FilterPattern ?? '', /\$\.event = "hook-key-stale"/);
+    const published = filter?.Properties?.MetricTransformations?.[0];
+    const alarm = template.Resources.HookKeyStaleAlarm;
+    assert.equal(alarm?.Properties?.AlarmName, 'governor-hook-key-stale');
+    assert.equal(alarm?.Properties?.Namespace, published?.MetricNamespace);
+    assert.equal(alarm?.Properties?.MetricName, published?.MetricName);
+    assert.equal(alarm?.Properties?.Threshold, 1);
+    assert.equal(alarm?.Properties?.TreatMissingData, 'notBreaching');
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\].*hook-key-stale/);
+    assert.deepEqual(alarm?.Properties?.AlarmActions, template.Resources.DispatchErrorsAlarm?.Properties?.AlarmActions);
   });
 
   test('outputs the URL and the secret the workflow points the App\'s webhook at', () => {

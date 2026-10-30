@@ -51,7 +51,7 @@ A task has no timeout of its own, so the entrypoint ends the turn after eighteen
 
 ## Triggers
 
-The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`) queues a fire for each of these, and the task checks the repo's switch before acting.
+The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`, `hook.mjs`) queues a fire for each of these, and the task checks the repo's switch before acting.
 
 | Event | Condition | What happens | Switch |
 |---|---|---|---|
@@ -73,6 +73,7 @@ The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`) queu
 | Dispatched run on another branch finished | Any outcome | A message to the session that wrote its commit | `branchRunMessages` |
 | PR opened, ready, pushed to, or its body or base edited | Not a draft; by an owner, member or collaborator | The PR review | `prReview` |
 | Workflow run finished on a PR's head | The PR is open | The PR review, at that head | `prReview` |
+| A signed `POST /hooks/<owner>/<repo>/<hook>` | The signature matches the hook's key, within five minutes; the file lists the hook at that key version | One session on the hook's prompt, with the caller's text below it | `hooks` |
 
 A mention starts a session only from someone with a say in the repo. A bot cannot, and neither can a session, whose posts end in the Claude Code footer. On a PR a session owns, a mention starts nobody: the owner is messaged instead.
 
@@ -246,6 +247,8 @@ A file in the older shape, `"heartbeat": { "issue": <number>, "marker": "<!-- �
 | A file that could not be read (anything but a 404) | `dispatch-config-unread`; the repo is left out and the turn exits 1 | `governor-errors` |
 | The login's environment list could not be read | `dispatch-environments-unread`, after one refresh attempt | `governor-errors` |
 | A repo's launch started nothing | `dispatch-repo-skipped` | `governor-repo-skipped` |
+| A hook fire for a repo whose file turns `hooks` off, or lists no hook of that name | `dispatch-refused`, at warn | none |
+| A hook fire signed with a key version other than the hook's `keyVersion` | `hook-key-stale`, at error, naming the repo, hook and version | `governor-hook-key-stale` |
 | A periodic's record, or its last run's session, could not be read, or its baseline written | `dispatch-periodic-unread` or `dispatch-periodic-unrecorded`; that periodic waits and the turn exits 1 | `governor-errors` |
 | The installation list or a token mint failed | `dispatch-failed` | `governor-errors` |
 
@@ -259,9 +262,11 @@ GitHub posts every installation's events to one Lambda Function URL (`governor-w
 - A label added by a bot queues no selection, since governor's own claim and release are a bot's. Subscribers still hear it.
 - A delivery's id is its deduplication id on the queue, so a redelivery is not a second fire.
 
+A request on a `/hooks/<owner>/<repo>/<hook>` path is a hook's, not GitHub's ([Hooks](../README.md#hooks)). The receiver derives the hook's key from `governor/hook-secret`, the repo, the hook and the version the `Governor-Signature` header names, and checks the signature in constant time. It reads no config file, so it does not know whether the repo lists the hook or which version is current: the task checks both (`dispatch/hooks.mjs`). A hook fire's deduplication id is its signature, so a replay inside the queue's five-minute window is not a second fire. No line logs a signature or a key.
+
 Every fire, the schedule's included, goes on `governor-fires.fifo`. The starter (`governor-starter`, `dispatch/webhook/starter.mjs`) runs one task per fire, never beside a running one. A fire that finds a task running goes back on the queue for ten seconds. After half an hour of attempts it goes to the dead-letter queue, and `governor-fires-dead` pages. A task that fails to start (an image pull refused, no placement) is put back on the queue by `governor-retrier`, for three attempts in all.
 
-After every apply, the deploy runs `scripts/point-app-webhook.mjs`, which writes the receiver's URL and the stack's key to the App's webhook config, as the App. It first reads the App's events, and writes nothing while one the receiver routes is unticked. The deploy's conformance checks (`scripts/conformance.mjs`) then read back the App's events and post once, unsigned, to the receiver, failing on anything but its own `401`.
+After every apply, the deploy runs `scripts/point-app-webhook.mjs`, which writes the receiver's URL and the stack's key to the App's webhook config, as the App. It first reads the App's events, and writes nothing while one the receiver routes is unticked. The deploy's conformance checks (`scripts/conformance.mjs`) then read back the App's events and post once, unsigned, to the receiver, failing on anything but its own `401`. They post once more, unsigned, to a hook path (`hook-url`), and fail on anything but `401`.
 
 The App's **Advanced → Recent Deliveries** shows each answer:
 
@@ -272,6 +277,17 @@ The App's **Advanced → Recent Deliveries** shows each answer:
 | `401` | The signature does not match the stack's key. |
 | `403` with no receiver log line | AWS refused the URL before the receiver ran. The stack grants both `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction`. |
 | `502` | The receiver threw, or the queue refused the fire. Redeliver retries it. |
+
+A hook request's answers, which only its caller sees:
+
+| Answer | Meaning |
+|---|---|
+| `202` | A `hook` fire was queued, naming the repo, the hook, the key version and the text. |
+| `200` | The repo's owner is not on `DispatchOwners`: `hook-ignored` at info, nothing queued. |
+| `400` | The body is not JSON, or holds no string `text`. Nothing queued. |
+| `401` | The header is missing or malformed, the signature does not match, or `t` is more than five minutes from the receiver's clock: `hook-refused`, nothing queued. |
+| `404` | A path under `/hooks/` that names no repo and hook. |
+| `413` | The text is over 32 KiB, or the fire would not fit the task's container override. Nothing queued. |
 
 ## Invoking by hand
 
@@ -318,6 +334,7 @@ Every alarm publishes to the `governor-alerts` topic, which emails the address i
 | `governor-claim-stranded` | A ticket was claimed but no marker names its session. It stays claimed; if no session is working on it, put the ready label back. |
 | `governor-config-invalid` | A served repo's file fails the schema. |
 | `governor-repo-skipped` | A repo's launch started nothing; its tickets wait for the next fire. |
+| `governor-hook-key-stale` | A hook fire was signed with a key version the repo's file has moved past (`hook-key-stale`). Unless a caller is still to be moved to the new key, treat the old key as leaked. |
 | `governor-not-started` | EventBridge could not invoke the receiver on the schedule. |
 | `governor-not-run` | Tasks repeatedly failed to start their container. The stop event in `/governor` says why. |
 | `governor-not-run-undelivered` | A stop event could not reach the retrier. Its fire needs sending again by hand. |

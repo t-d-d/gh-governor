@@ -11,7 +11,7 @@
  * where a field is spelled, so a new kind of fire, or a new field, is one
  * edit here and one test.
  *
- * Ten kinds. A `schedule` fire (EventBridge, every two hours) selects
+ * Eleven kinds. A `schedule` fire (EventBridge, every two hours) selects
  * ready work up to the cap; one naming an `issue` (an issue just given a
  * label on the stack's SelectLabels) selects that issue alone, if the label
  * is one of the repo's ready labels and the selection would; one naming a
@@ -38,7 +38,10 @@
  * (dispatch/conflicts.mjs). Each of those names the default branch its
  * payload did: no fire takes it for `main`. A `periodics` fire names an
  * event a periodic counts that queued no other fire; any fire may carry one
- * as `counted` (dispatch/periodics.mjs).
+ * as `counted` (dispatch/periodics.mjs). A `hook` names a hook in the
+ * repo's config file that an outside system fired, the key version it was
+ * signed with, when the receiver took it, and the caller's text: no prompt,
+ * since the task reads the hook's from the file (route.mjs, dispatch/hooks.mjs).
  *
  * Pure, and a leaf: the Lambda packages dispatch/webhook/ whole, and the
  * task image copies this file (dispatch/Dockerfile).
@@ -261,7 +264,10 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  * @typedef {{ kind: 'review', pr?: number, headSha?: string }} ReviewFire
  * @typedef {{ kind: 'conflicts', pr: number, sha: string, base: string }} ConflictsFire A PR merged into the default branch, `base`, and its merge commit.
  * @typedef {{ kind: 'periodics' }} PeriodicsFire An event a periodic counts, which queued no other fire: the turn checks the repo's periodics alone.
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire) & { repo?: string, counted?: Count }} Fire
+ * @typedef {{ kind: 'hook', hook: string, keyVersion: number, text: string, at: string }} HookFire
+ *   A hook an outside system fired: its name, the key version its request
+ *   was signed with, the caller's text, and when the receiver took it.
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
@@ -349,6 +355,9 @@ export const build = Object.freeze({
 
   /** @param {{ counted: Count }} args @returns {PeriodicsFire & { counted: Count }} */
   periodics: ({ counted }) => ({ kind: 'periodics', counted }),
+
+  /** @param {Omit<HookFire, 'kind'>} args @returns {HookFire} */
+  hook: ({ hook, keyVersion, text, at }) => ({ kind: 'hook', hook, keyVersion, text, at }),
 });
 
 // ── The container override ───────────────────────────────────────────────
@@ -479,6 +488,12 @@ export const selectLabelsOf = ownersOf;
  */
 export const ownerListed = (owners, account) => owners.some((o) => o.toLowerCase() === account.toLowerCase());
 
+/**
+ * A hook's name, as the config file lists it and its URL path names it:
+ * lower-case letters, digits and hyphens, safe in a path.
+ */
+export const HOOK_NAME = /^[a-z0-9-]{1,64}$/;
+
 /** A repository's `owner/name`, as GitHub spells one. */
 export const REPO_NAME = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 
@@ -567,6 +582,7 @@ const parseKind = (event) => {
     };
   }
   if (kind === 'periodics') return { kind };
+  if (kind === 'hook') return parseHook(e);
   if (kind === 'conflicts') {
     if (!isPositiveInt(e?.pr)) {
       throw new Error(`a conflicts invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);
@@ -740,6 +756,24 @@ const parseJob = (e) => {
     commit: /** @type {string} */ (e?.commit),
     ...(e?.runAttempt === undefined ? {} : { runAttempt: Number(e.runAttempt) }),
   };
+};
+
+/**
+ * A hook fire, refused unless it names a hook the file could list, a
+ * positive key version, the caller's text and when it was taken. One that
+ * carries a prompt is refused: the prompt is the file's, never the caller's.
+ *
+ * @param {Record<string, unknown> | null} e
+ * @returns {HookFire}
+ */
+const parseHook = (e) => {
+  const refuse = (/** @type {string} */ what) => { throw new Error(`a hook invocation's ${what}, got: ${JSON.stringify({ ...e, text: undefined })?.slice(0, 300)}`); };
+  if (e?.prompt !== undefined) refuse('prompt is the config file\'s, so it carries none');
+  if (typeof e?.hook !== 'string' || !HOOK_NAME.test(e.hook)) refuse('hook must be a hook name');
+  if (!isPositiveInt(e?.keyVersion)) refuse('keyVersion must be a positive integer');
+  if (typeof e?.text !== 'string' || e.text.trim() === '') refuse('text must be the caller\'s');
+  if (typeof e?.at !== 'string' || !Number.isFinite(Date.parse(e.at))) refuse('at must be when the receiver took it');
+  return { kind: 'hook', hook: /** @type {string} */ (e?.hook), keyVersion: Number(e?.keyVersion), text: /** @type {string} */ (e?.text), at: /** @type {string} */ (e?.at) };
 };
 
 /**

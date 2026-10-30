@@ -24,6 +24,12 @@ const deps = {
     const read = await secrets.send(new GetSecretValueCommand({ SecretId: String(env.WEBHOOK_SECRET_ID) }));
     return String(read.SecretString ?? '');
   }),
+  // Every hook key's root (hook.mjs): read only when a hook request comes.
+  hookSecret: cachedSecret(async () => {
+    const read = await secrets.send(new GetSecretValueCommand({ SecretId: String(env.HOOK_SECRET_ID) }));
+    return String(read.SecretString ?? '');
+  }),
+  now: Date.now,
   // The stack's owner list (DispatchOwners); unset is no owner, so nothing routes.
   owners: ownersOf(env.DISPATCH_OWNERS),
   // The stack's SelectLabels; unset is every label.
@@ -43,13 +49,13 @@ const deps = {
 
 /**
  * Two callers: the EventBridge schedule rule, whose Input is the bare
- * `{"kind":"schedule"}`, and the Function URL, whose event carries headers
- * and a body.
+ * `{"kind":"schedule"}`, and the Function URL, whose event carries its path,
+ * headers and a body: a hook's path, or any other for GitHub's deliveries.
  *
- * @param {{ kind?: string, headers?: Record<string, string>, body?: string, isBase64Encoded?: boolean }} request
+ * @param {{ kind?: string, rawPath?: string, headers?: Record<string, string>, body?: string, isBase64Encoded?: boolean }} request
  */
 export const handler = async (request) => {
   if (request.kind === 'schedule') return handleSchedule(deps);
-  const { statusCode, body } = await handle({ headers: request.headers ?? {}, body: request.body, isBase64Encoded: request.isBase64Encoded }, deps);
+  const { statusCode, body } = await handle({ path: request.rawPath, headers: request.headers ?? {}, body: request.body, isBase64Encoded: request.isBase64Encoded }, deps);
   return { statusCode, headers: { 'content-type': 'text/plain' }, body };
 };

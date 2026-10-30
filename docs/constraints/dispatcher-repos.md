@@ -11,12 +11,16 @@ spends the one claude.ai login.
 - The owner list is the stack parameter `DispatchOwners` (`DISPATCH_OWNERS`,
   `ownersOf`), which the deploy reads from the `GOVERNOR_OWNERS` repository
   variable. It has no default. Changing it is a deploy.
-- Events arrive through the App's own webhook, one URL for every
-  installation. The receiver routes from the payload and holds no token: the
-  task reads the config file and its prompts, never the receiver or a fire.
-- A delivery for a repo whose owner is not on the list gets a 2xx, queues
-  nothing, and is logged at info, never as an error: an outsider must not be
-  able to page the operator.
+- GitHub's events arrive through the App's own webhook, one URL for every
+  installation. A hook fire arrives at the same receiver on its own path,
+  `/hooks/<owner>/<repo>/<hook>`, signed with that hook's key instead of
+  GitHub's secret (dispatch/webhook/hook.mjs). The receiver routes from the
+  payload or the path and holds no token: the task reads the config file and
+  its prompts, never the receiver or a fire. A hook fire carries the caller's
+  text, never a prompt.
+- A delivery or a signed hook for a repo whose owner is not on the list gets
+  a 2xx, queues nothing, and is logged at info, never as an error: an
+  outsider must not be able to page the operator.
 - A label added to an issue queues a selection fire only if the stack's
   `SelectLabels` (`selectLabelsOf`) lists it or is empty, and no bot added it
   (the dispatcher's own claim or release). A repo whose ready label is not
@@ -42,8 +46,8 @@ spends the one claude.ai login.
   refuses a fire kind its repo's file does not turn on. The switches are
   pickup, summons, PR messages, subscribe messages, the red scheduled run,
   the merge hand-off, CI and deploy messages, branch-run messages, the
-  conflicts check, deployed-label job fires, the PR review, the heartbeat
-  and periodics (`GENERIC_SWITCHES`). What CI and a deploy are in a repo is
+  conflicts check, deployed-label job fires, the PR review, the heartbeat,
+  periodics and hooks (`GENERIC_SWITCHES`). What CI and a deploy are in a repo is
   dispatcher-workflows.md's, and the review's settings dispatcher-review.md's.
   The schema accepts no switch by repo.
 - A fire that counts an event for the periodics (`counted`: a merge into the
@@ -81,8 +85,15 @@ spends the one claude.ai login.
   itself: what happened, the PR or issue, the run and commit, the session's
   standing line. No repo can drop or reword them. A prompt may name a fact
   its kind has (`{pr}`), and the dispatcher writes it in.
-- Every prompt value, each in `prompts`, the review's `checklist` and each
-  periodic's `prompt`, is the
+- A file turning hooks on lists at least one hook, or is a schema fault.
+  Each hook has a name unique in the file and safe in a URL path, a prompt,
+  and a `keyVersion`. A hook's key is derived from one stack secret, its
+  repo, its name and that version, so the file holds no key and governor
+  stores none. The task refuses a hook fire whose hook the file does not
+  list, at warn, and one signed with another key version, as an alarmed
+  `hook-key-stale` error (dispatch/hooks.mjs).
+- Every prompt value, each in `prompts`, the review's `checklist`, each
+  periodic's `prompt` and each hook's, is the
   text or `{ "file": "<path>" }`: a file in the repo, from its root, read
   from the default branch with the config file (`resolveFiles`). A missing
   or empty file, or one naming a fact its kind lacks, makes the config file
@@ -117,6 +128,9 @@ spends the one claude.ai login.
 - Prompts: `instruction` in dispatch/prompts.mjs, called by each text's
   builder; the red scheduled run's fire carries its facts and the task adds
   the instruction (`redRunPrompt`, dispatch/workflow.mjs).
+- A hook: `handleHook` in dispatch/webhook/route.mjs checks the signature
+  and queues the fire; `hookFor` in dispatch/hooks.mjs checks it against the
+  file; `HookKeyStaleAlarm` in infra/governor.cfn.yml pages on a stale key.
 - A full config file, every feature on: test/fixtures/factory/.github/dispatch.json.
 
 ## Do not
@@ -151,4 +165,4 @@ spends the one claude.ai login.
   then hold or redirect a dispatch.
 
 Judgment: that a new per-repo table record keys on its repo, and that a config file holds no secret, no check sees: a key is a string no schema reads, and a secret has no shape the schema can refuse.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28. A hook fire arrives at the receiver on its own path, signed with its hook key, and the switch list gains hooks, since #55, under PRD #53.

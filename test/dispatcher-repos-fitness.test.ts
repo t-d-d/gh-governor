@@ -246,6 +246,7 @@ describe('fitness: an unlisted owner queues nothing (dispatcher-repos.md)', () =
           body: raw,
         }, {
           secret: async () => SECRET,
+          hookSecret: async () => SECRET,
           owners,
           appId: 1,
           enqueue: async (message) => { queued.push(message); return 'm'; },
