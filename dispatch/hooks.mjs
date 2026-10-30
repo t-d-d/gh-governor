@@ -4,7 +4,9 @@
  *
  * The receiver checked the request's signature against the key for the
  * repo, the hook and the key version the request named (webhook/hook.mjs),
- * but it reads no config file. So the task refuses a fire whose hook the
+ * and against the hook table's item as the task last wrote it
+ * (webhook/hook-table.mjs), but it reads no config file, and a fire queued
+ * before the item changed, or with no item, gets past it. So the task refuses a fire whose hook the
  * file no longer lists, logged at warn: a caller someone forgot. It refuses
  * one signed with a key version other than the hook's `keyVersion`, logged as
  * {@link HOOK_KEY_STALE} at error, which pages: only someone who once held a
@@ -16,8 +18,10 @@
  * it ({@link hookPrompt}).
  */
 
-/** The event a fire signed with a stale key version logs, at error; `governor-hook-key-stale` pages on it. */
-export const HOOK_KEY_STALE = 'hook-key-stale';
+import { HOOK_KEY_STALE } from './webhook/hook-table.mjs';
+
+/** The event a fire signed with a stale key version logs, at error, here or at the receiver. */
+export { HOOK_KEY_STALE };
 
 /**
  * The hook a fire is for, or why the turn refuses it and the line to log.

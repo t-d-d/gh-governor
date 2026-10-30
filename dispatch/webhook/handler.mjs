@@ -11,12 +11,15 @@
 
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { hookTable } from './hook-table.mjs';
 import { LANE, ownersOf, selectLabelsOf } from './fire.mjs';
 import { appIdOf, cachedSecret, handle, handleSchedule } from './route.mjs';
 
 const env = process.env;
 const secrets = new SecretsManagerClient({});
 const sqs = new SQSClient({});
+const hooks = hookTable(new DynamoDBClient({}), String(env.HOOK_TABLE));
 
 /** @type {import('./route.mjs').Deps} */
 const deps = {
@@ -29,6 +32,9 @@ const deps = {
     const read = await secrets.send(new GetSecretValueCommand({ SecretId: String(env.HOOK_SECRET_ID) }));
     return String(read.SecretString ?? '');
   }),
+  // The hooks each repo's file listed when the task last read it: read
+  // after a hook request's signature, before it queues.
+  listedHooks: hooks.listed,
   now: Date.now,
   // The stack's owner list (DispatchOwners); unset is no owner, so nothing routes.
   owners: ownersOf(env.DISPATCH_OWNERS),
