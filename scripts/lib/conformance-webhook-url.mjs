@@ -15,8 +15,9 @@
 //
 // The hook-url check posts once, unsigned, to a hook path on the same URL.
 // A hook request is routed on its path before any GitHub check, so its own
-// 401 proves the path reaches the hook's signature check; anything else is a
-// receiver that took, ignored or never saw an unsigned hook.
+// 401, in the hook's words, proves the path reaches the hook's signature
+// check; anything else, GitHub's 401 among it, is a receiver that took,
+// ignored or never saw an unsigned hook.
 //
 // The `aws` CLI is the reader because governor carries no CloudFormation SDK
 // client. The stack arrives in GOVERNOR_STACK, which the deploy sets, so a
@@ -30,6 +31,13 @@ export const STACK_VAR = 'GOVERNOR_STACK';
 export const URL_OUTPUT = 'WebhookUrl';
 /** What dispatch/webhook/route.mjs answers a delivery it cannot verify. */
 export const REFUSAL = { status: 401, body: 'signature does not match' };
+
+/**
+ * What dispatch/webhook/route.mjs answers a hook request with no signature
+ * header. GitHub's 401 has other words, so a receiver that never routed the
+ * hook path cannot pass for one that did.
+ */
+export const HOOK_REFUSAL = { status: 401, body: 'Governor-Signature is missing or malformed' };
 
 /**
  * The hook path the probe posts to, under the URL. A well-formed path, so the
@@ -165,12 +173,12 @@ export async function checkDispatchWebhookUrl({ env, ...io }) {
  */
 export function hookUrlFindings({ url, answer, stackName = 'the dispatch stack' }) {
   if (url === undefined || answer === undefined) return [`${stackName} has no ${URL_OUTPUT} output, so there is no hook path to post to`];
-  if (answer.status === 401) return [];
+  if (answer.status === HOOK_REFUSAL.status && answer.body === HOOK_REFUSAL.body) return [];
   const said = `${answer.status}${answer.errorType ? ` ${answer.errorType}` : ''}: ${answer.body.slice(0, 200)}`;
   if (answer.status >= 200 && answer.status < 300) {
     return [`${url} answered an unsigned hook post ${said}, not 401: the receiver is not checking a hook's signature before it answers`];
   }
-  return [`${url} answered an unsigned hook post ${said}, not the receiver's 401: a hook request does not reach its signature check. Read /aws/lambda/governor-webhook`];
+  return [`${url} answered an unsigned hook post ${said}, not the receiver's hook refusal (${HOOK_REFUSAL.status}: ${HOOK_REFUSAL.body}): a hook request does not reach its signature check. Read /aws/lambda/governor-webhook`];
 }
 
 /**

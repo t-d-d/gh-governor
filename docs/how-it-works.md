@@ -284,10 +284,10 @@ A hook request's answers, which only its caller sees:
 |---|---|
 | `202` | A `hook` fire was queued, naming the repo, the hook, the key version and the text. |
 | `200` | The repo's owner is not on `DispatchOwners`: `hook-ignored` at info, nothing queued. |
-| `400` | The body is not JSON, or holds no string `text`. Nothing queued. |
+| `400` | The body is not JSON, or holds no string `text`: `hook-refused`, nothing queued. |
 | `401` | The header is missing or malformed, the signature does not match, or `t` is more than five minutes from the receiver's clock: `hook-refused`, nothing queued. |
 | `404` | A path under `/hooks/` that names no repo and hook. |
-| `413` | The text is over 32 KiB, or the fire would not fit the task's container override. Nothing queued. |
+| `413` | The text is over 32 KiB, or the fire would not fit the task's container override: `hook-refused`, nothing queued. |
 
 ## Invoking by hand
 

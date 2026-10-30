@@ -140,7 +140,7 @@ A new periodic starts its first session one day limit, or one count, after the f
 
 - `name`: lower-case letters, digits and hyphens, unique in the file. It ends the hook's URL, and the session is named after it.
 - `prompt`: what the session runs, as text or `{ "file": "<path>" }` read from the default branch. Governor adds lines under it saying which hook fired and when, and quoting the caller's text as the caller's data.
-- `keyVersion` (required): the version of the hook's key a request must be signed with, a positive whole number. It is not a secret.
+- `keyVersion` (required): the version of the hook's key a request must be signed with, a positive whole number of at most nine digits. It is not a secret.
 
 ```json
 { "name": "operator-prod", "prompt": { "file": "ops/prod-alarm.md" }, "keyVersion": 1 }

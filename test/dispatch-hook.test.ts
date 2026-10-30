@@ -174,10 +174,11 @@ describe('handle — a hook fire', () => {
 
   test('a body that is not JSON, or has no string text, gets 400 and queues nothing', async () => {
     for (const body of ['not json', '[]', '{}', '{"text":5}', '{"text":"   "}', 'null']) {
-      const { deps, queued } = harness();
+      const { deps, queued, logged } = harness();
       const response = await handle(fire(body), deps);
       assert.equal(response.statusCode, 400, body);
       assert.equal(queued.length, 0);
+      assert.equal(logged.find((l) => l.event === 'hook-refused')?.status, 400, 'the operator can see why a signed request went nowhere');
     }
   });
 
@@ -267,7 +268,7 @@ describe('the config file\'s hooks', () => {
     const hook = { name: 'operator-prod', prompt: 'Look into the alarm.', keyVersion: 1 };
     assert.equal(fault(withHooks({ hooks: true }, [hook, { ...hook, name: 'operator-dev', prompt: { file: 'ops/alarm.md' } }])), null);
     assert.match(String(fault(withHooks({ hooks: true }, [hook, hook]))), /operator-prod/);
-    for (const bad of [{ name: 'Operator' }, { name: 'op prod' }, { name: 'op_prod' }, { name: 'op/prod' }, { name: '' }, { prompt: '' }, { prompt: { file: '../x' } }, { keyVersion: 0 }, { keyVersion: 1.5 }, { keyVersion: '1' }, { perHour: 20 }]) {
+    for (const bad of [{ name: 'Operator' }, { name: 'op prod' }, { name: 'op_prod' }, { name: 'op/prod' }, { name: '' }, { prompt: '' }, { prompt: { file: '../x' } }, { keyVersion: 0 }, { keyVersion: 1.5 }, { keyVersion: '1' }, { keyVersion: 1_000_000_000 }, { perHour: 20 }]) {
       assert.notEqual(fault(withHooks({ hooks: true }, [{ ...hook, ...bad }])), null, JSON.stringify(bad));
     }
     const { keyVersion: _v, ...unversioned } = hook;

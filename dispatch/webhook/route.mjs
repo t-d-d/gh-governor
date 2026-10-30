@@ -639,20 +639,25 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
     deps.log('hook-ignored', { level: 'info', ...about, reason: `${repo}'s owner ${owner} is not on the owner list` });
     return { statusCode: 200, body: `${repo}'s owner is not on the owner list: nothing queued` };
   }
+  // The caller signed it, so the operator may need to see why it went nowhere.
+  const unread = (/** @type {number} */ statusCode, /** @type {string} */ body) => {
+    deps.log('hook-refused', { ...about, keyVersion: signature.version, status: statusCode, reason: body });
+    return { statusCode, body };
+  };
   /** @type {any} */
   let body;
   try {
     body = JSON.parse(raw.toString('utf8'));
   } catch {
-    return { statusCode: 400, body: 'body is not JSON' };
+    return unread(400, 'body is not JSON');
   }
   const text = body !== null && typeof body === 'object' ? body.text : undefined;
-  if (typeof text !== 'string' || text.trim() === '') return { statusCode: 400, body: 'body holds no text: send {"text": "..."}' };
-  if (Buffer.byteLength(text) > HOOK_TEXT_LIMIT) return { statusCode: 413, body: `text is over ${HOOK_TEXT_LIMIT} bytes` };
+  if (typeof text !== 'string' || text.trim() === '') return unread(400, 'body holds no text: send {"text": "..."}');
+  if (Buffer.byteLength(text) > HOOK_TEXT_LIMIT) return unread(413, `text is over ${HOOK_TEXT_LIMIT} bytes`);
   const fire = { ...build.hook({ hook, keyVersion: signature.version, text, at: new Date(now).toISOString() }), repo };
   // The fire rides to the task in its container override: one too heavy
   // for it would fail at the starter on every attempt, where no caller hears.
-  if (overrideWeight(fire) > OVERRIDE_BUDGET) return { statusCode: 413, body: 'text is too long to start a task with: send less' };
+  if (overrideWeight(fire) > OVERRIDE_BUDGET) return unread(413, 'text is too long to start a task with: send less');
   const messageId = await queueFire({ fire, reason: `hook ${hook} fired in ${repo}` }, signature.hex, deps);
   return { statusCode: 202, body: `queued ${messageId}: hook ${hook} fired in ${repo}` };
 };

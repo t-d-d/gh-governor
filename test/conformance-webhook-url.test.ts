@@ -16,7 +16,7 @@ import { appliesStack, runsScript } from './helpers/repo-model.ts';
 import { loadWorkflow } from './helpers/workflow.ts';
 import { handle } from '../dispatch/webhook/route.mjs';
 import {
-  STACK_VAR, URL_OUTPUT, REFUSAL, HOOK_PROBE_PATH,
+  STACK_VAR, URL_OUTPUT, REFUSAL, HOOK_PROBE_PATH, HOOK_REFUSAL,
   checkDispatchWebhookUrl, checkHookUrl, dispatchWebhookFindings, hookUrlFindings,
 } from '../scripts/lib/conformance-webhook-url.mjs';
 import { CHECKS, runCheck } from '../scripts/conformance.mjs';
@@ -181,7 +181,7 @@ describe('webhook-url — the run', () => {
 
 describe('hook-url — an unsigned post to a hook path', () => {
   test('the receiver\'s 401 reports nothing; anything else is a finding', () => {
-    assert.deepEqual(hookUrlFindings({ url: URL, answer: { status: 401, body: 'Governor-Signature is missing or malformed' } }), []);
+    assert.deepEqual(hookUrlFindings({ url: URL, answer: { status: HOOK_REFUSAL.status, body: HOOK_REFUSAL.body } }), []);
     for (const answer of [{ status: 202, body: 'queued' }, { status: 200, body: 'ignored' }, { status: 403, body: 'Forbidden', errorType: 'AccessDeniedException' }, { status: 404, body: 'no hook here' }, { status: 502, body: 'Internal Server Error' }]) {
       const findings = hookUrlFindings({ url: URL, answer });
       assert.equal(findings.length, 1, JSON.stringify(answer));
@@ -189,6 +189,12 @@ describe('hook-url — an unsigned post to a hook path', () => {
       assert.ok(!findings[0]!.includes('\u2014'), findings[0]);
     }
     assert.equal(hookUrlFindings({ url: undefined, answer: undefined }).length, 1);
+  });
+
+  test('a 401 in GitHub\'s words is a receiver that never routed the hook path: a finding', () => {
+    const findings = hookUrlFindings({ url: URL, answer: { status: REFUSAL.status, body: REFUSAL.body } });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0]!, /401/);
   });
 
   test('the receiver, handed the same post, answers 401 and queues nothing', async () => {
@@ -201,7 +207,7 @@ describe('hook-url — an unsigned post to a hook path', () => {
       enqueue: async () => { queued++; return 'm-1'; },
       log: () => {},
     });
-    assert.equal(answer.statusCode, 401);
+    assert.deepEqual(answer, { statusCode: HOOK_REFUSAL.status, body: HOOK_REFUSAL.body });
     assert.equal(queued, 0);
   });
 
@@ -209,7 +215,7 @@ describe('hook-url — an unsigned post to a hook path', () => {
     const posted: string[] = [];
     const check = CHECKS.find((c) => c.id === 'hook-url')!;
     assert.deepEqual(check.env, [STACK_VAR]);
-    const outcome = await checkHookUrl({ env: { [STACK_VAR]: 'governor' }, readUrl: () => URL, post: async (url: string) => { posted.push(url); return { status: 401, body: 'signature does not match' }; } });
+    const outcome = await checkHookUrl({ env: { [STACK_VAR]: 'governor' }, readUrl: () => URL, post: async (url: string) => { posted.push(url); return { status: HOOK_REFUSAL.status, body: HOOK_REFUSAL.body }; } });
     assert.deepEqual(outcome.findings, []);
     assert.deepEqual(posted, [`${URL}${HOOK_PROBE_PATH}`]);
     assert.match(HOOK_PROBE_PATH, /^hooks\/[^/]+\/[^/]+\/[a-z0-9-]+$/);

@@ -200,7 +200,9 @@ const periodicSchema = z.strictObject({
 const hookSchema = z.strictObject({
   name: z.string().regex(HOOK_NAME, 'lower-case letters, digits and hyphens, safe in a URL path'),
   prompt: z.union([z.string().trim().min(1), promptFile]),
-  keyVersion: z.number().int().positive(),
+  // At most nine digits, as a request's `v=` and scripts/hook-key.mjs take:
+  // a larger version could never be signed.
+  keyVersion: z.number().int().positive().max(999_999_999),
 });
 
 /**

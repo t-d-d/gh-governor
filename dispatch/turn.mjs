@@ -1384,8 +1384,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const found = hookFor(configOf(fireRepo()), invocation);
     if ('refusal' in found) throw new Error(found.refusal);
     plan.push({ issue: null, repo: fireRepo(), prompt: hookPrompt(found.hook.prompt, invocation), sessionName: found.hook.name, model: DEFAULT_MODEL });
-    // A scheduled red after a red plans nothing: the red before started the session that is on it.
   } else if (!(invocation.kind === 'dispatch' && invocation.scheduled !== undefined && await redBefore(invocation.scheduled, getReader, deps))) {
+    // Not a scheduled red after a red: that one plans nothing, since the red before started the session that is on it.
     plan.push({
       issue: null,
       repo: fireRepo(),
