@@ -230,7 +230,7 @@ The `prod` environment of `acme/factory` then holds the secret `GOVERNOR_HOOK_KE
 An owner who is not an admin of the repo leaves out `--env`. The script then prints the key alone on stdout, and on stderr the hook's URL and the two commands that save both values. Whoever runs them needs admin on the repo and the same AWS access, since the first runs the script again. The first saves the key only when that run succeeds, so an expired AWS session cannot replace a working key with an empty one:
 
 ```bash
-key="$(node scripts/hook-key.mjs --repo acme/factory --hook operator-prod)" && printf '%s' "$key" | gh secret set GOVERNOR_HOOK_KEY --repo acme/factory --env <environment>
+(key="$(node scripts/hook-key.mjs --repo acme/factory --hook operator-prod)" && printf '%s' "$key" | gh secret set GOVERNOR_HOOK_KEY --repo acme/factory --env <environment>)
 gh variable set GOVERNOR_HOOK_URL --repo acme/factory --env <environment> --body <hook URL>
 ```
 

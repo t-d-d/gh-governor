@@ -176,6 +176,8 @@ const shellWord = (word) => (/^[A-Za-z0-9_./:@=,+-]+$/.test(word) ? word : `'${w
  * to a shell variable and from there to gh's stdin through printf, a shell
  * builtin, so the key is in no command line. A plain pipe would start gh even
  * when the run fails, and gh would save the empty stdin over a working key.
+ * The parentheses make it a subshell, so the variable ends with the command
+ * and does not stay in, or overwrite a `key` of, the owner's shell.
  *
  * @param {Args} args
  * @param {string} url
@@ -189,7 +191,7 @@ export const saveCommands = (args, url) => {
   ].map(shellWord).join(' ');
   const scope = `--repo ${shellWord(args.repo)} --env <environment>`;
   return [
-    `key="$(${run})" && printf '%s' "$key" | gh secret set ${args.keyName} ${scope}`,
+    `(key="$(${run})" && printf '%s' "$key" | gh secret set ${args.keyName} ${scope})`,
     `gh variable set ${args.urlName} ${scope} --body ${shellWord(url)}`,
   ];
 };
