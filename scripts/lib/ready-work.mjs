@@ -28,6 +28,9 @@
  * @property {string[]} [labels] Label names, already flattened from the API's
  *   objects by the caller.
  * @property {string} [created_at] ISO 8601.
+ * @property {number} [openBlockers] The issue's open blockers, from its
+ *   dependency summary (`issue_dependencies_summary.blocked_by`), where the
+ *   row carries one.
  */
 
 /**
@@ -57,11 +60,24 @@ const has = (issue, label) => (issue.labels ?? []).includes(label);
  * rows. A missing entry means nothing was fetched for that issue, which is
  * the same answer as no blockers: not blocked.
  *
- * @param {number} number
- * @param {Map<number, BlockerRow[]>} blockers
+ * @param {ReadonlyArray<{ state?: string }> | undefined} rows
  */
-const hasOpenBlocker = (number, blockers) =>
-  (blockers.get(number) ?? []).some((b) => b.state === 'open');
+const hasOpenBlocker = (rows) => (rows ?? []).some((b) => b.state === 'open');
+
+/**
+ * Whether an issue has an open blocker by its dependency summary, or, for a
+ * row with no summary, by its `blocked_by` rows (`hasOpenBlocker`).
+ *
+ * GitHub leaves a blocker the caller cannot see, one in a repo the App is
+ * not installed on, out of the rows and still answers 200. The summary
+ * counts every blocker, seen or not, so where a row has one it decides.
+ *
+ * @param {{ openBlockers?: number }} issue
+ * @param {ReadonlyArray<{ state?: string }> | undefined} rows Its `blocked_by` rows,
+ *   if read. None read is the same answer as none: not blocked.
+ */
+export const isBlocked = (issue, rows) =>
+  issue.openBlockers === undefined ? hasOpenBlocker(rows) : issue.openBlockers > 0;
 
 /**
  * @param {IssueRow} issue
@@ -79,7 +95,7 @@ const isEligible = (issue, blockers, labels) => {
   // repo whose claim leaves its ready label on is read the same way.
   if (has(issue, labels.claim)) return false;
   if (labels.exclude.some((label) => has(issue, label))) return false;
-  if (hasOpenBlocker(issue.number, blockers)) return false;
+  if (isBlocked(issue, blockers.get(issue.number))) return false;
   return true;
 };
 

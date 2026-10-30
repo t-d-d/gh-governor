@@ -138,6 +138,21 @@ describe('githubReader', () => {
     assert.equal(new Headers(calls[0]!.init?.headers).get('authorization'), 'Bearer ghs_abc');
   });
 
+  test('readyIssues carries each issue\'s open blocker count from its dependency summary, where it has one', async () => {
+    // The summary counts a blocker the caller cannot see; `blocked_by` is
+    // the open ones, `total_blocked_by` all of them.
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues': (_init: RequestInit | undefined, url: string) => (new URL(url).searchParams.get('page') === '2' ? [] : [
+        issueRow(10, ['mode: afk'], { issue_dependencies_summary: { blocked_by: 1, total_blocked_by: 1, blocking: 0, total_blocking: 0 } }),
+        issueRow(11, ['mode: afk'], { issue_dependencies_summary: { blocked_by: 0, total_blocked_by: 2, blocking: 0, total_blocking: 0 } }),
+        issueRow(12, ['mode: afk']),
+      ]),
+    });
+    const issues = await githubReader({ token: 't', repo: 'acme/factory', fetch }).readyIssues(['mode: afk']);
+    assert.deepEqual(issues.map((i) => [i.number, i.openBlockers]), [[10, 1], [11, 0], [12, undefined]]);
+    assert.ok(!('openBlockers' in issues[2]!), 'a row with no summary carries no count');
+  });
+
   test('blockers reads the native blocked_by relationship, in gh-deps row shape', async () => {
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues/10/dependencies/blocked_by': [
@@ -642,6 +657,13 @@ describe('githubReader', () => {
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
     assert.deepEqual(await reader.ticket(12), { number: 12, title: 'T', body: '', state: 'open', labels: ['mode: afk', 'type: nfr'], pull: false });
+  });
+
+  test('ticket carries its open blocker count from its dependency summary, where it has one', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/12': { number: 12, title: 'T', body: '', state: 'open', labels: [], issue_dependencies_summary: { blocked_by: 1, total_blocked_by: 2 } },
+    });
+    assert.equal((await githubReader({ token: 't', repo: 'acme/factory', fetch }).ticket(12)).openBlockers, 1);
   });
 
   test('allComments pages through a whole thread, each marked with whether the reader\'s own App posted it', async () => {

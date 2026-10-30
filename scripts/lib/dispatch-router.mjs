@@ -97,8 +97,12 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     if (plan.length >= cap) break;
     const { reader, repo, labels, prompts } = candidate.source;
     if (failed.has(repo)) continue;
-    const blocking = await guarded(repo, () => reader.blockers(candidate.number));
-    if (blocking === null || selectReadyWork([candidate], { cap: 1, blockers: new Map([[candidate.number, blocking]]), labels }).length === 0) continue;
+    // A row carrying its dependency summary was judged by it in the first
+    // pass, so only a row without one asks for its `blocked_by` rows.
+    if (candidate.openBlockers === undefined) {
+      const blocking = await guarded(repo, () => reader.blockers(candidate.number));
+      if (blocking === null || selectReadyWork([candidate], { cap: 1, blockers: new Map([[candidate.number, blocking]]), labels }).length === 0) continue;
+    }
     const comments = await guarded(repo, () => reader.comments(candidate.number, { since }));
     if (comments === null || recentlyDispatched(comments, now, windowMs)) continue;
     plan.push({

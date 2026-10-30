@@ -39,6 +39,7 @@ type Issue = {
   state: string;
   labels: string[];
   created_at: string;
+  openBlockers?: number;
 };
 
 const READY = 'workflow: ready for development';
@@ -126,6 +127,28 @@ describe('selectReadyWork — native blockers', () => {
   test('an empty blocker list is not blocked', () => {
     const blockers = new Map([[1, []]]);
     assert.deepEqual(numbers(selectReadyWork([issue(1)], { labels: FACTORY_LABELS, cap: 5, blockers })), [1]);
+  });
+});
+
+/**
+ * GitHub leaves a blocker the caller cannot see out of the `blocked_by`
+ * rows and still answers 200, but the issue's dependency summary counts
+ * it. The summary's open count, `openBlockers` on the row, decides where
+ * the row carries one.
+ */
+describe('selectReadyWork — the dependency summary', () => {
+  test('drops an issue whose summary counts an open blocker, with no rows', () => {
+    assert.deepEqual(selectReadyWork([issue(1, { openBlockers: 1 })], { labels: FACTORY_LABELS, cap: 5 }), []);
+  });
+
+  test('drops an issue whose summary counts an open blocker its rows leave out', () => {
+    const blockers = new Map([[1, [{ number: 99, state: 'closed' }]]]);
+    assert.deepEqual(selectReadyWork([issue(1, { openBlockers: 1 })], { labels: FACTORY_LABELS, cap: 5, blockers }), []);
+  });
+
+  test('keeps an issue whose summary counts no open blocker, whatever its rows say', () => {
+    const blockers = new Map([[1, [{ number: 99, state: 'open' }]]]);
+    assert.deepEqual(numbers(selectReadyWork([issue(1, { openBlockers: 0 })], { labels: FACTORY_LABELS, cap: 5, blockers })), [1]);
   });
 });
 
