@@ -28,6 +28,22 @@ describe('the config file\'s JSON Schema', () => {
   test('refuses an unknown key at the top, so a $schema key does not belong in the file', () => {
     assert.equal(configJsonSchema().additionalProperties, false);
   });
+
+  test('requires no key that has a default, so a file leaving one out is not flagged', () => {
+    type Node = { properties?: Record<string, Node & { default?: unknown }>, required?: string[], [key: string]: unknown };
+    const defaultedRequired: string[] = [];
+    const walk = (node: unknown, at: string) => {
+      if (node === null || typeof node !== 'object') return;
+      const { properties, required = [] } = node as Node;
+      for (const [key, child] of Object.entries(properties ?? {})) {
+        if ('default' in child && required.includes(key)) defaultedRequired.push(`${at}.${key}`);
+      }
+      for (const [key, child] of Object.entries(node)) walk(child, `${at}.${key}`);
+    };
+    walk(configJsonSchema(), '$');
+    assert.deepEqual(defaultedRequired, []);
+    assert.deepEqual(configJsonSchema().required, ['environment', 'labels', 'features']);
+  });
 });
 
 describe('the README on the schema', () => {

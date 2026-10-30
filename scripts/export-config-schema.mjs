@@ -26,7 +26,7 @@ export const SCHEMA_PATH = 'schema/dispatch.schema.json';
 
 const DESCRIPTION = [
   'The shape of governor\'s config file, .github/dispatch.json, for an editor to complete and check keys while the file is written.',
-  'It covers the shape only: it leaves out the rules across keys and cannot read prompt files, so a file it accepts can still be refused.',
+  'It covers the shape only: it leaves out the rules across keys and the checks on a prompt\'s text or a prompt file\'s path, and cannot read prompt files, so a file it accepts can still be refused.',
   'The config check, the reusable workflow .github/workflows/config-check.yml in t-d-d/gh-governor, is the full check.',
 ].join(' ');
 

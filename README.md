@@ -153,9 +153,9 @@ A new periodic starts its first session one day limit, or one count, after the f
 }
 ```
 
-Use the commit the config check is pinned to, so the editor and the check read the same schema. Do not add a `$schema` key to `dispatch.json` instead: the schema refuses any key it does not know, that one included, and so does governor.
+Use the commit the config check is pinned to, so the editor and the check read the same schema. A pin older than the schema has no such file, so the editor reports it cannot load the schema; bump both pins together. Do not add a `$schema` key to `dispatch.json` instead: the schema refuses any key it does not know, that one included, and so does governor.
 
-The JSON Schema covers the file's shape only. It leaves out the rules across keys, such as a claim label that is also a ready label, and it cannot read prompt files, so a file it accepts can still be refused. [The config check](#the-config-check) is the full check. After a change to `configSchema`, run `node scripts/export-config-schema.mjs` and commit the result; the gate fails while the committed file differs from a fresh export.
+The JSON Schema covers the file's shape only. It leaves out the rules across keys, such as a claim label that is also a ready label, and the checks on one value that are not a shape, such as a prompt naming a fact its kind lacks or a prompt file's path leaving the repo. It cannot read prompt files either, so a file it accepts can still be refused. [The config check](#the-config-check) is the full check. After a change to `configSchema`, run `node scripts/export-config-schema.mjs` and commit the result; the gate fails while the committed file differs from a fresh export.
 
 ### Immediate pickup needs the ready label in `SelectLabels`
 
