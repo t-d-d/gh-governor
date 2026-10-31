@@ -15,6 +15,7 @@
 
 import { createSign } from 'node:crypto';
 import { postedByApp } from '../../dispatch/webhook/review-comment.mjs';
+import { closedBy } from '../../dispatch/pr-body.mjs';
 
 const API = 'https://api.github.com';
 /** The version the gh-deps shim pins, so both read the same endpoint shapes. */
@@ -259,6 +260,30 @@ const RED_CONCLUSIONS = new Set(['failure', 'timed_out', 'cancelled', 'action_re
 export const RUNS_PER_PAGE = 50;
 
 /**
+ * How long after a PR merges its issues' `closed` events may come. GitHub
+ * closes them one to three seconds after the merge.
+ */
+const CLOSE_LAG_MS = 5 * 60 * 1000;
+
+/**
+ * The `owner/repo` an API row's `repository_url` names, or undefined.
+ *
+ * @param {unknown} url
+ * @returns {string | undefined}
+ */
+const repoOf = (url) => /\/repos\/([^/]+\/[^/]+)$/.exec(String(url ?? ''))?.[1];
+
+/**
+ * The row that merged last, by the merge time `mergedAt` reads from it.
+ *
+ * @template T
+ * @param {T[]} rows
+ * @param {(row: T) => string} mergedAt
+ * @returns {T | undefined}
+ */
+const lastMerged = (rows, mergedAt) => rows.reduce((/** @type {T | undefined} */ last, row) => (last === undefined || Date.parse(mergedAt(row)) > Date.parse(mergedAt(last)) ? row : last), undefined);
+
+/**
  * Every page of a list endpoint that pages a hundred at a time, up to
  * `pages` of them.
  *
@@ -446,36 +471,54 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         number: row.number,
         state: row.state,
         title: row.title,
-        repo: /\/repos\/([^/]+\/[^/]+)$/.exec(String(row.repository_url ?? ''))?.[1] ?? repo,
+        repo: repoOf(row.repository_url) ?? repo,
       }));
     },
 
     /**
      * How an issue closed: its title, GitHub's `state_reason` (null where
-     * it gave none), and the PR whose merge closed it: the merged PR whose
-     * merge commit is the one its last `closed` event names. A close by
-     * hand, by a commit pushed straight to the branch (which an older PR
-     * may also hold), or by a commit in another repository names no PR,
-     * and nothing outside this repository is read.
+     * it gave none), and the PR of this repository whose merge closed it.
+     * That PR merged in the {@link CLOSE_LAG_MS} before the issue's last
+     * `closed` event, and after any reopen before it, and either holds the commit the event names (GitHub
+     * closed the issue from that commit's message) or closes the issue
+     * from its body, read from the issue's timeline (the event then names
+     * no commit). A close by hand, or a PR that merged long before the
+     * close (one that also holds a commit pushed straight to the branch),
+     * names no PR. Nothing outside this repository is read, and a PR in
+     * another repository is never named.
      *
      * @param {number} number
      * @returns {Promise<{ title: string, reason: string | null, pr: { number: number, title: string, url: string } | null }>}
      */
     closure: async (number) => {
       const issue = await call('GET', `/repos/${repo}/issues/${number}`);
+      const title = issue.title ?? '';
+      const reason = typeof issue.state_reason === 'string' ? issue.state_reason : null;
       const events = await allPages(call, `/repos/${repo}/issues/${number}/events`, {});
       const closed = events.filter((e) => e.event === 'closed').at(-1);
-      const sha = closed?.commit_id;
-      const here = typeof closed?.commit_url !== 'string' || closed.commit_url.toLowerCase().startsWith(`https://api.github.com/repos/${repo}/commits/`.toLowerCase());
-      /** @type {{ number: number, title: string, url: string } | null} */
-      let pr = null;
+      if (closed === undefined) return { title, reason, pr: null };
+      const at = Date.parse(closed.created_at);
+      const since = Math.max(at - CLOSE_LAG_MS, ...events.filter((e) => e.event === 'reopened').map((e) => Date.parse(e.created_at)).filter((t) => t <= at));
+      const justBefore = (/** @type {unknown} */ merged) => typeof merged === 'string' && Date.parse(merged) <= at && Date.parse(merged) >= since;
+      const named = (/** @type {any} */ row) => ({ number: row.number, title: row.title ?? '', url: row.html_url });
+      const sha = closed.commit_id;
+      const here = typeof closed.commit_url !== 'string' || closed.commit_url.toLowerCase().startsWith(`https://api.github.com/repos/${repo}/commits/`.toLowerCase());
       if (typeof sha === 'string' && /^[0-9a-f]{40}$/.test(sha) && here) {
         /** @type {any[]} */
         const pulls = await call('GET', `/repos/${repo}/commits/${sha}/pulls?per_page=100`);
-        const row = pulls.find((p) => p.merged_at && p.merge_commit_sha === sha);
-        if (row !== undefined) pr = { number: row.number, title: row.title ?? '', url: row.html_url };
+        const row = lastMerged(pulls.filter((p) => justBefore(p.merged_at)), (p) => p.merged_at);
+        if (row !== undefined) return { title, reason, pr: named(row) };
       }
-      return { title: issue.title ?? '', reason: typeof issue.state_reason === 'string' ? issue.state_reason : null, pr };
+      const timeline = await allPages(call, `/repos/${repo}/issues/${number}/timeline`, {});
+      const closers = timeline
+        .filter((e) => e.event === 'cross-referenced')
+        .map((e) => e.source?.issue)
+        .filter((i) => i?.pull_request
+          && repoOf(i.repository_url)?.toLowerCase() === repo.toLowerCase()
+          && justBefore(i.pull_request.merged_at)
+          && closedBy(i.body ?? '', repo).includes(number));
+      const row = lastMerged(closers, (i) => i.pull_request.merged_at);
+      return { title, reason, pr: row === undefined ? null : named(row) };
     },
 
     /** Post a comment. @param {number} number @param {string} body */
