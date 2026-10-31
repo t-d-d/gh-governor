@@ -205,7 +205,14 @@ const pickupSchema = z.strictObject({
  * merges into the default branch, issues opened and issues closed it names,
  * brings it due sooner, once that many have happened since its last fire.
  * `gapHours`: the fewest whole hours between two of its runs.
+ * `connectors`: the claude.ai connectors its session needs, each by its
+ * name in the account's connector list (`feed_prod`). A periodic that
+ * names any starts as a routine run with those attached, and no others
+ * (dispatch/routines.mjs).
  */
+/** A claude.ai connector's name as a routine's `mcp_connections` takes it. */
+export const CONNECTOR_NAME = /^[A-Za-z0-9_-]+$/;
+
 const periodicSchema = z.strictObject({
   name: z.string().trim().min(1).max(100).regex(/^[^\n]*$/, 'a name is one line'),
   prompt: z.union([z.string().trim().min(1), promptFile]),
@@ -214,6 +221,10 @@ const periodicSchema = z.strictObject({
     .refine((c) => Object.values(c).some((n) => n !== undefined), 'counts names at least one of merges, issuesOpened and issuesClosed')
     .optional(),
   gapHours: z.number().int().min(1).optional(),
+  connectors: z.array(z.string().regex(CONNECTOR_NAME, 'a connector name is letters, digits, hyphens and underscores'))
+    .min(1, 'connectors names at least one connector, or is left out')
+    .refine((names) => new Set(names).size === names.length, 'connectors names each connector once')
+    .optional(),
 });
 
 /**
@@ -300,7 +311,7 @@ export const configSchema = z.strictObject({
  * @typedef {{ file: string }} PromptFile
  * @typedef {{ issue: number, marker?: string }} Heartbeat
  * @typedef {{ sweepHours?: number }} Pickup
- * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number }} Periodic A recurring session, its prompt read.
+ * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
  * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, pickup?: Pickup, periodics: Periodic[], hooks: Hook[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the

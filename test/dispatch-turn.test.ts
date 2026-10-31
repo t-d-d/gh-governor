@@ -32,6 +32,8 @@ import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, readLastRun } from '../
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
+import { CONNECTOR_MISSING } from '../dispatch/turn.mjs';
+import { ROUTINE_ANSWER } from '../dispatch/routines.mjs';
 
 const REPO = 'acme/factory';
 /** The factory's own config file (dispatch/repo-config.mjs): every feature on, and the factory's prompts. */
@@ -107,6 +109,10 @@ const harness = (over: Record<string, unknown> = {}) => {
   const stored: string[] = [];
   const slept: number[] = [];
   const logged: Array<{ event: string; [key: string]: unknown }> = [];
+  // The routines API: every call, the routines that stand, and each fire.
+  const routineCalls: Array<{ call: string; id?: string; body?: any; token: string; organization: string | null }> = [];
+  const routinesHeld: Array<{ id: string; name: string }> = [];
+  const routineRuns: string[] = [];
   const archives: Array<{ session: string; token: string }> = [];
   // The dispatcher's state table: each label's cursor, by file
   // and label, keyed `<file>#<label>` here; CI's is label-less.
@@ -258,6 +264,23 @@ const harness = (over: Record<string, unknown> = {}) => {
     fires: { waiting: async () => 1 },
     // A fire a turn queues on the lane: none unless a test says otherwise.
     enqueue: async () => { throw new Error('this test queues no fire'); },
+    // The routines API and the account's connectors: feed_prod is
+    // connected, no routine stands until one is created, and a fired
+    // routine's run session is listed at once.
+    routines: (token: string, organization: string | null) => ({
+      connectors: async () => { routineCalls.push({ call: 'connectors', token, organization }); return { data: [{ uuid: 'mcpsrv_01FEED', name: 'feed_prod', url: 'https://feed.example/mcp' }] }; },
+      triggers: async () => ({ data: [...routinesHeld] }),
+      create: async (body: { name: string }) => {
+        routineCalls.push({ call: 'create', body, token, organization });
+        const id = `trig_0${routinesHeld.length + 1}`;
+        routinesHeld.push({ id, name: body.name });
+        return { id };
+      },
+      update: async (id: string, body: unknown) => { routineCalls.push({ call: 'update', id, body, token, organization }); return { id }; },
+      run: async (id: string) => { routineCalls.push({ call: 'run', id, token, organization }); routineRuns.push(id); return {}; },
+      sessions: async (id: string) => ({ data: routineRuns.filter((r) => r === id).map((_r, i) => ({ id: `cse_01RUN${id.slice(-1)}${i}` })).reverse() }),
+    }),
+    uuid: () => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
     hookTable: {
       publish: async (repo: string, hooks: Array<{ name: string; keyVersion: number; perHour: number }>, at: string) => {
         published.push({ repo, hooks, at });
@@ -323,7 +346,7 @@ const harness = (over: Record<string, unknown> = {}) => {
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, recorded, published, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, routineCalls, routinesHeld, recorded, published, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -1241,6 +1264,13 @@ describe('run — periodics', () => {
   const fired = (days: number, session: string | null = 'https://claude.ai/code/session_01OLD') => ({ at: ago(days), session, baseline: false });
   const key = (name: string) => `${REPO}#${name}`;
   const TICKETS = [sessionName(7, 'Issue 7'), sessionName(9, 'Issue 9')];
+  /** The factory's file with no periodic naming connectors: every periodic starts through the launcher. */
+  const LAUNCHER_ONLY = (() => {
+    const file = JSON.parse(FACTORY_FILE);
+    for (const p of file.periodics) delete p.connectors;
+    return JSON.stringify(file);
+  })();
+  const launcherOnly = (over: Record<string, unknown> = {}) => harness({ configFile: async (repo: string) => (repo === REPO ? LAUNCHER_ONLY : null), ...over });
 
   test('with no record, the turn writes now as the baseline and starts nothing', async () => {
     const { deps, launches, periodicWrites } = harness();
@@ -1266,6 +1296,72 @@ describe('run — periodics', () => {
     assert.ok(h.calls.includes('heartbeat'));
   });
 
+  test('a periodic that names connectors starts as a routine run with those connectors and no others, on the prompt the launcher would get, and its run\'s session is the periodic\'s', async () => {
+    const h = harness();
+    h.periodics.set(key(RETRO.name), fired(1));
+    h.periodics.set(key(REVIEW.name), fired(3));
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.deepEqual(h.launches.map((l) => l.sessionName), TICKETS, 'not through the launcher');
+    const created = h.routineCalls.find((c) => c.call === 'create')!;
+    assert.match(created.body.name, /acme\/factory/);
+    assert.match(created.body.name, new RegExp(REVIEW.name));
+    assert.deepEqual(created.body.mcp_connections, [{ connector_uuid: 'mcpsrv_01FEED', name: 'feed_prod', url: 'https://feed.example/mcp' }]);
+    assert.equal(created.body.job_config.ccr.events[0].data.message.content, `${REVIEW.prompt}\n\nThis periodic last fired at ${ago(3)}.`);
+    assert.equal(created.body.job_config.ccr.environment_id, JSON.parse(FACTORY_FILE).environment);
+    assert.deepEqual(created.body.job_config.ccr.session_context.sources, [{ git_repository: { url: `https://github.com/${REPO}` } }]);
+    assert.ok(h.routineCalls.every((c) => c.token === 'sk-ant-oat01-a' && c.organization === ACCOUNT.organizationUuid), 'under the login\'s token and organization');
+    assert.deepEqual(h.routineCalls.filter((c) => c.call === 'run').map((c) => c.id), ['trig_01']);
+    const session = 'https://claude.ai/code/session_01RUN10';
+    assert.deepEqual(h.periodics.get(key(REVIEW.name)), { at: new Date(NOW).toISOString(), session, baseline: false });
+    assert.ok(h.recorded.includes(session), 'the run\'s session is governor\'s own, as a launched one is');
+    assert.equal(result.dispatched[0]?.sessionUrl, session);
+    assert.deepEqual(h.logged.filter((l) => l.event === ROUTINE_ANSWER).map((l) => [l.call, l.routine ?? null]), [['connectors', null], ['triggers', null], ['create', null], ['run', 'trig_01'], ['sessions', 'trig_01']], 'each routines API call logs what it answered');
+    assert.ok(!JSON.stringify(h.logged.filter((l) => l.event === ROUTINE_ANSWER)).includes(REVIEW.prompt), 'by its shape, never its prompt');
+  });
+
+  test('a periodic\'s routine is reused on its next fire, updated, never a second one created', async () => {
+    const h = harness();
+    h.periodics.set(key(RETRO.name), fired(1));
+    h.periodics.set(key(REVIEW.name), fired(3));
+    await run({ source: 'aws.events' }, h.deps as never);
+    h.periodics.set(key(REVIEW.name), fired(3, 'https://claude.ai/code/session_01OLD'));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.routineCalls.filter((c) => c.call !== 'connectors').map((c) => [c.call, c.id ?? null]), [['create', null], ['run', 'trig_01'], ['update', 'trig_01'], ['run', 'trig_01']]);
+    assert.equal(h.routinesHeld.length, 1);
+    assert.equal(h.periodics.get(key(REVIEW.name))?.session, 'https://claude.ai/code/session_01RUN11', 'the second run\'s session, not the first');
+  });
+
+  test('a periodic naming a connector the account has not connected starts nothing, logs an alarmed error naming the repo, the periodic and the connector, and writes no record', async () => {
+    const file = JSON.parse(FACTORY_FILE);
+    file.periodics.find((p: { name: string }) => p.name === REVIEW.name).connectors = ['feed_prod', 'mail_prod'];
+    const h = harness({ configFile: async (repo: string) => (repo === REPO ? JSON.stringify(file) : null) });
+    h.periodics.set(key(RETRO.name), fired(1));
+    h.periodics.set(key(REVIEW.name), fired(3));
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.ok(!h.routineCalls.some((c) => c.call === 'create' || c.call === 'run'));
+    assert.deepEqual(h.periodics.get(key(REVIEW.name)), fired(3), 'no record: the next turn tries again');
+    const line = h.logged.find((l) => l.event === CONNECTOR_MISSING);
+    assert.ok(line !== undefined, JSON.stringify(h.logged));
+    assert.equal(line.level, 'error');
+    assert.equal(line.repo, REPO);
+    assert.equal(line.periodic, REVIEW.name);
+    assert.deepEqual(line.connectors, ['mail_prod']);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), TICKETS, 'the repo\'s tickets still start: the fault is the periodic\'s alone');
+    assert.ok(!h.logged.some((l) => l.event === 'dispatch-repo-skipped'));
+    assert.ok(!result.dispatched.some((d) => d.issue === null));
+  });
+
+  test('a routine run whose session the list never shows is recorded as an unconfirmed launch is', async () => {
+    const h = harness();
+    const base = h.deps.routines;
+    h.deps.routines = (token: string, organization: string | null) => ({ ...base(token, organization), sessions: async () => ({ data: [] }) });
+    h.periodics.set(key(RETRO.name), fired(1));
+    h.periodics.set(key(REVIEW.name), fired(3));
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.deepEqual(h.periodics.get(key(REVIEW.name)), { at: new Date(NOW).toISOString(), session: null, baseline: false });
+    assert.equal(result.dispatched[0]?.outcome, 'unconfirmed');
+  });
+
   test('after the baseline, the first run says so', async () => {
     const h = harness();
     h.periodics.set(key(RETRO.name), { at: ago(8), session: null, baseline: true });
@@ -1284,7 +1380,7 @@ describe('run — periodics', () => {
   });
 
   test('due periodics go oldest due first', async () => {
-    const h = harness();
+    const h = launcherOnly();
     h.periodics.set(key(RETRO.name), fired(8)); // due a day ago
     h.periodics.set(key(REVIEW.name), fired(5)); // due two days ago
     await run({ source: 'aws.events' }, h.deps as never);
@@ -1344,7 +1440,7 @@ describe('run — periodics', () => {
   });
 
   test('a read that fails refuses that periodic for the turn, never taken for a missing record, and fails the turn', async () => {
-    const h = harness({
+    const h = launcherOnly({
       state: {
         periodic: async (_repo: string, name: string) => {
           if (name === RETRO.name) throw new Error('AccessDeniedException');
@@ -1369,7 +1465,7 @@ describe('run — periodics', () => {
 
   test('a periodic shares the launch window, and one left unlaunched stays due', async () => {
     let clock = NOW;
-    const h = harness({
+    const h = launcherOnly({
       now: () => clock,
       launch: async (launch: Launch) => {
         h.launches.push(launch);
@@ -1417,7 +1513,7 @@ describe('run — periodics', () => {
     const expired = LOGIN.replace(String(NOW + 3_600_000), String(NOW - 1));
     let secret = storedLogin(expired, ACCOUNT);
     const tokens: string[] = [];
-    const h = harness({
+    const h = launcherOnly({
       secret: { get: async () => secret, put: async (text: string) => { h.stored.push(text); secret = text; } },
       sessions: oldSession(async (token) => { tokens.push(token); return { id: 'cse_01OLD', session_status: 'SESSION_STATUS_ARCHIVED' }; }),
       refreshLogin: async () => {
@@ -1624,6 +1720,26 @@ describe('run — periodics an event brings due', () => {
     assert.ok(h.launches[0]!.prompt.endsWith(`Issues opened since ${ago(DAY)}: 2\n- #30 New one\n- #31 Newer`));
     assert.equal(result.kind, 'periodics');
     assert.deepEqual(h.recorded, ['https://claude.ai/code/session_01ABC'], 'a periodic\'s session is governor\'s too');
+  });
+
+  test('an event\'s periodic that names connectors starts as a routine run, and one naming a connector the account lacks starts nothing and writes no record', async () => {
+    const triage = { name: 'Ticket triage', prompt: 'Triage the new issues.', days: 7, counts: { issuesOpened: 2 }, connectors: ['feed_prod'] };
+    const opened = { issuesOpened: [{ number: 30, title: 'New one', at: ago(HOUR) }, { number: 31, title: 'Newer', at: ago(1) }] };
+    const h = counting(opened, { configFile: async (repo: string) => (repo === REPO ? fileWith({}, { periodics: [triage] }) : null) });
+    h.periodics.set(key(triage.name), fired(DAY));
+    const result = await run({ kind: 'periodics', counted: 'issuesOpened' }, h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.launches, []);
+    assert.deepEqual(h.routineCalls.find((c) => c.call === 'create')?.body.mcp_connections.map((c: { name: string }) => c.name), ['feed_prod']);
+    assert.equal(h.periodics.get(key(triage.name))?.session, 'https://claude.ai/code/session_01RUN10');
+    assert.equal(exitCodeFor(result as never), 0);
+
+    const lacking = { ...triage, connectors: ['mail_prod'] };
+    const h2 = counting(opened, { configFile: async (repo: string) => (repo === REPO ? fileWith({}, { periodics: [lacking] }) : null) });
+    h2.periodics.set(key(triage.name), fired(DAY));
+    await run({ kind: 'periodics', counted: 'issuesOpened' }, h2.deps as never);
+    assert.ok(!h2.routineCalls.some((c) => c.call === 'run'));
+    assert.deepEqual(h2.periodics.get(key(triage.name)), fired(DAY));
+    assert.ok(h2.logged.some((l) => l.event === CONNECTOR_MISSING && l.level === 'error' && l.repo === REPO && l.periodic === triage.name && JSON.stringify(l.connectors) === '["mail_prod"]'), JSON.stringify(h2.logged));
   });
 
   test('a repo whose file turns periodics off reads no periodic on an event', async () => {

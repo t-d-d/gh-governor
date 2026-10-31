@@ -88,6 +88,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -104,6 +105,7 @@ import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '..
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
+import { launchRoutine, observed } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
@@ -159,6 +161,12 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
 export const SESSION_UNRECORDED = 'dispatch-session-unrecorded';
 
 /**
+ * The event a periodic logs when it names a connector the account has not
+ * connected: it starts nothing (infra/governor.cfn.yml pages on it).
+ */
+export const CONNECTOR_MISSING = 'dispatch-connector-missing';
+
+/**
  * A claim's key, `owner/name#number`, as the repo and issue it names.
  *
  * @param {string} key
@@ -188,10 +196,14 @@ export const sessionUrlFrom = (output) => {
 
 /**
  * @typedef {import('./deliveries.mjs').OpenRow} OpenRow
- * @typedef {{ prompt: string, sessionName: string, model: string, repo: string, environment: string }} Launch
+ * @typedef {{ prompt: string, sessionName: string, model: string, repo: string, environment: string, connectors?: string[] }} Launch
  *   `repo`, `environment`: the repo the session is for and its cloud
- *   environment, from the repo's config file.
- * @typedef {{ status: number | null, output: string }} LaunchResult
+ *   environment, from the repo's config file. `connectors`: a periodic's
+ *   claude.ai connectors, which start it as a run of its routine
+ *   (dispatch/routines.mjs), the periodic named by `sessionName`.
+ * @typedef {{ status: number | null, output: string, missing?: string[] }} LaunchResult
+ *   `missing`: the connectors a routine launch named that the account has
+ *   not connected. It started nothing.
  * @typedef {import('../scripts/lib/dispatch-router.mjs').Reader & import('./workflow.mjs').WorkflowReader & {
  *   comment: (n: number, body: string) => Promise<void>,
  *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string }>>,
@@ -234,6 +246,8 @@ export const sessionUrlFrom = (output) => {
  *     useAccount: (account: import('../scripts/lib/claude-login.mjs').LoginAccount | null) => void,
  *   },
  *   launch: (launch: Launch) => Promise<LaunchResult>,
+ *   routines: (token: string, organization: string | null) => import('./routines.mjs').RoutinesApi,
+ *   uuid: () => string,
  *   launchTimeoutMs?: number,
  *   probe: () => Promise<{ ok: boolean, detail: string }>,
  *   message: (message: { session: string, text: string }) => Promise<LaunchResult>,
@@ -261,6 +275,9 @@ export const sessionUrlFrom = (output) => {
  *   access token and organization; any refusal throws.
  *   `refreshLogin`: one minimal CLI call under the restored login, which
  *   refreshes it when its access token has expired.
+ *   `routines`: the routines API and the account's connector list under the
+ *   login's access token and organization (dispatch/routines.mjs). `uuid`:
+ *   a fresh v4 UUID, for a routine's prompt event.
  *   `sessions`: the sessions API the CLI lists and teleports with, each
  *   answer parsed; a session it does not have is null, any other refusal throws.
  *   `events` is a page of one session's events; any refusal throws.
@@ -547,6 +564,30 @@ export const run = async (event, deps) => {
   };
   /** Each launch's record, awaited before the turn ends. @type {Promise<void>[]} */
   const records = [];
+  /** The login's access token for the routines API, read once a turn. */
+  const routinesToken = loginToken({ ...deps, secret }, 'start a periodic as a routine run');
+  /**
+   * A periodic that names connectors, as a run of its routine
+   * (dispatch/routines.mjs), under the login's token and organization. A
+   * token the turn cannot use started nothing.
+   *
+   * @param {Launch} begin
+   * @param {string[]} connectors
+   * @returns {Promise<LaunchResult>}
+   */
+  const routineLaunch = async (begin, connectors) => {
+    /** @type {import('./routines.mjs').RoutinesApi} */
+    let api;
+    try {
+      const { account } = readStoredLogin(await secret.get());
+      api = observed(deps.routines(await routinesToken(), account?.organizationUuid ?? null), deps.log, { repo: begin.repo, periodic: begin.sessionName });
+    } catch (error) {
+      return { status: 1, output: messageOf(error) };
+    }
+    const result = await launchRoutine({ api, repo: begin.repo, periodic: begin.sessionName, prompt: begin.prompt, environment: begin.environment, model: begin.model, connectors, sleep: deps.sleep, uuid: deps.uuid });
+    deps.log('dispatch-routine-output', { repo: begin.repo, periodic: begin.sessionName, status: result.status, tail: result.output.slice(-OUTPUT_TAIL) });
+    return result;
+  };
   /**
    * Every launch, recorded as governor's own session wherever the launcher
    * printed one, whatever outcome it reported: the PR review reads the
@@ -559,7 +600,7 @@ export const run = async (event, deps) => {
    * @type {Deps['launch']}
    */
   const launch = async (begin) => {
-    const launched = await deps.launch(begin);
+    const launched = begin.connectors !== undefined && begin.connectors.length > 0 ? await routineLaunch(begin, begin.connectors) : await deps.launch(begin);
     const sessionUrl = sessionUrlFrom(launched.output);
     if (sessionUrl !== null) {
       records.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
@@ -845,8 +886,12 @@ const startPeriodics = async ({ repo, config, counted, started, carried, deps, d
       break;
     }
     const firedAt = new Date(deps.now()).toISOString();
-    const begun = deps.launch({ prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, model: DEFAULT_MODEL, repo, environment: config.environment });
-    const { status, output } = await (deps.launchTimeoutMs === undefined ? begun : withinBudget(begun, deps.launchTimeoutMs, periodic.name));
+    const begun = deps.launch({ prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, model: DEFAULT_MODEL, repo, environment: config.environment, ...connectorsOf(periodic) });
+    const { status, output, missing } = await (deps.launchTimeoutMs === undefined ? begun : withinBudget(begun, deps.launchTimeoutMs, periodic.name));
+    if (missing !== undefined) {
+      connectorMissing(deps, repo, periodic.name, missing);
+      continue;
+    }
     const outcome = launchOutcome(status) ?? 'failed';
     const sessionUrl = outcome === 'failed' ? null : sessionUrlFrom(output);
     deps.log('dispatch-launch', { repo, issue: null, sessionName: periodic.name, periodic: periodic.name, counted, outcome, status, sessionUrl });
@@ -861,6 +906,29 @@ const startPeriodics = async ({ repo, config, counted, started, carried, deps, d
     lines.push({ name: periodic.name, at: asOf ?? firedAt, by, session: sessionUrl, state: 'open' });
   }
   return { dispatched, unread, beats: beats() };
+};
+
+/**
+ * A periodic's connectors as its launch carries them: none where it names none.
+ *
+ * @param {{ connectors?: string[] }} periodic
+ * @returns {{ connectors?: string[] }}
+ */
+const connectorsOf = (periodic) => (periodic.connectors === undefined ? {} : { connectors: periodic.connectors });
+
+/**
+ * A periodic whose connectors the account has not connected started
+ * nothing: an alarmed error naming the repo, the periodic and each
+ * connector. Its record stays, so the next fire tries again, and the
+ * repo's other launches go on: the fault is this periodic's alone.
+ *
+ * @param {Pick<Deps, 'log'>} deps
+ * @param {string} repo
+ * @param {string} periodic
+ * @param {string[]} missing
+ */
+const connectorMissing = ({ log }, repo, periodic, missing) => {
+  log(CONNECTOR_MISSING, { level: 'error', repo, periodic, connectors: missing, reason: `its .github/dispatch.json names ${missing.length === 1 ? 'a connector' : 'connectors'} the claude.ai account has not connected, so its session was not started: connect ${missing.join(', ')} on the account, or take ${missing.length === 1 ? 'it' : 'them'} out of the file` });
 };
 
 /**
@@ -881,6 +949,29 @@ const sweepLookup = (deps) => async (id, token) => {
 };
 
 /**
+ * The login's access token, read at most once: the one on disk, or the
+ * stored login refreshed where that has expired. A refresh that fails
+ * throws, saying what the token was for.
+ *
+ * @param {Deps} deps
+ * @param {string} what
+ * @returns {() => Promise<string>}
+ */
+const loginToken = (deps, what) => {
+  /** @type {Promise<string> | null} */
+  let token = null;
+  return () => (token ??= (async () => {
+    let usable = accessToken(deps.workspace.readLogin(), deps.now());
+    if ('reason' in usable) {
+      const { credentials, account } = readStoredLogin(await deps.secret.get());
+      usable = await refreshedLogin(deps, credentials, account);
+    }
+    if ('reason' in usable) throw new Error(`cannot ${what}: ${usable.reason}`);
+    return usable.token;
+  })());
+};
+
+/**
  * Whether a periodic's last run is still open (dispatch/periodics.mjs): its
  * session's own record, read under the login's token, is neither archived,
  * by the sign-off sweep or by hand, nor gone (null, as a 404 answers).
@@ -895,17 +986,7 @@ const sweepLookup = (deps) => async (id, token) => {
  * @returns {import('./periodics.mjs').Open}
  */
 const runOpen = (deps) => {
-  /** @type {Promise<string> | null} */
-  let token = null;
-  const tokenOf = () => (token ??= (async () => {
-    let usable = accessToken(deps.workspace.readLogin(), deps.now());
-    if ('reason' in usable) {
-      const { credentials, account } = readStoredLogin(await deps.secret.get());
-      usable = await refreshedLogin(deps, credentials, account);
-    }
-    if ('reason' in usable) throw new Error(`cannot read the last run's session: ${usable.reason}`);
-    return usable.token;
-  })());
+  const tokenOf = loginToken(deps, 'read the last run\'s session');
   return async (session) => {
     const id = /^session_([A-Za-z0-9]+)$/.exec(sessionId(session))?.[1];
     if (id === undefined) throw new Error(`the last run's session is not a session link: ${session}`);
@@ -998,14 +1079,14 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    *
    * @param {Omit<Launch, 'repo' | 'environment'> & Partial<Pick<Launch, 'repo' | 'environment'>>} launch
    * @param {number} [until] When the budget it shares runs out.
-   * @returns {Promise<{ outcome: Dispatched['outcome'], sessionUrl: string | null, status: number | null }>}
+   * @returns {Promise<{ outcome: Dispatched['outcome'], sessionUrl: string | null, status: number | null, missing?: string[] }>}
    */
   const start = async (launch, until) => {
     const repo = launch.repo ?? fireRepo();
     const full = { ...launch, repo, environment: launch.environment ?? configOf(repo).environment };
-    const { status, output } = await budgeted(() => deps.launch(full), launch.sessionName, until);
+    const { status, output, missing } = await budgeted(() => deps.launch(full), launch.sessionName, until);
     const outcome = launchOutcome(status) ?? 'failed';
-    return { outcome, sessionUrl: outcome === 'failed' ? null : sessionUrlFrom(output), status };
+    return { outcome, sessionUrl: outcome === 'failed' ? null : sessionUrlFrom(output), status, ...(missing === undefined ? {} : { missing }) };
   };
 
   /** One reader a repo a turn. @type {Map<string, Reader>} */
@@ -1370,7 +1451,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   }
 
   const started = deps.now();
-  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, unclaimed?: true, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, hook?: { name: string, read: import('./hooks.mjs').HookRecord | null } }>} */
+  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, connectors?: string[], unclaimed?: true, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, hook?: { name: string, read: import('./hooks.mjs').HookRecord | null } }>} */
   const plan = [];
   /** The issues a targeted schedule fire limits the plan to; undefined for the sweep. @type {number[] | undefined} */
   let only;
@@ -1465,6 +1546,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           prompt: periodicPrompt(periodic.prompt, read, windows),
           sessionName: periodic.name,
           model: DEFAULT_MODEL,
+          ...connectorsOf(periodic),
           periodic: { name: periodic.name, read, by, ...(asOf === undefined ? {} : { asOf }) },
         })));
       }
@@ -1692,7 +1774,11 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         continue;
       }
       const firedAt = new Date(deps.now()).toISOString();
-      const { outcome, sessionUrl, status } = await start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo });
+      const { outcome, sessionUrl, status, missing } = await start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo, ...connectorsOf(entry) });
+      if (missing !== undefined) {
+        connectorMissing(deps, entry.repo, entry.sessionName, missing);
+        continue;
+      }
       deps.log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.sessionName, ...(entry.periodic === undefined ? {} : { periodic: entry.periodic.name }), outcome, status, sessionUrl });
       // A periodic's record moves to this fire only for a launch that started
       // or may have, and only over the record the turn read. A failed launch
@@ -2100,6 +2186,57 @@ const ARCHIVE_API = 'https://api.anthropic.com/v1/code/sessions';
  */
 const ENVIRONMENTS_API = 'https://api.anthropic.com/v1/environment_providers';
 
+/** The API the routines and the connector list are on. */
+const API = 'https://api.anthropic.com';
+
+/** The beta each path of the routines API asks for, as the CLI sends it. */
+const ROUTINES_BETA = 'ccr-triggers-2026-01-30';
+const CONNECTORS_BETA = 'mcp-servers-2025-12-04';
+
+/**
+ * The routines API and the account's connector list (dispatch/routines.mjs)
+ * under the login's token and organization, as the CLI's routine commands
+ * call them: each answer parsed, and any answer but a 2xx thrown, naming
+ * the path and status. A refusal's body is cut short: it may quote a prompt.
+ *
+ * @param {string} token
+ * @param {string | null} organization
+ * @returns {import('./routines.mjs').RoutinesApi}
+ */
+export const routinesApi = (token, organization) => {
+  /** @param {'GET' | 'POST'} method @param {string} path @param {string} beta @param {object} [body] */
+  const call = async (method, path, beta, body) => {
+    const response = await fetch(`${API}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': beta,
+        ...(organization === null ? {} : { 'x-organization-uuid': organization }),
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(ARCHIVE_TIMEOUT_MS),
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${method} ${path.replace(/\?.*$/, '')}: ${response.status} ${text.slice(0, 200)}`);
+    return text === '' ? {} : JSON.parse(text);
+  };
+  /** @param {string} id */
+  const trigger = (id) => {
+    if (!/^[\w-]+$/.test(id)) throw new Error(`not a routine id: ${id}`);
+    return `/v1/code/triggers/${id}`;
+  };
+  return {
+    connectors: () => call('GET', '/v1/mcp_servers?limit=1000', CONNECTORS_BETA),
+    triggers: () => call('GET', '/v1/code/triggers', ROUTINES_BETA),
+    create: (body) => call('POST', '/v1/code/triggers', ROUTINES_BETA, body),
+    update: (id, body) => call('POST', trigger(id), ROUTINES_BETA, body),
+    run: (id) => call('POST', `${trigger(id)}/run`, ROUTINES_BETA, {}),
+    sessions: (id) => call('GET', `/v1/code/sessions?trigger_id=${encodeURIComponent(id)}&limit=100`, ROUTINES_BETA),
+  };
+};
+
 /**
  * One read of the sessions API, parsed; a 404 is null, and any other answer
  * but a 2xx throws. The
@@ -2470,6 +2607,8 @@ export const realDeps = () => {
         rmSync(dir, { recursive: true, force: true });
       }
     },
+    routines: routinesApi,
+    uuid: () => randomUUID(),
     launchTimeoutMs: LAUNCH_TIMEOUT_MS,
     // No pseudo-terminal: with --print the CLI sends the text to the session
     // and prints one JSON line, {ok, session_id, url} or {ok: false, error}.

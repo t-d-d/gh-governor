@@ -818,6 +818,14 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991
+          },
+          "connectors": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
           }
         },
         "required": [

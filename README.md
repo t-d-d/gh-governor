@@ -122,13 +122,14 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 - `dependabot`: the manifests a Dependabot PR may change and pass with no model.
 - `merge`: whether a pass merges. Default `true`. With `false`, a pass approves and the owner merges.
 
-`periodics`: a list of recurring sessions, each `{ "name", "prompt", "days" }`, with `counts` and `gapHours` if wanted.
+`periodics`: a list of recurring sessions, each `{ "name", "prompt", "days" }`, with `counts`, `gapHours` and `connectors` if wanted.
 
 - `name`: one line, unique in the file. The session is named after it.
 - `prompt`: what the session runs, as text or `{ "file": "<path>" }` read from the default branch. Governor adds a line under it giving the last fire's time, or saying this is the first run, and lists what each count counted since then, by number and title.
 - `days` (required): the day limit, in whole days, at least one. The periodic is due on the sweep nearest that many days after its last fire.
 - `counts`: any of `merges` (pull requests merged into the default branch), `issuesOpened` and `issuesClosed`, each a whole number of at least one. The periodic is also due once that many have happened since its last fire, whichever limit comes first. At its day limit, a periodic with counts that counted nothing starts no session, and its next day limit counts from then.
 - `gapHours`: the fewest whole hours between two runs, at least one. A count reached inside the gap fires on the first event or sweep after it.
+- `connectors`: the claude.ai connectors the session needs, each by its name in the account's connector list, such as `gmail_prod`: letters, digits, hyphens and underscores, each named once. A session governor starts with `claude --cloud` has none of the account's connectors, so a periodic that names any starts as a run of a routine instead, with those connectors attached and no others. Governor keeps one routine for the periodic, named after the repo and the periodic, and fires it itself; the routine's own schedule never comes due. A connector the account has not connected starts nothing and pages (`governor-connector-missing`), and the periodic stays due. This works in public repos too, where whatever the session writes is public.
 
 ```json
 { "name": "Code review", "prompt": "Review what merged since the last review.", "days": 7, "counts": { "merges": 20 }, "gapHours": 4 }
