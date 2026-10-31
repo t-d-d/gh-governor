@@ -8,7 +8,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { NEVER_DUE, ROUTINE_SESSION_TRIES, connectionsFor, launchRoutine, routineName } from '../dispatch/routines.mjs';
+import { NEVER_DUE, ROUTINE_ANSWER, ROUTINE_SESSION_TRIES, answerShape, connectionsFor, launchRoutine, observed, routineName } from '../dispatch/routines.mjs';
 
 const REPO = 'acme/factory';
 const FEED = { uuid: 'mcpsrv_01FEED', name: 'feed_prod', url: 'https://feed.example/mcp' };
@@ -173,5 +173,50 @@ describe('a periodic\'s routine run', () => {
     assert.equal(result.status, 1);
     assert.match(result.output, /page/);
     assert.ok(!calls.some((c) => c.call === 'create'));
+  });
+});
+
+describe('what the routines API answered, logged by shape', () => {
+  test('each call logs its keys and their types, any routine or session id, and for a list its count, has_more and first row\'s keys', async () => {
+    const logged: Array<Record<string, unknown>> = [];
+    const prompt = 'Publish the week. A secret plan.';
+    const api = observed({
+      connectors: async () => ({ data: [FEED] }),
+      triggers: async () => ({ data: [{ id: 'trig_01OLD', name: 'governor acme/factory: Weekly retro', job_config: { ccr: { events: [{ data: { message: { content: prompt } } }] } } }], has_more: false }),
+      create: async () => ({ id: 'trig_01NEW', name: 'x' }),
+      update: async (id: string) => ({ id }),
+      run: async () => ({ type: 'run_started', session: { id: 'cse_01RUN', title: prompt }, last_run: null }),
+      sessions: async () => ({ data: [{ id: 'cse_01RUN', title: prompt, created_at: '2026-10-31T12:00:05Z' }], has_more: true, last_id: 'cse_01RUN' }),
+    }, (event, context) => logged.push({ event, ...context }));
+    await api.connectors();
+    await api.triggers();
+    await api.run('trig_01OLD');
+    await api.sessions('trig_01OLD');
+    assert.ok(logged.every((l) => l.event === ROUTINE_ANSWER && l.level === 'info'));
+    assert.deepEqual(logged.map((l) => [l.call, l.routine ?? null]), [['connectors', null], ['triggers', null], ['run', 'trig_01OLD'], ['sessions', 'trig_01OLD']]);
+    assert.deepEqual(logged[2]!.answer, { keys: { type: 'string', session: 'object', last_run: 'null' }, ids: { 'session.id': 'cse_01RUN' } });
+    assert.deepEqual(logged[3]!.answer, {
+      keys: { data: 'array', has_more: 'boolean', last_id: 'string' },
+      ids: { last_id: 'cse_01RUN' },
+      rows: 1,
+      hasMore: true,
+      firstRow: { keys: { id: 'string', title: 'string', created_at: 'string' }, ids: { id: 'cse_01RUN' } },
+    });
+    assert.deepEqual((logged[1]!.answer as { firstRow: { keys: unknown } }).firstRow.keys, { id: 'string', name: 'string', job_config: 'object' });
+    assert.ok(!JSON.stringify(logged).includes('secret plan'), 'no string the API answered with is logged but an id');
+    assert.ok(!JSON.stringify(logged).includes('Weekly retro'));
+  });
+
+  test('a call that throws logs that it failed, and still throws', async () => {
+    const logged: Array<Record<string, unknown>> = [];
+    const api = observed({ ...fakeApi().api, run: async () => { throw new Error('POST /v1/code/triggers/trig_01OLD/run: 409'); } }, (event, context) => logged.push({ event, ...context }));
+    await assert.rejects(api.run('trig_01OLD'), /409/);
+    assert.deepEqual(logged, [{ event: ROUTINE_ANSWER, level: 'info', call: 'run', routine: 'trig_01OLD', failed: true }]);
+  });
+
+  test('an answer that is not an object logs its type alone', () => {
+    assert.deepEqual(answerShape('ok'), { type: 'string' });
+    assert.deepEqual(answerShape([1, 2]), { type: 'array', rows: 2 });
+    assert.deepEqual(answerShape({}), { keys: {}, ids: {} });
   });
 });

@@ -33,6 +33,7 @@ import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
 import { CONNECTOR_MISSING } from '../dispatch/turn.mjs';
+import { ROUTINE_ANSWER } from '../dispatch/routines.mjs';
 
 const REPO = 'acme/factory';
 /** The factory's own config file (dispatch/repo-config.mjs): every feature on, and the factory's prompts. */
@@ -1314,6 +1315,8 @@ describe('run — periodics', () => {
     assert.deepEqual(h.periodics.get(key(REVIEW.name)), { at: new Date(NOW).toISOString(), session, baseline: false });
     assert.ok(h.recorded.includes(session), 'the run\'s session is governor\'s own, as a launched one is');
     assert.equal(result.dispatched[0]?.sessionUrl, session);
+    assert.deepEqual(h.logged.filter((l) => l.event === ROUTINE_ANSWER).map((l) => [l.call, l.routine ?? null]), [['connectors', null], ['triggers', null], ['create', null], ['run', 'trig_01'], ['sessions', 'trig_01']], 'each routines API call logs what it answered');
+    assert.ok(!JSON.stringify(h.logged.filter((l) => l.event === ROUTINE_ANSWER)).includes(REVIEW.prompt), 'by its shape, never its prompt');
   });
 
   test('a periodic\'s routine is reused on its next fire, updated, never a second one created', async () => {

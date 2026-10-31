@@ -105,7 +105,7 @@ import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '..
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
-import { launchRoutine } from './routines.mjs';
+import { launchRoutine, observed } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
@@ -580,7 +580,7 @@ export const run = async (event, deps) => {
     let api;
     try {
       const { account } = readStoredLogin(await secret.get());
-      api = deps.routines(await routinesToken(), account?.organizationUuid ?? null);
+      api = observed(deps.routines(await routinesToken(), account?.organizationUuid ?? null), deps.log);
     } catch (error) {
       return { status: 1, output: messageOf(error) };
     }

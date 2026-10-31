@@ -23,6 +23,9 @@
  * fire whose session it could not find (unconfirmed), 1 for nothing
  * started. A named connector the account has not connected starts nothing
  * and is named in `missing`.
+ *
+ * Every shape here is read from the bundled CLI's routine commands, not a
+ * published API, so the turn logs each answer's shape ({@link observed}).
  */
 
 import { CONNECTOR_NAME } from './repo-config.mjs';
@@ -56,6 +59,103 @@ const SESSION_ID = /^(?:cse|session)_([A-Za-z0-9]{4,128})$/;
  * @typedef {{ connector_uuid: string, name: string, url: string }} Connection
  * @typedef {{ status: number, output: string, missing?: string[] }} RoutineResult
  */
+
+/**
+ * The event each routines API call logs: the shape of what it answered.
+ */
+export const ROUTINE_ANSWER = 'dispatch-routine-answer';
+
+/** A routine or session id, the only answered text a shape carries. */
+const LOGGED_ID = /^(?:session|cse|trig|trigger)_[A-Za-z0-9]{4,128}$/;
+
+/** A value's type as JSON names it. @param {unknown} value */
+const typeOf = (value) => (value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value);
+
+/**
+ * An object's keys and each one's type, and any routine or session id in
+ * it or one level down, by its path (`session.id`).
+ *
+ * @param {Record<string, unknown>} object
+ */
+const keysOf = (object) => {
+  /** @type {Record<string, string>} */
+  const keys = {};
+  /** @type {Record<string, string>} */
+  const ids = {};
+  for (const [key, value] of Object.entries(object)) {
+    keys[key] = typeOf(value);
+    if (typeof value === 'string' && LOGGED_ID.test(value)) ids[key] = value;
+    if (typeOf(value) === 'object') {
+      for (const [inner, v] of Object.entries(/** @type {Record<string, unknown>} */ (value))) {
+        if (typeof v === 'string' && LOGGED_ID.test(v)) ids[`${key}.${inner}`] = v;
+      }
+    }
+  }
+  return { keys, ids };
+};
+
+/**
+ * What a routines API answer looks like, with none of its text but ids: its
+ * keys and their types, any routine or session id, and for a list, its
+ * count, `has_more` and its first row's keys. The answers carry a
+ * periodic's prompt and its sessions' titles, which stay out of the log.
+ *
+ * @param {unknown} answer
+ * @returns {Record<string, unknown>}
+ */
+export const answerShape = (answer) => {
+  if (Array.isArray(answer)) return { type: 'array', rows: answer.length };
+  if (typeOf(answer) !== 'object') return { type: typeOf(answer) };
+  const object = /** @type {Record<string, unknown>} */ (answer);
+  const shape = /** @type {Record<string, unknown>} */ (keysOf(object));
+  if (Array.isArray(object.data)) {
+    shape.rows = object.data.length;
+    shape.hasMore = object.has_more === true;
+    const first = object.data[0];
+    if (typeOf(first) === 'object') shape.firstRow = keysOf(/** @type {Record<string, unknown>} */ (first));
+  }
+  return shape;
+};
+
+/**
+ * The routines API with each call's answer logged by its shape
+ * ({@link answerShape}), and a call that throws logged as failed: the API's
+ * answers are read from the bundled CLI, not a published shape, and the log
+ * says what the live API answers.
+ *
+ * @param {RoutinesApi} api
+ * @param {(event: string, context: Record<string, unknown>) => void} log
+ * @returns {RoutinesApi}
+ */
+export const observed = (api, log) => {
+  /**
+   * @template T
+   * @param {string} call
+   * @param {string | undefined} routine
+   * @param {() => Promise<T>} begin
+   * @returns {Promise<T>}
+   */
+  const watch = async (call, routine, begin) => {
+    const at = { level: 'info', call, ...(routine === undefined ? {} : { routine }) };
+    let answer;
+    try {
+      answer = await begin();
+    } catch (error) {
+      log(ROUTINE_ANSWER, { ...at, failed: true });
+      throw error;
+    }
+    log(ROUTINE_ANSWER, { ...at, answer: answerShape(answer) });
+    return answer;
+  };
+  return {
+    connectors: () => watch('connectors', undefined, () => api.connectors()),
+    triggers: () => watch('triggers', undefined, () => api.triggers()),
+    create: (body) => watch('create', undefined, () => api.create(body)),
+    update: (id, body) => watch('update', id, () => api.update(id, body)),
+    run: (id) => watch('run', id, () => api.run(id)),
+    sessions: (id) => watch('sessions', id, () => api.sessions(id)),
+  };
+};
 
 /**
  * The name governor keeps a periodic's routine under. GitHub names a repo
