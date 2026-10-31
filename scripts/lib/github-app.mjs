@@ -266,6 +266,14 @@ export const RUNS_PER_PAGE = 50;
 const CLOSE_LAG_MS = 5 * 60 * 1000;
 
 /**
+ * The `owner/repo` an API row's `repository_url` names, or undefined.
+ *
+ * @param {unknown} url
+ * @returns {string | undefined}
+ */
+const repoOf = (url) => /\/repos\/([^/]+\/[^/]+)$/.exec(String(url ?? ''))?.[1];
+
+/**
  * The row that merged last, by the merge time `mergedAt` reads from it.
  *
  * @template T
@@ -463,7 +471,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         number: row.number,
         state: row.state,
         title: row.title,
-        repo: /\/repos\/([^/]+\/[^/]+)$/.exec(String(row.repository_url ?? ''))?.[1] ?? repo,
+        repo: repoOf(row.repository_url) ?? repo,
       }));
     },
 
@@ -505,7 +513,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         .filter((e) => e.event === 'cross-referenced')
         .map((e) => e.source?.issue)
         .filter((i) => i?.pull_request
-          && /\/repos\/([^/]+\/[^/]+)$/.exec(String(i.repository_url ?? ''))?.[1]?.toLowerCase() === repo.toLowerCase()
+          && repoOf(i.repository_url)?.toLowerCase() === repo.toLowerCase()
           && justBefore(i.pull_request.merged_at)
           && closedBy(i.body ?? '', repo).includes(number));
       const row = lastMerged(closers, (i) => i.pull_request.merged_at);
