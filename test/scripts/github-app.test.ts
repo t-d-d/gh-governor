@@ -201,9 +201,9 @@ describe('githubReader', () => {
     const { fetch, calls } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues/10/events': [
         { event: 'labeled' },
-        { event: 'closed', commit_id: 'b'.repeat(40), commit_url: 'https://api.github.com/repos/acme/factory/commits/' + 'b'.repeat(40) },
+        { event: 'closed', created_at: '2026-09-01T00:00:00Z', commit_id: 'b'.repeat(40), commit_url: 'https://api.github.com/repos/acme/factory/commits/' + 'b'.repeat(40) },
         { event: 'reopened' },
-        { event: 'closed', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/factory/commits/${SHA}` },
+        { event: 'closed', created_at: '2026-10-01T00:00:02Z', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/factory/commits/${SHA}` },
       ],
       'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'The parser', state: 'closed', state_reason: 'completed' },
       [`https://api.github.com/repos/acme/factory/commits/${SHA}/pulls`]: [
@@ -216,14 +216,58 @@ describe('githubReader', () => {
     assert.ok(calls.every((c) => c.url.startsWith('https://api.github.com/repos/acme/factory/')), calls.map((c) => c.url).join('; '));
   });
 
-  // A commit pushed to the default branch can also sit in an older merged
-  // PR: only the PR whose merge made the commit closed the issue.
-  test('closure names no PR when no merged PR\'s merge commit is the closing commit', async () => {
+  // GitHub closes an issue from a commit message that names it, and its
+  // `closed` event then names that commit: one on the PR's branch, which
+  // reaches the default branch when the PR merges, not the merge commit.
+  test('closure names the PR holding the closing commit when that PR merged just before the close', async () => {
     const SHA = 'a'.repeat(40);
     const { fetch } = fakeFetch({
-      'https://api.github.com/repos/acme/factory/issues/10/events': [{ event: 'closed', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/factory/commits/${SHA}` }],
+      'https://api.github.com/repos/acme/factory/issues/10/events': [{ event: 'closed', created_at: '2026-10-01T00:00:02Z', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/factory/commits/${SHA}` }],
+      'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'The parser', state: 'closed', state_reason: 'completed' },
+      [`https://api.github.com/repos/acme/factory/commits/${SHA}/pulls`]: [
+        { number: 52, title: 'Parse it', html_url: 'https://github.com/acme/factory/pull/52', merged_at: '2026-10-01T00:00:00Z', merge_commit_sha: 'c'.repeat(40) },
+      ],
+    });
+    assert.deepEqual(await githubReader({ token: 't', repo: 'acme/factory', fetch }).closure(10), { title: 'The parser', reason: 'completed', pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/factory/pull/52' } });
+  });
+
+  // A PR whose body says `Closes #10` closes the issue when it merges, and
+  // the `closed` event names no commit. The PR is the one in the issue's
+  // timeline that closes it from its body and merged just before the close.
+  test('closure names the PR that closes the issue from its body and merged just before a close naming no commit', async () => {
+    const pull = (number: number, body: string, merged_at: string | null, repo = 'acme/factory') => ({
+      event: 'cross-referenced',
+      source: { type: 'issue', issue: { number, title: `PR ${number}`, body, html_url: `https://github.com/${repo}/pull/${number}`, repository_url: `https://api.github.com/repos/${repo}`, pull_request: { merged_at } } },
+    });
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/10/events': [{ event: 'closed', created_at: '2026-10-01T12:00:02Z', commit_id: null, commit_url: null }],
+      'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'The parser', state: 'closed', state_reason: 'completed' },
+      'https://api.github.com/repos/acme/factory/issues/10/timeline': [
+        { event: 'labeled' },
+        { event: 'cross-referenced', source: { type: 'issue', issue: { number: 11, title: 'A ticket', body: 'Closes #10', html_url: 'https://github.com/acme/factory/issues/11', repository_url: 'https://api.github.com/repos/acme/factory' } } },
+        pull(40, 'Closes #10', '2026-10-01T11:50:00Z'),
+        pull(41, 'Closes #10', '2026-10-01T11:56:00Z'),
+        pull(42, 'Mentions #10 and closes nothing', '2026-10-01T12:00:01Z'),
+        pull(43, 'Closes acme/factory#10', '2026-10-01T12:00:01Z', 'acme/other'),
+        pull(44, 'Closes #10', null),
+        pull(45, 'Closes #10', '2026-10-01T12:00:05Z'),
+        pull(52, 'Closes #10', '2026-10-01T12:00:00Z', 'Acme/Factory'),
+        { event: 'closed', commit_id: null },
+      ],
+    });
+    assert.deepEqual(await githubReader({ token: 't', repo: 'acme/factory', fetch }).closure(10), { title: 'The parser', reason: 'completed', pr: { number: 52, title: 'PR 52', url: 'https://github.com/Acme/Factory/pull/52' } });
+    assert.ok(calls.every((c) => c.url.startsWith('https://api.github.com/repos/acme/factory/')), calls.map((c) => c.url).join('; '));
+  });
+
+  // A commit pushed to the default branch can also sit in an older merged
+  // PR: only a PR that merged just before the close made it.
+  test('closure names no PR when the PR holding the closing commit merged long before the close', async () => {
+    const SHA = 'a'.repeat(40);
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/10/events': [{ event: 'closed', created_at: '2026-10-01T00:00:00Z', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/factory/commits/${SHA}` }],
       'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'The parser', state: 'closed', state_reason: 'completed' },
       [`https://api.github.com/repos/acme/factory/commits/${SHA}/pulls`]: [{ number: 40, title: 'Back-merge', html_url: 'https://github.com/acme/factory/pull/40', merged_at: '2026-09-01T00:00:00Z', merge_commit_sha: 'd'.repeat(40) }],
+      'https://api.github.com/repos/acme/factory/issues/10/timeline': [],
     });
     assert.deepEqual(await githubReader({ token: 't', repo: 'acme/factory', fetch }).closure(10), { title: 'The parser', reason: 'completed', pr: null });
   });
@@ -231,13 +275,16 @@ describe('githubReader', () => {
   test('closure names no PR for a close by hand, or by a commit in another repository', async () => {
     const SHA = 'a'.repeat(40);
     for (const events of [
-      [{ event: 'closed', commit_id: null }],
-      [{ event: 'closed', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/other/commits/${SHA}` }],
+      [{ event: 'closed', created_at: '2026-10-01T00:00:00Z', commit_id: null }],
+      [{ event: 'closed', created_at: '2026-10-01T00:00:00Z', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/other/commits/${SHA}` }],
       [],
     ]) {
       const { fetch, calls } = fakeFetch({
         'https://api.github.com/repos/acme/factory/issues/10/events': events,
         'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'The parser', state: 'closed', state_reason: 'not_planned' },
+        'https://api.github.com/repos/acme/factory/issues/10/timeline': [
+          { event: 'cross-referenced', source: { type: 'issue', issue: { number: 44, title: 'Still open', body: 'Closes #10', html_url: 'https://github.com/acme/factory/pull/44', repository_url: 'https://api.github.com/repos/acme/factory', pull_request: { merged_at: null } } } },
+        ],
       });
       const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
       assert.deepEqual(await reader.closure(10), { title: 'The parser', reason: 'not_planned', pr: null }, JSON.stringify(events));
