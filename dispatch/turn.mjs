@@ -1774,7 +1774,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         continue;
       }
       const firedAt = new Date(deps.now()).toISOString();
-      const { outcome, sessionUrl, status, missing } = await start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo, ...(entry.connectors === undefined ? {} : { connectors: entry.connectors }) });
+      const { outcome, sessionUrl, status, missing } = await start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo, ...connectorsOf(entry) });
       if (missing !== undefined) {
         connectorMissing(deps, entry.repo, entry.sessionName, missing);
         continue;

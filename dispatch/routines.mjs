@@ -58,12 +58,15 @@ const SESSION_ID = /^(?:cse|session)_([A-Za-z0-9]{4,128})$/;
  */
 
 /**
- * The name governor keeps a periodic's routine under.
+ * The name governor keeps a periodic's routine under. GitHub names a repo
+ * in any case, and a fire may carry it in another case than the sweep, so
+ * the repo is in lower case: it is the same routine. The periodic's name
+ * keeps its case, as the file keeps two names apart by it.
  *
  * @param {string} repo
  * @param {string} periodic
  */
-export const routineName = (repo, periodic) => `governor ${repo}: ${periodic}`;
+export const routineName = (repo, periodic) => `governor ${repo.toLowerCase()}: ${periodic}`;
 
 /**
  * A connector's name as a routine takes it: the app's `claude.ai ` prefix
@@ -152,7 +155,9 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
   /** The routine's run sessions before this fire. @type {Set<string>} */
   const before = new Set();
   try {
-    const found = connectionsFor(connectors, await api.connectors());
+    // Both lists are read together: neither answer shapes the other's request.
+    const [listedConnectors, listedRoutines] = await Promise.all([api.connectors(), api.triggers()]);
+    const found = connectionsFor(connectors, listedConnectors);
     if ('missing' in found) return { status: 1, output: `not connected on the account: ${found.missing.join(', ')}`, missing: found.missing };
     const body = {
       name,
@@ -167,7 +172,7 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
       },
       mcp_connections: found.connections,
     };
-    const { rows, more } = rowsOf(await api.triggers(), 'the routines list');
+    const { rows, more } = rowsOf(listedRoutines, 'the routines list');
     const existing = rows.find((r) => r?.name === name);
     if (existing === undefined && more) return { status: 1, output: `the routines list runs past one page without ${name}: none is created, so no second routine stands beside it` };
     if (existing === undefined) {

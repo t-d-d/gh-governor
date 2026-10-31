@@ -113,6 +113,13 @@ describe('a periodic\'s routine run', () => {
     assert.equal(calls.findIndex((c) => c.call === 'sessions') < calls.findIndex((c) => c.call === 'run'), true, 'its earlier runs are read before the fire, so none is taken for this one');
   });
 
+  test('a routine named for the periodic under the repo in another case is the same routine, never a second one', async () => {
+    const { api, calls } = fakeApi({ triggers: async () => ({ data: [{ id: 'trig_01OLD', name: routineName(REPO, 'Weekly retro') }] }) });
+    const result = await launch(api, { repo: 'Acme/Factory' });
+    assert.equal(result.status, 0, result.output);
+    assert.deepEqual(calls.filter((c) => c.call !== 'sessions').map((c) => [c.call, c.id]), [['update', 'trig_01OLD'], ['run', 'trig_01OLD']]);
+  });
+
   test('a connector the account has not connected starts nothing and names it', async () => {
     const { api, calls } = fakeApi();
     const result = await launch(api, { connectors: ['feed_prod', 'slack'] });
