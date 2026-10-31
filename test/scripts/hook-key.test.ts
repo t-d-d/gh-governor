@@ -7,8 +7,11 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { HOOK_SECRET_ID, hookUrl, keyLine, parseArgs, run } from '../../scripts/hook-key.mjs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { HOOK_SECRET_ID, hookUrl, keyLine, parseArgs, run, saveCommands } from '../../scripts/hook-key.mjs';
 import { hookKey } from '../../dispatch/webhook/hook.mjs';
 import { CONFIG_PATH } from '../../dispatch/repo-config.mjs';
 
@@ -222,7 +225,7 @@ describe('scripts/hook-key.mjs', () => {
       assert.deepEqual(f.out, [keyOf(1)]);
       const err = f.err.join('\n');
       assert.ok(err.includes(URL_OPERATOR_PROD));
-      assert.ok(err.includes('node scripts/hook-key.mjs --repo acme/factory --hook operator-prod | gh secret set GOVERNOR_HOOK_KEY --repo acme/factory --env <environment>'), err);
+      assert.ok(err.includes('(key="$(node scripts/hook-key.mjs --repo acme/factory --hook operator-prod)" && printf \'%s\' "$key" | gh secret set GOVERNOR_HOOK_KEY --repo acme/factory --env <environment>)'), err);
       assert.ok(err.includes(`gh variable set GOVERNOR_HOOK_URL --repo acme/factory --env <environment> --body ${URL_OPERATOR_PROD}`), err);
       assert.equal(err.includes(keyOf(1).slice(3)), false, 'the key is not on stderr');
       assert.equal(f.gh.some((c) => c.argv[0] !== 'api'), false, 'nothing is written');
@@ -235,8 +238,51 @@ describe('scripts/hook-key.mjs', () => {
         '--key-name', 'ALARM_KEY', '--url-name', 'ALARM_URL',
       ]), f.io);
       const err = f.err.join('\n');
-      assert.ok(err.includes('node scripts/hook-key.mjs --repo acme/factory --hook operator-prod --version 2 --profile ops --stack governor-test | gh secret set ALARM_KEY --repo acme/factory --env <environment>'), err);
+      assert.ok(err.includes('(key="$(node scripts/hook-key.mjs --repo acme/factory --hook operator-prod --version 2 --profile ops --stack governor-test)" && printf \'%s\' "$key" | gh secret set ALARM_KEY --repo acme/factory --env <environment>)'), err);
       assert.ok(err.includes(`gh variable set ALARM_URL --repo acme/factory --env <environment> --body ${URL_OPERATOR_PROD}`), err);
+    });
+    /**
+     * Run the printed secret command in sh, with stubs for node and gh first
+     * on PATH. The node stub prints `stdout` and exits `status`; the gh stub
+     * records its arguments and stdin. `before` and `after` run in the same
+     * shell, around the command.
+     */
+    const runPrinted = (stdout: string, status: number, before = '', after = '') => {
+      const dir = mkdtempSync(join(tmpdir(), 'hook-key-'));
+      try {
+        const [command] = saveCommands(parseArgs(['--repo', 'acme/factory', '--hook', 'operator-prod']), URL_OPERATOR_PROD);
+        writeFileSync(join(dir, 'node'), `#!/bin/sh\nprintf '%s' '${stdout}'\nexit ${status}\n`);
+        writeFileSync(join(dir, 'gh'), `#!/bin/sh\necho "$@" > '${dir}/gh-argv'\ncat > '${dir}/gh-stdin'\n`);
+        chmodSync(join(dir, 'node'), 0o755);
+        chmodSync(join(dir, 'gh'), 0o755);
+        // The placeholder is the owner's to fill in; sh would read it as a redirect.
+        const done = spawnSync('sh', ['-c', `${before}${String(command).replace('<environment>', 'prod')}${after}`], {
+          encoding: 'utf8', env: { PATH: `${dir}:${process.env.PATH}` },
+        });
+        const read = (name: string) => { try { return readFileSync(join(dir, name), 'utf8'); } catch { return undefined; } };
+        return { status: done.status, stdout: done.stdout, argv: read('gh-argv'), stdin: read('gh-stdin') };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    test('the printed secret command saves nothing when the key run fails', () => {
+      const done = runPrinted('', 1);
+      assert.notEqual(done.status, 0);
+      assert.equal(done.argv, undefined, 'gh never ran');
+    });
+
+    test('the printed secret command saves the key line, without its newline, when the key run succeeds', () => {
+      const done = runPrinted(`${keyOf(1)}\n`, 0);
+      assert.equal(done.status, 0);
+      assert.equal(done.argv, 'secret set GOVERNOR_HOOK_KEY --repo acme/factory --env prod\n');
+      assert.equal(done.stdin, keyOf(1));
+    });
+
+    test('the printed secret command leaves the owner\'s shell variable key as it was', () => {
+      const done = runPrinted(`${keyOf(1)}\n`, 0, 'key=mine; ', '; printf \'%s\' "$key"');
+      assert.equal(done.status, 0);
+      assert.equal(done.stdout, 'mine');
     });
   });
 
