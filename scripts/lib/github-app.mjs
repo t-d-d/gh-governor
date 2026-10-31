@@ -479,7 +479,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      * How an issue closed: its title, GitHub's `state_reason` (null where
      * it gave none), and the PR of this repository whose merge closed it.
      * That PR merged in the {@link CLOSE_LAG_MS} before the issue's last
-     * `closed` event, and either holds the commit the event names (GitHub
+     * `closed` event, and after any reopen before it, and either holds the commit the event names (GitHub
      * closed the issue from that commit's message) or closes the issue
      * from its body, read from the issue's timeline (the event then names
      * no commit). A close by hand, or a PR that merged long before the
@@ -498,7 +498,8 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       const closed = events.filter((e) => e.event === 'closed').at(-1);
       if (closed === undefined) return { title, reason, pr: null };
       const at = Date.parse(closed.created_at);
-      const justBefore = (/** @type {unknown} */ merged) => typeof merged === 'string' && Date.parse(merged) <= at && at - Date.parse(merged) <= CLOSE_LAG_MS;
+      const since = Math.max(at - CLOSE_LAG_MS, ...events.filter((e) => e.event === 'reopened').map((e) => Date.parse(e.created_at)).filter((t) => t <= at));
+      const justBefore = (/** @type {unknown} */ merged) => typeof merged === 'string' && Date.parse(merged) <= at && Date.parse(merged) >= since;
       const named = (/** @type {any} */ row) => ({ number: row.number, title: row.title ?? '', url: row.html_url });
       const sha = closed.commit_id;
       const here = typeof closed.commit_url !== 'string' || closed.commit_url.toLowerCase().startsWith(`https://api.github.com/repos/${repo}/commits/`.toLowerCase());

@@ -222,7 +222,7 @@ describe('githubReader', () => {
   test('closure names the PR holding the closing commit when that PR merged just before the close', async () => {
     const SHA = 'a'.repeat(40);
     const { fetch } = fakeFetch({
-      'https://api.github.com/repos/acme/factory/issues/10/events': [{ event: 'closed', created_at: '2026-10-01T00:00:02Z', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/factory/commits/${SHA}` }],
+      'https://api.github.com/repos/acme/factory/issues/10/events': [{ event: 'closed', created_at: '2026-10-01T00:04:00Z', commit_id: SHA, commit_url: `https://api.github.com/repos/acme/factory/commits/${SHA}` }],
       'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'The parser', state: 'closed', state_reason: 'completed' },
       [`https://api.github.com/repos/acme/factory/commits/${SHA}/pulls`]: [
         { number: 52, title: 'Parse it', html_url: 'https://github.com/acme/factory/pull/52', merged_at: '2026-10-01T00:00:00Z', merge_commit_sha: 'c'.repeat(40) },
@@ -257,6 +257,23 @@ describe('githubReader', () => {
     });
     assert.deepEqual(await githubReader({ token: 't', repo: 'acme/factory', fetch }).closure(10), { title: 'The parser', reason: 'completed', pr: { number: 52, title: 'PR 52', url: 'https://github.com/Acme/Factory/pull/52' } });
     assert.ok(calls.every((c) => c.url.startsWith('https://api.github.com/repos/acme/factory/')), calls.map((c) => c.url).join('; '));
+  });
+
+  // The PR closed the issue, someone reopened it, and a hand closed it
+  // again: the last close is the hand's, however soon it came.
+  test('closure names no PR when the issue was reopened after the PR merged', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/10/events': [
+        { event: 'closed', created_at: '2026-10-01T12:00:02Z', commit_id: null },
+        { event: 'reopened', created_at: '2026-10-01T12:01:00Z' },
+        { event: 'closed', created_at: '2026-10-01T12:02:00Z', commit_id: null },
+      ],
+      'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'The parser', state: 'closed', state_reason: 'completed' },
+      'https://api.github.com/repos/acme/factory/issues/10/timeline': [
+        { event: 'cross-referenced', source: { type: 'issue', issue: { number: 52, title: 'Parse it', body: 'Closes #10', html_url: 'https://github.com/acme/factory/pull/52', repository_url: 'https://api.github.com/repos/acme/factory', pull_request: { merged_at: '2026-10-01T12:00:00Z' } } } },
+      ],
+    });
+    assert.deepEqual(await githubReader({ token: 't', repo: 'acme/factory', fetch }).closure(10), { title: 'The parser', reason: 'completed', pr: null });
   });
 
   // A commit pushed to the default branch can also sit in an older merged
