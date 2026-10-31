@@ -91,6 +91,17 @@ spends the one claude.ai login.
   itself: what happened, the PR or issue, the run and commit, the session's
   standing line. No repo can drop or reword them. A prompt may name a fact
   its kind has (`{pr}`), and the dispatcher writes it in.
+- A periodic may list `connectors`: the claude.ai connectors its session
+  needs, each by its name in the account's connector list, never an id or
+  URL. One that names any starts as a run of its routine, with those
+  connectors attached and no others (dispatch/routines.mjs); one that names
+  none starts with `claude --cloud`. Governor keeps one routine per such
+  periodic, named after the repo and the periodic, and updates it to the
+  fire's prompt, environment, source and connectors before each fire. The
+  routine's own schedule never comes due: governor alone decides when a
+  periodic is due. A named connector the account has not connected starts
+  nothing and writes no record, as an alarmed `dispatch-connector-missing`
+  error naming the repo, the periodic and the connector.
 - A file turning hooks on lists at least one hook, or is a schema fault.
   Each hook has a name unique in the file and safe in a URL path, a prompt,
   and a `keyVersion`. A hook's key is derived from one stack secret, its
@@ -187,6 +198,10 @@ spends the one claude.ai login.
   fresh while the thing it reports had stopped.
 - Do not read a marker of another prefix as governor's: a repo's text would
   then hold or redirect a dispatch.
+- Do not let a periodic's routine keep a schedule that could come due, nor
+  attach every connector the account has: the routine would fire outside
+  governor's records, and a session would hold connectors its file never
+  named.
 
 Judgment: that a new per-repo table record keys on its repo, and that a config file holds no secret, no check sees: a key is a string no schema reads, and a secret has no shape the schema can refuse.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28. A hook fire arrives at the receiver on its own path, signed with its hook key, and the switch list gains hooks, since #55, under PRD #53. A turn may queue a fire naming another repo, a blocker's close is handled in each blocked ticket's own repo, and `unblocked` replaces the merge hand-off, since #72. A periodic's baseline adds its heartbeat line, in the `not fired yet` state, where it has none, since #52.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28. A hook fire arrives at the receiver on its own path, signed with its hook key, and the switch list gains hooks, since #55, under PRD #53. A turn may queue a fire naming another repo, a blocker's close is handled in each blocked ticket's own repo, and `unblocked` replaces the merge hand-off, since #72. A periodic's baseline adds its heartbeat line, in the `not fired yet` state, where it has none, since #52. A periodic may name the claude.ai connectors its session needs, and then starts as a run of its own routine, since #89.

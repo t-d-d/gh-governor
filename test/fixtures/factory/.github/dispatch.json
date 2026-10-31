@@ -42,8 +42,11 @@
     },
     {
       "name": "Ticket review",
-      "prompt": "Review the open tickets labelled ready for development. Fix any whose spec the code has overtaken.",
-      "days": 3
+      "prompt": "Review the open tickets labelled ready for development. Fix any whose spec the code has overtaken, and send a short summary of what changed to the owner's feed.",
+      "days": 3,
+      "connectors": [
+        "feed_prod"
+      ]
     },
     {
       "name": "Code review",

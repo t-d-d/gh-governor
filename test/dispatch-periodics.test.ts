@@ -58,6 +58,17 @@ describe('the config file\'s periodics', () => {
     assert.ok(readConfig(file({ periodics: [{ ...RETRO, days: 1 }] })).ok);
   });
 
+  test('a periodic may name the claude.ai connectors its session needs: one or more distinct names', () => {
+    const read = readConfig(file({ periodics: [{ ...RETRO, connectors: ['feed_prod', 'gmail-2'] }] }));
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.config.periodics, [{ ...RETRO, connectors: ['feed_prod', 'gmail-2'] }]);
+    for (const connectors of [[], ['feed_prod', 'feed_prod'], ['feed prod'], ['feed.prod'], [''], 'feed_prod', [7], {}]) {
+      const bad = readConfig(file({ periodics: [{ ...RETRO, connectors }] }));
+      assert.ok(!bad.ok, JSON.stringify(connectors));
+      assert.match(bad.fault, /connectors/, JSON.stringify(connectors));
+    }
+  });
+
   test('a name is one line, and the prompt is text or a file', () => {
     for (const periodic of [{ ...RETRO, name: '' }, { ...RETRO, name: 'Weekly\nretro' }, { ...RETRO, prompt: '' }, { ...RETRO, prompt: { path: 'x.md' } }, { ...RETRO, prompt: { file: '../x.md' } }, { ...RETRO, extra: true }]) {
       assert.ok(!readConfig(file({ periodics: [periodic] })).ok, JSON.stringify(periodic));

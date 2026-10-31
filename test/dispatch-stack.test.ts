@@ -423,12 +423,13 @@ describe('infra/governor.cfn.yml — the alarms', () => {
   });
 
   /**
-   * A served repo's config file that fails its schema, and a repo whose
-   * launch started nothing, each page off their own event; a repo
-   * with no file pages nobody.
+   * A served repo's config file that fails its schema, a repo whose
+   * launch started nothing, and a periodic naming a connector the account
+   * has not connected, each page off their own event; a repo with no file
+   * pages nobody.
    */
-  test('an invalid config file and a skipped repo each page, read off their own event', () => {
-    for (const [name, event] of [['DispatchConfigInvalid', 'dispatch-config-invalid'], ['DispatchRepoSkipped', 'dispatch-repo-skipped']]) {
+  test('an invalid config file, a skipped repo and a missing connector each page, read off their own event', () => {
+    for (const [name, event] of [['DispatchConfigInvalid', 'dispatch-config-invalid'], ['DispatchRepoSkipped', 'dispatch-repo-skipped'], ['DispatchConnectorMissing', 'dispatch-connector-missing']]) {
       const filter = template.Resources[`${name}Filter`];
       assert.equal(filter?.Properties?.LogGroupName, '${DispatchLogGroup}', name);
       assert.match(filter?.Properties?.FilterPattern ?? '', new RegExp(`\\$\\.event = "${event}"`), name);
