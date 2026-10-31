@@ -158,6 +158,18 @@ export const DEPENDABOT = 'dependabot[bot]';
 export const UNATTENDED = 'Unattended session: nobody answers a question here. Decide, act, and report on GitHub.';
 
 /**
+ * How a session signs what it posts on GitHub, so the receiver can skip
+ * its own posts (`postedBy`, subscribe.mjs). Claude Code ends a session's
+ * comment in a footer that names no session, and a post naming none reaches
+ * every session that hears of it, its author included. The turn ends every
+ * launch's prompt with it (dispatch/turn.mjs), and a message about a post
+ * naming no session carries it (mention.mjs). It names no literal link: a
+ * refused message goes on, as it is, to the session a dispatch marker
+ * names, and a cloud session knows its own link.
+ */
+export const SIGN_POSTS = "On every comment, review and reply you post on GitHub, put this session's link, its https://claude.ai/code/session_… URL, alone on the line just above the Claude Code footer. The dispatcher reads the link there, so it does not send you your own posts.";
+
+/**
  * The lane's one message group: FIFO within it is what serialises the
  * fires. The receiver queues on it, the retrier requeues on it, and so does
  * a fire by hand (scripts/run-turn.mjs).
