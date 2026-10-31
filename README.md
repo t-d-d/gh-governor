@@ -154,11 +154,11 @@ A new periodic starts its first session one day limit, or one count, after the f
 
 ### Deploy messages and labels
 
-`deployMessages` tells the sessions of the merges a deploy shipped, and `deployedLabels` labels their tickets `deployed: <target>`. Turning the switches on is not enough: governor sees a deploy only through two marks in the deploy workflow, and reads both from the workflow file at the run's commit.
+`deployMessages` tells the sessions of the merges a deploy shipped, and `deployedLabels` labels their tickets `deployed: <target>`. Turning the switches on is not enough: governor sees a deploy only through two marks in the deploy workflow. It reads the first from the shipping job's name as the run reports it (from the workflow file, for a red run), and the second from the workflow file at the run's head commit.
 
-1. **Mark the shipping job.** Name the job whose success means the change is live so the name ends ` · deployed: <target>`: a middle dot (U+00B7) with one space each side, then the target, such as `live` or `prod`. Mark only that job. Never mark a rollback job that redeploys an older build, or governor tells sessions their change is live as it is taken down.
-2. **Add `at <sha>` only when it is needed.** Put `at <sha>` before the dot when the job builds a commit other than the run's head, such as a release dispatched at an older commit. Without it, governor takes the run's head as the commit shipped.
-3. **Declare `TICKET_LABEL_PATHS`.** Set it as a top-level `env:` entry of the workflow file. It picks which of the shipped PRs hear of the deploy and have their tickets labelled. `all` picks every PR the job shipped. `trigger` picks the PRs that changed a file under the workflow's own `on.push.paths`, and needs those paths. Anything else is read as globs, one per line.
+1. **Mark the shipping job.** Name the job whose success means the change is live so the name ends ` · deployed: <target>`: a middle dot (U+00B7) with one space each side, then the target, such as `live` or `prod`. Mark only that job for each target. Never mark a rollback job that redeploys an older build, or governor tells sessions their change is live as it is taken down.
+2. **Add `at <sha>` only when it is needed.** Put `at <sha>` before the dot when the job builds a commit other than the run's head, such as a release dispatched at an older commit. The sha is the whole 40-character commit id in lower case, the form `${{ github.sha }}` gives: a short one makes the job fire nothing. Without it, governor takes the run's head as the commit shipped.
+3. **Declare `TICKET_LABEL_PATHS`.** Set it as a top-level `env:` entry of the workflow file. It picks which of the shipped PRs hear of the deploy and have their tickets labelled. `all` picks every PR the job shipped. `trigger` picks the PRs that changed a file under the workflow's own `on.push.paths`, and needs those paths. Anything else is read as globs, one per line, so more than one glob needs a YAML block (`|`).
 4. **Name the target's tag.** Without a `workflows.tags` entry, a message says "Your change is on the <target>", so a target named `live` reads "on the live". With `"tags": { "live": "live-ok" }` it says "Your change is on live", and "the live-ok tag is on <sha>".
 5. **Turn on the switches.** `deployMessages`, and `deployedLabels` for the labels, which needs `deployMessages`.
 
@@ -166,8 +166,8 @@ What to expect once it is set up:
 
 - **The tag is named when the job ends.** A message says "the <tag> tag is on <sha>" as soon as the shipping job succeeds. If a later job moves the tag, the message runs ahead of it, and is wrong if that job fails. Mark the job that moves the tag, or a job after it.
 - **The first marked deploy tells nobody.** A shipping job covers the merges since the last green run that shipped the same label. The first run with the marker has none, so it only sets the baseline. Messages and labels start with the next one.
-- **A deploy workflow that is also `workflows.ci`.** Many small repos run the gate inside the deploy. A red run of that workflow is then CI: it goes to `ciMessages` (the one suspect's session, or one fresh session for several), never to `deployRed`. A green shipping job in it still uses `deployMessages`.
-- **An issue's filer does not hear the label by default.** A filer is subscribed to everything on its issue but `labels` and `deploys`. To hear a `deployed:` label, the issue body needs `<!-- governor:subscribe <session link> events=deploys -->` naming the filer. A filer that has signed off by then refuses the message, and governor drops its line.
+- **A deploy workflow that is also `workflows.ci`.** Many small repos run the gate inside the deploy. A red run of that workflow is then CI: it goes to `ciMessages` (the one suspect's session, or one fresh session for several), never to the red-deploy message (the `deployRed` prompt). A green shipping job in it still uses `deployMessages`.
+- **An issue's filer does not hear the label by default.** A filer is subscribed to everything on its issue but `labels` and `deploys`. To hear a `deployed:` label, the issue body needs `<!-- governor:subscribe <session link> events=deploys -->` naming the filer, and the repo needs `subscribeMessages` and `deployedLabels` on. A filer that has signed off by then refuses the message, and governor drops its line.
 
 A minimal deploy workflow, `.github/workflows/deploy.yml`, with both marks:
 
@@ -180,7 +180,8 @@ env:
   TICKET_LABEL_PATHS: all
 jobs:
   deploy:
-    name: Deploy · deployed: live
+    # Quoted: an unquoted ": " inside a value is not valid YAML.
+    name: "Deploy · deployed: live"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
