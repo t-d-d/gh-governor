@@ -45,14 +45,22 @@
  * (owner, member, collaborator). A bot cannot, and neither can a session:
  * every comment a session posts ends in the Claude Code footer, and one
  * quoting "@claude" back would otherwise start a session that starts one.
- * Every comment a session posts also ends in its own link, which keeps its
- * post off its own messages: a message carrying its own reply would wake it
- * for nothing.
+ *
+ * Who wrote a session's post: the session whose link sits under the footer,
+ * or alone on the line above it, and that session is not messaged with its
+ * own post. The footer Claude Code puts on a comment names no session, so a
+ * session signs its posts only when told to. Every session the dispatcher
+ * starts is told in its opening prompt (`SIGN_POSTS`, fire.mjs). A
+ * session's post naming no session may be any subscriber's, so it reaches
+ * every one, and the message says so ({@link UNSIGNED}). An author that
+ * reads its own post back posts nothing and signs the next one. Skipping
+ * the owner instead would lose a reviewer session's remark, and an owner
+ * that nothing wakes leaves its PR idle.
  *
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
-import { DISPATCH_MARKER, OVERRIDE_BUDGET, SUMMONERS, UNATTENDED, build, deployedTarget, isBranch, isCommit, overrideWeight } from './fire.mjs';
+import { DISPATCH_MARKER, OVERRIDE_BUDGET, SIGN_POSTS, SUMMONERS, UNATTENDED, build, deployedTarget, isBranch, isCommit, overrideWeight } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
 import { isSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor } from './subscribe.mjs';
 
@@ -99,6 +107,13 @@ export const defaultBranch = (payload) => (isBranch(payload?.repository?.default
  * does so itself where that rewrite failed, and keeps the link there.
  */
 export const HANDOFF = 'The session that wrote this PR is gone; it is yours now. The dispatcher points the PR description\'s session link at you; if it still names another session, put your own link in its place, and keep it there, so later remarks reach you.';
+
+/**
+ * What a message about a session's post naming no session adds: the
+ * recipient may be its author, and is told to sign its posts so the next one
+ * is skipped.
+ */
+export const UNSIGNED = `This post ends in the Claude Code footer and names no session, so the dispatcher cannot tell which session wrote it. If you wrote it, it has come back to you: post nothing about it. ${SIGN_POSTS}`;
 
 /** A review with no text still says something when its state is one of these. */
 const VERDICTS = new Set(['approved', 'changes_requested']);
@@ -227,18 +242,22 @@ const summons = (prompt, on, reason) => ({
  *   closing?: boolean,
  *   merged?: boolean,
  *   issue?: boolean,
+ *   unsigned?: boolean,
  *   reason: string,
  * }} args `merged`: `on` merged into main, which the owner's fire says.
  *   `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
+ *   `unsigned`: a session's post naming no session, which the message says
+ *   ({@link UNSIGNED}); the fallback's fresh session wrote nothing, and is
+ *   not told.
  * @returns {Queued}
  */
-const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, merged = false, issue = false, reason }) => {
+const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, merged = false, issue = false, unsigned = false, reason }) => {
   const role = owner ? 'owner' : 'subscriber';
   const number = Number.isInteger(on?.number) ? on.number : undefined;
   /** @param {string} text @returns {MessageFire} */
   const fire = (text) => build.message({
     ...(session === null ? { byBranch: /** @type {true} */ (true), poster: poster ?? undefined } : { session }),
-    text,
+    text: unsigned ? `${text}\n\n${UNSIGNED}` : text,
     on: number,
     event,
     commit,
@@ -285,8 +304,10 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   `issue`: `on` is an issue, whose owner hears `deploys` only by a line.
  *   `byBranch`: `on` is a PR, and with no session its body names, the
  *   live session on its head branch is the owner; `sessionPost`, what was
- *   posted is a session's, which then is that session's own. `merged`: `on`
- *   is a PR merged into main, which the owner's fire says.
+ *   posted is a session's, which then is that session's own. `sessionPost`
+ *   with no `poster`: any subscriber may have written it, so each hears of
+ *   it, told so ({@link UNSIGNED}). `merged`: `on` is a PR merged into
+ *   main, which the owner's fire says.
  * @returns {Fanout}
  */
 const fanOut = ({ on, event, poster, prompt, fallback = false, commit, closing = false, merged = false, ownerOnly = false, byBranch = false, sessionPost = false, issue = false, reason }) => {
@@ -305,7 +326,7 @@ const fanOut = ({ on, event, poster, prompt, fallback = false, commit, closing =
       skipped.push(`${sessionId(poster)}'s own post`);
       continue;
     }
-    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, merged, issue, reason }));
+    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, merged, issue, unsigned: sessionPost && poster === null, reason }));
   }
   const heard = fires.length === 0 && skipped.length === 0 ? [`${reason}: nobody subscribes to ${event}`] : [];
   return { fires, reason: [...fires.map((f) => f.reason), ...skipped, ...heard].join('; ') };

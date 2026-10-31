@@ -19,9 +19,12 @@
  * vocabulary is closed (`SUBSCRIPTION_EVENTS`, fire.mjs): an event it does not
  * know subscribes to nothing.
  *
- * A session's own post ends in the footer and its own link, so a
- * subscriber is never messaged with what it wrote itself. A post with the
- * footer and no link is some session's, and reaches every subscriber.
+ * A session's post ends in the footer. Where the session signed it, with its
+ * link under the footer or alone on the line above it ({@link postedBy}), a
+ * subscriber is never messaged with what it wrote itself. Claude Code adds
+ * no link to a comment, so a session signs only when told to (`SIGN_POSTS`,
+ * fire.mjs). A post with the footer and no link is some session's, and
+ * reaches every subscriber, told it may be its own (mention.mjs).
  *
  * Pure, importing only the fire's vocabulary (fire.mjs): the receiver
  * (mention.mjs, route.mjs) and the task (dispatch/deliveries.mjs,

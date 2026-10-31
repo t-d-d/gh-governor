@@ -34,6 +34,12 @@ How dark the factory runs is the repo's choice: with pickup and the review on an
 
 The next fire serves the repo. No deploy is needed. Deleting the file or uninstalling the App stops it at the next fire.
 
+Sessions should sign what they post on GitHub. Claude Code ends a session's comment with a footer that names no session, so governor cannot tell a session's own comment from another session's. It sends such a comment to every session that hears of the PR or issue, the author included, and tells each that the comment may be its own. A session that puts its own link alone on the line just above the footer is not sent its own posts. Governor tells every session it starts to do this. For sessions a person starts, add a line like this to the repo's CLAUDE.md:
+
+```
+On every comment, review and reply you post on GitHub, put this session's link, its https://claude.ai/code/session_… URL, alone on the line just above the Claude Code footer.
+```
+
 Governor reads the file from the default branch only. A file that fails the schema skips the repo and raises the `governor-config-invalid` alarm. The file holds no secret: a served repo may be public.
 
 The smallest useful file:

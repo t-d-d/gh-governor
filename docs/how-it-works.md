@@ -98,7 +98,9 @@ Every message ends with the session's standing: the other open PRs and issues th
 
 ## Who a PR or issue belongs to
 
-**A PR a cloud session wrote** names it: the last `claude.ai/code/session_…` link under the Claude Code footer in its body. Every comment, review comment and review on it goes to that session, mention or not, review bots included. What does not reach it: its own posts, a stranger's comment, and a review with neither text nor a verdict.
+**A PR a cloud session wrote** names it: the last `claude.ai/code/session_…` link under the Claude Code footer in its body. Every comment, review comment and review on it goes to that session, mention or not, review bots included. What does not reach it: its own signed posts, a stranger's comment, and a review with neither text nor a verdict.
+
+**A session's own post** is skipped only where the session signed it, with its link under the Claude Code footer or alone on the line just above it. The footer Claude Code puts on a comment names no session, so every session governor starts is told in its opening prompt to sign its posts. A post with the footer and no link may be any session's. It reaches the owner and every subscriber. The message tells each one that if it wrote the post, it should post nothing about it and sign its posts from then on. Skipping the owner instead would lose a remark from another session, such as a reviewer's, and an owner that nothing wakes leaves its PR idle.
 
 **When the owner is archived**, the message is refused, and governor starts a fresh session on the same text, told to take the PR over. It rewrites the PR body's session link to the fresh session, so later remarks go straight to it, and leaves a dispatch marker on the PR. If the rewrite failed, a refusal within the next two hours forwards to the session the marker names rather than starting a third.
 
@@ -126,7 +128,7 @@ Only one answer counts as a refusal: `cloud session <id> is archived`. Any other
 | `ci` | A red CI run on the default branch that this PR may have caused |
 | `deploys` | A shipping job or a red deploy that shipped this PR; on an issue, a `deployed:` label added |
 
-A PR's owner is implicitly subscribed to everything but `labels`; an issue's filer to everything but `labels` and `deploys`. A subscriber that refuses is dropped from the body (`dispatch-unsubscribe`). Nobody hears of its own post: every post a session makes ends with the Claude Code footer and its own session URL, and the receiver skips that session. A push names its commit, and the session its `Claude-Session` trailer names is skipped.
+A PR's owner is implicitly subscribed to everything but `labels`; an issue's filer to everything but `labels` and `deploys`. A subscriber that refuses is dropped from the body (`dispatch-unsubscribe`). Nobody hears of its own signed post: the receiver skips the session whose link sits under the Claude Code footer or alone on the line above it. A post with the footer and no link reaches every subscriber, told it may be its own (above). A push names its commit, and the session its `Claude-Session` trailer names is skipped.
 
 ## Signing off
 

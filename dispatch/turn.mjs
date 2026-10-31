@@ -121,7 +121,7 @@ import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
-import { DISPATCH_WINDOW_MS, HOOK_PER_HOUR, LANE, RED, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, recentlyDispatched } from './webhook/fire.mjs';
+import { DISPATCH_WINDOW_MS, HOOK_PER_HOUR, LANE, RED, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, recentlyDispatched, SIGN_POSTS } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -596,10 +596,13 @@ export const run = async (event, deps) => {
    * that fails: the session is running either way. The record spends none
    * of the launch's budget, so a slow one never turns a launch that started
    * into one tried again; the turn waits for every record before it ends.
+   * Every prompt ends in `SIGN_POSTS`, which no repo's prompts replace: the
+   * receiver skips a session's own posts only where the session signed them.
    *
    * @type {Deps['launch']}
    */
-  const launch = async (begin) => {
+  const launch = async (asked) => {
+    const begin = { ...asked, prompt: `${asked.prompt}\n\n${SIGN_POSTS}` };
     const launched = begin.connectors !== undefined && begin.connectors.length > 0 ? await routineLaunch(begin, begin.connectors) : await deps.launch(begin);
     const sessionUrl = sessionUrlFrom(launched.output);
     if (sessionUrl !== null) {
