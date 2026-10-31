@@ -187,12 +187,12 @@ describe('what the routines API answered, logged by shape', () => {
       update: async (id: string) => ({ id }),
       run: async () => ({ type: 'run_started', session: { id: 'cse_01RUN', title: prompt }, last_run: null }),
       sessions: async () => ({ data: [{ id: 'cse_01RUN', title: prompt, created_at: '2026-10-31T12:00:05Z' }], has_more: true, last_id: 'cse_01RUN' }),
-    }, (event, context) => logged.push({ event, ...context }));
+    }, (event, context) => logged.push({ event, ...context }), { repo: REPO, periodic: 'Weekly retro' });
     await api.connectors();
     await api.triggers();
     await api.run('trig_01OLD');
     await api.sessions('trig_01OLD');
-    assert.ok(logged.every((l) => l.event === ROUTINE_ANSWER && l.level === 'info'));
+    assert.ok(logged.every((l) => l.event === ROUTINE_ANSWER && l.level === 'info' && l.repo === REPO && l.periodic === 'Weekly retro'), 'each line names the repo and periodic it is for');
     assert.deepEqual(logged.map((l) => [l.call, l.routine ?? null]), [['connectors', null], ['triggers', null], ['run', 'trig_01OLD'], ['sessions', 'trig_01OLD']]);
     assert.deepEqual(logged[2]!.answer, { keys: { type: 'string', session: 'object', last_run: 'null' }, ids: { 'session.id': 'cse_01RUN' } });
     assert.deepEqual(logged[3]!.answer, {
@@ -204,14 +204,14 @@ describe('what the routines API answered, logged by shape', () => {
     });
     assert.deepEqual((logged[1]!.answer as { firstRow: { keys: unknown } }).firstRow.keys, { id: 'string', name: 'string', job_config: 'object' });
     assert.ok(!JSON.stringify(logged).includes('secret plan'), 'no string the API answered with is logged but an id');
-    assert.ok(!JSON.stringify(logged).includes('Weekly retro'));
+    assert.ok(!JSON.stringify(logged.map((l) => l.answer)).includes('Weekly retro'), 'the routine\'s name in the list is not logged');
   });
 
-  test('a call that throws logs that it failed, and still throws', async () => {
+  test('a call that throws logs that it failed, with the status its error names, and still throws', async () => {
     const logged: Array<Record<string, unknown>> = [];
-    const api = observed({ ...fakeApi().api, run: async () => { throw new Error('POST /v1/code/triggers/trig_01OLD/run: 409'); } }, (event, context) => logged.push({ event, ...context }));
+    const api = observed({ ...fakeApi().api, run: async () => { throw new Error('POST /v1/code/triggers/trig_01OLD/run: 409 {"error":"busy"}'); } }, (event, context) => logged.push({ event, ...context }), { repo: REPO, periodic: 'Weekly retro' });
     await assert.rejects(api.run('trig_01OLD'), /409/);
-    assert.deepEqual(logged, [{ event: ROUTINE_ANSWER, level: 'info', call: 'run', routine: 'trig_01OLD', failed: true }]);
+    assert.deepEqual(logged, [{ event: ROUTINE_ANSWER, level: 'info', repo: REPO, periodic: 'Weekly retro', call: 'run', routine: 'trig_01OLD', failed: true, status: 409 }]);
   });
 
   test('an answer that is not an object logs its type alone', () => {

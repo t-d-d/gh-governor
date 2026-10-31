@@ -580,7 +580,7 @@ export const run = async (event, deps) => {
     let api;
     try {
       const { account } = readStoredLogin(await secret.get());
-      api = observed(deps.routines(await routinesToken(), account?.organizationUuid ?? null), deps.log);
+      api = observed(deps.routines(await routinesToken(), account?.organizationUuid ?? null), deps.log, { repo: begin.repo, periodic: begin.sessionName });
     } catch (error) {
       return { status: 1, output: messageOf(error) };
     }

@@ -121,13 +121,15 @@ export const answerShape = (answer) => {
  * The routines API with each call's answer logged by its shape
  * ({@link answerShape}), and a call that throws logged as failed: the API's
  * answers are read from the bundled CLI, not a published shape, and the log
- * says what the live API answers.
+ * says what the live API answers. Each line names the repo and periodic
+ * the call is for, and a failed call the HTTP status its error names.
  *
  * @param {RoutinesApi} api
  * @param {(event: string, context: Record<string, unknown>) => void} log
+ * @param {{ repo: string, periodic: string }} about
  * @returns {RoutinesApi}
  */
-export const observed = (api, log) => {
+export const observed = (api, log, { repo, periodic }) => {
   /**
    * @template T
    * @param {string} call
@@ -136,12 +138,13 @@ export const observed = (api, log) => {
    * @returns {Promise<T>}
    */
   const watch = async (call, routine, begin) => {
-    const at = { level: 'info', call, ...(routine === undefined ? {} : { routine }) };
+    const at = { level: 'info', repo, periodic, call, ...(routine === undefined ? {} : { routine }) };
     let answer;
     try {
       answer = await begin();
     } catch (error) {
-      log(ROUTINE_ANSWER, { ...at, failed: true });
+      const status = /: (\d{3})\b/.exec(error instanceof Error ? error.message : String(error))?.[1];
+      log(ROUTINE_ANSWER, { ...at, failed: true, ...(status === undefined ? {} : { status: Number(status) }) });
       throw error;
     }
     log(ROUTINE_ANSWER, { ...at, answer: answerShape(answer) });
