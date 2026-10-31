@@ -91,7 +91,7 @@ The switches in `features`:
 | `pickup` | A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `pickup.sweepHours` sets. |
 | `summons` | A session per `@claude` remark, and a dispatch started by hand. |
 | `prMessages` | Messages into the session a PR names, or the local session holding its branch. |
-| `subscribeMessages` | Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. |
+| `subscribeMessages` | Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. A filer hears a `deployed:` label on its issue only through a subscribe line for `deploys`. |
 | `redScheduledRun` | A fresh session on a scheduled run on the default branch that went red. |
 | `unblocked` | What a blocker's close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket's session, and a session to rewrite a not-ready ticket's spec from what merged. A file that still sets the older `mergeHandoff` reads as this. |
 | `ciMessages` | A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`. |
@@ -110,7 +110,7 @@ The switches in `features`:
 - `triage`: the deploy targets whose failure starts one fresh session, rather than messages to the sessions of the merges it shipped.
 - `tags`: the tag each target's deploy moves, which messages name.
 
-A deploy is seen only if the repo's workflow declares it: the shipping job's name ends `at <sha> · deployed: <target>`, and the workflow sets a top-level `TICKET_LABEL_PATHS` env (`all`, `trigger`, or globs).
+A deploy is seen only if the repo's workflow declares it: the shipping job's name ends `· deployed: <target>`, and the workflow sets a top-level `TICKET_LABEL_PATHS` env. [Deploy messages and labels](#deploy-messages-and-labels) gives the steps.
 
 `review`:
 
@@ -151,6 +151,51 @@ A new periodic starts its first session one day limit, or one count, after the f
 `prompts`: each value is text, or `{ "file": "<path>" }` read from the default branch. The kinds, and the facts each may name as `{fact}`, are in [docs/how-it-works.md](docs/how-it-works.md#prompts).
 
 [test/fixtures/factory/.github/dispatch.json](test/fixtures/factory/.github/dispatch.json) is a full file with every feature on.
+
+### Deploy messages and labels
+
+`deployMessages` tells the sessions of the merges a deploy shipped, and `deployedLabels` labels their tickets `deployed: <target>`. Turning the switches on is not enough: governor sees a deploy only through two marks in the deploy workflow. It reads the first from the shipping job's name as the run reports it (from the workflow file, for a red run), and the second from the workflow file at the run's head commit.
+
+1. **Mark the shipping job.** Name the job whose success means the change is live so the name ends ` · deployed: <target>`: a middle dot (U+00B7) with one space each side, then the target, such as `live` or `prod`. Mark only that job for each target. Never mark a rollback job that redeploys an older build, or governor tells sessions their change is live as it is taken down.
+2. **Add `at <sha>` only when it is needed.** Put `at <sha>` before the dot when the job builds a commit other than the run's head, such as a release dispatched at an older commit. The sha is the whole 40-character commit id in lower case, the form `${{ github.sha }}` gives: a short one makes the job fire nothing. Without it, governor takes the run's head as the commit shipped.
+3. **Declare `TICKET_LABEL_PATHS`.** Set it as a top-level `env:` entry of the workflow file. It picks which of the shipped PRs hear of the deploy and have their tickets labelled. `all` picks every PR the job shipped. `trigger` picks the PRs that changed a file under the workflow's own `on.push.paths`, and needs those paths. Anything else is read as globs, one per line, so more than one glob needs a YAML block (`|`).
+4. **Name the target's tag.** Without a `workflows.tags` entry, a message says "Your change is on the <target>", so a target named `live` reads "on the live". With `"tags": { "live": "live-ok" }` it says "Your change is on live", and "the live-ok tag is on <sha>".
+5. **Turn on the switches.** `deployMessages`, and `deployedLabels` for the labels, which needs `deployMessages`.
+
+What to expect once it is set up:
+
+- **The tag is named when the job ends.** A message says "the <tag> tag is on <sha>" as soon as the shipping job succeeds. If a later job moves the tag, the message runs ahead of it, and is wrong if that job fails. Mark the job that moves the tag, or a job after it.
+- **The first marked deploy tells nobody.** A shipping job covers the merges since the last green run that shipped the same label. The first run with the marker has none, so it only sets the baseline. Messages and labels start with the next one.
+- **A deploy workflow that is also `workflows.ci`.** Many small repos run the gate inside the deploy. A red run of that workflow is then CI: it goes to `ciMessages` (the one suspect's session, or one fresh session for several), never to the red-deploy message (the `deployRed` prompt). A green shipping job in it still uses `deployMessages`.
+- **An issue's filer does not hear the label by default.** A filer is subscribed to everything on its issue but `labels` and `deploys`. To hear a `deployed:` label, the issue body needs `<!-- governor:subscribe <session link> events=deploys -->` naming the filer, and the repo needs `subscribeMessages` and `deployedLabels` on. A filer that has signed off by then refuses the message, and governor drops its line.
+
+A minimal deploy workflow, `.github/workflows/deploy.yml`, with both marks:
+
+```yaml
+name: Deploy
+on:
+  push:
+    branches: [main]
+env:
+  TICKET_LABEL_PATHS: all
+jobs:
+  deploy:
+    # Quoted: an unquoted ": " inside a value is not valid YAML.
+    name: "Deploy · deployed: live"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/deploy.sh
+```
+
+And the lines that match it in `dispatch.json`:
+
+```json
+{
+  "features": { "deployMessages": true, "deployedLabels": true },
+  "workflows": { "tags": { "live": "live-ok" } }
+}
+```
 
 ### Editing the file with its JSON Schema
 
