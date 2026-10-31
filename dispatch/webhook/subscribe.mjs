@@ -200,6 +200,15 @@ export const postedBy = (body) => {
   return ADJACENT.test(text.slice(above.index + above[0].length, footer)) ? above[0] : null;
 };
 
+/**
+ * Whether a session posted `body` and did not sign it: the footer outside
+ * any quote, and no {@link postedBy}. A person's reply quoting a session's
+ * post is the person's.
+ *
+ * @param {unknown} body
+ */
+export const unsignedPost = (body) => withoutLines(withoutQuotes(String(body ?? ''))).includes(SESSION_FOOTER) && postedBy(body) === null;
+
 /** A session's id, off its claude.ai/code URL or as given. @param {string} session */
 export const sessionId = (session) => session.slice(session.lastIndexOf('/') + 1);
 

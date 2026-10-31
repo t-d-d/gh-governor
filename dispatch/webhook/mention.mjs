@@ -62,7 +62,7 @@
 
 import { DISPATCH_MARKER, OVERRIDE_BUDGET, SIGN_POSTS, SUMMONERS, UNATTENDED, build, deployedTarget, isBranch, isCommit, overrideWeight } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
-import { isSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor } from './subscribe.mjs';
+import { isSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost } from './subscribe.mjs';
 
 export const MENTION = '@claude';
 
@@ -298,19 +298,21 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   ownerOnly?: boolean,
  *   byBranch?: boolean,
  *   sessionPost?: boolean,
+ *   unsigned?: boolean,
  *   issue?: boolean,
  *   reason: string,
  * }} args `ownerOnly`: the PR's owner hears it, and no subscriber.
  *   `issue`: `on` is an issue, whose owner hears `deploys` only by a line.
  *   `byBranch`: `on` is a PR, and with no session its body names, the
  *   live session on its head branch is the owner; `sessionPost`, what was
- *   posted is a session's, which then is that session's own. `sessionPost`
- *   with no `poster`: any subscriber may have written it, so each hears of
- *   it, told so ({@link UNSIGNED}). `merged`: `on` is a PR merged into
+ *   posted is a session's, which then is that session's own. `unsigned`: a
+ *   session posted it and did not sign it (`unsignedPost`), so any
+ *   subscriber may have written it, and each hears of it, told so
+ *   ({@link UNSIGNED}). `merged`: `on` is a PR merged into
  *   main, which the owner's fire says.
  * @returns {Fanout}
  */
-const fanOut = ({ on, event, poster, prompt, fallback = false, commit, closing = false, merged = false, ownerOnly = false, byBranch = false, sessionPost = false, issue = false, reason }) => {
+const fanOut = ({ on, event, poster, prompt, fallback = false, commit, closing = false, merged = false, ownerOnly = false, byBranch = false, sessionPost = false, unsigned = false, issue = false, reason }) => {
   /** @type {Queued[]} */
   const fires = [];
   /** @type {string[]} */
@@ -326,7 +328,7 @@ const fanOut = ({ on, event, poster, prompt, fallback = false, commit, closing =
       skipped.push(`${sessionId(poster)}'s own post`);
       continue;
     }
-    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, merged, issue, unsigned: sessionPost && poster === null, reason }));
+    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, merged, issue, unsigned, reason }));
   }
   const heard = fires.length === 0 && skipped.length === 0 ? [`${reason}: nobody subscribes to ${event}`] : [];
   return { fires, reason: [...fires.map((f) => f.reason), ...skipped, ...heard].join('; ') };
@@ -548,6 +550,7 @@ const writtenFires = (written, event, payload, appId) => {
       ownerOnly,
       byBranch,
       sessionPost: isSessionPost(body),
+      unsigned: unsignedPost(body),
       reason: `${what} ${by?.id} on #${on?.number}`,
     }));
   }
