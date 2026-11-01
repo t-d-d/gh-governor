@@ -29,7 +29,7 @@ describe('the pages workflow publishes docs/pages on a green merge to main', () 
     assert.equal(workflow.jobs.gate?.secrets, undefined, 'the gate is handed no secret');
     const others = Object.entries(workflow.jobs).filter(([name]) => name !== 'gate');
     assert.equal(others.length, 1, 'one publishing job besides the gate');
-    const needs = [others[0]![1].needs].flat();
+    const needs = [(others[0]![1] as { needs?: string | string[] }).needs].flat();
     assert.ok(needs.includes('gate'), 'the publishing job needs the gate');
   });
 
