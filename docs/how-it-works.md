@@ -381,7 +381,7 @@ Every alarm publishes to the `governor-alerts` topic, which emails the address i
 | `governor-stale-runs` | `dispatch-stale-runs`: the runs list still lacked a run, or a cursor could not be read. The next run of the same workflow catches up. |
 | `governor-login-expiring` | The stored login is within three days of its refresh expiry. Mint again. |
 | `governor-claim-stranded` | A ticket was claimed but no marker names its session. It stays claimed; if no session is working on it, put the ready label back. |
-| `governor-session-unrecorded` | Governor started a session and could not record it (`dispatch-session-unrecorded`), so the PR review would let a ticket's mode label waive a human-only path for its PRs. Put the item `session#<session id>` / `started` in the state table, or review that session's PRs yourself. |
+| `governor-session-unrecorded` | Governor started a session and could not record it (`dispatch-session-unrecorded`), so the PR review would let a ticket's mode label waive a human-only path for its PRs. Put the item `session#<session id>` / `started` in the state table, or review that session's PRs yourself. A line with no session URL is a launch that may have started a session but printed none: find it in the sessions list by the line's session name and time. |
 | `governor-config-invalid` | A served repo's file fails the schema. |
 | `governor-repo-skipped` | A repo's `claude --cloud` launch started nothing; its tickets wait for the next fire. |
 | `governor-routine-refused` | The routines API refused a periodic's routine before the fire. That periodic waits for the next fire; the repo's tickets and other periodics did not. |
