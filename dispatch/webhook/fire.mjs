@@ -3,10 +3,9 @@
  * runs, and the vocabulary both ends read it in.
  *
  * The receiver (route.mjs, mention.mjs) builds every fire with
- * {@link build}; the starter (starter.mjs) refuses one with nothing to start
- * with {@link startable} before it spends a task on it; the task
- * (dispatch/turn.mjs, scripts/run-turn.mjs) and the retrier (retry.mjs)
- * read one with {@link parseFire}, which refuses anything the receiver could
+ * {@link build}; the task (dispatch/lane.mjs, dispatch/turn.mjs) and
+ * scripts/run-turn.mjs read one with {@link parseFire}, which refuses
+ * anything the receiver could
  * not have built: a session costs money and attention. The builders are
  * where a field is spelled, so a new kind of fire, or a new field, is one
  * edit here and one test.
@@ -171,8 +170,8 @@ export const SIGN_POSTS = "On every comment, review and reply you post on GitHub
 
 /**
  * The lane's one message group: FIFO within it is what serialises the
- * fires. The receiver queues on it, the retrier requeues on it, and so does
- * a fire by hand (scripts/run-turn.mjs).
+ * fires. The receiver queues on it, a turn queues a close's unblocked fires
+ * on it, and so does a fire by hand (scripts/run-turn.mjs).
  */
 export const LANE = 'dispatch';
 
@@ -287,7 +286,7 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  * @typedef {{ kind: 'unblocked', issue: number, blocker: Blocker, pr?: ClosingPull }} UnblockedFire
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit
- *   the override ({@link OVERRIDE_BUDGET}).
+ *   the lane ({@link FIRE_BUDGET}).
  * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
@@ -381,7 +380,7 @@ export const build = Object.freeze({
 
   /**
    * Each title on one line and at most {@link TITLE_LIMIT} characters, so
-   * any title fits the override.
+   * any title fits the lane.
    *
    * @param {{ issue: number, blocker: Omit<Blocker, 'reason'> & { reason?: string | null | undefined }, pr?: ClosingPull | null | undefined }} args
    * @returns {UnblockedFire}
@@ -403,29 +402,54 @@ const shortTitle = (title) => {
   return flat.length <= TITLE_LIMIT ? flat : `${flat.slice(0, TITLE_LIMIT - 1)}\u2026`;
 };
 
-// ── The container override ───────────────────────────────────────────────
+// ── The lane message and the container override ─────────────────────────
 
-/** The task's environment variable the fire rides in (dispatch/cli.mjs reads it). */
+/**
+ * What a fire may weigh on the lane ({@link fireWeight}): the queue takes a
+ * message of 256 KiB, and the fire shares it with its reason and the
+ * receiver's context. An owner's message fire carries its prompt twice
+ * (the text, the fallback). The standing line the task appends is added
+ * after the lane, and costs it nothing.
+ */
+export const FIRE_BUDGET = 200 * 1024;
+
+/** A fire's weight on the lane: its JSON, in bytes. @param {unknown} fire */
+export const fireWeight = (fire) => Buffer.byteLength(JSON.stringify(fire));
+
+/**
+ * The queue attributes that count the fires on the lane: visible, and in
+ * flight, since a fire a dying task received but never deleted comes back
+ * once its visibility timeout ends. The starter (starter-handler.mjs) and a
+ * turn's sign-off wait (dispatch/turn.mjs sqsFires) count the same way.
+ */
+export const LANE_COUNTS = /** @type {const} */ (['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']);
+
+/**
+ * The fires on the lane, from a GetQueueAttributes answer for LANE_COUNTS.
+ * An attribute missing or not a count is a throw, never a quiet lane.
+ *
+ * @param {Record<string, string> | undefined} attributes
+ * @returns {number}
+ */
+export const laneCount = (attributes) => LANE_COUNTS.reduce((sum, name) => {
+  const count = Number(attributes?.[name]);
+  if (attributes?.[name] === undefined || !Number.isInteger(count)) throw new Error(`the fire lane did not say ${name}`);
+  return sum + count;
+}, 0);
+
+/**
+ * The task's environment variable a fire by hand rides in: a probe, which
+ * scripts/run-turn.mjs starts beside the lane. dispatch/cli.mjs runs that
+ * one fire; a task without it reads the lane.
+ */
 export const FIRE_VARIABLE = 'DISPATCH_EVENT';
 
 /** What ECS takes of a RunTask's overrides, in characters of JSON. */
 export const OVERRIDE_CAP = 8192;
 
 /**
- * What a fire may weigh in the override ({@link overrideWeight}): the fire
- * rides it as a JSON string inside that JSON, and an owner's message fire
- * carries its prompt twice (the text, the fallback). The rest of the cap is
- * the override's own framing. The standing line the task appends is added
- * after the override, and costs it nothing.
- */
-export const OVERRIDE_BUDGET = 7000;
-
-/** A fire's weight in the override: its JSON, quoted as a string value. @param {unknown} fire */
-export const overrideWeight = (fire) => Buffer.byteLength(JSON.stringify(JSON.stringify(fire)));
-
-/**
- * The RunTask overrides that carry `fire` to the task's container: the
- * starter's, and a fire by hand's (scripts/run-turn.mjs).
+ * The RunTask overrides that carry `fire` to the task's container: a probe's
+ * (scripts/run-turn.mjs).
  *
  * @param {string} containerName
  * @param {unknown} fire
@@ -433,50 +457,6 @@ export const overrideWeight = (fire) => Buffer.byteLength(JSON.stringify(JSON.st
 export const containerOverride = (containerName, fire) => ({
   containerOverrides: [{ name: containerName, environment: [{ name: FIRE_VARIABLE, value: JSON.stringify(fire) }] }],
 });
-
-/**
- * The fire a task's overrides carried, as carried: the retrier's read of a
- * stopped task, which it then reads with {@link parseFire}. Overrides with no
- * fire object are a throw.
- *
- * @param {{ containerOverrides?: Array<{ environment?: Array<{ name?: string, value?: string }> }> } | undefined} overrides
- * @returns {Record<string, unknown>}
- */
-export const fireOfOverride = (overrides) => {
-  const value = (overrides?.containerOverrides ?? [])
-    .flatMap((o) => o.environment ?? [])
-    .find((e) => e.name === FIRE_VARIABLE)?.value;
-  /** @type {unknown} */
-  let fire;
-  try {
-    fire = JSON.parse(String(value));
-  } catch {
-    // Refused below.
-  }
-  if (!fire || typeof fire !== 'object') throw new Error(`the overrides carry no ${FIRE_VARIABLE}`);
-  return /** @type {Record<string, unknown>} */ (fire);
-};
-
-// ── The starter's check ──────────────────────────────────────────────────
-
-/**
- * Throw unless `fire` has something to start: a kind, and for a dispatch a
- * prompt, for a message a session (or byBranch) and text. The starter calls
- * it before RunTask; the task's {@link parseFire} refuses the rest.
- *
- * @param {any} fire
- * @returns {asserts fire is Fire}
- */
-export const startable = (fire) => {
-  if (!fire || typeof fire.kind !== 'string') throw new Error('the message carries no fire');
-  if (fire.kind === 'dispatch' && !(typeof fire.prompt === 'string' && fire.prompt.trim() !== '')) {
-    throw new Error('a dispatch fire needs a prompt');
-  }
-  if (fire.kind === 'message') {
-    if (!(typeof fire.session === 'string' && fire.session.trim() !== '') && fire.byBranch !== true) throw new Error('a message fire needs a session, or byBranch');
-    if (!(typeof fire.text === 'string' && fire.text.trim() !== '')) throw new Error('a message fire needs text');
-  }
-};
 
 // ── The parser ───────────────────────────────────────────────────────────
 

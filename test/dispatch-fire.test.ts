@@ -1,9 +1,8 @@
 /**
- * The fire: what the receiver queues and the task, the starter and the
- * retrier read (dispatch/webhook/fire.mjs). One module packaged into
- * the Lambda and the image owns its shape: the builders the receiver calls,
- * the parser the task and the retrier call, the check the starter calls,
- * and the vocabulary they share.
+ * The fire: what the receiver queues and the task reads
+ * (dispatch/webhook/fire.mjs). One module packaged into the Lambda and the
+ * image owns its shape: the builders the receiver calls, the parser the task
+ * calls, and the vocabulary they share.
  */
 
 import { test, describe } from 'node:test';
@@ -436,24 +435,6 @@ describe('the builders', () => {
 });
 
 /**
- * The starter refuses a fire with nothing to start before it spends a task
- * on it; the task's parser refuses the rest.
- */
-describe('startable', () => {
-  test('passes any fire with a kind, and refuses a dispatch with no prompt or a message with no session or text', async () => {
-    const { startable } = await import('../dispatch/webhook/fire.mjs');
-    for (const fire of [{ kind: 'schedule' }, { kind: 'dispatch', prompt: 'p' }, { kind: 'message', session: 'session_01ABC', text: 'hi' }, { kind: 'message', byBranch: true, text: 'hi' }, { kind: 'review' }]) {
-      assert.doesNotThrow(() => startable(fire), JSON.stringify(fire));
-    }
-    assert.throws(() => startable(undefined), /no fire/);
-    assert.throws(() => startable({}), /no fire/);
-    assert.throws(() => startable({ kind: 'dispatch', prompt: ' ' }), /prompt/);
-    assert.throws(() => startable({ kind: 'message', text: 'hi' }), /session, or byBranch/);
-    assert.throws(() => startable({ kind: 'message', session: 'session_01ABC', text: '' }), /text/);
-  });
-});
-
-/**
  * The fire's vocabulary has one spelling, here; the modules either side of
  * the packaging seam import it rather than spell it again.
  */
@@ -484,34 +465,22 @@ describe('the vocabulary', () => {
 });
 
 /**
- * The fire rides to the task as one environment variable on the RunTask
- * container override, which ECS caps at 8192 characters: the starter
- * builds the override, the retrier reads the fire back off a stopped task's.
+ * A fire rides to the task as a lane message, which SQS caps at 256 KiB, and
+ * shares it with its reason and the receiver's context. A probe alone rides
+ * the RunTask container override, which ECS caps at 8192 characters.
  */
-describe('the container override', () => {
-  test('carries the fire the retrier reads back', async () => {
-    const { containerOverride, fireOfOverride } = await import('../dispatch/webhook/fire.mjs');
-    const fire = { kind: 'review', pr: 724 };
-    const overrides = containerOverride('dispatch', fire);
-    assert.deepEqual(overrides, { containerOverrides: [{ name: 'dispatch', environment: [{ name: 'DISPATCH_EVENT', value: JSON.stringify(fire) }] }] });
-    assert.deepEqual(fireOfOverride(overrides), fire);
+describe('the lane message and the container override', () => {
+  test('a fire within the budget fits on the lane, with room for its context', async () => {
+    const { FIRE_BUDGET, fireWeight } = await import('../dispatch/webhook/fire.mjs');
+    const fire = { kind: 'dispatch', prompt: '"'.repeat(FIRE_BUDGET) };
+    assert.ok(fireWeight(fire) > FIRE_BUDGET, 'a quote weighs two bytes in JSON');
+    assert.ok(FIRE_BUDGET + 16 * 1024 <= 256 * 1024);
+    assert.equal(fireWeight({ kind: 'schedule' }), Buffer.byteLength('{"kind":"schedule"}'));
   });
 
-  test('refuses an override with no fire object, and hands back any other as carried', async () => {
-    const { containerOverride, fireOfOverride } = await import('../dispatch/webhook/fire.mjs');
-    assert.throws(() => fireOfOverride(undefined), /DISPATCH_EVENT/);
-    assert.throws(() => fireOfOverride({ containerOverrides: [] }), /DISPATCH_EVENT/);
-    assert.throws(() => fireOfOverride({ containerOverrides: [{ environment: [{ name: 'DISPATCH_EVENT', value: 'not json' }] }] }), /DISPATCH_EVENT/);
-    assert.deepEqual(fireOfOverride(containerOverride('dispatch', { kind: 'stars' })), { kind: 'stars' }, 'as carried: the retrier parses it');
-  });
-
-  test('a fire within the budget fits under the cap, framing included', async () => {
-    const { OVERRIDE_BUDGET, OVERRIDE_CAP, containerOverride, overrideWeight } = await import('../dispatch/webhook/fire.mjs');
-    const fire = { kind: 'dispatch', prompt: '"'.repeat(OVERRIDE_BUDGET) };
-    let trimmed = fire;
-    while (overrideWeight(trimmed) > OVERRIDE_BUDGET) trimmed = { ...trimmed, prompt: trimmed.prompt.slice(1) };
-    assert.ok(OVERRIDE_BUDGET < OVERRIDE_CAP);
-    assert.ok(Buffer.byteLength(JSON.stringify(containerOverride('dispatch', trimmed))) < OVERRIDE_CAP);
+  test('a probe rides DISPATCH_EVENT on the one container', async () => {
+    const { containerOverride } = await import('../dispatch/webhook/fire.mjs');
+    assert.deepEqual(containerOverride('dispatch', { kind: 'probe' }), { containerOverrides: [{ name: 'dispatch', environment: [{ name: 'DISPATCH_EVENT', value: '{"kind":"probe"}' }] }] });
   });
 });
 
@@ -527,8 +496,8 @@ describe('parseFire — the repo a fire is for', () => {
   });
 
   // A fire with no repo was once read as the stack's own repo's. Nothing
-  // falls back to a default repo, and the retrier sends
-  // such a fire to the dead-letter queue (retry.mjs).
+  // falls back to a default repo, and the task sends
+  // such a fire to the dead-letter queue (dispatch/lane.mjs).
   test('refuses every other fire that names no repo', () => {
     const unnamed = [
       { kind: 'schedule', issue: 9 },
@@ -593,5 +562,17 @@ describe('a fire that counts for the periodics', () => {
 
   test('the builder spells it', () => {
     assert.deepEqual(build.periodics({ counted: 'merges' }), { kind: 'periodics', counted: 'merges' });
+  });
+});
+
+describe('laneCount', () => {
+  // The starter and a turn's sign-off wait count the lane the same way.
+  test('adds the visible and in-flight fires, and refuses an answer missing either', async () => {
+    const { LANE_COUNTS, laneCount } = await import('../dispatch/webhook/fire.mjs');
+    assert.deepEqual([...LANE_COUNTS], ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']);
+    assert.equal(laneCount({ ApproximateNumberOfMessages: '2', ApproximateNumberOfMessagesNotVisible: '1' }), 3);
+    assert.throws(() => laneCount({ ApproximateNumberOfMessages: '2' }), /NotVisible/);
+    assert.throws(() => laneCount(undefined), /did not say/);
+    assert.throws(() => laneCount({ ApproximateNumberOfMessages: 'x', ApproximateNumberOfMessagesNotVisible: '0' }), /did not say/);
   });
 });

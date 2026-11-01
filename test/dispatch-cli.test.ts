@@ -15,6 +15,7 @@ const harness = (over: Record<string, unknown> = {}) => {
   const logged: Logged[] = [];
   const exits: number[] = [];
   const timers: Array<{ fn: () => void; ms: number }> = [];
+  const cancelled: unknown[] = [];
   const args = {
     env: { DISPATCH_EVENT: '{"kind":"probe"}' },
     run: async (_event: unknown, _deps: unknown) => ({ kind: 'probe', ok: true, detail: 'pty-ok' }),
@@ -27,10 +28,17 @@ const harness = (over: Record<string, unknown> = {}) => {
     },
     schedule: (fn: () => void, ms: number) => {
       timers.push({ fn, ms });
+      return timers.length;
+    },
+    cancel: (handle: unknown) => {
+      cancelled.push(handle);
+    },
+    lane: () => {
+      throw new Error('a task with an event on its override reads no lane');
     },
     ...over,
   };
-  return { args, logged, exits, timers };
+  return { args, logged, exits, timers, cancelled };
 };
 
 const dispatched = (...outcomes: string[]) => ({
@@ -218,8 +226,8 @@ describe('main', () => {
     assert.deepEqual(exits, [1]);
   });
 
-  test('no event, or an event that is not JSON, runs nothing', async () => {
-    for (const env of [{}, { DISPATCH_EVENT: '' }, { DISPATCH_EVENT: 'schedule' }]) {
+  test('an event that is not JSON runs nothing', async () => {
+    for (const env of [{ DISPATCH_EVENT: 'schedule' }, { DISPATCH_EVENT: '{' }]) {
       let ran = false;
       const { args, logged, exits } = harness({
         env,
@@ -287,6 +295,104 @@ describe('main', () => {
     assert.equal(logged[0]?.sessionName, 'Issue 7');
     assert.match(String(logged[0]?.error), /deadline/);
     assert.match(String(logged[0]?.reason), /human-only path/);
+    assert.deepEqual(exits, [1]);
+  });
+});
+
+/**
+ * With no event on its override, the task is the lane's reader
+ * (dispatch/lane.mjs): each fire it takes is its own turn, under its own
+ * deadline, and its result line names the fire's message.
+ */
+describe('main: the lane', () => {
+  const laneOf = (bodies: unknown[]) => {
+    const script = bodies.map((fire, i) => ({ messageId: `m${i + 1}`, receiptHandle: `rh${i + 1}`, body: JSON.stringify({ fire, reason: 'queued' }) }));
+    const clock = { at: 0 };
+    return {
+      clock,
+      lane: () => ({
+        receive: async (wait: number) => {
+          const next = script.shift();
+          if (next === undefined) clock.at += wait * 1000;
+          return next ?? null;
+        },
+        remove: async () => {},
+        deadLetter: async () => {},
+        reset: () => {},
+        now: () => clock.at,
+      }),
+    };
+  };
+
+  test('runs each fire it takes as its own turn, with its own claims, and names the message on its result line', async () => {
+    const seen: Array<{ event: unknown; deps: { claims: Set<string> } }> = [];
+    const { lane } = laneOf([{ kind: 'schedule' }, { kind: 'review', repo: 'acme/factory', pr: 12 }]);
+    const { args, logged, exits, timers, cancelled } = harness({
+      env: {},
+      lane,
+      run: async (event: unknown, deps: { claims: Set<string> }) => {
+        deps.claims.add(`acme/factory#${seen.length + 1}`);
+        seen.push({ event, deps });
+        return dispatched();
+      },
+    });
+    await main(args as never);
+    assert.deepEqual(seen.map((s) => s.event), [{ kind: 'schedule' }, { kind: 'review', repo: 'acme/factory', pr: 12 }]);
+    assert.notEqual(seen[0]!.deps.claims, seen[1]!.deps.claims, 'a claim one turn held is not the next turn\'s');
+    const results = logged.filter((l) => l.event === 'dispatch-result');
+    assert.deepEqual(results.map((r) => [r.messageId, r.exitCode]), [['m1', 0], ['m2', 0]]);
+    assert.deepEqual(timers.map((t) => t.ms), [DEADLINE_MS, DEADLINE_MS], 'the deadline bounds each turn, not the task');
+    assert.deepEqual(cancelled, [1, 2], 'each turn\'s deadline is cleared when it ends');
+    assert.equal(logged.at(-1)?.event, 'lane-idle');
+    assert.deepEqual(exits, [0]);
+  });
+
+  test('a turn that failed is logged with its message and its exit code, and the task takes the next fire', async () => {
+    const { lane } = laneOf([{ kind: 'schedule' }, { kind: 'schedule' }]);
+    let calls = 0;
+    const { args, logged, exits } = harness({
+      env: {},
+      lane,
+      run: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('the stored login is not a login');
+        return dispatched('failed');
+      },
+    });
+    await main(args as never);
+    const failed = logged.filter((l) => l.event === 'dispatch-failed');
+    assert.deepEqual(failed.map((f) => [f.messageId, f.reason ?? null, f.exitCode]), [['m1', 'threw', 1], ['m2', null, 1]]);
+    assert.deepEqual(exits, [0], 'a failed turn fails its fire, not the task');
+  });
+
+  test('a turn that runs past its deadline logs dispatch-failed with the reason deadline, naming its message, and ends the task', async () => {
+    const { lane } = laneOf([{ kind: 'schedule' }, { kind: 'schedule' }]);
+    const { args, logged, exits, timers } = harness({ env: {}, lane, run: async () => new Promise(() => {}) });
+    void main(args as never);
+    await new Promise((settle) => setImmediate(settle));
+    assert.equal(timers.length, 1);
+    timers[0]!.fn();
+    assert.deepEqual(logged.at(-1), { event: 'dispatch-failed', reason: 'deadline', deadlineMs: DEADLINE_MS, messageId: 'm1', exitCode: 1 });
+    // The fire behind it was never received, so it waits on the lane for the
+    // task the stop event starts.
+    assert.deepEqual(exits, [1]);
+  });
+
+  test('a lane it cannot read exits 1', async () => {
+    const { args, exits, logged } = harness({
+      env: {},
+      lane: () => ({
+        receive: async () => {
+          throw new Error('AccessDenied');
+        },
+        remove: async () => {},
+        deadLetter: async () => {},
+        reset: () => {},
+        now: () => 0,
+      }),
+    });
+    await main(args as never);
+    assert.equal(logged.at(-1)?.reason, 'lane-unread');
     assert.deepEqual(exits, [1]);
   });
 });

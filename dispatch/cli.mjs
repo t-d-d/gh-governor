@@ -1,16 +1,15 @@
 /**
- * The dispatcher task's entrypoint: one turn, from the event in
- * DISPATCH_EVENT, then exit.
+ * The dispatcher task's entrypoint. A task is the fire lane's one reader:
+ * it takes each fire off governor-fires.fifo and runs it as its own turn
+ * (dispatch/lane.mjs), until the lane stays empty, then exits. A task
+ * started with an event in DISPATCH_EVENT (a probe, by scripts/run-turn.mjs)
+ * runs that one turn and exits with its code.
  *
- * ECS starts the container with the event as an environment override (the
- * schedule rule's target input in infra/governor.cfn.yml, or
- * scripts/run-turn.mjs by hand), so the turn is dispatch/turn.mjs's
- * `run` with the real dependencies, and what this file adds is the edge: the
- * event read and refused when it is not one, the result logged as one JSON
- * line, an exit code the probe reads, and a deadline. A Fargate task has no
- * timeout of its own; a launcher that hangs would otherwise hold the task,
- * at a few cents an hour, until the next fire started a second one beside it
- * and both refreshed one login.
+ * Each turn is dispatch/turn.mjs's `run` with the real dependencies, and
+ * what this file adds is the edge: the result logged as one JSON line, an
+ * exit code the probe reads, and a deadline on each turn. A Fargate task
+ * has no timeout of its own; a launcher that hangs would otherwise hold the
+ * task, and the lane behind it, at a few cents an hour.
  *
  * The one line the stack alarms on is `dispatch-failed`: the metric filter
  * counts it, whether the turn threw, proved nothing, started nothing it was
@@ -22,7 +21,9 @@
  */
 
 import { isCliEntry } from '../scripts/lib/cli-entry.mjs';
-import { CLAIM_STRANDED, SESSION_UNRECORDED, realDeps, run, ticketOf, unrecordedLine } from './turn.mjs';
+import { SQSClient } from '@aws-sdk/client-sqs';
+import { work, sqsLane } from './lane.mjs';
+import { CLAIM_STRANDED, SESSION_UNRECORDED, clearTurnState, realDeps, run, ticketOf, unrecordedLine } from './turn.mjs';
 import { FIRE_VARIABLE } from './webhook/fire.mjs';
 
 /**
@@ -102,16 +103,29 @@ export const exitCodeFor = (result) => {
 };
 
 /**
- * @param {{
+ * @typedef {{
  *   env: Record<string, string | undefined>,
  *   run: typeof run,
  *   deps: () => ReturnType<typeof realDeps>,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  *   exit: (code: number) => void,
  *   schedule: (fn: () => void, ms: number) => unknown,
- * }} args
+ *   cancel: (handle: unknown) => void,
+ *   lane: () => Omit<import('./lane.mjs').Deps, 'turn' | 'log'>,
+ * }} Args
  */
-export const main = async ({ env, run: turn, deps, log, exit, schedule }) => {
+
+/**
+ * One turn under its own deadline. The result line carries `tag`: in the
+ * lane, the fire's message id and the turn's exit code, so the by-hand
+ * script finds its turn by its message (scripts/run-turn.mjs).
+ *
+ * @param {() => unknown} eventOf The event, read inside the turn so a refusal is the turn's failure.
+ * @param {(code: number) => Record<string, unknown>} tag
+ * @param {Args} args
+ * @returns {Promise<0 | 1>}
+ */
+const oneTurn = async (eventOf, tag, { run: turn, deps, log, exit, schedule, cancel }) => {
   // The tickets the turn claimed that no marker names a session for yet.
   // The deadline unwinds nothing, so it logs them itself.
   /** Each `owner/name#number`. @type {Set<string>} */
@@ -120,35 +134,64 @@ export const main = async ({ env, run: turn, deps, log, exit, schedule }) => {
   // off may never land, so it is logged as unrecorded here.
   /** @type {Set<import('./turn.mjs').PendingRecord>} */
   const unrecorded = new Set();
-  schedule(() => {
+  // The deadline ends the task, not just the turn: a launcher that hangs
+  // cannot be unwound, and a second turn beside it would share its login.
+  // A fire behind it was never received, so it waits on the lane for the
+  // task the stop event starts.
+  const deadline = schedule(() => {
     for (const key of claims) log(CLAIM_STRANDED, { ...ticketOf(key), reason: `claimed, and the deadline (${DEADLINE_MS} ms) ended the turn before a dispatch marker named its session` });
     for (const pending of unrecorded) log(SESSION_UNRECORDED, unrecordedLine(pending, `the deadline (${DEADLINE_MS} ms) ended the turn while its record was being written, so it may not have landed`));
-    log('dispatch-failed', { reason: 'deadline', deadlineMs: DEADLINE_MS });
+    log('dispatch-failed', { reason: 'deadline', deadlineMs: DEADLINE_MS, ...tag(1) });
     exit(1);
   }, DEADLINE_MS);
   try {
-    const raw = env[FIRE_VARIABLE];
-    if (!raw) throw new Error(`${FIRE_VARIABLE} is not set: the task was started without an invocation`);
-    /** @type {unknown} */
-    let event;
-    try {
-      event = JSON.parse(raw);
-    } catch {
-      throw new Error(`${FIRE_VARIABLE} is not JSON: ${raw}`);
-    }
-    const result = await turn(event, { ...deps(), claims, unrecorded });
+    const result = await turn(eventOf(), { ...deps(), claims, unrecorded });
     const code = exitCodeFor(result);
     // A message into an archived session exits 1 for its caller, but the
     // dispatcher did not fail: the send counts as taken for the alarm, so
     // any other fault in the turn still fails it.
     const archived = 'archived' in result && result.archived === true;
     const failed = code === 1 && (!archived || exitCodeFor({ ...result, ok: true }) === 1);
-    log(failed ? 'dispatch-failed' : 'dispatch-result', { ...result });
-    exit(code);
+    log(failed ? 'dispatch-failed' : 'dispatch-result', { ...result, ...tag(code) });
+    return code;
   } catch (error) {
-    log('dispatch-failed', { reason: 'threw', error: String(/** @type {any} */ (error)?.stack ?? error) });
-    exit(1);
+    log('dispatch-failed', { reason: 'threw', error: String(/** @type {any} */ (error)?.stack ?? error), ...tag(1) });
+    return 1;
+  } finally {
+    cancel(deadline);
   }
+};
+
+/**
+ * A task started with an event on its override (a probe, by
+ * scripts/run-turn.mjs) runs that one turn and exits with its code. Any
+ * other task is the lane's reader (dispatch/lane.mjs): it runs each fire it
+ * takes as its own turn, and exits once the lane stays empty.
+ *
+ * @param {Args} args
+ */
+export const main = async (args) => {
+  const { env, log, exit } = args;
+  const raw = env[FIRE_VARIABLE];
+  if (raw !== undefined && raw !== '') {
+    const eventOf = () => {
+      try {
+        return JSON.parse(raw);
+      } catch {
+        throw new Error(`${FIRE_VARIABLE} is not JSON: ${raw}`);
+      }
+    };
+    exit(await oneTurn(eventOf, () => ({}), args));
+    return;
+  }
+  const code = await work({
+    ...args.lane(),
+    log,
+    turn: async (fire, messageId) => {
+      await oneTurn(() => fire, (exitCode) => ({ messageId, exitCode }), args);
+    },
+  });
+  exit(code);
 };
 
 if (isCliEntry(import.meta.url, process.argv[1])) {
@@ -161,5 +204,10 @@ if (isCliEntry(import.meta.url, process.argv[1])) {
     // unref: the deadline fires while a hung launcher keeps the loop alive,
     // and never keeps the process alive on its own after a clean exit.
     schedule: (fn, ms) => setTimeout(fn, ms).unref(),
+    cancel: (handle) => clearTimeout(/** @type {NodeJS.Timeout} */ (handle)),
+    lane: () => {
+      const urls = { lane: String(process.env.DISPATCH_FIRES_QUEUE_URL), dead: String(process.env.DISPATCH_FIRES_DEAD_QUEUE_URL) };
+      return { ...sqsLane(new SQSClient({}), urls), reset: () => clearTurnState(process.env), now: Date.now };
+    },
   });
 }

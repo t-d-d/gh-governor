@@ -17,20 +17,24 @@
  * Every fire names its repo but the bare schedule fire and a
  * probe, so every other kind refuses to queue without `--repo`.
  *
- * A fire, a dispatch or a message starts no task itself. It queues on the fire lane the
- * starter drains (dispatch/webhook/starter.mjs), like the schedule's and a
- * delivery's, then finds the task the starter started for it by the
- * `fire-started` line in the starter's log: a refresh rotates the login's
+ * A fire, a dispatch or a message starts no task itself. It queues on the
+ * fire lane, like the schedule's and a delivery's, and the dispatcher task
+ * takes it from there (dispatch/lane.mjs): a refresh rotates the login's
  * refresh token, so two turns at once would leave one holding a dead login,
- * and the starter is the one thing that starts a turn. A probe touches no
- * login, so it starts its own task beside anything.
+ * and the task runs one turn at a time. It does not call the starter: the
+ * running task takes the fire, or the starter's backstop starts a task for
+ * it within a minute. It finds its turn by the task's `fire-taken` line for
+ * the message, and the turn's result line that names the message, in the
+ * task's log. A probe touches no login, so it starts its own task beside
+ * anything.
  *
  * With `--no-wait` it prints the task ARN (a probe) or the queued message id
- * (a fire or a dispatch) and returns. Otherwise it waits for the task to
- * stop, prints the task's log lines, and exits with the container's exit
- * code, or 1 when the task never ran its container or the starter never
- * started one. Needs the aws CLI under credentials that may run the task
- * and queue on the lane.
+ * (a fire or a dispatch) and returns. Otherwise a probe waits for its task
+ * to stop and exits with the container's exit code, or 1 when the task never
+ * ran its container; a fire waits for its turn's result line and exits with
+ * the turn's exit code, or 1 when no task took it or the turn never ended.
+ * Either way it prints the turn's log lines. Needs the aws CLI under
+ * credentials that may run the task, queue on the lane and read the log.
  * Node built-ins only.
  */
 
@@ -49,18 +53,23 @@ export const OUTPUT_KEYS = Object.freeze({
   logGroup: 'LogGroupName',
   logStreamPrefix: 'LogStreamPrefix',
   firesQueueUrl: 'FiresQueueUrl',
-  starterLogGroup: 'StarterLogGroupName',
 });
 
 /**
- * How long a queued fire may go, from its first offer, without the starter
- * starting its task: the lane re-offers a deferred fire for half an hour
- * from its first receipt before dead-lettering it
- * (infra/governor.cfn.yml DispatchFiresQueue), which
- * test/dispatch-stack.test.ts holds this past, plus the starter's log
- * delivery.
+ * How long a queued fire may wait for a task to take it: the fires ahead of
+ * it run first, one turn at a time. test/dispatch-stack.test.ts holds this
+ * past the lane's stall alarm (infra/governor.cfn.yml
+ * DispatchLaneStalledAlarm), so the script never gives up on a fire the
+ * stack does not yet call stalled.
  */
-export const START_BUDGET_MS = 35 * 60 * 1000;
+export const START_BUDGET_MS = 50 * 60 * 1000;
+
+/**
+ * How long a taken fire's turn may run: its deadline (dispatch/cli.mjs
+ * DEADLINE_MS, which test/scripts/run-turn.test.ts holds this past), and the
+ * log's delivery.
+ */
+export const TURN_BUDGET_MS = 20 * 60 * 1000;
 export const START_POLL_MS = 10 * 1000;
 
 /**
@@ -104,62 +113,74 @@ const waitForStop = async ({ aws, log, cluster, taskArns }) => {
  */
 
 /**
- * The starter's own line out of one filter-log-events event: under the
- * Lambda's JSON log format the line is the `message` of the record, as a
- * string or already parsed.
+ * The task's own line out of one filter-log-events event: one JSON object a
+ * line, as the turn logs it (dispatch/cli.mjs, dispatch/lane.mjs).
  *
  * @param {string} raw
  * @returns {Record<string, unknown> | null}
  */
-const starterLine = (raw) => {
+const taskLine = (raw) => {
   try {
-    /** @type {any} */
-    let line = JSON.parse(raw);
-    if (line && typeof line.event !== 'string' && line.message !== undefined) {
-      line = typeof line.message === 'string' ? JSON.parse(line.message) : line.message;
-    }
+    const line = JSON.parse(raw);
     return line && typeof line === 'object' ? line : null;
   } catch {
     return null;
   }
 };
 
+/** The lines that end a turn in the lane: the result, failed or not. */
+const RESULT = new Set(['dispatch-result', 'dispatch-failed']);
+
 /**
- * Poll the starter's log for the `fire-started` line carrying `reason`,
- * until START_BUDGET_MS has passed since the lane first offered the fire:
- * the lane is FIFO in one group, so a fire queued behind another is first
- * offered only once that one leaves. Before any line of its own, the budget
- * runs from the send.
- *
- * @param {{ aws: Aws, log: (line: string) => void, logGroup: string, reason: string, nonce: string, since: number, sleep: (ms: number) => Promise<unknown>, now: () => number }} io
- * @returns {Promise<string | null>} The task ARN, or null when none started.
+ * @typedef {{ stream: string, takenAt: number, endedAt?: number, exitCode?: number }} Turn
  */
-const findStartedTask = async ({ aws, log, logGroup, reason, nonce, since, sleep, now }) => {
-  let windowStart = since;
-  let told = false;
+
+/**
+ * Poll the task's log for the lines that name `messageId`: the task's
+ * `fire-taken` line, which says which task's stream holds the turn, and the
+ * turn's result line, which carries its exit code. A fire is first waited on
+ * for START_BUDGET_MS, while the fires ahead of it run; once taken, its turn
+ * for TURN_BUDGET_MS.
+ *
+ * @param {{ aws: Aws, log: (line: string) => void, logGroup: string, messageId: string, since: number, sleep: (ms: number) => Promise<unknown>, now: () => number }} io
+ * @returns {Promise<Turn | null>} The turn, ended or not, or null when no task took the fire.
+ */
+const followFire = async ({ aws, log, logGroup, messageId, since, sleep, now }) => {
+  /** @type {Turn | null} */
+  let turn = null;
+  let takenSeen = 0;
   for (;;) {
     const found = JSON.parse(await aws([
       'logs', 'filter-log-events',
       '--log-group-name', logGroup,
-      '--start-time', String(since - 60 * 1000),
-      '--filter-pattern', `"${nonce}"`,
+      '--start-time', String(turn === null ? since - 60 * 1000 : turn.takenAt),
+      '--filter-pattern', `"${messageId}"`,
       '--output', 'json',
     ]));
     for (const e of found.events ?? []) {
-      const line = starterLine(String(e.message));
-      if (line?.reason !== reason) continue;
-      if (line.event === 'fire-started' && typeof line.taskArn === 'string') return line.taskArn;
-      if (windowStart === since && typeof e.timestamp === 'number') windowStart = Math.max(since, e.timestamp);
-      if (!told) {
-        told = true;
-        log(line.event === 'fire-deferred' && Array.isArray(line.running)
-          ? `The starter deferred it behind ${line.running.length} running task(s): ${line.running.join(', ')}`
-          : `The starter logged ${String(line.event)} for it: ${JSON.stringify(line)}`);
+      const line = taskLine(String(e.message));
+      if (line?.messageId !== messageId) continue;
+      // Refused, the fire is already on the dead-letter queue: no task will take it.
+      if (line.event === 'fire-refused' && turn === null) {
+        log(`The task refused this fire and moved it to governor-fires-dead.fifo: ${String(line.error)}`);
+        return null;
+      }
+      if (line.event === 'fire-taken' && turn === null) {
+        turn = { stream: String(e.logStreamName), takenAt: Number(e.timestamp) };
+        takenSeen = now();
+        log(`A task took it: ${turn.stream}`);
+      }
+      if (RESULT.has(String(line.event)) && turn !== null && typeof line.exitCode === 'number') {
+        return { ...turn, endedAt: Number(e.timestamp), exitCode: line.exitCode };
       }
     }
-    if (now() - windowStart >= START_BUDGET_MS) {
-      log(`The starter started no task for this fire in ${START_BUDGET_MS / 60000} minutes. Read ${logGroup} for why; the fire is in governor-fires-dead.fifo once the lane gives up on it.`);
+    if (turn === null && now() - since >= START_BUDGET_MS) {
+      log(`No task took this fire in ${START_BUDGET_MS / 60000} minutes. Read /aws/lambda/governor-starter for start-failed lines, and ${logGroup} for the running task; the fire is in governor-fires-dead.fifo if the task refused it.`);
       return null;
+    }
+    if (turn !== null && now() - takenSeen >= TURN_BUDGET_MS) {
+      log(`The turn logged no result in ${TURN_BUDGET_MS / 60000} minutes. Read ${turn.stream} in ${logGroup}: the task may have stopped mid-turn.`);
+      return turn;
     }
     await sleep(START_POLL_MS);
   }
@@ -261,30 +282,12 @@ export const runTask = async ({ args, aws, log, nonce = randomUUID, sleep = dela
   const cluster = output(OUTPUT_KEYS.cluster);
   const container = output(OUTPUT_KEYS.container);
 
-  /** @type {string | null} */
-  let taskArn;
-  if (event.kind === 'probe') {
-    taskArn = await startProbe({ aws, log, cluster, container, event, output });
-    if (!taskArn) return 1;
-    log(`Started ${taskArn}`);
-    if (!args.wait) return 0;
-  } else {
-    const id = nonce();
-    const reason = `by hand ${id}`;
-    const since = now();
-    const sent = JSON.parse(await aws([
-      'sqs', 'send-message',
-      '--queue-url', output(OUTPUT_KEYS.firesQueueUrl),
-      '--message-group-id', LANE,
-      '--message-body', JSON.stringify({ fire: event, reason }),
-      '--output', 'json',
-    ]));
-    log(`Queued ${sent.MessageId} on the fire lane (${reason})`);
-    if (!args.wait) return 0;
-    taskArn = await findStartedTask({ aws, log, logGroup: output(OUTPUT_KEYS.starterLogGroup), reason, nonce: id, since, sleep, now });
-    if (!taskArn) return 1;
-    log(`The starter started ${taskArn}`);
-  }
+  if (event.kind !== 'probe') return queueFire({ aws, log, event, output, args, nonce, sleep, now });
+
+  const taskArn = await startProbe({ aws, log, cluster, container, event, output });
+  if (!taskArn) return 1;
+  log(`Started ${taskArn}`);
+  if (!args.wait) return 0;
 
   if (!(await waitForStop({ aws, log, cluster, taskArns: [taskArn] }))) return 1;
   const described = JSON.parse(await aws(['ecs', 'describe-tasks', '--cluster', cluster, '--tasks', taskArn, '--output', 'json']));
@@ -292,18 +295,7 @@ export const runTask = async ({ args, aws, log, nonce = randomUUID, sleep = dela
   const exitCode = task.containers?.find((/** @type {{ name: string }} */ c) => c.name === container)?.exitCode;
 
   const taskId = taskArn.split('/').pop();
-  try {
-    const tail = JSON.parse(await aws([
-      'logs', 'get-log-events',
-      '--log-group-name', output(OUTPUT_KEYS.logGroup),
-      '--log-stream-name', `${output(OUTPUT_KEYS.logStreamPrefix)}/${container}/${taskId}`,
-      '--start-from-head',
-      '--output', 'json',
-    ]));
-    for (const e of tail.events ?? []) log(String(e.message));
-  } catch (error) {
-    log(`No log to tail: ${/** @type {Error} */ (error).message}`);
-  }
+  await tail({ aws, log, logGroup: output(OUTPUT_KEYS.logGroup), stream: `${output(OUTPUT_KEYS.logStreamPrefix)}/${container}/${taskId}` });
 
   if (typeof exitCode !== 'number') {
     log(`The container never reported an exit code: ${task.stoppedReason ?? 'no reason given'}`);
@@ -311,6 +303,58 @@ export const runTask = async ({ args, aws, log, nonce = randomUUID, sleep = dela
   }
   log(`Exit ${exitCode}`);
   return exitCode;
+};
+
+/**
+ * Print a task's log stream, or the part of it between two times.
+ *
+ * @param {{ aws: Aws, log: (line: string) => void, logGroup: string, stream: string, from?: number | undefined, to?: number | undefined }} io
+ */
+const tail = async ({ aws, log, logGroup, stream, from, to }) => {
+  try {
+    const events = JSON.parse(await aws([
+      'logs', 'get-log-events',
+      '--log-group-name', logGroup,
+      '--log-stream-name', stream,
+      ...(from === undefined ? [] : ['--start-time', String(from)]),
+      ...(to === undefined ? [] : ['--end-time', String(to + 1)]),
+      '--start-from-head',
+      '--output', 'json',
+    ]));
+    for (const e of events.events ?? []) log(String(e.message));
+  } catch (error) {
+    log(`No log to tail: ${/** @type {Error} */ (error).message}`);
+  }
+};
+
+/**
+ * Queue a fire on the lane, then follow its turn in the task's log.
+ *
+ * @param {{ aws: Aws, log: (line: string) => void, event: unknown, output: (key: string) => string, args: Args } & Required<LaneIo>} io
+ * @returns {Promise<number>}
+ */
+const queueFire = async ({ aws, log, event, output, args, nonce, sleep, now }) => {
+  const reason = `by hand ${nonce()}`;
+  const since = now();
+  const sent = JSON.parse(await aws([
+    'sqs', 'send-message',
+    '--queue-url', output(OUTPUT_KEYS.firesQueueUrl),
+    '--message-group-id', LANE,
+    '--message-body', JSON.stringify({ fire: event, reason }),
+    '--output', 'json',
+  ]));
+  const messageId = String(sent.MessageId);
+  log(`Queued ${messageId} on the fire lane (${reason})`);
+  if (!args.wait) return 0;
+  const logGroup = output(OUTPUT_KEYS.logGroup);
+  const turn = await followFire({ aws, log, logGroup, messageId, since, sleep, now });
+  if (turn === null) return 1;
+  // The task runs other fires after this one, so a turn with no result is
+  // tailed only as far as its deadline could have run.
+  await tail({ aws, log, logGroup, stream: turn.stream, from: turn.takenAt, to: turn.endedAt ?? turn.takenAt + TURN_BUDGET_MS });
+  if (turn.exitCode === undefined) return 1;
+  log(`Exit ${turn.exitCode}`);
+  return turn.exitCode;
 };
 
 /** @type {Aws} */

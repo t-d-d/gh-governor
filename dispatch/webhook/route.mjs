@@ -6,8 +6,8 @@
  * HOOK_EVENTS}), from every repo the App is installed on. The
  * receiver verifies the delivery is GitHub's (the HMAC over the raw body,
  * keyed by the secret both sides hold), decides what it means for the
- * dispatcher, and queues its fires on the lane the starter drains
- * (starter.mjs). Three kinds of fire for issues and remarks: a `schedule`
+ * dispatcher, and queues its fires on the lane the dispatcher task reads
+ * (dispatch/lane.mjs). Three kinds of fire for issues and remarks: a `schedule`
  * fire naming the issue and a label on the stack's `SelectLabels` just added
  * to it, which the task dispatches if the label is one of the repo's ready
  * labels and the selection would, and no other; a `dispatch` fire with a prompt of its
@@ -58,7 +58,8 @@
  * does, and lists no blocked ticket: the merging session has no step left
  * after the merge, and can sign off.
  *
- * One task at a time is the starter's to keep: a dispatcher turn refreshes
+ * One task at a time is the starter's to keep (starter.mjs), and one turn at
+ * a time the task's: a dispatcher turn refreshes
  * the stored login, and two turns refreshing one login leave one of them
  * dead. The receiver only queues, so a burst of deliveries costs nothing
  * more than a queue of fires, each started in turn: a delivery with three
@@ -77,7 +78,7 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
+import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob } from './fire.mjs';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 
@@ -698,9 +699,9 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
   if (typeof text !== 'string' || text.trim() === '') return unread(400, 'body holds no text: send {"text": "..."}');
   if (Buffer.byteLength(text) > HOOK_TEXT_LIMIT) return unread(413, `text is over ${HOOK_TEXT_LIMIT} bytes`);
   const fire = { ...build.hook({ hook, keyVersion: signature.version, text, at: new Date(now).toISOString() }), repo };
-  // The fire rides to the task in its container override: one too heavy
-  // for it would fail at the starter on every attempt, where no caller hears.
-  if (overrideWeight(fire) > OVERRIDE_BUDGET) return unread(413, 'text is too long to start a task with: send less');
+  // A fire too heavy for the lane's message would fail at the queue, where
+  // no caller hears.
+  if (fireWeight(fire) > FIRE_BUDGET) return unread(413, 'text is too long for a lane message: send less');
   // Counted last, so only a fire that would otherwise queue takes a place.
   // An item the task wrote before perHour had a ceiling may name more: held
   // to it, so an hour's set of signatures never outgrows its item.

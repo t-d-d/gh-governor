@@ -1,0 +1,904 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Governor fire lane</title>
+<style>
+/* Layout: a drafting sheet. The live schematic is the page; the caption and controls hang under it like a title block. */
+:root {
+  --paper: rgb(235 239 242);
+  --sheet: rgb(248 250 251);
+  --ink: rgb(23 34 45);
+  --muted: rgb(86 102 118);
+  --rule: rgb(199 208 216);
+  --wire: rgb(135 150 165);
+  --grid: rgb(225 231 236);
+  --fire: rgb(229 142 53);
+  --fire-ink: rgb(35 22 10);
+  --poke: rgb(28 135 128);
+  --login: rgb(58 90 140);
+  --danger: rgb(178 58 48);
+  --font-display: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: rgb(15 21 27); --sheet: rgb(21 29 37); --ink: rgb(220 228 235); --muted: rgb(147 162 176); --rule: rgb(43 55 67);
+    --wire: rgb(95 111 127); --grid: rgb(27 37 48); --fire: rgb(240 160 75); --fire-ink: rgb(30 18 6); --poke: rgb(69 189 181);
+    --login: rgb(134 168 221); --danger: rgb(229 122 110); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: rgb(15 21 27); --sheet: rgb(21 29 37); --ink: rgb(220 228 235); --muted: rgb(147 162 176); --rule: rgb(43 55 67);
+  --wire: rgb(95 111 127); --grid: rgb(27 37 48); --fire: rgb(240 160 75); --fire-ink: rgb(30 18 6); --poke: rgb(69 189 181);
+  --login: rgb(134 168 221); --danger: rgb(229 122 110); color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 15px;
+  line-height: 1.55;
+}
+.wrap {
+  max-width: 1140px;
+  margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 56px;
+  display: grid;
+  gap: 28px;
+}
+header { display: grid; gap: 8px; max-width: 70ch; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+h1 {
+  font-size: clamp(28px, 4vw, 40px);
+  line-height: 1.1;
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+h2 {
+  font-size: 19px;
+  margin: 0;
+  font-weight: 600;
+  text-wrap: balance;
+}
+p { margin: 0; }
+.lede { color: var(--muted); font-size: 16px; }
+.context { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px 28px; }
+@media (max-width: 860px) { .context { grid-template-columns: minmax(0, 1fr); } }
+.context section { display: grid; gap: 8px; align-content: start; border-top: 2px solid var(--ink); padding-top: 12px; min-width: 0; }
+.context h2 { font-family: var(--font-mono); font-size: 12px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.context p, .context li { font-size: 14.5px; }
+.context ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.context li strong { font-weight: 600; }
+code, .mono { font-family: var(--font-mono); font-size: 0.9em; }
+
+/* The player */
+.player {
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  display: grid;
+  overflow: hidden;
+}
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule);
+}
+.tab {
+  font: 500 13px/1 var(--font-display);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 8px 13px;
+  cursor: pointer;
+}
+.tab:hover { color: var(--ink); border-color: var(--rule); }
+.tab[aria-pressed="true"] { color: var(--sheet); background: var(--ink); border-color: var(--ink); }
+.stage { overflow-x: auto; }
+.stage svg { display: block; width: 100%; min-width: 760px; height: auto; }
+
+.titleblock {
+  border-top: 1px solid var(--rule);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px 24px;
+  padding: 16px 18px 18px;
+  align-items: start;
+}
+.caption { display: grid; gap: 6px; min-width: 0; }
+.counter {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+.caption p { font-size: 16px; max-width: 72ch; min-height: 3.1em; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
+.btn {
+  font: 500 13px/1 var(--font-display);
+  color: var(--ink);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 9px 13px;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) { border-color: var(--ink); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn.primary { background: var(--ink); color: var(--sheet); border-color: var(--ink); min-width: 78px; }
+.dots { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.dot {
+  width: 14px; height: 14px; padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--wire);
+  background: transparent;
+  cursor: pointer;
+}
+.dot.past { background: var(--wire); }
+.dot.now { background: var(--fire); border-color: var(--fire); }
+button:focus-visible { outline: 2px solid var(--fire); outline-offset: 2px; }
+@media (max-width: 700px) {
+  .titleblock { grid-template-columns: minmax(0, 1fr); }
+  .controls { justify-content: flex-start; }
+}
+
+/* Legend */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 0 2px;
+}
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.legend svg { flex: none; }
+
+/* Schematic */
+svg text { font-family: var(--font-mono); fill: var(--ink); }
+.gridline { fill: none; stroke: var(--grid); stroke-width: 1; }
+.box { fill: var(--sheet); stroke: var(--ink); stroke-width: 1.25; }
+.src .box { stroke: var(--wire); }
+.ntitle { font-family: var(--font-display); font-weight: 600; font-size: 13.5px; }
+.ntitle.mono { font-family: var(--font-mono); font-weight: 500; font-size: 12px; }
+.nsub { font-size: 10.5px; fill: var(--muted); }
+.check { font-size: 10.5px; fill: var(--muted); }
+.readout { font-size: 11px; font-weight: 500; }
+.hint { font-size: 10px; fill: var(--muted); }
+.sep { stroke: var(--rule); stroke-width: 1; }
+.elabel { font-size: 10.5px; fill: var(--muted); }
+.wire { fill: none; stroke: var(--wire); stroke-width: 1.5; transition: stroke 160ms; }
+.wire.signal { stroke-dasharray: 5 4; }
+.wire.lit { stroke: var(--fire); stroke-width: 2.25; }
+.wire.signal.lit { stroke: var(--poke); }
+.arrowhead { fill: var(--wire); }
+.node .box { transition: stroke 160ms, stroke-width 160ms; }
+.node.focus .box { stroke: var(--fire); stroke-width: 2.25; }
+
+.pill rect { fill: var(--grid); }
+.pill text { font-size: 10px; fill: var(--muted); }
+.pill.on rect { fill: var(--ink); }
+.pill.on text { fill: var(--sheet); font-weight: 600; }
+.pill.on.working rect { fill: var(--fire); }
+.pill.on.working text { fill: var(--fire-ink); }
+.pill.on.bad rect { fill: var(--danger); }
+.pill.on.bad text { fill: var(--sheet); }
+.loop { fill: none; stroke: var(--wire); stroke-width: 1.25; }
+.task-none-label { font-size: 11px; fill: var(--muted); display: none; }
+#n-task.status-none .box { stroke-dasharray: 4 4; stroke: var(--wire); }
+#n-task.status-none .pills, #n-task.status-none .loop { display: none; }
+#n-task.status-none .task-none-label { display: block; }
+#n-task.status-none .ntitle, #n-task.status-none .nsub { fill: var(--muted); }
+#n-task.status-failed .box { stroke: var(--danger); stroke-width: 2.25; }
+.held { fill: var(--sheet); stroke: var(--poke); stroke-width: 2; }
+.held.off { stroke: var(--rule); stroke-width: 1; }
+
+.chip-fire rect { fill: var(--fire); }
+.chip-fire text { fill: var(--fire-ink); font-size: 10.5px; font-weight: 600; }
+.chip-delivery rect { fill: var(--sheet); stroke: var(--ink); stroke-width: 1.25; }
+.chip-delivery text { font-size: 10px; }
+.chip-reply rect { fill: var(--ink); }
+.chip-reply text { fill: var(--sheet); font-size: 10px; font-weight: 600; }
+.chip-reply.bad rect { fill: var(--danger); }
+.chip-signal rect { fill: var(--sheet); stroke: var(--poke); stroke-width: 1.5; }
+.chip-signal text { font-size: 10px; }
+.dot-poke { fill: var(--sheet); stroke: var(--poke); stroke-width: 2.5; }
+.dot-query { fill: var(--muted); }
+.dot-login { fill: var(--login); }
+
+.notes { display: grid; gap: 10px; max-width: 76ch; }
+.notes ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; color: var(--muted); }
+.notes li strong { color: var(--ink); font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wire, .node .box { transition: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">gh-governor · how fires run</div>
+    <h1>One queue, one reader</h1>
+    <p class="lede">Governor starts and steers Claude Code cloud sessions for GitHub repos. Everything it acts on, such as a PR comment, a review or a CI result, becomes a fire. Each fire runs as one turn inside a short-lived AWS Fargate task. Every fire waits on one queue, the lane, and one task reads it, one turn at a time. This page follows fires along that lane.</p>
+  </header>
+
+  <div class="context">
+    <section aria-labelledby="ctx-lane">
+      <h2 id="ctx-lane">The lane</h2>
+      <p>Every producer sends to one FIFO queue, <code>governor-fires.fifo</code>, in one message group. The webhook receiver sends GitHub's deliveries, hook calls and the two-hourly pickup. A turn sends the <code>unblocked</code> fires it queues, and <code>scripts/run-turn.mjs</code> sends a fire by hand.</p>
+      <p>The dispatcher task, <code>dispatch/lane.mjs</code> on Fargate, is the lane's only reader. Once started, it takes fires until the lane has been empty for 60 seconds, so a burst pays one cold start.</p>
+    </section>
+    <section aria-labelledby="ctx-constraints">
+      <h2 id="ctx-constraints">Constraints</h2>
+      <ul>
+        <li><strong>One claude.ai login.</strong> Every turn refreshes it, and a refresh replaces the token. Two turns at once leave one of them with a dead login, so only one turn may run at a time.</li>
+        <li><strong>A task, not a Lambda.</strong> The Claude CLI needs a terminal, and Lambda has none.</li>
+        <li><strong>Scale to zero.</strong> With no work, nothing runs and nothing costs.</li>
+        <li><strong>No lost fires.</strong> GitHub does not resend a failed delivery by itself, so the receiver puts a fire on the lane before it answers.</li>
+      </ul>
+    </section>
+    <section aria-labelledby="ctx-starter">
+      <h2 id="ctx-starter">The starter</h2>
+      <p>The <code>governor-starter</code> Lambda holds no fires. Each call asks two questions: does a fire wait on the lane, and does a dispatcher task run? It calls RunTask only when a fire waits and none runs. Otherwise it does nothing.</p>
+      <p>Three things call it: the receiver after it queues fires, every task's stop event, and a backstop schedule every minute.</p>
+    </section>
+  </div>
+
+  <section class="player" aria-label="Animated scenarios">
+    <div class="tabs" id="tabs"></div>
+    <div class="stage">
+      <svg id="lane" viewBox="0 0 1080 525" role="img" aria-label="The fire lane. GitHub, hook callers and the schedule post to the receiver. The receiver sends each fire to one FIFO queue and calls the starter. Only the dispatcher task receives from the queue. The starter is called by the receiver, by every task stop event and by a backstop schedule every minute, and starts a task only when a fire waits and none runs.">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" class="arrowhead"/>
+          </marker>
+          <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M20 0 H0 V20" class="gridline"/>
+          </pattern>
+        </defs>
+        <rect x="0" y="0" width="1080" height="525" fill="url(#grid)"/>
+
+        <g class="wires">
+          <path id="e-gh" class="wire" d="M150 134 H182 V180 H213" marker-end="url(#arrow)"/>
+          <path id="e-hook" class="wire" d="M150 214 H213" marker-end="url(#arrow)"/>
+          <path id="e-sched" class="wire" d="M150 294 H182 V250 H213" marker-end="url(#arrow)"/>
+          <path id="e-send" class="wire" d="M365 215 H438" marker-end="url(#arrow)"/>
+          <path id="e-take" class="wire" d="M640 215 H718" marker-end="url(#arrow)"/>
+          <path id="e-out" class="wire" d="M890 215 H938" marker-end="url(#arrow)"/>
+          <path id="e-turnq" class="wire" d="M720 296 H610 V262" marker-end="url(#arrow)"/>
+          <path id="e-restore" class="wire" d="M790 74 V118" marker-end="url(#arrow)"/>
+          <path id="e-store" class="wire" d="M830 120 V76" marker-end="url(#arrow)"/>
+          <path id="e-poke" class="wire signal" d="M300 280 V425 H438" marker-end="url(#arrow)"/>
+          <path id="e-backstop" class="wire signal" d="M365 477 H438" marker-end="url(#arrow)"/>
+          <path id="e-check" class="wire signal" d="M540 395 V262" marker-end="url(#arrow)"/>
+          <path id="e-run" class="wire signal" d="M640 420 H760 V322" marker-end="url(#arrow)"/>
+          <path id="e-stop" class="wire signal" d="M850 322 V480 H642" marker-end="url(#arrow)"/>
+        </g>
+
+        <g class="elabels">
+          <text class="elabel" x="402" y="207" text-anchor="middle">send</text>
+          <text class="elabel" x="679" y="207" text-anchor="middle">receive</text>
+          <text class="elabel" x="914" y="207" text-anchor="middle">sends</text>
+          <text class="elabel" x="665" y="313" text-anchor="middle">turn queues</text>
+          <text class="elabel" x="782" y="100" text-anchor="end">restore</text>
+          <text class="elabel" x="838" y="100">store refresh</text>
+          <text class="elabel" x="370" y="418" text-anchor="middle">call</text>
+          <text class="elabel" x="402" y="470" text-anchor="middle">call</text>
+          <text class="elabel" x="548" y="333">fires waiting?</text>
+          <text class="elabel" x="650" y="399">ListTasks</text>
+          <text class="elabel" x="650" y="412">RunTask</text>
+          <text class="elabel" x="745" y="496" text-anchor="middle">stop event</text>
+        </g>
+
+        <g class="node src" id="n-gh" data-key="gh">
+          <rect class="box" x="20" y="110" width="130" height="48" rx="6"/>
+          <text class="ntitle" x="85" y="131" text-anchor="middle">GitHub</text>
+          <text class="nsub" x="85" y="147" text-anchor="middle">webhook deliveries</text>
+        </g>
+        <g class="node src" id="n-hook" data-key="hook">
+          <rect class="box" x="20" y="190" width="130" height="48" rx="6"/>
+          <text class="ntitle" x="85" y="211" text-anchor="middle">Hook caller</text>
+          <text class="nsub" x="85" y="227" text-anchor="middle">signed request</text>
+        </g>
+        <g class="node src" id="n-sched" data-key="sched">
+          <rect class="box" x="20" y="270" width="130" height="48" rx="6"/>
+          <text class="ntitle" x="85" y="291" text-anchor="middle">Schedule</text>
+          <text class="nsub" x="85" y="307" text-anchor="middle">every two hours</text>
+        </g>
+
+        <g class="node" id="n-recv" data-key="recv">
+          <rect class="box" x="215" y="150" width="150" height="130" rx="6"/>
+          <text class="ntitle" x="290" y="172" text-anchor="middle">Receiver</text>
+          <text class="nsub" x="290" y="187" text-anchor="middle">Lambda · per delivery</text>
+          <text class="check" x="232" y="207">· signature</text>
+          <text class="check" x="232" y="221">· owner list</text>
+          <text class="check" x="232" y="235">· hook's hourly cap</text>
+          <line class="sep" x1="227" y1="248" x2="353" y2="248"/>
+          <text class="readout" id="recv-read" x="290" y="267" text-anchor="middle">idle</text>
+        </g>
+
+        <g class="node" id="n-queue" data-key="queue">
+          <rect class="box" x="440" y="170" width="200" height="90" rx="6"/>
+          <text class="ntitle mono" x="540" y="189" text-anchor="middle">governor-fires.fifo</text>
+          <text class="hint" id="q-empty" x="540" y="219" text-anchor="middle">empty</text>
+          <g id="q-chips"></g>
+          <text class="hint" x="540" y="251" text-anchor="middle">one group · only the task reads</text>
+        </g>
+
+        <g class="node" id="n-login" data-key="login">
+          <rect class="box" x="720" y="30" width="170" height="44" rx="6"/>
+          <text class="ntitle" x="805" y="49" text-anchor="middle">claude.ai login</text>
+          <text class="nsub" x="805" y="64" text-anchor="middle">Secrets Manager</text>
+        </g>
+
+        <g class="node status-none" id="n-task" data-key="task">
+          <rect class="box" x="720" y="120" width="170" height="200" rx="6"/>
+          <text class="ntitle" x="805" y="140" text-anchor="middle">Dispatcher task</text>
+          <text class="nsub" x="805" y="155" text-anchor="middle">Fargate · at most one</text>
+          <text class="task-none-label" x="805" y="228" text-anchor="middle">no task running</text>
+          <g class="pills" id="pills"></g>
+          <path class="loop" d="M876 243 C 887 243, 887 196, 878 196" marker-end="url(#arrow)"/>
+        </g>
+
+        <g class="node" id="n-out" data-key="out">
+          <rect class="box" x="940" y="160" width="125" height="110" rx="6"/>
+          <text class="ntitle" x="1002" y="180" text-anchor="middle">Sessions, GitHub</text>
+          <text class="nsub" x="1002" y="195" text-anchor="middle">what turns do</text>
+          <line class="sep" x1="952" y1="205" x2="1053" y2="205"/>
+          <text class="readout" id="out-0" x="952" y="223"></text>
+          <text class="readout" id="out-1" x="952" y="240" opacity="0.7"></text>
+          <text class="readout" id="out-2" x="952" y="257" opacity="0.45"></text>
+        </g>
+
+        <g class="node" id="n-starter" data-key="starter">
+          <rect class="box" x="440" y="395" width="200" height="110" rx="6"/>
+          <text class="ntitle" x="540" y="416" text-anchor="middle">Starter</text>
+          <text class="nsub" x="540" y="431" text-anchor="middle">Lambda · concurrency 1</text>
+          <line class="sep" x1="452" y1="440" x2="628" y2="440"/>
+          <text class="readout" id="st-0" x="540" y="457" text-anchor="middle">idle</text>
+          <text class="readout" id="st-1" x="540" y="473" text-anchor="middle"></text>
+          <text class="hint" x="456" y="495">held calls</text>
+          <circle class="held off" id="held-0" cx="534" cy="491.5" r="4.5"/>
+          <circle class="held off" id="held-1" cx="549" cy="491.5" r="4.5"/>
+          <circle class="held off" id="held-2" cx="564" cy="491.5" r="4.5"/>
+        </g>
+
+        <g class="node src" id="n-minute" data-key="minute">
+          <rect class="box" x="215" y="455" width="150" height="44" rx="6"/>
+          <text class="ntitle" x="290" y="474" text-anchor="middle">Every minute</text>
+          <text class="nsub" x="290" y="489" text-anchor="middle">backstop schedule</text>
+        </g>
+
+        <g id="movers"></g>
+      </svg>
+    </div>
+    <div class="titleblock">
+      <div class="caption">
+        <div class="counter" id="counter">Start</div>
+        <p id="caption" aria-live="polite"></p>
+      </div>
+      <div class="controls">
+        <button class="btn" id="back" type="button">Back</button>
+        <button class="btn primary" id="play" type="button">Play</button>
+        <button class="btn" id="next" type="button">Next</button>
+        <button class="btn" id="restart" type="button">Restart</button>
+      </div>
+      <div class="dots" id="dots" aria-label="Jump to a step"></div>
+    </div>
+  </section>
+
+  <div class="legend" aria-label="Legend">
+    <span><svg width="34" height="20" viewBox="0 0 34 20" aria-hidden="true"><g class="chip-fire"><rect x="1" y="1" width="32" height="18" rx="4"/><text x="17" y="10.5" text-anchor="middle" dominant-baseline="central">M1</text></g></svg>A fire. M is a message, R a review, C an issue closing, U an unblocked fire.</span>
+    <span><svg width="34" height="20" viewBox="0 0 34 20" aria-hidden="true"><g class="chip-delivery"><rect x="1.5" y="1.5" width="31" height="17" rx="4"/><text x="17" y="10.5" text-anchor="middle" dominant-baseline="central">202</text></g></svg>A GitHub delivery, or an HTTP answer.</span>
+    <span><svg width="40" height="14" viewBox="0 0 40 14" aria-hidden="true"><line x1="0" y1="7" x2="40" y2="7" class="wire signal"/><circle cx="20" cy="7" r="4.5" class="dot-poke"/></svg>A call to the starter, or a stop event. It carries no fire.</span>
+    <span><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="3.5" class="dot-query"/></svg>The starter checking the queue or ECS.</span>
+    <span><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5" class="dot-login"/></svg>The login, restored or written back.</span>
+  </div>
+
+  <section class="notes" aria-labelledby="notes-h">
+    <h2 id="notes-h">Limits the animation does not show</h2>
+    <ul>
+      <li><strong>Thirty minutes a task.</strong> A task stops taking fires 30 minutes after it starts and leaves the rest to a fresh task, so a deploy's new image is picked up. A turn started before then runs to its end.</li>
+      <li><strong>Eighteen minutes a turn.</strong> Each turn has its own deadline. Past it the task logs <code>dispatch-failed</code> with reason <code>deadline</code> and exits. Fires behind that turn were never received, so they wait on the lane for the next task.</li>
+      <li><strong>Between fires.</strong> The task clears the CLI's state under HOME and its working directories, so one turn leaves nothing for the next.</li>
+      <li><strong>The dead-letter queue.</strong> A fire the task's parser refuses goes to <code>governor-fires-dead.fifo</code> at once. A turn that fails is logged and not retried.</li>
+      <li><strong>Fires that do not call the starter.</strong> A turn that queues <code>unblocked</code> fires, and <code>scripts/run-turn.mjs</code> run by hand, leave their fires on the lane. The running task takes them, or the backstop starts a task within a minute.</li>
+      <li><strong>A failed call from the receiver.</strong> The receiver calls the starter asynchronously. If that call fails, it is logged and the delivery still answers 202. The fire is already on the lane for the backstop to find.</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+(() => {
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  let reduce = false;
+  try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { reduce = false; }
+
+  const $ = (sel) => document.querySelector(sel);
+  const svg = $('#lane');
+  const movers = $('#movers');
+
+  const STAGES = [
+    ['provision', 'provision · pull image'],
+    ['poll', 'long-poll queue'],
+    ['login', 'restore login'],
+    ['turn', 'turn'],
+    ['idle', 'idle grace · 60 s'],
+    ['exit', 'exit'],
+  ];
+
+  // Build the task's stage pills once.
+  const pillsG = $('#pills');
+  const pillEls = {};
+  STAGES.forEach(([key, label], i) => {
+    const g = document.createElementNS(SVGNS, 'g');
+    g.setAttribute('class', 'pill');
+    const y = 163 + i * 24;
+    const r = document.createElementNS(SVGNS, 'rect');
+    r.setAttribute('x', 735); r.setAttribute('y', y); r.setAttribute('width', 138); r.setAttribute('height', 17); r.setAttribute('rx', 3);
+    const t = document.createElementNS(SVGNS, 'text');
+    t.setAttribute('x', 804); t.setAttribute('y', y + 8.5); t.setAttribute('text-anchor', 'middle'); t.setAttribute('dominant-baseline', 'central');
+    t.textContent = label;
+    g.append(r, t);
+    pillsG.append(g);
+    pillEls[key] = { g, t, label };
+  });
+
+  // State helpers.
+  const idle = () => ({
+    queue: [],
+    task: { status: 'none', stage: null, fire: null, note: '' },
+    held: 0,
+    starter: ['idle', ''],
+    receiver: 'idle',
+    out: [],
+  });
+  const clone = (s) => JSON.parse(JSON.stringify(s));
+  const out = (s, text) => { s.out.unshift(text); s.out = s.out.slice(0, 3); };
+  const startTask = (s) => { s.task = { status: 'starting', stage: 'provision', fire: null, note: '' }; };
+  const noTask = (s) => { s.task = { status: 'none', stage: null, fire: null, note: '' }; };
+  const take = (s) => { s.task.status = 'running'; s.task.stage = 'poll'; s.task.fire = null; s.queue.shift(); };
+  const working = (s, id) => { s.task.status = 'running'; s.task.stage = 'turn'; s.task.fire = id; };
+
+  // A move: e = edge id, k = kind, t = text, rev = travel backwards, d = delay in ms.
+  const turnMoves = (id, outText) => [
+    { e: 'e-take', k: 'fire', t: id },
+    { e: 'e-restore', k: 'login', d: 650 },
+    { e: 'e-out', k: 'signal', t: outText, d: 1300 },
+    { e: 'e-store', k: 'login', d: 1750 },
+  ];
+  // The starter's two questions. A stop event or the backstop asks the lane and ECS.
+  // A call from the receiver counts as a fire waiting, so it asks ECS only.
+  const checks = (d = 0) => [{ e: 'e-check', k: 'query', d }, { e: 'e-run', k: 'query', d: d + 200 }];
+  const ecsCheck = (d = 0) => [{ e: 'e-run', k: 'query', d }];
+  const WAITS = 'fire waits';
+  const NONE = 'no fire waits';
+
+  const SCENARIOS = [
+    {
+      id: 'one-fire',
+      name: 'One fire',
+      intro: 'Nothing is running. The lane is empty and no task exists, so nothing is being paid for. Press Play, or step through with Next.',
+      init: idle,
+      steps: [
+        { c: 'Someone comments on a PR. GitHub posts the delivery to the receiver.', focus: ['recv'],
+          moves: [{ e: 'e-gh', k: 'delivery', t: 'issue_comment' }], apply: (s) => { s.receiver = 'checking'; } },
+        { c: 'The receiver checks the signature and the owner list. The PR names the session that owns it, so the delivery becomes one fire, M1, a message for that session.', focus: ['recv'],
+          apply: (s) => { s.receiver = '1 fire: M1'; } },
+        { c: 'It sends M1 to the lane, with the delivery id as its deduplication id, and answers GitHub 202. The fire is stored before anything else happens.', focus: ['queue'],
+          moves: [{ e: 'e-send', k: 'fire', t: 'M1' }, { e: 'e-gh', k: 'reply', t: '202', rev: true, d: 250 }],
+          apply: (s) => { s.queue.push('M1'); s.receiver = '202, queued'; } },
+        { c: 'Then the receiver calls the starter asynchronously. The call carries no fire.', focus: ['starter'],
+          moves: [{ e: 'e-poke', k: 'poke' }], apply: (s) => { s.starter = ['receiver call', '']; } },
+        { c: 'A call from the receiver counts as a fire waiting, so the starter does not ask the lane. It asks ECS whether a dispatcher task runs. None does.', focus: ['starter'],
+          moves: ecsCheck(), apply: (s) => { s.starter = [WAITS + ' · tasks 0', '']; } },
+        { c: 'So it calls RunTask. Fargate provisions the task and pulls the image. This is the cold start.', focus: ['task'],
+          moves: [{ e: 'e-run', k: 'signal', t: 'RunTask' }],
+          apply: (s) => { s.starter = [WAITS + ' · tasks 0', '→ RunTask']; startTask(s); } },
+        { c: 'Once it is up, the task long-polls the lane. It takes M1, deletes it at once and logs fire-taken with the message id and kind. Nothing else ever reads this queue.', focus: ['task', 'queue'],
+          pre: (s) => { take(s); }, moves: [{ e: 'e-take', k: 'fire', t: 'M1' }],
+          apply: (s) => { s.task.stage = 'login'; s.task.fire = 'M1'; } },
+        { c: 'M1 runs as its own turn, which starts by restoring the claude.ai login from its secret in Secrets Manager.', focus: ['task', 'login'],
+          moves: [{ e: 'e-restore', k: 'login' }], apply: (s) => { working(s, 'M1'); } },
+        { c: 'The turn sends the message into the session. The CLI refreshed the login during the turn, so the task stores the refresh back before it receives again.', focus: ['out', 'login'],
+          moves: [{ e: 'e-out', k: 'signal', t: 'msg' }, { e: 'e-store', k: 'login', d: 450 }],
+          apply: (s) => { out(s, 'msg → session'); } },
+        { c: 'The task clears the CLI\'s state and keeps long-polling. The lane is empty, so its idle grace of 60 seconds starts from the end of that turn.', focus: ['task'],
+          apply: (s) => { s.task.stage = 'idle'; s.task.fire = null; } },
+        { c: 'Sixty seconds pass with nothing received, so the task exits. ECS sends its stop event, and the governor-task-stopped rule calls the starter.', focus: ['starter'],
+          pre: (s) => { s.task.status = 'stopping'; s.task.stage = 'exit'; },
+          moves: [{ e: 'e-stop', k: 'poke' }], apply: (s) => { noTask(s); s.starter = ['stop event', '']; } },
+        { c: 'The starter asks the lane and ECS. No fire waits and no task runs, so it starts nothing. The lane is back at zero.', focus: ['starter'],
+          moves: checks(), apply: (s) => { s.starter = [NONE + ' · tasks 0', '→ nothing']; } },
+      ],
+    },
+    {
+      id: 'burst',
+      name: 'A burst',
+      intro: 'A comment lands on a PR, and in the same moment an issue closes. Nothing is running yet.',
+      init: idle,
+      steps: [
+        { c: 'GitHub posts two deliveries. Each one gets its own receiver invocation, and the two run in parallel.', focus: ['recv'],
+          moves: [{ e: 'e-gh', k: 'delivery', t: 'issue_comment' }, { e: 'e-gh', k: 'delivery', t: 'issues', d: 380 }],
+          apply: (s) => { s.receiver = '2 deliveries'; } },
+        { c: 'They become three fires. M1 and M2 carry the comment to the owner session and to one subscribed session. C1 names the closed issue as freed. All three land on the lane in order, and GitHub gets 202 twice.', focus: ['queue'],
+          moves: [
+            { e: 'e-send', k: 'fire', t: 'M1' }, { e: 'e-send', k: 'fire', t: 'M2', d: 320 }, { e: 'e-send', k: 'fire', t: 'C1', d: 640 },
+            { e: 'e-gh', k: 'reply', t: '202', rev: true, d: 300 }, { e: 'e-gh', k: 'reply', t: '202', rev: true, d: 750 },
+          ],
+          apply: (s) => { s.queue.push('M1', 'M2', 'C1'); s.receiver = '202 ×2, 3 queued'; } },
+        { c: 'Each receiver then calls the starter. The starter has a reserved concurrency of 1, so Lambda holds the second call until the first is done.', focus: ['starter'],
+          moves: [{ e: 'e-poke', k: 'poke' }, { e: 'e-poke', k: 'poke', d: 320 }],
+          apply: (s) => { s.held = 1; s.starter = ['call 1 of 2', '']; } },
+        { c: 'The first call counts as a fire waiting. ECS lists no task, so the starter calls RunTask.', focus: ['starter', 'task'],
+          moves: [...ecsCheck(), { e: 'e-run', k: 'signal', t: 'RunTask', d: 500 }],
+          apply: (s) => { s.starter = [WAITS + ' · tasks 0', '→ RunTask']; startTask(s); } },
+        { c: 'The held call runs next. The task is already listed, so the starter starts nothing. A repeated call costs one check and nothing more.', focus: ['starter'],
+          pre: (s) => { s.held = 0; s.starter = ['call 2 of 2', '']; }, moves: ecsCheck(),
+          apply: (s) => { s.starter = [WAITS + ' · tasks 1', '→ nothing']; } },
+        { c: 'The task comes up, long-polls the lane and takes M1, the head of the line. Its turn restores the login, carries the comment to the owner session and stores any refresh back.', focus: ['task', 'out'],
+          pre: (s) => { take(s); }, moves: turnMoves('M1', 'msg'),
+          apply: (s) => { working(s, 'M1'); out(s, 'msg → owner'); } },
+        { c: 'The task clears the CLI\'s state and takes M2, the same comment for the subscribed session. Each fire is its own turn.', focus: ['task', 'out'],
+          pre: (s) => { take(s); }, moves: turnMoves('M2', 'msg'),
+          apply: (s) => { working(s, 'M2'); out(s, 'msg → subscriber'); } },
+        { c: 'Then C1. The turn reads what the closed issue was blocking and finds one claimed ticket. It queues U1, an unblocked fire, and calls nobody, because the task that will take U1 is already running.', focus: ['queue', 'task'],
+          pre: (s) => { take(s); },
+          moves: [{ e: 'e-take', k: 'fire', t: 'C1' }, { e: 'e-restore', k: 'login', d: 650 }, { e: 'e-turnq', k: 'fire', t: 'U1', d: 1300 }, { e: 'e-store', k: 'login', d: 1750 }],
+          apply: (s) => { working(s, 'C1'); s.queue.push('U1'); } },
+        { c: 'Then U1, which tells the ticket\'s session its blocker has closed. Four fires ran in lane order, one turn at a time, for one cold start.', focus: ['task', 'out'],
+          pre: (s) => { take(s); }, moves: turnMoves('U1', 'msg'),
+          apply: (s) => { working(s, 'U1'); out(s, 'msg → ticket'); } },
+        { c: 'The lane stays empty for 60 seconds, so the task exits. Its stop event calls the starter, which finds no fire waiting.', focus: ['starter'],
+          pre: (s) => { s.task.status = 'stopping'; s.task.stage = 'exit'; s.task.fire = null; },
+          moves: [{ e: 'e-stop', k: 'poke', d: 500 }, ...checks(1500)],
+          apply: (s) => { noTask(s); s.starter = [NONE + ' · tasks 0', '→ nothing']; } },
+      ],
+    },
+    {
+      id: 'exit-gap',
+      name: 'The exit gap',
+      intro: 'A task has just finished a turn and is in its idle grace. The lane is empty.',
+      init: () => {
+        const s = idle();
+        s.task = { status: 'running', stage: 'idle', fire: null, note: '' };
+        s.out = ['msg → session'];
+        return s;
+      },
+      steps: [
+        { c: 'Sixty seconds pass with nothing received, so the task starts to exit. ECS still lists it while it stops.', focus: ['task'],
+          apply: (s) => { s.task.status = 'stopping'; s.task.stage = 'exit'; } },
+        { c: 'At that moment a comment arrives. The receiver queues M7, answers 202 and calls the starter.', focus: ['recv', 'queue'],
+          moves: [
+            { e: 'e-gh', k: 'delivery', t: 'issue_comment' }, { e: 'e-send', k: 'fire', t: 'M7', d: 900 },
+            { e: 'e-gh', k: 'reply', t: '202', rev: true, d: 1000 }, { e: 'e-poke', k: 'poke', d: 1300 },
+          ],
+          apply: (s) => { s.queue.push('M7'); s.receiver = '202, queued'; s.starter = ['receiver call', '']; } },
+        { c: 'The call counts as M7 waiting, but ECS still lists the stopping task, so the starter starts nothing. The exiting task will not read the lane again, so M7 now waits with no reader.', focus: ['starter'],
+          moves: ecsCheck(), apply: (s) => { s.starter = [WAITS + ' · tasks 1', '→ nothing']; } },
+        { c: 'The task finishes stopping. Its stop event goes to the governor-task-stopped rule, which calls the starter.', focus: ['starter'],
+          pre: (s) => { noTask(s); }, moves: [{ e: 'e-stop', k: 'poke' }], apply: (s) => { s.starter = ['stop event', '']; } },
+        { c: 'The starter asks the lane and ECS. M7 waits and no task runs, so it calls RunTask. The stop event is what closes the gap.', focus: ['starter', 'task'],
+          moves: [...checks(), { e: 'e-run', k: 'signal', t: 'RunTask', d: 700 }],
+          apply: (s) => { s.starter = [WAITS + ' · tasks 0', '→ RunTask']; startTask(s); } },
+        { c: 'The new task takes M7 and runs its turn. M7 waited for one stop and one cold start.', focus: ['task', 'out'],
+          pre: (s) => { take(s); }, moves: turnMoves('M7', 'msg'),
+          apply: (s) => { working(s, 'M7'); out(s, 'msg → session'); } },
+        { c: 'If a stop event is ever lost, the backstop schedule still calls the starter every minute. This time it finds a task running and does nothing.', focus: ['minute', 'starter'],
+          moves: [{ e: 'e-backstop', k: 'poke' }, ...checks(800)],
+          apply: (s) => { s.starter = [NONE + ' · tasks 1', '→ nothing']; } },
+      ],
+    },
+    {
+      id: 'failed-start',
+      name: 'A failed start',
+      intro: 'Nothing is running. A push to a PR is about to queue a review.',
+      init: idle,
+      steps: [
+        { c: 'The receiver turns the delivery into R4, a review fire. It queues R4, answers 202 and calls the starter.', focus: ['recv', 'queue'],
+          moves: [
+            { e: 'e-gh', k: 'delivery', t: 'pull_request' }, { e: 'e-send', k: 'fire', t: 'R4', d: 900 },
+            { e: 'e-gh', k: 'reply', t: '202', rev: true, d: 1000 }, { e: 'e-poke', k: 'poke', d: 1300 },
+          ],
+          apply: (s) => { s.queue.push('R4'); s.receiver = '202, queued'; s.starter = ['receiver call', '']; } },
+        { c: 'R4 waits and ECS lists no task, so the starter calls RunTask. It marks the task\'s startedBy as governor-starter/attempt-1.', focus: ['starter', 'task'],
+          moves: [...ecsCheck(), { e: 'e-run', k: 'signal', t: 'RunTask', d: 500 }],
+          apply: (s) => { s.starter = [WAITS + ' · tasks 0', '→ RunTask, attempt-1']; startTask(s); } },
+        { c: 'The image pull is refused, so the task stops before its container runs.', focus: ['task'],
+          apply: (s) => { s.task.status = 'failed'; s.task.note = 'image pull refused'; } },
+        { c: 'Its stop event, with stop code TaskFailedToStart, goes to the governor-not-run rule, which calls the starter. The task never took R4, so R4 is still on the lane. Nothing has to put it back.', focus: ['starter', 'queue'],
+          pre: (s) => { noTask(s); }, moves: [{ e: 'e-stop', k: 'poke' }], apply: (s) => { s.starter = ['failed start, attempt 1', '']; } },
+        { c: 'R4 still waits and no task runs. The starter reads attempt 1 from the stopped task\'s startedBy and calls RunTask again as attempt-2.', focus: ['starter', 'task'],
+          moves: [...checks(), { e: 'e-run', k: 'signal', t: 'RunTask', d: 700 }],
+          apply: (s) => { s.starter = [WAITS + ' · tasks 0', '→ RunTask, attempt-2']; startTask(s); } },
+        { c: 'This task starts and takes R4. The starter allows 3 attempts in a row. When a third fails, it logs start-gave-up at error, which pages, and the next receiver call or the backstop begins a new chain.', focus: ['task', 'out'],
+          pre: (s) => { take(s); }, moves: turnMoves('R4', 'review'),
+          apply: (s) => { working(s, 'R4'); out(s, 'review posted'); } },
+      ],
+    },
+    {
+      id: 'refused',
+      name: 'Refused at the receiver',
+      intro: 'Some requests never reach the lane. The receiver answers them itself, because the caller needs the answer.',
+      init: idle,
+      steps: [
+        { c: 'A request arrives at a hook\'s address with a signature that does not match its key.', focus: ['recv'],
+          moves: [{ e: 'e-hook', k: 'delivery', t: 'hook' }], apply: (s) => { s.receiver = 'bad signature'; } },
+        { c: 'The receiver answers 401. Nothing is queued, and the starter is never called.', focus: ['recv', 'hook'],
+          moves: [{ e: 'e-hook', k: 'reply', t: '401', rev: true }], apply: (s) => { s.receiver = '401, nothing queued'; } },
+        { c: 'A correctly signed hook call arrives. The receiver checks the signature, then counts the fire against the hook\'s hourly cap in its own table.', focus: ['recv'],
+          moves: [{ e: 'e-hook', k: 'delivery', t: 'hook' }], apply: (s) => { s.receiver = 'at cap this hour'; } },
+        { c: 'The hook has had all its fires for this hour, so the receiver answers 429. Again nothing is queued.', focus: ['recv', 'hook'],
+          moves: [{ e: 'e-hook', k: 'reply', t: '429', rev: true }], apply: (s) => { s.receiver = '429, nothing queued'; } },
+        { c: 'A stranger installs the App and opens an issue on their own repo. Their owner is not on the owner list.', focus: ['recv'],
+          moves: [{ e: 'e-gh', k: 'delivery', t: 'issues' }], apply: (s) => { s.receiver = 'owner not listed'; } },
+        { c: 'The receiver answers 200 with that reason, which shows in the App\'s Recent Deliveries. Nothing is queued, and neither the starter nor the task ever sees the request.', focus: ['recv', 'gh'],
+          moves: [{ e: 'e-gh', k: 'reply', t: '200', rev: true }], apply: (s) => { s.receiver = '200, nothing queued'; } },
+      ],
+    },
+  ];
+
+
+  // Rendering.
+  const chip = (cls, text, w) => {
+    const g = document.createElementNS(SVGNS, 'g');
+    g.setAttribute('class', cls);
+    const r = document.createElementNS(SVGNS, 'rect');
+    r.setAttribute('x', -w / 2); r.setAttribute('y', -10); r.setAttribute('width', w); r.setAttribute('height', 20); r.setAttribute('rx', 4);
+    const t = document.createElementNS(SVGNS, 'text');
+    t.setAttribute('x', 0); t.setAttribute('y', 0.5); t.setAttribute('text-anchor', 'middle'); t.setAttribute('dominant-baseline', 'central');
+    t.textContent = text;
+    g.append(r, t);
+    return g;
+  };
+  const dot = (cls, r) => {
+    const c = document.createElementNS(SVGNS, 'circle');
+    c.setAttribute('class', cls); c.setAttribute('r', r); c.setAttribute('cx', 0); c.setAttribute('cy', 0);
+    return c;
+  };
+  const moverFor = (m) => {
+    switch (m.k) {
+      case 'fire': return chip('chip-fire', m.t, 34);
+      case 'delivery': return chip('chip-delivery', m.t, m.t.length * 6.2 + 14);
+      case 'reply': return chip('chip-reply' + (/^[45]/.test(m.t) ? ' bad' : ''), m.t, 32);
+      case 'signal': return chip('chip-signal', m.t, m.t.length * 6.2 + 14);
+      case 'poke': return dot('dot-poke', 5);
+      case 'login': return dot('dot-login', 5);
+      default: return dot('dot-query', 3.5);
+    }
+  };
+
+  const render = (s, focus) => {
+    const q = $('#q-chips');
+    q.replaceChildren();
+    const extra = s.queue.length > 5 ? s.queue.length - 4 : 0;
+    const shown = extra ? s.queue.slice(0, 4) : s.queue;
+    shown.forEach((id, i) => {
+      const g = chip('chip-fire', id, 34);
+      g.setAttribute('transform', `translate(${613 - i * 38},215)`);
+      q.append(g);
+    });
+    if (extra) {
+      const t = document.createElementNS(SVGNS, 'text');
+      t.setAttribute('class', 'hint'); t.setAttribute('x', 461); t.setAttribute('y', 219); t.setAttribute('text-anchor', 'middle');
+      t.textContent = `+${extra}`;
+      q.append(t);
+    }
+    $('#q-empty').style.display = s.queue.length ? 'none' : '';
+
+    const task = $('#n-task');
+    ['none', 'starting', 'running', 'stopping', 'failed'].forEach((st) => task.classList.remove('status-' + st));
+    task.classList.add('status-' + s.task.status);
+    STAGES.forEach(([key]) => {
+      const p = pillEls[key];
+      const on = s.task.stage === key;
+      let cls = 'pill';
+      if (on) cls += ' on';
+      if (on && key === 'turn' && s.task.fire) cls += ' working';
+      if (on && s.task.status === 'failed') cls += ' bad';
+      p.g.setAttribute('class', cls);
+      let label = p.label;
+      if (key === 'turn' && s.task.fire) label = `turn · ${s.task.fire}`;
+      if (on && s.task.note) label = s.task.note;
+      p.t.textContent = label;
+    });
+
+    $('#st-0').textContent = s.starter[0] || '';
+    $('#st-1').textContent = s.starter[1] || '';
+    for (let i = 0; i < 3; i++) $('#held-' + i).setAttribute('class', 'held' + (i < s.held ? '' : ' off'));
+    $('#recv-read').textContent = s.receiver;
+    for (let i = 0; i < 3; i++) $('#out-' + i).textContent = s.out[i] || '';
+
+    svg.querySelectorAll('.node').forEach((n) => n.classList.toggle('focus', (focus || []).includes(n.dataset.key)));
+  };
+
+  // Animation.
+  let runId = 0;
+  const resetWires = () => {
+    movers.replaceChildren();
+    svg.querySelectorAll('.wire').forEach((w) => { w.dataset.lit = '0'; w.classList.remove('lit'); });
+  };
+  const light = (path, on) => {
+    const n = Math.max(0, (Number(path.dataset.lit) || 0) + (on ? 1 : -1));
+    path.dataset.lit = String(n);
+    path.classList.toggle('lit', n > 0);
+  };
+  const move = (m, my) => new Promise((resolve) => {
+    if (reduce) { resolve(); return; }
+    const path = document.getElementById(m.e);
+    const len = path.getTotalLength();
+    const dur = Math.min(1300, Math.max(560, len * 3));
+    const el = moverFor(m);
+    const begin = performance.now() + (m.d || 0);
+    let shown = false;
+    const frame = (now) => {
+      if (my !== runId) { resolve(); return; }
+      if (now < begin) { requestAnimationFrame(frame); return; }
+      if (!shown) { movers.append(el); light(path, true); shown = true; }
+      const p = Math.min(1, (now - begin) / dur);
+      const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      const pt = path.getPointAtLength((m.rev ? 1 - e : e) * len);
+      el.setAttribute('transform', `translate(${pt.x},${pt.y})`);
+      if (p < 1) { requestAnimationFrame(frame); return; }
+      setTimeout(() => {
+        if (my === runId) { el.remove(); light(path, false); }
+        resolve();
+      }, 140);
+    };
+    requestAnimationFrame(frame);
+  });
+  const sleep = (ms, my) => new Promise((resolve) => setTimeout(() => resolve(my === runId), ms));
+
+  // Player state.
+  let sc = SCENARIOS[0];
+  let pos = 0;
+  let playing = false;
+  let animating = false;
+
+  const stateAt = (p) => {
+    const s = clone(sc.init());
+    for (let i = 0; i < p; i++) {
+      const st = sc.steps[i];
+      if (st.pre) st.pre(s);
+      if (st.apply) st.apply(s);
+    }
+    return s;
+  };
+  const captionAt = (i) => (i === 0 ? sc.intro : sc.steps[i - 1].c);
+  const focusAt = (i) => (i === 0 ? [] : sc.steps[i - 1].focus || []);
+  const shownIndex = () => (animating ? pos + 1 : pos);
+
+  const playBtn = $('#play');
+  const updateUI = () => {
+    const n = sc.steps.length;
+    const i = shownIndex();
+    $('#caption').textContent = captionAt(i);
+    $('#counter').textContent = i === 0 ? `${sc.name} · start` : `${sc.name} · step ${i} of ${n}`;
+    playBtn.textContent = playing ? 'Pause' : (pos >= n ? 'Replay' : 'Play');
+    $('#back').disabled = i === 0;
+    $('#next').disabled = i >= n && !animating;
+    document.querySelectorAll('#dots .dot').forEach((d, k) => {
+      d.classList.toggle('now', k === i);
+      d.classList.toggle('past', k < i);
+      d.setAttribute('aria-current', k === i ? 'step' : 'false');
+    });
+  };
+
+  const halt = () => { runId++; playing = false; animating = false; resetWires(); };
+  const show = (p) => {
+    halt();
+    pos = Math.max(0, Math.min(sc.steps.length, p));
+    render(stateAt(pos), focusAt(pos));
+    updateUI();
+  };
+
+  const advance = async (my) => {
+    const step = sc.steps[pos];
+    const s = stateAt(pos);
+    animating = true;
+    updateUI();
+    if (step.pre) step.pre(s);
+    render(s, step.focus || []);
+    await Promise.all((step.moves || []).map((m) => move(m, my)));
+    if (my !== runId) return false;
+    if (step.apply) step.apply(s);
+    render(s, step.focus || []);
+    pos++;
+    animating = false;
+    updateUI();
+    return true;
+  };
+
+  const play = async () => {
+    if (pos >= sc.steps.length) show(0); else halt();
+    playing = true;
+    const my = runId;
+    updateUI();
+    while (my === runId && pos < sc.steps.length) {
+      const t0 = performance.now();
+      const ok = await advance(my);
+      if (!ok) return;
+      const dwell = 1000 + captionAt(pos).length * 32;
+      const left = dwell - (performance.now() - t0);
+      if (left > 0 && !(await sleep(left, my))) return;
+    }
+    if (my === runId) { playing = false; updateUI(); }
+  };
+
+  const next = () => {
+    if (animating) { show(pos + 1); return; }
+    if (pos >= sc.steps.length) return;
+    halt();
+    advance(runId);
+  };
+  const back = () => { if (animating) show(pos); else show(pos - 1); };
+  const togglePlay = () => {
+    if (playing) {
+      if (animating) show(pos + 1); else { halt(); updateUI(); }
+    } else {
+      play();
+    }
+  };
+
+  // Tabs and dots.
+  const tabs = $('#tabs');
+  SCENARIOS.forEach((x) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'tab'; b.textContent = x.name; b.dataset.id = x.id;
+    b.addEventListener('click', () => select(x.id, true));
+    tabs.append(b);
+  });
+  const buildDots = () => {
+    const dots = $('#dots');
+    dots.replaceChildren();
+    for (let k = 0; k <= sc.steps.length; k++) {
+      const d = document.createElement('button');
+      d.type = 'button'; d.className = 'dot';
+      d.setAttribute('aria-label', k === 0 ? 'Start' : `Step ${k}`);
+      d.addEventListener('click', () => show(k));
+      dots.append(d);
+    }
+  };
+  const select = (id, autoplay) => {
+    const found = SCENARIOS.find((x) => x.id === id) || SCENARIOS[0];
+    sc = found;
+    tabs.querySelectorAll('.tab').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.id === sc.id)));
+    buildDots();
+    show(0);
+    try { if (location.hash !== '#' + sc.id) history.replaceState(null, '', '#' + sc.id); } catch (e) { /* the hash is a convenience */ }
+    if (autoplay && !reduce) setTimeout(() => { if (!playing && pos === 0 && sc === found) play(); }, 500);
+  };
+
+  playBtn.addEventListener('click', togglePlay);
+  $('#next').addEventListener('click', next);
+  $('#back').addEventListener('click', back);
+  $('#restart').addEventListener('click', () => { show(0); play(); });
+  window.addEventListener('hashchange', () => {
+    const id = location.hash.slice(1);
+    if (id && id !== sc.id && SCENARIOS.some((x) => x.id === id)) select(id, true);
+  });
+
+  const initial = SCENARIOS.find((x) => '#' + x.id === location.hash);
+  select(initial ? initial.id : SCENARIOS[0].id, true);
+})();
+</script>
+</body>
+</html>

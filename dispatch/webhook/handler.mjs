@@ -4,14 +4,17 @@
  * package` in .github/workflows/deploy.yml (infra/governor.cfn.yml,
  * WebhookFunction); the AWS SDK is the runtime's own.
  *
- * It starts nothing itself: every fire goes on the lane the starter drains
- * (starter-handler.mjs), one message group, so fires start one at a time in
- * the order they arrived.
+ * It starts nothing itself: every fire goes on the lane, one message group,
+ * which the dispatcher task reads in the order the fires arrived
+ * (dispatch/lane.mjs). Once a request has queued its fires, it calls the
+ * starter asynchronously (poke.mjs), which starts a task if none runs.
  */
 
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
+import { poking } from './poke.mjs';
 import { hookTable } from './hook-table.mjs';
 import { LANE, ownersOf, selectLabelsOf } from './fire.mjs';
 import { appIdOf, cachedSecret, handle, handleSchedule } from './route.mjs';
@@ -19,6 +22,7 @@ import { appIdOf, cachedSecret, handle, handleSchedule } from './route.mjs';
 const env = process.env;
 const secrets = new SecretsManagerClient({});
 const sqs = new SQSClient({});
+const lambda = new LambdaClient({});
 // No table named: every hook request's read fails, answered 503 and logged
 // at error, never queued as if the repo had no item.
 const unset = async () => { throw new Error('HOOK_TABLE is unset'); };
@@ -63,6 +67,16 @@ const deps = {
 };
 
 /**
+ * The starter, invoked asynchronously: the receiver waits for Lambda to take
+ * the call, not for the task.
+ *
+ * @param {unknown} payload
+ */
+const invokeStarter = async (payload) => {
+  await lambda.send(new InvokeCommand({ FunctionName: String(env.STARTER_FUNCTION), InvocationType: 'Event', Payload: JSON.stringify(payload) }));
+};
+
+/**
  * Two callers: the EventBridge schedule rule, whose Input is the bare
  * `{"kind":"schedule"}`, and the Function URL, whose event carries its path,
  * headers and a body: a hook's path, or any other for GitHub's deliveries.
@@ -70,7 +84,13 @@ const deps = {
  * @param {{ kind?: string, rawPath?: string, headers?: Record<string, string>, body?: string, isBase64Encoded?: boolean }} request
  */
 export const handler = async (request) => {
-  if (request.kind === 'schedule') return handleSchedule(deps);
-  const { statusCode, body } = await handle({ path: request.rawPath, headers: request.headers ?? {}, body: request.body, isBase64Encoded: request.isBase64Encoded }, deps);
+  const { deps: queueing, poke } = poking(deps, invokeStarter);
+  if (request.kind === 'schedule') {
+    const answer = await handleSchedule(queueing);
+    await poke();
+    return answer;
+  }
+  const { statusCode, body } = await handle({ path: request.rawPath, headers: request.headers ?? {}, body: request.body, isBase64Encoded: request.isBase64Encoded }, queueing);
+  await poke();
   return { statusCode, headers: { 'content-type': 'text/plain' }, body };
 };
