@@ -41,7 +41,7 @@ export const HOOK_DEDUP_WINDOW_MS = 5 * 60 * 1000;
  * lands inside the queue's window and is dropped.
  */
 export const HOOK_CLOCK_AHEAD_MS = 30 * 1000;
-export const HOOK_CLOCK_BEHIND_MS = HOOK_DEDUP_WINDOW_MS - HOOK_CLOCK_AHEAD_MS;
+export const HOOK_CLOCK_BEHIND_MS = 4 * 60 * 1000 + 30 * 1000;
 
 const PREFIX = '/hooks/';
 const OWNER = /^[A-Za-z0-9-]+$/;

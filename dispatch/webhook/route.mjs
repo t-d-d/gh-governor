@@ -651,7 +651,7 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
   if (ahead > HOOK_CLOCK_AHEAD_MS || -ahead > HOOK_CLOCK_BEHIND_MS) {
     const reason = 'the signature\'s time is more than 30 seconds ahead of the receiver\'s clock or more than 4 minutes 30 seconds behind it';
     deps.log('hook-refused', { ...about, keyVersion: signature.version, t: signature.t, reason });
-    return { statusCode: 401, body: 'signature time is more than 30 seconds ahead of the receiver\'s clock or more than 4 minutes 30 seconds behind it' };
+    return { statusCode: 401, body: reason };
   }
   const owner = repo.slice(0, repo.indexOf('/'));
   if (!ownerListed(deps.owners, owner)) {
