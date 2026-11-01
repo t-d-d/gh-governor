@@ -4,7 +4,8 @@
 name: gate
 
 on:
-  # main is gated by deploy.yml, which calls this before it deploys.
+  # main is gated by deploy.yml and pages.yml, which call this before they
+  # publish.
   push:
     branches-ignore: [main]
   pull_request:

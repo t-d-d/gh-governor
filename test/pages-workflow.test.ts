@@ -68,7 +68,8 @@ describe('the pages workflow publishes docs/pages on a green merge to main', () 
   test('the gate and the stack deploy do not publish pages', () => {
     for (const file of ['gate.yml', 'deploy.yml']) {
       const { codeOnly } = loadWorkflow(resolve(REPO_ROOT, '.github/workflows', file));
-      assert.doesNotMatch(codeOnly, /pages/, `${file} leaves pages to pages.yml`);
+      assert.doesNotMatch(codeOnly, /actions\/(?:configure|upload|deploy)-pages@/, `${file} runs no Pages action`);
+      assert.doesNotMatch(codeOnly, /^\s*pages:\s*write\b/m, `${file} holds no Pages permission`);
     }
   });
 });
@@ -79,7 +80,8 @@ describe('the pages folder', () => {
   test('holds an index.html that links every other page', () => {
     const files = htmlFiles();
     assert.ok(files.includes('index.html'), 'docs/pages/index.html exists');
-    const index = readFileSync(join(PAGES_DIR, 'index.html'), 'utf8');
+    // A link inside an HTML comment, such as the index's template line, lists nothing.
+    const index = readFileSync(join(PAGES_DIR, 'index.html'), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
     const missing = files.filter((name) => name !== 'index.html' && !index.includes(`href="${name}"`));
     assert.deepEqual(missing, [], 'the index lists each page');
   });
@@ -91,6 +93,9 @@ describe('the pages folder', () => {
       const html = readFileSync(join(PAGES_DIR, name), 'utf8');
       assert.doesNotMatch(html, /<script[^>]*\bsrc=/i, `${name} loads no script file`);
       assert.doesNotMatch(html, /<link[^>]*rel=["']?stylesheet/i, `${name} loads no stylesheet file`);
+      assert.doesNotMatch(html, /<link[^>]*rel=["']?modulepreload/i, `${name} preloads no script file`);
+      assert.doesNotMatch(html, /@import\b/i, `${name} imports no stylesheet from its CSS`);
+      assert.doesNotMatch(html, /\bimport\s*(?:\(\s*)?(?:[^'"()]*\bfrom\s*)?["'](?:https?:)?\/\//i, `${name} imports no script from another site`);
     }
   });
 });

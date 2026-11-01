@@ -26,8 +26,8 @@ on:
 permissions:
   contents: read
 
-# One publish at a time, and a queued one is not cancelled, so the last
-# merge's pages are the ones served.
+# One publish at a time. A running publish is not cancelled. A newer run
+# replaces one still waiting, so the last merge's pages are the ones served.
 concurrency:
   group: pages
   cancel-in-progress: false
