@@ -847,16 +847,15 @@ describe('routeEvent — subscribers', () => {
     assert.ok(abandoned.sent.every((m) => m.closing === true));
   });
 
-  // The owner's message of a merge into main is marked merged.
-  test('a PR merged into main marks its owner\'s message merged, and no subscriber\'s; a merge elsewhere or a close marks none', () => {
+  // Nothing reads a merged mark any more, so no message carries one.
+  test('a PR closed, merged into main or elsewhere or not merged, marks no message merged', () => {
     const closedWith = (over: Record<string, unknown>) => pullRequestEvent('closed', { pull_request: { ...pullRequestEvent('closed').pull_request, ...over } });
-    const merged = messages('pull_request', closedWith({ merged: true, base: { ref: 'main' } }));
-    assert.deepEqual(merged.sent.map((m) => [m.session, m.merged]), [[OWNER, true], [REVIEWER, undefined]]);
-    for (const payload of [closedWith({ merged: true, base: { ref: 'claude/stacked' } }), closedWith({ merged: false, base: { ref: 'main' } })]) {
-      assert.ok(messages('pull_request', payload).sent.every((m) => m.merged === undefined), JSON.stringify(payload.pull_request));
+    for (const over of [{ merged: true, base: { ref: 'main' } }, { merged: true, base: { ref: 'claude/stacked' } }, { merged: false, base: { ref: 'main' } }, { merged: true, base: { ref: 'main' }, body: 'No session named.' }]) {
+      const { all } = messages('pull_request', closedWith(over));
+      const sent = all.filter((f) => f.fire.kind === 'message');
+      assert.ok(sent.length > 0, JSON.stringify(over));
+      assert.ok(sent.every((f) => !('merged' in f.fire)), JSON.stringify(over));
     }
-    const local = messages('pull_request', closedWith({ merged: true, base: { ref: 'main' }, body: 'No session named.' }));
-    assert.deepEqual(local.all.filter((f) => f.fire.kind === 'message').map((f) => [(f.fire as { byBranch?: true }).byBranch, (f.fire as { merged?: true }).merged]), [[true, true]], 'a local owner by branch is the owner');
   });
 
   // GitHub has no event for a PR a merge left conflicted, so the
@@ -1787,11 +1786,11 @@ describe('routeEvent — every served repo', () => {
     assert.deepEqual(firesOf('workflow_run', run({ event: 'schedule', head_branch: 'main' }), ASKME, 'trunk').fires, [], 'off the default branch');
   });
 
-  test('a merge into another repo\'s default branch marks its owner\'s message merged', () => {
-    const merged = (base: string) => firesOf('pull_request', { action: 'closed', pull_request: { ...pr, merged: true, merge_commit_sha: SHA, base: { ref: base } }, sender: member }, ASKME, 'trunk')
-      .fires.find((f) => (f.fire as { session?: string }).session === OWNER)?.fire as { merged?: boolean } | undefined;
-    assert.equal(merged('trunk')?.merged, true);
-    assert.equal(merged('feature')?.merged, undefined);
+  test('a merge into another repo\'s default branch marks no message merged', () => {
+    const { fires } = firesOf('pull_request', { action: 'closed', pull_request: { ...pr, merged: true, merge_commit_sha: SHA, base: { ref: 'trunk' } }, sender: member }, ASKME, 'trunk');
+    const owner = fires.find((f) => (f.fire as { session?: string }).session === OWNER)?.fire;
+    assert.ok(owner !== undefined);
+    assert.ok(!('merged' in owner));
   });
 
   test('the events the receiver routes are the ones the App\'s webhook subscribes to', () => {

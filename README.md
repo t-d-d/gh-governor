@@ -135,7 +135,7 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 - `days` (required): the day limit, in whole days, at least one. The periodic is due on the sweep nearest that many days after its last fire.
 - `counts`: any of `merges` (pull requests merged into the default branch), `issuesOpened` and `issuesClosed`, each a whole number of at least one. The periodic is also due once that many have happened since its last fire, whichever limit comes first. At its day limit, a periodic with counts that counted nothing starts no session, and its next day limit counts from then.
 - `gapHours`: the fewest whole hours between two runs, at least one. A count reached inside the gap fires on the first event or sweep after it.
-- `connectors`: the claude.ai connectors the session needs, each by its name in the account's connector list, such as `gmail_prod`: letters, digits, hyphens and underscores, each named once. A session governor starts with `claude --cloud` has none of the account's connectors, so a periodic that names any starts as a run of a routine instead, with those connectors attached and no others. Governor keeps one routine for the periodic, named after the repo and the periodic, and fires it itself; the routine's own schedule never comes due. A connector the account has not connected starts nothing and pages (`governor-connector-missing`), and the periodic stays due. This works in public repos too, where whatever the session writes is public.
+- `connectors`: the claude.ai connectors the session needs, each by its name in the account's connector list, such as `gmail_prod`: letters, digits, hyphens and underscores, each named once. A session governor starts with `claude --cloud` has none of the account's connectors, so a periodic that names any starts as a run of a routine instead, with those connectors attached and no others. Governor keeps one routine for the periodic, named after the repo and the periodic, and fires it itself; the routine's own schedule never comes due. A connector the account has not connected starts nothing and pages (`governor-connector-missing`), and the periodic stays due. So does a routine the routines API refuses (`governor-routine-refused`), and the repo's tickets and other periodics still start. This works in public repos too, where whatever the session writes is public.
 
 ```json
 { "name": "Code review", "prompt": "Review what merged since the last review.", "days": 7, "counts": { "merges": 20 }, "gapHours": 4 }
@@ -238,7 +238,7 @@ Governor-Signature: v=1,t=1790000000,sha256=<hex>
 
 - `text` is plain text, at most 32 KiB. A fire also has to fit the task's start, which holds about 6,800 characters of plain text, and as few as 2,300 where every character is a quote, a backslash or a newline. Send the alarm's summary, not its whole payload.
 - `v` is the key version, `t` the time in Unix seconds, and the hex is the HMAC-SHA256 of `<t>.<raw body>`, keyed with the key's hex digits as text. Sign the exact bytes you send.
-- `t` must be within five minutes of governor's clock. The same request sent twice inside five minutes is one fire.
+- `t` must be no more than 30 seconds ahead of governor's clock and no more than 4 minutes 30 seconds behind it, so sign with the current time. The same request sent twice inside five minutes is one fire, and a request stays valid for at most five minutes, so a replay never starts a second session.
 
 In Node:
 
@@ -261,7 +261,7 @@ The known answer in test/dispatch-hook.test.ts checks a caller's code: under the
 | `202` | The fire was queued. |
 | `200` | The repo's owner is not on the deployment's owner list. Nothing was queued. |
 | `400` | The body is not JSON, or holds no string `text`. |
-| `401` | The header is missing or malformed, the signature does not match, or `t` is more than five minutes from governor's clock. Also a hook the repo's file did not list when governor last read it, or a key version older than the one it named. |
+| `401` | The header is missing or malformed, the signature does not match, or `t` is more than 30 seconds ahead of governor's clock or more than 4 minutes 30 seconds behind it. Also a hook the repo's file did not list when governor last read it, or a key version older than the one it named. |
 | `404` | The path under `/hooks/` names no repo and hook. |
 | `413` | The text is over 32 KiB, or too long to start a task with. |
 | `429` | The hook has had its `perHour` fires this clock hour. Nothing was queued: send it next hour, or not at all. |
@@ -269,7 +269,7 @@ The known answer in test/dispatch-hook.test.ts checks a caller's code: under the
 
 Governor reads the repo's file on its own schedule and on GitHub events, and keeps the list of hooks, key versions and caps it last read where the receiver can check it. So a new hook answers `401` until governor next reads the file, a raised `keyVersion` turns the old key away at the receiver from then on, and a changed `perHour` holds from then on. Before governor has read the file at all, every signed request is queued, up to 20 an hour per hook.
 
-A `202` means queued, not started. The task then refuses a fire whose repo turns `hooks` off or lists no hook of that name, logged at warn, and one signed with a key version other than the hook's `keyVersion`, which pages as `governor-hook-key-stale`. Otherwise, if the hook's last session is still open, the fire goes into it as a message: governor's relay line, then which hook fired and when, the caller's text quoted as the caller's data, and the session's standing line. So one session covers a burst of alarms. Once that session has signed off and been archived, or archived by hand, the next fire starts a new session in the repo's environment. A fire for one hook never reaches another hook's session.
+A `202` means queued, not started. The task then refuses a fire whose repo turns `hooks` off or lists no hook of that name, logged at warn, and one signed with a key version other than the hook's `keyVersion`, which pages as `governor-hook-key-stale`. Otherwise, if the hook's last session is still open, the fire goes into it as a message: governor's relay line naming the hook, then which hook fired and when, the caller's text quoted as the caller's data, and the session's standing line. So one session covers a burst of alarms. Once that session has signed off and been archived, or archived by hand, the next fire starts a new session in the repo's environment. A fire for one hook never reaches another hook's session.
 
 **Minting a key.** Each hook's key is derived from the stack's secret `governor/hook-secret`, the repo, the hook's name and its key version, so governor stores no key. The owner runs the key script once per hook, after the pull request that adds the hook has merged. It needs an AWS identity that may read that secret and the stack's outputs, and the `gh` CLI logged in as an admin of the repo:
 
@@ -478,13 +478,12 @@ From a machine with the AWS CLI signed in as an identity that may write the secr
 3. The address the alarms email, in Parameter Store: `aws ssm put-parameter --name /governor/alert-email --type String --value <address> --profile <p>`. The stack reads it there on every deploy, so it never passes through GitHub. To change it, put the new address with `--overwrite`, deploy, and confirm the subscription AWS emails to the new address.
 4. Optional, with a drop box: the drop-box writer, `node scripts/save-secret.mjs session-log-writer --file <writer.txt> --profile <p>`. The file holds 32 or more lowercase hex digits.
 
-### 5. Set the repository variables and secret
+### 5. Set the repository variables and secrets
 
-Under the repo's **Settings → Secrets and variables → Actions**. Anyone can read a public repo's run logs, and Actions masks only secrets, so the drop box is a secret.
+Under the repo's **Settings → Secrets and variables → Actions**. Anyone can read a public repo's run logs, and Actions masks only secrets, so the deploy role's ARN and the drop box are secrets.
 
 | Variable | Value |
 |---|---|
-| `AWS_DEPLOY_ROLE_ARN` | The deploy role's ARN, from step 3. Until it is set, a push to `main` runs the gate and deploys nothing. |
 | `AWS_REGION` | The region to deploy to, the bootstrap stack's. Default `us-east-1`. |
 | `GOVERNOR_OWNERS` | The GitHub accounts whose installations are served, comma-separated. |
 | `APP_ID` | The App's numeric ID. |
@@ -493,6 +492,7 @@ Under the repo's **Settings → Secrets and variables → Actions**. Anyone can 
 
 | Secret | Value |
 |---|---|
+| `AWS_DEPLOY_ROLE_ARN` | The deploy role's ARN, from step 3. It carries the AWS account id, so it is a secret. Until it is set, a push to `main` runs the gate and deploys nothing. |
 | `DROP_BOX_URL` | Optional. An https URL that the PR review's transcripts are PUT under. Unset ships none. |
 
 ### 6. Run the first deploy

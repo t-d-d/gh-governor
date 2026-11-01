@@ -104,6 +104,7 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
+import { isBlocked } from '../scripts/lib/ready-work.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { launchRoutine, observed } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
@@ -120,7 +121,7 @@ import { ROW_SWITCH, closingFires, notPlannedComment, readyPrompt, specPrompt, t
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
-import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
+import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, hookSource, refusedAsArchived } from './deliveries.mjs';
 import { DISPATCH_WINDOW_MS, HOOK_PER_HOUR, LANE, RED, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, recentlyDispatched, SIGN_POSTS } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
@@ -168,6 +169,13 @@ export const SESSION_UNRECORDED = 'dispatch-session-unrecorded';
 export const CONNECTOR_MISSING = 'dispatch-connector-missing';
 
 /**
+ * The event a periodic logs when the routines API refused its routine
+ * before the fire: it starts nothing, and the repo's other launches go on,
+ * as `claude --cloud` would still start them (infra/governor.cfn.yml pages on it).
+ */
+export const ROUTINE_REFUSED = 'dispatch-routine-refused';
+
+/**
  * A claim's key, `owner/name#number`, as the repo and issue it names.
  *
  * @param {string} key
@@ -202,9 +210,10 @@ export const sessionUrlFrom = (output) => {
  *   environment, from the repo's config file. `connectors`: a periodic's
  *   claude.ai connectors, which start it as a run of its routine
  *   (dispatch/routines.mjs), the periodic named by `sessionName`.
- * @typedef {{ status: number | null, output: string, missing?: string[] }} LaunchResult
+ * @typedef {{ status: number | null, output: string, missing?: string[], refused?: true }} LaunchResult
  *   `missing`: the connectors a routine launch named that the account has
- *   not connected. It started nothing.
+ *   not connected. It started nothing. `refused`: the routines API refused
+ *   a routine launch before the fire. It started nothing.
  * @typedef {import('../scripts/lib/dispatch-router.mjs').Reader & import('./workflow.mjs').WorkflowReader & {
  *   comment: (n: number, body: string) => Promise<void>,
  *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string }>>,
@@ -587,7 +596,9 @@ export const run = async (event, deps) => {
     }
     const result = await launchRoutine({ api, repo: begin.repo, periodic: begin.sessionName, prompt: begin.prompt, environment: begin.environment, model: begin.model, connectors, sleep: deps.sleep, uuid: deps.uuid });
     deps.log('dispatch-routine-output', { repo: begin.repo, periodic: begin.sessionName, status: result.status, tail: result.output.slice(-OUTPUT_TAIL) });
-    return result;
+    // Nothing started for any other reason than a missing connector is the
+    // routines API refusing before the fire: the CLI is not at fault.
+    return result.status === 1 && result.missing === undefined ? { ...result, refused: true } : result;
   };
   /**
    * Every launch, recorded as governor's own session wherever the launcher
@@ -891,11 +902,9 @@ const startPeriodics = async ({ repo, config, counted, started, carried, deps, d
     }
     const firedAt = new Date(deps.now()).toISOString();
     const begun = deps.launch({ prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, model: DEFAULT_MODEL, repo, environment: config.environment, ...connectorsOf(periodic) });
-    const { status, output, missing } = await (deps.launchTimeoutMs === undefined ? begun : withinBudget(begun, deps.launchTimeoutMs, periodic.name));
-    if (missing !== undefined) {
-      connectorMissing(deps, repo, periodic.name, missing);
-      continue;
-    }
+    const launched = await (deps.launchTimeoutMs === undefined ? begun : withinBudget(begun, deps.launchTimeoutMs, periodic.name));
+    if (routineFault(deps, repo, periodic.name, launched)) continue;
+    const { status, output } = launched;
     const outcome = launchOutcome(status) ?? 'failed';
     const sessionUrl = outcome === 'failed' ? null : sessionUrlFrom(output);
     deps.log('dispatch-launch', { repo, issue: null, sessionName: periodic.name, periodic: periodic.name, counted, outcome, status, sessionUrl });
@@ -933,6 +942,30 @@ const connectorsOf = (periodic) => (periodic.connectors === undefined ? {} : { c
  */
 const connectorMissing = ({ log }, repo, periodic, missing) => {
   log(CONNECTOR_MISSING, { level: 'error', repo, periodic, connectors: missing, reason: `its .github/dispatch.json names ${missing.length === 1 ? 'a connector' : 'connectors'} the claude.ai account has not connected, so its session was not started: connect ${missing.join(', ')} on the account, or take ${missing.length === 1 ? 'it' : 'them'} out of the file` });
+};
+
+/**
+ * A routine launch that started nothing for a fault of its own periodic: a
+ * connector the account lacks, or the routines API refusing before the
+ * fire. Either logs an alarmed error naming the repo and the periodic, and
+ * says so, so the caller writes no record and goes on with the repo's
+ * other launches: `claude --cloud` would still start them. A launch through
+ * the CLI that failed is neither, and still skips the repo.
+ *
+ * @param {Pick<Deps, 'log'>} deps
+ * @param {string} repo
+ * @param {string} periodic
+ * @param {LaunchResult} launched
+ * @returns {boolean} Whether the launch was one of these.
+ */
+const routineFault = (deps, repo, periodic, launched) => {
+  if (launched.missing !== undefined) {
+    connectorMissing(deps, repo, periodic, launched.missing);
+    return true;
+  }
+  if (launched.refused !== true) return false;
+  deps.log(ROUTINE_REFUSED, { level: 'error', repo, periodic, reason: `the routines API refused its routine before the fire, so its session was not started and it stays due; the repo's other launches go on: ${launched.output.slice(-OUTPUT_TAIL)}` });
+  return true;
 };
 
 /**
@@ -1083,14 +1116,14 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    *
    * @param {Omit<Launch, 'repo' | 'environment'> & Partial<Pick<Launch, 'repo' | 'environment'>>} launch
    * @param {number} [until] When the budget it shares runs out.
-   * @returns {Promise<{ outcome: Dispatched['outcome'], sessionUrl: string | null, status: number | null, missing?: string[] }>}
+   * @returns {Promise<{ outcome: Dispatched['outcome'], sessionUrl: string | null, status: number | null, output: string, missing?: string[], refused?: true }>}
    */
   const start = async (launch, until) => {
     const repo = launch.repo ?? fireRepo();
     const full = { ...launch, repo, environment: launch.environment ?? configOf(repo).environment };
-    const { status, output, missing } = await budgeted(() => deps.launch(full), launch.sessionName, until);
+    const { status, output, missing, refused } = await budgeted(() => deps.launch(full), launch.sessionName, until);
     const outcome = launchOutcome(status) ?? 'failed';
-    return { outcome, sessionUrl: outcome === 'failed' ? null : sessionUrlFrom(output), status, ...(missing === undefined ? {} : { missing }) };
+    return { outcome, sessionUrl: outcome === 'failed' ? null : sessionUrlFrom(output), status, output, ...(missing === undefined ? {} : { missing }), ...(refused === undefined ? {} : { refused }) };
   };
 
   /** One reader a repo a turn. @type {Map<string, Reader>} */
@@ -1151,6 +1184,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         'byBranch' in invocation ? { pr: invocation.on, ...(invocation.poster === undefined ? {} : { poster: invocation.poster }) } : { session: invocation.session },
         text,
         {
+          source: GITHUB_SOURCE,
           fallback,
           takeover: true,
           on: on === undefined ? [] : [on],
@@ -1247,7 +1281,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       }
       if (before !== null) {
         if (plan.triage !== null) {
-          const launched = await start({ prompt: fromDispatcher(plan.triage.prompt), sessionName: plan.triage.sessionName, model: DEFAULT_MODEL });
+          const launched = await start({ prompt: fromDispatcher(plan.triage.prompt, GITHUB_SOURCE), sessionName: plan.triage.sessionName, model: DEFAULT_MODEL });
           triage = { outcome: launched.outcome, sessionUrl: launched.sessionUrl };
           deps.log('dispatch-workflow', { ...about, triage, reason: 'no one session to tell: one fresh session owns the fix' });
         }
@@ -1267,7 +1301,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
             deps.log('dispatch-workflow', { ...about, untold: owed.slice(i).map((n) => ({ session: n.session, prs: n.prs })), reason: `out of time: past ${WORKFLOW_SEND_WINDOW_MS} ms, another delivery might outrun the deadline` });
             break;
           }
-          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { fallback: note.fallback, on: note.prs, closing: note.closing, dropFrom: note.subscribed });
+          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, fallback: note.fallback, on: note.prs, closing: note.closing, dropFrom: note.subscribed });
           deliveries.push({ prs: note.prs, session: note.session, ok, answered, refused, error, fallback });
           // As dispatch/cli.mjs counts a fault: a refusal with no fallback is a gone session, told enough.
           if (ok || (refused && fallback?.outcome !== 'failed')) {
@@ -1326,7 +1360,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       reason = plan.reason;
       deps.log('dispatch-branch-run', { ...about, session: plan.session, reason });
       if (plan.session !== null && plan.text !== null) {
-        const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: plan.session }, plan.text);
+        const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: plan.session }, plan.text, { source: GITHUB_SOURCE });
         deliveries.push({ prs: [], session: plan.session, ok, answered, refused, error, fallback });
       }
     } finally {
@@ -1390,11 +1424,16 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const targets = invocation.pr === undefined
         ? (await github.openPulls()).filter((p) => !p.draft).map((p) => ({ number: p.number }))
         : [{ number: invocation.pr, ...(invocation.headSha === undefined ? {} : { headSha: invocation.headSha }) }];
+      // What each PR's run spent, for its log line: a run that reports
+      // nothing leaves the line without it.
+      /** @type {Map<number, import('./checklist.mjs').Usage>} */
+      const spent = new Map();
       const judge = cliJudge({
         skill: review.checklist,
         run: (request, pr) => budgeted(() => deps.review(request), `review #${pr}`),
         transcript: deps.transcript,
         log: deps.log,
+        spent: (pr, usage) => { spent.set(pr, usage); },
       });
       for (const [i, target] of targets.entries()) {
         if (deps.now() - started > REVIEW_WINDOW_MS) {
@@ -1402,7 +1441,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           break;
         }
         const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession });
-        deps.log('dispatch-review', { ...reviewed });
+        const usage = spent.get(reviewed.pr);
+        deps.log('dispatch-review', { ...reviewed, ...(usage === undefined ? {} : { usage }) });
         reviews.push(reviewed);
       }
     } finally {
@@ -1469,6 +1509,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const sweepsUnread = [];
   /** The repos the bare fire sweeps, each with the time the turn read their last sweep, which it records. @type {Map<string, string>} */
   const swept = new Map();
+  /** The repos the bare fire sweeps with a ready ticket the cap cut: like a repo in `leftOver`, its sweep is not recorded. @type {Set<string>} */
+  const cut = new Set();
   /** The served repos turning pickup on that the bare fire left out of this sweep: not due, or their last sweep unread. */
   let held = 0;
   /** An unblocked fire's row of the table (dispatch/unblocked.mjs). @type {import('./unblocked.mjs').Row | undefined} */
@@ -1516,7 +1558,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       cap: deps.cap,
       now: deps.now(),
       ...(only === undefined ? {} : { only }),
-      ...(bare ? { unread } : {}),
+      ...(bare ? { unread, cut } : {}),
     });
     for (const { repo, error } of unread) deps.log('dispatch-backlog-unread', { level: 'error', repo, error });
     // Only when no repo was left out of the sweep: one due repo failing
@@ -1572,7 +1614,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       let told;
       let loginStored = false;
       try {
-        told = await delivery().deliver({ session: read.session }, hookMessage(invocation));
+        told = await delivery().deliver({ session: read.session }, hookMessage(invocation), { source: hookSource(name) });
       } finally {
         loginStored = await storeIfRefreshed(deps, original, account);
       }
@@ -1609,7 +1651,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     if (row === 'not-planned' || row === 'claimed') {
       /** @type {boolean} */
       let commented = false;
-      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts) : null;
+      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts, { blocked: isBlocked(ticket, blockers) }) : null;
       if (notPlanned !== null) {
         await reader.comment(issue, notPlanned);
         commented = true;
@@ -1630,7 +1672,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       let told;
       let loginStored = false;
       try {
-        told = await delivery().deliver({ session }, text, { on: [issue] });
+        told = await delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue] });
       } finally {
         loginStored = await storeIfRefreshed(deps, original, account);
       }
@@ -1778,11 +1820,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         continue;
       }
       const firedAt = new Date(deps.now()).toISOString();
-      const { outcome, sessionUrl, status, missing } = await start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo, ...connectorsOf(entry) });
-      if (missing !== undefined) {
-        connectorMissing(deps, entry.repo, entry.sessionName, missing);
-        continue;
-      }
+      const launched = await start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo, ...connectorsOf(entry) });
+      if (routineFault(deps, entry.repo, entry.sessionName, launched)) continue;
+      const { outcome, sessionUrl, status } = launched;
       deps.log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.sessionName, ...(entry.periodic === undefined ? {} : { periodic: entry.periodic.name }), outcome, status, sessionUrl });
       // A periodic's record moves to this fire only for a launch that started
       // or may have, and only over the record the turn read. A failed launch
@@ -1806,6 +1846,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         }
         // A launch that started nothing is the repo's environment or the
         // login: the repo's next ticket or periodic would fail the same way.
+        // A routine the routines API refused is not (`routineFault`).
         skipped.add(entry.repo);
         deps.log(REPO_SKIPPED, { level: 'error', repo: entry.repo, issue: entry.issue, ...(entry.periodic === undefined ? {} : { periodic: entry.periodic.name }), status, reason: 'its launch started nothing: the rest of its tickets and periodics wait for the next fire' });
       } else if (ticket !== null) {
@@ -1821,14 +1862,15 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // started nothing it planned is tried again at the next fire. A sweep
     // that left planned tickets to a failed launch, the launch window or a
     // skip is not recorded either, so the next fire picks them up, not the
-    // next interval.
+    // next interval, and nor is one with a ready ticket the cap cut: the cap
+    // limits load, and does not set how often a repo is swept.
     for (const [repo, at] of swept) {
       const own = dispatched.filter((d) => d.repo === repo);
       if (unread.some((u) => u.repo === repo) || (own.length > 0 && own.every((d) => d.outcome === 'failed'))) {
         swept.delete(repo);
         continue;
       }
-      if (leftOver.has(repo)) {
+      if (leftOver.has(repo) || cut.has(repo)) {
         deps.log('dispatch-pickup', { level: 'info', repo, outcome: 'swept, with tickets left for the next fire, so not recorded', at, started: startedOf(own) });
         continue;
       }

@@ -451,12 +451,13 @@ describe('infra/governor.cfn.yml — the alarms', () => {
 
   /**
    * A served repo's config file that fails its schema, a repo whose
-   * launch started nothing, and a periodic naming a connector the account
-   * has not connected, each page off their own event; a repo with no file
-   * pages nobody.
+   * launch started nothing, a periodic naming a connector the account
+   * has not connected, and a periodic whose routine the routines API
+   * refused, each page off their own event; a repo with no file pages
+   * nobody.
    */
-  test('an invalid config file, a skipped repo and a missing connector each page, read off their own event', () => {
-    for (const [name, event] of [['DispatchConfigInvalid', 'dispatch-config-invalid'], ['DispatchRepoSkipped', 'dispatch-repo-skipped'], ['DispatchConnectorMissing', 'dispatch-connector-missing']]) {
+  test('an invalid config file, a skipped repo, a missing connector and a refused routine each page, read off their own event', () => {
+    for (const [name, event] of [['DispatchConfigInvalid', 'dispatch-config-invalid'], ['DispatchRepoSkipped', 'dispatch-repo-skipped'], ['DispatchConnectorMissing', 'dispatch-connector-missing'], ['DispatchRoutineRefused', 'dispatch-routine-refused']]) {
       const filter = template.Resources[`${name}Filter`];
       assert.equal(filter?.Properties?.LogGroupName, '${DispatchLogGroup}', name);
       assert.match(filter?.Properties?.FilterPattern ?? '', new RegExp(`\\$\\.event = "${event}"`), name);
@@ -719,10 +720,11 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
     for (const line of lines) {
       assert.doesNotMatch(line, /echo "(?!::add-mask::).*(WEBHOOK_SECRET|APP_PRIVATE_KEY)|point-app-webhook\.mjs\s+\S/, 'the keys must reach the script through the environment');
     }
-    // GitHub holds only the drop box (public-repo.md); the App key lives in
-    // Secrets Manager, and the alert email in Parameter Store.
+    // GitHub holds only the deploy role's ARN and the drop box
+    // (public-repo.md); the App key lives in Secrets Manager, and the alert
+    // email in Parameter Store.
     const githubSecrets = [...new Set([...codeOnly.matchAll(/\bsecrets\.([A-Za-z_]+)/g)].map((m) => m[1]))].sort();
-    assert.deepEqual(githubSecrets, ['DROP_BOX_URL'], 'a GitHub secret beyond the drop box');
+    assert.deepEqual(githubSecrets, ['AWS_DEPLOY_ROLE_ARN', 'DROP_BOX_URL'], 'a GitHub secret beyond the deploy role and the drop box');
   });
 
   test('the workflow packages the receiver before the apply, and applies the packaged template', () => {
@@ -1025,11 +1027,11 @@ describe('.github/workflows/deploy.yml', () => {
     assert.deepEqual(Object.keys(workflow.on ?? {}).sort(), ['push', 'workflow_dispatch']);
     assert.deepEqual(workflow.on.push, { branches: ['main'] });
     assert.equal(workflow.jobs?.gate?.uses, './.github/workflows/gate.yml');
-    assert.equal(workflow.jobs?.deploy?.needs, 'gate');
+    assert.deepEqual(workflow.jobs?.deploy?.needs, ['gate', 'role']);
   });
 
   test('does nothing until the deploy role is set, and names no value of the operator\'s', () => {
-    assert.equal(workflow.jobs?.deploy?.if, "${{ vars.AWS_DEPLOY_ROLE_ARN != '' }}");
+    assert.equal(workflow.jobs?.deploy?.if, "${{ needs.role.outputs.set == 'true' }}");
     const apply = steps.find(appliesStack('governor'));
     for (const [parameter, variable, store] of [
       ['DispatchOwners', 'GOVERNOR_OWNERS', 'vars'],
