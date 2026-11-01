@@ -400,6 +400,26 @@ describe('routeEvent — a mention', () => {
     assert.doesNotMatch(fire.prompt, /Line 0 of the session's long post/);
     assert.match(fire.prompt, /more characters at the URL above/);
     assert.ok(fire.prompt.length < 4_000, `${fire.prompt.length} chars`);
+    assert.match(fire.prompt, /a quote of \d+ characters at the URL above/, 'the session is told a quote was left out');
+  });
+
+  test('a quote reply whose own words fit but leave too little room for the quote says the quote was left out', () => {
+    const quote = Array.from({ length: 60 }, (_, i) => `> Line ${i} of the session's long post.`).join('\n');
+    const remark = `My reply starts here. ${'y'.repeat(1_430)}`;
+    const fire = dispatchOf('issue_comment', commentEvent({}, { body: `${quote}\n\n@claude ${remark}` }));
+    assert.ok(fire.prompt.includes(remark), 'the whole reply stays');
+    assert.doesNotMatch(fire.prompt, /Line 0 of the session's long post/);
+    assert.match(fire.prompt, /a quote of \d+ characters at the URL above/);
+  });
+
+  test('a quote reply posted with Windows line endings counts every quoted block as the quote', () => {
+    // GitHub's web editor posts CRLF, so the blank line between two quoted
+    // blocks is "\r\n". Missing it would take the second block for the reply.
+    const block = (n: number) => Array.from({ length: 30 }, (_, i) => `> Block ${n} line ${i} of the session's long post.`).join('\r\n');
+    const remark = 'Please drop the retry loop and keep the timeout.';
+    const { fire } = messageOf('issue_comment', commentEvent({ issue: prIssue(`The PR.${footer}`) }, { body: `${block(1)}\r\n\r\n${block(2)}\r\n\r\n${remark}` }));
+    assert.match(fire.text, /Please drop the retry loop and keep the timeout\./);
+    assert.match(fire.text, /more characters of the quote at the URL above/);
   });
 
   test('a link the task would refuse, or one glued to more id characters, names no session', () => {

@@ -86,6 +86,9 @@ export const MENTION_EVENTS = new Set(['issue_comment', 'pull_request_review_com
 /** How much of a body the prompt quotes; the URL carries the rest. */
 const EXCERPT_CHARS = 1500;
 
+/** The least of a quote worth keeping beside a reply: below it, the quote goes. */
+const MIN_QUOTE_CHARS = 100;
+
 const OWN_PR = 'This is your pull request. Decide what it needs: a code change (commit and push to its branch), a reply on the thread, or nothing. Do not open a new branch or PR.';
 
 const SUBSCRIBED_PR = 'You subscribe to this pull request; it is not yours. Decide what it needs from you: a review, a reply on the thread, or nothing. Do not push to its branch.';
@@ -133,12 +136,9 @@ const excerpt = (body, limit = EXCERPT_CHARS) => {
   // A quote reply puts the quoted post first. The person's own words matter
   // more than the quote, so the quote gives way before the reply does.
   const room = limit - reply.length - 2;
-  if (room < MIN_QUOTE_CHARS) return cut(reply, limit);
+  if (room < MIN_QUOTE_CHARS) return `> [… a quote of ${quote.length} characters at the URL above]\n\n${cut(reply, limit)}`;
   return `${quote.slice(0, room)}\n> [… ${quote.length - room} more characters of the quote at the URL above]\n\n${reply}`;
 };
-
-/** The least of a quote worth keeping beside a reply: below it, the quote goes. */
-const MIN_QUOTE_CHARS = 100;
 
 /**
  * @param {string} text
@@ -155,7 +155,7 @@ const cut = (text, limit) => (text.length <= limit
  * @param {string} text
  */
 const splitQuote = (text) => {
-  const lead = /^(?:[ \t]*>[^\n]*(?:\n|$)|[ \t]*\n)*/.exec(text)?.[0] ?? '';
+  const lead = /^(?:[ \t]*>[^\n]*(?:\n|$)|[ \t\r]*\n)*/.exec(text)?.[0] ?? '';
   return { quote: lead.trimEnd(), reply: text.slice(lead.length).trim() };
 };
 
