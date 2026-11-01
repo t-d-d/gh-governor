@@ -1,0 +1,61 @@
+# The docs pages
+#
+# Publishes docs/pages/ with GitHub Pages, at https://t-d-d.github.io/gh-governor/.
+# Each page there is one self-contained HTML file with its CSS and JS inline,
+# and docs/pages/index.html lists them. There is no build step: the Pages
+# artifact is the folder's committed files, which are public already.
+#
+# Like the stack deploy, it runs on a push to main and calls the gate first,
+# so only a green merge publishes. It has no manual trigger, since nothing
+# deploys by hand, and it reads no secret or variable. It stays apart from
+# deploy.yml, so a failed stack deploy does not hold up the docs.
+#
+# The repository's Pages source must be "GitHub Actions" (Settings, Pages,
+# Build and deployment). A branch has no preview here: a pull request that
+# changes a page links one through raw.githack.com instead.
+
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/pages/**
+      - .github/workflows/pages.yml
+
+permissions:
+  contents: read
+
+# One publish at a time, and a queued one is not cancelled, so the last
+# merge's pages are the ones served.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    uses: ./.github/workflows/gate.yml
+
+  publish:
+    needs: gate
+    name: Publish docs/pages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read    # checkout
+      pages: write      # deploy to Pages
+      id-token: write   # the token deploy-pages proves the run with
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/pages
+
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

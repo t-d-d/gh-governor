@@ -18,6 +18,7 @@ The README says what governor does, how a repo opts in, and how to deploy it. Th
 - [Minting the login](#minting-the-login)
 - [Alarms](#alarms)
 - [Troubleshooting](#troubleshooting)
+- [Pages](#pages)
 
 ## Why a task and a stored login
 
@@ -404,3 +405,11 @@ A message an archived session refused, with no fallback tried, is not an error. 
 **A session was not archived.** Its last reply's last line must start `Signing off`, and the session must be idle. `dispatch-signoff` in `/governor` names each candidate and the decision.
 
 **The deploy's probe is red.** The probe prints the task's log, which says whether the task could not reach the network, hold a pseudo-terminal or find the CLI. A task that never ran its container, such as one whose image pull was refused, has no log, and the probe prints its stop reason instead.
+
+## Pages
+
+This page and the README are Markdown and Mermaid, which GitHub renders in place. A diagram that needs motion or controls is an HTML page instead, and GitHub shows an `.html` file as source. So those pages live in `docs/pages/` and publish with GitHub Pages at <https://t-d-d.github.io/gh-governor/>. This page links to one where a diagram needs it.
+
+- **One file per page.** Each page is a self-contained HTML file, with its CSS and JS inline and no build step. `docs/pages/index.html` lists them, and a new page adds a line there. The public-repo rules apply to a page as to any file.
+- **Publishing.** [.github/workflows/pages.yml](../.github/workflows/pages.yml) runs on a push to main that changes `docs/pages/**` or the workflow. It calls the gate first, so only a green merge publishes, then uploads the folder with GitHub's Pages actions. It has no manual trigger, reads no secret or variable, and is apart from the stack deploy, so a failed stack deploy does not hold up the docs.
+- **Previewing from a branch.** Pages serves one site per repo and has no branch previews. A pull request that adds or changes a page links a preview in its description, rendered from the branch by raw.githack.com: `https://raw.githack.com/t-d-d/gh-governor/<branch>/docs/pages/<page>.html`.
