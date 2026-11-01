@@ -33,6 +33,7 @@
 
 import { isDeepStrictEqual } from 'node:util';
 import { messageOf } from '../scripts/lib/error-message.mjs';
+import { labelRow } from '../scripts/lib/ready-work.mjs';
 import { DEPENDABOT } from './webhook/fire.mjs';
 
 /**
@@ -48,7 +49,7 @@ import { DEPENDABOT } from './webhook/fire.mjs';
  *   tickets: { require: TicketRule[], forbid: TicketRule[] },
  *   quote: string[],
  *   decides: string[],
- *   labels: { ready: string[], claim: string, claimRemoves: string[] },
+ *   labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] },
  * }} Rules The repo's settings the code decides tests 1 and 7 from: its `review` section's lists and its config file's labels.
  * @typedef {TicketRow | { number: number, missing: true }} ClosedTicket A ticket the body closes, or a number no issue answers to.
  */
@@ -229,16 +230,18 @@ export const dependabotAnswer = ({ files, commits, list }) => {
 const named = (labels) => labels.map((l) => `\`${l}\``).join(', ');
 
 /**
- * Whether a ticket is ready and not yet claimed: it carries a label the
- * claim takes off, or, in a repo whose claim takes none off, every ready
- * label.
+ * Whether a ticket neither claimed nor excluded is still waiting for its
+ * claim. Where the repo's claim takes labels off, a ticket still carrying
+ * one of them is unclaimed; where it takes none off, a ticket `labelRow`
+ * reads as ready is.
  *
  * @param {TicketRow} ticket
- * @param {Rules['labels']} labels
+ * @param {'ready' | 'not-ready'} row The ticket's `labelRow`.
+ * @param {string[]} claimRemoves
  */
-const unclaimed = (ticket, { ready, claimRemoves }) => (claimRemoves.length > 0
+const unclaimed = (ticket, row, claimRemoves) => (claimRemoves.length > 0
   ? claimRemoves.some((l) => ticket.labels.includes(l))
-  : ready.every((l) => ticket.labels.includes(l)));
+  : row === 'ready');
 
 /**
  * The first of the repo's ticket rules `ticket` breaks, as a reason, or
@@ -302,9 +305,11 @@ const decidedConstraints = (ticket, { quote, decides }) => {
 /**
  * Test 1 for one ticket the body closes: why it is not one the review can
  * judge against, and whether an edit to the body could close one that is;
- * or null when it is. A ticket still ready and unclaimed is the author
- * session's to claim; another open PR closing it, or any other
- * state, waits for a person.
+ * or null when it is. A ticket that is claimed, or that carries an
+ * excluded label and so is not pickup's (`labelRow`), passes; a repo that
+ * forbids closing an excluded ticket says so in its ticket rules. A ticket
+ * still ready and unclaimed is the author session's to claim; another open
+ * PR closing it, or any other state, waits for a person.
  *
  * @param {ClosedTicket} ticket
  * @param {string} which How the reason names it: `the ticket it closes` or `a ticket it closes`.
@@ -322,8 +327,9 @@ const oneTicketFailure = (ticket, which, others, { tickets, labels }) => {
   if (others.length > 0) {
     return { reason: `${others.map((o) => `#${o}`).join(', ')} ${others.length > 1 ? 'are open PRs that also close' : 'is an open PR that also closes'} ${n}; a person decides which delivers it`, editable: false };
   }
-  if (ticket.labels.includes(labels.claim)) return null;
-  if (unclaimed(ticket, labels)) return { reason: `${which}, ${n}, is not yet \`${labels.claim}\`: nobody claimed it`, editable: true, claim: true };
+  const row = labelRow(ticket.labels, labels);
+  if (row === 'claimed' || row === 'excluded') return null;
+  if (unclaimed(ticket, row, labels.claimRemoves)) return { reason: `${which}, ${n}, is not yet \`${labels.claim}\`: nobody claimed it`, editable: true, claim: true };
   return { reason: `${which}, ${n}, is not \`${labels.claim}\`, nor ready to claim`, editable: false };
 };
 
