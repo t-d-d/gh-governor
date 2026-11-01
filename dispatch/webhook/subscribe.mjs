@@ -265,6 +265,19 @@ const linesIn = (body) =>
     }));
 
 /**
+ * Whether `body` names `session` as its owner ({@link sessionNamedIn}) or
+ * in a subscribe line: the bodies on that session's standing line. A
+ * session's link quoted or cited in a member's text is not one of them.
+ *
+ * @param {unknown} body
+ * @param {string} session a session's link or id
+ */
+export const namesSession = (body, session) => {
+  const named = sessionNamedIn(body);
+  return (named !== null && sameSession(named, session)) || linesIn(body).some((line) => sameSession(line.session, session));
+};
+
+/**
  * Who hears of `event` on the PR or issue whose body is `body`: the owner
  * its footer names first, unless the event is `labels`, or `deploys` on an
  * issue (`issue`), then each session a line subscribes to it, once each.
@@ -304,8 +317,8 @@ const DISOWNED = '(its session refused a message and is unsubscribed)';
 
 /**
  * The body with the owner link struck, where it names `session`: nothing
- * reads an owner off it, and the standing search, which matches the
- * session's id anywhere in the body, no longer counts it by its footer.
+ * reads an owner off it, and the standing search ({@link namesSession}) no
+ * longer counts it.
  * For an issue only: a PR's owner is the one a remark's fallback
  * takes over from.
  *
