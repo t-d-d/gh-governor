@@ -210,6 +210,26 @@ describe('a targeted schedule fire', () => {
     assert.deepEqual(seen, [{ repo: REPO, issue: 6, labels: READY, openBlockers: 0 }]);
   });
 
+  test('planSchedule starts nothing for a named issue that is gone, and does not throw', async () => {
+    for (const status of [404, 410]) {
+      const { reader } = fakeReader({ issues: [] });
+      const gone = { ...reader, ticket: async (n: number) => { throw Object.assign(new Error(`GET /issues/${n} failed: ${status}`), { status }); } };
+      const seen: Seen[] = [];
+      assert.deepEqual(await planSchedule({ sources: [{ reader: gone, repo: REPO, labels: FACTORY_LABELS }], cap: 1, now: NOW, only: [6], seen }), [], `status ${status}`);
+      assert.deepEqual(seen, []);
+    }
+  });
+
+  // A moved issue's read follows GitHub's redirect to another repository's
+  // issue, under another number, which this repo's number must not stand for.
+  test('planSchedule starts nothing for a named issue whose read answers with another number', async () => {
+    const { reader } = fakeReader({ issues: [], others: [issue(31, READY)] });
+    const moved = { ...reader, ticket: async () => reader.ticket(31) };
+    const seen: Seen[] = [];
+    assert.deepEqual(await planSchedule({ sources: [{ reader: moved, repo: REPO, labels: FACTORY_LABELS }], cap: 1, now: NOW, only: [6], seen }), []);
+    assert.deepEqual(seen, []);
+  });
+
   test('planSchedule records what each named issue\'s read saw, so a fire that starts nothing can say why', async () => {
     const { reader } = fakeReader({
       issues: [issue(4, READY)],

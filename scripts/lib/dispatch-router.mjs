@@ -103,7 +103,16 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
    */
   const rowsOf = async ({ repo, reader, labels }) => {
     if (only === undefined) return reader.readyIssues(labels.ready);
-    const read = await Promise.all([...new Set(only)].map((n) => reader.ticket(n)));
+    // A moved issue's read follows GitHub's redirect to another repository's
+    // issue, under another number; that one, and an issue that is gone (404,
+    // or 410 for a deleted one), is no ticket here and starts nothing.
+    /** @param {number} n */
+    const readOne = (n) => reader.ticket(n).then((t) => (t.number === n ? t : null), (error) => {
+      const status = /** @type {{ status?: number }} */ (error)?.status;
+      if (status === 404 || status === 410) return null;
+      throw error;
+    });
+    const read = (await Promise.all([...new Set(only)].map(readOne))).filter((t) => t !== null);
     for (const { number, labels: on, openBlockers } of read) {
       const record = { repo, issue: number, labels: on, ...(openBlockers === undefined ? {} : { openBlockers }) };
       records.set(`${repo}#${number}`, record);

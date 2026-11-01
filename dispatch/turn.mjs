@@ -1596,8 +1596,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       ...(bare ? { unread, cut } : {}),
     });
     if (only !== undefined && planned.length === 0) {
+      const why = deps.cap === 0 ? { outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' } : { outcome: 'not started: not ready, blocked, or dispatched inside the window' };
       for (const { repo, issue, ...read } of seen) {
-        deps.log('dispatch-pickup', { level: 'info', repo, issue, outcome: 'not started: not ready, blocked, or dispatched inside the window', reads: [read] });
+        deps.log('dispatch-pickup', { level: 'info', repo, issue, ...why, reads: [read] });
       }
     }
     for (const { repo, error } of unread) deps.log('dispatch-backlog-unread', { level: 'error', repo, error });
@@ -1722,7 +1723,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       // As pickup does: the selection's own checks, the window included.
       const planned = await planSchedule({ sources: [{ repo: fireRepo(), reader, labels: config.labels, prompts }], cap: 1, now: deps.now(), only: [issue] });
       for (const d of planned) plan.push({ issue, repo: d.repo, prompt: readyPrompt(d.prompt, invocation, prompts), sessionName: d.sessionName, model: DEFAULT_MODEL });
-      deps.log('dispatch-unblocked', { ...about, outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, or no longer ready' : 'picking up' });
+      deps.log('dispatch-unblocked', { ...about, outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, blocked, or no longer ready' : 'picking up' });
     } else {
       // The spec session is not claimed: its marker keeps the sweep off the
       // ticket inside the window, and the claim it adds before it builds

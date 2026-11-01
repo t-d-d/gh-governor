@@ -692,6 +692,15 @@ describe('run — the dispatcher claims what it launches', () => {
     assert.deepEqual(line.reads, [{ labels: ['type: bug'], openBlockers: 0 }]);
   });
 
+  test('a label fire under a DispatchCap of 0 starts nothing, and logs the cap as the reason, not the ticket', async () => {
+    const { deps, launches, logged } = harness({ cap: 0 });
+    await run({ kind: 'schedule', issue: 9 }, deps as never);
+    assert.deepEqual(launches, []);
+    const line = logged.find((l) => l.event === 'dispatch-pickup' && l.issue === 9);
+    assert.ok(line, JSON.stringify(logged));
+    assert.equal(line.reason, 'DispatchCap is 0: no fire starts anything');
+  });
+
   test('a launch that started nothing puts the labels back', async () => {
     const { deps, calls } = harness({ launch: async () => ({ status: 1, output: 'claude died' }) });
     await run({ kind: 'schedule', issue: 9 }, deps as never);
