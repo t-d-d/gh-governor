@@ -7,9 +7,15 @@
  *
  * The check reads the pinned commit from git history, so the gate's
  * checkout fetches the whole history (.github/workflows/gate.yml).
+ *
+ * test/starter-kit.test.ts still checks the same inputs against the checker
+ * on the current tree, so the starter works once its pin moves. Between the
+ * two, one pull request cannot rename an input. Add the new input beside the
+ * old one, then move the pin and the starter's `with:` to it, then drop the
+ * old one. Every repo already pinned keeps working at each step.
  */
 
-import { test, describe } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -32,8 +38,9 @@ const TODAY = {
   labels: { type: 'string', default: '' },
 };
 
-// A throwaway repo whose main carries the checker with today's inputs, and a
-// side branch whose checker renamed one, so a test can pin either commit.
+// A throwaway repo: main holds the checker with today's inputs, then one that
+// adds a required input; a side branch holds one that renamed an input. A test
+// can pin any of the three commits.
 function fixtureRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'starter-pin-'));
   const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: dir, encoding: 'utf8' }).trim();
@@ -50,71 +57,52 @@ function fixtureRepo() {
   git('branch', '-q', 'side');
   git('reset', '-q', '--hard', onMain);
   const required = commit({ ...TODAY, repo: { type: 'string', required: true } });
-  git('branch', '-q', '-f', 'side-required');
-  git('reset', '-q', '--hard', onMain);
-  git('merge', '-q', '--ff-only', 'side-required');
   return { dir, onMain, renamed, required, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 const STARTER_WITH = { 'tolerance-hours': 3, labels: 'heartbeat' };
 
 describe('pinnedInputProblems', () => {
+  // Every test only reads the repo, so one serves them all.
+  let repo: ReturnType<typeof fixtureRepo>;
+  before(() => { repo = fixtureRepo(); });
+  after(() => repo.cleanup());
+
   test('finds nothing when the pin is on main and takes every input passed', () => {
-    const repo = fixtureRepo();
-    try {
-      assert.deepEqual(pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: repo.onMain, path: CHECKER, passed: STARTER_WITH }), []);
-    } finally { repo.cleanup(); }
+    assert.deepEqual(pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: repo.onMain, path: CHECKER, passed: STARTER_WITH }), []);
   });
 
   test('reports a pinned commit that is not on main', () => {
-    const repo = fixtureRepo();
-    try {
-      const got = pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: repo.renamed, path: CHECKER, passed: { 'tolerance-hours': 3, 'issue-labels': 'x' } });
-      assert.equal(got.length, 1, JSON.stringify(got));
-      assert.match(got[0] ?? '', /not on main/);
-    } finally { repo.cleanup(); }
+    const got = pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: repo.renamed, path: CHECKER, passed: { 'tolerance-hours': 3, 'issue-labels': 'x' } });
+    assert.equal(got.length, 1, JSON.stringify(got));
+    assert.match(got[0] ?? '', /not on main/);
   });
 
   test('reports an input passed that the checker at the pin does not take, though the current tree does', () => {
-    const repo = fixtureRepo();
-    try {
-      const got = pinnedInputProblems({ cwd: repo.dir, main: 'side', sha: repo.renamed, path: CHECKER, passed: STARTER_WITH });
-      assert.deepEqual(got, [`the checker at ${repo.renamed.slice(0, 12)} takes no input labels`]);
-    } finally { repo.cleanup(); }
+    const got = pinnedInputProblems({ cwd: repo.dir, main: 'side', sha: repo.renamed, path: CHECKER, passed: STARTER_WITH });
+    assert.deepEqual(got, [`the checker at ${repo.renamed.slice(0, 12)} takes no input labels`]);
   });
 
   test('reports a required input at the pin that is not passed', () => {
-    const repo = fixtureRepo();
-    try {
-      const got = pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: repo.required, path: CHECKER, passed: STARTER_WITH });
-      assert.deepEqual(got, [`the checker at ${repo.required.slice(0, 12)} requires input repo`]);
-    } finally { repo.cleanup(); }
+    const got = pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: repo.required, path: CHECKER, passed: STARTER_WITH });
+    assert.deepEqual(got, [`the checker at ${repo.required.slice(0, 12)} requires input repo`]);
   });
 
   test('reports a value whose type the input at the pin does not declare', () => {
-    const repo = fixtureRepo();
-    try {
-      const got = pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: repo.onMain, path: CHECKER, passed: { 'tolerance-hours': 'three' } });
-      assert.deepEqual(got, [`the checker at ${repo.onMain.slice(0, 12)} takes tolerance-hours as a number, not a string`]);
-    } finally { repo.cleanup(); }
+    const got = pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: repo.onMain, path: CHECKER, passed: { 'tolerance-hours': 'three' } });
+    assert.deepEqual(got, [`the checker at ${repo.onMain.slice(0, 12)} takes tolerance-hours as a number, not a string`]);
   });
 
   test('reports a pinned commit the clone does not hold, and says how to fetch it', () => {
-    const repo = fixtureRepo();
-    try {
-      const got = pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: 'f'.repeat(40), path: CHECKER, passed: STARTER_WITH });
-      assert.equal(got.length, 1, JSON.stringify(got));
-      assert.match(got[0] ?? '', /not in this clone.*git fetch/);
-    } finally { repo.cleanup(); }
+    const got = pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: 'f'.repeat(40), path: CHECKER, passed: STARTER_WITH });
+    assert.equal(got.length, 1, JSON.stringify(got));
+    assert.match(got[0] ?? '', /not in this clone.*git fetch/);
   });
 
   test('reports a main ref the clone does not hold', () => {
-    const repo = fixtureRepo();
-    try {
-      const got = pinnedInputProblems({ cwd: repo.dir, main: 'origin/main', sha: repo.onMain, path: CHECKER, passed: STARTER_WITH });
-      assert.equal(got.length, 1, JSON.stringify(got));
-      assert.match(got[0] ?? '', /no origin\/main in this clone/);
-    } finally { repo.cleanup(); }
+    const got = pinnedInputProblems({ cwd: repo.dir, main: 'origin/main', sha: repo.onMain, path: CHECKER, passed: STARTER_WITH });
+    assert.equal(got.length, 1, JSON.stringify(got));
+    assert.match(got[0] ?? '', /no origin\/main in this clone/);
   });
 });
 

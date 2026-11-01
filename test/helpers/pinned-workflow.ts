@@ -15,7 +15,11 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
   path: string,
   passed: Record<string, unknown>,
 }): string[] {
-  const git = (...args: string[]) => spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const git = (...args: string[]) => {
+    const run = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    if (run.error !== undefined) throw run.error;
+    return run;
+  };
   const short = sha.slice(0, 12);
   if (git('cat-file', '-e', `${sha}^{commit}`).status !== 0) {
     return [`the pinned commit ${short} is not in this clone: run git fetch --unshallow origin, or check out with fetch-depth: 0`];
@@ -29,18 +33,18 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
   }
   const shown = git('show', `${sha}:${path}`);
   if (shown.status !== 0) return [...problems, `the pinned commit ${short} has no ${path}`];
-  const doc = yaml.load(shown.stdout) as { on?: { workflow_call?: { inputs?: Record<string, { type?: string, required?: boolean }> } } };
-  const inputs = doc.on?.workflow_call?.inputs ?? {};
+  const doc = yaml.load(shown.stdout) as { on?: { workflow_call?: { inputs?: Record<string, { type?: string, required?: boolean } | null> | null } | null } | null } | null | undefined;
+  const inputs = doc?.on?.workflow_call?.inputs ?? {};
   for (const [key, value] of Object.entries(passed)) {
-    const input = inputs[key];
-    if (input === undefined) {
+    const input = Object.hasOwn(inputs, key) ? inputs[key] : undefined;
+    if (input === undefined || input === null) {
       problems.push(`the checker at ${short} takes no input ${key}`);
     } else if (input.type !== undefined && typeof value !== input.type) {
       problems.push(`the checker at ${short} takes ${key} as a ${input.type}, not a ${typeof value}`);
     }
   }
   for (const [key, input] of Object.entries(inputs)) {
-    if (input.required === true && !(key in passed)) problems.push(`the checker at ${short} requires input ${key}`);
+    if (input?.required === true && !Object.hasOwn(passed, key)) problems.push(`the checker at ${short} requires input ${key}`);
   }
   return problems;
 }
