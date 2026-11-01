@@ -4552,6 +4552,40 @@ describe('run — every served repo', () => {
     assert.ok(h.read.includes(`${ASKME} ready mode: afk as ghs_${ASKME}`), h.read.join('; '));
   });
 
+  /**
+   * The cap limits load, not how often a repo is swept: a due repo with a
+   * ready ticket the cap cut is swept again at the next fire, not its next
+   * interval, as a repo with tickets a failed launch left.
+   */
+  test('a repo with a ready ticket the shared cap cut keeps its sweep unrecorded, so the next fire sweeps it again', async () => {
+    const NEWER = '2026-10-01T00:00:00Z';
+    const askmeFile = JSON.stringify({ ...JSON.parse(ASKME_FILE), pickup: { sweepHours: 24 } });
+    const h = twoRepos({ askmeFile, askmeIssues: [{ number: 2, title: 'Issue 2', state: 'open', created_at: NEWER, labels: ['mode: afk', 'type: bug'] }] });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => [(l as unknown as { repo: string }).repo, l.sessionName]), [
+      [REPO, sessionName(7, 'Issue 7')], [REPO, sessionName(9, 'Issue 9')],
+    ], 'two of the factory\'s older bugs, under the cap of 2');
+    assert.deepEqual(h.sweepWrites, [], 'each repo still has a ticket the cap cut');
+    for (const repo of [REPO, ASKME]) {
+      const line = h.logged.find((l) => l.event === 'dispatch-pickup' && l.repo === repo);
+      assert.equal(line?.outcome, 'swept, with tickets left for the next fire, so not recorded', JSON.stringify(h.logged));
+    }
+    const read = h.read.length;
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.ok(h.read.slice(read).some((r) => r.startsWith(`${REPO} ready`)), 'the next fire sweeps the factory again');
+    assert.ok(h.read.slice(read).some((r) => r.startsWith(`${ASKME} ready`)), 'and askme-mcp, inside its 24 hours');
+  });
+
+  test('a repo whose every ready ticket was planned and started is recorded as swept beside one the cap cut', async () => {
+    const askmeFile = JSON.stringify({ ...JSON.parse(ASKME_FILE), pickup: { sweepHours: 24 } });
+    const h = twoRepos({ askmeFile });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => [(l as unknown as { repo: string }).repo, l.sessionName]), [
+      [ASKME, sessionName(2, 'Issue 2')], [REPO, sessionName(7, 'Issue 7')],
+    ]);
+    assert.deepEqual(h.sweepWrites, [{ repo: ASKME, at: new Date(NOW).toISOString() }], 'askme-mcp\'s one ticket started; the factory\'s #9 and #11 were cut');
+  });
+
   test('the periodics\' last runs are read under one login refresh a turn, whichever served repo they are in', async () => {
     const expired = LOGIN.replace(String(NOW + 3_600_000), String(NOW - 1));
     const askmeFile = JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: true, periodics: true }, periodics: [{ name: 'Askme retro', prompt: 'Look back.', days: 7 }] });
@@ -5347,17 +5381,17 @@ describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval 
   };
 
   test('with no interval set, the two-hourly fire sweeps, and records the sweep under the repo', async () => {
-    const h = sweeping(undefined);
+    const h = sweeping(undefined, { cap: 3 });
     h.sweeps.set(REPO, ago(2 * HOUR));
     await run({ source: 'aws.events' }, h.deps as never);
-    assert.equal(h.tickets().length, 2);
+    assert.equal(h.tickets().length, 3);
     assert.deepEqual(h.sweepWrites, [{ repo: REPO, at: AT }]);
   });
 
   test('a repo with no record of a sweep is swept now', async () => {
-    const h = sweeping({ sweepHours: 6 });
+    const h = sweeping({ sweepHours: 6 }, { cap: 3 });
     await run({ source: 'aws.events' }, h.deps as never);
-    assert.equal(h.tickets().length, 2);
+    assert.equal(h.tickets().length, 3);
     assert.deepEqual(h.sweepWrites, [{ repo: REPO, at: AT }]);
   });
 
@@ -5379,12 +5413,12 @@ describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval 
   });
 
   test('the first fire at or after the interval sweeps, and pickup\'s line records the sweep', async () => {
-    const h = sweeping({ sweepHours: 6 });
+    const h = sweeping({ sweepHours: 6 }, { cap: 3 });
     h.sweeps.set(REPO, ago(6 * HOUR - 10 * 60 * 1000));
     const result = turn(await run({ source: 'aws.events' }, h.deps as never));
-    assert.equal(h.tickets().length, 2);
+    assert.equal(h.tickets().length, 3);
     assert.deepEqual(h.sweepWrites, [{ repo: REPO, at: AT }]);
-    assert.deepEqual(readHeartbeat(h.issue.body).pickup, { at: AT, started: 2 });
+    assert.deepEqual(readHeartbeat(h.issue.body).pickup, { at: AT, started: 3 });
     assert.equal(result.heartbeat, true);
   });
 
@@ -5475,10 +5509,19 @@ describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval 
     assert.deepEqual(h.sweepWrites, []);
   });
 
+  test('a sweep with a ready ticket the cap cut records no sweep, and pickup\'s line still says it ran', async () => {
+    const h = sweeping({ sweepHours: 6 });
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.equal(h.tickets().length, 2, 'the cap of 2 cut #11');
+    assert.deepEqual(h.sweepWrites, []);
+    assert.deepEqual(readHeartbeat(h.issue.body).pickup, { at: AT, started: 2 });
+    assert.equal(result.heartbeat, true);
+  });
+
   test('a sweep that cannot be recorded fails the turn, after its launches', async () => {
-    const h = sweeping({ sweepHours: 6 }, { state: { recordSweep: async () => { throw new Error('ProvisionedThroughputExceededException'); } } });
+    const h = sweeping({ sweepHours: 6 }, { cap: 3, state: { recordSweep: async () => { throw new Error('ProvisionedThroughputExceededException'); } } });
     const result = await run({ source: 'aws.events' }, h.deps as never);
-    assert.equal(h.tickets().length, 2);
+    assert.equal(h.tickets().length, 3);
     assert.ok(h.logged.some((l) => l.event === 'dispatch-pickup-unrecorded' && l.level === 'error' && l.repo === REPO), JSON.stringify(h.logged));
     assert.equal(exitCodeFor(result as never), 1);
   });

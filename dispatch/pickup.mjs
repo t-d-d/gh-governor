@@ -15,6 +15,11 @@
  * interval shorter than the tick sweeps at every fire. A missing record, for
  * a new repo or a lost item, means sweep now; a read that fails refuses the
  * repo's sweep for the turn.
+ *
+ * A sweep that leaves a ready ticket unstarted is not recorded, so the next
+ * fire sweeps the repo again: a failed launch, the launch window, or the
+ * stack's `DispatchCap` cutting it in favour of another repo's older tickets.
+ * The cap limits load; it does not set how often a repo is swept.
  */
 
 import { HOUR_MS } from './periodics.mjs';
