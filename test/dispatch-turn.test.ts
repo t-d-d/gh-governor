@@ -672,15 +672,16 @@ describe('run — the dispatcher claims what it launches', () => {
   });
 
   // The plan is read once, and each launch takes minutes: a ticket a person
-  // or another turn claimed, unreadied or closed in between is not the
-  // dispatcher's to claim, and its session would proceed on the prompt's
-  // claim line over someone else's work.
+  // or another turn claimed, unreadied, closed or gave an excluded label in
+  // between is not the dispatcher's to claim, and its session would proceed
+  // on the prompt's claim line over someone else's work.
   test('a ticket no longer ready when its turn comes is neither claimed nor launched', async () => {
     for (const taken of [
       { state: 'open', labels: [CLAIMED] },
-      { state: 'open', labels: [READY, CLAIMED] },
+      { state: 'open', labels: [READY, 'mode: afk', CLAIMED] },
       { state: 'open', labels: [] },
       { state: 'closed', labels: [READY] },
+      { state: 'open', labels: [READY, 'mode: afk', 'type: prd'] },
     ]) {
       const base = harness();
       const { deps, calls, launches, logged } = harness({
@@ -696,6 +697,7 @@ describe('run — the dispatcher claims what it launches', () => {
       assert.ok(!labelCalls(calls).some((c) => c.startsWith('label #7 ')), `#7 untouched: ${JSON.stringify(labelCalls(calls))}`);
       assert.deepEqual(result.dispatched.map((d) => d.issue), [9]);
       assert.deepEqual(stranded(logged), []);
+      assert.ok(logged.some((l) => l.event === 'dispatch-claim' && l.issue === 7 && l.outcome === 'skipped' && String(l.reason).startsWith('no longer ready to claim')), JSON.stringify(taken));
     }
   });
 
@@ -5904,6 +5906,24 @@ describe('run: the hook table', () => {
     assert.equal(line?.repo, REPO);
     assert.match(String(line?.error), /AccessDeniedException/);
     assert.deepEqual(h.launches.map((l) => l.sessionName), [FACTORY_HOOKS[0]!.name]);
+  });
+
+  // A write that fails counts the repo unread on any kind of turn, so the
+  // owner hears of it on the next CI run or comment, not the next schedule fire.
+  test('a message turn whose write failed exits 1, though the session took the message', async () => {
+    const h = harness({ hookTable: { publish: async () => { throw new Error('AccessDeniedException'); } } });
+    const result = await run({ kind: 'message', session: 'session_01ABC', text: 'a comment on your pull request' }, h.deps as never) as Record<string, any>;
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.unread, [{ repo: REPO, error: 'hook table: AccessDeniedException' }]);
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  test('a label the repo does not list keeps the turn\'s unread repos, and exits 1', async () => {
+    const h = harness({ hookTable: { publish: async () => { throw new Error('AccessDeniedException'); } } });
+    const result = await run({ kind: 'schedule', repo: REPO, issue: 2, label: 'type: bug' }, h.deps as never) as Record<string, any>;
+    assert.match(String(result.refusal), /not one of .*ready labels/);
+    assert.deepEqual(result.unread, [{ repo: REPO, error: 'hook table: AccessDeniedException' }]);
+    assert.equal(exitCodeFor(result as never), 1);
   });
 
   test('a write a later read beat is not a fault', async () => {
