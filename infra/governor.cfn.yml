@@ -257,8 +257,9 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
                 Resource: !GetAtt DispatchStateTable.Arn
-              # Each served repo's hooks, put each time the turn reads its
-              # file (dispatch/webhook/hook-table.mjs); never read back.
+              # Each served repo's hooks and switches, put each time the turn
+              # reads its file (dispatch/webhook/hook-table.mjs); never read
+              # back.
               - Sid: WriteTheHookTable
                 Effect: Allow
                 Action: dynamodb:PutItem
@@ -976,8 +977,9 @@ Resources:
                 Effect: Allow
                 Action: lambda:InvokeFunction
                 Resource: !GetAtt StarterFunction.Arn
-              # A repo's listed hooks, read before a hook fire is queued, and
-              # each hook's count of fires this hour, raised under its cap.
+              # A repo's listed hooks, read before a hook fire is queued, its
+              # switches, read before a GitHub delivery's fires are queued,
+              # and each hook's count of fires this hour, raised under its cap.
               # Nothing on the state table: the receiver faces the internet.
               - Sid: ReadAndCountTheHookTable
                 Effect: Allow

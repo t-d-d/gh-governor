@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { DEADLINE_MS, exitCodeFor } from '../dispatch/cli.mjs';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, GENERIC_SWITCHES } from '../dispatch/repo-config.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { STALE_RUNS_PAUSES_MS } from '../dispatch/runs.mjs';
@@ -139,8 +139,8 @@ const harness = (over: Record<string, unknown> = {}) => {
   const eventsRead: Array<{ id: string; token: string }> = [];
   // Each session the turn recorded as governor's own.
   const recorded: string[] = [];
-  // Each write to the receiver's hook table: a repo's hooks as its file was read.
-  const published: Array<{ repo: string; hooks: Array<{ name: string; keyVersion: number; perHour: number }>; at: string }> = [];
+  // Each write to the receiver's hook table: a repo's hooks and switches as its file was read.
+  const published: Array<{ repo: string; hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; at: string }> = [];
   let loginOnDisk: string | null = null;
   const accounts: unknown[] = [];
   const deps = {
@@ -284,8 +284,8 @@ const harness = (over: Record<string, unknown> = {}) => {
     }),
     uuid: () => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
     hookTable: {
-      publish: async (repo: string, hooks: Array<{ name: string; keyVersion: number; perHour: number }>, at: string) => {
-        published.push({ repo, hooks, at });
+      publish: async (repo: string, { hooks, switches }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean> }, at: string) => {
+        published.push({ repo, hooks, switches, at });
         return true;
       },
     },
@@ -5985,7 +5985,33 @@ describe('run: the hook table', () => {
   test('a fire naming its repo writes that repo\'s hooks, their key versions and their caps, stamped with the turn\'s time', async () => {
     const h = harness();
     await run(hookFire, h.deps as never);
-    assert.deepEqual(h.published, [{ repo: REPO, hooks: FACTORY_HOOKS, at: new Date(NOW).toISOString() }]);
+    assert.deepEqual(h.published, [{ repo: REPO, hooks: FACTORY_HOOKS, switches: Object.fromEntries(GENERIC_SWITCHES.map((n) => [n, true])), at: new Date(NOW).toISOString() }]);
+  });
+
+  // The receiver drops a fire whose switch the item says is off
+  // (dispatch/webhook/route.mjs), so the item holds every switch as the
+  // turn reads it.
+  test('the item holds every switch as turnsOn reads it: one left out is off, and mergeHandoff reads as unblocked', async () => {
+    const { prReview: _r, unblocked: _u, ...rest } = JSON.parse(FACTORY_FILE).features;
+    const h = harness({ configFile: fileWith({ features: { ...rest, conflicts: false, mergeHandoff: true } }) });
+    await run({ kind: 'schedule' }, h.deps as never);
+    const switches = h.published[0]!.switches;
+    assert.deepEqual(Object.keys(switches).sort(), [...GENERIC_SWITCHES].sort());
+    assert.equal(switches.prReview, false, 'left out');
+    assert.equal(switches.conflicts, false, 'turned off');
+    assert.equal(switches.unblocked, true, 'mergeHandoff reads as unblocked');
+    assert.equal(switches.pickup, true);
+  });
+
+  // A switch just turned on is dropped by the receiver until a turn reads
+  // the new file. The merge that changed it queues a conflicts fire, which
+  // the receiver never drops, and whose turn writes the item even where it
+  // refuses the fire.
+  test('a conflicts fire the repo refuses still writes the item from the file it read', async () => {
+    const h = harness({ configFile: fileWith({ features: { ...JSON.parse(FACTORY_FILE).features, conflicts: false, prReview: true } }) });
+    const result = await run({ kind: 'conflicts', repo: REPO, pr: 3, sha: 'a'.repeat(40), base: 'main' }, h.deps as never) as Record<string, any>;
+    assert.match(String(result.refusal), /does not turn conflicts on/);
+    assert.deepEqual(h.published.map((p) => [p.repo, p.switches.prReview, p.switches.conflicts]), [[REPO, true, false]]);
   });
 
   test('the bare schedule fire writes every served repo\'s, and none for a repo it does not serve', async () => {

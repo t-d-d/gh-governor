@@ -58,6 +58,13 @@
  * does, and lists no blocked ticket: the merging session has no step left
  * after the merge, and can sign off.
  *
+ * Routing reads the payload alone. Once a delivery would queue fires, the
+ * receiver reads the repo's switches from the hook table, as the task last
+ * read the repo's file (hook-table.mjs), and drops each fire whose switch
+ * they say is off before it reaches the lane ({@link handle}, switches.mjs):
+ * a fire the task would refuse still costs a whole task. Anything the table
+ * cannot say, the fire is queued and the task decides.
+ *
  * One task at a time is the starter's to keep (starter.mjs), and one turn at
  * a time the task's: a dispatcher turn refreshes
  * the stored login, and two turns refreshing one login leave one of them
@@ -81,6 +88,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob } from './fire.mjs';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
+import { droppedBy } from './switches.mjs';
 
 /**
  * The events the receiver acts on, which the App's webhook subscribes to:
@@ -428,8 +436,9 @@ const mergedFire = (payload, main) => {
  * config file: the turn applies the repo's (dispatch/repo-config.mjs). It
  * filters a workflow or merge event on facts in the payload alone, the
  * default branch among them, never by repo. Every listed
- * repo's PR queues the PR review; the task refuses it where the repo's
- * file leaves `prReview` off.
+ * repo's PR routes to the PR review; {@link handle} drops it where the hook
+ * table says the repo's file leaves `prReview` off, and the task refuses it
+ * where the file does.
  *
  * @param {{ event: string | undefined, payload: any, owners: readonly string[], appId?: number | undefined, selectLabels?: readonly string[] | undefined }} args
  * `owners`: the stack's owner list. `appId`: the dispatcher's own App,
@@ -510,6 +519,7 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
  *   hookSecret: () => Promise<string>,
  *   listedHooks: import('./hook-table.mjs').HookTable['listed'],
  *   countFire: import('./hook-table.mjs').HookTable['count'],
+ *   repoSwitches: import('./hook-table.mjs').HookTable['switches'],
  *   now?: () => number,
  *   owners: readonly string[],
  *   selectLabels?: readonly string[] | undefined,
@@ -521,7 +531,9 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
  *   every hook key's root (hook.mjs). `listedHooks`: the repo's item in the
  *   hook table (hook-table.mjs), the hooks its file listed when the task last
  *   read it. `countFire`: one more fire of a hook in the clock hour, taken
- *   only under its cap and once per signature (hook-table.mjs). `now`: the
+ *   only under its cap and once per signature (hook-table.mjs).
+ *   `repoSwitches`: the repo's switches in the hook table, as its file read
+ *   when the task last read it (hook-table.mjs). `now`: the
  *   receiver's clock, which a hook's timestamp is held to and an hour's
  *   count is kept by.
  *
@@ -570,7 +582,8 @@ const queueFire = async (message, dedupId, deps) => {
  * one under it that names no repo and hook), or else one delivery. A
  * delivery's status is what GitHub records against it: 401 for a
  * delivery that is not GitHub's, 400 for one it could not read, 200 for one
- * that changes nothing, 202 for one that queued a fire. A queue that refused
+ * that changes nothing, its fires all dropped by the repo's switches among
+ * them, 202 for one that queued a fire. A queue that refused
  * the fire leaves as a throw, and GitHub records the 502 the Function URL
  * answers with, which an operator can redeliver.
  *
@@ -596,8 +609,8 @@ export const handle = async (request, deps) => {
     return { statusCode: 400, body: 'body is not JSON' };
   }
   const event = headers['x-github-event'];
-  const decision = routeEvent({ event, payload, owners: deps.owners, appId: deps.appId, selectLabels: deps.selectLabels });
   const delivery = headers['x-github-delivery'];
+  const decision = await switchedOn(routeEvent({ event, payload, owners: deps.owners, appId: deps.appId, selectLabels: deps.selectLabels }), delivery, deps);
   if (decision.fires.length === 0) {
     // Never an error: an outsider who installed the App must not page anyone.
     deps.log('webhook-ignored', { level: 'info', delivery: delivery ?? null, github: event, reason: decision.reason });
@@ -615,6 +628,47 @@ export const handle = async (request, deps) => {
     }, delivery && dedupId(delivery, key), deps));
   }
   return { statusCode: 202, body: `queued ${queued.join(', ')}: ${decision.reason}` };
+};
+
+/**
+ * A delivery's fires less those the repo's switches drop: each fire whose
+ * switch the repo's item in the hook table says is off ({@link droppedBy}).
+ * The item is read once, and only for a delivery that would queue a fire.
+ * A read that fails is logged at error and drops nothing: the task still
+ * refuses a fire whose switch is off, and a 503 would lose the delivery,
+ * which GitHub does not send again by itself. A dropped fire's reason names
+ * its switch, so the App's Recent Deliveries says why it went nowhere.
+ *
+ * @param {Decision} decision
+ * @param {string | undefined} delivery
+ * @param {Deps} deps
+ * @returns {Promise<Decision>}
+ */
+const switchedOn = async (decision, delivery, deps) => {
+  const repo = decision.fires[0]?.fire.repo;
+  if (repo === undefined) return decision;
+  /** @type {ReadonlyMap<string, boolean> | null} */
+  let switches;
+  try {
+    switches = await deps.repoSwitches(repo);
+  } catch (error) {
+    deps.log('webhook-switches-unread', { level: 'error', delivery: delivery ?? null, repo, error: String(/** @type {any} */ (error)?.message ?? error) });
+    return decision;
+  }
+  /** @type {Queued[]} */
+  const kept = [];
+  /** @type {string[]} */
+  const dropped = [];
+  for (const queued of decision.fires) {
+    const off = droppedBy(queued.fire, switches);
+    if (off === null) kept.push(queued);
+    else dropped.push(`its ${queued.fire.kind} fire, as ${repo}'s file turns ${off.join(' and ')} off`);
+  }
+  if (dropped.length === 0) return decision;
+  const reason = `${decision.reason}; dropped ${dropped.join(', and ')}`;
+  // A delivery with every fire dropped is logged once, as one that queued nothing.
+  if (kept.length > 0) deps.log('webhook-dropped', { level: 'info', delivery: delivery ?? null, repo, reason });
+  return { fires: kept, reason };
 };
 
 /**

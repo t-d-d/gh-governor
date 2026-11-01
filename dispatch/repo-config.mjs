@@ -166,15 +166,9 @@ const workflowsSchema = z.strictObject({
 /** A repo's `workflows` when its file names none: no CI, no triage, no tags. @type {Readonly<Workflows>} */
 export const NO_WORKFLOWS = Object.freeze({ triage: [], tags: {} });
 
-/**
- * Whether `run` is of the repo's CI workflow, the file its config names:
- * a red run is its merges' to fix. Every other workflow a PR
- * hears of declares a deploy target. A workflow's name decides nothing.
- *
- * @param {{ path?: string }} run
- * @param {Workflows} workflows
- */
-export const isCi = (run, workflows) => workflows.ci !== undefined && run.path === workflows.ci;
+// What CI is, and the switch each fire kind needs, live in a leaf the
+// receiver shares (dispatch/webhook/switches.mjs).
+export { isCi, switchOf } from './webhook/switches.mjs';
 
 /**
  * The issue governor records its fires on (dispatch/heartbeat.mjs). With a
@@ -473,34 +467,3 @@ export const environmentFrom = (environment, listed) => {
  * @param {string} name
  */
 export const turnsOn = (config, name) => config.features[name] === true;
-
-/**
- * The switch a fire kind needs, or null for one that needs none (a probe).
- * A message to a PR's owner needs PR messages, one heard by subscription
- * (a `governor:subscribe` line, an issue's filer) subscribe messages; a
- * dispatch is a summons unless it is the red scheduled run's. A red run of
- * the repo's CI needs CI messages; a red deploy, like a green shipping job,
- * deploy messages. The bare schedule fire's heartbeat is read on its own.
- * A close needs none: it starts nothing, and queues an `unblocked` fire per
- * ticket it blocked, whose switch the ticket's own state picks in its own
- * repo, `pickup` or `unblocked` (dispatch/unblocked.mjs).
- *
- * @param {import('./webhook/fire.mjs').Fire} fire
- * @param {Workflows} [workflows] The repo's config file's.
- * @returns {string | null}
- */
-export const switchOf = (fire, workflows = NO_WORKFLOWS) => {
-  switch (fire.kind) {
-    case 'schedule': return fire.freed === undefined ? 'pickup' : null;
-    case 'dispatch': return fire.scheduled === undefined ? 'summons' : 'redScheduledRun';
-    case 'message': return fire.subscribed === true ? 'subscribeMessages' : 'prMessages';
-    case 'workflow': return isCi(fire, workflows) ? 'ciMessages' : 'deployMessages';
-    case 'job': return 'deployMessages';
-    case 'branch-run': return 'branchRunMessages';
-    case 'conflicts': return 'conflicts';
-    case 'review': return 'prReview';
-    case 'periodics': return 'periodics';
-    case 'hook': return 'hooks';
-    default: return null;
-  }
-};
