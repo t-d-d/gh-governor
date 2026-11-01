@@ -156,7 +156,8 @@ const oneTurn = async (eventOf, tag, { run: turn, deps, log, exit, schedule, can
     return code;
   } catch (error) {
     // The turn waits for its records before it throws, so none should be
-    // left; one that is ends with the task, as at the deadline.
+    // left; one that is may be cut off when the task exits, so it is logged
+    // as at the deadline.
     for (const pending of unrecorded) log(SESSION_UNRECORDED, unrecordedLine(pending, 'the turn threw while its record was being written, so it may not have landed'));
     log('dispatch-failed', { reason: 'threw', error: String(/** @type {any} */ (error)?.stack ?? error), ...tag(1) });
     return 1;

@@ -551,7 +551,7 @@ describe('run — governor records each session it starts', () => {
         },
       },
     });
-    // The read the sign-off sweep makes once turnFor is done, not one inside it.
+    // The first read once turnFor is done (the wait for replies), not one inside it.
     const readLogin = h.deps.workspace.readLogin;
     h.deps.workspace.readLogin = () => {
       if (recording && !String(new Error().stack).includes('turnFor')) throw new Error('the login on disk could not be read');

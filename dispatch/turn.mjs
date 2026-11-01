@@ -461,9 +461,11 @@ const withinBudget = (launched, ms, sessionName) =>
  * in reply to it is archived by it.
  *
  * Each launch's session record is written in the background, and the turn
- * waits for every one before it ends, whether it returns or throws: a throw
- * ends the task in dispatch/cli.mjs, which would cut off a record still
- * being written, and one cut off never lands.
+ * waits for every one before it ends, whether it returns or throws:
+ * dispatch/cli.mjs takes a throw as the turn's end, and the task may exit
+ * straight after (a by-hand turn's at once, the lane's once the lane stays
+ * empty), which would cut off a record still being written, and one cut off
+ * never lands.
  *
  * @param {unknown} event The raw event: EventBridge's, or the by-hand script's.
  * @param {Deps} deps
@@ -624,7 +626,7 @@ const turnOf = async (event, deps, records) => {
     if (find === undefined) finders.set(token, find = branchFinder({ list: (after) => deps.sessions.list(token, after), get: async (id) => sessionRecord(await deps.sessions.get(id, token)) }, repo, { log: deps.log }));
     return find;
   };
-  /** The records still being written, which the deadline logs as unrecorded. */
+  /** The records still being written, which dispatch/cli.mjs logs as unrecorded at the deadline or a throw. */
   const unrecorded = deps.unrecorded ?? new Set();
   /** The login's access token for the routines API, read once a turn. */
   const routinesToken = loginToken({ ...deps, secret }, 'start a periodic as a routine run');
