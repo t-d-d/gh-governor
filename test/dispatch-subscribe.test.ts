@@ -320,6 +320,22 @@ describe('quotes as GitHub renders them', () => {
     assert.equal(sessionNamedIn(`Filed.\n\n\`\`\`\n> ${FILER}\n\`\`\`\n\n${OWNER}`), OWNER);
   });
 
+  test('a body with CRLF line ends reads as one with LF: a rule or an empty heading still ends the quote', () => {
+    for (const between of ['---\r\n', '#\r\n', '# Heading\r\n']) {
+      const body = `> Fixed.\r\n${between}${FILER}`;
+      assert.equal(quoted(body, FILER), false, JSON.stringify(between));
+    }
+    assert.equal(mentions('> Ask\r\n---\r\n@claude about it.'), true);
+  });
+
+  test('a fence in a list item closes at the item\'s indent, and with the item', () => {
+    const nested = '1. a\n   - b\n     ```\n     x\n     ```\n';
+    assert.equal(quoted(`${nested}> ${FILER}`, `> ${FILER}`), true, 'closed at the nested item\'s indent');
+    assert.equal(mentions(`${nested}> @claude`), false);
+    assert.equal(quoted(`- \`\`\`\n> ${FILER}`, `> ${FILER}`), true, 'a line left of the item ends it, and its fence');
+    assert.equal(quoted(`- \`\`\`\n\n  > ${FILER}`, `  > ${FILER}`), false, 'a blank line inside the fence keeps it open');
+  });
+
   test('a quote in a fenced block inside a quote stays quoted, and the quote ends with the fence\'s quote', () => {
     assert.equal(quoted('> ```\n> > x\n> ```', '> > x'), true);
     assert.equal(sessionNamedIn(`> \`\`\`\n> ${FILER}\n> \`\`\``), null);

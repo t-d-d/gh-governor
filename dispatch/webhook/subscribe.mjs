@@ -91,20 +91,26 @@ const INTERRUPTS =
  * @param {string} line tabs expanded
  * @param {string} marker
  */
-const closesFence = (line, marker) => new RegExp(`^ {0,3}${marker[0] === '`' ? '`' : '~'}{${marker.length},}[ \\t\\r]*$`).test(line);
+const closesFence = (line, marker) => {
+  const run = /^ {0,3}(`+|~+)[ \t]*$/.exec(line)?.[1];
+  return run !== undefined && run[0] === marker[0] && run.length >= marker.length;
+};
 
 /**
- * Whether each line of `text` renders inside a blockquote, as GitHub reads
+ * Whether each of `lines` renders inside a blockquote, as GitHub reads
  * markdown: a line starting `>` at most three spaces in, also inside a list
  * item, and a lazy continuation, a line under a quoted paragraph that
  * starts nothing new. A `>` in a fenced or indented code block is code.
+ * A carriage return ending a line is read as no character.
  *
- * @param {string} text
+ * @param {string[]} lines
  * @returns {boolean[]}
  */
-const quotedLines = (text) => {
+const quotedLines = (lines) => {
   /** The marker of the open fence outside any quote, or null. @type {string | null} */
   let fence = null;
+  /** The column the open fence's list item starts its content at, 0 outside a list. */
+  let fenceBase = 0;
   /** The marker of the open fence inside the quote, or null. @type {string | null} */
   let quoteFence = null;
   /** Whether a paragraph is open, and whether it is inside a quote. */
@@ -113,11 +119,17 @@ const quotedLines = (text) => {
   /** The column a list item's content starts at, or null outside a list. @type {number | null} */
   let item = null;
   let blankAbove = true;
-  return text.split('\n').map((raw) => {
-    const line = expandTabs(raw);
+  return lines.map((raw) => {
+    const line = expandTabs(raw.replace(/\r$/, ''));
     if (fence !== null) {
-      if (closesFence(line, fence)) fence = null;
-      return false;
+      const indent = indentOf(line);
+      if (indent >= fenceBase || /^[ \t]*$/.test(line)) {
+        if (closesFence(line.slice(Math.min(indent, fenceBase)), fence)) fence = null;
+        return false;
+      }
+      // A line left of the item's content ends the item, and the fence in it.
+      fence = null;
+      item = null;
     }
     if (/^[ \t\r]*$/.test(line)) {
       paragraph = quoteParagraph = false;
@@ -153,6 +165,7 @@ const quotedLines = (text) => {
     const opener = FENCE.exec(rest);
     if (opener?.[1]) {
       fence = opener[1];
+      fenceBase = base;
       paragraph = false;
       quoteFence = null;
       return false;
@@ -184,11 +197,9 @@ const quotedLines = (text) => {
  * @param {string} fill
  */
 const fillQuotes = (text, fill) => {
-  const quoted = quotedLines(text);
-  return text
-    .split('\n')
-    .map((line, i) => (quoted[i] ? fill.repeat(line.length) : line))
-    .join('\n');
+  const lines = text.split('\n');
+  const quoted = quotedLines(lines);
+  return lines.map((line, i) => (quoted[i] ? fill.repeat(line.length) : line)).join('\n');
 };
 
 /** `text` with every quoted line blanked, character for character. @param {string} text */
