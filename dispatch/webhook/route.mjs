@@ -663,10 +663,12 @@ const switchedOn = async (decision, delivery, deps) => {
   for (const queued of decision.fires) {
     const { fire } = queued;
     const label = fire.kind === 'schedule' ? fire.label : undefined;
-    const off = droppedBy(fire, item?.switches ?? null);
     if (label !== undefined && item?.ready && !item.ready.includes(label)) {
       dropped.push(`its ${fire.kind} fire, as ${label} is not one of ${repo}'s ready labels`);
-    } else if (off === null) kept.push(queued);
+      continue;
+    }
+    const off = droppedBy(fire, item?.switches ?? null);
+    if (off === null) kept.push(queued);
     else dropped.push(`its ${fire.kind} fire, as ${repo}'s file turns ${off.join(' and ')} off`);
   }
   if (dropped.length === 0) return decision;
