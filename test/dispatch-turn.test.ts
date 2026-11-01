@@ -1146,7 +1146,7 @@ describe('run — an unblocked fire', () => {
   const OLD_MARKER = dispatchMarker({ at: new Date(NOW - 3 * 24 * 60 * 60 * 1000).toISOString(), sessionUrl: 'https://claude.ai/code/session_01WORK' });
   const blocker = { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' };
   const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' }, ...over });
-  const ticketTurn = ({ labels = READY, state = 'open', blockers = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, features = {} as Record<string, boolean>, openBlockers = undefined as number | undefined } = {}) => {
+  const ticketTurn = ({ unlabelFails = [] as string[], labels = READY, state = 'open', blockers = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, features = {} as Record<string, boolean>, openBlockers = undefined as number | undefined } = {}) => {
     const asked: string[] = [];
     const file = JSON.parse(FACTORY_FILE);
     file.features = { ...file.features, ...features };
@@ -1172,7 +1172,10 @@ describe('run — an unblocked fire', () => {
           h.comments.push({ issue: n, body });
         },
         addLabels: async (n: number, on: string[]) => { h.calls.push(`label #${n} +${on.join(', ')}`); },
-        removeLabel: async (n: number, label: string) => { h.calls.push(`label #${n} -${label}`); },
+        removeLabel: async (n: number, label: string) => {
+          if (unlabelFails.includes(label)) throw new Error('HTTP 502');
+          h.calls.push(`label #${n} -${label}`);
+        },
         ensureLabel: async (name: string) => { h.calls.push(`ensure ${name}`); },
       }),
     });
@@ -1208,13 +1211,80 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual([h.launches, h.messages, h.comments], [[], [], []]);
   });
 
+  const dropped = { blocker: { ...blocker, reason: 'not_planned' } };
+  const TAKEN_OFF = ['label #7 -workflow: ready for development', 'label #7 -mode: afk'];
+
   test('its blocker closed as not planned: a comment naming the blocker, and nothing starts', async () => {
-    const h = ticketTurn();
-    const result = await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never) as Record<string, unknown>;
+    const h = ticketTurn({ labels: ['enhancement'] });
+    const result = await run(fire(dropped), h.deps as never) as Record<string, unknown>;
     assert.equal(result.row, 'not-planned');
     assert.deepEqual(h.comments.map((c) => c.issue), [7]);
     assert.match(h.comments[0]!.body, /acme\/tools#41 \(`The parser`\) closed as not planned/);
+    assert.doesNotMatch(h.comments[0]!.body, /ready label/);
     assert.deepEqual([h.launches, h.messages, labelCalls(h.calls)], [[], [], []]);
+  });
+
+  test('not planned, and ready: every ready label comes off, and the one comment says so and how to ready it again', async () => {
+    const h = ticketTurn();
+    const result = await run(fire(dropped), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'not-planned');
+    assert.deepEqual(labelCalls(h.calls), TAKEN_OFF);
+    assert.deepEqual(h.comments.map((c) => c.issue), [7]);
+    assert.match(h.comments[0]!.body, /closed as not planned[\s\S]*Its work will not land[\s\S]*took its ready labels, `workflow: ready for development` and `mode: afk`, off #7/);
+    assert.match(h.comments[0]!.body, /Put them back once you decide #7 still stands/);
+    assert.deepEqual([h.launches, h.messages], [[], []]);
+  });
+
+  test('not planned, ready, and a repo that replaces the ask: the comment still says the labels came off', async () => {
+    const h = ticketTurn();
+    const file = JSON.parse(FACTORY_FILE);
+    file.prompts = { ...file.prompts, unblockedNotPlanned: 'Ask the owner.' };
+    h.deps.configFile = async (repo: string) => (repo === REPO ? JSON.stringify({ ...file, features: { ...file.features } }) : null);
+    await run(fire(dropped), h.deps as never);
+    assert.match(h.comments[0]!.body, /Ask the owner\.[\s\S]*took its ready labels/);
+  });
+
+  test('not planned, ready, and pickup on with unblocked off: the labels still come off, with the comment', async () => {
+    const h = ticketTurn({ features: { pickup: true, unblocked: false } });
+    const result = await run(fire(dropped), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.refusal, undefined);
+    assert.deepEqual(labelCalls(h.calls), TAKEN_OFF);
+    assert.equal(h.comments.length, 1);
+    assert.match(h.comments[0]!.body, /closed as not planned[\s\S]*took its ready labels/);
+  });
+
+  test('not planned, ready, and pickup off: its labels stay, and unblocked still comments as before', async () => {
+    const h = ticketTurn({ features: { pickup: false, unblocked: true } });
+    await run(fire(dropped), h.deps as never);
+    assert.deepEqual(labelCalls(h.calls), []);
+    assert.equal(h.comments.length, 1);
+    assert.doesNotMatch(h.comments[0]!.body, /ready label/);
+  });
+
+  test('not planned, ready, and a label that will not come off: logged at error, and named in the comment', async () => {
+    const h = ticketTurn({ unlabelFails: ['mode: afk'] });
+    await run(fire(dropped), h.deps as never);
+    assert.deepEqual(labelCalls(h.calls), ['label #7 -workflow: ready for development']);
+    const line = h.logged.find((l) => l.event === 'dispatch-unblocked-unlabelled');
+    assert.ok(line, JSON.stringify(h.logged));
+    assert.equal(line.level, 'error');
+    assert.equal(line.label, 'mode: afk');
+    assert.match(h.comments[0]!.body, /could not take `mode: afk` off #7/);
+    assert.match(h.comments[0]!.body, /can still be picked up/);
+  });
+
+  test('not planned, ready, and still blocked by another open issue: the labels come off all the same', async () => {
+    const h = ticketTurn({ blockers: [{ number: 41, state: 'closed', title: 'x' }, { number: 43, state: 'open', title: 'y' }] });
+    await run(fire(dropped), h.deps as never);
+    assert.deepEqual(labelCalls(h.calls), TAKEN_OFF);
+    assert.match(h.comments[0]!.body, /still blocked by another open issue[\s\S]*took its ready labels/);
+  });
+
+  test('not planned, claimed and carrying the ready labels: its labels stay, and its session hears it', async () => {
+    const h = ticketTurn({ labels: [...READY, CLAIM], comments: [{ body: OLD_MARKER }] });
+    await run(fire(dropped), h.deps as never);
+    assert.deepEqual(labelCalls(h.calls), []);
+    assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK']);
   });
 
   test('not planned, and claimed: the comment, and its session hears it too', async () => {
@@ -1227,7 +1297,7 @@ describe('run — an unblocked fire', () => {
   });
 
   test('not planned, and still blocked by another open issue: the comment says it is still blocked, and nothing starts', async () => {
-    const h = ticketTurn({ blockers: [{ number: 41, state: 'closed', title: 'x' }, { number: 43, state: 'open', title: 'y' }] });
+    const h = ticketTurn({ labels: ['enhancement'], blockers: [{ number: 41, state: 'closed', title: 'x' }, { number: 43, state: 'open', title: 'y' }] });
     const result = await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never) as Record<string, unknown>;
     assert.equal(result.row, 'not-planned');
     assert.deepEqual(h.comments.map((c) => c.issue), [7]);
@@ -1376,7 +1446,8 @@ describe('run — an unblocked fire', () => {
       ['ready', READY, {}, { pickup: false, unblocked: true }],
       ['claimed', [CLAIM], {}, { pickup: true, unblocked: false }],
       ['not-ready', ['enhancement'], {}, { pickup: true, unblocked: false }],
-      ['not-planned', READY, { blocker: { ...blocker, reason: 'not_planned' } }, { pickup: true, unblocked: false }],
+      ['not-planned', ['enhancement'], { blocker: { ...blocker, reason: 'not_planned' } }, { pickup: true, unblocked: false }],
+      ['not-planned', [CLAIM], { blocker: { ...blocker, reason: 'not_planned' } }, { pickup: true, unblocked: false }],
     ];
     for (const [row, labels, over, features] of cases) {
       const off = ticketTurn({ labels, features, comments: [{ body: OLD_MARKER }] });

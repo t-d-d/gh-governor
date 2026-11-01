@@ -17,11 +17,19 @@
  * |---|---|---|
  * | closed | nothing | |
  * | lost its blocker to a "not planned" close | comments, and messages its session if claimed, saying so if another open issue still blocks it | `unblocked` |
+ * | the same, and carries every ready label and no claim | also takes its ready labels off, and the comment says so | `pickup` |
  * | still blocked by another open issue | nothing: that blocker's close sends its own fire | |
  * | carries an `exclude` label | nothing | |
  * | is claimed | messages the session its dispatch marker names | `unblocked` |
  * | is ready | picks it up as pickup does, the close's facts in the prompt | `pickup` |
  * | is not ready | starts a spec session with a marker and no claim | `unblocked` |
+ *
+ * A not-planned close takes a ready, unclaimed ticket's ready labels off
+ * ({@link readyToTakeOff}), whether or not another blocker is still open,
+ * so pickup does not start it before a person decides it still stands. That
+ * guard is `pickup`'s, since pickup is what could start the ticket; the
+ * comment and the message stay `unblocked`'s. With both on, the ticket gets
+ * one comment.
  *
  * The last row is pickup's reverse: the prompt tells the session to add the
  * claim label itself before it builds. The marker keeps the sweep off the
@@ -182,17 +190,57 @@ export const specPrompt = ({ fire, title, labels, prompts }) => {
 export const unblockedMessage = (fire, prompts) => `${unblockedFacts(fire)}\n\n${instruction(prompts, 'unblockedClaimed', { issue: fire.issue })}`;
 
 /**
+ * The ready labels a not-planned close takes off a ticket: every one of the
+ * repo's, where the ticket carries them all and no claim label, and none
+ * otherwise. A claimed ticket's session is told instead, and keeps its
+ * labels.
+ *
+ * @param {readonly string[]} on The ticket's labels.
+ * @param {Pick<Labels, 'ready' | 'claim'>} labels The repo's.
+ * @returns {string[]}
+ */
+export const readyToTakeOff = (on, labels) =>
+  !on.includes(labels.claim) && labels.ready.length > 0 && labels.ready.every((label) => on.includes(label)) ? [...labels.ready] : [];
+
+/** @param {readonly string[]} names */
+const listed = (names) => {
+  const quoted = names.map((n) => `\`${n}\``);
+  return quoted.length <= 1 ? quoted.join('') : `${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)}`;
+};
+
+/**
+ * What became of a ticket's ready labels, for its comment. Fixed text, not
+ * the repo's prompt, so a repo that replaces the ask still says it.
+ *
+ * @param {number} issue
+ * @param {{ removed: readonly string[], failed: readonly string[] }} unreadied
+ */
+const readySentence = (issue, { removed, failed }) => {
+  if (failed.length === 0) {
+    const its = removed.length === 1 ? `its ready label, ${listed(removed)},` : `its ready labels, ${listed(removed)},`;
+    return `Governor took ${its} off #${issue}, so it is not picked up. Put them back once you decide #${issue} still stands.`;
+  }
+  const took = removed.length === 0 ? '' : `Governor took ${listed(removed)} off #${issue}, but `;
+  const could = `${took === '' ? 'Governor ' : ''}could not take ${listed(failed)} off #${issue}`;
+  return `${took}${could}, so it can still be picked up. Take ${failed.length === 1 ? 'it' : 'them'} off by hand until you decide #${issue} still stands.`;
+};
+
+/**
  * The comment a ticket gets when its blocker closed as not planned, and its
  * session's message if it is claimed. `blocked`: another open issue still
  * blocks the ticket, which the text says, so nobody reads it as free. That
  * sentence comes after the ask, since the default ask's "Its work" means the
  * blocker's and must follow the blocker's facts.
  *
+ * `unreadied`: the ready labels this close took off, and those it could
+ * not, which the comment ends on.
+ *
  * @param {UnblockedFire & { repo?: string }} fire
  * @param {Record<string, string | undefined>} prompts
- * @param {{ blocked?: boolean }} [options]
+ * @param {{ blocked?: boolean, unreadied?: { removed: readonly string[], failed: readonly string[] } }} [options]
  */
-export const notPlannedComment = (fire, prompts, { blocked = false } = {}) => {
+export const notPlannedComment = (fire, prompts, { blocked = false, unreadied } = {}) => {
   const still = blocked ? `\n\n#${fire.issue} is still blocked by another open issue, so this close does not free it.` : '';
-  return `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}${still}`;
+  const ready = unreadied === undefined ? '' : `\n\n${readySentence(fire.issue, unreadied)}`;
+  return `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}${still}${ready}`;
 };

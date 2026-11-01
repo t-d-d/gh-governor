@@ -6,7 +6,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { ROW_SWITCH, closingFires, readyPrompt, specPrompt, ticketRow, unblockedFacts, unblockedMessage, notPlannedComment } from '../dispatch/unblocked.mjs';
+import { ROW_SWITCH, closingFires, readyPrompt, specPrompt, ticketRow, unblockedFacts, unblockedMessage, notPlannedComment, readyToTakeOff } from '../dispatch/unblocked.mjs';
 import { parseFire, fireWeight, FIRE_BUDGET } from '../dispatch/webhook/fire.mjs';
 
 const FACTORY = 'acme/factory';
@@ -148,11 +148,47 @@ describe('the texts', () => {
     assert.match(text, /It blocked #7\.\n\nIts work will not land/);
   });
 
+  const dropped = { kind: 'unblocked' as const, repo: FACTORY, issue: 7, blocker: { ...closed, reason: 'not_planned' } };
+
+  test('ready labels taken off: the comment says so, and how to ready the ticket again, whatever the repo\'s ask', () => {
+    const text = notPlannedComment(dropped, { unblockedNotPlanned: 'Ask the owner.' }, { unreadied: { removed: ['ready', 'mode: afk'], failed: [] } });
+    assert.match(text, /Ask the owner\./);
+    assert.match(text, /took its ready labels, `ready` and `mode: afk`, off #7/);
+    assert.match(text, /Put them back once you decide #7 still stands/);
+    assert.doesNotMatch(text, /could not/);
+  });
+
+  test('a ready label that would not come off is named, so nobody reads the ticket as held', () => {
+    const text = notPlannedComment(dropped, {}, { unreadied: { removed: ['ready'], failed: ['mode: afk'] } });
+    assert.match(text, /took `ready` off #7/);
+    assert.match(text, /could not take `mode: afk` off/);
+    assert.match(text, /can still be picked up/);
+    assert.doesNotMatch(text, /Put them back/);
+  });
+
+  test('the label sentence comes after the still-blocked one', () => {
+    const text = notPlannedComment(dropped, {}, { blocked: true, unreadied: { removed: ['ready'], failed: [] } });
+    assert.match(text, /still blocked by another open issue[\s\S]*took its ready label, `ready`, off #7/);
+  });
+
   // A comment GitHub renders: a title's @handle or #N must not notify or link.
   test('the comment quotes each title as code, so a mention in it notifies nobody', () => {
     const text = notPlannedComment({ kind: 'unblocked', repo: FACTORY, issue: 7, blocker: { ...closed, title: 'Ask @alice about `#9`', reason: 'not_planned' }, pr: { ...pr, title: 'Ping @team' } }, {});
     assert.match(text, /\(`Ask @alice about '#9'`\)/);
     assert.match(text, /\(`Ping @team`, https/);
     assert.doesNotMatch(text.replace(/`[^`]*`/g, ''), /@/);
+  });
+});
+
+describe('readyToTakeOff', () => {
+  const labels = { ready: ['ready', 'mode: afk'], claim: 'claimed', exclude: ['type: prd'] };
+  test('a ticket carrying every ready label and no claim: every ready label', () => {
+    assert.deepEqual(readyToTakeOff(['ready', 'mode: afk', 'bug'], labels), ['ready', 'mode: afk']);
+  });
+  test('a claimed ticket keeps its labels', () => {
+    assert.deepEqual(readyToTakeOff(['ready', 'mode: afk', 'claimed'], labels), []);
+  });
+  test('a ticket missing a ready label is not ready: nothing to take off', () => {
+    assert.deepEqual(readyToTakeOff(['ready'], labels), []);
   });
 });

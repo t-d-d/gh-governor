@@ -55,11 +55,14 @@ Each `unblocked` fire runs in the ticket's repo's own turn, under that repo's co
 |---|---|---|
 | Is closed | Nothing. | |
 | Lost its blocker to a "not planned" close | Comments on the ticket naming the blocker, and messages its session if it is claimed. If another open issue still blocks it, the comment and the message say so. Nothing starts. | `unblocked` |
+| The same, and carries every ready label and no claim label | Also takes each of the repo's ready labels off, whether or not another blocker is still open, so pickup does not start the ticket before a person decides it still stands. The comment says the labels came off and to put them back once it does. A label that will not come off is logged at error as `dispatch-unblocked-unlabelled`, and the comment names it. With `unblocked` on too, the ticket gets one comment. | `pickup` |
 | Is still blocked by another open issue, by the same count pickup reads | Nothing. That blocker's close sends its own fire. | |
 | Carries an `exclude` label | Nothing. | |
 | Is claimed | Messages the session the newest dispatch marker names: its blocker closed, and by which PR. | `unblocked` |
 | Is ready | Picks it up as pickup does: claim, marker, launch. The prompt adds the close's facts and asks the session to check the spec against what merged first. | `pickup` |
 | Is not ready | Starts a session with a dispatch marker and no claim, to rewrite the spec from what merged. A decision only a person can make goes into the body as a question. The session either marks the ticket ready and stops, or adds the claim label itself before it builds. | `unblocked` |
+
+The label removal sits under `pickup` because pickup is what could start the ticket, so a repo with `pickup` on is held whatever `unblocked` says. The sentence about the labels is fixed text, not part of the `unblockedNotPlanned` prompt, so a repo that replaces the prompt still says it.
 
 The closing turn cannot read another repo's switches, so it queues the fire anyway, and the ticket's turn ends when its switch is off. For its own repo, it skips the fire when the file turns neither `pickup` nor `unblocked` on. With `unblocked` on and `pickup` off, a spec session can still claim a ticket and build it; one that only marks it ready waits for nothing to start it.
 
