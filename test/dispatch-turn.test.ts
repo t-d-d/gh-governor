@@ -989,7 +989,7 @@ describe('run — the login after the launch', () => {
  * The receiver's fire for one issue labelled ready names it: the turn
  * dispatches that issue if the selection would, and no other. The cap and
  * the rest of the backlog are the sweep's, and so is the heartbeat: it says
- * the two-hourly sweep ran, and a fire per label would keep it fresh while
+ * the hourly sweep ran, and a fire per label would keep it fresh while
  * the schedule was dead.
  */
 describe('run — a schedule fire for one issue', () => {
@@ -5538,7 +5538,7 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
 
 /**
  * Pickup's sweep interval (dispatch/pickup.mjs): the bare schedule fire
- * sweeps a repo's ready tickets once the interval its file sets, two hours
+ * sweeps a repo's ready tickets once the interval its file sets, one hour
  * when unset, has passed since that repo's last sweep. The last sweep lives
  * in the state table under `pickup#<repo>`, and a lost item means sweep now.
  * A ready label and a close that unblocks a ready ticket still pick up at once, so a
@@ -5583,9 +5583,9 @@ describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval 
     return { ...h, issue, backlogReads: () => backlogReads, tickets: () => h.launches.map((l) => l.sessionName).filter((n) => /^#\d+/.test(n)) };
   };
 
-  test('with no interval set, the two-hourly fire sweeps, and records the sweep under the repo', async () => {
+  test('with no interval set, the hourly fire sweeps a repo it swept an hour ago, and records the sweep under the repo', async () => {
     const h = sweeping(undefined, { cap: 3 });
-    h.sweeps.set(REPO, ago(2 * HOUR));
+    h.sweeps.set(REPO, ago(HOUR));
     await run({ source: 'aws.events' }, h.deps as never);
     assert.equal(h.tickets().length, 3);
     assert.deepEqual(h.sweepWrites, [{ repo: REPO, at: AT }]);

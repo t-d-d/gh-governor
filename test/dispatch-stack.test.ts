@@ -312,7 +312,7 @@ describe('infra/governor.cfn.yml — the schedule', () => {
     // A receiver EventBridge could not invoke is retried, inside the lane's
     // five-minute deduplication window, so a retry of a fire it did queue is
     // not a second fire.
-    assert.ok(Number(target?.RetryPolicy?.MaximumRetryAttempts) >= 1, 'a throttled invoke loses the schedule fire for two hours');
+    assert.ok(Number(target?.RetryPolicy?.MaximumRetryAttempts) >= 1, 'a throttled invoke loses the schedule fire for an hour');
     assert.ok(Number(target?.RetryPolicy?.MaximumEventAgeInSeconds) <= 300, 'a retry past the deduplication window could queue a second fire');
     const permission = template.Resources.SchedulePermission?.Properties;
     assert.equal(permission?.Principal, 'events.amazonaws.com');
@@ -320,6 +320,17 @@ describe('infra/governor.cfn.yml — the schedule', () => {
     assert.equal(permission?.SourceArn, '${ScheduleRule.Arn}');
     assert.equal(template.Resources.DispatchEventsRole, undefined, 'no role starts the task but the receiver\'s');
     assert.equal(template.Parameters?.SubnetIds?.Type, 'List<AWS::EC2::Subnet::Id>');
+  });
+
+  // `aws cloudformation deploy` keeps a parameter it is not given, so a new
+  // default alone would leave a deployed stack on its old schedule.
+  test('fires every hour at :17, and the deploy passes that schedule', () => {
+    const hourly = 'cron(17 * * * ? *)';
+    assert.equal(template.Parameters?.ScheduleExpression?.Default, hourly);
+    assert.equal(rule?.Properties?.ScheduleExpression, '${ScheduleExpression}');
+    const apply = steps.find(appliesStack('governor'));
+    assert.match(apply?.run ?? '', /"ScheduleExpression=\$\{SCHEDULE_EXPRESSION\}"/);
+    assert.equal(apply?.env?.SCHEDULE_EXPRESSION, hourly, 'the deploy passes the template\'s default');
   });
 
 });

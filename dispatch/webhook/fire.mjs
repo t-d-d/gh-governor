@@ -10,7 +10,7 @@
  * where a field is spelled, so a new kind of fire, or a new field, is one
  * edit here and one test.
  *
- * Twelve kinds. A `schedule` fire (EventBridge, every two hours) selects
+ * Twelve kinds. A `schedule` fire (EventBridge, every hour) selects
  * ready work up to the cap; one naming an `issue` (an issue just given a
  * label on the stack's SelectLabels) selects that issue alone, if the label
  * is one of the repo's ready labels and the selection would; one naming a

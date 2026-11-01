@@ -220,6 +220,10 @@ jobs:
           APP_ID: ${{ vars.APP_ID }}
           SELECT_LABELS: ${{ vars.SELECT_LABELS }}
           DROP_BOX_URL: ${{ secrets.DROP_BOX_URL }}
+          # The template's default, passed because `aws cloudformation
+          # deploy` keeps a parameter it is not given: a new default alone
+          # never reaches a deployed stack.
+          SCHEDULE_EXPRESSION: 'cron(17 * * * ? *)'
         run: |
           if [[ ! "$APP_ID" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::APP_ID variable is not an App ID"
@@ -241,7 +245,8 @@ jobs:
               "DispatchOwners=${GOVERNOR_OWNERS}" \
               "GitHubAppId=${APP_ID}" \
               "SelectLabels=${SELECT_LABELS}" \
-              "DropBoxUrl=${DROP_BOX_URL}"
+              "DropBoxUrl=${DROP_BOX_URL}" \
+              "ScheduleExpression=${SCHEDULE_EXPRESSION}"
 
       # The App's webhook follows the stack: the receiver's URL and the
       # stack's key, written as the App itself, and every installation

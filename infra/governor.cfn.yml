@@ -45,7 +45,7 @@ Parameters:
       config file, so it cannot tell a ready label from any other; the turn
       still checks the label against the repo's ready labels. Empty means
       every label selects. A repo whose ready label is not listed is picked
-      up by the two-hourly schedule fire instead.
+      up by the hourly schedule fire instead.
 
   GitHubAppId:
     Type: String
@@ -54,12 +54,15 @@ Parameters:
       The GitHub App's ID. The webhook receiver takes a comment carrying the
       PR review's marker for the review's only when this App posted it.
 
+  # The deploy passes this value too (.github/workflows/deploy.yml):
+  # `aws cloudformation deploy` keeps a parameter it is not given, so a new
+  # default alone would never reach a deployed stack.
   ScheduleExpression:
     Type: String
-    Default: cron(17 1-23/2 * * ? *)
+    Default: cron(17 * * * ? *)
     Description: >
-      When the schedule fire runs: every 2 h, odd hours at :17. A served
-      repo's watchdog that reads the heartbeat expects the same cadence.
+      When the schedule fire runs: every hour at :17. A served repo's
+      watchdog that reads the heartbeat expects the same cadence.
 
   DispatchCap:
     Type: String
@@ -475,7 +478,7 @@ Resources:
   # DispatchErrorsAlarm pages, too late. Each turn within
   # LOGIN_EXPIRY_WARNING_MS (scripts/lib/claude-login.mjs, three days) of it
   # logs `dispatch-login-expiring` (dispatch/turn.mjs). A day's period, not
-  # fifteen minutes: turns run every two hours or less, so each day of the
+  # fifteen minutes: turns run every hour or less, so each day of the
   # window holds a line and the alarm stays in ALARM, one page, until a
   # re-mint; the next day's turns publish 0 (DefaultValue) and clear it.
   DispatchLoginExpiringFilter:

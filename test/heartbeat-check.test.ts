@@ -19,6 +19,7 @@ import { pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat } from '../dispatch/heartbeat.mjs';
 import { readConfig as governorReadConfig } from '../dispatch/repo-config.mjs';
+import { SWEEP_HOURS as PICKUP_SWEEP_HOURS } from '../dispatch/pickup.mjs';
 
 const WORKFLOW_PATH = new URL('../.github/workflows/heartbeat-check.yml', import.meta.url);
 const SOURCE_PATH = new URL('../checker/heartbeat-check.mjs', import.meta.url);
@@ -168,11 +169,12 @@ describe('reading the config file', () => {
     });
   });
 
-  test('pickup\'s interval is two hours when the file sets none, and nothing is checked for a feature left off', () => {
+  test('pickup\'s interval is one hour when the file sets none, pickup\'s own default, and nothing is checked for a feature left off', () => {
+    assert.equal(checker.SWEEP_HOURS, PICKUP_SWEEP_HOURS, 'the checker cannot import dispatch/pickup.mjs, so it keeps a copy of the default');
     const file = factory();
     delete file.pickup;
     file.features = { ...file.features, periodics: false };
-    assert.deepEqual(checker.readConfig(JSON.stringify(file)), { ok: true, config: { issue: 412, pickupHours: 2, periodics: [] } });
+    assert.deepEqual(checker.readConfig(JSON.stringify(file)), { ok: true, config: { issue: 412, pickupHours: 1, periodics: [] } });
     file.features = { ...file.features, pickup: false, periodics: true };
     assert.equal((checker.readConfig(JSON.stringify(file)) as { config: { pickupHours: unknown } }).config.pickupHours, null);
   });

@@ -14,7 +14,7 @@ on:
   workflow_call:
     inputs:
       tolerance-hours:
-        description: How many hours past its limit a line may be before the check opens an issue. Cover the schedule fire's two-hour tick.
+        description: How many hours past its limit a line may be before the check opens an issue. Cover the schedule fire's one-hour tick.
         type: number
         default: 3
       labels:
@@ -80,8 +80,8 @@ jobs:
           /** The served repo's config file, read from its default branch. */
           export const CONFIG_PATH = '.github/dispatch.json';
 
-          /** Pickup's sweep interval when the file sets none. */
-          export const SWEEP_HOURS = 2;
+          /** Pickup's sweep interval when the file sets none: dispatch/pickup.mjs's, copied, since this runs in another repo. */
+          export const SWEEP_HOURS = 1;
 
           const HOUR_MS = 60 * 60 * 1000;
           const DAY_MS = 24 * HOUR_MS;

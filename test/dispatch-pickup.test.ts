@@ -1,6 +1,6 @@
 /**
  * Pickup's sweep interval: a repo's config file may set how often the bare
- * schedule fire sweeps its ready tickets, in whole hours, two when unset
+ * schedule fire sweeps its ready tickets, in whole hours, one when unset
  * (dispatch/pickup.mjs). The turn that applies it is in
  * test/dispatch-turn.test.ts.
  */
@@ -27,13 +27,18 @@ describe('the config file\'s pickup section', () => {
     }
   });
 
-  test('unset is two hours: a file with no pickup section, or an empty one', () => {
-    assert.equal(SWEEP_HOURS, 2);
+  test('unset is one hour, the schedule fire\'s own tick: a file with no pickup section, or an empty one', () => {
+    assert.equal(SWEEP_HOURS, 1);
     for (const over of [{}, { pickup: {} }]) {
       const read = readConfig(file(over));
       assert.ok(read.ok, JSON.stringify(read));
-      assert.equal(sweepHoursOf(read.config), 2);
+      assert.equal(sweepHoursOf(read.config), 1);
     }
+  });
+
+  test('unset, a repo swept at the last hourly fire is swept again at this one', () => {
+    assert.equal(sweepDue(ago(HOUR), SWEEP_HOURS, NOW), true);
+    assert.equal(sweepDue(ago(HOUR - 20 * 60 * 1000), SWEEP_HOURS, NOW), true, 'the last sweep\'s turn ran late after its fire');
   });
 
   test('the factory sets it', () => {
@@ -58,6 +63,14 @@ describe('when a repo\'s sweep is due', () => {
     assert.equal(SWEEP_SLACK_MS, 30 * 60 * 1000);
     assert.equal(sweepDue(ago(2 * HOUR - 20 * 60 * 1000), 2, NOW), true);
     assert.equal(sweepDue(ago(2 * HOUR - SWEEP_SLACK_MS - 1), 2, NOW), false);
+  });
+
+  // A fire waits on the lane behind the turns ahead of it, so the last
+  // sweep's turn can have run most of an hour after its fire. One sweep per
+  // tick is all the clock allows, so an interval of one tick needs no slack.
+  test('an interval of the clock\'s own tick sweeps at every fire, however late the last sweep\'s turn ran', () => {
+    assert.equal(sweepDue(ago(20 * 60 * 1000), 1, NOW), true, 'the last sweep ran 40 minutes after its fire');
+    assert.equal(sweepDue(ago(HOUR), 2, NOW), false, 'a longer interval keeps its slack');
   });
 
   test('an interval shorter than the clock\'s tick sweeps at every fire', () => {

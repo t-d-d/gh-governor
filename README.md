@@ -84,8 +84,8 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.
 | `features` | yes | The switches below, each `true` or `false`. A switch left out is off. |
 | `workflows` | no | What the repo's workflows are to governor: `ci`, `triage` and `tags`. |
 | `review` | when `prReview` is on | The PR review's settings. |
-| `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the two-hourly sweep updates. |
-| `pickup` | no | `{ "sweepHours": <number> }`: how many whole hours the two-hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default two, which sweeps at every fire. |
+| `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the hourly sweep updates. |
+| `pickup` | no | `{ "sweepHours": <number> }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default one, which sweeps at every fire. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the switch is on. |
 | `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request ([Hooks](#hooks)), each with an optional `perHour` cap on fires. At least one when the switch is on. |
@@ -106,7 +106,7 @@ The switches in `features`:
 | `conflicts` | A merge into the default branch tells each PR it left conflicted. |
 | `deployedLabels` | A shipping job labels the tickets it shipped `deployed: <target>`. Needs `deployMessages`. |
 | `prReview` | The PR review, run from the `review` section. |
-| `heartbeat` | Governor records each fire on the issue `heartbeat` names: a line for pickup and one per periodic. In the older shape with a `marker`, the two-hourly sweep stamps the issue's `last-run:` line instead. |
+| `heartbeat` | Governor records each fire on the issue `heartbeat` names: a line for pickup and one per periodic. In the older shape with a `marker`, the hourly sweep stamps the issue's `last-run:` line instead. |
 | `periodics` | A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached. |
 | `hooks` | A session on a hook's prompt when a signed request fires one of the `hooks` listed. A fire while the hook's last session is open goes into that session as a message. |
 
@@ -296,7 +296,7 @@ A label added to an issue starts a selection at once only if the deployment's `S
 
 ### Pickup's sweep interval
 
-A ready label listed in `SelectLabels`, and the close of a ready ticket's last open blocker, pick a ticket up at once. The sweep catches what those miss: a lost event, a label `SelectLabels` does not list. It runs at the two-hourly fire, once `pickup.sweepHours` have passed since the repo's last sweep, and every two hours when the file sets none. A repo that trusts its events can sweep less often:
+A ready label listed in `SelectLabels`, and the close of a ready ticket's last open blocker, pick a ticket up at once. The sweep catches what those miss: a lost event, a label `SelectLabels` does not list. It runs at the hourly fire, once `pickup.sweepHours` have passed since the repo's last sweep, and every hour when the file sets none. A repo that trusts its events can sweep less often:
 
 ```json
 "pickup": { "sweepHours": 6 }
@@ -333,12 +333,12 @@ What it reads:
 
 The inputs:
 
-- `tolerance-hours`: how far past its limit a line may run before the check opens an issue. Default 3. Governor's schedule fires every two hours, so a line can run up to two hours past its limit when nothing is wrong. Set the tolerance above that.
+- `tolerance-hours`: how far past its limit a line may run before the check opens an issue. Default 3. Governor's schedule fires every hour, so a line can run up to an hour past its limit when nothing is wrong. Set the tolerance above that.
 - `labels`: the labels the check's issues carry, separated by commas or new lines. Default none.
 
 What its issues say:
 
-- **Pickup's sweep is overdue.** Pickup's last sweep is older than `pickup.sweepHours`, or two hours when unset, plus the tolerance. The issue gives the last sweep's time.
+- **Pickup's sweep is overdue.** Pickup's last sweep is older than `pickup.sweepHours`, or an hour when unset, plus the tolerance. The issue gives the last sweep's time.
 - **A periodic is overdue.** Its last fire is older than its `days` plus the tolerance. The issue names the periodic, gives its last fire time and state, and says whether governor holds it for an open session, with that session's link. A periodic governor has read but never fired is measured from when governor first read it, and its issue says it has never fired.
 - **No line.** The file lists pickup or a periodic with no line on the heartbeat issue, and the file last changed longer ago than its limit plus the tolerance. A checker pinned to a commit older than the `not fired yet` state skips such a line, and treats the periodic as having none.
 - **The heartbeat could not be read.** The config file is missing, unreadable, does not parse, or does not turn the heartbeat on in the `{ "issue": <number> }` shape, or the heartbeat issue cannot be read or lacks governor's marker. The issue says which.
@@ -396,7 +396,7 @@ What it cannot see:
 - **One task on AWS.** The turns run in one ECS Fargate task, arm64, half a vCPU and a gigabyte. It needs a pseudo-terminal to start a cloud session, which Lambda cannot give. The task takes each fire off the queue and runs it as its own turn, one at a time, and exits once the queue has been empty for a minute. Only one task runs at a time.
 - **A webhook receiver.** The App's webhook posts every installation's events to one Lambda Function URL. The receiver checks the signature, routes the event from its payload, queues a fire on a FIFO queue, and calls a starter Lambda. The starter starts the task when a fire waits and none runs, never two at once. It also hears every task's stop, and runs every minute as a backstop.
 - **One claude.ai login.** The task creates sessions with a stored claude.ai login, kept in Secrets Manager. Each turn refreshes it and writes it back. The login's refresh expiry is fixed when it is minted, about two weeks on, so it must be minted again before then; an alarm warns three days ahead.
-- **A two-hourly schedule.** EventBridge fires the receiver every two hours. That fire sweeps every served repo: it starts due periodics, picks up ready tickets in each repo whose pickup interval has passed, writes heartbeats, and archives signed-off sessions.
+- **An hourly schedule.** EventBridge fires the receiver every hour. That fire sweeps every served repo: it starts due periodics, picks up ready tickets in each repo whose pickup interval has passed, writes heartbeats, and archives signed-off sessions.
 
 Governor runs from one CloudFormation stack, `governor` ([infra/governor.cfn.yml](infra/governor.cfn.yml)). A second stack, `governor-bootstrap` ([infra/bootstrap.cfn.yml](infra/bootstrap.cfn.yml)), holds the deploy's role and the secrets the operator writes. [.github/workflows/deploy.yml](.github/workflows/deploy.yml) applies both on a green push to `main`. A fire costs a fraction of a cent, and no GitHub Actions minutes.
 

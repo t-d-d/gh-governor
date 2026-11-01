@@ -10,7 +10,7 @@
     "periodics": true
   },
   "heartbeat": { "issue": 1 },
-  "pickup": { "sweepHours": 2 },
+  "pickup": { "sweepHours": 1 },
   "periodics": [
     {
       "name": "Code review",
