@@ -153,10 +153,10 @@ describe('a periodic\'s routine run', () => {
 
   test('a fire that throws may have started: the run sessions are read, and a new one is the fire\'s session', async () => {
     let fired = false;
-    const { api, calls } = fakeApi({
+    const { api } = fakeApi({
       triggers: async () => ({ data: [{ id: 'trig_01OLD', name: routineName(REPO, 'Weekly retro') }] }),
       run: async () => { fired = true; throw new Error('POST /v1/code/triggers/trig_01OLD/run: 502'); },
-      sessions: async (id: string) => { calls.push({ call: 'sessions', id }); return { data: fired ? [{ id: 'cse_01RUN' }, { id: 'cse_01EARLIER' }] : [{ id: 'cse_01EARLIER' }] }; },
+      sessions: async () => ({ data: fired ? [{ id: 'cse_01RUN' }, { id: 'cse_01EARLIER' }] : [{ id: 'cse_01EARLIER' }] }),
     });
     const result = await launch(api);
     assert.equal(result.status, 0, result.output);
@@ -174,6 +174,17 @@ describe('a periodic\'s routine run', () => {
     assert.equal(result.status, 3, result.output);
     assert.match(result.output, /timed out/, 'the unconfirmed answer says the fire threw');
     assert.equal(reads, ROUTINE_SESSION_TRIES);
+  });
+
+  test('a fire that throws with a body naming a session is unconfirmed, and its answer names no session for the turn to record', async () => {
+    const { api } = fakeApi({
+      run: async () => { throw new Error('POST /v1/code/triggers/trig_01NEW/run: 409 {"error":"busy","session_id":"session_01OTHER"}'); },
+      sessions: async () => ({ data: [] }),
+    });
+    const result = await launch(api);
+    assert.equal(result.status, 3, result.output);
+    assert.match(result.output, /409/, 'the unconfirmed answer still says how the fire threw');
+    assert.doesNotMatch(result.output, /\b(?:session|cse)_[A-Za-z0-9]{4,}/);
   });
 
   test('a refusal before the fire started nothing', async () => {

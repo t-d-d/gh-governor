@@ -31,6 +31,7 @@
  * published API, so the turn logs each answer's shape ({@link observed}).
  */
 
+import { messageOf } from '../scripts/lib/error-message.mjs';
 import { CONNECTOR_NAME } from './repo-config.mjs';
 
 /**
@@ -46,6 +47,9 @@ export const ROUTINE_SESSION_PAUSE_MS = 5_000;
 
 /** A session id as the sessions API writes one, either form. */
 const SESSION_ID = /^(?:cse|session)_([A-Za-z0-9]{4,128})$/;
+
+/** Any session id in a text, either form. */
+const ANY_SESSION_ID = /\b(?:cse|session)_[A-Za-z0-9]+/g;
 
 /**
  * @typedef {{
@@ -222,9 +226,6 @@ const rowsOf = (answer, what) => {
   return { rows, more: /** @type {any} */ (answer)?.has_more === true };
 };
 
-/** An error's message. @param {unknown} error */
-const messageOf = (error) => (error instanceof Error ? error.message : String(error));
-
 /** A session link for an id of either form, or null. @param {unknown} id */
 const linkOf = (id) => {
   const bare = typeof id === 'string' ? SESSION_ID.exec(id)?.[1] : undefined;
@@ -310,7 +311,9 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
     const fired = firedSession(await api.run(id));
     if (fired !== null) return { status: 0, output: `Routine ${id} fired: ${fired}` };
   } catch (error) {
-    threw = messageOf(error);
+    // The turn takes the session an unconfirmed answer names as this fire's,
+    // and a refusal's body may name another run's, so none is kept.
+    threw = messageOf(error).replace(ANY_SESSION_ID, 'a session');
   }
   for (let tries = 0; tries < ROUTINE_SESSION_TRIES; tries += 1) {
     if (tries > 0) await sleep(ROUTINE_SESSION_PAUSE_MS);
