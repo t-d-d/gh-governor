@@ -243,7 +243,7 @@ export const sessionUrlFrom = (output) => {
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
  *   openPulls: () => Promise<import('../scripts/lib/github-app.mjs').OpenPullRow[]>,
  *   branchHead: (branch: string) => Promise<string>,
- *   openNaming: (term: string) => Promise<OpenRow[]>,
+ *   openNaming: (session: string) => Promise<OpenRow[]>,
  *   commit: (sha: string) => Promise<{ sha: string, message: string, parents?: string[] }>,
  *   addLabels: (n: number, labels: string[]) => Promise<void>,
  *   removeLabel: (n: number, label: string) => Promise<void>,

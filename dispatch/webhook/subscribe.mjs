@@ -28,7 +28,8 @@
  *
  * Pure, importing only the fire's vocabulary (fire.mjs): the receiver
  * (mention.mjs, route.mjs) and the task (dispatch/deliveries.mjs,
- * dispatch/workflow.mjs; the image copies this file) read bodies with it.
+ * dispatch/workflow.mjs, and the standing search in
+ * scripts/lib/github-app.mjs; the image copies this file) read bodies with it.
  */
 
 import { SESSION_LINK as LINK, SUBSCRIPTION_EVENTS } from './fire.mjs';
@@ -265,6 +266,19 @@ const linesIn = (body) =>
     }));
 
 /**
+ * The ids of the sessions `body` names as its owner ({@link sessionNamedIn})
+ * or in a subscribe line: the sessions whose standing line counts it. A
+ * session's link quoted or cited in a member's text is not one of them.
+ *
+ * @param {unknown} body
+ * @returns {Set<string>}
+ */
+export const sessionsNamedIn = (body) => {
+  const owner = sessionNamedIn(body);
+  return new Set([...(owner === null ? [] : [owner]), ...linesIn(body).map((line) => line.session)].map(sessionId));
+};
+
+/**
  * Who hears of `event` on the PR or issue whose body is `body`: the owner
  * its footer names first, unless the event is `labels`, or `deploys` on an
  * issue (`issue`), then each session a line subscribes to it, once each.
@@ -304,8 +318,8 @@ const DISOWNED = '(its session refused a message and is unsubscribed)';
 
 /**
  * The body with the owner link struck, where it names `session`: nothing
- * reads an owner off it, and the standing search, which matches the
- * session's id anywhere in the body, no longer counts it by its footer.
+ * reads an owner off it, and the standing search ({@link sessionsNamedIn}) no
+ * longer counts it.
  * For an issue only: a PR's owner is the one a remark's fallback
  * takes over from.
  *

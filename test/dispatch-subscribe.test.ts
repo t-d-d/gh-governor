@@ -15,6 +15,7 @@ import {
   relinkSession,
   sameSession,
   sessionNamedIn,
+  sessionsNamedIn,
   subscribeLine,
   subscribersFor,
   unsubscribe,
@@ -178,6 +179,18 @@ describe('subscribersFor', () => {
   });
 });
 
+// The standing line counts a body for the sessions on it: its owner and
+// each session a line subscribes, whatever events. A session a member's
+// text cites or quotes is not on it.
+describe('sessionsNamedIn', () => {
+  test('is the ids of the owner and every subscriber, once each, and no session only cited or quoted', () => {
+    const body = `Cites ${FILER}.\n\n> ${REVIEWER}\n${subscribeLine(REVIEWER, ['labels'])}${subscribeLine(OWNER)}${footer}`;
+    assert.deepEqual([...sessionsNamedIn(body)].sort(), ['session_01OWNERAAA', 'session_01REVIEWER']);
+    assert.deepEqual([...sessionsNamedIn(`Cites ${FILER}.\n\n> ${OWNER}`)], []);
+    assert.deepEqual([...sessionsNamedIn(null)], []);
+  });
+});
+
 describe('unsubscribe', () => {
   test('drops every line naming the session, and nothing else', () => {
     const body = `Top.\n\n${subscribeLine(REVIEWER, ['comments'])}\n${subscribeLine(FILER)}\n${subscribeLine(REVIEWER, ['close'])}${footer}`;
@@ -196,7 +209,7 @@ describe('unsubscribe', () => {
 /**
  * An issue's filer that refuses a message is gone: its footer link
  * goes, so no later event messages it and the standing search, which
- * matches the session's id anywhere in the body, stops counting the issue.
+ * counts only an owner or a subscriber, stops counting the issue.
  */
 describe('disown', () => {
   test('an issue\'s owner is struck from its footer: nobody hears of any event, and the body no longer names the session', () => {

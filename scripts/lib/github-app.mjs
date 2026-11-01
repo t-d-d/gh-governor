@@ -16,6 +16,7 @@
 import { createSign } from 'node:crypto';
 import { postedByApp } from '../../dispatch/webhook/review-comment.mjs';
 import { closedBy } from '../../dispatch/pr-body.mjs';
+import { sessionId, sessionsNamedIn } from '../../dispatch/webhook/subscribe.mjs';
 
 const API = 'https://api.github.com';
 /** The version the gh-deps shim pins, so both read the same endpoint shapes. */
@@ -376,7 +377,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
   const headOf = (row) => (String(row?.head?.repo?.full_name ?? '').toLowerCase() === repo.toLowerCase() ? String(row.head.ref ?? '') : '');
 
   const call = githubApi({ token, fetch, sleep });
-  /** Every open issue and PR, read once for `openNaming`. @type {Promise<Array<OpenRow & { body: string }>> | null} */
+  /** Every open issue and PR, with the ids of the sessions its body names, read once for `openNaming`. @type {Promise<Array<OpenRow & { sessions: Set<string> }>> | null} */
   let openRows = null;
 
   return {
@@ -555,23 +556,23 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
-     * The open issues and PRs whose body holds `term` (a session's id). Read
-     * from the issues list, which carries PRs too and is on the core rate
-     * limit, once per reader (one per turn) and filtered here: the search
-     * API allows an installation about thirty calls a minute, which the
-     * App's other callers spend too. `term` counts only where no id
-     * character is glued to either side, as the search's phrase matched it:
-     * `session_01ABC` is not named by `session_01ABCDEF`.
+     * The open issues and PRs whose body names `session` (its link or id)
+     * as its owner or in a subscribe line ({@link sessionsNamedIn}). A
+     * member's body that quotes or cites the session is not one. Read from
+     * the issues list, which carries PRs too and is on the core rate limit,
+     * once per reader (one per turn), each body read for its sessions once,
+     * and filtered here: the search API allows an installation about thirty
+     * calls a minute, which the App's other callers spend too.
      *
-     * @param {string} term
+     * @param {string} session
      * @returns {Promise<OpenRow[]>}
      */
-    openNaming: async (term) => {
+    openNaming: async (session) => {
       openRows ??= allPages(call, `/repos/${repo}/issues`, { state: 'open' })
-        .then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: Boolean(row.pull_request), body: String(row.body ?? '') })))
+        .then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: Boolean(row.pull_request), sessions: sessionsNamedIn(row.body) })))
         .catch((error) => { openRows = null; throw error; });
-      const named = new RegExp(`(?<![A-Za-z0-9_])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`);
-      return (await openRows).filter((row) => named.test(row.body)).map(({ body: _body, ...row }) => row);
+      const id = sessionId(session);
+      return (await openRows).filter((row) => row.sessions.has(id)).map(({ sessions: _sessions, ...row }) => row);
     },
 
     /**
