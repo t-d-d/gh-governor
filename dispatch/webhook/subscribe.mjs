@@ -209,6 +209,15 @@ export const postedBy = (body) => {
  */
 export const unsignedPost = (body) => withoutLines(withoutQuotes(String(body ?? ''))).includes(SESSION_FOOTER) && postedBy(body) === null;
 
+/**
+ * Whether a session posted `body` itself: {@link isSessionPost} read
+ * outside any quote. A person's reply quoting a session's post is the
+ * person's.
+ *
+ * @param {unknown} body
+ */
+export const ownSessionPost = (body) => isSessionPost(withoutQuotes(String(body ?? '')));
+
 /** A session's id, off its claude.ai/code URL or as given. @param {string} session */
 export const sessionId = (session) => session.slice(session.lastIndexOf('/') + 1);
 

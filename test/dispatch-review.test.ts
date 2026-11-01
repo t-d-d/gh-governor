@@ -155,6 +155,8 @@ const harness = (over: {
       },
     }; },
     heartbeat: async () => {},
+    // Every turn writes its repo's hooks for the receiver; a failed write fails the turn.
+    hookTable: { publish: async () => true },
     workspace: { prepare: () => {}, writeLogin: () => {}, readLogin: () => LOGIN, useAccount: () => {} },
     launch: async (l: unknown) => { launches.push(l); return { status: over.launched ?? 0, output: 'https://claude.ai/code/session_01FRESH' }; },
     probe: async () => ({ ok: true, detail: '' }),
