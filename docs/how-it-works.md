@@ -288,7 +288,7 @@ A file in the older shape, `"heartbeat": { "issue": <number>, "marker": "<!-- â€
 | A hook fire for a repo whose file turns `hooks` off, or lists no hook of that name | `dispatch-refused`, at warn | none |
 | A hook fire signed with a key version other than the hook's `keyVersion` | `hook-key-stale`, at error, naming the repo, hook and version | `governor-hook-key-stale` |
 | A hook's record, or its last session, could not be read, its record written after a launch, or its session started inside the launch window | the turn throws, or `dispatch-hook-unrecorded` or `dispatch-hook-unstarted`; the turn exits 1 | `governor-errors` |
-| The repo's hooks could not be written to the hook table | `hook-table-unwritten`, at error; the receiver keeps the last list, and the repo counts as unread | `governor-errors` on a turn that dispatches |
+| The repo's hooks could not be written to the hook table | `hook-table-unwritten`, at error; the receiver keeps the last list, and the repo counts as unread and the turn exits 1, whatever its kind | `governor-errors` |
 | A periodic's record, or its last run's session, could not be read, or its baseline written | `dispatch-periodic-unread` or `dispatch-periodic-unrecorded`; that periodic waits and the turn exits 1 | `governor-errors` |
 | The installation list or a token mint failed | `dispatch-failed` | `governor-errors` |
 
