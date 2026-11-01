@@ -103,7 +103,7 @@ const harness = (over: Record<string, unknown> = {}) => {
     secret: async () => SECRET,
     hookSecret: async () => 'hook-secret-test',
     listedHooks: async () => null,
-    countFire: async () => true,
+    countFire: async () => 'counted' as const,
     owners: OWNERS,
     selectLabels: SELECT_LABELS,
     appId: APP_ID,
