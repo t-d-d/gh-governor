@@ -104,7 +104,7 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
-import { isBlocked } from '../scripts/lib/ready-work.mjs';
+import { isBlocked, labelRow } from '../scripts/lib/ready-work.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { launchRoutine, observed } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
@@ -1758,7 +1758,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const { labels } = configOf(repo);
     try {
       const { state, labels: on } = await (await readerFor(repo)).ticket(issue);
-      if (state !== 'open' || !labels.ready.every((l) => on.includes(l)) || on.includes(labels.claim) || labels.exclude.some((l) => on.includes(l))) {
+      if (state !== 'open' || labelRow(on, labels) !== 'ready') {
         deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}` });
         return 'taken';
       }

@@ -28,7 +28,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { selectReadyWork } from '../../scripts/lib/ready-work.mjs';
+import { labelRow, selectReadyWork } from '../../scripts/lib/ready-work.mjs';
 
 /** The factory's labels: two ready labels, the claim, and the default exclude. */
 const FACTORY_LABELS = { ready: ['workflow: ready for development', 'mode: afk'], claim: 'workflow: under development', exclude: ['type: prd'] };
@@ -229,5 +229,26 @@ describe('selectReadyWork — a repo\'s own labels', () => {
     assert.deepEqual(selectReadyWork([issue(1, { labels: ['mode: afk', 'epic'] })], { cap: 5, labels }), []);
     assert.deepEqual(selectReadyWork([issue(1, { labels: ['mode: afk', 'blocked'] })], { cap: 5, labels }), []);
     assert.deepEqual(numbers(selectReadyWork([issue(1, { labels: ['mode: afk', 'type: prd'] })], { cap: 5, labels })), [1], 'type: prd is only the default');
+  });
+});
+
+describe('labelRow, the ready-label rule the selection, the claim and the unblocked row share', () => {
+  const ROWS: [string, string[] | undefined, string][] = [
+    ['every ready label, no claim, no exclude', [READY, 'mode: afk'], 'ready'],
+    ['a ready label missing', [READY], 'not-ready'],
+    ['no labels at all', [], 'not-ready'],
+    ['a missing labels array', undefined, 'not-ready'],
+    ['claimed, ready labels still on', [READY, 'mode: afk', 'workflow: under development'], 'claimed'],
+    ['claimed, ready labels off', ['workflow: under development'], 'claimed'],
+    ['an excluded label on a ready ticket', [READY, 'mode: afk', 'type: prd'], 'excluded'],
+    ['an excluded label on a claimed ticket', ['workflow: under development', 'type: prd'], 'excluded'],
+  ];
+  for (const [name, on, want] of ROWS) {
+    test(`${name}: ${want}`, () => assert.equal(labelRow(on, FACTORY_LABELS), want));
+  }
+
+  test('a label the repo adds to its excludes keeps a ready ticket out', () => {
+    const labels = { ...FACTORY_LABELS, exclude: ['type: prd', 'needs: design'] };
+    assert.equal(labelRow([READY, 'mode: afk', 'needs: design'], labels), 'excluded');
   });
 });

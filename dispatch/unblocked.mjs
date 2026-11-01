@@ -34,7 +34,7 @@ import { createHash } from 'node:crypto';
 import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
-import { isBlocked } from '../scripts/lib/ready-work.mjs';
+import { isBlocked, labelRow } from '../scripts/lib/ready-work.mjs';
 
 /**
  * @typedef {import('./webhook/fire.mjs').UnblockedFire} UnblockedFire
@@ -124,10 +124,7 @@ export const ticketRow = ({ ticket, blockers, fire, labels }) => {
   if (ticket.state !== 'open') return 'closed';
   if (fire.blocker.reason === NOT_PLANNED) return 'not-planned';
   if (isBlocked(ticket, blockers)) return 'blocked';
-  if (labels.exclude.some((l) => ticket.labels.includes(l))) return 'excluded';
-  if (ticket.labels.includes(labels.claim)) return 'claimed';
-  if (labels.ready.every((l) => ticket.labels.includes(l))) return 'ready';
-  return 'not-ready';
+  return labelRow(ticket.labels, labels);
 };
 
 /**
