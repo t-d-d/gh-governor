@@ -1,17 +1,19 @@
 /**
- * The packages code under dispatch/ imports, and which of them the root
- * package-lock.json must install at the version dispatch/package-lock.json
- * does.
+ * The packages code under dispatch/ imports, and the scripts/ modules it
+ * imports, and which of them the root package-lock.json must install at the
+ * version dispatch/package-lock.json does.
  *
  * Code under dispatch/ takes a package from dispatch/node_modules when that
  * is installed, and from the root otherwise. The gate installs only the root,
  * with npm ci, so the tests run the root's version. The task image installs
- * dispatch/package-lock.json. Where a test runs a package for real, the two
- * versions have to match, or the tests check code the task does not ship.
+ * dispatch/package-lock.json, and the scripts/lib/ modules dispatch/ imports
+ * load their packages from it there too. Where a test runs a package for
+ * real, the two versions have to match, or the tests check code the task
+ * does not ship.
  *
- * Every third-party package code under dispatch/ imports is on one of the two
- * lists below. A new import fails the test until someone puts it on a list,
- * with the reason.
+ * Every third-party package that code imports is on one of the two lists
+ * below. A new import fails the test until someone puts it on a list, with
+ * the reason.
  */
 
 import { test, describe } from 'node:test';
@@ -20,7 +22,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { isBuiltin } from 'node:module';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import * as acorn from 'acorn';
+import { importClosure, moduleSpecifiers } from './helpers/imports.ts';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -37,7 +39,7 @@ const MUST_MATCH: Listed[] = [
  * `/*` covers the whole scope.
  */
 const MAY_DIFFER: Listed[] = [
-  { name: '@aws-sdk/*', reason: 'the tests replace every AWS client with a fake, so the root\'s version is never what they check.' },
+  { name: '@aws-sdk/*', reason: 'the tests replace every AWS client with a fake, and read back only each command\'s class name and the input it was built with, which every version keeps.' },
 ];
 
 const covers = (entry: string, name: string): boolean =>
@@ -49,30 +51,14 @@ const onList = (list: Listed[], name: string): boolean => list.some(({ name: ent
 const packageOf = (specifier: string): string | null => {
   if (/^\.{0,2}\//.test(specifier) || isBuiltin(specifier)) return null;
   const parts = specifier.split('/');
-  return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0] ?? null;
-};
-
-/** Every module specifier a source loads, read off the AST: static, re-export, side-effect and dynamic. */
-const specifiers = (source: string): string[] => {
-  const specs: string[] = [];
-  const walk = (node: unknown): void => {
-    if (!node || typeof node !== 'object') return;
-    const n = node as { type?: string; source?: { type?: string; value?: unknown } };
-    if (
-      (n.type === 'ImportDeclaration' || n.type === 'ExportNamedDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'ImportExpression')
-      && n.source?.type === 'Literal' && typeof n.source.value === 'string'
-    ) specs.push(n.source.value);
-    for (const value of Object.values(node)) for (const child of Array.isArray(value) ? value : [value]) walk(child);
-  };
-  walk(acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'module' }));
-  return specs;
+  return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]!;
 };
 
 /** Third-party packages the sources import, each with the first file that imports it. */
 const thirdPartyImports = (sources: Record<string, string>): Map<string, string> => {
   const found = new Map<string, string>();
   for (const [file, source] of Object.entries(sources)) {
-    for (const spec of specifiers(source)) {
+    for (const spec of moduleSpecifiers(source)) {
       const name = packageOf(spec);
       if (name && !found.has(name)) found.set(name, file);
     }
@@ -96,20 +82,21 @@ const mismatches = (root: Lock, dispatch: Lock, names: string[]): string[] =>
 
 const readLock = (path: string): Lock => JSON.parse(readFileSync(join(ROOT, path), 'utf8')) as Lock;
 
+/** Every module under dispatch/, and every repo module those import, by path from the root. */
 const dispatchSources = (): Record<string, string> => {
-  const sources: Record<string, string> = {};
+  const modules: string[] = [];
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (entry.name !== 'node_modules') walk(path);
-      } else if (entry.name.endsWith('.mjs')) {
-        sources[relative(ROOT, path)] = readFileSync(path, 'utf8');
+      } else if (/\.m?js$/.test(entry.name)) {
+        modules.push(relative(ROOT, path));
       }
     }
   };
   walk(join(ROOT, 'dispatch'));
-  return sources;
+  return Object.fromEntries([...importClosure(ROOT, ...modules)].map((path) => [path, readFileSync(join(ROOT, path), 'utf8')]));
 };
 
 describe('the packages the root and dispatch/ lock files must hold to one version', () => {
@@ -143,10 +130,12 @@ describe('the packages the root and dispatch/ lock files must hold to one versio
   });
 });
 
-describe('the third-party packages code under dispatch/ imports', () => {
+describe('the third-party packages code under dispatch/, and the modules it imports, imports', () => {
   test('each is on the must-match list or the may-differ list', () => {
-    const imports = thirdPartyImports(dispatchSources());
-    assert.ok(imports.has('zod') && imports.has('js-yaml'), 'the import scan found neither zod nor js-yaml under dispatch/');
+    const sources = dispatchSources();
+    assert.ok(Object.keys(sources).includes('scripts/lib/session-signoff.mjs'), 'the scan does not follow dispatch/ into the scripts/lib/ modules it imports');
+    const imports = thirdPartyImports(sources);
+    assert.deepEqual(MUST_MATCH.map(({ name }) => name).filter((name) => !imports.has(name)), [], 'a must-match package nothing under dispatch/ imports any more: take it off MUST_MATCH');
     assert.deepEqual(unlisted(imports), [], 'put each package on MUST_MATCH or MAY_DIFFER in test/dispatch-dependencies.test.ts, with the reason');
   });
 

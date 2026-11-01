@@ -12,9 +12,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { resolve, dirname, relative } from 'node:path';
+import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import * as acorn from 'acorn';
 import { LOGIN_EXPIRY_WARNING_MS } from '../scripts/lib/claude-login.mjs';
 import {
   ACCOUNT_ID_PLACEHOLDER,
@@ -26,6 +25,7 @@ import {
 } from './helpers/cfn.ts';
 import { loadWorkflow, type WorkflowStep } from './helpers/workflow.ts';
 import { appliesStack, runsCommand, runsScript, usesAction, withId } from './helpers/repo-model.ts';
+import { importClosure, relativeImports } from './helpers/imports.ts';
 import { OUTPUT_KEYS, START_BUDGET_MS } from '../scripts/run-turn.mjs';
 import { DEADLINE_MS } from '../dispatch/cli.mjs';
 import { SESSION_UNRECORDED, STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
@@ -954,35 +954,6 @@ describe('dispatch/Dockerfile', () => {
   });
 });
 
-/** Every relative module specifier a source loads, read off the AST: static, re-export, side-effect and dynamic. */
-const relativeImports = (source: string): string[] => {
-  const specs: string[] = [];
-  const walk = (node: unknown): void => {
-    if (!node || typeof node !== 'object') return;
-    const n = node as { type?: string; source?: { type?: string; value?: unknown } };
-    if (
-      (n.type === 'ImportDeclaration' || n.type === 'ExportNamedDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'ImportExpression')
-      && n.source?.type === 'Literal' && typeof n.source.value === 'string' && /^\.{1,2}\//.test(n.source.value)
-    ) specs.push(n.source.value);
-    for (const value of Object.values(node)) for (const child of Array.isArray(value) ? value : [value]) walk(child);
-  };
-  walk(acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'module' }));
-  return specs;
-};
-
-/** Every repo path `entry` loads, itself included, following relative imports. */
-const importClosure = (...entries: string[]): Set<string> => {
-  const seen = new Set<string>();
-  const walk = (path: string) => {
-    if (seen.has(path)) return;
-    seen.add(path);
-    const source = readFileSync(resolve(ROOT, path), 'utf8');
-    for (const spec of relativeImports(source)) walk(relative(ROOT, resolve(ROOT, dirname(path), spec)));
-  };
-  for (const entry of entries) walk(entry);
-  return seen;
-};
-
 /** The source paths the Dockerfile's COPY lines carry. */
 const copiedPaths = (): string[] => [...dockerfile.matchAll(/^COPY\s+(.+?)\s+\S+\s*$/gm)].flatMap((m) => m[1]!.split(/\s+/));
 
@@ -1006,7 +977,7 @@ describe('the task\'s modules in the image', () => {
   // one it lacks fails every turn at import, one it carries beyond the
   // closure rebuilds the image for a change the task never runs.
   test('copies exactly the modules the entrypoint imports, transitively', () => {
-    const closure = importClosure('dispatch/cli.mjs');
+    const closure = importClosure(ROOT, 'dispatch/cli.mjs');
     assert.ok(closure.has('dispatch/turn.mjs') && closure.has('scripts/lib/github-app.mjs'), [...closure].join(', '));
     const copied = copiedPaths();
     assert.deepEqual(copied.filter((c) => c.endsWith('/')), [], 'a directory COPY carries modules beyond the closure');
