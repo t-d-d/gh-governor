@@ -995,6 +995,29 @@ describe('run — a review of every open PR', () => {
     assert.equal(exitCodeFor(result as never), 0);
   });
 
+  test('each review\'s log line carries its run\'s tokens and cost, a limited run\'s too, and leaves out what the result line lacks', async () => {
+    const usage = { input_tokens: 9, output_tokens: 210, cache_read_input_tokens: 4100, cache_creation_input_tokens: 650 };
+    const spent = { inputTokens: 9, outputTokens: 210, cacheReadTokens: 4100, cacheCreationTokens: 650, costUsd: 0.031 };
+    const answered = (prompt: string) => prompt.includes('#767')
+      ? JSON.stringify({ ...JSON.parse(cliOutput(PASS)), usage, total_cost_usd: 0.031 })
+      : cliOutput(PASS);
+    const open = [{ number: 767, draft: false }, { number: 780, draft: false }];
+    const h = harness({ open, pulls: { 767: pullRow(), 780: pullRow({ number: 780 }) }, answers: answered });
+    const result = await review({ kind: 'review' }, h);
+    assert.deepEqual(result.reviews.map((r) => [r.pr, r.outcome]), [[767, 'merged'], [780, 'merged']]);
+    const line = (pr: number) => h.logged.find((l) => l.event === 'dispatch-review' && l.pr === pr)!;
+    assert.deepEqual(line(767).usage, spent);
+    assert.ok(!('usage' in line(780)), JSON.stringify(line(780)));
+
+    const limited = harness({ ...three(), answers: () => JSON.stringify({ ...JSON.parse(SESSION), usage, total_cost_usd: 0.031 }) });
+    await review({ kind: 'review' }, limited);
+    const logged = (pr: number) => limited.logged.find((l) => l.event === 'dispatch-review' && l.pr === pr)!;
+    assert.equal(logged(767).outcome, 'limited');
+    assert.deepEqual(logged(767).usage, spent);
+    // #773 was decided in code and #780's run never started: neither spent anything.
+    assert.ok(!('usage' in logged(773)) && !('usage' in logged(780)), JSON.stringify(limited.logged));
+  });
+
   test('a weekly limit is still a fault, and starts no further run either', async () => {
     const h = harness({ ...three(), answers: () => WEEKLY });
     const result = await review({ kind: 'review' }, h);

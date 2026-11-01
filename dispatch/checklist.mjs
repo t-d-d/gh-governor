@@ -650,14 +650,48 @@ const objectIn = (text) => {
 };
 
 /**
- * The checklist's answer from `claude -p --output-format json`, and the
- * run's session id for its transcript. Anything outside the schema the run
- * was held to throws: a comment built on a guess would tell a session to
- * do the wrong thing.
+ * @typedef {{ inputTokens?: number, outputTokens?: number, cacheReadTokens?: number, cacheCreationTokens?: number, costUsd?: number }} Usage
+ *   What a checklist run spent, as its result line reports it. A field the
+ *   line does not carry as a count, or a cost, of zero or more is left out.
+ */
+
+/** The result line's field for each of `Usage`'s token counts. */
+const USAGE_FIELDS = /** @type {const} */ ([
+  ['inputTokens', 'input_tokens'],
+  ['outputTokens', 'output_tokens'],
+  ['cacheReadTokens', 'cache_read_input_tokens'],
+  ['cacheCreationTokens', 'cache_creation_input_tokens'],
+]);
+
+/**
+ * The tokens and cost a CLI result line reports, or null when it reports
+ * none. A missing or malformed number is left out, never a fault: the
+ * measurement must not fail a review.
+ *
+ * @param {any} result
+ * @returns {Usage | null}
+ */
+const usageOf = (result) => {
+  /** @type {Record<string, number>} */
+  const usage = {};
+  const tokens = result.usage && typeof result.usage === 'object' ? result.usage : {};
+  for (const [name, field] of USAGE_FIELDS) {
+    if (Number.isInteger(tokens[field]) && tokens[field] >= 0) usage[name] = tokens[field];
+  }
+  if (Number.isFinite(result.total_cost_usd) && result.total_cost_usd >= 0) usage.costUsd = result.total_cost_usd;
+  return Object.keys(usage).length === 0 ? null : usage;
+};
+
+/**
+ * The checklist's answer from `claude -p --output-format json`, the run's
+ * session id for its transcript, and what the run spent, where its result
+ * line says. Anything outside the schema the run was held to throws, with
+ * the session id and the spend: a comment built on a guess would tell a
+ * session to do the wrong thing.
  *
  * @param {string} output
  * @param {{ properties: { test: { minimum: number, maximum: number } } }} [schema]
- * @returns {{ sessionId: string | null, answer: Answer }}
+ * @returns {{ sessionId: string | null, answer: Answer, usage?: Usage }}
  */
 export const parseReview = (output, schema = ANSWER_SCHEMA) => {
   /** @type {any} */
@@ -675,29 +709,31 @@ export const parseReview = (output, schema = ANSWER_SCHEMA) => {
   }
   if (result === null) throw new Error(`the CLI printed no answer: ${output.trim().slice(-500) || '(nothing)'}`);
   const sessionId = typeof result.session_id === 'string' ? result.session_id : null;
+  const usage = usageOf(result);
+  const reported = usage === null ? {} : { usage };
   if (result.is_error) {
     const text = String(result.result ?? result.subtype);
     const limit = usageLimit(text);
-    throw Object.assign(new Error(`the CLI's run failed: ${text.slice(0, 500)}`), { sessionId, ...(limit === null ? {} : { limit }) });
+    throw Object.assign(new Error(`the CLI's run failed: ${text.slice(0, 500)}`), { sessionId, ...reported, ...(limit === null ? {} : { limit }) });
   }
   /** @type {any} */
   const a = result.structured_output ?? objectIn(String(result.result ?? ''));
-  const refuse = (/** @type {string} */ why) => Object.assign(new Error(`the answer is not the checklist's: ${why}: ${JSON.stringify(a)?.slice(0, 500)}`), { sessionId });
+  const refuse = (/** @type {string} */ why) => Object.assign(new Error(`the answer is not the checklist's: ${why}: ${JSON.stringify(a)?.slice(0, 500)}`), { sessionId, ...reported });
   if (!a || typeof a !== 'object') throw refuse('no object');
   if (typeof a.reason !== 'string' || a.reason.trim() === '') throw refuse('no reason');
-  if (a.answer === 'pass') return { sessionId, answer: { answer: 'pass', reason: a.reason.trim() } };
+  if (a.answer === 'pass') return { sessionId, ...reported, answer: { answer: 'pass', reason: a.reason.trim() } };
   if (a.answer !== 'fail') throw refuse('answer is neither pass nor fail');
   const { minimum, maximum } = schema.properties.test;
   if (!Number.isInteger(a.test) || a.test < minimum || a.test > maximum) throw refuse(`test is not one of ${minimum} to ${maximum}`);
   if (typeof a.editable !== 'boolean') throw refuse('editable is not a boolean');
   const fail = /** @type {const} */ ({ answer: 'fail', test: a.test, reason: a.reason.trim() });
-  if (a.person === undefined) return { sessionId, answer: { ...fail, editable: a.editable } };
+  if (a.person === undefined) return { sessionId, ...reported, answer: { ...fail, editable: a.editable } };
   const { person } = a;
   if (!person || typeof person !== 'object') throw refuse('person is not an object');
   if (!Number.isInteger(person.test) || person.test <= a.test || person.test > maximum) throw refuse(`person's test is not one of ${a.test + 1} to ${maximum}`);
   if (typeof person.reason !== 'string' || person.reason.trim() === '') throw refuse('person has no reason');
   // The first test is the session's to meet; the PR still waits for a person.
-  return { sessionId, answer: { ...fail, editable: false, person: { test: person.test, reason: person.reason.trim() } } };
+  return { sessionId, ...reported, answer: { ...fail, editable: false, person: { test: person.test, reason: person.reason.trim() } } };
 };
 
 /**
@@ -762,7 +798,8 @@ export const checklist = async ({ pull, files, tickets, others, owners, prose, f
  * The model as a `claude -p` run: the repo's checklist as its system
  * prompt, with the suffix saying what the code decided, and the schema its
  * answer is held to; a prompt quoting files leaves test 7 for them to the
- * model. Each run's transcript goes to the drop box, logged.
+ * model. Each run's transcript goes to the drop box, logged, and what the
+ * run spent, where its result line says, goes to `spent`.
  *
  * A run the account's allowance refused: every later run would meet it, so
  * none starts, and each PR that needs one gets its error. A PR decided in
@@ -773,10 +810,11 @@ export const checklist = async ({ pull, files, tickets, others, owners, prose, f
  *   run: (request: { system: string, prompt: string, schema: object }, pr: number) => Promise<{ output: string }>,
  *   transcript: (t: { sessionId: string, pr: number }) => Promise<object>,
  *   log: (event: string, context: Record<string, unknown>) => void,
+ *   spent?: (pr: number, usage: Usage) => void,
  * }} cli
  * @returns {Judge}
  */
-export const cliJudge = ({ skill, run, transcript, log }) => {
+export const cliJudge = ({ skill, run, transcript, log, spent = () => {} }) => {
   /** The refusal, and the PR whose run met it. @type {{ error: unknown, pr: number } | null} */
   let limited = null;
   return async (question) => {
@@ -791,15 +829,26 @@ export const cliJudge = ({ skill, run, transcript, log }) => {
     const ran = await run({ system, prompt: reviewPrompt(question), schema }, pr);
     /** @type {string | null} */
     let sessionId = null;
+    /** @type {Usage | undefined} */
+    let usage;
     try {
       const parsed = parseReview(ran.output, schema);
-      sessionId = parsed.sessionId;
+      ({ sessionId, usage } = parsed);
       return parsed.answer;
     } catch (error) {
       sessionId = /** @type {{ sessionId?: string | null }} */ (error)?.sessionId ?? null;
+      usage = /** @type {{ usage?: Usage }} */ (error)?.usage;
       if (/** @type {{ limit?: string }} */ (error)?.limit !== undefined) limited = { error, pr };
       throw error;
     } finally {
+      // The measurement must not fail a review: a throw here would replace the answer.
+      if (usage !== undefined) {
+        try {
+          spent(pr, usage);
+        } catch (error) {
+          log('dispatch-review-usage', { pr, error: messageOf(error) });
+        }
+      }
       if (sessionId !== null) {
         try {
           log('dispatch-review-transcript', { pr, sessionId, ...await transcript({ sessionId, pr }) });

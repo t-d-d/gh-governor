@@ -1391,11 +1391,16 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const targets = invocation.pr === undefined
         ? (await github.openPulls()).filter((p) => !p.draft).map((p) => ({ number: p.number }))
         : [{ number: invocation.pr, ...(invocation.headSha === undefined ? {} : { headSha: invocation.headSha }) }];
+      // What each PR's run spent, for its log line: a run that reports
+      // nothing leaves the line without it.
+      /** @type {Map<number, import('./checklist.mjs').Usage>} */
+      const spent = new Map();
       const judge = cliJudge({
         skill: review.checklist,
         run: (request, pr) => budgeted(() => deps.review(request), `review #${pr}`),
         transcript: deps.transcript,
         log: deps.log,
+        spent: (pr, usage) => { spent.set(pr, usage); },
       });
       for (const [i, target] of targets.entries()) {
         if (deps.now() - started > REVIEW_WINDOW_MS) {
@@ -1403,7 +1408,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           break;
         }
         const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession });
-        deps.log('dispatch-review', { ...reviewed });
+        const usage = spent.get(reviewed.pr);
+        deps.log('dispatch-review', { ...reviewed, ...(usage === undefined ? {} : { usage }) });
         reviews.push(reviewed);
       }
     } finally {
