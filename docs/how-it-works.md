@@ -377,6 +377,7 @@ Every alarm publishes to the `governor-alerts` topic, which emails the address i
 | `governor-stale-runs` | `dispatch-stale-runs`: the runs list still lacked a run, or a cursor could not be read. The next run of the same workflow catches up. |
 | `governor-login-expiring` | The stored login is within three days of its refresh expiry. Mint again. |
 | `governor-claim-stranded` | A ticket was claimed but no marker names its session. It stays claimed; if no session is working on it, put the ready label back. |
+| `governor-session-unrecorded` | Governor started a session and could not record it (`dispatch-session-unrecorded`), so the PR review would let a ticket's mode label waive a human-only path for its PRs. Put the item `session#<session id>` / `started` in the state table, or review that session's PRs yourself. |
 | `governor-config-invalid` | A served repo's file fails the schema. |
 | `governor-repo-skipped` | A repo's launch started nothing; its tickets wait for the next fire. |
 | `governor-hook-key-stale` | A hook fire was signed with a key version the repo's file has moved past (`hook-key-stale`), refused by the task or, once the hook table has the new version, by the receiver. Unless a caller is still to be moved to the new key, treat the old key as leaked. |

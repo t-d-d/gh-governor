@@ -28,7 +28,7 @@ import { loadWorkflow, type WorkflowStep } from './helpers/workflow.ts';
 import { appliesStack, runsCommand, runsScript, usesAction, withId } from './helpers/repo-model.ts';
 import { OUTPUT_KEYS, START_BUDGET_MS } from '../scripts/run-turn.mjs';
 import { DEADLINE_MS } from '../dispatch/cli.mjs';
-import { STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
+import { SESSION_UNRECORDED, STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
 import { DEFER_SECONDS } from '../dispatch/webhook/starter.mjs';
 import { MAX_START_ATTEMPTS } from '../dispatch/webhook/retry.mjs';
 import { HOOK_EVENTS } from '../dispatch/webhook/route.mjs';
@@ -431,8 +431,7 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     const filter = template.Resources.DispatchSessionUnrecordedFilter;
     assert.equal(filter?.Type, 'AWS::Logs::MetricFilter');
     assert.equal(filter?.Properties?.LogGroupName, '${DispatchLogGroup}');
-    assert.match(filter?.Properties?.FilterPattern ?? '', /\$\.event = "dispatch-session-unrecorded"/);
-    assert.doesNotMatch(filter?.Properties?.FilterPattern ?? '', /\$\.level/);
+    assert.equal(filter?.Properties?.FilterPattern, `{ $.event = "${SESSION_UNRECORDED}" }`);
     const published = filter?.Properties?.MetricTransformations?.[0];
     const others = Object.entries(template.Resources)
       .filter(([name, r]) => name !== 'DispatchSessionUnrecordedFilter' && (r as { Type?: string }).Type === 'AWS::Logs::MetricFilter')
@@ -444,7 +443,7 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     assert.equal(alarm?.Properties?.Namespace, published?.MetricNamespace);
     assert.equal(alarm?.Properties?.MetricName, published?.MetricName);
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
-    assert.match(alarm?.Properties?.AlarmDescription ?? '', /dispatch-session-unrecorded/);
+    assert.ok((alarm?.Properties?.AlarmDescription ?? '').includes(SESSION_UNRECORDED), 'the page names the line to read');
     assert.equal(alarm?.Properties?.Threshold, 1);
     assert.equal(alarm?.Properties?.TreatMissingData, 'notBreaching');
     assert.deepEqual(alarm?.Properties?.AlarmActions, template.Resources.DispatchErrorsAlarm?.Properties?.AlarmActions, 'the same action as the errors alarm');
