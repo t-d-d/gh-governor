@@ -70,7 +70,8 @@ export const switchOf = (fire, workflows = {}) => {
  *   checks the repo's periodics whatever its own kind's switch says.
  * - A `workflow` fire needs `ciMessages` or `deployMessages` by the file's
  *   `workflows.ci`, which the item does not hold, so it is dropped only
- *   where both are off.
+ *   where the switch it would need as CI and the one it would need
+ *   otherwise are both off, each as {@link switchOf} names it.
  *
  * @param {import('./fire.mjs').Fire} fire
  * @param {ReadonlyMap<string, boolean> | null} switches
@@ -80,7 +81,7 @@ export const droppedBy = (fire, switches) => {
   if (switches === null || fire.kind === 'conflicts') return null;
   const off = (/** @type {string} */ name) => switches.get(name) === false;
   if (fire.counted !== undefined && !off('periodics')) return null;
-  const needs = fire.kind === 'workflow' ? ['ciMessages', 'deployMessages'] : [switchOf(fire)];
-  const names = needs.filter((name) => name !== null);
+  const needs = fire.kind === 'workflow' ? [switchOf(fire, { ci: fire.path }), switchOf(fire)] : [switchOf(fire)];
+  const names = [...new Set(needs.filter((name) => name !== null))];
   return names.length > 0 && names.every(off) ? names : null;
 };

@@ -1995,6 +1995,22 @@ describe('fitness: the receiver drops a fire only where the repo\'s hook-table i
     assert.match(response.body, /ciMessages and deployMessages/);
   });
 
+  test('a red run naming no workflow file cannot be CI to the task, so deployMessages off drops it', async () => {
+    const { path: _p, ...pathless } = red.workflow_run;
+    const { queued } = await handled('workflow_run', { ...red, workflow_run: pathless }, item(['ciMessages']));
+    assert.deepEqual(queued, []);
+  });
+
+  test('a delivery with some fires dropped queues the rest, keeps its routing\'s reason, and logs what it dropped once', async () => {
+    const { queued, response, logged } = await handled('pull_request', pushed, item(['prMessages', 'subscribeMessages']));
+    assert.equal(response.statusCode, 202);
+    assert.ok(!kinds(queued).includes('review'));
+    assert.match(response.body, /#12 synchronize: review it; .*dropped its review fire, as acme\/factory's file turns prReview off/);
+    assert.equal(logged.filter((l) => l.event === 'webhook-dropped').length, 1);
+    const all = await handled('pull_request', pushed, item([]));
+    assert.deepEqual(all.logged.filter((l) => l.event === 'webhook-dropped'), [], 'a delivery that queued nothing is logged once, as webhook-ignored');
+  });
+
   test('a switch the item does not name is not off: the fire is queued', async () => {
     const { queued } = await handled('pull_request', pushed, async () => new Map([['prMessages', false]]));
     assert.deepEqual(kinds(queued), ['review']);

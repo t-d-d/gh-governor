@@ -662,11 +662,13 @@ const switchedOn = async (decision, delivery, deps) => {
   for (const queued of decision.fires) {
     const off = droppedBy(queued.fire, switches);
     if (off === null) kept.push(queued);
-    else dropped.push(`${queued.reason}: dropped, ${repo}'s file turns ${off.join(' and ')} off`);
+    else dropped.push(`its ${queued.fire.kind} fire, as ${repo}'s file turns ${off.join(' and ')} off`);
   }
   if (dropped.length === 0) return decision;
-  deps.log('webhook-dropped', { level: 'info', delivery: delivery ?? null, repo, reason: dropped.join('; ') });
-  return { fires: kept, reason: [...kept.map((q) => q.reason), ...dropped].join('; ') };
+  const reason = `${decision.reason}; dropped ${dropped.join(', and ')}`;
+  // A delivery with every fire dropped is logged once, as one that queued nothing.
+  if (kept.length > 0) deps.log('webhook-dropped', { level: 'info', delivery: delivery ?? null, repo, reason });
+  return { fires: kept, reason };
 };
 
 /**

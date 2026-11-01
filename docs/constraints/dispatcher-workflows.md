@@ -41,7 +41,8 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   It routes on facts in the payload, then drops a fire whose switch the
   repo's item in the hook table says is off (dispatcher-state.md). It
   cannot tell CI from a deploy, so it drops a red run's fire only where
-  `ciMessages` and `deployMessages` are both off, and it never drops the
+  `ciMessages` and `deployMessages` are both off (`deployMessages` alone
+  for a run naming no workflow file, which is never CI), and never the
   conflicts check. The task still applies the repo's switches and
   `workflows` section, and refuses a CI run a push did not start.
 
@@ -75,9 +76,9 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   nothing, or route runs on a branch that is not its default.
 - Do not keep a list of repos with CI in a stack parameter: onboarding then
   needs a deploy, which dispatcher-repos.md rules out.
-- Do not gate workflow or merge events by repo in the receiver, nor read a
-  config file there: the task reads the file and writes the switches the
-  receiver drops by to the hook table.
+- Do not gate workflow or merge events in the receiver by a list of repos,
+  nor read a config file there: the task reads the file and writes the
+  switches the receiver drops by to the hook table.
 - Do not declare CI, triage or tags in the workflow files: whether a red run
   is CI, or gets a triage session, is a choice about governor's behaviour,
   which the config file holds.
