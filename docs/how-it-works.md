@@ -288,7 +288,7 @@ A file in the older shape, `"heartbeat": { "issue": <number>, "marker": "<!-- â€
 | A hook fire for a repo whose file turns `hooks` off, or lists no hook of that name | `dispatch-refused`, at warn | none |
 | A hook fire signed with a key version other than the hook's `keyVersion` | `hook-key-stale`, at error, naming the repo, hook and version | `governor-hook-key-stale` |
 | A hook's record, or its last session, could not be read, its record written after a launch, or its session started inside the launch window | the turn throws, or `dispatch-hook-unrecorded` or `dispatch-hook-unstarted`; the turn exits 1 | `governor-errors` |
-| The repo's hooks could not be written to the hook table | `hook-table-unwritten`, at error; the receiver keeps the last list, and the repo counts as unread | `governor-errors` on a turn that dispatches |
+| The repo's hooks could not be written to the hook table | `hook-table-unwritten`, at error; the receiver keeps the last list, and the repo counts as unread and the turn exits 1, whatever its kind | `governor-errors` |
 | A periodic's record, or its last run's session, could not be read, or its baseline written | `dispatch-periodic-unread` or `dispatch-periodic-unrecorded`; that periodic waits and the turn exits 1 | `governor-errors` |
 | The installation list or a token mint failed | `dispatch-failed` | `governor-errors` |
 
@@ -377,6 +377,7 @@ Every alarm publishes to the `governor-alerts` topic, which emails the address i
 | `governor-stale-runs` | `dispatch-stale-runs`: the runs list still lacked a run, or a cursor could not be read. The next run of the same workflow catches up. |
 | `governor-login-expiring` | The stored login is within three days of its refresh expiry. Mint again. |
 | `governor-claim-stranded` | A ticket was claimed but no marker names its session. It stays claimed; if no session is working on it, put the ready label back. |
+| `governor-session-unrecorded` | Governor started a session and could not record it (`dispatch-session-unrecorded`), so the PR review would let a ticket's mode label waive a human-only path for its PRs. Put the item `session#<session id>` / `started` in the state table, or review that session's PRs yourself. |
 | `governor-config-invalid` | A served repo's file fails the schema. |
 | `governor-repo-skipped` | A repo's launch started nothing; its tickets wait for the next fire. |
 | `governor-hook-key-stale` | A hook fire was signed with a key version the repo's file has moved past (`hook-key-stale`), refused by the task or, once the hook table has the new version, by the receiver. Unless a caller is still to be moved to the new key, treat the old key as leaked. |
