@@ -28,7 +28,7 @@ import { loadWorkflow, type WorkflowStep } from './helpers/workflow.ts';
 import { appliesStack, runsCommand, runsScript, usesAction, withId } from './helpers/repo-model.ts';
 import { OUTPUT_KEYS, START_BUDGET_MS } from '../scripts/run-turn.mjs';
 import { DEADLINE_MS } from '../dispatch/cli.mjs';
-import { STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
+import { SESSION_UNRECORDED, STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
 import { DEFER_SECONDS } from '../dispatch/webhook/starter.mjs';
 import { MAX_START_ATTEMPTS } from '../dispatch/webhook/retry.mjs';
 import { HOOK_EVENTS } from '../dispatch/webhook/route.mjs';
@@ -417,6 +417,33 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     assert.equal(alarm?.Properties?.MetricName, published?.MetricName);
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /dispatch-claim-stranded/);
+    assert.equal(alarm?.Properties?.Threshold, 1);
+    assert.equal(alarm?.Properties?.TreatMissingData, 'notBreaching');
+    assert.deepEqual(alarm?.Properties?.AlarmActions, template.Resources.DispatchErrorsAlarm?.Properties?.AlarmActions, 'the same action as the errors alarm');
+  });
+
+  /**
+   * A session governor started whose record failed to write gets no
+   * human-only check from the PR review, so its PRs can clear a ticket's
+   * mode label: it pages, read off its own event.
+   */
+  test('an unrecorded session pages, read off its own event, never off a level', () => {
+    const filter = template.Resources.DispatchSessionUnrecordedFilter;
+    assert.equal(filter?.Type, 'AWS::Logs::MetricFilter');
+    assert.equal(filter?.Properties?.LogGroupName, '${DispatchLogGroup}');
+    assert.equal(filter?.Properties?.FilterPattern, `{ $.event = "${SESSION_UNRECORDED}" }`);
+    const published = filter?.Properties?.MetricTransformations?.[0];
+    const others = Object.entries(template.Resources)
+      .filter(([name, r]) => name !== 'DispatchSessionUnrecordedFilter' && (r as { Type?: string }).Type === 'AWS::Logs::MetricFilter')
+      .map(([, f]) => (f as { Properties?: { MetricTransformations?: Array<{ MetricName?: string }> } }).Properties?.MetricTransformations?.[0]?.MetricName);
+    assert.ok(published?.MetricName, 'the filter publishes a metric');
+    assert.ok(!others.includes(published?.MetricName), 'its own metric');
+    const alarm = template.Resources.DispatchSessionUnrecordedAlarm;
+    assert.equal(alarm?.Type, 'AWS::CloudWatch::Alarm');
+    assert.equal(alarm?.Properties?.Namespace, published?.MetricNamespace);
+    assert.equal(alarm?.Properties?.MetricName, published?.MetricName);
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
+    assert.ok((alarm?.Properties?.AlarmDescription ?? '').includes(SESSION_UNRECORDED), 'the page names the line to read');
     assert.equal(alarm?.Properties?.Threshold, 1);
     assert.equal(alarm?.Properties?.TreatMissingData, 'notBreaching');
     assert.deepEqual(alarm?.Properties?.AlarmActions, template.Resources.DispatchErrorsAlarm?.Properties?.AlarmActions, 'the same action as the errors alarm');

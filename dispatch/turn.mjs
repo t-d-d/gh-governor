@@ -157,6 +157,7 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
 /**
  * A session governor started that its state table does not record: the
  * PR review would let a ticket's mode label waive a human-only path for it.
+ * Its own alarm pages on it (infra/governor.cfn.yml).
  */
 export const SESSION_UNRECORDED = 'dispatch-session-unrecorded';
 
