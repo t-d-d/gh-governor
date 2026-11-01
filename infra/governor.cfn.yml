@@ -654,6 +654,37 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertsTopic]
 
+  # A periodic whose routine the routines API refused before the fire, a
+  # 400 on the create or a routines list past one page among them, starts
+  # nothing, writes no record, and logs `dispatch-routine-refused` naming
+  # the repo and the periodic (dispatch/turn.mjs). The repo's tickets and
+  # other periodics still start: the CLI is not at fault.
+  DispatchRoutineRefusedFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "dispatch-routine-refused" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: RoutinesRefused
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DispatchRoutineRefusedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-routine-refused
+      AlarmDescription: '[tripwire] The routines API refused a periodic''s routine before the fire, so its session did not start; the repo''s other launches went on. Read /governor for the dispatch-routine-refused line; it names the repo and the periodic and says what the API answered, and the dispatch-routine-answer lines before it give each call''s shape. The periodic stays due, so the next fire tries again.'
+      Namespace: governor
+      MetricName: RoutinesRefused
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
   # A schedule fire that never reached the receiver logs nothing: EventBridge
   # counts the invocation it could not make on the rule. A task RunTask
   # refused is the fire lane's to retry, and its dead-letter alarm's to page.

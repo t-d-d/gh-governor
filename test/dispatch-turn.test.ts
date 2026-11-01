@@ -32,7 +32,7 @@ import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, readLastRun } from '../
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
-import { CONNECTOR_MISSING } from '../dispatch/turn.mjs';
+import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
 import { ROUTINE_ANSWER } from '../dispatch/routines.mjs';
 
 const REPO = 'acme/factory';
@@ -1368,6 +1368,26 @@ describe('run — periodics', () => {
     assert.ok(!result.dispatched.some((d) => d.issue === null));
   });
 
+  test('a routine the routines API refuses before the fire stops only that periodic: no record, an alarmed error naming the repo and periodic, and the repo\'s tickets and other periodics still go', async () => {
+    const h = harness();
+    const base = h.deps.routines;
+    h.deps.routines = (token: string, organization: string | null) => ({ ...base(token, organization), create: async () => { throw new Error('POST /v1/code/triggers: 400 bad request'); } });
+    h.periodics.set(key(REVIEW.name), fired(4));
+    h.periodics.set(key(RETRO.name), fired(7));
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.ok(!h.routineCalls.some((c) => c.call === 'run'));
+    assert.deepEqual(h.periodics.get(key(REVIEW.name)), fired(4), 'no record: the periodic stays due');
+    const line = h.logged.find((l) => l.event === ROUTINE_REFUSED);
+    assert.ok(line !== undefined, JSON.stringify(h.logged));
+    assert.equal(line.level, 'error');
+    assert.equal(line.repo, REPO);
+    assert.equal(line.periodic, REVIEW.name);
+    assert.match(String(line.reason), /400/);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [RETRO.name, ...TICKETS], 'the repo\'s other periodic and its tickets still start');
+    assert.ok(!h.logged.some((l) => l.event === 'dispatch-repo-skipped'), JSON.stringify(h.logged));
+    assert.ok(!result.dispatched.some((d) => d.outcome === 'failed'));
+  });
+
   test('a routine run whose session the list never shows is recorded as an unconfirmed launch is', async () => {
     const h = harness();
     const base = h.deps.routines;
@@ -1757,6 +1777,22 @@ describe('run — periodics an event brings due', () => {
     assert.ok(!h2.routineCalls.some((c) => c.call === 'run'));
     assert.deepEqual(h2.periodics.get(key(triage.name)), fired(DAY));
     assert.ok(h2.logged.some((l) => l.event === CONNECTOR_MISSING && l.level === 'error' && l.repo === REPO && l.periodic === triage.name && JSON.stringify(l.connectors) === '["mail_prod"]'), JSON.stringify(h2.logged));
+  });
+
+  test('an event\'s periodic whose routine the routines API refuses starts nothing and writes no record, and the repo\'s next periodic still goes', async () => {
+    const triage = { name: 'Ticket triage', prompt: 'Triage the new issues.', days: 7, counts: { issuesOpened: 2 }, connectors: ['feed_prod'] };
+    const tally = { name: 'Issue tally', prompt: 'Count the new issues.', days: 7, counts: { issuesOpened: 2 } };
+    const opened = { issuesOpened: [{ number: 30, title: 'New one', at: ago(HOUR) }, { number: 31, title: 'Newer', at: ago(1) }] };
+    const h = counting(opened, { configFile: async (repo: string) => (repo === REPO ? fileWith({}, { periodics: [triage, tally] }) : null) });
+    const base = h.deps.routines;
+    h.deps.routines = (token: string, organization: string | null) => ({ ...base(token, organization), triggers: async () => ({ data: [], has_more: true }) });
+    h.periodics.set(key(triage.name), fired(2 * DAY));
+    h.periodics.set(key(tally.name), fired(DAY));
+    await run({ kind: 'periodics', counted: 'issuesOpened' }, h.deps as never);
+    assert.deepEqual(h.periodics.get(key(triage.name)), fired(2 * DAY));
+    assert.ok(h.logged.some((l) => l.event === ROUTINE_REFUSED && l.level === 'error' && l.repo === REPO && l.periodic === triage.name), JSON.stringify(h.logged));
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [tally.name]);
+    assert.ok(!h.logged.some((l) => l.event === 'dispatch-repo-skipped'), JSON.stringify(h.logged));
   });
 
   test('a repo whose file turns periodics off reads no periodic on an event', async () => {
