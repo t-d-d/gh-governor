@@ -8,8 +8,8 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { basename, dirname, join, relative } from 'node:path';
 import yaml from 'js-yaml';
 import { REPO_ROOT } from './helpers/repo-model.ts';
 import { loadWorkflow } from './helpers/workflow.ts';
@@ -106,5 +106,68 @@ describe('third-party actions are named by their commit', () => {
       return [...unpinned(raw), ...unpinnedRefs(workflow)].map((line) => `${relative(REPO_ROOT, path)}: ${line}`);
     });
     assert.deepEqual(found, []);
+  });
+});
+
+/** The directories a Dependabot entry watches: one `directory`, or a `directories` list. */
+function watched(entry: { directory?: string; directories?: string[] }): string[] {
+  return [...(entry.directory ? [entry.directory] : []), ...(entry.directories ?? [])];
+}
+
+/**
+ * Whether a list of Dependabot directories reaches a folder. An entry is a
+ * path, a path ending in `/*` for the folders one level below it, or a path
+ * ending in `/**` for that path and every folder below it. A trailing slash
+ * is ignored.
+ */
+function covers(patterns: string[], dir: string): boolean {
+  const trim = (p: string) => (p.length > 1 ? p.replace(/\/+$/, '') : p);
+  const d = trim(dir);
+  return patterns.map(trim).some((p) => {
+    if (p.endsWith('/**')) {
+      const base = p.slice(0, -3);
+      return d === (base || '/') || d.startsWith(`${base}/`);
+    }
+    if (p.endsWith('/*')) {
+      const base = p.slice(0, -1);
+      return d.startsWith(base) && d.length > base.length && !d.slice(base.length).includes('/');
+    }
+    return p === d;
+  });
+}
+
+describe('Dependabot moves the pinned commits forward', () => {
+  test('a path, a one-level glob and a deep glob each reach the folders they name', () => {
+    assert.ok(covers(['/'], '/'));
+    assert.ok(covers(['/.github/actions/image/'], '/.github/actions/image'));
+    assert.ok(covers(['/.github/actions/*'], '/.github/actions/image'));
+    assert.ok(!covers(['/.github/actions/*'], '/.github/actions/grp/inner'));
+    assert.ok(!covers(['/.github/actions/*'], '/.github/actions'));
+    assert.ok(covers(['/**'], '/'));
+    assert.ok(covers(['/**'], '/.github/actions/grp/inner'));
+    assert.ok(covers(['/.github/actions/**'], '/.github/actions/grp/inner'));
+    assert.ok(!covers(['/.github/actions/**'], '/'));
+  });
+
+  test('a github-actions entry watches the workflows and every local action', () => {
+    const config = yaml.load(readFileSync(join(REPO_ROOT, '.github/dependabot.yml'), 'utf8')) as {
+      version?: number;
+      updates?: { 'package-ecosystem'?: string; directory?: string; directories?: string[]; schedule?: { interval?: string } }[];
+    };
+    assert.equal(config.version, 2);
+    const entries = (config.updates ?? []).filter((u) => u['package-ecosystem'] === 'github-actions');
+    assert.equal(entries.length, 1, 'one github-actions entry');
+    const entry = entries[0]!;
+    assert.ok(entry.schedule?.interval, 'the entry has a schedule');
+    const patterns = watched(entry);
+    // Dependabot reads .github/workflows from the root directory, "/".
+    assert.ok(covers(patterns, '/'), 'the root, and so .github/workflows, is watched');
+    // A composite action is any folder holding an action.yml, at any depth,
+    // since a `/*` glob reaches only one level down.
+    const actions = yamlFiles(join(REPO_ROOT, '.github/actions'))
+      .filter((path) => /^action\.ya?ml$/.test(basename(path)))
+      .map((path) => `/${relative(REPO_ROOT, dirname(path))}`);
+    assert.ok(actions.length > 0, 'found the local actions');
+    assert.deepEqual(actions.filter((dir) => !covers(patterns, dir)), []);
   });
 });
