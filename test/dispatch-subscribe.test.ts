@@ -110,6 +110,14 @@ describe('subscribersFor', () => {
     assert.match(relinked, /^> /m, 'the quote is kept');
   });
 
+  test('a link a member cites on a line of its own, with a quote below it, is a citation, not the owner', () => {
+    const cited = `Seen this from the session:\n\n${FILER}\n\n> Fixed.\n> It was the cache.`;
+    assert.equal(sessionNamedIn(cited), null, 'a quote under the link is more than a rule');
+    assert.deepEqual(subscribersFor(cited, 'comments', { issue: true }), []);
+    assert.equal(disown(cited, FILER), cited, 'a citation is not struck');
+    assert.equal(sessionNamedIn(relinkSession(cited, OWNER)), OWNER, 'a handoff appends the new owner');
+  });
+
   test('a person\'s summons whose last line is a session link stays a summons', () => {
     assert.equal(isSessionPost(`@claude this one stalled, can you look?\n${FILER}`), false);
   });
