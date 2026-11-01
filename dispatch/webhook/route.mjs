@@ -77,7 +77,7 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { HOOK_KEY_STALE, HOOK_PER_HOUR, OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
+import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 
@@ -520,8 +520,9 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
  *   every hook key's root (hook.mjs). `listedHooks`: the repo's item in the
  *   hook table (hook-table.mjs), the hooks its file listed when the task last
  *   read it. `countFire`: one more fire of a hook in the clock hour, taken
- *   only under its cap (hook-table.mjs). `now`: the receiver's clock, which a
- *   hook's timestamp is held to and an hour's count is kept by.
+ *   only under its cap and once per signature (hook-table.mjs). `now`: the
+ *   receiver's clock, which a hook's timestamp is held to and an hour's
+ *   count is kept by.
  *
  * @typedef {{ path?: string | undefined, headers: Record<string, string | undefined>, body?: string | undefined, isBase64Encoded?: boolean | undefined }} Request
  *   `path`: the Function URL's raw path, a hook's (`/hooks/…`) or GitHub's.
@@ -628,6 +629,8 @@ export const handle = async (request, deps) => {
  * cap, and the task decides. Nothing but a 202 queues anything, and no
  * line logs the signature or a key. The fire's deduplication id is the
  * signature, so a replay inside the queue's window is not a second fire.
+ * The hour counts each signature once: a resent request takes no place and
+ * is queued again, so a retry after a 502 still reaches the queue.
  *
  * @param {{ repo: string, hook: string }} target
  * @param {string | undefined} header The `Governor-Signature` header.
@@ -699,20 +702,24 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
   // for it would fail at the starter on every attempt, where no caller hears.
   if (overrideWeight(fire) > OVERRIDE_BUDGET) return unread(413, 'text is too long to start a task with: send less');
   // Counted last, so only a fire that would otherwise queue takes a place.
-  const cap = current?.perHour ?? HOOK_PER_HOUR;
+  // An item the task wrote before perHour had a ceiling may name more: held
+  // to it, so an hour's set of signatures never outgrows its item.
+  const cap = Math.min(current?.perHour ?? HOOK_PER_HOUR, HOOK_PER_HOUR_MAX);
   let counted;
   try {
-    counted = await deps.countFire(repo, hook, now, cap);
+    counted = await deps.countFire(repo, hook, now, cap, signature.hex);
   } catch (error) {
     deps.log('hook-table-uncounted', { level: 'error', ...about, error: String(/** @type {any} */ (error)?.message ?? error) });
     return { statusCode: 503, body: 'could not count the hook\'s fires: try again' };
   }
-  if (!counted) {
+  if (counted === 'full') {
     // A flood from a valid key: worth a look, not a page.
     deps.log('hook-refused', { level: 'warn', ...about, keyVersion: signature.version, status: 429, reason: `hook ${hook} in ${repo} has had its ${cap} fires this hour` });
     return { statusCode: 429, body: `hook ${hook} takes at most ${cap} fires an hour: try again next hour` };
   }
-  const messageId = await queueFire({ fire, reason: `hook ${hook} fired in ${repo}` }, signature.hex, deps);
+  // A signature the hour counted already is queued again: if its first send
+  // got through, the queue drops this one by its deduplication id.
+  const messageId = await queueFire({ fire, reason: `hook ${hook} fired in ${repo}${counted === 'seen' ? ', sent again' : ''}` }, signature.hex, deps);
   return { statusCode: 202, body: `queued ${messageId}: hook ${hook} fired in ${repo}` };
 };
 

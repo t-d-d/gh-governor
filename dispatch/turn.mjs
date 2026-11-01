@@ -104,7 +104,7 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
-import { isBlocked } from '../scripts/lib/ready-work.mjs';
+import { isBlocked, labelRow } from '../scripts/lib/ready-work.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { launchRoutine, observed } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
@@ -163,6 +163,23 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
 export const SESSION_UNRECORDED = 'dispatch-session-unrecorded';
 
 /**
+ * A session record still being written: the deadline (dispatch/cli.mjs)
+ * logs each one left as {@link SESSION_UNRECORDED}.
+ *
+ * @typedef {{ repo: string, sessionName: string, sessionUrl: string }} PendingRecord
+ */
+
+/**
+ * The {@link SESSION_UNRECORDED} line for a record that did not land, from
+ * the turn's own catch or from dispatch/cli.mjs when the turn is cut off.
+ * The reason matters to whoever reads the line.
+ *
+ * @param {PendingRecord} pending
+ * @param {string} error
+ */
+export const unrecordedLine = (pending, error) => ({ level: 'error', ...pending, error, reason: 'its PRs may clear a human-only path on a ticket\'s mode label' });
+
+/**
  * The event a periodic logs when it names a connector the account has not
  * connected: it starts nothing (infra/governor.cfn.yml pages on it).
  */
@@ -219,7 +236,7 @@ export const sessionUrlFrom = (output) => {
  *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string }>>,
  *   closure: (n: number) => Promise<{ title: string, reason: string | null, pr: import('./webhook/fire.mjs').ClosingPull | null }>,
  *   ticket: (n: number) => Promise<import('../scripts/lib/github-app.mjs').TicketRow>,
- *   pull: (n: number) => Promise<{ number: number, body: string, head: string }>,
+ *   pull: (n: number) => Promise<{ number: number, body: string, head: string, open: boolean }>,
  *   updatePull: (n: number, change: { body: string }) => Promise<void>,
  *   issue: (n: number) => Promise<{ number: number, body: string, pull: boolean }>,
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
@@ -271,6 +288,7 @@ export const sessionUrlFrom = (output) => {
  *   state: DispatchState,
  *   hookTable: Pick<import('./webhook/hook-table.mjs').HookTable, 'publish'>,
  *   claims?: Set<string> | undefined,
+ *   unrecorded?: Set<PendingRecord> | undefined,
  * }} Deps
  *   `owners`: the stack's owner list. The stack names no repo: every fire
  *   but the bare schedule fire names its own, and the bare one
@@ -297,6 +315,9 @@ export const sessionUrlFrom = (output) => {
  *   `claims`: the tickets the turn claimed that no marker naming a session
  *   covers yet, each `owner/name#number`, shared with dispatch/cli.mjs, whose deadline unwinds
  *   nothing and logs what is left in it.
+ *   `unrecorded`: the session records the turn is still writing, shared
+ *   with dispatch/cli.mjs, whose deadline logs each one left as
+ *   unrecorded, since a write the deadline cuts off never lands.
  *   `fires`: the fire lane ({@link sqsFires}); without it, a turn never
  *   waits for replies.
  *   `enqueue`: a fire onto that lane, deduplicated by the id given
@@ -574,6 +595,8 @@ export const run = async (event, deps) => {
   };
   /** Each launch's record, awaited before the turn ends. @type {Promise<void>[]} */
   const records = [];
+  /** The records still being written, which the deadline logs as unrecorded. */
+  const unrecorded = deps.unrecorded ?? new Set();
   /** The login's access token for the routines API, read once a turn. */
   const routinesToken = loginToken({ ...deps, secret }, 'start a periodic as a routine run');
   /**
@@ -618,9 +641,12 @@ export const run = async (event, deps) => {
     const launched = begin.connectors !== undefined && begin.connectors.length > 0 ? await routineLaunch(begin, begin.connectors) : await deps.launch(begin);
     const sessionUrl = sessionUrlFrom(launched.output);
     if (sessionUrl !== null) {
+      /** @type {PendingRecord} */
+      const pending = { repo: begin.repo, sessionName: begin.sessionName, sessionUrl };
+      unrecorded.add(pending);
       records.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
-        deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl, error: messageOf(error), reason: 'its PRs may clear a human-only path on a ticket\'s mode label' });
-      }));
+        deps.log(SESSION_UNRECORDED, unrecordedLine(pending, messageOf(error)));
+      }).finally(() => { unrecorded.delete(pending); }));
     }
     return launched;
   };
@@ -1758,7 +1784,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const { labels } = configOf(repo);
     try {
       const { state, labels: on } = await (await readerFor(repo)).ticket(issue);
-      if (state !== 'open' || !labels.ready.every((l) => on.includes(l)) || on.includes(labels.claim) || labels.exclude.some((l) => on.includes(l))) {
+      if (state !== 'open' || labelRow(on, labels) !== 'ready') {
         deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}` });
         return 'taken';
       }

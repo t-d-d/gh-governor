@@ -34,7 +34,7 @@ import { createHash } from 'node:crypto';
 import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
-import { isBlocked } from '../scripts/lib/ready-work.mjs';
+import { isBlocked, labelRow } from '../scripts/lib/ready-work.mjs';
 
 /**
  * @typedef {import('./webhook/fire.mjs').UnblockedFire} UnblockedFire
@@ -43,7 +43,8 @@ import { isBlocked } from '../scripts/lib/ready-work.mjs';
  * @typedef {{ repo: string, number: number, state: string }} BlockedRow A ticket the closed issue blocked, in its repo.
  * @typedef {{ fire: UnblockedFire & { repo: string }, dedupId: string }} Queued
  * @typedef {{ repo: string, issue: number, reason: string }} Skipped
- * @typedef {'closed' | 'blocked' | 'not-planned' | 'excluded' | 'claimed' | 'ready' | 'not-ready'} Row
+ * @typedef {import('../scripts/lib/ready-work.mjs').Labels} Labels
+ * @typedef {'closed' | 'blocked' | 'not-planned' | ReturnType<typeof labelRow>} Row
  */
 
 /** The close reason GitHub gives an issue closed as not planned. */
@@ -116,7 +117,7 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
  *   ticket: { state: string, labels: readonly string[], openBlockers?: number },
  *   blockers: ReadonlyArray<{ state: string }> | undefined,
  *   fire: Pick<UnblockedFire, 'blocker'>,
- *   labels: { ready: readonly string[], claim: string, exclude: readonly string[] },
+ *   labels: Labels,
  * }} args
  * @returns {Row}
  */
@@ -124,10 +125,7 @@ export const ticketRow = ({ ticket, blockers, fire, labels }) => {
   if (ticket.state !== 'open') return 'closed';
   if (fire.blocker.reason === NOT_PLANNED) return 'not-planned';
   if (isBlocked(ticket, blockers)) return 'blocked';
-  if (labels.exclude.some((l) => ticket.labels.includes(l))) return 'excluded';
-  if (ticket.labels.includes(labels.claim)) return 'claimed';
-  if (labels.ready.every((l) => ticket.labels.includes(l))) return 'ready';
-  return 'not-ready';
+  return labelRow(ticket.labels, labels);
 };
 
 /**

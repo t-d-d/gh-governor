@@ -543,6 +543,14 @@ export const HOOK_NAME = /^[a-z0-9-]{1,64}$/;
  */
 export const HOOK_PER_HOUR = 20;
 
+/**
+ * The largest `perHour` a hook may set. An hour's count item holds each
+ * signature it counted, 64 hex characters apiece, so this keeps the item
+ * under 7 KB, and a count or a refusal at most 7 write units. Governor runs
+ * about 100 fires an hour in all, so a larger cap buys nothing.
+ */
+export const HOOK_PER_HOUR_MAX = 100;
+
 /** The event a fire signed with a stale key version logs, at error, at the receiver or the task; `governor-hook-key-stale` pages on it. */
 export const HOOK_KEY_STALE = 'hook-key-stale';
 

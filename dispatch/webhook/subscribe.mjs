@@ -175,7 +175,7 @@ export const relinkSession = (body, sessionUrl) => {
 export const isSessionPost = (body) => String(body ?? '').includes(SESSION_FOOTER) || footerLink(withoutToolFooters(withoutLines(String(body ?? '')))) !== undefined;
 
 /** `text` with every blockquote line blanked, character for character. @param {string} text */
-const withoutQuotes = (text) => text.replace(/^[ \t]*>.*$/gm, (/** @type {string} */ quote) => quote.replace(/[^\n]/g, ' '));
+export const withoutQuotes = (text) => text.replace(/^[ \t]*>.*$/gm, (/** @type {string} */ quote) => quote.replace(/[^\n]/g, ' '));
 
 /** Nothing but a rule and blank lines between a session's URL and the footer below it. */
 const ADJACENT = /^[\s*_-]*$/;

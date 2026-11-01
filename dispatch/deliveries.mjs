@@ -9,9 +9,9 @@
  * on a refusal (the CLI answers the session archived) forwards to the
  * session a dispatch marker inside the window names, or launches the
  * fallback, leaving the marker and, for a takeover, relinking the PR body
- * to it; with no fallback it drops the refusing subscriber, or disowns an
- * issue's filer. A session's own push, or a branch owner's own post, is
- * skipped. The owner of a PR whose body names no session is the live local
+ * to it, unless the takeover's PR has closed since; with no fallback it
+ * drops the refusing subscriber, or disowns an issue's filer. A session's
+ * own push, or a branch owner's own post, is skipped. The owner of a PR whose body names no session is the live local
  * session on its head branch.
  *
  * Every I/O is injected: the GitHub reader, the send into a session, the
@@ -197,7 +197,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  * @typedef {{
  *   comments: import('../scripts/lib/dispatch-router.mjs').Reader['comments'],
  *   comment: (n: number, body: string) => Promise<void>,
- *   pull: (n: number) => Promise<{ number: number, body: string, head: string }>,
+ *   pull: (n: number) => Promise<{ number: number, body: string, head: string, open: boolean }>,
  *   updatePull: (n: number, change: { body: string }) => Promise<void>,
  *   issue: (n: number) => Promise<{ number: number, body: string, pull: boolean }>,
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
@@ -538,6 +538,17 @@ export const deliveries = (deps) => {
         fallback = { outcome: 'skipped', sessionUrl: null };
       }
       let relinked = false;
+      /** Why nothing started, when the fallback was skipped for it. @type {string | null} */
+      let reason = null;
+      // A takeover of a PR that has closed or merged since the remark was
+      // posted has nothing to take over. It is read now, not when the remark
+      // arrived: a remark posted while the PR was open can be delivered after
+      // it merged. A fallback that is not a takeover (a red run on a merge)
+      // is meant for a closed PR.
+      if (fallback === null && takeover && issue !== undefined && !(await (await deps.reader()).pull(issue)).open) {
+        fallback = { outcome: 'skipped', sessionUrl: null };
+        reason = `PR #${issue} has closed`;
+      }
       if (fallback === null) {
         const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL }, until);
         fallback = { outcome: started.outcome, sessionUrl: started.sessionUrl };
@@ -546,7 +557,7 @@ export const deliveries = (deps) => {
           if (takeover && started.sessionUrl !== null) relinked = await relink(issue, started.sessionUrl);
         }
       }
-      deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, ...fallback, relinked });
+      deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, ...fallback, relinked, ...(reason === null ? {} : { reason }) });
     }
     // A refusal with none: a subscriber gone. Its line goes; the turn is not
     // a failure, since nothing was owed to a session that is not there.
