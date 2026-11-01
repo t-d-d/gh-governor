@@ -158,12 +158,20 @@ describe('the texts', () => {
     assert.doesNotMatch(text, /could not/);
   });
 
-  test('a ready label that would not come off is named, so nobody reads the ticket as held', () => {
+  // Pickup needs every ready label, so one that came off holds the ticket.
+  test('a ready label that would not come off is named, and the ticket reads as held by the one that did', () => {
     const text = notPlannedComment(dropped, {}, { unreadied: { removed: ['ready'], failed: ['mode: afk'] } });
-    assert.match(text, /took `ready` off #7/);
+    assert.match(text, /took `ready` off #7, so it is not picked up/);
     assert.match(text, /could not take `mode: afk` off/);
-    assert.match(text, /can still be picked up/);
-    assert.doesNotMatch(text, /Put them back/);
+    assert.doesNotMatch(text, /can still be picked up/);
+    assert.match(text, /Put `ready` back once you decide #7 still stands/);
+  });
+
+  test('no ready label would come off: each is named, so nobody reads the ticket as held', () => {
+    const text = notPlannedComment(dropped, {}, { unreadied: { removed: [], failed: ['ready', 'mode: afk'] } });
+    assert.match(text, /could not take `ready` and `mode: afk` off #7, so it can still be picked up/);
+    assert.match(text, /Take them off by hand/);
+    assert.doesNotMatch(text, /Put .* back/);
   });
 
   test('the label sentence comes after the still-blocked one', () => {
@@ -190,5 +198,8 @@ describe('readyToTakeOff', () => {
   });
   test('a ticket missing a ready label is not ready: nothing to take off', () => {
     assert.deepEqual(readyToTakeOff(['ready'], labels), []);
+  });
+  test('an excluded ticket is never picked up: its labels stay', () => {
+    assert.deepEqual(readyToTakeOff(['ready', 'mode: afk', 'type: prd'], labels), []);
   });
 });

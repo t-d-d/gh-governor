@@ -61,7 +61,9 @@ export const NOT_PLANNED = 'not_planned';
 /**
  * The switch each row that acts is governed by, in the ticket's repo:
  * `pickup` covers ready tickets wherever they come from, `unblocked` what
- * happens only when a blocker closes. No ticket falls under both.
+ * happens only when a blocker closes. The one overlap is a ready ticket's
+ * not-planned close: its labels come off under `pickup` (turn.mjs reads
+ * {@link readyToTakeOff} before this table), its comment under `unblocked`.
  *
  * @type {Readonly<Partial<Record<Row, 'pickup' | 'unblocked'>>>}
  */
@@ -191,16 +193,15 @@ export const unblockedMessage = (fire, prompts) => `${unblockedFacts(fire)}\n\n$
 
 /**
  * The ready labels a not-planned close takes off a ticket: every one of the
- * repo's, where the ticket carries them all and no claim label, and none
- * otherwise. A claimed ticket's session is told instead, and keeps its
- * labels.
+ * repo's, where pickup reads the ticket as ready ({@link labelRow}), and
+ * none otherwise. A claimed ticket's session is told instead, and keeps its
+ * labels; an excluded one is never picked up, so it keeps them too.
  *
  * @param {readonly string[]} on The ticket's labels.
- * @param {Pick<Labels, 'ready' | 'claim'>} labels The repo's.
+ * @param {Pick<Labels, 'ready' | 'claim' | 'exclude'>} labels The repo's.
  * @returns {string[]}
  */
-export const readyToTakeOff = (on, labels) =>
-  !on.includes(labels.claim) && labels.ready.length > 0 && labels.ready.every((label) => on.includes(label)) ? [...labels.ready] : [];
+export const readyToTakeOff = (on, labels) => (labelRow(on, labels) === 'ready' ? [...labels.ready] : []);
 
 /** @param {readonly string[]} names */
 const listed = (names) => {
@@ -210,19 +211,21 @@ const listed = (names) => {
 
 /**
  * What became of a ticket's ready labels, for its comment. Fixed text, not
- * the repo's prompt, so a repo that replaces the ask still says it.
+ * the repo's prompt, so a repo that replaces the ask still says it. Pickup
+ * needs every ready label, so any one that came off holds the ticket.
  *
  * @param {number} issue
  * @param {{ removed: readonly string[], failed: readonly string[] }} unreadied
  */
 const readySentence = (issue, { removed, failed }) => {
+  if (removed.length === 0) {
+    return `Governor could not take ${listed(failed)} off #${issue}, so it can still be picked up. Take ${failed.length === 1 ? 'it' : 'them'} off by hand until you decide #${issue} still stands.`;
+  }
   if (failed.length === 0) {
     const its = removed.length === 1 ? `its ready label, ${listed(removed)},` : `its ready labels, ${listed(removed)},`;
-    return `Governor took ${its} off #${issue}, so it is not picked up. Put them back once you decide #${issue} still stands.`;
+    return `Governor took ${its} off #${issue}, so it is not picked up. Put ${removed.length === 1 ? 'it' : 'them'} back once you decide #${issue} still stands.`;
   }
-  const took = removed.length === 0 ? '' : `Governor took ${listed(removed)} off #${issue}, but `;
-  const could = `${took === '' ? 'Governor ' : ''}could not take ${listed(failed)} off #${issue}`;
-  return `${took}${could}, so it can still be picked up. Take ${failed.length === 1 ? 'it' : 'them'} off by hand until you decide #${issue} still stands.`;
+  return `Governor took ${listed(removed)} off #${issue}, so it is not picked up, but could not take ${listed(failed)} off. Put ${listed(removed)} back once you decide #${issue} still stands.`;
 };
 
 /**

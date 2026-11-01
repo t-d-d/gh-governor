@@ -1269,8 +1269,20 @@ describe('run — an unblocked fire', () => {
     assert.ok(line, JSON.stringify(h.logged));
     assert.equal(line.level, 'error');
     assert.equal(line.label, 'mode: afk');
-    assert.match(h.comments[0]!.body, /could not take `mode: afk` off #7/);
-    assert.match(h.comments[0]!.body, /can still be picked up/);
+    assert.doesNotMatch(String(line.reason), /can still start it/);
+    assert.match(h.comments[0]!.body, /could not take `mode: afk` off/);
+    assert.match(h.comments[0]!.body, /so it is not picked up/);
+    assert.doesNotMatch(h.comments[0]!.body, /can still be picked up/);
+  });
+
+  test('not planned, ready, and no ready label will come off: each logged, and the comment says it can still be picked up', async () => {
+    const h = ticketTurn({ unlabelFails: ['workflow: ready for development', 'mode: afk'] });
+    await run(fire(dropped), h.deps as never);
+    assert.deepEqual(labelCalls(h.calls), []);
+    const lines = h.logged.filter((l) => l.event === 'dispatch-unblocked-unlabelled');
+    assert.deepEqual(lines.map((l) => l.label), ['workflow: ready for development', 'mode: afk']);
+    assert.match(String(lines[0]!.reason), /can still start it/);
+    assert.match(h.comments[0]!.body, /could not take `workflow: ready for development` and `mode: afk` off #7, so it can still be picked up/);
   });
 
   test('not planned, ready, and still blocked by another open issue: the labels come off all the same', async () => {

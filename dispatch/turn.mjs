@@ -1703,14 +1703,21 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       let unreadied;
       if (takeOff.length > 0) {
         unreadied = { removed: [], failed: [] };
+        /** @type {Array<{ label: string, error: string }>} */
+        const stayed = [];
         for (const label of takeOff) {
           try {
             await reader.removeLabel(issue, label);
             unreadied.removed.push(label);
           } catch (error) {
-            deps.log('dispatch-unblocked-unlabelled', { level: 'error', ...about, label, error: messageOf(error), reason: 'a ready label stayed on a ticket whose blocker closed as not planned, so pickup can still start it' });
+            stayed.push({ label, error: messageOf(error) });
             unreadied.failed.push(label);
           }
+        }
+        // Pickup needs every ready label, so one that came off holds the ticket.
+        const held = unreadied.removed.length > 0;
+        for (const { label, error } of stayed) {
+          deps.log('dispatch-unblocked-unlabelled', { level: 'error', ...about, label, error, reason: held ? 'a ready label stayed on a ticket whose blocker closed as not planned; another came off, so pickup does not start it' : 'a ready label stayed on a ticket whose blocker closed as not planned, and none came off, so pickup can still start it' });
         }
       }
       const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts, { blocked: isBlocked(ticket, blockers), ...(unreadied === undefined ? {} : { unreadied }) }) : null;
