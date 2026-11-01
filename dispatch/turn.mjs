@@ -112,7 +112,7 @@ import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
 import { repoServed, servedRepos } from './repos.mjs';
-import { CONFIG_PATH, switchOf, turnsOn } from './repo-config.mjs';
+import { CONFIG_PATH, GENERIC_SWITCHES, switchOf, turnsOn } from './repo-config.mjs';
 import { planWorkflow, redRunPrompt } from './workflow.mjs';
 import { STALE_RUNS_PAUSES_MS, baselineIn, freshRuns } from './runs.mjs';
 import { coverageOf } from './coverage.mjs';
@@ -312,7 +312,7 @@ export const sessionUrlFrom = (output) => {
  *   `events` is a page of one session's events; any refusal throws.
  *   `state`: the dispatcher's state table ({@link dynamoState}).
  *   `hookTable`: the receiver's hook table (webhook/hook-table.mjs), where
- *   each served repo's hooks are written as its file was read.
+ *   each served repo's hooks and switches are written as its file was read.
  *   `claims`: the tickets the turn claimed that no marker naming a session
  *   covers yet, each `owner/name#number`, shared with dispatch/cli.mjs, whose deadline unwinds
  *   nothing and logs what is left in it.
@@ -511,9 +511,13 @@ export const run = async (event, deps) => {
   const reads = { owners: deps.owners, token: tokenFor, config: deps.configFile, environments, log: deps.log };
   const readAt = new Date(deps.now()).toISOString();
   /**
-   * Each served repo's hooks, key versions and hourly caps, as its file reads
-   * now, to the receiver's hook table, so the receiver refuses a revoked key,
-   * a removed hook or a fire past the cap before the queue. A write that
+   * Each served repo's hooks, key versions and hourly caps, and each of its
+   * switches as {@link turnsOn} reads it, as its file reads now, to the
+   * receiver's hook table, in one write, so the receiver refuses a revoked
+   * key, a removed hook or a fire past the cap before the queue, and drops a
+   * delivery's fire whose switch is off (dispatch/webhook/switches.mjs). It
+   * is written before the turn refuses its fire, so a turn whose own switch
+   * is off still brings the item up to the file. A write that
    * fails is logged at error and counts the repo unread, and the turn goes
    * on: the receiver queues on the last list meanwhile, and this turn's own
    * checks still refuse a stale key (dispatch/hooks.mjs).
@@ -525,8 +529,9 @@ export const run = async (event, deps) => {
     // One item per repo, so the writes are independent: each goes at once.
     const written = await Promise.all(list.map(async ({ repo: served, config }) => {
       const hooks = turnsOn(config, 'hooks') ? config.hooks.map(({ name, keyVersion, perHour }) => ({ name, keyVersion, perHour: perHour ?? HOOK_PER_HOUR })) : [];
+      const switches = Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, turnsOn(config, name)]));
       try {
-        await deps.hookTable.publish(served, hooks, readAt);
+        await deps.hookTable.publish(served, { hooks, switches }, readAt);
         return null;
       } catch (error) {
         deps.log('hook-table-unwritten', { level: 'error', repo: served, error: messageOf(error) });
