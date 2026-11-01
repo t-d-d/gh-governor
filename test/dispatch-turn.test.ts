@@ -484,6 +484,26 @@ describe('run — governor records each session it starts', () => {
     assert.deepEqual(result.dispatched.map((d) => d.outcome), ['dispatched', 'dispatched']);
     assert.deepEqual(slow, [ABC, ABC]);
   });
+  // The deadline (dispatch/cli.mjs) logs a record still pending when it ends the turn.
+  test('a record is held in unrecorded while it is pending, and leaves it once written or failed', async () => {
+    const unrecorded = new Set<{ repo: string; sessionName: string; sessionUrl: string }>();
+    const seen: Array<Array<{ repo: string; sessionUrl: string }>> = [];
+    let calls = 0;
+    const h = harness({
+      state: {
+        recordSession: async () => {
+          await new Promise((r) => { setImmediate(r); });
+          seen.push([...unrecorded].map(({ repo, sessionUrl }) => ({ repo, sessionUrl })));
+          calls += 1;
+          if (calls === 2) throw new Error('ProvisionedThroughputExceededException');
+        },
+      },
+    });
+    turn(await run({ source: 'aws.events' }, { ...h.deps, unrecorded } as never));
+    assert.equal(seen.length, 2);
+    assert.ok(seen[0]!.some((p) => p.repo === REPO && p.sessionUrl === ABC), 'the pending record names its repo and session');
+    assert.equal(unrecorded.size, 0, 'a record written or failed is no longer pending');
+  });
 });
 
 describe('run — schedule', () => {

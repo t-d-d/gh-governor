@@ -141,7 +141,7 @@ describe('main', () => {
       },
     });
     await main(args as never);
-    assert.deepEqual(seen, [{ kind: 'probe' }, { real: true, claims: new Set() }], 'the real dependencies, with the claims the deadline reads');
+    assert.deepEqual(seen, [{ kind: 'probe' }, { real: true, claims: new Set(), unrecorded: new Set() }], 'the real dependencies, with the claims and pending records the deadline reads');
     assert.deepEqual(logged, [{ event: 'dispatch-result', kind: 'probe', ok: true, detail: 'pty-ok' }]);
     assert.deepEqual(exits, [0]);
   });
@@ -267,6 +267,26 @@ describe('main', () => {
     timers[0]!.fn();
     assert.deepEqual(logged.map((l) => [l.event, l.repo, l.issue]), [['dispatch-claim-stranded', 't-d-d/askme-mcp', 717], ['dispatch-failed', undefined, undefined]]);
     assert.match(String(logged[0]?.reason), /deadline/);
+    assert.deepEqual(exits, [1]);
+  });
+
+  // A session's record is written in the background. One still pending when
+  // the deadline ends the turn never lands, so the deadline logs it.
+  test('the deadline logs each session record still pending, naming the session', async () => {
+    const { args, logged, exits, timers } = harness({
+      run: async (_event: unknown, deps: { unrecorded: Set<{ repo: string; sessionName: string; sessionUrl: string }> }) => {
+        deps.unrecorded.add({ repo: 'acme/factory', sessionName: 'Issue 7', sessionUrl: 'https://claude.ai/code/session_01ABC' });
+        return new Promise(() => {});
+      },
+    });
+    void main(args as never);
+    await new Promise((settle) => setImmediate(settle));
+    timers[0]!.fn();
+    assert.deepEqual(logged.map((l) => [l.event, l.repo, l.sessionUrl]), [['dispatch-session-unrecorded', 'acme/factory', 'https://claude.ai/code/session_01ABC'], ['dispatch-failed', undefined, undefined]]);
+    assert.equal(logged[0]?.level, 'error');
+    assert.equal(logged[0]?.sessionName, 'Issue 7');
+    assert.match(String(logged[0]?.error), /deadline/);
+    assert.match(String(logged[0]?.reason), /human-only path/);
     assert.deepEqual(exits, [1]);
   });
 });
