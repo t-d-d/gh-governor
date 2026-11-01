@@ -60,6 +60,8 @@ const loginArn = arnOfSecret(loginName);
 const appArn = arnOfSecret(appName);
 const writerArn = arnOfSecret(writerName);
 const LOG_GROUP = '/governor';
+/** An EventBridge rule's target that writes into the dispatch log group. */
+const DISPATCH_LOG_TARGET = `arn:aws:logs:us-east-1:${ACCOUNT}:log-group:\${DispatchLogGroup}`;
 
 
 describe('infra/governor.cfn.yml — the task', () => {
@@ -517,7 +519,7 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     const targets: Array<{ Arn?: string }> = rule.Properties?.Targets ?? [];
     assert.deepEqual(
       targets.map((t) => t.Arn).sort(),
-      [`arn:aws:logs:us-east-1:${ACCOUNT}:log-group:\${DispatchLogGroup}`, '${RetrierFunction.Arn}'].sort(),
+      [DISPATCH_LOG_TARGET, '${RetrierFunction.Arn}'].sort(),
       'the rule writes the event into the dispatch log group and hands it to the retrier',
     );
     assert.match(String(rule.Properties?.Name ?? ''), /^governor-/, 'every name the stack gives starts governor-');
@@ -561,10 +563,8 @@ describe('infra/governor.cfn.yml — the alarms', () => {
    * pull and start times, and no event is written twice.
    */
   describe('every dispatcher task\'s stop event is logged once', () => {
-    const stopRules = resourcesOfType(template, 'AWS::Events::Rule')
-      .filter(([, r]) => r.Properties?.EventPattern?.source?.includes('aws.ecs'));
+    const stopRules = resourcesOfType(template, 'AWS::Events::Rule').filter(([, r]) => r.Properties?.EventPattern);
     const rule = template.Resources.DispatchTaskStoppedRule;
-    const logTarget = `arn:aws:logs:us-east-1:${ACCOUNT}:log-group:\${DispatchLogGroup}`;
 
     test('a task that ran and stopped has its stop event written into /governor', () => {
       assert.equal(rule?.Type, 'AWS::Events::Rule');
@@ -576,14 +576,17 @@ describe('infra/governor.cfn.yml — the alarms', () => {
         detail: {
           clusterArn: ['${DispatchCluster.Arn}'],
           lastStatus: ['STOPPED'],
-          stopCode: [{ 'anything-but': ['TaskFailedToStart'] }],
+          // A value-matching filter only matches a field the event carries,
+          // so a stop with no stopCode needs its own clause, or neither rule
+          // would write it.
+          stopCode: [{ 'anything-but': ['TaskFailedToStart'] }, { exists: false }],
         },
       });
       const targets: Array<{ Arn?: string }> = rule?.Properties?.Targets ?? [];
-      assert.deepEqual(targets.map((t) => t.Arn), [logTarget], 'it only logs: the retrier hears tasks that failed to start alone');
+      assert.deepEqual(targets.map((t) => t.Arn), [DISPATCH_LOG_TARGET], 'it only logs: the retrier hears tasks that failed to start alone');
     });
 
-    test('the two rules split the stop codes, so no stop is logged twice and the not-run rule is unchanged', () => {
+    test('the two rules split the stop codes, so no rule writes another\'s stop and the not-run rule is unchanged', () => {
       assert.deepEqual(stopRules.map(([id]) => id).sort(), ['DispatchNotRunRule', 'DispatchTaskStoppedRule']);
       assert.deepEqual(template.Resources.DispatchNotRunRule?.Properties?.EventPattern?.detail?.stopCode, ['TaskFailedToStart']);
       for (const [id, r] of resourcesOfType(template, 'AWS::CloudWatch::Alarm')) {

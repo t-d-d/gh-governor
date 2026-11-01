@@ -776,7 +776,9 @@ Resources:
   # other stop event of the cluster there too, one stream per event: each
   # carries createdAt, pullStartedAt, pullStoppedAt, startedAt and stoppedAt.
   # It matches every stop code but TaskFailedToStart, which the not-run rule
-  # writes, so no stop is logged twice. It only logs: no alarm counts its
+  # writes, so the two rules never both write one event. A value filter
+  # matches only a field the event carries, so a stop with no stopCode needs
+  # the exists clause. It only logs: no alarm counts its
   # matches and the retrier never hears it. Every metric filter on the group
   # matches a top-level `event` key, which an ECS event lacks.
   DispatchTaskStoppedRule:
@@ -791,7 +793,7 @@ Resources:
         detail:
           clusterArn: [!GetAtt DispatchCluster.Arn]
           lastStatus: [STOPPED]
-          stopCode: [{ anything-but: [TaskFailedToStart] }]
+          stopCode: [{ anything-but: [TaskFailedToStart] }, { exists: false }]
       Targets:
         - Id: log
           Arn: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DispatchLogGroup}'
