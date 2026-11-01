@@ -12,7 +12,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { DISPATCH_WINDOW_MS, dispatchMarker } from '../../dispatch/webhook/fire.mjs';
-import { planSchedule } from '../../scripts/lib/dispatch-router.mjs';
+import { planSchedule, type Seen } from '../../scripts/lib/dispatch-router.mjs';
 import { promptFor, sessionName } from '../../scripts/lib/dispatch-prompt.mjs';
 
 /** The factory's labels: two ready labels, and the claim. */
@@ -35,6 +35,8 @@ const READY = ['workflow: ready for development', 'mode: afk', 'type: bug'];
 /** A reader over fixed rows, recording what was asked. */
 const fakeReader = (rows: {
   issues: ReturnType<typeof issue>[];
+  /** Open issues the ready list leaves out: not labelled ready, or labelled too lately for the list to show. */
+  others?: ReturnType<typeof issue>[];
   blockers?: Record<number, { number: number; state: string; title: string }[]>;
   blocking?: Record<number, { number: number; state: string; title: string }[]>;
   parents?: Record<number, { number: number; state: string; labels: string[] } | null>;
@@ -45,6 +47,12 @@ const fakeReader = (rows: {
     asked,
     reader: {
       readyIssues: async () => rows.issues,
+      ticket: async (n: number) => {
+        asked.push(`ticket ${n}`);
+        const row = [...rows.issues, ...(rows.others ?? [])].find((r) => r.number === n);
+        if (row === undefined) throw new Error(`GET /issues/${n} failed: 404`);
+        return { ...row, body: '', pull: false };
+      },
       blockers: async (n: number) => {
         asked.push(`blockers ${n}`);
         return rows.blockers?.[n] ?? [];
@@ -165,11 +173,12 @@ describe('a targeted schedule fire', () => {
   test('planSchedule dispatches the named issue alone when it is selectable, and nothing when it is not', async () => {
     const { reader } = fakeReader({
       issues: [issue(3, READY), issue(4, READY), issue(6, READY)],
+      others: [issue(99, ['type: bug'])],
       blockers: { 4: [{ number: 1, state: 'open', title: 'Blocker' }] },
     });
     assert.deepEqual((await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, only: [6] })).map((d) => d.issue), [6]);
     assert.deepEqual(await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, only: [4] }), [], 'a blocked issue is not dispatched because it was labelled');
-    assert.deepEqual(await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, only: [99] }), [], 'an issue the selection does not list is not dispatched');
+    assert.deepEqual(await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, only: [99] }), [], 'an issue not labelled ready is not dispatched');
   });
 
   test('planSchedule takes a list: the selectable ones in the selector\'s order, up to the cap', async () => {
@@ -181,11 +190,58 @@ describe('a targeted schedule fire', () => {
         issue(6, READY),
         issue(8, READY),
       ],
+      others: [issue(99, ['type: bug'])],
       blockers: { 4: [{ number: 1, state: 'open', title: 'Blocker' }] },
     });
     assert.deepEqual((await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 5, now: NOW, only: [5, 4, 3, 99] })).map((d) => d.issue), [3, 5]);
     assert.deepEqual((await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 1, now: NOW, only: [5, 3] })).map((d) => d.issue), [3]);
     assert.deepEqual(await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, only: [] }), [], 'an empty list is nothing, not the sweep');
+  });
+
+  // GitHub's filtered issue list shows a label change about four seconds
+  // late, and a label fire's turn runs inside that, so the named issue is
+  // read directly: the single issue shows the change on its first read.
+  test('planSchedule reads a named issue directly, so a ready label the list does not show yet still dispatches', async () => {
+    const { reader, asked } = fakeReader({ issues: [], others: [issue(6, READY)] });
+    const seen: Seen[] = [];
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 1, now: NOW, only: [6], seen });
+    assert.deepEqual(plan.map((d) => d.issue), [6]);
+    assert.ok(asked.includes('ticket 6'), asked.join('; '));
+    assert.deepEqual(seen, [{ repo: REPO, issue: 6, labels: READY, openBlockers: 0 }]);
+  });
+
+  test('planSchedule starts nothing for a named issue that is gone, and does not throw', async () => {
+    for (const status of [404, 410]) {
+      const { reader } = fakeReader({ issues: [] });
+      const gone = { ...reader, ticket: async (n: number) => { throw Object.assign(new Error(`GET /issues/${n} failed: ${status}`), { status }); } };
+      const seen: Seen[] = [];
+      assert.deepEqual(await planSchedule({ sources: [{ reader: gone, repo: REPO, labels: FACTORY_LABELS }], cap: 1, now: NOW, only: [6], seen }), [], `status ${status}`);
+      assert.deepEqual(seen, []);
+    }
+  });
+
+  // A moved issue's read follows GitHub's redirect to another repository's
+  // issue, under another number, which this repo's number must not stand for.
+  test('planSchedule starts nothing for a named issue whose read answers with another number', async () => {
+    const { reader } = fakeReader({ issues: [], others: [issue(31, READY)] });
+    const moved = { ...reader, ticket: async () => reader.ticket(31) };
+    const seen: Seen[] = [];
+    assert.deepEqual(await planSchedule({ sources: [{ reader: moved, repo: REPO, labels: FACTORY_LABELS }], cap: 1, now: NOW, only: [6], seen }), []);
+    assert.deepEqual(seen, []);
+  });
+
+  test('planSchedule records what each named issue\'s read saw, so a fire that starts nothing can say why', async () => {
+    const { reader } = fakeReader({
+      issues: [issue(4, READY)],
+      others: [issue(5, ['type: bug'], { openBlockers: 2 })],
+      blockers: { 4: [{ number: 1, state: 'open', title: 'Blocker' }, { number: 2, state: 'closed', title: 'Done' }] },
+    });
+    const seen: Seen[] = [];
+    assert.deepEqual(await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, only: [4, 5], seen }), []);
+    assert.deepEqual(seen, [
+      { repo: REPO, issue: 4, labels: READY, openBlockers: 1 },
+      { repo: REPO, issue: 5, labels: ['type: bug'], openBlockers: 2 },
+    ]);
   });
 });
 

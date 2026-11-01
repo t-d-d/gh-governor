@@ -671,6 +671,36 @@ describe('run — the dispatcher claims what it launches', () => {
     assert.ok(base.calls.includes('heartbeat'), 'the heartbeat is written through the reader');
   });
 
+  // GitHub's filtered list shows a label change about four seconds late; a
+  // label fire's turn runs inside that, so it reads the issue itself.
+  test('a label fire plans its ticket from a direct read, so a ready label the list does not show yet still dispatches', async () => {
+    const base = harness();
+    const { deps, launches } = harness({ reader: () => ({ ...base.deps.reader(''), readyIssues: async () => [] }) });
+    await run({ kind: 'schedule', issue: 9 }, deps as never);
+    assert.deepEqual(launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9')]);
+  });
+
+  test('a label fire whose read shows no ready label starts nothing, and logs the issue and what its read saw', async () => {
+    const base = harness();
+    const { deps, launches, logged } = harness({
+      reader: () => ({ ...base.deps.reader(''), ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: ['type: bug'], pull: false, openBlockers: 0 }) }),
+    });
+    await run({ kind: 'schedule', issue: 9 }, deps as never);
+    assert.deepEqual(launches, []);
+    const line = logged.find((l) => l.event === 'dispatch-pickup' && l.issue === 9);
+    assert.ok(line, JSON.stringify(logged));
+    assert.deepEqual(line.reads, [{ labels: ['type: bug'], openBlockers: 0 }]);
+  });
+
+  test('a label fire under a DispatchCap of 0 starts nothing, and logs the cap as the reason, not the ticket', async () => {
+    const { deps, launches, logged } = harness({ cap: 0 });
+    await run({ kind: 'schedule', issue: 9 }, deps as never);
+    assert.deepEqual(launches, []);
+    const line = logged.find((l) => l.event === 'dispatch-pickup' && l.issue === 9);
+    assert.ok(line, JSON.stringify(logged));
+    assert.equal(line.reason, 'DispatchCap is 0: no fire starts anything');
+  });
+
   test('a launch that started nothing puts the labels back', async () => {
     const { deps, calls } = harness({ launch: async () => ({ status: 1, output: 'claude died' }) });
     await run({ kind: 'schedule', issue: 9 }, deps as never);
@@ -974,7 +1004,10 @@ describe('run — a schedule fire for one issue', () => {
   });
 
   test('launches nothing when the named issue is not selectable, and writes no heartbeat either', async () => {
-    const { deps, launches, calls } = harness();
+    const base = harness();
+    const { deps, launches, calls } = harness({
+      reader: () => ({ ...base.deps.reader(''), ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: ['type: bug'], pull: false }) }),
+    });
     const result = turn(await run({ kind: 'schedule', issue: 711 }, deps as never));
     assert.deepEqual(launches, []);
     assert.deepEqual(result.dispatched, []);
@@ -1248,6 +1281,58 @@ describe('run — an unblocked fire', () => {
     assert.ok(h.calls.includes(`label #7 +${CLAIM}`), h.calls.join('; '));
     assert.deepEqual(h.comments.map((c) => c.issue), [7]);
     assert.ok(!h.calls.includes('heartbeat'));
+  });
+
+  /** The ticket turn, its ticket read through `reads` in turn, the last answer repeating. */
+  const lagging = (reads: Array<number | undefined>, over: Parameters<typeof ticketTurn>[0] = {}) => {
+    const h = ticketTurn(over);
+    const reader = h.deps.reader;
+    let read = 0;
+    h.deps.reader = ((...args: Parameters<typeof reader>) => ({
+      ...reader(...args),
+      ticket: async (n: number) => {
+        const openBlockers = reads[Math.min(read, reads.length - 1)];
+        read += 1;
+        h.asked.push(`ticket ${n}`);
+        return { number: n, title: `Issue ${n}`, body: '', state: 'open', labels: over.labels ?? READY, pull: false, ...(openBlockers === undefined ? {} : { openBlockers }) };
+      },
+    })) as typeof reader;
+    return h;
+  };
+  const sleptMs = (h: { deps: { sleep: (ms: number) => Promise<void> } }, run: () => Promise<unknown>) => {
+    const slept: number[] = [];
+    const sleep = h.deps.sleep;
+    h.deps.sleep = async (ms: number) => { slept.push(ms); await sleep(ms); };
+    return run().then(() => slept.reduce((a, b) => a + b, 0));
+  };
+
+  // The ticket's dependency summary may still count the blocker that just
+  // closed when the turn runs, seconds after the close.
+  test('a first read still counting the closed blocker reads again, and picks the ticket up once a later read does not', async () => {
+    const h = lagging([1, 1, 0]);
+    const total = await sleptMs(h, () => run(fire(), h.deps as never));
+    assert.equal(h.launches.length, 1, JSON.stringify(h.logged));
+    assert.ok(h.asked.filter((a) => a === 'ticket 7').length >= 3, h.asked.join('; '));
+    assert.ok(total <= 10_000, `slept ${total} ms`);
+  });
+
+  test('a ticket every read counts as blocked starts nothing inside about ten seconds, and logs each read', async () => {
+    const h = lagging([1]);
+    const total = await sleptMs(h, () => run(fire(), h.deps as never));
+    assert.deepEqual(h.launches, []);
+    assert.ok(total > 0 && total <= 10_000, `slept ${total} ms`);
+    const logged = h.logged.find((l) => l.event === 'dispatch-unblocked');
+    assert.equal(logged?.issue, 7);
+    const reads = logged?.reads as Array<{ labels: string[]; openBlockers: number }>;
+    assert.ok(Array.isArray(reads) && reads.length > 1, JSON.stringify(logged));
+    assert.deepEqual(reads.at(-1), { labels: READY, openBlockers: 1 });
+  });
+
+  test('a ticket the first read shows unblocked is read once, with no wait', async () => {
+    const h = lagging([0]);
+    const total = await sleptMs(h, () => run(fire(), h.deps as never));
+    assert.equal(h.launches.length, 1);
+    assert.equal(total, 0);
   });
 
   test('ready, but dispatched inside the window: nothing starts', async () => {

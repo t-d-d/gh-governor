@@ -723,6 +723,14 @@ describe('githubReader', () => {
     assert.deepEqual(await reader.ticket(12), { number: 12, title: 'T', body: '', state: 'open', labels: ['mode: afk', 'type: nfr'], pull: false });
   });
 
+  // A fire naming issues reads each on its own and orders them oldest first.
+  test('ticket carries its creation time, where the issue has one', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/12': { number: 12, title: 'T', body: '', state: 'open', labels: [], created_at: '2026-09-12T00:00:00Z' },
+    });
+    assert.equal((await githubReader({ token: 't', repo: 'acme/factory', fetch }).ticket(12)).created_at, '2026-09-12T00:00:00Z');
+  });
+
   test('ticket carries its open blocker count from its dependency summary, where it has one', async () => {
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues/12': { number: 12, title: 'T', body: '', state: 'open', labels: [], issue_dependencies_summary: { blocked_by: 1, total_blocked_by: 2 } },
