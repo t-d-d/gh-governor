@@ -183,7 +183,8 @@ Resources:
   #
   # The task role: what the turn itself may do. The login read and written,
   # the App key and the drop-box writer read, the state table's items, the
-  # fire lane counted and sent to, nothing else; the logs are the execution role's.
+  # fire lane taken from, counted and sent to, a refused fire moved to the
+  # dead-letter queue, nothing else; the logs are the execution role's.
   DispatchRole:
     Type: AWS::IAM::Role
     Properties:
@@ -213,17 +214,31 @@ Resources:
                 Effect: Allow
                 Action: secretsmanager:PutSecretValue
                 Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:governor/claude-login-??????'
+              # The task is the lane's only reader (dispatch/lane.mjs): it
+              # takes each fire and deletes it before the fire's turn.
+              - Sid: TakeTheFires
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                Resource: !GetAtt DispatchFiresQueue.Arn
+              # A fire the task's parser refuses goes to the dead-letter
+              # queue at once, as it came.
+              - Sid: RefuseAFire
+                Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt DispatchFiresDeadQueue.Arn
               # A turn that messaged sessions waits for their replies only
               # while no fire is queued (awaitReplies,
-              # scripts/lib/session-signoff.mjs): it counts the lane
-              # and takes nothing off it.
+              # scripts/lib/session-signoff.mjs): it counts the lane.
               - Sid: CountTheFires
                 Effect: Allow
                 Action: sqs:GetQueueAttributes
                 Resource: !GetAtt DispatchFiresQueue.Arn
               # An issue closing queues one `unblocked` fire for each open
               # ticket it blocked, for the ticket's own repo's turn
-              # (dispatch/unblocked.mjs). It takes nothing off the lane.
+              # (dispatch/unblocked.mjs). The task takes it off the lane
+              # itself, after the turn that queued it.
               - Sid: QueueTheUnblockedFires
                 Effect: Allow
                 Action: sqs:SendMessage
@@ -314,9 +329,9 @@ Resources:
           # grandchildren are never reaped.
           LinuxParameters:
             InitProcessEnabled: true
-          # DISPATCH_EVENT is deliberately absent: every run overrides it
-          # (the schedule rule's Input below; scripts/run-turn.mjs by
-          # hand), so a task started without one refuses to run.
+          # DISPATCH_EVENT is deliberately absent: a task without it reads
+          # the lane (dispatch/lane.mjs), and only a probe sets it
+          # (scripts/run-turn.mjs).
           Environment:
             - Name: CLAUDE_LOGIN_SECRET_ID
               Value: governor/claude-login
@@ -336,10 +351,14 @@ Resources:
               Value: !Ref DispatchStateTable
             - Name: DISPATCH_HOOK_TABLE
               Value: !Ref DispatchHookTable
-            # The fire lane the sign-off wait counts (scripts/lib/session-signoff.mjs),
+            # The fire lane the task takes its fires off (dispatch/lane.mjs),
+            # the sign-off wait counts (scripts/lib/session-signoff.mjs),
             # and a close's unblocked fires go on (dispatch/unblocked.mjs).
             - Name: DISPATCH_FIRES_QUEUE_URL
               Value: !Ref DispatchFiresQueue
+            # Where a fire the task refuses goes.
+            - Name: DISPATCH_FIRES_DEAD_QUEUE_URL
+              Value: !Ref DispatchFiresDeadQueue
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -351,7 +370,8 @@ Resources:
   # The rule invokes the webhook receiver below with the schedule event,
   # rather than running the task itself, so the schedule fire joins the same
   # lane a webhook delivery's does: a task a delivery started at :10 is
-  # still running at :17, and two turns would refresh one login. A receiver
+  # still running at :17, and two turns would refresh one login. The
+  # receiver then calls the starter, as for any fire it queues. A receiver
   # EventBridge could not invoke is retried, inside the lane's five-minute
   # deduplication window, so a retry of a fire the receiver did queue is not
   # a second fire.
@@ -720,7 +740,8 @@ Resources:
 
   # A schedule fire that never reached the receiver logs nothing: EventBridge
   # counts the invocation it could not make on the rule. A task RunTask
-  # refused is the fire lane's to retry, and its dead-letter alarm's to page.
+  # refused leaves its fire on the lane for the backstop, and the lane's
+  # stall alarm pages if it stays.
   DispatchNotStartedAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -744,9 +765,10 @@ Resources:
   # RunTask succeeded, so neither alarm above hears it. ECS says so on
   # the task's STOPPED event; this rule writes that whole event, stoppedReason
   # included, into the task's own log group, one stream per event, for the
-  # operator to read, and hands it to the retrier (below), which puts the
-  # fire the task carried back on the lane; the alarm below counts
-  # the rule's matches. A task that ran its container stops with
+  # operator to read, and hands it to the starter, which starts the next
+  # attempt (dispatch/webhook/starter.mjs). The task never took a fire, so
+  # the fire is still on the lane. The alarm below counts the rule's
+  # matches. A task that ran its container stops with
   # EssentialContainerExited, whatever its exit code: that path is the
   # dispatch-failed filter's.
   DispatchNotRunRule:
@@ -765,11 +787,11 @@ Resources:
       Targets:
         - Id: log
           Arn: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DispatchLogGroup}'
-        - Id: retry
-          Arn: !GetAtt RetrierFunction.Arn
+        - Id: start
+          Arn: !GetAtt StarterFunction.Arn
           RetryPolicy:
             MaximumRetryAttempts: 2
-            MaximumEventAgeInSeconds: 3600
+            MaximumEventAgeInSeconds: 300
 
   # A task that ran leaves only its container's output in /governor, so
   # nothing else records how long it took to start. This rule writes every
@@ -778,9 +800,10 @@ Resources:
   # It matches every stop code but TaskFailedToStart, which the not-run rule
   # writes, so the two rules never both write one event. A value filter
   # matches only a field the event carries, so a stop with no stopCode needs
-  # the exists clause. It only logs: no alarm counts its
-  # matches and the retrier never hears it. Every metric filter on the group
-  # matches a top-level `event` key, which an ECS event lacks.
+  # the exists clause. No alarm counts its matches: every metric filter on
+  # the group matches a top-level `event` key, which an ECS event lacks. It
+  # also calls the starter, so a fire that landed while the task was
+  # exiting, which saw the task still listed, starts the next task.
   DispatchTaskStoppedRule:
     Type: AWS::Events::Rule
     Properties:
@@ -797,6 +820,11 @@ Resources:
       Targets:
         - Id: log
           Arn: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DispatchLogGroup}'
+        - Id: start
+          Arn: !GetAtt StarterFunction.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: 300
 
   # A log-group target takes no role: EventBridge writes on the group's
   # resource policy, both principals, the one group.
@@ -819,16 +847,16 @@ Resources:
 
   # Counted on the rule's own matches, not off the log it writes: a write the
   # group's policy refused would leave this tripwire deaf (it is a
-  # FailedInvocation, which DispatchNotRunUndeliveredAlarm reads). One stop is the retrier's to absorb, so the
-  # threshold is one fire's worth of attempts in the window
-  # (dispatch/webhook/retry.mjs MAX_START_ATTEMPTS): stops the retries are
-  # not beating. The fire that runs out of attempts pages on its own, from
-  # the dead-letter queue.
+  # FailedInvocation, which DispatchNotRunUndeliveredAlarm reads). One stop is the starter's next attempt to absorb, so the
+  # threshold is one chain's worth of attempts in the window
+  # (dispatch/webhook/starter.mjs MAX_START_ATTEMPTS): stops the attempts are
+  # not beating. A chain that runs out of attempts pages on its own
+  # (StarterGaveUpAlarm).
   DispatchNotRunAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-not-run
-      AlarmDescription: '[tripwire] Dispatcher tasks keep stopping without running their container, MAX_START_ATTEMPTS (dispatch/webhook/retry.mjs) or more in fifteen minutes. Read /governor for the ECS Task State Change events the stops logged; detail.stoppedReason says why (an image pull, a placement, an ENI). /aws/lambda/governor-retrier says which fires went back on the lane.'
+      AlarmDescription: '[tripwire] Dispatcher tasks keep stopping without running their container, MAX_START_ATTEMPTS (dispatch/webhook/starter.mjs) or more in fifteen minutes. Read /governor for the ECS Task State Change events the stops logged; detail.stoppedReason says why (an image pull, a placement, an ENI). /aws/lambda/governor-starter says which attempts it started. The fires wait on the lane.'
       Namespace: AWS/Events
       MetricName: TriggeredRules
       Dimensions:
@@ -842,100 +870,15 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertsTopic]
 
-  # ── The retrier ────────────────────────────────────────────────────────────
-  # The starter is done with a fire once RunTask succeeds, so a task that
-  # then failed to start dropped its fire. The not-run rule hands
-  # the stop event here: the fire rides the container override, the attempt
-  # rides the task's startedBy, and the retrier puts the fire back on the
-  # lane until it has had its attempts, then on the dead-letter queue, whose
-  # tripwire pages (dispatch/webhook/retry.mjs).
-  RetrierLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: /aws/lambda/governor-retrier
-      RetentionInDays: 30
-
-  # What the retrier may do: queue a fire on the lane or its dead-letter
-  # queue. It starts nothing: the starter does.
-  RetrierRole:
-    Type: AWS::IAM::Role
-    Properties:
-      Description: The fire retrier's execution role
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: retry
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: QueueAFire
-                Effect: Allow
-                Action: sqs:SendMessage
-                Resource:
-                  - !GetAtt DispatchFiresQueue.Arn
-                  - !GetAtt DispatchFiresDeadQueue.Arn
-              - Sid: Logs
-                Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !GetAtt RetrierLogGroup.Arn
-
-  RetrierFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: governor-retrier
-      Description: Puts back on the lane the fire of a dispatcher task that failed to start
-      Runtime: nodejs22.x
-      Architectures: [arm64]
-      Handler: retry-handler.handler
-      Code: ../dispatch/webhook/
-      Role: !GetAtt RetrierRole.Arn
-      MemorySize: 256
-      # One SQS call.
-      Timeout: 20
-      LoggingConfig:
-        LogFormat: JSON
-        LogGroup: !Ref RetrierLogGroup
-      Environment:
-        Variables:
-          FIRES_QUEUE_URL: !Ref DispatchFiresQueue
-          DEAD_QUEUE_URL: !Ref DispatchFiresDeadQueue
-
-  RetrierPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref RetrierFunction
-      Action: lambda:InvokeFunction
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt DispatchNotRunRule.Arn
-
-  # The rule's RetryPolicy covers EventBridge's delivery alone; a retrier
-  # that throws is retried by Lambda, a minute then two minutes later. The
-  # age bound keeps both retries inside the lane's five-minute deduplication
-  # window, so a retry of a send the lane took is not a second fire.
-  RetrierInvokeConfig:
-    Type: AWS::Lambda::EventInvokeConfig
-    Properties:
-      FunctionName: !Ref RetrierFunction
-      Qualifier: $LATEST
-      MaximumRetryAttempts: 2
-      MaximumEventAgeInSeconds: 300
-
-  # A stop event EventBridge could not hand the retrier (a throttle past the
-  # rule's retries, a permission gone) is a fire lost, and one stop is below
-  # the not-run alarm's threshold. A log write the group's policy refused
-  # counts here too.
+  # A stop event EventBridge could not hand the starter or the log group (a
+  # throttle past the rule's retries, a permission gone) loses the stop's
+  # record. The fire is not lost: it is on the lane, and the backstop
+  # starts its task within a minute.
   DispatchNotRunUndeliveredAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-not-run-undelivered
-      AlarmDescription: '[tripwire] EventBridge could not deliver a dispatcher task''s stop event to the retrier or the log group, so its fire may be lost. Read the governor-not-run rule''s failed invocations, then re-fire by hand: node scripts/run-turn.mjs.'
+      AlarmDescription: '[tripwire] EventBridge could not deliver a dispatcher task''s stop event to the starter or the log group. Read the governor-not-run rule''s failed invocations. The fire waits on the lane, and the backstop starts its task within a minute; the stop''s record in /governor may be missing.'
       Namespace: AWS/Events
       MetricName: FailedInvocations
       Dimensions:
@@ -949,34 +892,13 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertsTopic]
 
-  # A retrier that throws has lost the fire the stop carried, once Lambda's
-  # async retries are spent (RetrierInvokeConfig): a lane that refused the
-  # send, a starter task with no fire on it.
-  RetrierErrorsAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: governor-retrier-errors
-      AlarmDescription: '[tripwire] The retrier threw on a dispatcher task that failed to start, so its fire may be lost. Read /aws/lambda/governor-retrier for the retry-failed line, then re-fire by hand: node scripts/run-turn.mjs.'
-      Namespace: AWS/Lambda
-      MetricName: Errors
-      Dimensions:
-        - Name: FunctionName
-          Value: !Ref RetrierFunction
-      Statistic: Sum
-      Period: 900
-      EvaluationPeriods: 1
-      Threshold: 1
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      AlarmActions: [!Ref AlertsTopic]
-
   # ── The webhook receiver ───────────────────────────────────────────────────
   # GitHub posts the repository's issue, comment and review events here. An
   # issue labelled ready queues a schedule fire naming it, which the task
   # dispatches if the selection would; a mention of @claude by someone with
   # a say in the repository queues a dispatch fire with a prompt of its own
-  # (dispatch/webhook/route.mjs, mention.mjs). The receiver starts nothing:
-  # the fire lane below does, one task at a time.
+  # (dispatch/webhook/route.mjs, mention.mjs). The receiver starts nothing
+  # itself: it calls the starter below once it has queued a request's fires.
   # The Function URL is unsigned by necessity, since GitHub cannot sign
   # SigV4; what keeps anyone else from queueing fires is the HMAC over every
   # body, keyed by the secret below, which the deploy workflow writes into
@@ -1018,8 +940,8 @@ Resources:
       RetentionInDays: 30
 
   # What the receiver may do: read its two keys and the hook table, queue a
-  # fire. Nothing else: the
-  # starter below is the one thing that starts a task.
+  # fire, call the starter. Nothing else: the starter below is the one
+  # thing that starts a task.
   WebhookRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1046,6 +968,11 @@ Resources:
                 Effect: Allow
                 Action: sqs:SendMessage
                 Resource: !GetAtt DispatchFiresQueue.Arn
+              # Once a request has queued its fires (dispatch/webhook/poke.mjs).
+              - Sid: CallTheStarter
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt StarterFunction.Arn
               # A repo's listed hooks, read before a hook fire is queued, and
               # each hook's count of fires this hour, raised under its cap.
               # Nothing on the state table: the receiver faces the internet.
@@ -1089,6 +1016,7 @@ Resources:
           DISPATCH_OWNERS: !Ref DispatchOwners
           SELECT_LABELS: !Ref SelectLabels
           FIRES_QUEUE_URL: !Ref DispatchFiresQueue
+          STARTER_FUNCTION: !Ref StarterFunction
           APP_ID: !Ref GitHubAppId
 
   WebhookUrl:
@@ -1134,40 +1062,37 @@ Resources:
       MaximumEventAgeInSeconds: 300
 
   # ── The fire lane ──────────────────────────────────────────────────────────
-  # Every fire, the schedule's and a delivery's, waits its turn here, and
-  # the starter drains the lane one task at a time: a dispatcher turn
-  # refreshes the stored login, and two turns refreshing one login leave
-  # one of them dead. FIFO with one message group is what serialises the
-  # fires; a delivery's id is its deduplication id, so a redelivery is not
-  # a second fire, and the schedule's identical body deduplicates itself
-  # within the five-minute window. A fire that finds a task running is
-  # handed straight back (dispatch/webhook/starter.mjs), as is one that
-  # fails: the queue re-offers it in seconds, and the attempts outlast a
-  # whole task and its provisioning (dispatch/cli.mjs DEADLINE_MS, eighteen
-  # minutes) before the fire is dead-lettered and the tripwire pages.
+  # Every fire, the schedule's and a delivery's, waits its turn here, and the
+  # dispatcher task is its only reader: it takes the head fire, deletes it,
+  # and runs it as its own turn, until the lane stays empty
+  # (dispatch/lane.mjs). One task at a time is the starter's to keep, and one
+  # turn at a time the task's: a dispatcher turn refreshes the stored login,
+  # and two turns refreshing one login leave one of them dead. FIFO with one
+  # message group keeps the fires in order; a delivery's id is its
+  # deduplication id, so a redelivery is not a second fire, and the
+  # schedule's identical body deduplicates itself within the five-minute
+  # window.
   DispatchFiresQueue:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: governor-fires.fifo
       FifoQueue: true
       ContentBasedDeduplication: true
-      # How long an invocation may hold a fire before the lane offers it
-      # again: twice the starter's Timeout below, since a fire handed to a
-      # second invocation while the first still holds it would be two
-      # tasks. Not the pace: a deferred fire is asked back sooner by the
-      # starter (dispatch/webhook/starter.mjs DEFER_SECONDS), and this is
-      # what a refused ask costs it.
-      VisibilityTimeout: 60
+      # How long a received fire stays hidden before the lane offers it
+      # again. The task deletes a fire as it takes it, so this only matters
+      # for a task that died between the two, or a delete that failed; the
+      # lane's one group waits behind it meanwhile.
+      VisibilityTimeout: 30
       # A fire a day old is stale: the schedule has fired since, and a
       # mention's author has long since looked.
       MessageRetentionPeriod: 86400
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt DispatchFiresDeadQueue.Arn
-        # Half an hour of re-offers at the starter's ten-second pace: a
-        # task's deadline, its provisioning, and a margin. A fire that fails
-        # is re-offered at the same pace, so this is also how long a
-        # persistent failure holds the lane before the tripwire.
-        maxReceiveCount: 180
+        # One reader deletes each fire as it takes it, so a fire received
+        # this often without a delete is one whose task dies every time
+        # between the two. It goes to the dead-letter queue rather than
+        # hold the lane.
+        maxReceiveCount: 5
 
   DispatchFiresDeadQueue:
     Type: AWS::SQS::Queue
@@ -1182,9 +1107,9 @@ Resources:
       LogGroupName: /aws/lambda/governor-starter
       RetentionInDays: 30
 
-  # What the starter may do: consume the lane, see whether a dispatcher task
-  # is running, start one. Every task start, the schedule's included, is
-  # this role's.
+  # What the starter may do: count the lane, see whether a dispatcher task
+  # is running, start one. Every task start is this role's. It takes
+  # nothing off the lane: the task does.
   StarterRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1201,15 +1126,9 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Sid: ConsumeTheLane
+              - Sid: CountTheLane
                 Effect: Allow
-                Action:
-                  - sqs:ReceiveMessage
-                  - sqs:DeleteMessage
-                  - sqs:GetQueueAttributes
-                  # A deferred fire is asked back in seconds, not the minute
-                  # the queue would take.
-                  - sqs:ChangeMessageVisibility
+                Action: sqs:GetQueueAttributes
                 Resource: !GetAtt DispatchFiresQueue.Arn
               # ListTasks takes no resource; the cluster condition keeps it
               # to this one.
@@ -1247,7 +1166,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: governor-starter
-      Description: Starts one dispatcher task per fire off the lane, never beside a running one
+      Description: Starts a dispatcher task when a fire waits on the lane and none runs
       Runtime: nodejs22.x
       Architectures: [arm64]
       Handler: starter-handler.handler
@@ -1256,6 +1175,9 @@ Resources:
       MemorySize: 256
       # Two ECS calls and an SQS call; the starter never waits.
       Timeout: 30
+      # One call at a time, so two calls never both see no task and both
+      # start one.
+      ReservedConcurrentExecutions: 1
       LoggingConfig:
         LogFormat: JSON
         LogGroup: !Ref StarterLogGroup
@@ -1263,35 +1185,121 @@ Resources:
         Variables:
           CLUSTER: !Ref DispatchCluster
           TASK_FAMILY: governor
-          CONTAINER_NAME: dispatch
           SUBNET_IDS: !Join [',', !Ref SubnetIds]
-          # For the re-offer: a receipt handle is changed on its queue's URL.
+          # Counted: is a fire waiting?
           FIRES_QUEUE_URL: !Ref DispatchFiresQueue
 
-  # One message per invocation. Two is the smallest concurrency the event
-  # source takes; the single message group is what keeps the fires serial.
-  StarterLane:
-    Type: AWS::Lambda::EventSourceMapping
+  # Every call reaches the starter asynchronously: the receiver's, both stop
+  # rules' and the backstop's. A call held back past a minute is stale: the
+  # backstop has called since. The starter throws nothing, so no retry is
+  # for a function error.
+  StarterInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
     Properties:
-      EventSourceArn: !GetAtt DispatchFiresQueue.Arn
       FunctionName: !Ref StarterFunction
-      BatchSize: 1
-      ScalingConfig:
-        MaximumConcurrency: 2
-      # A deferred or failed fire leaves as a batch item failure, not a
-      # throw, so neither counts toward the account-wide Errors safety net.
-      FunctionResponseTypes: [ReportBatchItemFailures]
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 0
+      MaximumEventAgeInSeconds: 60
 
-  # A fire that failed every attempt: RunTask refused it each time, a task
-  # ran for the whole half hour, or every task it started failed to start
-  # (the retrier sends it here). The starter logs a failure (fire-failed)
-  # and hands the fire back rather than throwing, so the lane retries it at
-  # the deferral's pace; this is where it ends.
+  # The backstop: a poke or a stop event that never arrived, or a fire
+  # queued with no poke (a by-hand fire, a turn's), starts within a minute.
+  # The starter logs only when it starts a task, since that means a faster
+  # path missed.
+  StarterBackstopRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: governor-starter-backstop
+      Description: Calls the starter every minute, in case a faster call missed a fire
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Targets:
+        - Id: start
+          Arn: !GetAtt StarterFunction.Arn
+          Input: '{"caller":"backstop"}'
+
+  StarterBackstopPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StarterFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt StarterBackstopRule.Arn
+
+  StarterNotRunPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StarterFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DispatchNotRunRule.Arn
+
+  StarterTaskStoppedPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StarterFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DispatchTaskStoppedRule.Arn
+
+  # A chain of tasks that each failed to start, MAX_START_ATTEMPTS of them
+  # (dispatch/webhook/starter.mjs): the starter gives up on the chain and
+  # logs `start-gave-up`. Each line is one object, which Lambda's JSON log
+  # format nests under `message`.
+  StarterGaveUpFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref StarterLogGroup
+      FilterPattern: '{ $.message.event = "start-gave-up" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: StartsGivenUp
+          MetricValue: '1'
+          DefaultValue: 0
+
+  StarterGaveUpAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-start-gave-up
+      AlarmDescription: '[tripwire] Dispatcher tasks failed to start MAX_START_ATTEMPTS (dispatch/webhook/starter.mjs) times in a row, so the starter gave up on them. Read /aws/lambda/governor-starter for the start-gave-up line, and /governor for the stops'' stoppedReason. The fires wait on the lane; the next poke or the backstop tries again.'
+      Namespace: governor
+      MetricName: StartsGivenUp
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # Every way the lane can stall shows as its oldest fire growing old:
+  # RunTask refused at every call, a starter that cannot list or count, a
+  # task that takes nothing. A burst waits its turns, so the threshold sits
+  # well past one turn's deadline (dispatch/cli.mjs DEADLINE_MS).
+  DispatchLaneStalledAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-lane-stalled
+      AlarmDescription: '[tripwire] A fire has waited on governor-fires.fifo for 45 minutes. Read /aws/lambda/governor-starter for start-failed lines, and /governor for the running task''s fire-taken and dispatch lines.'
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DispatchFiresQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2700
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # A fire the task refused (dispatch/lane.mjs fire-refused), or one the
+  # lane offered maxReceiveCount times without a delete.
   DispatchFiresDeadAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-fires-dead
-      AlarmDescription: '[tripwire] A fire failed every attempt to start a dispatcher task and sits in governor-fires-dead.fifo. Read /aws/lambda/governor-starter for why, or /aws/lambda/governor-retrier (fire-gave-up) for a fire whose tasks failed to start, then redrive the dead-letter queue or purge it.'
+      AlarmDescription: '[tripwire] A fire sits in governor-fires-dead.fifo: the dispatcher task refused it, or took it so often without deleting it that the lane gave up. Read /governor for the fire-refused or fire-untaken line naming its message id; the message''s reason attribute says why it was refused. Redrive the dead-letter queue once it is mended, or purge it.'
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions:
@@ -1330,7 +1338,7 @@ Resources:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Outputs — what scripts/run-turn.mjs reads to start a probe, or queue
-# a fire and find the task the starter started for it
+# a fire and find the turn a task ran it in
 # ─────────────────────────────────────────────────────────────────────────────
 Outputs:
   ClusterName:
@@ -1347,8 +1355,6 @@ Outputs:
     Value: task
   FiresQueueUrl:
     Value: !Ref DispatchFiresQueue
-  StarterLogGroupName:
-    Value: !Ref StarterLogGroup
 
   WebhookUrl:
     Description: The App webhook's Payload URL, which the deploy writes (scripts/point-app-webhook.mjs).

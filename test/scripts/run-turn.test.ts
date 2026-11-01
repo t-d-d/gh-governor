@@ -7,7 +7,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { OUTPUT_KEYS, START_BUDGET_MS, WAIT_ROUNDS, WAITER_BUDGET_MS, eventFor, overridesFor, parseArgs, runTask } from '../../scripts/run-turn.mjs';
+import { OUTPUT_KEYS, START_BUDGET_MS, TURN_BUDGET_MS, WAIT_ROUNDS, WAITER_BUDGET_MS, eventFor, overridesFor, parseArgs, runTask } from '../../scripts/run-turn.mjs';
 import { DEADLINE_MS } from '../../dispatch/cli.mjs';
 import { LANE } from '../../dispatch/webhook/fire.mjs';
 
@@ -19,11 +19,11 @@ const OUTPUTS = [
   { OutputKey: OUTPUT_KEYS.logGroup, OutputValue: '/governor' },
   { OutputKey: OUTPUT_KEYS.logStreamPrefix, OutputValue: 'task' },
   { OutputKey: OUTPUT_KEYS.firesQueueUrl, OutputValue: 'https://sqs.us-east-1.amazonaws.com/123456789012/governor-fires.fifo' },
-  { OutputKey: OUTPUT_KEYS.starterLogGroup, OutputValue: '/aws/lambda/governor-starter' },
 ];
 const NONCE = 'by-hand-0f1e2d';
 const MESSAGE_ID = 'a1b2c3d4-message';
 const TASK_ARN = 'arn:aws:ecs:us-east-1:123456789012:task/governor/0123456789abcdef';
+const STREAM = 'task/dispatch/0123456789abcdef';
 
 type Answer = string | ((argv: string[]) => string);
 
@@ -51,20 +51,21 @@ const happy = (exitCode = 0) => ({
   'ecs describe-tasks': stopped(exitCode),
   'logs get-log-events': JSON.stringify({ events: [{ message: '{"event":"dispatch-result","kind":"probe","ok":true}' }] }),
   'sqs send-message': JSON.stringify({ MessageId: MESSAGE_ID }),
-  'logs filter-log-events': (argv: string[]) => starterSaw(argv, [{ event: 'fire-started', kind: 'schedule', taskArn: TASK_ARN }]),
+  'logs filter-log-events': (argv: string[]) => taskSaw(argv, [taken(1000), ended(9000, 0)]),
 });
 
+/** The task's line for the fire it took, and its turn's result (dispatch/lane.mjs, dispatch/cli.mjs). */
+const taken = (at: number, messageId = MESSAGE_ID) => ({ at, line: { event: 'fire-taken', messageId, kind: 'schedule', reason: `by hand ${NONCE}` } });
+const ended = (at: number, exitCode: number, messageId = MESSAGE_ID) => ({ at, line: { event: exitCode === 0 ? 'dispatch-result' : 'dispatch-failed', kind: 'schedule', messageId, exitCode } });
+
 /**
- * The starter's log as filter-log-events returns it: each line a Lambda
- * JSON-format record whose message is the starter's own JSON, carrying the
- * reason of the fire it was handling (dispatch/webhook/starter.mjs).
+ * The task's log as filter-log-events returns it: each line the task's own
+ * JSON, in the task's own stream.
  */
-const starterSaw = (argv: string[], lines: Array<Record<string, unknown>>, reason = `by hand ${NONCE}`, at = 0) => {
-  assert.equal(argv[argv.indexOf('--log-group-name') + 1], '/aws/lambda/governor-starter');
-  assert.ok(argv[argv.indexOf('--filter-pattern') + 1]?.includes(NONCE), 'the search is not narrowed to this fire');
-  return JSON.stringify({
-    events: lines.map((line) => ({ timestamp: at, message: JSON.stringify({ level: 'INFO', message: JSON.stringify({ ...line, reason }) }) })),
-  });
+const taskSaw = (argv: string[], lines: Array<{ at: number; line: Record<string, unknown> }>, stream = STREAM) => {
+  assert.equal(argv[argv.indexOf('--log-group-name') + 1], '/governor');
+  assert.ok(argv[argv.indexOf('--filter-pattern') + 1]?.includes(MESSAGE_ID), 'the search is not narrowed to this fire');
+  return JSON.stringify({ events: lines.map(({ at, line }) => ({ timestamp: at, logStreamName: stream, message: JSON.stringify(line) })) });
 };
 
 /** The io a lane fire needs beyond the aws CLI: a fixed nonce and a sleep that costs nothing. */
@@ -268,12 +269,13 @@ describe('runTask', () => {
  * lane like any other, and tails the task the starter started for it.
  */
 describe('runTask — a fire or a dispatch goes through the lane', () => {
-  test('queues the fire on the lane, starts nothing itself, and tails the task the starter started for it', async () => {
-    const { aws, calls } = fakeAws(happy(0));
+  test('queues the fire on the lane, starts nothing itself, and tails the turn the task ran it in', async () => {
+    const { aws, calls } = fakeAws(happy());
     const { lines, log } = collect();
     const io = laneIo();
     assert.equal(await runTask({ args: parseArgs(['--kind', 'dispatch', '--repo', 'acme/factory', '--prompt', 'hi', '--session-name', 'S']), aws, log, ...io }), 0);
     assert.ok(!calls.some((c) => c[1] === 'run-task'), 'a by-hand fire started a task outside the lane');
+    assert.ok(!calls.some((c) => c[0] === 'lambda'), 'a by-hand fire calls no starter: the backstop starts its task');
 
     const send = calls.find((c) => c[0] === 'sqs' && c[1] === 'send-message')!;
     assert.equal(send[send.indexOf('--queue-url') + 1], 'https://sqs.us-east-1.amazonaws.com/123456789012/governor-fires.fifo');
@@ -285,74 +287,66 @@ describe('runTask — a fire or a dispatch goes through the lane', () => {
 
     const order = calls.map((c) => c[1]);
     assert.ok(order.indexOf('send-message') < order.indexOf('filter-log-events'), order.join(' > '));
-    const wait = calls.find((c) => c[1] === 'wait')!;
-    assert.ok(wait.includes(TASK_ARN), 'waited on something other than the task the starter started');
+    assert.ok(!calls.some((c) => c[1] === 'wait'), 'a task runs many turns: the turn ends at its result line, not the task\'s stop');
+    // The task's stream, from the fire it took to its turn's result: the
+    // turns before and after it are other fires'.
     const tail = calls.find((c) => c[1] === 'get-log-events')!;
-    assert.equal(tail[tail.indexOf('--log-stream-name') + 1], 'task/dispatch/0123456789abcdef');
+    assert.equal(tail[tail.indexOf('--log-stream-name') + 1], STREAM);
+    assert.equal(tail[tail.indexOf('--start-time') + 1], '1000');
+    assert.equal(tail[tail.indexOf('--end-time') + 1], '9001');
     assert.ok(lines.some((l) => l.includes(MESSAGE_ID)), lines.join('\n'));
     assert.ok(lines.some((l) => /"event":"dispatch-result"/.test(l)), lines.join('\n'));
   });
 
-  test('waits while the starter defers the fire, and takes only its own fire-started line', async () => {
-    let polls = 0;
-    const other = 'arn:aws:ecs:us-east-1:123456789012:task/governor/fedcba9876543210';
-    const { aws, calls } = fakeAws({
-      ...happy(),
-      'logs filter-log-events': (argv: string[]) => {
-        polls += 1;
-        if (polls === 1) return starterSaw(argv, []);
-        if (polls === 2) {
-          return JSON.stringify({
-            events: [
-              JSON.parse(starterSaw(argv, [{ event: 'fire-deferred', kind: 'schedule', running: [other] }])).events[0],
-              JSON.parse(starterSaw(argv, [{ event: 'fire-started', kind: 'schedule', taskArn: other }], 'by hand someone-else')).events[0],
-            ],
-          });
-        }
-        return starterSaw(argv, [{ event: 'fire-deferred', kind: 'schedule', running: [other] }, { event: 'fire-started', kind: 'schedule', taskArn: TASK_ARN }]);
-      },
-    });
-    const { log } = collect();
-    const io = laneIo();
-    assert.equal(await runTask({ args: parseArgs(['--kind', 'schedule']), aws, log, ...io }), 0);
-    assert.equal(polls, 3);
-    assert.equal(io.slept.length, 2);
-    assert.ok(calls.filter((c) => c[1] === 'wait').every((c) => c.includes(TASK_ARN) && !c.includes(other)));
+  test('exits with the turn\'s own exit code', async () => {
+    const { aws } = fakeAws({ ...happy(), 'logs filter-log-events': (argv: string[]) => taskSaw(argv, [taken(1000), ended(9000, 1)]) });
+    const { lines, log } = collect();
+    assert.equal(await runTask({ args: parseArgs(['--kind', 'schedule']), aws, log, ...laneIo() }), 1);
+    assert.ok(lines.includes('Exit 1'), lines.join('\n'));
   });
 
-  /**
-   * The lane is FIFO in one group, so a fire queued behind another is not
-   * offered until that one leaves, up to the lane's whole window later; its
-   * own half hour of re-offers starts at its first offer, not at the send.
-   */
-  test('a fire queued behind another gets the lane\'s whole window from its own first offer, and says what defers it', async () => {
-    const other = 'arn:aws:ecs:us-east-1:123456789012:task/governor/fedcba9876543210';
-    const firstOffer = 32 * 60 * 1000;
-    const io = laneIo();
+  test('waits while fires ahead of it run, and reads only its own message\'s lines', async () => {
+    let polls = 0;
     const { aws } = fakeAws({
       ...happy(),
       'logs filter-log-events': (argv: string[]) => {
-        const t = io.now();
-        if (t < firstOffer) return starterSaw(argv, []);
-        const deferred = JSON.parse(starterSaw(argv, [{ event: 'fire-deferred', kind: 'schedule', running: [other] }], undefined, firstOffer)).events;
-        if (t < 50 * 60 * 1000) return JSON.stringify({ events: deferred });
-        const started = JSON.parse(starterSaw(argv, [{ event: 'fire-started', kind: 'schedule', taskArn: TASK_ARN }], undefined, t)).events;
-        return JSON.stringify({ events: [...deferred, ...started] });
+        polls += 1;
+        if (polls === 1) return taskSaw(argv, []);
+        if (polls === 2) return taskSaw(argv, [taken(500, 'another-message'), ended(800, 1, 'another-message')]);
+        if (polls === 3) return taskSaw(argv, [taken(1000)]);
+        return taskSaw(argv, [taken(1000), ended(9000, 0)]);
       },
     });
     const { lines, log } = collect();
+    const io = laneIo();
     assert.equal(await runTask({ args: parseArgs(['--kind', 'schedule']), aws, log, ...io }), 0, lines.join('\n'));
-    assert.equal(lines.filter((l) => l.includes(other)).length, 1, lines.join('\n'));
+    assert.equal(polls, 4);
+    assert.equal(io.slept.length, 3);
+    assert.equal(lines.filter((l) => l.startsWith('A task took it')).length, 1, lines.join('\n'));
   });
 
-  test('a fire the starter never started in the lane\'s whole retry window is a failure that names the dead-letter queue', async () => {
-    const { aws, calls } = fakeAws({ ...happy(), 'logs filter-log-events': (argv: string[]) => starterSaw(argv, []) });
+  test('a fire no task took in the whole budget is a failure that names where to look', async () => {
+    const { aws, calls } = fakeAws({ ...happy(), 'logs filter-log-events': (argv: string[]) => taskSaw(argv, []) });
     const { lines, log } = collect();
     const io = laneIo();
     assert.equal(await runTask({ args: parseArgs(['--kind', 'schedule']), aws, log, ...io }), 1);
     assert.ok(io.now() >= START_BUDGET_MS);
-    assert.ok(!calls.some((c) => c[1] === 'wait'));
-    assert.ok(lines.some((l) => /governor-fires-dead\.fifo/.test(l)), lines.join('\n'));
+    assert.ok(!calls.some((c) => c[1] === 'get-log-events'));
+    assert.ok(lines.some((l) => /governor-starter/.test(l) && /governor-fires-dead\.fifo/.test(l)), lines.join('\n'));
+  });
+
+  test('a turn that logged no result past its deadline is a failure that names its stream', async () => {
+    const { aws } = fakeAws({ ...happy(), 'logs filter-log-events': (argv: string[]) => taskSaw(argv, [taken(1000)]) });
+    const { lines, log } = collect();
+    const io = laneIo();
+    assert.equal(await runTask({ args: parseArgs(['--kind', 'schedule']), aws, log, ...io }), 1);
+    assert.ok(io.now() >= TURN_BUDGET_MS);
+    assert.ok(io.now() < START_BUDGET_MS, 'once taken, the turn has its own budget');
+    assert.ok(lines.some((l) => l.includes(STREAM) && /no result/.test(l)), lines.join('\n'));
+  });
+
+  test('the turn\'s budget outlasts its deadline', () => {
+    assert.ok(TURN_BUDGET_MS > DEADLINE_MS);
   });
 
   test('--no-wait queues the fire, names the message, and returns', async () => {

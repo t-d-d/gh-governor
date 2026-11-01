@@ -1075,8 +1075,8 @@ describe('run — a schedule fire for a closed issue', () => {
     assert.match(String(line?.reason), /no open ticket/);
   });
 
-  // A failed turn is not tried again (dispatch/webhook/retry.mjs retries
-  // only a task that never ran), so one refusal must not cost the rest.
+  // A failed turn is not tried again (dispatch/lane.mjs deletes a fire as
+  // it takes it), so one refusal must not cost the rest.
   test('a fire the lane refuses is logged at error by its ticket, the rest still go, and the turn exits 1', async () => {
     let calls = 0;
     const h = closing({ blocking: [{ repo: REPO, number: 7 }, { repo: REPO, number: 8 }, { repo: REPO, number: 9 }] });

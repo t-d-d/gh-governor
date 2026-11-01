@@ -29,8 +29,7 @@ import { importClosure, relativeImports } from './helpers/imports.ts';
 import { OUTPUT_KEYS, START_BUDGET_MS } from '../scripts/run-turn.mjs';
 import { DEADLINE_MS } from '../dispatch/cli.mjs';
 import { SESSION_UNRECORDED, STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
-import { DEFER_SECONDS } from '../dispatch/webhook/starter.mjs';
-import { MAX_START_ATTEMPTS } from '../dispatch/webhook/retry.mjs';
+import { MAX_START_ATTEMPTS } from '../dispatch/webhook/starter.mjs';
 import { HOOK_EVENTS } from '../dispatch/webhook/route.mjs';
 import { HOOK_KEY_STALE } from '../dispatch/webhook/hook-table.mjs';
 
@@ -65,7 +64,7 @@ const DISPATCH_LOG_TARGET = `arn:aws:logs:us-east-1:${ACCOUNT}:log-group:\${Disp
 
 
 describe('infra/governor.cfn.yml — the task', () => {
-  test('is a Fargate task on arm64 running the image the workflow resolves; the only Lambda is the webhook receiver', () => {
+  test('is a Fargate task on arm64 running the image the workflow resolves; the Lambdas are the receiver and the starter', () => {
     assert.equal(taskDefinition?.Type, 'AWS::ECS::TaskDefinition');
     assert.deepEqual(taskDefinition?.Properties?.RequiresCompatibilities, ['FARGATE']);
     assert.equal(taskDefinition?.Properties?.NetworkMode, 'awsvpc');
@@ -73,12 +72,11 @@ describe('infra/governor.cfn.yml — the task', () => {
     assert.equal(taskDefinition?.Properties?.Family, 'governor');
     assert.equal(container?.Image, '${ImageUri}');
     assert.equal(template.Resources.DispatchCluster?.Type, 'AWS::ECS::Cluster');
-    // A Lambda has no pseudo-terminal devices (run 36132993403): the turn
-    // runs as a task, and the Lambdas here are the webhook receiver, the
-    // starter that drains its lane, and the retrier that puts back a fire
-    // whose task failed to start.
+    // A Lambda has no pseudo-terminal devices: the turn runs as a task, and
+    // the Lambdas here are the webhook receiver and the starter that starts
+    // the task. The task takes its own fires off the lane.
     const lambdas = Object.entries(template.Resources).filter(([, r]) => r.Type === 'AWS::Lambda::Function').map(([id]) => id);
-    assert.deepEqual(lambdas.sort(), ['RetrierFunction', 'StarterFunction', 'WebhookFunction']);
+    assert.deepEqual(lambdas.sort(), ['StarterFunction', 'WebhookFunction']);
   });
 
   /**
@@ -112,7 +110,7 @@ describe('infra/governor.cfn.yml — the task', () => {
     for (const name of env.keys()) {
       assert.doesNotMatch(name, /TOKEN|KEY$|PASSWORD|LOGIN_JSON/, `${name} puts a credential in the environment`);
     }
-    assert.ok(!env.has('DISPATCH_EVENT'), 'the event is what each run overrides, never a fixed value');
+    assert.ok(!env.has('DISPATCH_EVENT'), 'a task without the event reads the lane; only a probe sets it');
   });
 
   // The PR review's transcripts go to the drop box under a writer of
@@ -139,8 +137,8 @@ describe('infra/governor.cfn.yml — the task', () => {
     }
     assert.equal(template.Outputs?.[OUTPUT_KEYS.container]?.Value, container?.Name);
     assert.equal(template.Outputs?.[OUTPUT_KEYS.logStreamPrefix]?.Value, container?.LogConfiguration?.Options?.['awslogs-stream-prefix']);
-    assert.equal(template.Outputs?.[OUTPUT_KEYS.firesQueueUrl]?.Value, '${DispatchFiresQueue}', 'a by-hand fire queues on the lane the starter drains');
-    assert.equal(template.Outputs?.[OUTPUT_KEYS.starterLogGroup]?.Value, '${StarterLogGroup}', 'a by-hand fire finds its task in the starter\'s log');
+    assert.equal(template.Outputs?.[OUTPUT_KEYS.firesQueueUrl]?.Value, '${DispatchFiresQueue}', 'a by-hand fire queues on the lane the task reads');
+    assert.equal(template.Outputs?.[OUTPUT_KEYS.logGroup]?.Value, '${DispatchLogGroup}', 'a by-hand fire finds its turn by the task\'s line for it');
   });
 });
 
@@ -218,29 +216,34 @@ describe('infra/governor.cfn.yml — the grants', () => {
   const webhookStatements = inlinePolicyStatements(template, 'WebhookRole');
 
   test('every role holds its policy inline, where this test can read all of it', () => {
-    for (const id of ['DispatchRole', 'DispatchExecutionRole', 'WebhookRole', 'StarterRole', 'RetrierRole']) {
+    for (const id of ['DispatchRole', 'DispatchExecutionRole', 'WebhookRole', 'StarterRole']) {
       assert.equal(template.Resources[id]?.Properties?.ManagedPolicyArns, undefined, `${id} attaches a managed policy`);
       assert.ok(inlinePolicyStatements(template, id).length > 0, `no inline statements on ${id}`);
     }
   });
 
-  // The sign-off sweep waits for replies only while no fire is queued
-  // (scripts/lib/session-signoff.mjs): it counts the lane. A close queues
-  // an `unblocked` fire per ticket it blocked (dispatch/unblocked.mjs). It
-  // takes nothing off the lane.
-  test('the task counts the fire lane and sends to it, and does nothing else to it', () => {
+  // The task is the lane's only reader (dispatch/lane.mjs): it takes each
+  // fire and deletes it. The sign-off sweep waits for replies only while no
+  // fire is queued (scripts/lib/session-signoff.mjs): it counts the lane. A
+  // close queues an `unblocked` fire per ticket it blocked
+  // (dispatch/unblocked.mjs). A fire the task refuses goes to the
+  // dead-letter queue, which it may only send to.
+  test('the task takes fires off the lane, counts it and sends to it, and only sends to its dead-letter queue', () => {
     const sqs = taskStatements.filter((s) => actionsOf(s).some((a) => a.startsWith('sqs:')));
-    assert.deepEqual(sqs.flatMap(actionsOf).sort(), ['sqs:GetQueueAttributes', 'sqs:SendMessage']);
-    for (const statement of sqs) assert.deepEqual(resourcesOf(statement), ['${DispatchFiresQueue.Arn}']);
+    const on = (arn: string) => sqs.filter((s) => resourcesOf(s).includes(arn)).flatMap(actionsOf).sort();
+    assert.deepEqual(on('${DispatchFiresQueue.Arn}'), ['sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:ReceiveMessage', 'sqs:SendMessage']);
+    assert.deepEqual(on('${DispatchFiresDeadQueue.Arn}'), ['sqs:SendMessage']);
+    for (const statement of sqs) assert.equal(resourcesOf(statement).length, 1, `${sidOf(statement)} names more than one queue`);
     const container = template.Resources.DispatchTaskDefinition?.Properties?.ContainerDefinitions?.[0];
     const env = new Map<string, unknown>((container?.Environment ?? []).map((e: { Name: string; Value: unknown }) => [e.Name, e.Value]));
     assert.equal(env.get('DISPATCH_FIRES_QUEUE_URL'), '${DispatchFiresQueue}');
+    assert.equal(env.get('DISPATCH_FIRES_DEAD_QUEUE_URL'), '${DispatchFiresDeadQueue}');
   });
 
   test('the task reads its three secrets, writes the login alone, and nothing else', () => {
     assert.deepEqual(
       [...new Set(taskStatements.flatMap(actionsOf))].sort(),
-      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'secretsmanager:GetSecretValue', 'secretsmanager:PutSecretValue', 'sqs:GetQueueAttributes', 'sqs:SendMessage'],
+      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'secretsmanager:GetSecretValue', 'secretsmanager:PutSecretValue', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:ReceiveMessage', 'sqs:SendMessage'],
     );
     const puts = taskStatements.filter((s) => actionsOf(s).includes('secretsmanager:PutSecretValue'));
     assert.equal(puts.length, 1);
@@ -500,10 +503,11 @@ describe('infra/governor.cfn.yml — the alarms', () => {
    * that would not attach) logs nothing, and the RunTask that started it
    * succeeded, so neither alarm above hears it. ECS says so on the
    * task's STOPPED event; the rule writes that event into the task's own
-   * log group for the operator to read, and the alarm counts the rule's own
-   * matches, so a log write EventBridge could not make still alarms.
+   * log group for the operator to read, and hands it to the starter, which
+   * starts the next attempt. The alarm counts the rule's own matches, so a
+   * log write EventBridge could not make still alarms.
    */
-  test('a task that never started its container is logged and retried, read off the ECS stop event', () => {
+  test('a task that never started its container is logged and followed by another, read off the ECS stop event', () => {
     const rule = template.Resources.DispatchNotRunRule;
     assert.equal(rule?.Type, 'AWS::Events::Rule');
     assert.equal(rule.Properties?.State, 'ENABLED');
@@ -519,8 +523,8 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     const targets: Array<{ Arn?: string }> = rule.Properties?.Targets ?? [];
     assert.deepEqual(
       targets.map((t) => t.Arn).sort(),
-      [DISPATCH_LOG_TARGET, '${RetrierFunction.Arn}'].sort(),
-      'the rule writes the event into the dispatch log group and hands it to the retrier',
+      [DISPATCH_LOG_TARGET, '${StarterFunction.Arn}'].sort(),
+      'the rule writes the event into the dispatch log group and hands it to the starter',
     );
     assert.match(String(rule.Properties?.Name ?? ''), /^governor-/, 'every name the stack gives starts governor-');
 
@@ -544,10 +548,9 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     assert.deepEqual(alarm?.Properties?.Dimensions, [{ Name: 'RuleName', Value: '${DispatchNotRunRule}' }]);
     assert.equal(alarm?.Properties?.Statistic, 'Sum');
     assert.ok(Number(alarm?.Properties?.Period) * Number(alarm?.Properties?.EvaluationPeriods) <= 900, 'heard within fifteen minutes');
-    // The retrier absorbs a transient, so one stop no longer pages:
-    // as many stops in the window as one fire's attempts is a fault the
-    // retries are not beating. The dead-letter tripwire pages the fire
-    // itself.
+    // The starter's next attempt absorbs a transient, so one stop does not
+    // page: as many stops in the window as one chain's attempts is a fault
+    // the attempts are not beating. A chain that gives up pages itself.
     assert.equal(alarm?.Properties?.Threshold, MAX_START_ATTEMPTS);
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /MAX_START_ATTEMPTS/, 'a threshold sized off a code constant names it');
     assert.equal(alarm?.Properties?.TreatMissingData, 'notBreaching');
@@ -583,7 +586,7 @@ describe('infra/governor.cfn.yml — the alarms', () => {
         },
       });
       const targets: Array<{ Arn?: string }> = rule?.Properties?.Targets ?? [];
-      assert.deepEqual(targets.map((t) => t.Arn), [DISPATCH_LOG_TARGET], 'it only logs: the retrier hears tasks that failed to start alone');
+      assert.deepEqual(targets.map((t) => t.Arn), [DISPATCH_LOG_TARGET, '${StarterFunction.Arn}'], 'it logs the stop, and calls the starter for the fire that landed as the task exited');
     });
 
     test('the two rules split the stop codes, so no rule writes another\'s stop and the not-run rule is unchanged', () => {
@@ -594,7 +597,7 @@ describe('infra/governor.cfn.yml — the alarms', () => {
         assert.ok(!dims.some((d) => d.Value === '${DispatchTaskStoppedRule}'), `${id} counts the stop-event log rule`);
       }
       const invokers = Object.values(template.Resources).filter((r) => r.Type === 'AWS::Lambda::Permission' && String(r.Properties?.SourceArn).includes('DispatchTaskStoppedRule'));
-      assert.equal(invokers.length, 0, 'nothing but a log group hears the stop-event log rule');
+      assert.deepEqual(invokers.map((r) => r.Properties?.FunctionName), ['${StarterFunction}'], 'the starter alone hears the stop-event rule, beside its log group');
     });
 
     test('no metric filter on /governor counts a stop event', () => {
@@ -714,9 +717,12 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
     assert.equal(fn?.Properties?.ReservedConcurrentExecutions, undefined);
   });
 
-  test('may read its two keys and queue a fire, and starts nothing itself', () => {
+  test('may read its two keys, queue a fire and call the starter, and starts nothing itself', () => {
     const allowed = new Set(statements.flatMap(actionsOf));
-    assert.deepEqual([...allowed].sort(), ['dynamodb:GetItem', 'dynamodb:UpdateItem', 'logs:CreateLogStream', 'logs:PutLogEvents', 'secretsmanager:GetSecretValue', 'sqs:SendMessage']);
+    assert.deepEqual([...allowed].sort(), ['dynamodb:GetItem', 'dynamodb:UpdateItem', 'lambda:InvokeFunction', 'logs:CreateLogStream', 'logs:PutLogEvents', 'secretsmanager:GetSecretValue', 'sqs:SendMessage']);
+    const call = statements.find((s) => actionsOf(s).includes('lambda:InvokeFunction'))!;
+    assert.deepEqual(resourcesOf(call), ['${StarterFunction.Arn}']);
+    assert.equal(fn?.Properties?.Environment?.Variables?.STARTER_FUNCTION, '${StarterFunction}');
     const key = statements.find((s) => actionsOf(s).includes('secretsmanager:GetSecretValue'))!;
     assert.deepEqual(resourcesOf(key).sort(), ['${HookSecret}', '${WebhookSecret}'], 'the receiver can read a secret that is not one of its keys');
     const send = statements.find((s) => actionsOf(s).includes('sqs:SendMessage'))!;
@@ -827,18 +833,17 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
 
 /**
  * One lane between the receiver and the cluster: every fire, the schedule's
- * and a delivery's, waits its turn in a FIFO queue, and the starter drains
- * it one task at a time. A dispatcher turn refreshes the stored login, and
- * two turns refreshing one login leave one of them dead; a fire that found a
- * task running used to be dropped until the next schedule, which is fine for
- * a label change and wrong for a mention.
+ * and a delivery's, waits its turn in a FIFO queue. The dispatcher task is
+ * its only reader and runs one turn at a time, and the starter keeps one
+ * task at a time. A dispatcher turn refreshes the stored login, and two
+ * turns refreshing one login leave one of them dead.
  */
 describe('infra/governor.cfn.yml — the fire lane', () => {
   const queue = template.Resources.DispatchFiresQueue;
   const dead = template.Resources.DispatchFiresDeadQueue;
   const starter = template.Resources.StarterFunction;
   const statements = inlinePolicyStatements(template, 'StarterRole');
-  const mapping = Object.values(template.Resources).find((r) => r.Type === 'AWS::Lambda::EventSourceMapping');
+  const invokers = (fnRef: string) => Object.values(template.Resources).filter((r) => r.Type === 'AWS::Lambda::Permission' && r.Properties?.FunctionName === fnRef);
 
   test('is one FIFO queue, deduplicating on content, with a dead-letter queue after a few attempts', () => {
     assert.equal(queue?.Type, 'AWS::SQS::Queue');
@@ -848,35 +853,53 @@ describe('infra/governor.cfn.yml — the fire lane', () => {
     assert.equal(dead?.Properties?.FifoQueue, true, 'a FIFO queue dead-letters to a FIFO queue');
   });
 
-  test('the starter drains the lane one fire at a time, from the same directory as the receiver', () => {
+  // The task is the lane's only reader (dispatch/lane.mjs). A second reader
+  // would compete with it for every fire, and a fire it lost would cost a
+  // fresh task its cold start.
+  test('nothing but the dispatcher task receives from the lane', () => {
+    assert.deepEqual(resourcesOfType(template, 'AWS::Lambda::EventSourceMapping'), [], 'an event source mapping is a second reader');
+    for (const [id, r] of resourcesOfType(template, 'AWS::IAM::Role')) {
+      const receives = inlinePolicyStatements(template, id).filter((s) => actionsOf(s).some((a) => a === 'sqs:ReceiveMessage' || a === 'sqs:*'));
+      if (id === 'DispatchRole') assert.deepEqual(receives.flatMap(resourcesOf), ['${DispatchFiresQueue.Arn}']);
+      else assert.deepEqual(receives, [], `${id} may receive from a queue`);
+      assert.ok(r);
+    }
+  });
+
+  // The task deletes each fire as it takes it, so a received fire stays
+  // hidden only when its task died, or its delete failed, in between. The
+  // lane's one group waits behind it meanwhile, and a fire that keeps doing
+  // so goes to the dead-letter queue rather than hold the lane.
+  test('a fire held without a delete comes back in seconds, and one that keeps coming back is dead-lettered within minutes', () => {
+    const visibility = Number(queue?.Properties?.VisibilityTimeout);
+    const receives = Number(queue?.Properties?.RedrivePolicy?.maxReceiveCount);
+    assert.ok(visibility >= 10 && visibility <= 60, `${visibility}s`);
+    assert.ok(receives >= 3, 'one dead task is no reason to drop a fire');
+    assert.ok(visibility * receives <= 5 * 60, 'a fire whose task dies every time holds the lane for over five minutes');
+  });
+
+  test('the starter is in dispatch/webhook/, beside the receiver, and runs one call at a time', () => {
     assert.equal(starter?.Properties?.Handler, 'starter-handler.handler');
     assert.equal(starter?.Properties?.Code, '../dispatch/webhook/');
     assert.ok(existsSync(resolve(ROOT, 'infra', starter.Properties.Code, 'starter-handler.mjs')), 'the handler the template names does not exist');
     assert.equal(starter?.Properties?.LoggingConfig?.LogFormat, 'JSON');
-    assert.equal(mapping?.Properties?.EventSourceArn, '${DispatchFiresQueue.Arn}');
-    assert.equal(mapping?.Properties?.FunctionName, '${StarterFunction}');
-    assert.equal(mapping?.Properties?.BatchSize, 1);
-    // The smallest value the event source takes; the single message group
-    // is what serialises the fires.
-    assert.equal(mapping?.Properties?.ScalingConfig?.MaximumConcurrency, 2);
-    // A deferral or a failure leaves as a batch item failure, not a throw, so
-    // it never counts toward the account-wide Errors safety net; without this
-    // the event source ignores the response and deletes the fire.
-    assert.deepEqual(mapping?.Properties?.FunctionResponseTypes, ['ReportBatchItemFailures']);
+    // Two calls at once could both see no task and both start one.
+    assert.equal(starter?.Properties?.ReservedConcurrentExecutions, 1);
   });
 
-  test('starts the same task the schedule always did, from the same settings', () => {
+  test('starts the task from the stack\'s settings, carrying no fire, and counts the lane', () => {
     const env = starter?.Properties?.Environment?.Variables ?? {};
     assert.equal(env.CLUSTER, '${DispatchCluster}');
     assert.equal(env.TASK_FAMILY, taskDefinition?.Properties?.Family);
-    assert.equal(env.CONTAINER_NAME, container?.Name);
     // The same joined list the by-hand script reads off the outputs.
     assert.equal(env.SUBNET_IDS, template.Outputs?.[OUTPUT_KEYS.subnets]?.Value);
+    assert.equal(env.FIRES_QUEUE_URL, '${DispatchFiresQueue}');
+    assert.equal(env.CONTAINER_NAME, undefined, 'the starter sets no override: the task takes its fires off the lane');
   });
 
-  test('may see running tasks and start one on this cluster passing the task roles, and consume the lane, nothing else', () => {
+  test('may see running tasks, start one on this cluster passing the task roles, and count the lane, nothing else', () => {
     const allowed = new Set(statements.flatMap(actionsOf));
-    assert.deepEqual([...allowed].sort(), ['ecs:ListTasks', 'ecs:RunTask', 'iam:PassRole', 'logs:CreateLogStream', 'logs:PutLogEvents', 'sqs:ChangeMessageVisibility', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:ReceiveMessage']);
+    assert.deepEqual([...allowed].sort(), ['ecs:ListTasks', 'ecs:RunTask', 'iam:PassRole', 'logs:CreateLogStream', 'logs:PutLogEvents', 'sqs:GetQueueAttributes']);
     for (const action of ['ecs:ListTasks', 'ecs:RunTask']) {
       const s = statements.find((st) => actionsOf(st).includes(action))!;
       assert.equal(s.Condition?.ArnEquals?.['ecs:cluster'], '${DispatchCluster.Arn}', `${action} is not pinned to the cluster`);
@@ -884,128 +907,87 @@ describe('infra/governor.cfn.yml — the fire lane', () => {
     const pass = statements.find((s) => actionsOf(s).includes('iam:PassRole'))!;
     assert.deepEqual(new Set(resourcesOf(pass)), new Set(['${DispatchRole.Arn}', '${DispatchExecutionRole.Arn}']));
     assert.equal(pass.Condition?.StringEquals?.['iam:PassedToService'], 'ecs-tasks.amazonaws.com');
-    const consume = statements.find((s) => actionsOf(s).includes('sqs:ReceiveMessage'))!;
-    assert.deepEqual(resourcesOf(consume), ['${DispatchFiresQueue.Arn}']);
-    const reoffer = statements.find((s) => actionsOf(s).includes('sqs:ChangeMessageVisibility'))!;
-    assert.deepEqual(resourcesOf(reoffer), ['${DispatchFiresQueue.Arn}'], 'the re-offer is on the lane alone');
-    assert.equal(starter?.Properties?.Environment?.Variables?.FIRES_QUEUE_URL, '${DispatchFiresQueue}', 'the re-offer needs the queue URL the receipt handle belongs to');
+    const count = statements.find((s) => actionsOf(s).includes('sqs:GetQueueAttributes'))!;
+    assert.deepEqual(resourcesOf(count), ['${DispatchFiresQueue.Arn}']);
   });
 
-  // The starter hands a busy fire straight back rather than waiting, asked
-  // back in DEFER_SECONDS (dispatch/webhook/starter.mjs), and the attempts
-  // have to outlast a whole task and its provisioning before the fire is
-  // given up. The queue's own visibility timeout is the hold: a message
-  // must stay invisible for as long as the starter may hold it, with a
-  // margin for the poller, or the lane hands the same fire to a second
-  // invocation. The two are separate knobs: a minute of hold as the pace
-  // was one fire a minute however short the task (2026-09-26: thirteen
-  // fires ahead, fourteen minutes to the session). A fire that fails is
-  // handed back at the same pace, so the attempts are also how long a
-  // persistent failure holds the lane before the tripwire: half an hour of
-  // re-offers, plus each attempt's own run.
-  test('the lane re-offers a busy fire within seconds, for longer than a task may run, then gives it up', () => {
-    const timeout = Number(starter?.Properties?.Timeout);
-    const visibility = Number(queue?.Properties?.VisibilityTimeout);
-    const attempts = Number(queue?.Properties?.RedrivePolicy?.maxReceiveCount);
-    assert.ok(visibility >= 2 * timeout, 'a fire could be handed out twice: the poller holds a fire past the invocation it started');
-    assert.ok(timeout <= 60, `the starter does not wait, so ${timeout}s of timeout is an idle Lambda`);
-    assert.ok(DEFER_SECONDS <= 10, `a busy fire idles ${DEFER_SECONDS}s past the end of the task before it`);
-    assert.ok(DEFER_SECONDS < visibility, 'the re-offer is sooner than the hold, or it is no pace');
-    assert.ok(attempts * DEFER_SECONDS * 1000 >= DEADLINE_MS + 5 * 60 * 1000, 'the attempts give up before a task and its provisioning could end');
-    assert.ok(attempts * DEFER_SECONDS <= 30 * 60, 'a fire that fails every attempt holds the lane for over half an hour before the tripwire');
-    assert.ok(START_BUDGET_MS >= attempts * DEFER_SECONDS * 1000, 'a by-hand fire gives up on the starter while the lane is still re-offering it');
+  // The receiver after it queues (its grant is the receiver's test), every
+  // task's stop, and a backstop every minute.
+  test('is called by both stop rules and the backstop, each allowed to', () => {
+    for (const id of ['DispatchNotRunRule', 'DispatchTaskStoppedRule']) {
+      const target = (template.Resources[id]?.Properties?.Targets ?? []).find((t: { Arn?: string }) => t.Arn === '${StarterFunction.Arn}');
+      assert.ok(target, `${id} does not call the starter`);
+      assert.ok(Number(target.RetryPolicy?.MaximumRetryAttempts) >= 1, `${id}: a call EventBridge could not make waits for the backstop`);
+    }
+    const backstop = template.Resources.StarterBackstopRule;
+    assert.equal(backstop?.Properties?.ScheduleExpression, 'rate(1 minute)', 'a fire with no poke starts within a minute');
+    assert.equal(backstop?.Properties?.State, 'ENABLED');
+    assert.match(String(backstop?.Properties?.Name), /^governor-/);
+    const [target] = backstop?.Properties?.Targets ?? [];
+    assert.equal(target?.Arn, '${StarterFunction.Arn}');
+    assert.deepEqual(JSON.parse(String(target?.Input)), { caller: 'backstop' });
+    const sources = invokers('${StarterFunction}').map((p) => [p.Properties?.Principal, p.Properties?.Action, p.Properties?.SourceArn]);
+    assert.deepEqual(sources.sort(), [
+      ['events.amazonaws.com', 'lambda:InvokeFunction', '${DispatchNotRunRule.Arn}'],
+      ['events.amazonaws.com', 'lambda:InvokeFunction', '${DispatchTaskStoppedRule.Arn}'],
+      ['events.amazonaws.com', 'lambda:InvokeFunction', '${StarterBackstopRule.Arn}'],
+    ].sort());
   });
 
-  test('a fire that failed every attempt is a tripwire on the dead-letter queue\'s depth', () => {
+  // A call held back by the reserved concurrency waits in Lambda's own
+  // queue. Past a minute the backstop has called since, so it is dropped.
+  test('drops a call older than the backstop\'s minute, and retries none', () => {
+    const config = Object.values(template.Resources).find((r) => r.Type === 'AWS::Lambda::EventInvokeConfig' && r.Properties?.FunctionName === '${StarterFunction}');
+    assert.ok(config, 'the starter has no EventInvokeConfig, so a held call runs up to six hours late');
+    assert.equal(config?.Properties?.Qualifier, '$LATEST');
+    assert.equal(Number(config?.Properties?.MaximumRetryAttempts), 0);
+    assert.ok(Number(config?.Properties?.MaximumEventAgeInSeconds) <= 60);
+  });
+
+  test('a chain of tasks that failed to start pages, read off the starter\'s own event', () => {
+    const filter = template.Resources.StarterGaveUpFilter;
+    assert.equal(filter?.Properties?.LogGroupName, '${StarterLogGroup}');
+    // The starter logs one object, which Lambda's JSON format nests under message.
+    assert.equal(filter?.Properties?.FilterPattern, '{ $.message.event = "start-gave-up" }');
+    const metric = filter?.Properties?.MetricTransformations?.[0];
+    const alarm = template.Resources.StarterGaveUpAlarm;
+    assert.equal(alarm?.Properties?.Namespace, metric?.MetricNamespace);
+    assert.equal(alarm?.Properties?.MetricName, metric?.MetricName);
+    assert.equal(Number(alarm?.Properties?.Threshold), 1);
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /MAX_START_ATTEMPTS/);
+    assert.ok(MAX_START_ATTEMPTS >= 2);
+  });
+
+  // Every stall shows as the oldest fire growing old: RunTask refused at
+  // every call, a starter that cannot list or count, a task that takes
+  // nothing. A burst waits its turns, so the threshold is past a deadline.
+  test('a lane whose oldest fire has waited too long is a tripwire', () => {
+    const alarm = template.Resources.DispatchLaneStalledAlarm;
+    assert.equal(alarm?.Properties?.Namespace, 'AWS/SQS');
+    assert.equal(alarm?.Properties?.MetricName, 'ApproximateAgeOfOldestMessage');
+    assert.deepEqual(alarm?.Properties?.Dimensions, [{ Name: 'QueueName', Value: '${DispatchFiresQueue.QueueName}' }]);
+    const threshold = Number(alarm?.Properties?.Threshold);
+    assert.ok(threshold * 1000 >= 2 * DEADLINE_MS, 'a fire behind one long turn is not a stall');
+    assert.ok(threshold <= 60 * 60, 'a stalled lane pages within the hour');
+    assert.ok(START_BUDGET_MS >= threshold * 1000, 'a by-hand fire gives up while the stack does not yet call the lane stalled');
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
+  });
+
+  test('a fire the task refused, or never deleted, is a tripwire on the dead-letter queue\'s depth', () => {
     const alarm = template.Resources.DispatchFiresDeadAlarm;
     assert.equal(alarm?.Properties?.Namespace, 'AWS/SQS');
     assert.equal(alarm?.Properties?.MetricName, 'ApproximateNumberOfMessagesVisible');
     assert.deepEqual(alarm?.Properties?.Dimensions, [{ Name: 'QueueName', Value: '${DispatchFiresDeadQueue.QueueName}' }]);
     assert.equal(Number(alarm?.Properties?.Threshold), 1);
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /fire-refused/);
     assert.deepEqual(alarm?.Properties?.AlarmActions, template.Resources.DispatchErrorsAlarm?.Properties?.AlarmActions, 'the lane\'s alarm goes where the other tripwires go');
   });
 
-  /**
-   * A task that fails to start drops its fire: the starter was done with the
-   * message once RunTask succeeded (a pull that came back "not found"
-   * three times in two days, the digest in ECR throughout). The not-run
-   * rule hands the stop event to the retrier, which puts the fire back on
-   * the lane, and once the attempts run out, onto the dead-letter queue.
-   */
-  describe('a fire whose task failed to start', () => {
-    const retrier = template.Resources.RetrierFunction;
-    const retrierStatements = inlinePolicyStatements(template, 'RetrierRole');
-    const rule = template.Resources.DispatchNotRunRule;
-
-    test('is handed to the retrier in dispatch/webhook/, which the rule may invoke', () => {
-      assert.equal(retrier?.Properties?.Code, '../dispatch/webhook/');
-      assert.equal(retrier?.Properties?.Handler, 'retry-handler.handler');
-      assert.ok(existsSync(resolve(ROOT, 'infra', retrier.Properties.Code, 'retry-handler.mjs')), 'the handler the template names does not exist');
-      assert.equal(retrier?.Properties?.LoggingConfig?.LogFormat, 'JSON');
-      assert.equal(retrier?.Properties?.LoggingConfig?.LogGroup, '${RetrierLogGroup}');
-      assert.match(String(retrier?.Properties?.FunctionName), /^governor-/);
-      const target = (rule?.Properties?.Targets ?? []).find((t: { Arn?: string }) => t.Arn === '${RetrierFunction.Arn}');
-      assert.ok(target, 'the not-run rule does not target the retrier');
-      assert.ok(Number(target.RetryPolicy?.MaximumRetryAttempts) >= 1, 'a retrier EventBridge could not invoke is a fire lost');
-      const permission = Object.values(template.Resources).find((r) => r.Type === 'AWS::Lambda::Permission' && r.Properties?.FunctionName === '${RetrierFunction}');
-      assert.equal(permission?.Properties?.Principal, 'events.amazonaws.com');
-      assert.equal(permission?.Properties?.SourceArn, '${DispatchNotRunRule.Arn}');
-      assert.equal(permission?.Properties?.Action, 'lambda:InvokeFunction');
-    });
-
-    test('may queue a fire on the lane and on its dead-letter queue, and nothing else', () => {
-      assert.deepEqual([...new Set(retrierStatements.flatMap(actionsOf))].sort(), ['logs:CreateLogStream', 'logs:PutLogEvents', 'sqs:SendMessage']);
-      const send = retrierStatements.filter((s) => actionsOf(s).includes('sqs:SendMessage'));
-      assert.deepEqual(new Set(send.flatMap(resourcesOf)), new Set(['${DispatchFiresQueue.Arn}', '${DispatchFiresDeadQueue.Arn}']));
-      const logs = retrierStatements.filter((s) => actionsOf(s).includes('logs:PutLogEvents'));
-      assert.deepEqual(logs.flatMap(resourcesOf), ['${RetrierLogGroup.Arn}']);
-      const env = retrier?.Properties?.Environment?.Variables ?? {};
-      assert.equal(env.FIRES_QUEUE_URL, '${DispatchFiresQueue}');
-      assert.equal(env.DEAD_QUEUE_URL, '${DispatchFiresDeadQueue}');
-    });
-
-    // The dead-letter tripwire reads the queue's depth every five minutes;
-    // each attempt fails within a couple of minutes of its start.
-    test('a fault that outlasts the attempts reaches the dead-letter tripwire within the half hour', () => {
-      const dead = template.Resources.DispatchFiresDeadAlarm;
-      const perAttemptMinutes = 5;
-      const minutes = MAX_START_ATTEMPTS * perAttemptMinutes + Number(dead?.Properties?.Period) * Number(dead?.Properties?.EvaluationPeriods) / 60;
-      assert.ok(minutes <= 30, `${minutes} minutes`);
-    });
-
-    // The rule's RetryPolicy covers EventBridge's delivery alone; a retrier
-    // that throws is retried by Lambda itself. Both retries land inside the
-    // lane's five-minute deduplication window, so a retry of a send the lane
-    // did take is not a second fire.
-    test('a retrier that threw is retried by Lambda, inside the deduplication window', () => {
-      const config = Object.values(template.Resources).find((r) => r.Type === 'AWS::Lambda::EventInvokeConfig' && r.Properties?.FunctionName === '${RetrierFunction}');
-      assert.ok(config, 'the retrier has no EventInvokeConfig, so its async retries run to the six-hour default');
-      assert.equal(config?.Properties?.Qualifier, '$LATEST');
-      assert.ok(Number(config?.Properties?.MaximumRetryAttempts) >= 1);
-      assert.ok(Number(config?.Properties?.MaximumEventAgeInSeconds) <= 300);
-    });
-
-    // The dead-letter queue now holds two kinds of fire: the starter's, and
-    // the retrier's, whose why is in the retrier's log, not the starter's.
-    test('the dead-letter tripwire names both logs a dead fire\'s why is in', () => {
-      const description = String(template.Resources.DispatchFiresDeadAlarm?.Properties?.AlarmDescription);
-      assert.match(description, /\/aws\/lambda\/governor-starter/);
-      assert.match(description, /\/aws\/lambda\/governor-retrier/);
-    });
-
-    // A retrier that throws has lost the fire the stop carried; Lambda
-    // retries the invoke, and this is where that ends.
-    test('a retrier that throws is a tripwire', () => {
-      const alarm = template.Resources.RetrierErrorsAlarm;
-      assert.equal(alarm?.Properties?.Namespace, 'AWS/Lambda');
-      assert.equal(alarm?.Properties?.MetricName, 'Errors');
-      assert.deepEqual(alarm?.Properties?.Dimensions, [{ Name: 'FunctionName', Value: '${RetrierFunction}' }]);
-      assert.equal(Number(alarm?.Properties?.Threshold), 1);
-      assert.ok(Number(alarm?.Properties?.Period) <= 900);
-      assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
-      assert.match(String(alarm?.Properties?.AlarmName), /^governor-/);
-    });
+  test('the retrier is gone: a fire whose task failed to start never left the lane', () => {
+    assert.deepEqual(Object.keys(template.Resources).filter((id) => /Retrier/.test(id)), []);
+    assert.ok(!existsSync(resolve(ROOT, 'dispatch/webhook/retry-handler.mjs')));
   });
 
   // A shipping job's own completion is the fire, so the hook hears jobs.

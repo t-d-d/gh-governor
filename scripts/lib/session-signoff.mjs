@@ -504,9 +504,9 @@ export const sweepSignoffs = async ({ archive, login, started, now, log, woken =
  * turn that messaged sessions, finding no fire on the lane, reads their
  * events every SIGNOFF_REPLY_POLL_MS for up to SIGNOFF_REPLY_WAIT_MS, and
  * stops when each one's newest result is newer than its message, or a fire
- * is queued. While this task runs its own fire is off the lane, and a fire
- * that arrives is handed back every few seconds (dispatch/webhook/starter.mjs),
- * so any count on the lane is a fire waiting: a busy lane is never slowed.
+ * is queued. The task deleted its own fire as it took it
+ * (dispatch/lane.mjs), so any count on the lane is a fire waiting for this
+ * task's next turn: a busy lane is never slowed.
  * The wait ends one look before SIGNOFF_LATEST_START_MS, so the sweep after
  * it still runs, and it does not start with a login the sweep could not use
  * (`accessToken`). A lane or an events read that fails ends it too. Nothing

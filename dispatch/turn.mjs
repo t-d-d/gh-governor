@@ -2,7 +2,8 @@
  * The dispatcher's turn: starts Claude Code cloud sessions from a stored
  * claude.ai login, off any machine of ours.
  *
- * One task is one turn (dispatch/cli.mjs is the entrypoint): restore the
+ * One fire is one turn (dispatch/cli.mjs is the entrypoint, and a task runs
+ * one turn after another off the lane, dispatch/lane.mjs): restore the
  * login from Secrets Manager into the CLI's credential file, read the fire
  * (dispatch/webhook/fire.mjs) and decide what to start
  * (scripts/lib/dispatch-router.mjs), run the launcher once per session
@@ -1486,7 +1487,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   // in whichever repo, for that repo's own turn (dispatch/unblocked.mjs).
   // It starts nothing, so DispatchCap does not hold it, and calls GitHub
   // only under the closed issue's repo. No failed turn is tried again
-  // (dispatch/webhook/retry.mjs), so a fire the lane refuses is logged at
+  // (dispatch/lane.mjs), so a fire the lane refuses is logged at
   // error by its ticket, the rest still go, and the turn exits 1.
   if (invocation.kind === 'schedule' && invocation.freed !== undefined) {
     const freed = invocation.freed;
@@ -2553,11 +2554,36 @@ export const dynamoState = (client, table) => {
  */
 export const dispatchOwners = ownersOf;
 
+/**
+ * The paths a turn writes under: the CLI's config and login under HOME, the
+ * turn's own working directory, and each launch's beside it (`realDeps`).
+ *
+ * @param {Record<string, string | undefined>} env
+ */
+const turnPaths = (env) => {
+  const home = env.HOME || '/home/dispatch';
+  const cwd = env.DISPATCH_WORKDIR || '/tmp/repo';
+  return { home, cwd, repos: join(dirname(cwd), 'repos') };
+};
+
+/**
+ * Clear what a turn leaves behind, before the next fire's turn in the same
+ * task (dispatch/lane.mjs): the CLI's config, login and transcripts, the
+ * turn's working directory and each launch's. The turn's directory keeps
+ * the first origin it is given, so left, a message for one repo would run
+ * in the last fire's. Each turn restores the login from the secret anyway.
+ *
+ * @param {Record<string, string | undefined>} env
+ */
+export const clearTurnState = (env) => {
+  const { home, cwd, repos } = turnPaths(env);
+  for (const path of [join(home, '.claude'), join(home, '.claude.json'), cwd, repos]) rmSync(path, { recursive: true, force: true });
+};
+
 /** @returns {Deps} */
 export const realDeps = () => {
   const env = process.env;
-  const home = env.HOME || '/home/dispatch';
-  const cwd = env.DISPATCH_WORKDIR || '/tmp/repo';
+  const { home, cwd, repos } = turnPaths(env);
   const configPath = join(home, '.claude.json');
   const credentials = join(home, '.claude', '.credentials.json');
   /** The restored login's account, which every CLI call is handed. @type {import('../scripts/lib/claude-login.mjs').LoginAccount | null} */
@@ -2596,7 +2622,7 @@ export const realDeps = () => {
    * @param {string} environment
    */
   const workspaceFor = (launched, environment) => {
-    const dir = join(dirname(cwd), 'repos', ...launched.split('/'));
+    const dir = join(repos, ...launched.split('/'));
     if (!existsSync(join(dir, '.git'))) {
       mkdirSync(dir, { recursive: true });
       spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: dir, stdio: 'ignore' });

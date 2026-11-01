@@ -7,7 +7,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { ROW_SWITCH, closingFires, readyPrompt, specPrompt, ticketRow, unblockedFacts, unblockedMessage, notPlannedComment } from '../dispatch/unblocked.mjs';
-import { parseFire, overrideWeight, OVERRIDE_BUDGET } from '../dispatch/webhook/fire.mjs';
+import { parseFire, fireWeight, FIRE_BUDGET } from '../dispatch/webhook/fire.mjs';
 
 const FACTORY = 'acme/factory';
 const closed = { repo: FACTORY, number: 41, title: 'The parser', reason: 'completed' };
@@ -25,7 +25,7 @@ describe('closingFires', () => {
     assert.deepEqual(skipped.map((s) => [s.repo, s.issue]), [[FACTORY, 8], ['stranger/repo', 3]]);
     for (const { fire } of queue) {
       assert.deepEqual(parseFire(fire), fire);
-      assert.ok(overrideWeight(fire) <= OVERRIDE_BUDGET);
+      assert.ok(fireWeight(fire) <= FIRE_BUDGET);
     }
   });
 

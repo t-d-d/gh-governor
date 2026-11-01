@@ -9,8 +9,8 @@
  * carrying a prompt of its own, which names where the mention is and quotes
  * what it said; the session reads the rest from GitHub itself, so the
  * prompt never embeds the PR or the issue. The prompt reaches the task
- * through a container override, which has a size cap, so a long body is
- * quoted only so far.
+ * as a lane message, which has a size cap, so a long body is quoted only
+ * so far.
  *
  * A subscription: a pull request a session wrote names that session, the
  * last claude.ai/code link in its body (the attribution footer Claude Code
@@ -62,7 +62,7 @@
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
-import { DISPATCH_MARKER, OVERRIDE_BUDGET, SIGN_POSTS, SUMMONERS, UNATTENDED, build, deployedTarget, isBranch, isCommit, overrideWeight } from './fire.mjs';
+import { DISPATCH_MARKER, FIRE_BUDGET, SIGN_POSTS, SUMMONERS, UNATTENDED, build, deployedTarget, isBranch, isCommit, fireWeight } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
 import { ownSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
 
@@ -267,7 +267,7 @@ const summons = (prompt, on, reason) => ({
  * by the session so each subscriber's is its own lane message. The owner's
  * fire on a remark carries the dispatch it would otherwise have been as
  * the fallback, told to take the PR over; the prompt then rides twice, so a
- * remark too long for the override is quoted shorter, halving until it
+ * remark too long for the lane is quoted shorter, halving until it
  * fits.
  *
  * @param {{
@@ -305,7 +305,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
   });
   let limit = EXCERPT_CHARS;
   let message = fire(prompt(role, limit));
-  while (overrideWeight(message) > OVERRIDE_BUDGET && limit > 1) {
+  while (fireWeight(message) > FIRE_BUDGET && limit > 1) {
     limit = Math.floor(limit / 2);
     message = fire(prompt(role, limit));
   }

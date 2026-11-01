@@ -236,7 +236,7 @@ Governor-Signature: v=1,t=1790000000,sha256=<hex>
 {"text":"ALARM: api 5xx over threshold"}
 ```
 
-- `text` is plain text, at most 32 KiB. A fire also has to fit the task's start, which holds about 6,800 characters of plain text, and as few as 2,300 where every character is a quote, a backslash or a newline. Send the alarm's summary, not its whole payload.
+- `text` is plain text, at most 32 KiB. Send the alarm's summary, not its whole payload.
 - `v` is the key version, `t` the time in Unix seconds, and the hex is the HMAC-SHA256 of `<t>.<raw body>`, keyed with the key's hex digits as text. Sign the exact bytes you send.
 - `t` must be no more than 30 seconds ahead of governor's clock and no more than 4 minutes 25 seconds behind it, so sign with the current time. The same request sent twice inside five minutes is one fire, and a request stays valid for 4 minutes 55 seconds, a margin under those five minutes, so a replay never starts a second session.
 
@@ -393,8 +393,8 @@ What it cannot see:
 
 ## How governor runs
 
-- **One task on AWS.** Each turn is one ECS Fargate task, arm64, half a vCPU and a gigabyte, for a few minutes. It needs a pseudo-terminal to start a cloud session, which Lambda cannot give. Only one task runs at a time.
-- **A webhook receiver.** The App's webhook posts every installation's events to one Lambda Function URL. The receiver checks the signature, routes the event from its payload, and queues a fire on a FIFO queue. A starter Lambda drains the queue and runs one task per fire, never two at once.
+- **One task on AWS.** The turns run in one ECS Fargate task, arm64, half a vCPU and a gigabyte. It needs a pseudo-terminal to start a cloud session, which Lambda cannot give. The task takes each fire off the queue and runs it as its own turn, one at a time, and exits once the queue has been empty for a minute. Only one task runs at a time.
+- **A webhook receiver.** The App's webhook posts every installation's events to one Lambda Function URL. The receiver checks the signature, routes the event from its payload, queues a fire on a FIFO queue, and calls a starter Lambda. The starter starts the task when a fire waits and none runs, never two at once. It also hears every task's stop, and runs every minute as a backstop.
 - **One claude.ai login.** The task creates sessions with a stored claude.ai login, kept in Secrets Manager. Each turn refreshes it and writes it back. The login's refresh expiry is fixed when it is minted, about two weeks on, so it must be minted again before then; an alarm warns three days ahead.
 - **A two-hourly schedule.** EventBridge fires the receiver every two hours. That fire sweeps every served repo: it starts due periodics, picks up ready tickets in each repo whose pickup interval has passed, writes heartbeats, and archives signed-off sessions.
 
@@ -507,9 +507,9 @@ Confirm the alerts subscription from the email AWS sends to the alert address. U
 
 | Log group | What it holds |
 |---|---|
-| `/governor` | Each turn: one JSON line per decision, such as `dispatch-launch`, `dispatch-signoff`, `dispatch-review`, and `dispatch-failed` on a fault. Each task's ECS stop event, with its pull and start times. |
-| `/aws/lambda/governor-webhook` | The receiver: `webhook-queued`, `webhook-ignored` with the reason, `webhook-refused`; for a hook, `hook-refused` with the reason, `hook-ignored`, `hook-key-stale`, `hook-table-unread` and `hook-table-uncounted`. |
-| `/aws/lambda/governor-starter` | The starter: `fire-started` with the task, `fire-deferred` while a task runs, `fire-failed`. |
+| `/governor` | Each turn: one JSON line per decision, such as `dispatch-launch`, `dispatch-signoff`, `dispatch-review`, and `dispatch-failed` on a fault. The task's `fire-taken` line for each fire it takes, with the fire's message id, and `lane-idle` when it exits. Each task's ECS stop event, with its pull and start times. |
+| `/aws/lambda/governor-webhook` | The receiver: `webhook-queued`, `webhook-ignored` with the reason, `webhook-refused`; for a hook, `hook-refused` with the reason, `hook-ignored`, `hook-key-stale`, `hook-table-unread` and `hook-table-uncounted`; `starter-poke-failed` when it could not call the starter. |
+| `/aws/lambda/governor-starter` | The starter: `task-started` with the task and what called it, `start-failed` with why, `start-gave-up` after three failed starts in a row. |
 
 The App's **Advanced → Recent Deliveries** shows each delivery's answer: `202` queued a fire, `200` queued nothing and says why, `401` is a key that does not match.
 

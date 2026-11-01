@@ -14,7 +14,7 @@ import { createHmac } from 'node:crypto';
 import { HOOK_EVENTS, appIdOf, cachedSecret, handle, handleSchedule, routeEvent, verifySignature } from '../dispatch/webhook/route.mjs';
 import { relinkSession, sessionNamedIn, subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { reviewMarker } from '../dispatch/pr-body.mjs';
-import { OVERRIDE_CAP, SIGN_POSTS, UNATTENDED, containerOverride, dispatchMarker, parseFire } from '../dispatch/webhook/fire.mjs';
+import { FIRE_BUDGET, SIGN_POSTS, UNATTENDED, dispatchMarker, fireWeight, parseFire } from '../dispatch/webhook/fire.mjs';
 import { UNSIGNED } from '../dispatch/webhook/mention.mjs';
 
 const SECRET = 'whsec_test';
@@ -366,15 +366,14 @@ describe('routeEvent — a mention', () => {
     assert.equal((decision.fire as { byBranch?: true }).byBranch, true);
   });
 
-  test('a message fire fits the task\'s container override, the prompt twice over, whatever the remark holds', () => {
-    // ECS caps a RunTask's overrides at 8192 characters; the fire rides one
-    // as JSON inside JSON, so a quote costs four characters, a CJK character
-    // three bytes, and the prompt appears twice. The remark is quoted shorter
-    // until the fire fits; the URL carries the rest.
+  test('a message fire fits on the lane, the prompt twice over, whatever the remark holds', () => {
+    // The fire rides as a lane message's JSON, so a quote costs two bytes, a
+    // CJK character three, and the prompt appears twice. A comment holds up
+    // to 65,536 characters. The remark is quoted shorter until the fire
+    // fits; the URL carries the rest.
     for (const fill of ['x', '"', '字']) {
-      const { fire } = messageOf('issue_comment', commentEvent({ issue: prIssue(`The PR.${footer}`) }, { body: `@claude ${fill.repeat(10_000)}` }));
-      const override = JSON.stringify(containerOverride('dispatch', fire));
-      assert.ok(Buffer.byteLength(override) < OVERRIDE_CAP, `${fill}: ${Buffer.byteLength(override)} bytes`);
+      const { fire } = messageOf('issue_comment', commentEvent({ issue: prIssue(`The PR.${footer}`) }, { body: `@claude ${fill.repeat(65_000)}` }));
+      assert.ok(fireWeight(fire) <= FIRE_BUDGET, `${fill}: ${fireWeight(fire)} bytes`);
       assert.match(fire.text, /issuecomment-77/);
       assert.match(fire.text, /more characters at the URL above/);
     }
@@ -544,7 +543,7 @@ describe('routeEvent — a mention', () => {
     assert.equal(route({ event: 'issues', payload, owners: OWNERS }).fire, undefined);
   });
 
-  test('the prompt quotes a long body only so far, and names the URL for the rest: the task takes the prompt through an override with a size cap', () => {
+  test('the prompt quotes a long body only so far, and names the URL for the rest: the prompt rides a lane message with a size cap', () => {
     const fire = dispatchOf('issue_comment', commentEvent({}, { body: `@claude ${'x'.repeat(10_000)}` }));
     assert.ok(fire.prompt.length < 4_000, `${fire.prompt.length} chars`);
     assert.match(fire.prompt, /issuecomment-77/);
@@ -1107,12 +1106,11 @@ describe('routeEvent — subscribers', () => {
     assert.equal(bare.fire, undefined);
   });
 
-  test('a subscriber\'s fire fits the container override too, whatever the remark holds', () => {
+  test('a subscriber\'s fire fits on the lane too, whatever the remark holds', () => {
     for (const fill of ['x', '"', '字']) {
-      const { sent } = messages('issue_comment', commentEvent({ issue: prIssue() }, { body: fill.repeat(10_000) }));
+      const { sent } = messages('issue_comment', commentEvent({ issue: prIssue() }, { body: fill.repeat(65_000) }));
       for (const { key: _key, ...fire } of sent) {
-        const override = JSON.stringify(containerOverride('dispatch', fire));
-        assert.ok(Buffer.byteLength(override) < OVERRIDE_CAP, `${fill} ${fire.session}: ${Buffer.byteLength(override)} bytes`);
+        assert.ok(fireWeight(fire) <= FIRE_BUDGET, `${fill} ${fire.session}: ${fireWeight(fire)} bytes`);
       }
     }
   });
@@ -1357,10 +1355,9 @@ describe('routeEvent — a workflow run', () => {
       assert.deepEqual(fires.map((f) => f.fire.kind), ['workflow'], reason);
     });
 
-    test('its fire fits the container override, whatever the branch and workflow are called', () => {
+    test('its fire fits on the lane, whatever the branch and workflow are called', () => {
       const { fire } = route({ event: 'workflow_run', payload: dispatched({ name: 'W'.repeat(1000), head_branch: `claude/${'b'.repeat(250)}` }), owners: OWNERS });
-      const override = JSON.stringify(containerOverride('dispatch', fire));
-      assert.ok(Buffer.byteLength(override) < OVERRIDE_CAP, `${Buffer.byteLength(override)} bytes`);
+      assert.ok(fireWeight(fire) <= FIRE_BUDGET, `${fireWeight(fire)} bytes`);
       assert.doesNotThrow(() => parseFire(fire));
     });
   });

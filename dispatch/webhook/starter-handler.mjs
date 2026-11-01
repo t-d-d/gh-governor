@@ -1,17 +1,17 @@
 /**
- * The starter Lambda: dispatch/webhook/starter.mjs bound to ECS, invoked by
- * the lane's event source one fire at a time (infra/governor.cfn.yml,
- * StarterFunction). Packaged from this directory beside the receiver; the
- * AWS SDK is the runtime's own.
+ * The starter Lambda: dispatch/webhook/starter.mjs bound to ECS and the fire
+ * lane, invoked by the receiver, by every dispatcher task's stop event and
+ * by the backstop schedule (infra/governor.cfn.yml, StarterFunction).
+ * Packaged from this directory beside the receiver; the AWS SDK is the
+ * runtime's own.
  *
- * The task it starts is the schedule fire's: same cluster, task definition,
- * subnets and container override, read from the environment the stack sets.
+ * The task it starts carries no fire: it takes its fires off the lane
+ * (dispatch/lane.mjs).
  */
 
 import { ECSClient, ListTasksCommand, RunTaskCommand } from '@aws-sdk/client-ecs';
-import { ChangeMessageVisibilityCommand, SQSClient } from '@aws-sdk/client-sqs';
-import { containerOverride } from './fire.mjs';
-import { handleRecords } from './starter.mjs';
+import { GetQueueAttributesCommand, SQSClient } from '@aws-sdk/client-sqs';
+import { startNext } from './starter.mjs';
 
 const env = process.env;
 const ecs = new ECSClient({});
@@ -27,7 +27,18 @@ const deps = {
     }));
     return listed.taskArns ?? [];
   },
-  runTask: async (fire, startedBy) => {
+  // Visible and in flight: a fire a dying task received but never deleted
+  // comes back once its visibility timeout ends.
+  waiting: async () => {
+    const names = /** @type {const} */ (['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']);
+    const { Attributes } = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: String(env.FIRES_QUEUE_URL), AttributeNames: [...names] }));
+    return names.reduce((sum, name) => {
+      const count = Number(Attributes?.[name]);
+      if (!Number.isInteger(count)) throw new Error(`the fire lane did not say ${name}`);
+      return sum + count;
+    }, 0);
+  },
+  runTask: async (startedBy) => {
     const started = await ecs.send(new RunTaskCommand({
       cluster: String(env.CLUSTER),
       startedBy,
@@ -36,21 +47,17 @@ const deps = {
       networkConfiguration: {
         awsvpcConfiguration: { subnets: String(env.SUBNET_IDS).split(','), assignPublicIp: 'ENABLED' },
       },
-      overrides: containerOverride(String(env.CONTAINER_NAME), fire),
     }));
     const arn = started.tasks?.[0]?.taskArn;
     if (!arn) throw new Error(`RunTask placed nothing: ${JSON.stringify(started.failures ?? [])}`);
     return arn;
   },
-  defer: async (receiptHandle, seconds) => {
-    await sqs.send(new ChangeMessageVisibilityCommand({
-      QueueUrl: String(env.FIRES_QUEUE_URL),
-      ReceiptHandle: receiptHandle,
-      VisibilityTimeout: seconds,
-    }));
-  },
-  log: (event, context = {}) => console.log(JSON.stringify({ event, ...context })),
+  // One object, which Lambda's JSON log format nests under `message`, so a
+  // metric filter can match the event field.
+  log: (event, context = {}) => console.log({ event, ...context }),
 };
 
-/** @param {{ Records?: Array<{ messageId: string, receiptHandle: string, body: string }> }} event */
-export const handler = async (event) => handleRecords(event.Records ?? [], deps);
+/** @param {unknown} event */
+export const handler = async (event) => {
+  await startNext(event, deps);
+};

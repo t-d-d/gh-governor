@@ -14,7 +14,7 @@ import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_DEDUP_WINDOW_MS, HOOK_T
 import { handle } from '../dispatch/webhook/route.mjs';
 import { hookTable, type Counted } from '../dispatch/webhook/hook-table.mjs';
 import { HOOK_KEY_STALE } from '../dispatch/hooks.mjs';
-import { HOOK_PER_HOUR_MAX, OVERRIDE_BUDGET, overrideWeight, parseFire } from '../dispatch/webhook/fire.mjs';
+import { HOOK_PER_HOUR_MAX, FIRE_BUDGET, fireWeight, parseFire } from '../dispatch/webhook/fire.mjs';
 import { configSchema, readConfig, resolveFiles, switchOf } from '../dispatch/repo-config.mjs';
 import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
 import { factoryFile } from './helpers/factory.ts';
@@ -208,18 +208,16 @@ describe('handle — a hook fire', () => {
     assert.equal(queued.length, 0);
   });
 
-  // The fire rides to the task in its container override, whose cap is
-  // far under 32 KiB: a fire that does not fit is refused here, where the
-  // caller hears it, not dead-lettered at the starter.
-  test('text that would not fit the task\'s start gets 413 too; text that fits is queued', async () => {
+  // The fire rides to the task as a lane message. Any text under the
+  // limit fits it, quotes escaped twice over included, so no hook fire is
+  // refused at the queue, where no caller hears.
+  test('any text under the limit fits on the lane, and is queued', async () => {
     const at = new Date(NOW).toISOString();
-    let fits = 'x'.repeat(OVERRIDE_BUDGET);
-    while (overrideWeight({ kind: 'hook', hook: HOOK, keyVersion: 1, text: fits, at, repo: REPO }) > OVERRIDE_BUDGET) fits = fits.slice(1);
-    const over = harness();
-    assert.equal((await handle(fire(JSON.stringify({ text: `${fits}x` })), over.deps)).statusCode, 413);
-    assert.equal(over.queued.length, 0);
-    const under = harness();
-    assert.equal((await handle(fire(JSON.stringify({ text: fits })), under.deps)).statusCode, 202);
+    const text = '"'.repeat(HOOK_TEXT_LIMIT);
+    assert.ok(fireWeight({ kind: 'hook', hook: HOOK, keyVersion: 1, text, at, repo: REPO }) <= FIRE_BUDGET);
+    const { deps, queued } = harness();
+    assert.equal((await handle(fire(JSON.stringify({ text })), deps)).statusCode, 202);
+    assert.equal(queued.length, 1);
   });
 
   test('a path under /hooks/ that names no repo and hook gets 404; every other path is a GitHub delivery', async () => {

@@ -1,60 +1,57 @@
 /**
- * The starter's decisions: one fire off the lane, one dispatcher task, never
- * beside a running one.
+ * The starter's decisions: start a dispatcher task when a fire waits on the
+ * lane and none runs, and do nothing otherwise.
  *
- * A dispatcher turn refreshes the stored login, and two turns refreshing one
- * login leave one of them dead. So a fire that finds a task running is
- * handed straight back as a batch item failure, which returns the message to
- * the queue, asked back in DEFER_SECONDS (ChangeMessageVisibility on its
- * receipt handle); the lane is FIFO with one message group, so nothing
- * behind it is offered first. The queue paces the retry and no Lambda sits
- * idle waiting. After the attempts run out the fire is dead-lettered and the
- * tripwire says so (infra/governor.cfn.yml, DispatchFiresQueue).
+ * The starter holds no fire. The task is the lane's only reader: it takes
+ * each fire and runs it as its own turn, until the lane stays empty
+ * (dispatch/lane.mjs). A dispatcher turn refreshes the stored login, and two
+ * turns refreshing one login leave one of them dead, so there is never more
+ * than one task. The function's reserved concurrency of one keeps two calls
+ * from both seeing no task and both starting one (infra/governor.cfn.yml,
+ * StarterFunction).
  *
- * The queue's own visibility timeout is a different knob: how long an
- * invocation may hold a fire before the lane offers it again, a minute with
- * a margin for the poller. Left as the pace too, the lane ran one fire a
- * minute however short the task (2026-09-26: thirteen fires ahead cost a
- * conflict comment fourteen minutes on its way to its session). A refused
- * ask costs the fire that minute and nothing more.
+ * Three things call it:
+ * - the receiver, after it queues a fire (dispatch/webhook/poke.mjs). The
+ *   lane took that fire, so the call counts as a fire waiting without
+ *   asking the lane, whose counts are approximate and may lag the send;
+ * - every task's stop event, so a fire that lands while a task is exiting
+ *   finds the next task started;
+ * - a schedule every minute, the backstop for a call that never came.
  *
- * A deferral is as designed, so it is not a throw: a throw counts toward the
- * Lambda Errors metric, and the account-wide safety net paged on a burst of
- * ready labels. A fire that
- * fails (RunTask refused it, a body with no fire) is not a throw either: it
- * is handed back and asked back in DEFER_SECONDS like a deferral, so it
- * spends the lane's receives at the same pace and reaches the dead-letter
- * queue in the same half hour. Thrown, it came back after the visibility
- * timeout and held the lane three hours on the same receive count.
+ * A task that fails to start never took a fire, so the fire is still on the
+ * lane. Its stop starts the next attempt, which rides on the task's
+ * startedBy, up to MAX_START_ATTEMPTS in a row. Past that the starter starts
+ * nothing for the chain and logs `start-gave-up` at error, which pages; the
+ * next poke or the backstop begins a new chain.
  *
- * Pure: `startFire` takes its I/O as `deps`. starter-handler.mjs binds the
+ * Nothing is thrown. A failed call to ECS or the lane is logged at error and
+ * the backstop calls again within a minute: the fire never left the lane.
+ *
+ * Pure: `startNext` takes its I/O as `deps`. starter-handler.mjs binds the
  * real ones.
  */
 
-import { startable } from './fire.mjs';
-
 /**
- * @typedef {import('./fire.mjs').FireMessage} FireMessage
+ * @typedef {'receiver' | 'stop' | 'backstop'} Caller
  * @typedef {{
  *   running: () => Promise<string[]>,
- *   runTask: (fire: import('./fire.mjs').Fire, startedBy: string) => Promise<string>,
- *   defer: (receiptHandle: string, seconds: number) => Promise<void>,
+ *   waiting: () => Promise<number>,
+ *   runTask: (startedBy: string) => Promise<string>,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  * }} Deps
  */
 
 /**
- * How soon a deferred fire is offered again: the lane's pace, since a fire
- * deferred beside a running task idles this out past the task's end,
- * whatever the task took. A message turn takes about twenty-five seconds.
+ * How many tasks in a row may fail to start before the starter gives up on
+ * the chain. The pull fault cleared within seconds each time it was seen, so
+ * a second attempt carries a transient; a third is the margin.
+ * infra/governor.cfn.yml's DispatchNotRunAlarm threshold is sized off this.
  */
-export const DEFER_SECONDS = 10;
+export const MAX_START_ATTEMPTS = 3;
 
 /**
- * The task's startedBy, which carries the fire's attempt: the one field
- * RunTask sets that the task's stop event hands back, so the retrier knows a
- * task that failed to start was the lane's, and how many tries the fire has
- * had (dispatch/webhook/retry.mjs). ECS takes letters, digits,
+ * The task's startedBy, which carries its attempt: the one field RunTask
+ * sets that the task's stop event hands back. ECS takes letters, digits,
  * hyphens, underscores and slashes there.
  */
 const STARTED_BY = /^governor-starter\/attempt-(\d+)$/;
@@ -72,81 +69,55 @@ export const attemptFrom = (startedBy) => {
 };
 
 /**
- * Start the task for one fire, unless one is running. A running task defers
- * the fire: it resolves with no ARN, and handleRecords hands it back. Every
- * failure leaves as a throw, which handleRecords logs and hands back too.
- *
- * @param {FireMessage} message
- * @param {Deps} deps
- * @returns {Promise<string | undefined>} The task ARN, or undefined when deferred.
+ * @param {unknown} event
+ * @returns {Caller | undefined}
  */
-export const startFire = async (message, deps) => {
-  const fire = message?.fire;
-  startable(fire);
-  const { fire: _fire, ...context } = message;
-  const attempt = Number.isInteger(message.attempt) && Number(message.attempt) > 0 ? Number(message.attempt) : 1;
-  const running = await deps.running();
-  if (running.length > 0) {
-    deps.log('fire-deferred', { ...context, kind: fire.kind, running });
-    return undefined;
-  }
-  const taskArn = await deps.runTask(fire, startedByFor(attempt));
-  if (!taskArn) throw new Error('RunTask returned no task ARN');
-  deps.log('fire-started', { ...context, kind: fire.kind, attempt, taskArn });
-  return taskArn;
+export const callerOf = (event) => {
+  const e = /** @type {Record<string, unknown> | null} */ (event);
+  if (e?.source === 'aws.ecs' && e?.['detail-type'] === 'ECS Task State Change') return 'stop';
+  if (e?.caller === 'receiver' || e?.caller === 'backstop') return e.caller;
+  return undefined;
 };
 
 /** @param {unknown} error */
 const errorText = (error) => String(/** @type {any} */ (error)?.stack ?? error);
 
 /**
- * Ask the queue to offer a deferred or failed fire again in DEFER_SECONDS. A
- * refusal (a receipt handle the queue no longer knows) is logged, not thrown:
- * the fire is handed back either way and comes back after the queue's own
- * visibility timeout, and a throw would be a Lambda error paging the
- * account-wide safety net for a slower re-offer.
+ * Start the next dispatcher task, if a fire waits and none runs.
  *
- * @param {{ messageId: string, receiptHandle: string }} record
+ * @param {unknown} event The receiver's call, a stop event or the backstop's.
  * @param {Deps} deps
+ * @returns {Promise<string | undefined>} The task ARN, or undefined when it started none.
  */
-const reoffer = async (record, deps) => {
+export const startNext = async (event, deps) => {
+  const caller = callerOf(event);
+  if (caller === undefined) {
+    deps.log('start-ignored', { reason: 'not a call the starter knows', called: JSON.stringify(event)?.slice(0, 300) });
+    return undefined;
+  }
+  /** @type {Record<string, unknown>} */
+  const context = { caller };
+  let attempt = 1;
+  if (caller === 'stop') {
+    const detail = /** @type {{ taskArn?: string, stopCode?: string, startedBy?: string, stoppedReason?: string } | undefined} */ (/** @type {any} */ (event).detail);
+    Object.assign(context, { stopped: detail?.taskArn, stopCode: detail?.stopCode, stoppedReason: detail?.stoppedReason });
+    const prior = detail?.stopCode === 'TaskFailedToStart' ? attemptFrom(detail?.startedBy) : undefined;
+    if (prior !== undefined) {
+      if (prior >= MAX_START_ATTEMPTS) {
+        deps.log('start-gave-up', { level: 'error', ...context, attempts: prior, reason: `${prior} tasks in a row failed to start; the next poke or the backstop tries again` });
+        return undefined;
+      }
+      attempt = prior + 1;
+    }
+  }
   try {
-    await deps.defer(record.receiptHandle, DEFER_SECONDS);
+    if ((await deps.running()).length > 0) return undefined;
+    if (caller !== 'receiver' && (await deps.waiting()) === 0) return undefined;
+    const taskArn = await deps.runTask(startedByFor(attempt));
+    deps.log('task-started', { ...context, attempt, taskArn });
+    return taskArn;
   } catch (error) {
-    deps.log('fire-defer-failed', { messageId: record.messageId, error: errorText(error) });
+    deps.log('start-failed', { level: 'error', ...context, attempt, error: errorText(error) });
+    return undefined;
   }
-};
-
-/**
- * The SQS records of one invocation, in order. One per invocation by the
- * event source's batch size; the loop is for the shape, not for throughput.
- * A deferred or failed fire goes back to the queue with every record behind
- * it, since the lane is FIFO (the event source's ReportBatchItemFailures
- * response); that one is asked back in DEFER_SECONDS, the ones behind it
- * wait the queue's visibility timeout, behind it either way. A failure is
- * logged, never thrown: the dead-letter tripwire is where a fire that fails
- * every attempt ends.
- *
- * @param {Array<{ messageId: string, receiptHandle: string, body: string }>} records
- * @param {Deps} deps
- * @returns {Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }>}
- */
-export const handleRecords = async (records, deps) => {
-  for (const [i, record] of records.entries()) {
-    let taskArn;
-    /** @type {any} */
-    let message;
-    try {
-      message = JSON.parse(record.body);
-      taskArn = await startFire(message, deps);
-    } catch (error) {
-      const { fire, ...context } = message !== null && typeof message === 'object' ? message : {};
-      deps.log('fire-failed', { messageId: record.messageId, ...context, kind: fire?.kind, error: errorText(error) });
-    }
-    if (taskArn === undefined) {
-      await reoffer(record, deps);
-      return { batchItemFailures: records.slice(i).map((r) => ({ itemIdentifier: r.messageId })) };
-    }
-  }
-  return { batchItemFailures: [] };
 };
