@@ -30,7 +30,7 @@
  */
 
 import { z } from 'zod';
-import { COUNTS, HOOK_NAME, WORKFLOW_PATH } from './webhook/fire.mjs';
+import { COUNTS, HOOK_NAME, HOOK_PER_HOUR_MAX, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
 
 /** Where the file lives, on the repo's default branch. */
@@ -234,7 +234,8 @@ const periodicSchema = z.strictObject({
  * of the hook's key a fire must be signed with. Raising it revokes the key
  * before it. A version is not a secret: the key is derived from the stack's.
  * `perHour`, the most fires the receiver queues for the hook in a clock hour,
- * 20 when unset (`HOOK_PER_HOUR`, webhook/fire.mjs).
+ * 20 when unset (`HOOK_PER_HOUR`, webhook/fire.mjs), and at most 1000
+ * (`HOOK_PER_HOUR_MAX`).
  */
 const hookSchema = z.strictObject({
   name: z.string().regex(HOOK_NAME, 'lower-case letters, digits and hyphens, safe in a URL path'),
@@ -242,7 +243,9 @@ const hookSchema = z.strictObject({
   // At most nine digits, as a request's `v=` and scripts/hook-key.mjs take:
   // a larger version could never be signed.
   keyVersion: z.number().int().positive().max(999_999_999),
-  perHour: z.number().int().positive().optional(),
+  // An hour's count item holds each signature it counted: a larger cap
+  // could outgrow the item.
+  perHour: z.number().int().positive().max(HOOK_PER_HOUR_MAX).optional(),
 });
 
 /**

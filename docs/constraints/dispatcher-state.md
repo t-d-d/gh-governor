@@ -21,8 +21,9 @@ group.
   repo, `hooks#<repo>` / `listed`, each hook's name, `keyVersion` and
   `perHour`, which the task puts each time it reads the repo's file; and one
   item per hook and clock hour, `fires#<repo>#<hook>` / `<hour>`, the
-  receiver's count of that hook's fires, raised by one conditional
-  `UpdateItem` while under the cap and expired by `ttl`. The receiver holds
+  receiver's count of that hook's fires and the signatures it counted,
+  raised by one conditional `UpdateItem` while under the cap and only for a
+  signature the hour has not counted, and expired by `ttl`. The receiver holds
   `GetItem` and `UpdateItem` on it and nothing on the state table; the task
   holds only the item actions it calls on it. The receiver finds it through `HOOK_TABLE`,
   the task through `DISPATCH_HOOK_TABLE`.
@@ -74,9 +75,13 @@ group.
   answers `503` (dispatch/webhook/route.mjs).
 - A hook's fires this hour: `fires#<repo>#<hook>` / `<hour>` in the hook
   table, raised by the receiver in one `UpdateItem` conditioned on the count
-  being under the hook's cap, never read then written, and expired by `ttl`
-  when the hour ends. A count at the cap answers `429`; any other failure
-  answers `503`. A lost item lets at most one more hour's cap through.
+  being under the hook's cap and the request's signature not yet in the
+  item's set, never read then written, and expired by `ttl` when the hour
+  ends. The refusal returns the old item: a signature already counted takes
+  no place and is queued again, and a new one at the cap answers `429`. Any
+  other failure answers `503`. The set holds at most `perHour` signatures,
+  and `perHour` is at most 1000. A lost item lets at most one more hour's
+  cap through.
 
 ## Do not
 
@@ -89,4 +94,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53. The hook record was added in #56.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66. The hook record was added in #56.

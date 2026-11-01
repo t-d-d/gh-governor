@@ -17,7 +17,10 @@
  * The receiver also counts each hook's fires here ({@link hookTable}
  * `count`), one item per hook and clock hour, `fires#<repo>#<hook>` /
  * `<hour>`, raised only while under the hook's cap and expired by `ttl` when
- * the hour ends. A lost count item lets at most one more hour's cap through.
+ * the hour ends. The item holds each signature it counted, and a signature
+ * is counted once: a resent request, or a retry after the queue refused the
+ * send, takes no second place. A lost count item lets at most one more
+ * hour's cap through.
  *
  * It is a table of its own, apart from the state table
  * (docs/constraints/dispatcher-state.md): the receiver is internet-facing,
@@ -57,7 +60,7 @@ const keyOf = (repo) => ({ pk: { S: `hooks#${repo.toLowerCase()}` }, sk: { S: 'l
  * @typedef {{
  *   listed: (repo: string) => Promise<ReadonlyMap<string, Listed> | null>,
  *   publish: (repo: string, hooks: ReadonlyArray<{ name: string } & Listed>, at: string) => Promise<boolean>,
- *   count: (repo: string, hook: string, at: number, cap: number) => Promise<boolean>,
+ *   count: (repo: string, hook: string, at: number, cap: number, signature: string) => Promise<Counted>,
  * }} HookTable
  *   `listed`: each hook the repo's file listed when the task last read it,
  *   its key version and its cap; null when the repo has no item. An item
@@ -67,8 +70,13 @@ const keyOf = (repo) => ({ pk: { S: `hooks#${repo.toLowerCase()}` }, sk: { S: 'l
  *   unless a write from a later read stands, false then. Any other failure
  *   throws.
  *   `count`: one more fire of the hook in the clock hour holding `at`, taken
- *   only while that hour's count is under `cap`; false when it is not. Any
- *   other failure throws.
+ *   only while that hour's count is under `cap` and the hour has not counted
+ *   `signature`. Any other failure throws.
+ * @typedef {'counted' | 'seen' | 'full'} Counted `counted`: the fire took a
+ *   place. `seen`: the hour counted this signature already, so the fire
+ *   takes no place and may still be queued, where the queue's deduplication
+ *   drops it if an earlier send got through. `full`: a new signature in an
+ *   hour at its cap.
  */
 
 /**
@@ -118,22 +126,32 @@ export const hookTable = (client, table) => ({
     }
   },
   // Raised in one conditional update, never read then written: two fires
-  // racing cannot both take the last place.
-  count: async (repo, hook, at, cap) => {
+  // racing cannot both take the last place, and two sends of one signature
+  // cannot both take one. The refusal returns the item, which tells a
+  // signature already counted from a full hour.
+  count: async (repo, hook, at, cap, signature) => {
     const hour = Math.floor(at / HOUR_MS) * HOUR_MS;
     try {
       await client.send(new UpdateItemCommand({
         TableName: table,
         Key: { pk: { S: `fires#${repo.toLowerCase()}#${hook}` }, sk: { S: new Date(hour).toISOString().slice(0, 13) } },
-        UpdateExpression: 'ADD #fires :one SET #ttl = :ttl',
-        ConditionExpression: 'attribute_not_exists(#fires) OR #fires < :cap',
-        ExpressionAttributeNames: { '#fires': 'fires', '#ttl': 'ttl' },
-        ExpressionAttributeValues: { ':one': { N: '1' }, ':cap': { N: String(cap) }, ':ttl': { N: String((hour + HOUR_MS) / 1000) } },
+        UpdateExpression: 'ADD #fires :one, #signatures :signatures SET #ttl = :ttl',
+        ConditionExpression: '(attribute_not_exists(#fires) OR #fires < :cap) AND NOT contains(#signatures, :signature)',
+        ExpressionAttributeNames: { '#fires': 'fires', '#signatures': 'signatures', '#ttl': 'ttl' },
+        ExpressionAttributeValues: {
+          ':one': { N: '1' },
+          ':cap': { N: String(cap) },
+          ':signature': { S: signature },
+          ':signatures': { SS: [signature] },
+          ':ttl': { N: String((hour + HOUR_MS) / 1000) },
+        },
+        ReturnValuesOnConditionCheckFailure: 'ALL_OLD',
       }));
-      return true;
+      return 'counted';
     } catch (error) {
-      if (conditionFailed(error)) return false;
-      throw error;
+      if (!conditionFailed(error)) throw error;
+      const counted = /** @type {any} */ (error).Item?.signatures?.SS;
+      return Array.isArray(counted) && counted.includes(signature) ? 'seen' : 'full';
     }
   },
 });

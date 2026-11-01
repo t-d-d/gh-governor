@@ -14,7 +14,7 @@ import { HOOK_CLOCK_SKEW_MS, HOOK_TEXT_LIMIT, hookKey, hookPath, hookSignature, 
 import { handle } from '../dispatch/webhook/route.mjs';
 import { hookTable } from '../dispatch/webhook/hook-table.mjs';
 import { HOOK_KEY_STALE } from '../dispatch/hooks.mjs';
-import { OVERRIDE_BUDGET, overrideWeight, parseFire } from '../dispatch/webhook/fire.mjs';
+import { HOOK_PER_HOUR_MAX, OVERRIDE_BUDGET, overrideWeight, parseFire } from '../dispatch/webhook/fire.mjs';
 import { configSchema, readConfig, resolveFiles, switchOf } from '../dispatch/repo-config.mjs';
 import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
 import { factoryFile } from './helpers/factory.ts';
@@ -24,6 +24,8 @@ const REPO = 'acme/factory';
 const HOOK = 'operator-prod';
 const NOW = Date.parse('2026-09-21T12:00:00Z');
 const T = Math.floor(NOW / 1000);
+
+type Counted = 'counted' | 'seen' | 'full';
 
 const keyOf = (repo = REPO, hook = HOOK, version = 1) => hookKey(HOOK_SECRET, repo, hook, version);
 
@@ -40,7 +42,7 @@ const harness = (over: Record<string, unknown> = {}) => {
     // The hook table's item for the repo: none unless a test says otherwise.
     listedHooks: async (_repo: string): Promise<ReadonlyMap<string, { keyVersion: number, perHour: number }> | null> => null,
     // The hour's count: always under the cap unless a test says otherwise.
-    countFire: async (_repo: string, _hook: string, _at: number, _cap: number) => true,
+    countFire: async (_repo: string, _hook: string, _at: number, _cap: number, _signature: string): Promise<Counted> => 'counted',
     enqueue: async (message: Record<string, unknown>, dedupId?: string) => {
       queued.push({ message, ...(dedupId === undefined ? {} : { dedupId }) });
       return `m-${queued.length}`;
@@ -317,19 +319,21 @@ describe('handle: the hook table', () => {
  */
 describe('handle: the hourly cap', () => {
   const counter = (over: Record<string, unknown> = {}) => {
-    const counts: Array<{ repo: string, hook: string, at: number, cap: number }> = [];
+    const counts: Array<{ repo: string, hook: string, at: number, cap: number, signature: string }> = [];
     const { deps, queued, logged } = harness({
-      countFire: async (repo: string, hook: string, at: number, cap: number) => { counts.push({ repo, hook, at, cap }); return true; },
+      countFire: async (repo: string, hook: string, at: number, cap: number, signature: string): Promise<Counted> => { counts.push({ repo, hook, at, cap, signature }); return 'counted'; },
       ...over,
     });
     return { deps, queued, logged, counts };
   };
 
-  test('a queued fire is counted once, against the perHour the hook table\'s item names', async () => {
+  test('a queued fire is counted once, by its signature, against the perHour the hook table\'s item names', async () => {
     const { deps, queued, counts } = counter({ listedHooks: async () => new Map([[HOOK, { keyVersion: 1, perHour: 7 }]]) });
-    assert.equal((await handle(fire(TEXT), deps)).statusCode, 202);
+    const request = fire(TEXT);
+    assert.equal((await handle(request, deps)).statusCode, 202);
     assert.equal(queued.length, 1);
-    assert.deepEqual(counts, [{ repo: REPO, hook: HOOK, at: NOW, cap: 7 }]);
+    const hex = readSignature(request.headers['Governor-Signature'])?.hex;
+    assert.deepEqual(counts, [{ repo: REPO, hook: HOOK, at: NOW, cap: 7, signature: hex }]);
   });
 
   test('a repo with no item yet is capped at 20', async () => {
@@ -339,7 +343,7 @@ describe('handle: the hourly cap', () => {
   });
 
   test('a fire past the cap gets 429, queues nothing, and logs at warn', async () => {
-    const { deps, queued, logged } = counter({ countFire: async () => false });
+    const { deps, queued, logged } = counter({ countFire: async (): Promise<Counted> => 'full' });
     const response = await handle(fire(TEXT), deps);
     assert.equal(response.statusCode, 429);
     assert.equal(queued.length, 0);
@@ -351,7 +355,7 @@ describe('handle: the hourly cap', () => {
   });
 
   test('a count that fails gets 503 and queues nothing, so the caller retries', async () => {
-    const { deps, queued, logged } = counter({ countFire: async () => { throw new Error('ProvisionedThroughputExceededException'); } });
+    const { deps, queued, logged } = counter({ countFire: async (): Promise<Counted> => { throw new Error('ProvisionedThroughputExceededException'); } });
     const response = await handle(fire(TEXT), deps);
     assert.equal(response.statusCode, 503);
     assert.equal(queued.length, 0);
@@ -372,17 +376,82 @@ describe('handle: the hourly cap', () => {
     assert.equal(counts.length, 1);
   });
 
+  // One hour's count as the hook table keeps it: each signature once, and a new one only under the cap.
+  const hourOf = (cap: number) => {
+    const seen = new Set<string>();
+    return {
+      seen,
+      countFire: async (_repo: string, _hook: string, _at: number, _cap: number, signature: string): Promise<Counted> => {
+        if (seen.has(signature)) return 'seen';
+        if (seen.size >= cap) return 'full';
+        seen.add(signature);
+        return 'counted';
+      },
+    };
+  };
+
+  test('the same signed request sent twice in one hour takes one place, and both sends answer 202 with the same deduplication id', async () => {
+    const hour = hourOf(20);
+    const { deps, queued, logged } = harness({ countFire: hour.countFire });
+    const request = fire(TEXT);
+    assert.equal((await handle(request, deps)).statusCode, 202);
+    assert.equal((await handle(request, deps)).statusCode, 202);
+    assert.equal(hour.seen.size, 1);
+    assert.equal(queued.length, 2, 'both reach the queue, whose deduplication drops the second');
+    assert.equal(queued[0]?.dedupId, queued[1]?.dedupId);
+    assert.ok(!logged.some((l) => l.level === 'warn' || l.level === 'error'), 'a resend is not a refusal');
+  });
+
+  test('a resend at the cap still answers 202: the hour counted it already', async () => {
+    const hour = hourOf(1);
+    const { deps } = harness({ countFire: hour.countFire });
+    const request = fire(TEXT);
+    assert.equal((await handle(request, deps)).statusCode, 202);
+    assert.equal((await handle(request, deps)).statusCode, 202);
+  });
+
+  test('a request whose send SQS refused, sent again with the same signature, takes no second place', async () => {
+    const hour = hourOf(20);
+    let refuse = true;
+    const { deps, queued } = harness({
+      countFire: hour.countFire,
+      enqueue: async (message: Record<string, unknown>, dedupId?: string) => {
+        if (refuse) throw new Error('ServiceUnavailable');
+        queued.push({ message, ...(dedupId === undefined ? {} : { dedupId }) });
+        return 'm-1';
+      },
+    });
+    const request = fire(TEXT);
+    await assert.rejects(handle(request, deps), /ServiceUnavailable/, 'a refused send leaves as a throw, which the Function URL answers 502');
+    await assert.rejects(handle(request, deps), /ServiceUnavailable/);
+    refuse = false;
+    assert.equal((await handle(request, deps)).statusCode, 202);
+    assert.equal(hour.seen.size, 1);
+    assert.equal(queued.length, 1);
+  });
+
+  test('a new signature past the cap still answers 429', async () => {
+    const hour = hourOf(2);
+    const { deps, queued } = harness({ countFire: hour.countFire });
+    const answers = [];
+    for (const text of ['ALARM 1', 'ALARM 2', 'ALARM 3']) answers.push((await handle(fire(JSON.stringify({ text })), deps)).statusCode);
+    assert.deepEqual(answers, [202, 202, 429]);
+    assert.equal(queued.length, 2);
+  });
+
   test('a flood: 100 fires in ten minutes queue the first 20 and answer 429 to the rest', async () => {
-    const hour = new Map<string, number>();
+    const hour = new Map<string, Set<string>>();
     let clock = NOW;
     const { deps, queued } = harness({
       now: () => clock,
-      countFire: async (repo: string, hook: string, at: number, cap: number) => {
+      countFire: async (repo: string, hook: string, at: number, cap: number, signature: string): Promise<Counted> => {
         const key = `${repo}|${hook}|${Math.floor(at / 3_600_000)}`;
-        const n = hour.get(key) ?? 0;
-        if (n >= cap) return false;
-        hour.set(key, n + 1);
-        return true;
+        const seen = hour.get(key) ?? new Set<string>();
+        hour.set(key, seen);
+        if (seen.has(signature)) return 'seen';
+        if (seen.size >= cap) return 'full';
+        seen.add(signature);
+        return 'counted';
       },
     });
     const answers: number[] = [];
@@ -480,25 +549,53 @@ describe('the hook table', () => {
     await assert.rejects(hookTable(failing as never, 'T').publish(REPO, [], '2026-09-21T12:00:00.000Z'), /AccessDeniedException/);
   });
 
-  test('a fire is counted in its hook\'s item for the clock hour, only while under the cap, and expires when the hour ends', async () => {
+  const SIG = 'a'.repeat(64);
+  const refused = (item?: Record<string, unknown>) => client(() => {
+    throw Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException', ...(item === undefined ? {} : { Item: item }) });
+  });
+
+  test('a fire is counted in its hook\'s item for the clock hour, with its signature, only while under the cap and new to the hour, and expires when the hour ends', async () => {
     const c = client(() => ({}));
     const at = Date.parse('2026-09-21T12:34:56.789Z');
-    assert.equal(await hookTable(c as never, 'T').count('Acme/Factory', HOOK, at, 20), true);
+    assert.equal(await hookTable(c as never, 'T').count('Acme/Factory', HOOK, at, 20, SIG), 'counted');
     const update = c.sent[0]!;
     assert.equal(update.name, 'UpdateItemCommand');
     assert.equal(update.input.TableName, 'T');
     assert.deepEqual(update.input.Key, { pk: { S: 'fires#acme/factory#operator-prod' }, sk: { S: '2026-09-21T12' } });
-    assert.equal(update.input.UpdateExpression, 'ADD #fires :one SET #ttl = :ttl');
-    assert.equal(update.input.ConditionExpression, 'attribute_not_exists(#fires) OR #fires < :cap');
-    assert.deepEqual(update.input.ExpressionAttributeNames, { '#fires': 'fires', '#ttl': 'ttl' });
-    assert.deepEqual(update.input.ExpressionAttributeValues, { ':one': { N: '1' }, ':cap': { N: '20' }, ':ttl': { N: String(Date.parse('2026-09-21T13:00:00Z') / 1000) } });
+    assert.equal(update.input.UpdateExpression, 'ADD #fires :one, #signatures :signatures SET #ttl = :ttl');
+    assert.equal(update.input.ConditionExpression, '(attribute_not_exists(#fires) OR #fires < :cap) AND NOT contains(#signatures, :signature)');
+    assert.deepEqual(update.input.ExpressionAttributeNames, { '#fires': 'fires', '#signatures': 'signatures', '#ttl': 'ttl' });
+    assert.deepEqual(update.input.ExpressionAttributeValues, {
+      ':one': { N: '1' },
+      ':cap': { N: '20' },
+      ':signature': { S: SIG },
+      ':signatures': { SS: [SIG] },
+      ':ttl': { N: String(Date.parse('2026-09-21T13:00:00Z') / 1000) },
+    });
+    assert.equal(update.input.ReturnValuesOnConditionCheckFailure, 'ALL_OLD', 'a refusal returns the item, to tell a counted signature from a full hour');
   });
 
-  test('a count at the cap is false; any other failure throws', async () => {
-    const full = client(() => { throw Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' }); });
-    assert.equal(await hookTable(full as never, 'T').count(REPO, HOOK, NOW, 20), false);
+  test('a signature the hour already holds is seen, whether or not the hour is full', async () => {
+    for (const fires of ['3', '20']) {
+      const item = { fires: { N: fires }, signatures: { SS: ['b'.repeat(64), SIG] } };
+      assert.equal(await hookTable(refused(item) as never, 'T').count(REPO, HOOK, NOW, 20, SIG), 'seen', fires);
+    }
+  });
+
+  test('an hour\'s item at the largest cap stays well under DynamoDB\'s 400 KB', () => {
+    // Each signature is 64 hex characters; the key, the count and the ttl are a few dozen bytes more.
+    const bytes = HOOK_PER_HOUR_MAX * 64 + 'signatures'.length + 200;
+    assert.ok(bytes < 100 * 1024, `${bytes} bytes`);
+  });
+
+  test('a new signature in a full hour is full; any other failure throws', async () => {
+    const item = { fires: { N: '20' }, signatures: { SS: ['b'.repeat(64)] } };
+    assert.equal(await hookTable(refused(item) as never, 'T').count(REPO, HOOK, NOW, 20, SIG), 'full');
+    // An hour counted before signatures were kept holds none.
+    assert.equal(await hookTable(refused({ fires: { N: '20' } }) as never, 'T').count(REPO, HOOK, NOW, 20, SIG), 'full');
+    assert.equal(await hookTable(refused() as never, 'T').count(REPO, HOOK, NOW, 20, SIG), 'full');
     const failing = client(() => { throw new Error('AccessDeniedException'); });
-    await assert.rejects(hookTable(failing as never, 'T').count(REPO, HOOK, NOW, 20), /AccessDeniedException/);
+    await assert.rejects(hookTable(failing as never, 'T').count(REPO, HOOK, NOW, 20, SIG), /AccessDeniedException/);
   });
 });
 
@@ -542,11 +639,12 @@ describe('the config file\'s hooks', () => {
     assert.equal(fault(withHooks({ hooks: false })), null);
   });
 
-  test('a hook may set perHour, a positive whole number; a hook without it stays valid', () => {
+  test('a hook may set perHour, a positive whole number up to the most an hour\'s item can hold; a hook without it stays valid', () => {
     const hook = { name: 'operator-prod', prompt: 'Look into the alarm.', keyVersion: 1 };
     assert.equal(fault(withHooks({ hooks: true }, [hook])), null);
     assert.equal(fault(withHooks({ hooks: true }, [{ ...hook, perHour: 5 }])), null);
-    for (const perHour of [0, -1, 1.5, '20', null]) {
+    assert.equal(fault(withHooks({ hooks: true }, [{ ...hook, perHour: HOOK_PER_HOUR_MAX }])), null);
+    for (const perHour of [0, -1, 1.5, '20', null, HOOK_PER_HOUR_MAX + 1]) {
       assert.notEqual(fault(withHooks({ hooks: true }, [{ ...hook, perHour }])), null, JSON.stringify(perHour));
     }
   });
