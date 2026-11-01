@@ -109,12 +109,12 @@ spends the one claude.ai login.
   (`dispatch-repo-skipped`) only when it went through `claude --cloud`: a
   failed CLI launch points at the repo's environment or the login, so the
   repo's next launch would fail the same way. A routine the routines API
-  refuses, before the fire or on it, stops only its own periodic. A fire is
-  refused when it answers a 4xx other than 408 and 429, or throws before
-  its request is sent; any other failed fire may have started a run. It starts nothing,
-  writes no record, and logs an alarmed `dispatch-routine-refused` error
-  naming the repo and the periodic, and the repo's tickets and other
-  periodics in the fire still go.
+  refuses, before the fire or on it, stops only its own periodic. It starts
+  nothing, writes no record, and logs an alarmed `dispatch-routine-refused`
+  error naming the repo and the periodic, and the repo's tickets and other
+  periodics in the fire still go. A fire is refused when it answers a 4xx
+  other than 408 and 429, or throws before its request is sent; any other
+  failed fire may have started a run.
 - A file turning hooks on lists at least one hook, or is a schema fault.
   Each hook has a name unique in the file and safe in a URL path, a prompt,
   and a `keyVersion`. A hook's key is derived from one stack secret, its

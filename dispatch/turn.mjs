@@ -2312,8 +2312,9 @@ const CONNECTORS_BETA = 'mcp-servers-2025-12-04';
  * The routines API and the account's connector list (dispatch/routines.mjs)
  * under the login's token and organization, as the CLI's routine commands
  * call them: each answer parsed, and any answer but a 2xx thrown as a
- * `RoutinesApiError` with its status, naming the path and status; a routine
- * id the path cannot carry throws one with no status, before any request. A refusal's body is cut short: it may quote a prompt.
+ * `RoutinesApiError` with its status, naming the path and status. A routine
+ * id the path cannot carry rejects before any request, with a status of
+ * null. A refusal's body is cut short: it may quote a prompt.
  *
  * @param {string} token
  * @param {string | null} organization
@@ -2347,8 +2348,8 @@ export const routinesApi = (token, organization) => {
     connectors: () => call('GET', '/v1/mcp_servers?limit=1000', CONNECTORS_BETA),
     triggers: () => call('GET', '/v1/code/triggers', ROUTINES_BETA),
     create: (body) => call('POST', '/v1/code/triggers', ROUTINES_BETA, body),
-    update: (id, body) => call('POST', trigger(id), ROUTINES_BETA, body),
-    run: (id) => call('POST', `${trigger(id)}/run`, ROUTINES_BETA, {}),
+    update: async (id, body) => call('POST', trigger(id), ROUTINES_BETA, body),
+    run: async (id) => call('POST', `${trigger(id)}/run`, ROUTINES_BETA, {}),
     sessions: (id) => call('GET', `/v1/code/sessions?trigger_id=${encodeURIComponent(id)}&limit=100`, ROUTINES_BETA),
   };
 };

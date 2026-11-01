@@ -25,8 +25,8 @@
  * 408 and 429, or a call that threw before its request went out) started
  * nothing. Any other fire that throws may still have started a run (a
  * timeout, a 502 after the server queued it), so it is read as a fire that
- * answered without its session. A named connector the account has not connected starts nothing and is
- * named in `missing`.
+ * answered without its session. A named connector the account has not
+ * connected starts nothing and is named in `missing`.
  *
  * Every shape here is read from the bundled CLI's routine commands, not a
  * published API, so the turn logs each answer's shape ({@link observed}).
@@ -290,6 +290,8 @@ const firedSession = (answer) => {
  */
 export const launchRoutine = async ({ api, repo, periodic, prompt, environment, model, connectors, sleep, uuid }) => {
   const name = routineName(repo, periodic);
+  /** A launch that did not fire, and why. @param {string} why @returns {RoutineResult} */
+  const unfired = (why) => ({ status: 1, output: `the routine for ${periodic} did not fire: ${why}` });
   /** @type {string} */
   let id;
   /** The routine's run sessions before this fire. @type {Set<string>} */
@@ -329,7 +331,7 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
       }
     }
   } catch (error) {
-    return { status: 1, output: `the routine for ${periodic} did not fire: ${messageOf(error)}` };
+    return unfired(messageOf(error));
   }
   // From the fire on, a failure the API did not refuse leaves a run that may
   // have started: a fire that times out, or answers 502 after the server
@@ -344,7 +346,7 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
     // The turn takes the session an answer names as this fire's, and a
     // refusal's body may name another run's, so none is kept.
     threw = messageOf(error).replace(ANY_SESSION_ID, 'a session');
-    if (refusedFire(error)) return { status: 1, output: `the routine for ${periodic} did not fire: ${threw}` };
+    if (refusedFire(error)) return unfired(threw);
   }
   for (let tries = 0; tries < ROUTINE_SESSION_TRIES; tries += 1) {
     if (tries > 0) await sleep(ROUTINE_SESSION_PAUSE_MS);

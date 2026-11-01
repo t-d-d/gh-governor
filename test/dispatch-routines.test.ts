@@ -301,7 +301,9 @@ describe('the routines API\'s errors', () => {
     let sent = 0;
     globalThis.fetch = (async () => { sent += 1; return new Response(body, { status }); }) as typeof fetch;
     try {
-      return { error: await (async () => call(routinesApi('token', null)))().then(() => null, (e: unknown) => e), sent };
+      // A call is a promise even when it fails before its request: a caller's
+      // rejection handler sees the error, never a synchronous throw.
+      return { error: await call(routinesApi('token', null)).then(() => null, (e: unknown) => e), sent };
     } finally {
       globalThis.fetch = real;
     }
