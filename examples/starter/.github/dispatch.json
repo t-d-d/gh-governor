@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/030ec89fd7f1a2ec6c80e37fc199256aa0dde358/schema/dispatch.schema.json",
   "environment": "my-env",
   "labels": { "ready": ["mode: afk"], "claim": "claimed", "claimRemoves": [] },
   "features": {
@@ -6,8 +7,17 @@
     "summons": true,
     "prMessages": true,
     "subscribeMessages": true,
+    "redScheduledRun": false,
+    "unblocked": false,
+    "ciMessages": false,
+    "deployMessages": false,
+    "branchRunMessages": false,
+    "conflicts": false,
+    "deployedLabels": false,
+    "prReview": false,
     "heartbeat": true,
-    "periodics": true
+    "periodics": true,
+    "hooks": false
   },
   "heartbeat": { "issue": 1 },
   "pickup": { "sweepHours": 1 },

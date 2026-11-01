@@ -11,7 +11,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
-import { CONFIG_PATH, namesEnvironment, readConfig } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, GENERIC_SWITCHES, namesEnvironment, readConfig } from '../dispatch/repo-config.mjs';
 import { readConfig as checkerReadConfig } from '../checker/heartbeat-check.mjs';
 
 const STARTER = 'examples/starter/';
@@ -35,6 +35,22 @@ describe('the starter kit\'s config file', () => {
     assert.equal(features.periodics, true);
     assert.ok(heartbeat !== undefined && Number.isInteger(heartbeat.issue));
     assert.equal(heartbeat.marker, undefined, 'the older shape keeps only a last-run line, not a line per fire');
+  });
+
+  test('lists every switch, the six it turns on true and the rest false', () => {
+    const { features } = JSON.parse(text) as { features: Record<string, unknown> };
+    assert.deepEqual(Object.keys(features).sort(), [...GENERIC_SWITCHES].sort(), 'a new switch is added to the starter file');
+    const on = ['pickup', 'summons', 'prMessages', 'subscribeMessages', 'heartbeat', 'periodics'];
+    for (const name of GENERIC_SWITCHES) assert.equal(features[name], on.includes(name), name);
+  });
+
+  test('names its JSON Schema at the commit the config check is pinned to', () => {
+    const { $schema } = JSON.parse(text) as { $schema?: unknown };
+    const m = /^https:\/\/raw\.githubusercontent\.com\/t-d-d\/gh-governor\/([0-9a-f]{40})\/schema\/dispatch\.schema\.json$/.exec(String($schema));
+    assert.ok(m !== null, String($schema));
+    const check = yaml.load(read(`${STARTER}.github/workflows/config-check.yml`)) as { jobs: Record<string, { uses?: string }> };
+    const pin = Object.values(check.jobs).map((j) => String(j.uses).split('@')[1]);
+    assert.deepEqual(pin, [m[1]], 'bump $schema and the config check together');
   });
 
   test('names its environment by a placeholder name, never an id', () => {
@@ -148,4 +164,12 @@ test('the README\'s "How a repo opts in" points at the starter kit and the heart
   const section = readme.slice(readme.indexOf('## How a repo opts in'), readme.indexOf('### The schema'));
   assert.match(section, /\(examples\/starter\/?\)/);
   assert.match(section, /<!-- governor:heartbeat -->/);
+});
+
+test('the README\'s starter kit section says the file names its schema and lists every switch', () => {
+  const readme = read('README.md');
+  const at = readme.indexOf('### The starter kit');
+  const section = readme.slice(at, readme.indexOf('\n### ', at + 1));
+  assert.match(section, /`\$schema`/);
+  assert.match(section, /every switch/);
 });
