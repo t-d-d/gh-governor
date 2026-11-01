@@ -47,8 +47,35 @@
  * @typedef {{ ready: readonly string[], claim: string, exclude: readonly string[] }} Labels
  */
 
-/** @param {IssueRow} issue @param {string} label */
-const has = (issue, label) => (issue.labels ?? []).includes(label);
+/**
+ * What a ticket's labels say about picking it up, under its repo's label
+ * rules: `excluded` when it carries any excluded label, else `claimed` when
+ * it carries the claim, else `ready` when it carries every ready label, else
+ * `not-ready`. Only `ready` may be picked up.
+ *
+ * The selection (`selectReadyWork`), the claim's second read
+ * (dispatch/turn.mjs) and the unblocked row (`ticketRow`,
+ * dispatch/unblocked.mjs) all call this, so a rule added here holds in all
+ * three. Copies of it drifted once: the selection learned the excluded
+ * labels and the claim did not, so a ticket labelled to keep out between
+ * the plan and its launch was claimed anyway.
+ *
+ * The claim is checked whatever the ready labels say: a claim swaps the
+ * ready label for the claim, but a worker that only adds leaves both, and
+ * the ready label alone would dispatch it again.
+ *
+ * @param {readonly string[] | undefined} on The ticket's label names. None
+ *   read is the same answer as none.
+ * @param {Labels} labels
+ * @returns {'excluded' | 'claimed' | 'ready' | 'not-ready'}
+ */
+export const labelRow = (on, labels) => {
+  const names = on ?? [];
+  if (labels.exclude.some((label) => names.includes(label))) return 'excluded';
+  if (names.includes(labels.claim)) return 'claimed';
+  if (labels.ready.every((label) => names.includes(label))) return 'ready';
+  return 'not-ready';
+};
 
 /**
  * Whether any linked blocker is still open.
@@ -89,12 +116,7 @@ const isEligible = (issue, blockers, labels) => {
   // a hand-assembled list should not be able to put a closed ticket in front
   // of an agent.
   if ((issue.state ?? 'open') !== 'open') return false;
-  if (!labels.ready.every((label) => has(issue, label))) return false;
-  // A claim swaps `ready` for `under development`, but a worker that only
-  // adds leaves both, and `ready` alone would re-dispatch it. A
-  // repo whose claim leaves its ready label on is read the same way.
-  if (has(issue, labels.claim)) return false;
-  if (labels.exclude.some((label) => has(issue, label))) return false;
+  if (labelRow(issue.labels, labels) !== 'ready') return false;
   if (isBlocked(issue, blockers.get(issue.number))) return false;
   return true;
 };
