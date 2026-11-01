@@ -1468,6 +1468,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const sweepsUnread = [];
   /** The repos the bare fire sweeps, each with the time the turn read their last sweep, which it records. @type {Map<string, string>} */
   const swept = new Map();
+  /** The repos the bare fire sweeps with a ready ticket the cap cut: like a repo in `leftOver`, its sweep is not recorded. @type {Set<string>} */
+  const cut = new Set();
   /** The served repos turning pickup on that the bare fire left out of this sweep: not due, or their last sweep unread. */
   let held = 0;
   /** An unblocked fire's row of the table (dispatch/unblocked.mjs). @type {import('./unblocked.mjs').Row | undefined} */
@@ -1515,7 +1517,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       cap: deps.cap,
       now: deps.now(),
       ...(only === undefined ? {} : { only }),
-      ...(bare ? { unread } : {}),
+      ...(bare ? { unread, cut } : {}),
     });
     for (const { repo, error } of unread) deps.log('dispatch-backlog-unread', { level: 'error', repo, error });
     // Only when no repo was left out of the sweep: one due repo failing
@@ -1820,14 +1822,15 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // started nothing it planned is tried again at the next fire. A sweep
     // that left planned tickets to a failed launch, the launch window or a
     // skip is not recorded either, so the next fire picks them up, not the
-    // next interval.
+    // next interval, and nor is one with a ready ticket the cap cut: the cap
+    // limits load, and does not set how often a repo is swept.
     for (const [repo, at] of swept) {
       const own = dispatched.filter((d) => d.repo === repo);
       if (unread.some((u) => u.repo === repo) || (own.length > 0 && own.every((d) => d.outcome === 'failed'))) {
         swept.delete(repo);
         continue;
       }
-      if (leftOver.has(repo)) {
+      if (leftOver.has(repo) || cut.has(repo)) {
         deps.log('dispatch-pickup', { level: 'info', repo, outcome: 'swept, with tickets left for the next fire, so not recorded', at, started: startedOf(own) });
         continue;
       }

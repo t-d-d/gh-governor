@@ -225,4 +225,75 @@ describe('planSchedule over several repos', () => {
     assert.equal(plan[0]?.prompt, "Pickup #2 'Issue 2'\n\nFix #2 in t-d-d/askme-mcp; it carries `claimed`.");
     assert.equal(plan[1]?.prompt, promptFor(7, 'Issue 7', REPO, FACTORY_LABELS.claim));
   });
+
+  /**
+   * The repos with a ready ticket the cap cut: the turn leaves their sweep
+   * unrecorded, so the next fire sweeps them again rather than their next
+   * interval. Only a ticket the selection would have started counts.
+   */
+  test('with `cut`, reports each repo with a ready ticket the cap cut', async () => {
+    const factory = fakeReader({ issues: [issue(1, READY), issue(2, READY), issue(3, READY)] });
+    const other = fakeReader({ issues: [issue(9, ['mode: afk', 'type: bug'])] });
+    const cut = new Set<string>();
+    const plan = await planSchedule({
+      sources: [{ reader: factory.reader, repo: REPO, labels: FACTORY_LABELS }, { reader: other.reader, repo: ASKME, labels: askme }],
+      cap: 2,
+      now: NOW,
+      cut,
+    });
+    assert.deepEqual(plan.map((d) => `${d.repo}#${d.issue}`), [`${REPO}#1`, `${REPO}#2`]);
+    assert.deepEqual([...cut].sort(), [ASKME, REPO].sort(), 'each repo still has a ticket the cap cut');
+  });
+
+  test('with `cut`, a repo whose every ready ticket was planned is not reported', async () => {
+    const factory = fakeReader({ issues: [issue(1, READY), issue(2, READY)] });
+    const other = fakeReader({ issues: [issue(9, ['mode: afk', 'type: bug'])] });
+    const cut = new Set<string>();
+    const plan = await planSchedule({
+      sources: [{ reader: factory.reader, repo: REPO, labels: FACTORY_LABELS }, { reader: other.reader, repo: ASKME, labels: askme }],
+      cap: 2,
+      now: NOW,
+      cut,
+    });
+    assert.deepEqual(plan.map((d) => `${d.repo}#${d.issue}`), [`${REPO}#1`, `${REPO}#2`]);
+    assert.deepEqual([...cut], [ASKME]);
+  });
+
+  test('with `cut`, a ticket past the cap the selection would skip is no cut, and a repo is judged once', async () => {
+    const at = new Date(NOW - 5 * 60_000).toISOString();
+    const factory = fakeReader({
+      issues: [issue(1, READY), issue(2, READY), issue(3, READY), issue(4, READY), issue(5, READY)],
+      blockers: { 3: [{ number: 8, state: 'open', title: 'Issue 8' }] },
+    });
+    const other = fakeReader({
+      issues: [issue(9, ['mode: afk', 'type: bug'])],
+      comments: { 9: [{ id: 1, body: dispatchMarker({ at, sessionUrl: null }), created_at: at }] },
+    });
+    const cut = new Set<string>();
+    await planSchedule({
+      sources: [{ reader: factory.reader, repo: REPO, labels: FACTORY_LABELS }, { reader: other.reader, repo: ASKME, labels: askme }],
+      cap: 2,
+      now: NOW,
+      cut,
+    });
+    assert.deepEqual([...cut], [REPO], 'the blocked #3 is passed over for #4; the other repo\'s one ticket was dispatched inside the window');
+    assert.ok(!factory.asked.some((a) => / 5( |$)/.test(a)), `asked past the repo's first cut ticket: ${factory.asked.join('; ')}`);
+  });
+
+  test('with `cut`, a read past the cap that fails counts the repo cut, not unread', async () => {
+    const factory = fakeReader({ issues: [issue(1, READY), issue(2, READY), issue(3, READY)] });
+    const reader = { ...factory.reader, comments: async (n: number) => { if (n === 3) throw new Error('GET /comments failed: 502'); return []; } };
+    const cut = new Set<string>();
+    const unread: Array<{ repo: string; error: string }> = [];
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, cut, unread });
+    assert.deepEqual(plan.map((d) => d.issue), [1, 2]);
+    assert.deepEqual([...cut], [REPO]);
+    assert.deepEqual(unread, []);
+  });
+
+  test('without `cut`, the plan asks nothing past the cap', async () => {
+    const factory = fakeReader({ issues: [issue(1, READY), issue(2, READY), issue(3, READY)] });
+    await planSchedule({ sources: [{ reader: factory.reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW });
+    assert.ok(!factory.asked.some((a) => / 3( |$)/.test(a)), factory.asked.join('; '));
+  });
 });

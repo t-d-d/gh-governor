@@ -53,10 +53,17 @@ import { byAge, isBlocked, selectReadyWork } from './ready-work.mjs';
  * of the rest of the plan, so one repo's refusal does not stop the others;
  * without it, the read's failure throws.
  *
- * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], unread?: Array<{ repo: string, error: string }> }} args
+ * With `cut`, the walk goes on past the cap to add each repo with a ticket
+ * the selection would have started had the cap allowed it. It asks about a
+ * repo's tickets only until it finds its first, so the reads past the cap
+ * are at most a few per repo. The bare fire leaves such a repo's sweep
+ * unrecorded: the cap limits load, and does not set how often a repo is
+ * swept.
+ *
+ * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string> }} args
  * @returns {Promise<Dispatch[]>}
  */
-export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, unread }) => {
+export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, unread, cut }) => {
   /** @type {Set<string>} */
   const failed = new Set();
   /**
@@ -91,12 +98,33 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
   // count, and the endpoint pages oldest first, so on a long thread the
   // newest marker would otherwise sit past the page.
   const since = new Date(now - windowMs).toISOString();
+  /**
+   * Whether the selection would have started a candidate past the cap; a
+   * read that fails says yes.
+   * @param {(typeof candidates)[number]} candidate
+   */
+  const cutAt = async (candidate) => {
+    const { reader } = candidate.source;
+    try {
+      if (candidate.openBlockers === undefined && isBlocked(candidate, await reader.blockers(candidate.number))) return false;
+      return !recentlyDispatched(await reader.comments(candidate.number, { since }), now, windowMs);
+    } catch {
+      return true;
+    }
+  };
   /** @type {Dispatch[]} */
   const plan = [];
   for (const candidate of candidates) {
-    if (plan.length >= cap) break;
+    const full = plan.length >= cap;
+    if (full && cut === undefined) break;
     const { reader, repo, labels, prompts } = candidate.source;
-    if (failed.has(repo)) continue;
+    if (failed.has(repo) || (full && cut?.has(repo))) continue;
+    if (full) {
+      // Past the cap a read that fails starts nothing, so it is no refusal:
+      // the repo counts as cut, and the next fire sweeps it again.
+      if (await cutAt(candidate)) cut?.add(repo);
+      continue;
+    }
     // A row carrying its dependency summary was judged by it in the first
     // pass, so only a row without one asks for its `blocked_by` rows.
     if (candidate.openBlockers === undefined) {
