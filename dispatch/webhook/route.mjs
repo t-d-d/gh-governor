@@ -77,7 +77,7 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { HOOK_KEY_STALE, HOOK_PER_HOUR, OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
+import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
 import { HOOK_CLOCK_SKEW_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 
@@ -698,7 +698,9 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
   // for it would fail at the starter on every attempt, where no caller hears.
   if (overrideWeight(fire) > OVERRIDE_BUDGET) return unread(413, 'text is too long to start a task with: send less');
   // Counted last, so only a fire that would otherwise queue takes a place.
-  const cap = current?.perHour ?? HOOK_PER_HOUR;
+  // An item the task wrote before perHour had a ceiling may name more: held
+  // to it, so an hour's set of signatures never outgrows its item.
+  const cap = Math.min(current?.perHour ?? HOOK_PER_HOUR, HOOK_PER_HOUR_MAX);
   let counted;
   try {
     counted = await deps.countFire(repo, hook, now, cap, signature.hex);

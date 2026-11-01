@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { HOOK_CLOCK_SKEW_MS, HOOK_TEXT_LIMIT, hookKey, hookPath, hookSignature, readSignature } from '../dispatch/webhook/hook.mjs';
 import { handle } from '../dispatch/webhook/route.mjs';
-import { hookTable } from '../dispatch/webhook/hook-table.mjs';
+import { hookTable, type Counted } from '../dispatch/webhook/hook-table.mjs';
 import { HOOK_KEY_STALE } from '../dispatch/hooks.mjs';
 import { HOOK_PER_HOUR_MAX, OVERRIDE_BUDGET, overrideWeight, parseFire } from '../dispatch/webhook/fire.mjs';
 import { configSchema, readConfig, resolveFiles, switchOf } from '../dispatch/repo-config.mjs';
@@ -24,8 +24,6 @@ const REPO = 'acme/factory';
 const HOOK = 'operator-prod';
 const NOW = Date.parse('2026-09-21T12:00:00Z');
 const T = Math.floor(NOW / 1000);
-
-type Counted = 'counted' | 'seen' | 'full';
 
 const keyOf = (repo = REPO, hook = HOOK, version = 1) => hookKey(HOOK_SECRET, repo, hook, version);
 
@@ -336,6 +334,12 @@ describe('handle: the hourly cap', () => {
     assert.deepEqual(counts, [{ repo: REPO, hook: HOOK, at: NOW, cap: 7, signature: hex }]);
   });
 
+  test('an item written before perHour had a ceiling is held to the ceiling, so an hour\'s item never outgrows DynamoDB', async () => {
+    const { deps, counts } = counter({ listedHooks: async () => new Map([[HOOK, { keyVersion: 1, perHour: 50_000 }]]) });
+    assert.equal((await handle(fire(TEXT), deps)).statusCode, 202);
+    assert.equal(counts[0]?.cap, HOOK_PER_HOUR_MAX);
+  });
+
   test('a repo with no item yet is capped at 20', async () => {
     const { deps, counts } = counter();
     assert.equal((await handle(fire(TEXT), deps)).statusCode, 202);
@@ -582,9 +586,12 @@ describe('the hook table', () => {
     }
   });
 
-  test('an hour\'s item at the largest cap stays well under DynamoDB\'s 400 KB', () => {
-    // Each signature is 64 hex characters; the key, the count and the ttl are a few dozen bytes more.
-    const bytes = HOOK_PER_HOUR_MAX * 64 + 'signatures'.length + 200;
+  test('an hour\'s item at the largest cap stays well under DynamoDB\'s 400 KB', async () => {
+    const c = client(() => ({}));
+    await hookTable(c as never, 'T').count(REPO, HOOK, NOW, HOOK_PER_HOUR_MAX, SIG);
+    // What one count adds to the set, times the most the set can hold; the key, the count and the ttl are a few dozen bytes more.
+    const added = Buffer.byteLength(JSON.stringify(c.sent[0]?.input.ExpressionAttributeValues[':signatures'].SS));
+    const bytes = HOOK_PER_HOUR_MAX * added + 'signatures'.length + 200;
     assert.ok(bytes < 100 * 1024, `${bytes} bytes`);
   });
 
