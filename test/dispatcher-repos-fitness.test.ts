@@ -276,7 +276,7 @@ describe('fitness: an unlisted owner queues nothing (dispatcher-repos.md)', () =
           hookSecret: async () => SECRET,
           listedHooks: async () => null,
           countFire: async () => 'counted' as const,
-          repoSwitches: async () => null,
+          repoItem: async () => null,
           owners,
           appId: 1,
           enqueue: async (message) => { queued.push(message); return 'm'; },

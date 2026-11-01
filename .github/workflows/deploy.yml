@@ -22,7 +22,6 @@
 #   GOVERNOR_OWNERS      variable: the GitHub accounts served, comma-separated
 #   APP_ID               variable: the GitHub App's ID
 #   APP_SLUG             variable: the App's slug, for the app-events check
-#   SELECT_LABELS        variable: the labels whose addition queues a selection fire
 #   DROP_BOX_URL         secret, optional: where the PR review's transcripts go
 #
 # The deploy job, in order: apply the bootstrap stack (infra/bootstrap.cfn.yml),
@@ -218,7 +217,6 @@ jobs:
           SUBNET_IDS: ${{ steps.network.outputs.subnet_ids }}
           GOVERNOR_OWNERS: ${{ vars.GOVERNOR_OWNERS }}
           APP_ID: ${{ vars.APP_ID }}
-          SELECT_LABELS: ${{ vars.SELECT_LABELS }}
           DROP_BOX_URL: ${{ secrets.DROP_BOX_URL }}
           # The template's default, passed because `aws cloudformation
           # deploy` keeps a parameter it is not given: a new default alone
@@ -244,7 +242,6 @@ jobs:
               "SubnetIds=${SUBNET_IDS}" \
               "DispatchOwners=${GOVERNOR_OWNERS}" \
               "GitHubAppId=${APP_ID}" \
-              "SelectLabels=${SELECT_LABELS}" \
               "DropBoxUrl=${DROP_BOX_URL}" \
               "ScheduleExpression=${SCHEDULE_EXPRESSION}"
 

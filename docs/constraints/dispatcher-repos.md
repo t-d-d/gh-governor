@@ -21,15 +21,18 @@ spends the one claude.ai login.
 - A delivery or a signed hook for a repo whose owner is not on the list gets
   a 2xx, queues nothing, and is logged at info, never as an error: an
   outsider must not be able to page the operator.
-- A label added to an issue queues a selection fire only if the stack's
-  `SelectLabels` (`selectLabelsOf`) lists it or is empty, and no bot added it
-  (the dispatcher's own claim or release). A repo whose ready label is not
-  listed waits for its pickup sweep: the bare schedule fire sweeps a repo's
-  ready tickets once the interval its file sets (`pickup.sweepHours`,
-  dispatch/pickup.mjs), one hour when unset, has passed since that repo's
-  last sweep. A new ready label needs
-  adding to `SelectLabels`, a deploy, for immediate pickup; onboarding needs
-  no deploy.
+- A label added to an issue queues a selection fire only if no bot added it
+  (the dispatcher's own claim or release), and the repo's item in the hook
+  table lists it as one of the repo's ready labels, or the receiver cannot
+  read the item's ready labels (no item, one written before it held them, a
+  malformed item, a failed read). The task writes the ready labels, as it
+  read the file, each time it reads the repo's file (dispatcher-state.md).
+  The receiver still holds no token and never reads the file. A new ready
+  label needs no deploy: it reaches the item at the repo's next turn, and a
+  ticket given it before then waits for its pickup sweep. The bare schedule
+  fire sweeps a repo's ready tickets once the interval its file sets
+  (`pickup.sweepHours`, dispatch/pickup.mjs), one hour when unset, has
+  passed since that repo's last sweep. Onboarding needs no deploy.
 - The config file is `.github/dispatch.json` (`CONFIG_PATH`), read from the
   repo's default branch only, never from a PR head or another branch. With
   no file, the repo is not served, logged at info as `not served`. A file
@@ -212,4 +215,4 @@ spends the one claude.ai login.
   named.
 
 Judgment: that a new per-repo table record keys on its repo, and that a config file holds no secret, no check sees: a key is a string no schema reads, and a secret has no shape the schema can refuse.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28. A hook fire arrives at the receiver on its own path, signed with its hook key, and the switch list gains hooks, since #55, under PRD #53. A turn may queue a fire naming another repo, a blocker's close is handled in each blocked ticket's own repo, and `unblocked` replaces the merge hand-off, since #72. A periodic's baseline adds its heartbeat line, in the `not fired yet` state, where it has none, since #52. A periodic may name the claude.ai connectors its session needs, and then starts as a run of its own routine, since #89. A routine the routines API refuses before the fire stops only its periodic, and only a failed `claude --cloud` launch skips its repo, since #91. The schedule fire runs hourly, and the sweep interval is one hour when the file sets none, since #190.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28. A hook fire arrives at the receiver on its own path, signed with its hook key, and the switch list gains hooks, since #55, under PRD #53. A turn may queue a fire naming another repo, a blocker's close is handled in each blocked ticket's own repo, and `unblocked` replaces the merge hand-off, since #72. A periodic's baseline adds its heartbeat line, in the `not fired yet` state, where it has none, since #52. A periodic may name the claude.ai connectors its session needs, and then starts as a run of its own routine, since #89. A routine the routines API refuses before the fire stops only its periodic, and only a failed `claude --cloud` launch skips its repo, since #91. The schedule fire runs hourly, and the sweep interval is one hour when the file sets none, since #190. The receiver judges a label against the repo's ready labels in its hook-table item, and `SelectLabels` is gone, since #180.

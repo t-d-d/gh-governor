@@ -19,9 +19,8 @@ a reader at a ticket they cannot open, or at the wrong one here.
   that needs a reason writes the reason, not a number. A test's fixture
   issues and pull requests have three digits or fewer, and are fakes.
 - The stack takes the operator's values as parameters: the owner list, the
-  App ID, `SelectLabels`, the alert email and the optional drop box. The
-  deploy reads the owner list, the App ID and `SelectLabels` from repository
-  variables, and the drop box from a repository secret. The stack reads the
+  App ID, the alert email and the optional drop box. The deploy reads the
+  owner list and the App ID from repository variables, and the drop box from a repository secret. The stack reads the
   alert email from Parameter Store, `/governor/alert-email`, so it never
   passes through GitHub. Anyone can read a public repo's run logs, a step
   prints each value its env block is given, and Actions masks only a
@@ -73,4 +72,4 @@ a reader at a ticket they cannot open, or at the wrong one here.
 - Map another repo's issue numbers onto this repo's: the number then points
   at an unrelated issue here.
 
-History: Set when governor's code was extracted into this repo, October 2026. Earlier decisions are in a private repo. The alert email and the drop box moved from repository variables to secrets in #3, the alert email to Parameter Store in #7, and the deploy role's ARN to a secret, with the account id masked in the deploy's log, in #5. The image build stopped uploading its build record and writing a summary in #128.
+History: Set when governor's code was extracted into this repo, October 2026. Earlier decisions are in a private repo. The alert email and the drop box moved from repository variables to secrets in #3, the alert email to Parameter Store in #7, and the deploy role's ARN to a secret, with the account id masked in the deploy's log, in #5. The image build stopped uploading its build record and writing a summary in #128. `SelectLabels` left the stack and the deploy's repository variables in #180.

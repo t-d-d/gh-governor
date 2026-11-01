@@ -36,17 +36,6 @@ Parameters:
       other account, and the task reads no installation on one. Adding an
       owner is a deploy, deliberately.
 
-  SelectLabels:
-    Type: String
-    Default: ''
-    Description: >
-      The labels whose addition to an issue queues a selection fire, in
-      every served repo, comma-separated. The receiver reads no repo's
-      config file, so it cannot tell a ready label from any other; the turn
-      still checks the label against the repo's ready labels. Empty means
-      every label selects. A repo whose ready label is not listed is picked
-      up by the hourly schedule fire instead.
-
   GitHubAppId:
     Type: String
     AllowedPattern: '^[1-9][0-9]*$'
@@ -1019,7 +1008,6 @@ Resources:
           HOOK_SECRET_ID: !Ref HookSecret
           HOOK_TABLE: !Ref DispatchHookTable
           DISPATCH_OWNERS: !Ref DispatchOwners
-          SELECT_LABELS: !Ref SelectLabels
           FIRES_QUEUE_URL: !Ref DispatchFiresQueue
           STARTER_FUNCTION: !Ref StarterFunction
           APP_ID: !Ref GitHubAppId
