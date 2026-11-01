@@ -33,6 +33,11 @@ a reader at a ticket they cannot open, or at the wrong one here.
   registry, the image URI and the build bucket. A job's `if:` cannot read a
   secret, so a first job reads whether the secret is set and the deploy job
   runs only when it is.
+- The mask reaches only the log, not a run artifact or a job summary, and
+  anyone signed in can download a public repo's artifacts. So the image
+  build sets `DOCKER_BUILD_RECORD_UPLOAD` and `DOCKER_BUILD_SUMMARY` to
+  false, and no step of the image action or the deploy job writes a job
+  summary or uploads an artifact.
 - The App key, the claude.ai login and the drop-box writer live in AWS
   Secrets Manager under `governor/`, in the bootstrap stack
   (infra/bootstrap.cfn.yml). The operator writes them with
@@ -68,4 +73,4 @@ a reader at a ticket they cannot open, or at the wrong one here.
 - Map another repo's issue numbers onto this repo's: the number then points
   at an unrelated issue here.
 
-History: Set when governor's code was extracted into this repo, October 2026. Earlier decisions are in a private repo. The alert email and the drop box moved from repository variables to secrets in #3, the alert email to Parameter Store in #7, and the deploy role's ARN to a secret, with the account id masked in the deploy's log, in #5.
+History: Set when governor's code was extracted into this repo, October 2026. Earlier decisions are in a private repo. The alert email and the drop box moved from repository variables to secrets in #3, the alert email to Parameter Store in #7, and the deploy role's ARN to a secret, with the account id masked in the deploy's log, in #5. The image build stopped uploading its build record and writing a summary in #128.
