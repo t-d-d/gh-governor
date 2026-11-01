@@ -238,7 +238,7 @@ Governor-Signature: v=1,t=1790000000,sha256=<hex>
 
 - `text` is plain text, at most 32 KiB. A fire also has to fit the task's start, which holds about 6,800 characters of plain text, and as few as 2,300 where every character is a quote, a backslash or a newline. Send the alarm's summary, not its whole payload.
 - `v` is the key version, `t` the time in Unix seconds, and the hex is the HMAC-SHA256 of `<t>.<raw body>`, keyed with the key's hex digits as text. Sign the exact bytes you send.
-- `t` must be no more than 30 seconds ahead of governor's clock and no more than 4 minutes 30 seconds behind it, so sign with the current time. The same request sent twice inside five minutes is one fire, and a request stays valid for at most five minutes, so a replay never starts a second session.
+- `t` must be no more than 30 seconds ahead of governor's clock and no more than 4 minutes 25 seconds behind it, so sign with the current time. The same request sent twice inside five minutes is one fire, and a request stays valid for 4 minutes 55 seconds, a margin under those five minutes, so a replay never starts a second session.
 
 In Node:
 
@@ -261,7 +261,7 @@ The known answer in test/dispatch-hook.test.ts checks a caller's code: under the
 | `202` | The fire was queued. |
 | `200` | The repo's owner is not on the deployment's owner list. Nothing was queued. |
 | `400` | The body is not JSON, or holds no string `text`. |
-| `401` | The header is missing or malformed, the signature does not match, or `t` is more than 30 seconds ahead of governor's clock or more than 4 minutes 30 seconds behind it. Also a hook the repo's file did not list when governor last read it, or a key version older than the one it named. |
+| `401` | The header is missing or malformed, the signature does not match, or `t` is more than 30 seconds ahead of governor's clock or more than 4 minutes 25 seconds behind it. Also a hook the repo's file did not list when governor last read it, or a key version older than the one it named. |
 | `404` | The path under `/hooks/` names no repo and hook. |
 | `413` | The text is over 32 KiB, or too long to start a task with. |
 | `429` | The hook has had its `perHour` fires this clock hour. Nothing was queued: send it next hour, or not at all. |

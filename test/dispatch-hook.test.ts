@@ -143,8 +143,8 @@ describe('handle — a hook fire', () => {
     assert.equal(queued.length, 0);
   });
 
-  test('a timestamp more than 30 seconds ahead of the receiver\'s clock, or more than 4 minutes 30 seconds behind it, gets 401; one inside is taken', async () => {
-    for (const [t, status] of [[T + 31, 401], [T + 29, 202], [T + 30, 202], [T - 269, 202], [T - 270, 202], [T - 271, 401]] as const) {
+  test('a timestamp more than 30 seconds ahead of the receiver\'s clock, or more than 4 minutes 25 seconds behind it, gets 401; one inside is taken', async () => {
+    for (const [t, status] of [[T + 31, 401], [T + 29, 202], [T + 30, 202], [T - 264, 202], [T - 265, 202], [T - 266, 401]] as const) {
       const { deps, queued } = harness();
       const response = await handle(fire(TEXT, { t }), deps);
       assert.equal(response.statusCode, status, `t ${t - T}`);
@@ -154,13 +154,16 @@ describe('handle — a hook fire', () => {
 
   // A valid request can be replayed for as long as it stays valid, which is
   // the sum of the two limits. The queue drops a duplicate only inside its
-  // deduplication window, so a sum past that window leaves a gap in which a
-  // replay starts a second session.
-  test('the clock limits ahead and behind add up to no more than the queue\'s deduplication window', () => {
+  // deduplication window, which runs from the first send, not from the clock
+  // check. A replay's own latency before its send is unbounded, so the sum
+  // stays a margin under the window, or a slow replay lands after the queue
+  // has forgotten the first send and starts a second session.
+  const DEDUP_MARGIN_MS = 5 * 1000;
+  test('the clock limits ahead and behind add up to at least 5 seconds under the queue\'s deduplication window', () => {
     assert.equal(HOOK_DEDUP_WINDOW_MS, 5 * 60 * 1000, 'an SQS FIFO queue deduplicates for five minutes');
     assert.equal(HOOK_CLOCK_AHEAD_MS, 30 * 1000);
-    assert.equal(HOOK_CLOCK_BEHIND_MS, 270 * 1000);
-    assert.ok(HOOK_CLOCK_AHEAD_MS + HOOK_CLOCK_BEHIND_MS <= HOOK_DEDUP_WINDOW_MS, `${HOOK_CLOCK_AHEAD_MS} + ${HOOK_CLOCK_BEHIND_MS} > ${HOOK_DEDUP_WINDOW_MS}`);
+    assert.equal(HOOK_CLOCK_BEHIND_MS, 265 * 1000);
+    assert.ok(HOOK_CLOCK_AHEAD_MS + HOOK_CLOCK_BEHIND_MS <= HOOK_DEDUP_WINDOW_MS - DEDUP_MARGIN_MS, `${HOOK_CLOCK_AHEAD_MS} + ${HOOK_CLOCK_BEHIND_MS} leaves less than ${DEDUP_MARGIN_MS} under ${HOOK_DEDUP_WINDOW_MS}`);
   });
 
   test('never logs the signature or the key', async () => {

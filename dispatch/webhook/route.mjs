@@ -649,7 +649,7 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
   const now = (deps.now ?? Date.now)();
   const ahead = signature.t * 1000 - now;
   if (ahead > HOOK_CLOCK_AHEAD_MS || -ahead > HOOK_CLOCK_BEHIND_MS) {
-    const reason = 'the signature\'s time is more than 30 seconds ahead of the receiver\'s clock or more than 4 minutes 30 seconds behind it';
+    const reason = 'the signature\'s time is more than 30 seconds ahead of the receiver\'s clock or more than 4 minutes 25 seconds behind it';
     deps.log('hook-refused', { ...about, keyVersion: signature.version, t: signature.t, reason });
     return { statusCode: 401, body: reason };
   }
