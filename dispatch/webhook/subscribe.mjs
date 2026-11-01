@@ -64,11 +64,135 @@ const LINE = /\n?<!--[ \t]*governor:subscribe[ \t]+(\S+)(?:[ \t]+events=(\S*))?[
  */
 const withoutLines = (text) => text.replace(LINE, (line) => line.replace(/[^\n]/g, ' '));
 
-/** A blockquote line. */
-const QUOTE = /^[ \t]*>.*$/gm;
+/** `line` with its leading tabs expanded to the next multiple of four columns. @param {string} line */
+const expandTabs = (line) => {
+  let out = '';
+  for (const char of /^[ \t]*/.exec(line)?.[0] ?? '') out += char === '\t' ? ' '.repeat(4 - (out.length % 4)) : ' ';
+  return out + line.replace(/^[ \t]*/, '');
+};
 
-/** `text` with every blockquote line blanked, character for character. @param {string} text */
-export const withoutQuotes = (text) => text.replace(QUOTE, (/** @type {string} */ quote) => quote.replace(/[^\n]/g, ' '));
+/** The columns of indent `line` starts with, tabs expanded. @param {string} line */
+const indentOf = (line) => /^ */.exec(line)?.[0].length ?? 0;
+
+/** A fence opener, at most three spaces in: its marker run. A backtick fence takes no backtick after it. */
+const FENCE = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/;
+
+/** A list item's marker, at most three spaces in, and the spaces after it, with something after them. */
+const LIST_ITEM = /^( {0,3})([-*+]|(\d{1,9})[.)])( +|$)(?=(.*))/;
+
+/** A line that ends a paragraph above it: a heading, a rule, or an HTML block that may interrupt one. */
+const INTERRUPTS =
+  /^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$|<(?:!--|\?|![A-Za-z]|!\[CDATA\[|\/?(?:script|pre|style|textarea|address|article|aside|blockquote|body|center|details|dialog|dir|div|dl|dt|dd|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|html|li|main|nav|ol|p|section|summary|table|tbody|td|tfoot|th|thead|tr|ul)(?:[\s/>]|$)))/i;
+
+/**
+ * Whether a fence closes the one opened with `marker`: the same character,
+ * at least as many, and nothing after but spaces.
+ *
+ * @param {string} line tabs expanded
+ * @param {string} marker
+ */
+const closesFence = (line, marker) => new RegExp(`^ {0,3}${marker[0] === '`' ? '`' : '~'}{${marker.length},}[ \\t\\r]*$`).test(line);
+
+/**
+ * Whether each line of `text` renders inside a blockquote, as GitHub reads
+ * markdown: a line starting `>` at most three spaces in, also inside a list
+ * item, and a lazy continuation, a line under a quoted paragraph that
+ * starts nothing new. A `>` in a fenced or indented code block is code.
+ *
+ * @param {string} text
+ * @returns {boolean[]}
+ */
+const quotedLines = (text) => {
+  /** The marker of the open fence outside any quote, or null. @type {string | null} */
+  let fence = null;
+  /** The marker of the open fence inside the quote, or null. @type {string | null} */
+  let quoteFence = null;
+  /** Whether a paragraph is open, and whether it is inside a quote. */
+  let paragraph = false;
+  let quoteParagraph = false;
+  /** The column a list item's content starts at, or null outside a list. @type {number | null} */
+  let item = null;
+  let blankAbove = true;
+  return text.split('\n').map((raw) => {
+    const line = expandTabs(raw);
+    if (fence !== null) {
+      if (closesFence(line, fence)) fence = null;
+      return false;
+    }
+    if (/^[ \t\r]*$/.test(line)) {
+      paragraph = quoteParagraph = false;
+      quoteFence = null;
+      blankAbove = true;
+      return false;
+    }
+    const wasBlankAbove = blankAbove;
+    blankAbove = false;
+    const indent = indentOf(line);
+    if (item !== null && indent < item && wasBlankAbove) item = null;
+    let rest = item !== null && indent >= item ? line.slice(item) : line;
+    let base = item !== null && indent >= item ? item : 0;
+    const marker = LIST_ITEM.exec(rest);
+    const startsItem =
+      marker !== null &&
+      (marker[5]?.trim() ?? '') !== '' &&
+      (!(paragraph || quoteParagraph) || marker[3] === undefined || marker[3] === '1') &&
+      !INTERRUPTS.test(rest);
+    if (quoteParagraph && !startsItem && !/^ {0,3}>/.test(rest) && !FENCE.test(rest) && !INTERRUPTS.test(rest)) return true;
+    if (startsItem && marker) {
+      const spaces = marker[4]?.length ?? 1;
+      const width = (marker[1]?.length ?? 0) + (marker[2]?.length ?? 0) + (spaces > 4 ? 1 : spaces);
+      item = base + width;
+      base = item;
+      rest = rest.slice(width);
+    }
+    quoteParagraph = false;
+    if (indentOf(rest) >= 4 && !paragraph) {
+      quoteFence = null;
+      return false;
+    }
+    const opener = FENCE.exec(rest);
+    if (opener?.[1]) {
+      fence = opener[1];
+      paragraph = false;
+      quoteFence = null;
+      return false;
+    }
+    if (!/^ {0,3}>/.test(rest)) {
+      quoteFence = null;
+      paragraph = !INTERRUPTS.test(rest);
+      return false;
+    }
+    let inner = rest;
+    while (/^ {0,3}>/.test(inner)) inner = inner.replace(/^ {0,3}> ?/, '');
+    if (quoteFence !== null) {
+      if (closesFence(inner, quoteFence)) quoteFence = null;
+    } else {
+      const quoted = FENCE.exec(inner)?.[1];
+      if (quoted) quoteFence = quoted;
+      else quoteParagraph = !/^[ \t\r]*$/.test(inner) && !INTERRUPTS.test(inner) && indentOf(inner) < 4;
+    }
+    paragraph = false;
+    return true;
+  });
+};
+
+/**
+ * `text` with every quoted line replaced by `fill`, character for
+ * character, so an index into the result is one into `text`.
+ *
+ * @param {string} text
+ * @param {string} fill
+ */
+const fillQuotes = (text, fill) => {
+  const quoted = quotedLines(text);
+  return text
+    .split('\n')
+    .map((line, i) => (quoted[i] ? fill.repeat(line.length) : line))
+    .join('\n');
+};
+
+/** `text` with every quoted line blanked, character for character. @param {string} text */
+export const withoutQuotes = (text) => fillQuotes(text, ' ');
 
 /**
  * `text` as an owner link is read from it: subscribe lines blanked, and
@@ -79,7 +203,7 @@ export const withoutQuotes = (text) => text.replace(QUOTE, (/** @type {string} *
  *
  * @param {string} text
  */
-const ownerText = (text) => withoutLines(text.replace(QUOTE, (/** @type {string} */ quote) => quote.replace(/[^\n]/g, '>')));
+const ownerText = (text) => withoutLines(fillQuotes(text, '>'));
 
 /** The GitHub tool's footer, naming no session, with nothing after it. */
 const TRAILING_TOOL_FOOTER = /_Generated by \[Claude Code\]\(https:\/\/claude\.ai\/code\)_\s*$/;
