@@ -16,6 +16,7 @@ import { relinkSession, sessionNamedIn, subscribeLine } from '../dispatch/webhoo
 import { reviewMarker } from '../dispatch/pr-body.mjs';
 import { FIRE_BUDGET, SIGN_POSTS, UNATTENDED, dispatchMarker, fireWeight, parseFire } from '../dispatch/webhook/fire.mjs';
 import { UNSIGNED } from '../dispatch/webhook/mention.mjs';
+import { GENERIC_SWITCHES } from '../dispatch/repo-config.mjs';
 
 const SECRET = 'whsec_test';
 const REPO = 'acme/factory';
@@ -104,6 +105,7 @@ const harness = (over: Record<string, unknown> = {}) => {
     hookSecret: async () => 'hook-secret-test',
     listedHooks: async () => null,
     countFire: async () => 'counted' as const,
+    repoSwitches: async () => null,
     owners: OWNERS,
     selectLabels: SELECT_LABELS,
     appId: APP_ID,
@@ -1182,7 +1184,7 @@ describe('routeEvent — a workflow job', () => {
     assert.equal((queued[0]!.message.fire as { kind: string }).kind, 'job');
     assert.equal(queued[0]!.message.github, 'workflow_job');
     assert.ok(logged.some((l) => l.event === 'webhook-queued' && l.kind === 'job'), JSON.stringify(logged));
-    assert.deepEqual(Object.keys(deps).sort(), ['appId', 'countFire', 'enqueue', 'hookSecret', 'listedHooks', 'log', 'owners', 'secret', 'selectLabels'], 'the receiver holds no GitHub reader');
+    assert.deepEqual(Object.keys(deps).sort(), ['appId', 'countFire', 'enqueue', 'hookSecret', 'listedHooks', 'log', 'owners', 'repoSwitches', 'secret', 'selectLabels'], 'the receiver holds no GitHub reader');
   });
 });
 
@@ -1891,5 +1893,138 @@ describe('handle — every served repo', () => {
     const ignored = logged.find((l) => l.event === 'webhook-ignored');
     assert.equal(ignored?.level, 'info');
     assert.match(String(ignored?.reason), /not on the owner list/);
+  });
+});
+
+/**
+ * The receiver drops a GitHub delivery's fire whose switch the repo's item
+ * in the hook table says is off, as the task last read the repo's file
+ * (hook-table.mjs). Routing stays on the payload alone (`routeEvent`); the
+ * drop is `handle`'s, after it. Whatever the item cannot say, the fire is
+ * queued and the task decides, as before.
+ */
+describe('fitness: the receiver drops a fire only where the repo\'s hook-table item says its switch is off (dispatcher-workflows.md)', () => {
+  const SHA = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
+  const OWNER = 'https://claude.ai/code/session_01OWNERAAA';
+  const at = { full_name: REPO, default_branch: 'main' };
+  const pr = { number: 12, title: 'A change', html_url: `https://github.com/${REPO}/pull/12`, body: `The change.\n\n${OWNER}`, head: { ref: 'claude/x', sha: SHA }, base: { ref: 'main' } };
+  const pushed = { action: 'synchronize', pull_request: pr, sender: member, repository: at };
+  const merged = { action: 'closed', pull_request: { ...pr, merged: true, merge_commit_sha: SHA }, sender: member, repository: at };
+  const red = { action: 'completed', repository: at, workflow_run: { id: 500, name: 'CI', path: '.github/workflows/ci.yml', workflow_id: 77, head_branch: 'main', head_sha: SHA, status: 'completed', conclusion: 'failure', html_url: `https://github.com/${REPO}/actions/runs/500`, event: 'push', run_attempt: 1 } };
+  const opened = (body: string) => ({ ...issuesEvent('opened'), issue: { ...issuesEvent('opened').issue, body }, repository: at });
+  /** The item as the task writes it: every switch, on where `on` says. */
+  const item = (on: string[]) => async () => new Map(GENERIC_SWITCHES.map((name) => [name, on.includes(name)]));
+  const ALL = [...GENERIC_SWITCHES];
+  const kinds = (queued: Array<{ message: Record<string, unknown> }>) => queued.map((q) => (q.message.fire as { kind: string }).kind);
+  const handled = async (event: string, payload: unknown, repoSwitches: () => Promise<ReadonlyMap<string, boolean> | null>) => {
+    const h = harness({ repoSwitches });
+    const response = await handle(delivery(event, payload), h.deps as never);
+    return { ...h, response };
+  };
+
+  test('a push to a PR in a repo with prReview off queues no review fire; the owner\'s message still goes', async () => {
+    const { queued, response } = await handled('pull_request', pushed, item(ALL.filter((n) => n !== 'prReview')));
+    assert.equal(response.statusCode, 202, response.body);
+    assert.ok(kinds(queued).length > 0);
+    assert.ok(!kinds(queued).includes('review'), JSON.stringify(kinds(queued)));
+  });
+
+  test('a push to a PR in a repo with prReview on queues the same fires as a repo with no item', async () => {
+    const before = await handled('pull_request', pushed, async () => null);
+    const on = await handled('pull_request', pushed, item(['prReview', 'prMessages', 'subscribeMessages']));
+    assert.ok(kinds(before.queued).includes('review'));
+    assert.deepEqual(on.queued, before.queued);
+  });
+
+  test('a delivery whose fires are all dropped answers 200, queues nothing, and names the switch', async () => {
+    const { queued, response, logged } = await handled('pull_request', pushed, item([]));
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(queued, []);
+    assert.match(response.body, /prReview/);
+    assert.match(response.body, /prMessages/);
+    const ignored = logged.find((l) => l.event === 'webhook-ignored');
+    assert.equal(ignored?.level, 'info');
+    assert.match(String(ignored?.reason), /prReview/);
+  });
+
+  test('no item, an item from before this change, a malformed item or a failed read queues every fire it queues today', async () => {
+    const today = await handled('pull_request', pushed, async () => null);
+    assert.ok(today.queued.length >= 2);
+    const failed = await handled('pull_request', pushed, async () => { throw new Error('AccessDeniedException'); });
+    assert.equal(failed.response.statusCode, 202, 'never a 503: GitHub does not redeliver a failed delivery by itself');
+    assert.deepEqual(failed.queued, today.queued);
+    const line = failed.logged.find((l) => l.event === 'webhook-switches-unread');
+    assert.equal(line?.level, 'error');
+    assert.equal(line?.repo, REPO);
+    assert.match(String(line?.error), /AccessDeniedException/);
+  });
+
+  test('the item is read once per delivery that would queue a fire, and not for one that queues none', async () => {
+    let reads = 0;
+    const counting = async () => { reads += 1; return null; };
+    await handled('pull_request', pushed, counting);
+    assert.equal(reads, 1);
+    await handled('pull_request', { ...pushed, repository: { full_name: 'stranger/repo' } }, counting);
+    assert.equal(reads, 1, 'an owner off the list reads nothing');
+  });
+
+  test('a merge into the default branch always queues its conflicts fire, every switch off', async () => {
+    const { queued, response } = await handled('pull_request', merged, item([]));
+    assert.equal(response.statusCode, 202, response.body);
+    assert.deepEqual(kinds(queued), ['conflicts']);
+  });
+
+  test('a fire carrying counted is queued where periodics is on, whatever its own switch', async () => {
+    const summons = opened('@claude please look at the retry budget');
+    const kept = await handled('issues', summons, item(['periodics']));
+    assert.deepEqual(kinds(kept.queued), ['dispatch']);
+    assert.equal((kept.queued[0]!.message.fire as { counted?: string }).counted, 'issuesOpened');
+    const dropped = await handled('issues', summons, item([]));
+    assert.deepEqual(dropped.queued, []);
+    const own = await handled('issues', opened('Nothing to summon.'), item(['periodics']));
+    assert.deepEqual(kinds(own.queued), ['periodics']);
+    assert.deepEqual((await handled('issues', opened('Nothing to summon.'), item([]))).queued, []);
+  });
+
+  test('a red run is dropped only when ciMessages and deployMessages are both off: the receiver cannot tell CI from a deploy', async () => {
+    for (const on of [['ciMessages'], ['deployMessages']]) {
+      assert.deepEqual(kinds((await handled('workflow_run', red, item(on))).queued), ['workflow'], on.join());
+    }
+    const { queued, response } = await handled('workflow_run', red, item([]));
+    assert.deepEqual(queued, []);
+    assert.match(response.body, /ciMessages and deployMessages/);
+  });
+
+  test('a red run naming no workflow file cannot be CI to the task, so deployMessages off drops it', async () => {
+    const { path: _p, ...pathless } = red.workflow_run;
+    const { queued } = await handled('workflow_run', { ...red, workflow_run: pathless }, item(['ciMessages']));
+    assert.deepEqual(queued, []);
+  });
+
+  test('a delivery with some fires dropped queues the rest, keeps its routing\'s reason, and logs what it dropped once', async () => {
+    const { queued, response, logged } = await handled('pull_request', pushed, item(['prMessages', 'subscribeMessages']));
+    assert.equal(response.statusCode, 202);
+    assert.ok(!kinds(queued).includes('review'));
+    assert.match(response.body, /#12 synchronize: review it; .*dropped its review fire, as acme\/factory's file turns prReview off/);
+    assert.equal(logged.filter((l) => l.event === 'webhook-dropped').length, 1);
+    const all = await handled('pull_request', pushed, item([]));
+    assert.deepEqual(all.logged.filter((l) => l.event === 'webhook-dropped'), [], 'a delivery that queued nothing is logged once, as webhook-ignored');
+  });
+
+  test('a switch the item does not name is not off: the fire is queued', async () => {
+    const { queued } = await handled('pull_request', pushed, async () => new Map([['prMessages', false]]));
+    assert.deepEqual(kinds(queued), ['review']);
+  });
+
+  test('a close starts nothing and is never dropped: its turn queues what it blocked', async () => {
+    const { queued } = await handled('issues', { ...issuesEvent('closed'), repository: at }, item([]));
+    assert.deepEqual(kinds(queued), ['schedule']);
+  });
+
+  test('a hook request does not read the switches', async () => {
+    let reads = 0;
+    const h = harness({ repoSwitches: async () => { reads += 1; return null; } });
+    await handle({ path: '/hooks/acme/factory/operator-prod', headers: {}, body: '{}' }, h.deps as never);
+    assert.equal(reads, 0);
   });
 });

@@ -6,13 +6,22 @@
  * The receiver reads no config file. The task does, and each time it reads a
  * served repo's file it writes that repo's one item here ({@link hookTable}
  * `publish`): `hooks#<repo>` / `listed`, a map from each hook's name to its
- * `keyVersion`, empty when the file turns hooks off or lists none, and beside
- * it a map from each name to its `perHour`. The receiver reads the item after
+ * `keyVersion`, empty when the file turns hooks off or lists none, beside
+ * it a map from each name to its `perHour`, and a map from each of the
+ * repo's switches to whether the file turns it on. Each list is an attribute
+ * of its own, so another can join the item without reshaping it. The
+ * receiver reads the item after
  * a request's signature checks out (route.mjs). A hook the map does not name
  * is refused, and so is a key version older than the map's, as {@link
  * HOOK_KEY_STALE}, which pages. A repo with no item yet is queued, and the
  * task decides (dispatch/hooks.mjs), so a lost item costs task starts and
  * nothing more.
+ *
+ * The receiver also reads the item's switches ({@link hookTable} `switches`)
+ * for a GitHub delivery that would queue a fire, and drops a fire whose
+ * switch it says is off (switches.mjs). There a missing item, one written
+ * before it held switches, and a read that fails all queue the fire, which
+ * leaves the task to decide, as it did before the item held them.
  *
  * The receiver also counts each hook's fires here ({@link hookTable}
  * `count`), one item per hook and clock hour, `fires#<repo>#<hook>` /
@@ -57,16 +66,24 @@ const keyOf = (repo) => ({ pk: { S: `hooks#${repo.toLowerCase()}` }, sk: { S: 'l
 /**
  * @typedef {{ keyVersion: number, perHour: number }} Listed A hook as the
  *   repo's file named it when the task last read it.
+ * @typedef {{ hooks: ReadonlyArray<{ name: string } & Listed>, switches: Readonly<Record<string, boolean>> }} Listing
+ *   What the task writes of a repo's file: its hooks, and each switch as
+ *   `turnsOn` reads it.
  * @typedef {{
  *   listed: (repo: string) => Promise<ReadonlyMap<string, Listed> | null>,
- *   publish: (repo: string, hooks: ReadonlyArray<{ name: string } & Listed>, at: string) => Promise<boolean>,
+ *   switches: (repo: string) => Promise<ReadonlyMap<string, boolean> | null>,
+ *   publish: (repo: string, listing: Listing, at: string) => Promise<boolean>,
  *   count: (repo: string, hook: string, at: number, cap: number, signature: string) => Promise<Counted>,
  * }} HookTable
  *   `listed`: each hook the repo's file listed when the task last read it,
  *   its key version and its cap; null when the repo has no item. An item
  *   written before hooks had a cap gives each one 20. A read that fails, or
  *   an item that is malformed, throws: never a missing item.
- *   `publish`: the repo's whole list, as the file read at `at` holds it, put
+ *   `switches`: each of the repo's switches, on or off, as the file read
+ *   when the task last read it; null when the repo has no item or its item
+ *   holds no switches. A read that fails, or switches that are malformed,
+ *   throw.
+ *   `publish`: the repo's hooks and switches, as the file read at `at` holds them, put
  *   unless a write from a later read stands, false then. Any other failure
  *   throws.
  *   `count`: one more fire of the hook in the clock hour holding `at`, taken
@@ -84,74 +101,90 @@ const keyOf = (repo) => ({ pk: { S: `hooks#${repo.toLowerCase()}` }, sk: { S: 'l
  * @param {string} table
  * @returns {HookTable}
  */
-export const hookTable = (client, table) => ({
-  listed: async (repo) => {
-    const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: keyOf(repo), ConsistentRead: true }));
-    if (item === undefined) return null;
-    const map = item.hooks?.M;
-    // Only an item written before hooks had a cap has no map of caps; a map
-    // that leaves a hook out is malformed, never a default.
-    const caps = item.perHour === undefined ? undefined : item.perHour.M ?? null;
-    /** @type {Array<[string, Listed]>} */
-    const entries = Object.entries(map ?? {}).map(([name, value]) => [name, {
-      keyVersion: Number(value.N),
-      perHour: caps === undefined ? HOOK_PER_HOUR : Number(caps?.[name]?.N),
-    }]);
-    // A malformed item is a failed read, never a missing one.
-    if (map === undefined || caps === null || entries.some(([, { keyVersion, perHour }]) => !positive(keyVersion) || !positive(perHour))) {
-      throw new Error(`the hook table's item for ${repo} is malformed: ${JSON.stringify(item)}`);
-    }
-    return new Map(entries);
-  },
-  // Only over an item from an earlier read: two turns racing cannot put an
-  // older file's list back.
-  publish: async (repo, hooks, at) => {
-    try {
-      await client.send(new PutItemCommand({
-        TableName: table,
-        Item: {
-          ...keyOf(repo),
-          at: { S: at },
-          hooks: { M: Object.fromEntries(hooks.map(({ name, keyVersion }) => [name, { N: String(keyVersion) }])) },
-          perHour: { M: Object.fromEntries(hooks.map(({ name, perHour }) => [name, { N: String(perHour) }])) },
-        },
-        ConditionExpression: 'attribute_not_exists(pk) OR #at <= :at',
-        ExpressionAttributeNames: { '#at': 'at' },
-        ExpressionAttributeValues: { ':at': { S: at } },
-      }));
-      return true;
-    } catch (error) {
-      if (conditionFailed(error)) return false;
-      throw error;
-    }
-  },
-  // Raised in one conditional update, never read then written: two fires
-  // racing cannot both take the last place, and two sends of one signature
-  // cannot both take one. The refusal returns the item, which tells a
-  // signature already counted from a full hour.
-  count: async (repo, hook, at, cap, signature) => {
-    const hour = Math.floor(at / HOUR_MS) * HOUR_MS;
-    try {
-      await client.send(new UpdateItemCommand({
-        TableName: table,
-        Key: { pk: { S: `fires#${repo.toLowerCase()}#${hook}` }, sk: { S: new Date(hour).toISOString().slice(0, 13) } },
-        UpdateExpression: 'ADD #fires :one, #signatures :signatures SET #ttl = :ttl',
-        ConditionExpression: '(attribute_not_exists(#fires) OR #fires < :cap) AND NOT contains(#signatures, :signature)',
-        ExpressionAttributeNames: { '#fires': 'fires', '#signatures': 'signatures', '#ttl': 'ttl' },
-        ExpressionAttributeValues: {
-          ':one': { N: '1' },
-          ':cap': { N: String(cap) },
-          ':signature': { S: signature },
-          ':signatures': { SS: [signature] },
-          ':ttl': { N: String((hour + HOUR_MS) / 1000) },
-        },
-        ReturnValuesOnConditionCheckFailure: 'ALL_OLD',
-      }));
-      return 'counted';
-    } catch (error) {
-      if (!conditionFailed(error)) throw error;
-      const counted = /** @type {any} */ (error).Item?.signatures?.SS;
-      return Array.isArray(counted) && counted.includes(signature) ? 'seen' : 'full';
-    }
-  },
-});
+export const hookTable = (client, table) => {
+  /** @param {string} repo */
+  const read = async (repo) => (await client.send(new GetItemCommand({ TableName: table, Key: keyOf(repo), ConsistentRead: true }))).Item;
+  return {
+    listed: async (repo) => {
+      const item = await read(repo);
+      if (item === undefined) return null;
+      const map = item.hooks?.M;
+      // Only an item written before hooks had a cap has no map of caps; a map
+      // that leaves a hook out is malformed, never a default.
+      const caps = item.perHour === undefined ? undefined : item.perHour.M ?? null;
+      /** @type {Array<[string, Listed]>} */
+      const entries = Object.entries(map ?? {}).map(([name, value]) => [name, {
+        keyVersion: Number(value.N),
+        perHour: caps === undefined ? HOOK_PER_HOUR : Number(caps?.[name]?.N),
+      }]);
+      // A malformed item is a failed read, never a missing one.
+      if (map === undefined || caps === null || entries.some(([, { keyVersion, perHour }]) => !positive(keyVersion) || !positive(perHour))) {
+        throw new Error(`the hook table's item for ${repo} is malformed: ${JSON.stringify(item)}`);
+      }
+      return new Map(entries);
+    },
+    switches: async (repo) => {
+      const item = await read(repo);
+      if (item?.switches === undefined) return null;
+      const map = item.switches.M;
+      const entries = Object.entries(map ?? {});
+      // Malformed switches are a failed read, never a missing one.
+      if (map === undefined || entries.some(([, value]) => typeof value.BOOL !== 'boolean')) {
+        throw new Error(`the hook table's switches for ${repo} are malformed: ${JSON.stringify(item.switches)}`);
+      }
+      return new Map(entries.map(([name, value]) => [name, /** @type {boolean} */ (value.BOOL)]));
+    },
+    // Only over an item from an earlier read: two turns racing cannot put an
+    // older file's list back.
+    publish: async (repo, { hooks, switches }, at) => {
+      try {
+        await client.send(new PutItemCommand({
+          TableName: table,
+          Item: {
+            ...keyOf(repo),
+            at: { S: at },
+            hooks: { M: Object.fromEntries(hooks.map(({ name, keyVersion }) => [name, { N: String(keyVersion) }])) },
+            perHour: { M: Object.fromEntries(hooks.map(({ name, perHour }) => [name, { N: String(perHour) }])) },
+            switches: { M: Object.fromEntries(Object.entries(switches).map(([name, on]) => [name, { BOOL: on }])) },
+          },
+          ConditionExpression: 'attribute_not_exists(pk) OR #at <= :at',
+          ExpressionAttributeNames: { '#at': 'at' },
+          ExpressionAttributeValues: { ':at': { S: at } },
+        }));
+        return true;
+      } catch (error) {
+        if (conditionFailed(error)) return false;
+        throw error;
+      }
+    },
+    // Raised in one conditional update, never read then written: two fires
+    // racing cannot both take the last place, and two sends of one signature
+    // cannot both take one. The refusal returns the item, which tells a
+    // signature already counted from a full hour.
+    count: async (repo, hook, at, cap, signature) => {
+      const hour = Math.floor(at / HOUR_MS) * HOUR_MS;
+      try {
+        await client.send(new UpdateItemCommand({
+          TableName: table,
+          Key: { pk: { S: `fires#${repo.toLowerCase()}#${hook}` }, sk: { S: new Date(hour).toISOString().slice(0, 13) } },
+          UpdateExpression: 'ADD #fires :one, #signatures :signatures SET #ttl = :ttl',
+          ConditionExpression: '(attribute_not_exists(#fires) OR #fires < :cap) AND NOT contains(#signatures, :signature)',
+          ExpressionAttributeNames: { '#fires': 'fires', '#signatures': 'signatures', '#ttl': 'ttl' },
+          ExpressionAttributeValues: {
+            ':one': { N: '1' },
+            ':cap': { N: String(cap) },
+            ':signature': { S: signature },
+            ':signatures': { SS: [signature] },
+            ':ttl': { N: String((hour + HOUR_MS) / 1000) },
+          },
+          ReturnValuesOnConditionCheckFailure: 'ALL_OLD',
+        }));
+        return 'counted';
+      } catch (error) {
+        if (!conditionFailed(error)) throw error;
+        const counted = /** @type {any} */ (error).Item?.signatures?.SS;
+        return Array.isArray(counted) && counted.includes(signature) ? 'seen' : 'full';
+      }
+    },
+  };
+};

@@ -11,8 +11,9 @@ served repos have their owner merge, so a pass there must not merge.
 - The review runs where the repo's file turns `prReview` on. It reads a PR
   into the repo's default branch, opened, readied, pushed to or with its
   body edited, whose author may summon governor, and again when a run on
-  its head finishes. The receiver queues the fire from every served repo;
-  the task refuses it where the switch is off.
+  its head finishes. The receiver queues the fire from every served repo
+  unless the repo's item in the hook table says `prReview` is off
+  (dispatcher-state.md); the task still refuses it where the switch is off.
 - The repo's `review` section (`reviewSchema`, dispatch/repo-config.mjs)
   drives it:
   - `checklist`: the model's prompt, text or `{ "file": "<path>" }`
@@ -80,4 +81,4 @@ served repos have their owner merge, so a pass there must not merge.
   and nobody watched that session.
 
 Judgment: that a repo's checklist numbers its model tests 2 to 6, and that a `quote` glob reaches only rule files, no check sees: both are the repo's prose.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. A closing ticket carrying an excluded label passes test 1 unclaimed in #145: it is not pickup's, so nobody claims it, and a repo that forbids closing one says so in its ticket rules.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. A closing ticket carrying an excluded label passes test 1 unclaimed in #145: it is not pickup's, so nobody claims it, and a repo that forbids closing one says so in its ticket rules. The receiver drops the review fire where the repo's hook-table item says `prReview` is off since #147.

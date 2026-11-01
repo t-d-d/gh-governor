@@ -41,6 +41,7 @@ const harness = (over: Record<string, unknown> = {}) => {
     listedHooks: async (_repo: string): Promise<ReadonlyMap<string, { keyVersion: number, perHour: number }> | null> => null,
     // The hour's count: always under the cap unless a test says otherwise.
     countFire: async (_repo: string, _hook: string, _at: number, _cap: number, _signature: string): Promise<Counted> => 'counted',
+    repoSwitches: async (_repo: string): Promise<ReadonlyMap<string, boolean> | null> => null,
     enqueue: async (message: Record<string, unknown>, dedupId?: string) => {
       queued.push({ message, ...(dedupId === undefined ? {} : { dedupId }) });
       return `m-${queued.length}`;
@@ -498,6 +499,7 @@ describe('the hook table', () => {
     at: { S: '2026-09-21T12:00:00.000Z' },
     hooks: { M: { 'operator-prod': { N: '2' }, 'operator-dev': { N: '1' } } },
     perHour: { M: { 'operator-prod': { N: '20' }, 'operator-dev': { N: '5' } } },
+    switches: { M: { prReview: { BOOL: false }, periodics: { BOOL: true } } },
   };
 
   test('one item per repo, read consistently by its key: each listed hook, its key version and its cap', async () => {
@@ -546,7 +548,8 @@ describe('the hook table', () => {
   test('a write puts the repo\'s whole list, unless a later read of the file already stands', async () => {
     const c = client(() => ({}));
     const at = '2026-09-21T12:00:00.000Z';
-    assert.equal(await hookTable(c as never, 'T').publish('Acme/Factory', [{ name: 'operator-prod', keyVersion: 2, perHour: 20 }, { name: 'operator-dev', keyVersion: 1, perHour: 5 }], at), true);
+    const hooks = [{ name: 'operator-prod', keyVersion: 2, perHour: 20 }, { name: 'operator-dev', keyVersion: 1, perHour: 5 }];
+    assert.equal(await hookTable(c as never, 'T').publish('Acme/Factory', { hooks, switches: { prReview: false, periodics: true } }, at), true);
     const put = c.sent[0]!;
     assert.equal(put.name, 'PutItemCommand');
     assert.deepEqual(put.input.Item, ITEM);
@@ -558,9 +561,39 @@ describe('the hook table', () => {
 
   test('a write a later one beat is false; any other failure throws', async () => {
     const beaten = client(() => { throw Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' }); });
-    assert.equal(await hookTable(beaten as never, 'T').publish(REPO, [], '2026-09-21T12:00:00.000Z'), false);
+    assert.equal(await hookTable(beaten as never, 'T').publish(REPO, { hooks: [], switches: {} }, '2026-09-21T12:00:00.000Z'), false);
     const failing = client(() => { throw new Error('AccessDeniedException'); });
-    await assert.rejects(hookTable(failing as never, 'T').publish(REPO, [], '2026-09-21T12:00:00.000Z'), /AccessDeniedException/);
+    await assert.rejects(hookTable(failing as never, 'T').publish(REPO, { hooks: [], switches: {} }, '2026-09-21T12:00:00.000Z'), /AccessDeniedException/);
+  });
+
+  // The receiver drops a GitHub delivery's fire whose switch the item says
+  // is off (route.mjs). Read from the same item as the hooks, so one read of
+  // the file wrote both.
+  test('the repo\'s switches read from the same item, by the same consistent read', async () => {
+    const c = client(() => ({ Item: ITEM }));
+    const switches = await hookTable(c as never, 'T').switches('Acme/Factory');
+    assert.deepEqual(switches && [...switches].sort(), [['periodics', true], ['prReview', false]]);
+    assert.equal(c.sent[0]?.name, 'GetItemCommand');
+    assert.equal(c.sent[0]?.input.ConsistentRead, true);
+    assert.deepEqual(c.sent[0]?.input.Key, { pk: { S: 'hooks#acme/factory' }, sk: { S: 'listed' } });
+  });
+
+  test('no item, or an item written before it held switches, is null: the receiver queues the fire', async () => {
+    assert.equal(await hookTable(client(() => ({})) as never, 'T').switches(REPO), null);
+    const { switches: _s, ...older } = ITEM;
+    assert.equal(await hookTable(client(() => ({ Item: older })) as never, 'T').switches(REPO), null);
+  });
+
+  test('switches read apart from the hooks: a fault in one is not a fault in the other', async () => {
+    const { hooks: _h, ...noHooks } = ITEM;
+    assert.equal((await hookTable(client(() => ({ Item: noHooks })) as never, 'T').switches(REPO))?.get('prReview'), false);
+  });
+
+  test('malformed switches, or a read that fails, throw: never a missing item', async () => {
+    for (const switches of [{ S: 'prReview' }, { M: { prReview: { S: 'false' } } }, { M: { prReview: { N: '0' } } }]) {
+      await assert.rejects(hookTable(client(() => ({ Item: { ...ITEM, switches } })) as never, 'T').switches(REPO), /malformed/, JSON.stringify(switches));
+    }
+    await assert.rejects(hookTable(client(() => { throw new Error('AccessDeniedException'); }) as never, 'T').switches(REPO), /AccessDeniedException/);
   });
 
   const SIG = 'a'.repeat(64);

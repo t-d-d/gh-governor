@@ -38,9 +38,13 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   - a successful shipping job;
   - a PR merged into the default branch, which queues the conflicts check.
 
-  It filters only on facts in the payload. The task applies the repo's
-  switches and `workflows` section, and refuses a CI run a push did not
-  start.
+  It routes on facts in the payload, then drops a fire whose switch the
+  repo's item in the hook table says is off (dispatcher-state.md). It
+  cannot tell CI from a deploy, so it drops a red run's fire only where
+  `ciMessages` and `deployMessages` are both off (`deployMessages` alone
+  for a run naming no workflow file, which is never CI), and never the
+  conflicts check. The task still applies the repo's switches and
+  `workflows` section, and refuses a CI run a push did not start.
 
 ## Examples
 
@@ -54,8 +58,12 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   in test/fixtures/factory/.github/dispatch.json.
 - Governor's own shipping job: the deploy job in .github/workflows/deploy.yml.
 - test/dispatch-webhook.test.ts pins the receiver's payload-only routing, a
-  `trunk` repo's included; test/dispatch-turn.test.ts a cursor per repo,
-  file and label.
+  `trunk` repo's included, and the drop by the repo's switches after it, in
+  `fitness: the receiver drops a fire only where the repo's hook-table item
+  says its switch is off (dispatcher-workflows.md)`;
+  test/dispatch-turn.test.ts a cursor per repo, file and label.
+- The drop: `droppedBy` in dispatch/webhook/switches.mjs, which also holds
+  `switchOf`, called by `handle` in dispatch/webhook/route.mjs.
 
 ## Do not
 
@@ -68,8 +76,9 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   nothing, or route runs on a branch that is not its default.
 - Do not keep a list of repos with CI in a stack parameter: onboarding then
   needs a deploy, which dispatcher-repos.md rules out.
-- Do not gate workflow or merge events by repo in the receiver: the task
-  holds the repo's switches, and the receiver reads no config file.
+- Do not gate workflow or merge events in the receiver by a list of repos,
+  nor read a config file there: the task reads the file and writes the
+  switches the receiver drops by to the hook table.
 - Do not declare CI, triage or tags in the workflow files: whether a red run
   is CI, or gets a triage session, is a choice about governor's behaviour,
   which the config file holds.
@@ -79,4 +88,4 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   that may never come.
 
 Judgment: that a served repo's workflows write the job-name suffix and `TICKET_LABEL_PATHS`, no check here sees: governor cannot read another repo's files at that repo's merge time.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The receiver drops a fire whose switch the repo's hook-table item says is off, the conflicts check never, since #147.

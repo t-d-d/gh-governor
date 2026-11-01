@@ -24,11 +24,12 @@ const secrets = new SecretsManagerClient({});
 const sqs = new SQSClient({});
 const lambda = new LambdaClient({});
 // No table named: every hook request's read fails, answered 503 and logged
-// at error, never queued as if the repo had no item.
+// at error, never queued as if the repo had no item. A delivery's read of
+// the repo's switches fails too, logged at error, and drops no fire.
 const unset = async () => { throw new Error('HOOK_TABLE is unset'); };
 const hooks = env.HOOK_TABLE
   ? hookTable(new DynamoDBClient({}), env.HOOK_TABLE)
-  : { listed: unset, count: unset };
+  : { listed: unset, count: unset, switches: unset };
 
 /** @type {import('./route.mjs').Deps} */
 const deps = {
@@ -46,6 +47,9 @@ const deps = {
   listedHooks: hooks.listed,
   // Each hook's fires this clock hour, counted under its cap before it queues.
   countFire: hooks.count,
+  // Each repo's switches as the task last read its file: read once a
+  // delivery would queue a fire, to drop the fires whose switch is off.
+  repoSwitches: hooks.switches,
   now: Date.now,
   // The stack's owner list (DispatchOwners); unset is no owner, so nothing routes.
   owners: ownersOf(env.DISPATCH_OWNERS),
