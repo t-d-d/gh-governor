@@ -21,8 +21,11 @@
  * shape (`status`, `output`), so the turn records and holds it as it does a
  * session `claude --cloud` started: 0 with the session's link, 3 for a
  * fire whose session it could not find (unconfirmed), 1 for nothing
- * started. A named connector the account has not connected starts nothing
- * and is named in `missing`.
+ * started. A fire that throws may still have started a run (a timeout, a
+ * 502 after the server queued it), so it is read as a fire that answered
+ * without its session: only the calls before the fire start nothing. A
+ * named connector the account has not connected starts nothing and is
+ * named in `missing`.
  *
  * Every shape here is read from the bundled CLI's routine commands, not a
  * published API, so the turn logs each answer's shape ({@link observed}).
@@ -219,6 +222,9 @@ const rowsOf = (answer, what) => {
   return { rows, more: /** @type {any} */ (answer)?.has_more === true };
 };
 
+/** An error's message. @param {unknown} error */
+const messageOf = (error) => (error instanceof Error ? error.message : String(error));
+
 /** A session link for an id of either form, or null. @param {unknown} id */
 const linkOf = (id) => {
   const bare = typeof id === 'string' ? SESSION_ID.exec(id)?.[1] : undefined;
@@ -291,12 +297,21 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
         if (link !== null) before.add(link);
       }
     }
+  } catch (error) {
+    return { status: 1, output: `the routine for ${periodic} did not fire: ${messageOf(error)}` };
+  }
+  // From the fire on, a failure leaves a run that may have started: a fire
+  // that times out, or answers 502 after the server queued the run, still
+  // starts a session. So a fire that throws is read as one that answered
+  // without its session, and only the calls above can refuse.
+  /** Why the fire's own answer named no session, when it threw. @type {string | null} */
+  let threw = null;
+  try {
     const fired = firedSession(await api.run(id));
     if (fired !== null) return { status: 0, output: `Routine ${id} fired: ${fired}` };
   } catch (error) {
-    return { status: 1, output: `the routine for ${periodic} did not fire: ${error instanceof Error ? error.message : String(error)}` };
+    threw = messageOf(error);
   }
-  // Fired: from here a failure leaves a run that may have started.
   for (let tries = 0; tries < ROUTINE_SESSION_TRIES; tries += 1) {
     if (tries > 0) await sleep(ROUTINE_SESSION_PAUSE_MS);
     try {
@@ -308,5 +323,6 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
       // Read again: the run may have started all the same.
     }
   }
-  return { status: 3, output: `Routine ${id} fired, and none of its run sessions is new after ${ROUTINE_SESSION_TRIES} reads` };
+  const fire = threw === null ? 'fired' : `fired and the fire threw (${threw})`;
+  return { status: 3, output: `Routine ${id} ${fire}, and none of its run sessions is new after ${ROUTINE_SESSION_TRIES} reads` };
 };

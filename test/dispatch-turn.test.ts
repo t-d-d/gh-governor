@@ -1420,6 +1420,18 @@ describe('run — periodics', () => {
     assert.equal(result.dispatched[0]?.outcome, 'unconfirmed');
   });
 
+  test('a routine fire that throws and shows no new run session is recorded as an unconfirmed launch, never refused', async () => {
+    const h = harness();
+    const base = h.deps.routines;
+    h.deps.routines = (token: string, organization: string | null) => ({ ...base(token, organization), run: async () => { throw new Error('POST /v1/code/triggers/trig_01/run: 502'); }, sessions: async () => ({ data: [] }) });
+    h.periodics.set(key(RETRO.name), fired(1));
+    h.periodics.set(key(REVIEW.name), fired(3));
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.deepEqual(h.periodics.get(key(REVIEW.name)), { at: new Date(NOW).toISOString(), session: null, baseline: false }, 'the record is written, so the next fire does not run it again');
+    assert.equal(result.dispatched[0]?.outcome, 'unconfirmed');
+    assert.ok(!h.logged.some((l) => l.event === ROUTINE_REFUSED), JSON.stringify(h.logged));
+  });
+
   test('after the baseline, the first run says so', async () => {
     const h = harness();
     h.periodics.set(key(RETRO.name), { at: ago(8), session: null, baseline: true });

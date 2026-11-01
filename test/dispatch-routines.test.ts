@@ -151,12 +151,36 @@ describe('a periodic\'s routine run', () => {
     assert.equal((await launch(api)).status, 3);
   });
 
+  test('a fire that throws may have started: the run sessions are read, and a new one is the fire\'s session', async () => {
+    let fired = false;
+    const { api, calls } = fakeApi({
+      triggers: async () => ({ data: [{ id: 'trig_01OLD', name: routineName(REPO, 'Weekly retro') }] }),
+      run: async () => { fired = true; throw new Error('POST /v1/code/triggers/trig_01OLD/run: 502'); },
+      sessions: async (id: string) => { calls.push({ call: 'sessions', id }); return { data: fired ? [{ id: 'cse_01RUN' }, { id: 'cse_01EARLIER' }] : [{ id: 'cse_01EARLIER' }] }; },
+    });
+    const result = await launch(api);
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /session_01RUN\b/);
+    assert.doesNotMatch(result.output, /EARLIER/);
+  });
+
+  test('a fire that throws with no new run session is unconfirmed, never read as nothing started', async () => {
+    let reads = 0;
+    const { api } = fakeApi({
+      run: async () => { throw new Error('POST /v1/code/triggers/trig_01NEW/run: timed out'); },
+      sessions: async () => { reads += 1; return { data: [] }; },
+    });
+    const result = await launch(api);
+    assert.equal(result.status, 3, result.output);
+    assert.match(result.output, /timed out/, 'the unconfirmed answer says the fire threw');
+    assert.equal(reads, ROUTINE_SESSION_TRIES);
+  });
+
   test('a refusal before the fire started nothing', async () => {
     for (const over of [
       { connectors: async () => { throw new Error('GET /v1/mcp_servers: 401'); } },
       { triggers: async () => { throw new Error('GET /v1/code/triggers: 500'); } },
       { create: async () => { throw new Error('POST /v1/code/triggers: 400 bad cron'); } },
-      { run: async () => { throw new Error('POST run: 409'); } },
       { triggers: async () => ({ data: [{ id: 'trig_01OLD', name: routineName(REPO, 'Weekly retro') }] }), sessions: async () => { throw new Error('GET sessions: 500'); } },
       { create: async () => ({}) },
     ]) {
