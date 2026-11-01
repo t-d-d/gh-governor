@@ -100,7 +100,15 @@ const take = async ({ messageId, receiptHandle, body }, deps) => {
     return false;
   }
   deps.log('fire-taken', { messageId, kind: fire.kind, reason: carried.reason });
-  deps.reset();
+  try {
+    deps.reset();
+  } catch (error) {
+    // The fire is deleted, so a throw would lose it without a line the alarm
+    // counts. Run over the last turn's state, it could act in another repo's
+    // directory, so it is not run.
+    deps.log('dispatch-failed', { reason: 'reset-failed', messageId, exitCode: 1, error: messageOf(error) });
+    return false;
+  }
   await deps.turn(carried.fire, messageId);
   return true;
 };

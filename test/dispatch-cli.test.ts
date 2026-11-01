@@ -304,7 +304,7 @@ describe('main', () => {
  * (dispatch/lane.mjs): each fire it takes is its own turn, under its own
  * deadline, and its result line names the fire's message.
  */
-describe('main — the lane', () => {
+describe('main: the lane', () => {
   const laneOf = (bodies: unknown[]) => {
     const script = bodies.map((fire, i) => ({ messageId: `m${i + 1}`, receiptHandle: `rh${i + 1}`, body: JSON.stringify({ fire, reason: 'queued' }) }));
     const clock = { at: 0 };

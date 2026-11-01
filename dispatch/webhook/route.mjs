@@ -701,7 +701,7 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
   const fire = { ...build.hook({ hook, keyVersion: signature.version, text, at: new Date(now).toISOString() }), repo };
   // A fire too heavy for the lane's message would fail at the queue, where
   // no caller hears.
-  if (fireWeight(fire) > FIRE_BUDGET) return unread(413, 'text is too long to start a task with: send less');
+  if (fireWeight(fire) > FIRE_BUDGET) return unread(413, 'text is too long for a lane message: send less');
   // Counted last, so only a fire that would otherwise queue takes a place.
   // An item the task wrote before perHour had a ceiling may name more: held
   // to it, so an hour's set of signatures never outgrows its item.

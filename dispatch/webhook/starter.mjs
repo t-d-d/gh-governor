@@ -24,6 +24,12 @@
  * nothing for the chain and logs `start-gave-up` at error, which pages; the
  * next poke or the backstop begins a new chain.
  *
+ * ECS's API is eventually consistent: ListTasks may miss a task for a few
+ * seconds after RunTask started it. So the starter also counts the task it
+ * last started as running, until that task's stop event arrives or
+ * START_GRACE_MS passes. The reserved concurrency of one keeps that memory
+ * in one execution environment.
+ *
  * Nothing is thrown. A failed call to ECS or the lane is logged at error and
  * the backstop calls again within a minute: the fire never left the lane.
  *
@@ -38,8 +44,17 @@
  *   waiting: () => Promise<number>,
  *   runTask: (startedBy: string) => Promise<string>,
  *   log: (event: string, context?: Record<string, unknown>) => void,
+ *   now: () => number,
+ *   memory: { started?: { taskArn: string, at: number } | undefined },
  * }} Deps
  */
+
+/**
+ * How long the task the starter last started counts as running though
+ * ListTasks does not show it. ListTasks catches up in seconds; past this, a
+ * lost stop event holds nothing back.
+ */
+export const START_GRACE_MS = 2 * 60 * 1000;
 
 /**
  * How many tasks in a row may fail to start before the starter gives up on
@@ -101,6 +116,7 @@ export const startNext = async (event, deps) => {
   if (caller === 'stop') {
     const detail = /** @type {{ taskArn?: string, stopCode?: string, startedBy?: string, stoppedReason?: string } | undefined} */ (/** @type {any} */ (event).detail);
     Object.assign(context, { stopped: detail?.taskArn, stopCode: detail?.stopCode, stoppedReason: detail?.stoppedReason });
+    if (deps.memory.started?.taskArn === detail?.taskArn) deps.memory.started = undefined;
     const prior = detail?.stopCode === 'TaskFailedToStart' ? attemptFrom(detail?.startedBy) : undefined;
     if (prior !== undefined) {
       if (prior >= MAX_START_ATTEMPTS) {
@@ -111,9 +127,12 @@ export const startNext = async (event, deps) => {
     }
   }
   try {
+    const started = deps.memory.started;
+    if (started !== undefined && deps.now() - started.at < START_GRACE_MS) return undefined;
     if ((await deps.running()).length > 0) return undefined;
     if (caller !== 'receiver' && (await deps.waiting()) === 0) return undefined;
     const taskArn = await deps.runTask(startedByFor(attempt));
+    deps.memory.started = { taskArn, at: deps.now() };
     deps.log('task-started', { ...context, attempt, taskArn });
     return taskArn;
   } catch (error) {

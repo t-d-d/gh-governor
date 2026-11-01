@@ -176,6 +176,21 @@ describe('work', () => {
     assert.equal(line?.messageId, 'm1');
   });
 
+  test('a turn it could not clear for is not run, and fails on the line the metric filter counts, naming its message', async () => {
+    const { deps, turns, logged } = harness([fireMessage('m1', { kind: 'schedule' }), fireMessage('m2', { kind: 'schedule' })], {
+      reset: () => {
+        throw new Error('EACCES: permission denied, rmdir /tmp/repo');
+      },
+    });
+    // The fire is already deleted: a throw here would end the task with no
+    // line the alarm counts, and the fire gone without a word.
+    assert.equal(await work(deps as never), 0);
+    assert.deepEqual(turns, [], 'run over the last turn\'s state, a message could land in another repo\'s directory');
+    const failed = logged.filter((l) => l.event === 'dispatch-failed');
+    assert.deepEqual(failed.map((l) => [l.reason, l.messageId, l.exitCode]), [['reset-failed', 'm1', 1], ['reset-failed', 'm2', 1]]);
+    assert.match(String(failed[0]?.error), /EACCES/);
+  });
+
   test('a lane it cannot read ends the task as a failure the metric filter counts', async () => {
     const { deps, logged } = harness([], {
       receive: async () => {

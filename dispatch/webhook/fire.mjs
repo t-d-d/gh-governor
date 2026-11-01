@@ -417,6 +417,27 @@ export const FIRE_BUDGET = 200 * 1024;
 export const fireWeight = (fire) => Buffer.byteLength(JSON.stringify(fire));
 
 /**
+ * The queue attributes that count the fires on the lane: visible, and in
+ * flight, since a fire a dying task received but never deleted comes back
+ * once its visibility timeout ends. The starter (starter-handler.mjs) and a
+ * turn's sign-off wait (dispatch/turn.mjs sqsFires) count the same way.
+ */
+export const LANE_COUNTS = /** @type {const} */ (['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']);
+
+/**
+ * The fires on the lane, from a GetQueueAttributes answer for LANE_COUNTS.
+ * An attribute missing or not a count is a throw, never a quiet lane.
+ *
+ * @param {Record<string, string> | undefined} attributes
+ * @returns {number}
+ */
+export const laneCount = (attributes) => LANE_COUNTS.reduce((sum, name) => {
+  const count = Number(attributes?.[name]);
+  if (attributes?.[name] === undefined || !Number.isInteger(count)) throw new Error(`the fire lane did not say ${name}`);
+  return sum + count;
+}, 0);
+
+/**
  * The task's environment variable a fire by hand rides in: a probe, which
  * scripts/run-turn.mjs starts beside the lane. dispatch/cli.mjs runs that
  * one fire; a task without it reads the lane.

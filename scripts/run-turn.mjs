@@ -153,13 +153,18 @@ const followFire = async ({ aws, log, logGroup, messageId, since, sleep, now }) 
     const found = JSON.parse(await aws([
       'logs', 'filter-log-events',
       '--log-group-name', logGroup,
-      '--start-time', String(since - 60 * 1000),
+      '--start-time', String(turn === null ? since - 60 * 1000 : turn.takenAt),
       '--filter-pattern', `"${messageId}"`,
       '--output', 'json',
     ]));
     for (const e of found.events ?? []) {
       const line = taskLine(String(e.message));
       if (line?.messageId !== messageId) continue;
+      // Refused, the fire is already on the dead-letter queue: no task will take it.
+      if (line.event === 'fire-refused' && turn === null) {
+        log(`The task refused this fire and moved it to governor-fires-dead.fifo: ${String(line.error)}`);
+        return null;
+      }
       if (line.event === 'fire-taken' && turn === null) {
         turn = { stream: String(e.logStreamName), takenAt: Number(e.timestamp) };
         takenSeen = now();
@@ -344,7 +349,9 @@ const queueFire = async ({ aws, log, event, output, args, nonce, sleep, now }) =
   const logGroup = output(OUTPUT_KEYS.logGroup);
   const turn = await followFire({ aws, log, logGroup, messageId, since, sleep, now });
   if (turn === null) return 1;
-  await tail({ aws, log, logGroup, stream: turn.stream, from: turn.takenAt, to: turn.endedAt });
+  // The task runs other fires after this one, so a turn with no result is
+  // tailed only as far as its deadline could have run.
+  await tail({ aws, log, logGroup, stream: turn.stream, from: turn.takenAt, to: turn.endedAt ?? turn.takenAt + TURN_BUDGET_MS });
   if (turn.exitCode === undefined) return 1;
   log(`Exit ${turn.exitCode}`);
   return turn.exitCode;

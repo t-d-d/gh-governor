@@ -564,3 +564,15 @@ describe('a fire that counts for the periodics', () => {
     assert.deepEqual(build.periodics({ counted: 'merges' }), { kind: 'periodics', counted: 'merges' });
   });
 });
+
+describe('laneCount', () => {
+  // The starter and a turn's sign-off wait count the lane the same way.
+  test('adds the visible and in-flight fires, and refuses an answer missing either', async () => {
+    const { LANE_COUNTS, laneCount } = await import('../dispatch/webhook/fire.mjs');
+    assert.deepEqual([...LANE_COUNTS], ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']);
+    assert.equal(laneCount({ ApproximateNumberOfMessages: '2', ApproximateNumberOfMessagesNotVisible: '1' }), 3);
+    assert.throws(() => laneCount({ ApproximateNumberOfMessages: '2' }), /NotVisible/);
+    assert.throws(() => laneCount(undefined), /did not say/);
+    assert.throws(() => laneCount({ ApproximateNumberOfMessages: 'x', ApproximateNumberOfMessagesNotVisible: '0' }), /did not say/);
+  });
+});

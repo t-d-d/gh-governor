@@ -123,7 +123,7 @@ import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, hookSource, refusedAsArchived } from './deliveries.mjs';
-import { DISPATCH_WINDOW_MS, HOOK_PER_HOUR, LANE, RED, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, recentlyDispatched, SIGN_POSTS } from './webhook/fire.mjs';
+import { DISPATCH_WINDOW_MS, HOOK_PER_HOUR, LANE, LANE_COUNTS, RED, laneCount, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, recentlyDispatched, SIGN_POSTS } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -2222,13 +2222,8 @@ const PROBE = [
  */
 export const sqsFires = (client, url) => ({
   waiting: async () => {
-    const names = /** @type {const} */ (['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']);
-    const { Attributes } = await client.send(new GetQueueAttributesCommand({ QueueUrl: url, AttributeNames: [...names] }));
-    return names.reduce((sum, name) => {
-      const count = Number(Attributes?.[name]);
-      if (Attributes?.[name] === undefined || !Number.isInteger(count)) throw new Error(`the fire lane did not say ${name}`);
-      return sum + count;
-    }, 0);
+    const { Attributes } = await client.send(new GetQueueAttributesCommand({ QueueUrl: url, AttributeNames: [...LANE_COUNTS] }));
+    return laneCount(Attributes);
   },
 });
 

@@ -335,11 +335,28 @@ describe('runTask — a fire or a dispatch goes through the lane', () => {
     assert.ok(lines.some((l) => /governor-starter/.test(l) && /governor-fires-dead\.fifo/.test(l)), lines.join('\n'));
   });
 
-  test('a turn that logged no result past its deadline is a failure that names its stream', async () => {
-    const { aws } = fakeAws({ ...happy(), 'logs filter-log-events': (argv: string[]) => taskSaw(argv, [taken(1000)]) });
+  test('a fire the task refused is a failure at once, naming the dead-letter queue, not a wait for the whole budget', async () => {
+    const refused = { at: 1000, line: { event: 'fire-refused', level: 'error', messageId: MESSAGE_ID, error: 'a dispatch fire needs a prompt' } };
+    const { aws, calls } = fakeAws({ ...happy(), 'logs filter-log-events': (argv: string[]) => taskSaw(argv, [refused]) });
     const { lines, log } = collect();
     const io = laneIo();
     assert.equal(await runTask({ args: parseArgs(['--kind', 'schedule']), aws, log, ...io }), 1);
+    assert.equal(io.slept.length, 0, 'it waited on a fire that is already dead-lettered');
+    assert.ok(!calls.some((c) => c[1] === 'get-log-events'));
+    assert.ok(lines.some((l) => /governor-fires-dead\.fifo/.test(l) && l.includes('a dispatch fire needs a prompt')), lines.join('\n'));
+  });
+
+  test('a turn that logged no result past its deadline is a failure that names its stream', async () => {
+    const { aws, calls } = fakeAws({ ...happy(), 'logs filter-log-events': (argv: string[]) => taskSaw(argv, [taken(1000)]) });
+    const { lines, log } = collect();
+    const io = laneIo();
+    assert.equal(await runTask({ args: parseArgs(['--kind', 'schedule']), aws, log, ...io }), 1);
+    // Once taken, each search starts at the fire's own line.
+    const searches = calls.filter((c) => c[1] === 'filter-log-events');
+    assert.equal(searches.at(-1)![searches.at(-1)!.indexOf('--start-time') + 1], '1000');
+    // The task runs other fires after it: the tail stops where this turn's deadline would.
+    const tail = calls.find((c) => c[1] === 'get-log-events')!;
+    assert.equal(tail[tail.indexOf('--end-time') + 1], String(1000 + TURN_BUDGET_MS + 1));
     assert.ok(io.now() >= TURN_BUDGET_MS);
     assert.ok(io.now() < START_BUDGET_MS, 'once taken, the turn has its own budget');
     assert.ok(lines.some((l) => l.includes(STREAM) && /no result/.test(l)), lines.join('\n'));

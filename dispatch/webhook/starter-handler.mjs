@@ -11,6 +11,7 @@
 
 import { ECSClient, ListTasksCommand, RunTaskCommand } from '@aws-sdk/client-ecs';
 import { GetQueueAttributesCommand, SQSClient } from '@aws-sdk/client-sqs';
+import { LANE_COUNTS, laneCount } from './fire.mjs';
 import { startNext } from './starter.mjs';
 
 const env = process.env;
@@ -27,16 +28,9 @@ const deps = {
     }));
     return listed.taskArns ?? [];
   },
-  // Visible and in flight: a fire a dying task received but never deleted
-  // comes back once its visibility timeout ends.
   waiting: async () => {
-    const names = /** @type {const} */ (['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']);
-    const { Attributes } = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: String(env.FIRES_QUEUE_URL), AttributeNames: [...names] }));
-    return names.reduce((sum, name) => {
-      const count = Number(Attributes?.[name]);
-      if (!Number.isInteger(count)) throw new Error(`the fire lane did not say ${name}`);
-      return sum + count;
-    }, 0);
+    const { Attributes } = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: String(env.FIRES_QUEUE_URL), AttributeNames: [...LANE_COUNTS] }));
+    return laneCount(Attributes);
   },
   runTask: async (startedBy) => {
     const started = await ecs.send(new RunTaskCommand({
@@ -55,6 +49,9 @@ const deps = {
   // One object, which Lambda's JSON log format nests under `message`, so a
   // metric filter can match the event field.
   log: (event, context = {}) => console.log({ event, ...context }),
+  now: Date.now,
+  // Kept across calls in this execution environment.
+  memory: {},
 };
 
 /** @param {unknown} event */

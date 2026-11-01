@@ -11,7 +11,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_START_ATTEMPTS, attemptFrom, callerOf, startNext, startedByFor } from '../dispatch/webhook/starter.mjs';
+import { MAX_START_ATTEMPTS, START_GRACE_MS, attemptFrom, callerOf, startNext, startedByFor } from '../dispatch/webhook/starter.mjs';
 
 const RUNNING = 'arn:aws:ecs:us-east-1:123456789012:task/governor/running';
 const STARTED = 'arn:aws:ecs:us-east-1:123456789012:task/governor/new';
@@ -21,7 +21,10 @@ const harness = (over: Record<string, unknown> = {}) => {
   const startedBy: string[] = [];
   const logged: Array<Record<string, unknown>> = [];
   const asked: string[] = [];
+  const clock = { at: 1_000_000 };
   const deps = {
+    memory: {},
+    now: () => clock.at,
     running: async () => {
       asked.push('running');
       return [] as string[];
@@ -39,7 +42,7 @@ const harness = (over: Record<string, unknown> = {}) => {
     },
     ...over,
   };
-  return { deps, startedBy, logged, asked };
+  return { deps, startedBy, logged, asked, clock };
 };
 
 const poke = { caller: 'receiver', messageIds: ['m1'] };
@@ -127,11 +130,14 @@ describe('startNext', () => {
     assert.ok(MAX_START_ATTEMPTS >= 2 && MAX_START_ATTEMPTS <= 5);
   });
 
-  test('the next poke or the backstop begins a new chain', async () => {
-    const { deps, startedBy } = harness();
-    await startNext(backstop, deps);
-    await startNext(poke, deps);
-    assert.deepEqual(startedBy, [startedByFor(1), startedByFor(1)]);
+  test('after it gives up, the next poke or the backstop begins a new chain', async () => {
+    for (const next of [poke, backstop]) {
+      const { deps, startedBy } = harness();
+      await startNext(backstop, deps);
+      await startNext(stop({ taskArn: STARTED, stopCode: 'TaskFailedToStart', startedBy: startedByFor(MAX_START_ATTEMPTS) }), deps);
+      await startNext(next, deps);
+      assert.deepEqual(startedBy, [startedByFor(1), startedByFor(1)]);
+    }
   });
 
   // A probe, or a task run by hand, carries no attempt of the starter's.
@@ -171,5 +177,52 @@ describe('attemptFrom', () => {
     assert.equal(attemptFrom('governor-starter/attempt-x'), undefined);
     assert.equal(attemptFrom(undefined), undefined);
     assert.match(startedByFor(1), /^[A-Za-z0-9_/-]{1,128}$/, 'ECS takes letters, digits, hyphens, underscores and slashes');
+  });
+});
+
+/**
+ * ECS's API is eventually consistent: ListTasks may not show a task for a
+ * few seconds after RunTask started it. Two calls that close together would
+ * both see no task and start two, and two turns would refresh one login. So
+ * the starter counts the task it last started as running until that task's
+ * stop event arrives, or START_GRACE_MS passes.
+ */
+describe('startNext: the task it just started', () => {
+  test('a second call while ListTasks does not yet show the new task starts nothing', async () => {
+    const { deps, startedBy } = harness();
+    assert.equal(await startNext(poke, deps), STARTED);
+    assert.equal(await startNext(poke, deps), undefined);
+    assert.equal(await startNext(backstop, deps), undefined);
+    assert.deepEqual(startedBy, [startedByFor(1)]);
+  });
+
+  test('that task\'s stop event forgets it, so the next fire starts a task at once', async () => {
+    const { deps, startedBy } = harness();
+    await startNext(poke, deps);
+    await startNext(stop({ taskArn: STARTED, stopCode: 'EssentialContainerExited', startedBy: startedByFor(1) }), deps);
+    assert.deepEqual(startedBy, [startedByFor(1), startedByFor(1)]);
+  });
+
+  test('a failed start\'s stop forgets it too, so the next attempt starts', async () => {
+    const { deps, startedBy } = harness();
+    await startNext(poke, deps);
+    await startNext(stop({ taskArn: STARTED, stopCode: 'TaskFailedToStart', startedBy: startedByFor(1) }), deps);
+    assert.deepEqual(startedBy, [startedByFor(1), startedByFor(2)]);
+  });
+
+  test('another task\'s stop leaves it remembered', async () => {
+    const { deps, startedBy } = harness();
+    await startNext(poke, deps);
+    await startNext(ran, deps);
+    assert.deepEqual(startedBy, [startedByFor(1)]);
+  });
+
+  test('past START_GRACE_MS, ListTasks alone answers, so a lost stop event holds nothing for long', async () => {
+    const { deps, startedBy, clock } = harness();
+    await startNext(poke, deps);
+    clock.at += START_GRACE_MS;
+    await startNext(backstop, deps);
+    assert.deepEqual(startedBy, [startedByFor(1), startedByFor(1)]);
+    assert.ok(START_GRACE_MS >= 60_000 && START_GRACE_MS <= 5 * 60_000);
   });
 });
