@@ -40,7 +40,8 @@ served repos have their owner merge, so a pass there must not merge.
   - `merge`: whether a pass merges. True unless set.
 - The settings checks run in code before the model is asked anything, and a
   PR that fails one never reaches it: the ticket rules, each closing ticket
-  open, claimed with the repo's claim label and closed by no other open PR,
+  open, claimed with the repo's claim label or carrying one of its excluded
+  labels (`labelRow`, scripts/lib/ready-work.mjs), and closed by no other open PR,
   and no closing reference below the body's top lines or to another repo's
   issue, which fail for an edit (test 1); the human-only globs (test 7); the Dependabot list. A required
   status check red on the head is test 8, for the author session's push. A
@@ -80,4 +81,4 @@ served repos have their owner merge, so a pass there must not merge.
   and nobody watched that session.
 
 Judgment: that a repo's checklist numbers its model tests 2 to 6, and that a `quote` glob reaches only rule files, no check sees: both are the repo's prose.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. The receiver drops the review fire where the repo's hook-table item says `prReview` is off since #147.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. A closing ticket carrying an excluded label passes test 1 unclaimed in #145: it is not pickup's, so nobody claims it, and a repo that forbids closing one says so in its ticket rules. The receiver drops the review fire where the repo's hook-table item says `prReview` is off since #147.
