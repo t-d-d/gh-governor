@@ -329,7 +329,7 @@ What it reads:
 
 - `.github/dispatch.json` from the default branch. It reads only `features.heartbeat`, `features.pickup`, `features.periodics`, `heartbeat.issue`, `pickup.sweepHours` and each periodic's `name` and `days`, and ignores every other key. A file using a key added after the pinned commit still reads.
 - The heartbeat issue the file names, and the lines governor keeps under its `<!-- governor:heartbeat -->` marker.
-- When `.github/dispatch.json` last changed, only for a pickup sweep or periodic that has no line yet.
+- When `.github/dispatch.json` last changed on the default branch, only for a pickup sweep or periodic that has no line yet. A change brought in by a merge commit counts from the merge, not from when its branch commit was made. It reads up to 1,000 commits of the branch's history for this, and past that uses the commit's own date.
 
 The inputs:
 
