@@ -169,8 +169,15 @@ export const SESSION_UNRECORDED = 'dispatch-session-unrecorded';
  * @typedef {{ repo: string, sessionName: string, sessionUrl: string }} PendingRecord
  */
 
-/** Why a session governor does not record matters to whoever reads the line. */
-export const UNRECORDED_REASON = 'its PRs may clear a human-only path on a ticket\'s mode label';
+/**
+ * The {@link SESSION_UNRECORDED} line for a record that did not land, from
+ * the turn's own catch or from dispatch/cli.mjs when the turn is cut off.
+ * The reason matters to whoever reads the line.
+ *
+ * @param {PendingRecord} pending
+ * @param {string} error
+ */
+export const unrecordedLine = (pending, error) => ({ level: 'error', ...pending, error, reason: 'its PRs may clear a human-only path on a ticket\'s mode label' });
 
 /**
  * The event a periodic logs when it names a connector the account has not
@@ -638,7 +645,7 @@ export const run = async (event, deps) => {
       const pending = { repo: begin.repo, sessionName: begin.sessionName, sessionUrl };
       unrecorded.add(pending);
       records.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
-        deps.log(SESSION_UNRECORDED, { level: 'error', ...pending, error: messageOf(error), reason: UNRECORDED_REASON });
+        deps.log(SESSION_UNRECORDED, unrecordedLine(pending, messageOf(error)));
       }).finally(() => { unrecorded.delete(pending); }));
     }
     return launched;

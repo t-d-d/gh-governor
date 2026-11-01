@@ -22,7 +22,7 @@
  */
 
 import { isCliEntry } from '../scripts/lib/cli-entry.mjs';
-import { CLAIM_STRANDED, SESSION_UNRECORDED, UNRECORDED_REASON, realDeps, run, ticketOf } from './turn.mjs';
+import { CLAIM_STRANDED, SESSION_UNRECORDED, realDeps, run, ticketOf, unrecordedLine } from './turn.mjs';
 import { FIRE_VARIABLE } from './webhook/fire.mjs';
 
 /**
@@ -117,12 +117,12 @@ export const main = async ({ env, run: turn, deps, log, exit, schedule }) => {
   /** Each `owner/name#number`. @type {Set<string>} */
   const claims = new Set();
   // The session records the turn is still writing. One the deadline cuts
-  // off never lands, so it is logged as unrecorded here.
+  // off may never land, so it is logged as unrecorded here.
   /** @type {Set<import('./turn.mjs').PendingRecord>} */
   const unrecorded = new Set();
   schedule(() => {
     for (const key of claims) log(CLAIM_STRANDED, { ...ticketOf(key), reason: `claimed, and the deadline (${DEADLINE_MS} ms) ended the turn before a dispatch marker named its session` });
-    for (const pending of unrecorded) log(SESSION_UNRECORDED, { level: 'error', ...pending, error: `the deadline (${DEADLINE_MS} ms) ended the turn before its record was written`, reason: UNRECORDED_REASON });
+    for (const pending of unrecorded) log(SESSION_UNRECORDED, unrecordedLine(pending, `the deadline (${DEADLINE_MS} ms) ended the turn while its record was being written, so it may not have landed`));
     log('dispatch-failed', { reason: 'deadline', deadlineMs: DEADLINE_MS });
     exit(1);
   }, DEADLINE_MS);
