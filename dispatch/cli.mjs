@@ -17,7 +17,8 @@
  * asked to start, or ran out of time. A message an archived session
  * refused, with no fallback tried and no subscriber dropped, still exits 1
  * for the by-hand caller, but logs `dispatch-result`: the dispatcher reached
- * the session, and nothing about it needs an operator.
+ * the session, and nothing about it needs an operator. Any other fault in
+ * the same turn, such as an unread repo, still logs `dispatch-failed`.
  */
 
 import { isCliEntry } from '../scripts/lib/cli-entry.mjs';
@@ -133,10 +134,10 @@ export const main = async ({ env, run: turn, deps, log, exit, schedule }) => {
     const result = await turn(event, { ...deps(), claims });
     const code = exitCodeFor(result);
     // A message into an archived session exits 1 for its caller, but the
-    // dispatcher did not fail: nothing about it is the alarm's, unless a
-    // repo's part of the turn failed too.
-    const unread = 'unread' in result && Array.isArray(result.unread) && result.unread.length > 0;
-    const failed = code === 1 && (unread || !('archived' in result && result.archived === true));
+    // dispatcher did not fail: the send counts as taken for the alarm, so
+    // any other fault in the turn still fails it.
+    const archived = 'archived' in result && result.archived === true;
+    const failed = code === 1 && (!archived || exitCodeFor({ ...result, ok: true }) === 1);
     log(failed ? 'dispatch-failed' : 'dispatch-result', { ...result });
     exit(code);
   } catch (error) {

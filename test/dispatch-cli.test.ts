@@ -176,6 +176,16 @@ describe('main', () => {
     assert.deepEqual(exits, [1]);
   });
 
+  test('a message into an archived session in a turn whose heartbeat went unwritten is a dispatcher failure', async () => {
+    const { args, logged, exits } = harness({
+      env: { DISPATCH_EVENT: '{"kind":"message","session":"session_01OLD","text":"hi"}' },
+      run: async () => ({ kind: 'message', ok: false, archived: true, sessionUrl: null, error: 'archived', loginStored: false, heartbeatUnwritten: [{ repo: 'acme/factory', error: 'Bad credentials' }] }),
+    });
+    await main(args as never);
+    assert.equal(logged[0]?.event, 'dispatch-failed');
+    assert.deepEqual(exits, [1]);
+  });
+
   test('any other failed message is a dispatcher failure', async () => {
     const { args, logged, exits } = harness({
       env: { DISPATCH_EVENT: '{"kind":"message","session":"session_01ABC","text":"hi"}' },
