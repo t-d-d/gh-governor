@@ -6,7 +6,9 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import yaml from 'js-yaml';
 import { scanRepo, trackedFiles } from '../scripts/public-repo-scan.mjs';
 import { loadTemplate } from './helpers/cfn.ts';
 import { appliesStack, REPO_ROOT } from './helpers/repo-model.ts';
@@ -84,5 +86,30 @@ describe('fitness: the deploy\'s log never shows the AWS account id (public-repo
     assert.equal(role?.outputs?.set, '${{ steps.read.outputs.set }}');
     const read = (role?.steps ?? []).find((step: { id?: string }) => step.id === 'read');
     assert.equal(read?.env?.ROLE_ARN, '${{ secrets.AWS_DEPLOY_ROLE_ARN }}');
+  });
+});
+
+// Masking a log line does not reach a run artifact or a job summary, and
+// anyone signed in to GitHub can download a public repo's artifacts. The
+// build action uploads a build record and writes a summary by default, and
+// both name the image by its registry, which carries the account id.
+describe('fitness: the image build uploads no build record and writes no summary (public-repo.md)', () => {
+  const action = yaml.load(readFileSync(resolve(REPO_ROOT, '.github/actions/image/action.yml'), 'utf8')) as { runs: { steps: { uses?: string, run?: string, env?: Record<string, unknown> }[] } };
+  const steps = action.runs.steps;
+
+  test('every build step turns off the build record and the summary', () => {
+    const builds = steps.filter((step) => step.uses?.startsWith('docker/build-push-action@'));
+    assert.ok(builds.length > 0);
+    for (const build of builds) {
+      assert.equal(build.env?.DOCKER_BUILD_RECORD_UPLOAD, false);
+      assert.equal(build.env?.DOCKER_BUILD_SUMMARY, false);
+    }
+  });
+
+  test('no step writes a job summary or uploads an artifact', () => {
+    for (const step of steps) {
+      assert.doesNotMatch(step.run ?? '', /GITHUB_STEP_SUMMARY/);
+      assert.doesNotMatch(step.uses ?? '', /^actions\/upload-artifact@/);
+    }
   });
 });

@@ -52,6 +52,8 @@ a reader at a ticket they cannot open, or at the wrong one here.
   same file.
 - The deploy's log: `fitness: the deploy's log never shows the AWS account
   id (public-repo.md)`, in the same file.
+- The image build's artifact and summary: `fitness: the image build uploads
+  no build record and writes no summary (public-repo.md)`, in the same file.
 - A fixture repo shaped like a real served repo: test/fixtures/factory/,
   `acme/factory`.
 
