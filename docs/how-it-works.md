@@ -211,14 +211,14 @@ A repo's `prompts` map replaces the instruction in a kind of message, or the ope
 |---|---|---|
 | `pickup` | A pickup session's opening prompt, below `Pickup #N 'title'` | `{issue}`, `{repo}`, `{claim}` |
 | `signOff` | The standing line's ask to sign off | |
-| `unblockedReady` | A ready ticket's ask, below its pickup prompt and the close's facts | |
-| `unblockedSpec` | A not-ready ticket's spec session's ask, below the close's facts | `{issue}`, `{ready}`, `{claim}` |
-| `unblockedClaimed` | A claimed ticket's session's ask, below the close's facts | `{issue}` |
-| `unblockedNotPlanned` | The ask in the comment, and message, when a blocker closed as not planned | |
+| `unblockedReady` | A ready ticket's ask, below its pickup prompt and the facts of its blocker's close | |
+| `unblockedSpec` | A not-ready ticket's spec session's ask, below the facts of its blocker's close | `{issue}`, `{ready}`, `{claim}` |
+| `unblockedClaimed` | A claimed ticket's session's ask, below the facts of its blocker's close | `{issue}` |
+| `unblockedNotPlanned` | The ask in the comment, and message, when a ticket's blocker closed as not planned | |
 | `redScheduledRun` | A red scheduled run's session prompt, below the run | |
-| `ciBreaker` | A red CI's ask to its one suspect's session | `{pr}` |
-| `ciTriage` | A red CI's fresh session over several suspects | |
-| `ciBumpTriage` | A red CI's fresh session over a Dependabot bump | `{pr}` |
+| `ciBreaker` | A red CI run's ask to its one suspect's session | `{pr}` |
+| `ciTriage` | A red CI run's fresh session over several suspects | |
+| `ciBumpTriage` | A red CI run's fresh session over a Dependabot bump | `{pr}` |
 | `prodTriage` | A failed `triage` target's fresh session | |
 | `deployGreen`, `deployGreenMany` | A green deploy's ask, for one PR or several | `{pr}` (the newest), `{target}` |
 | `deployRed`, `deployRedMany` | A red deploy's ask, for one PR or several | `{pr}` (the newest) |

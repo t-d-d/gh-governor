@@ -2,9 +2,9 @@
 /**
  * Export the JSON Schema of a served repo's `.github/dispatch.json` from
  * `configSchema` (dispatch/repo-config.mjs), and write it to
- * schema/dispatch.schema.json. A repo maps its config file to that file at a
- * pinned commit in its editor, which then completes key names and flags an
- * unknown key while the file is written.
+ * schema/dispatch.schema.json. A repo names that file at a pinned commit in
+ * its config file's `$schema` key, and an editor then describes each key,
+ * completes key names and flags an unknown key while the file is written.
  *
  *   node scripts/export-config-schema.mjs
  *
