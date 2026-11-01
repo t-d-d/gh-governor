@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import yaml from 'js-yaml';
 import { pinnedInputProblems } from './helpers/pinned-workflow.ts';
 import { REPO_ROOT } from './helpers/repo-model.ts';
+import { loadWorkflow } from './helpers/workflow.ts';
 
 const CHECKER = '.github/workflows/heartbeat-check.yml';
 
@@ -110,10 +111,8 @@ describe('pinnedInputProblems', () => {
 // The one job in a starter workflow that calls `workflow` pinned to a commit of
 // this repo, and the problems pinnedInputProblems finds with it.
 function starterPinProblems(starter: string, workflow: string) {
-  const doc = yaml.load(readFileSync(join(REPO_ROOT, 'examples/starter/.github/workflows', starter), 'utf8')) as {
-    jobs: Record<string, { uses?: string, with?: Record<string, unknown> }>,
-  };
-  const jobs = Object.values(doc.jobs);
+  const { workflow: doc } = loadWorkflow(join(REPO_ROOT, 'examples/starter/.github/workflows', starter));
+  const jobs = Object.values(doc.jobs as Record<string, { uses?: string, with?: Record<string, unknown> }>);
   assert.equal(jobs.length, 1);
   const path = `.github/workflows/${workflow}`;
   const uses = String(jobs[0]?.uses);
