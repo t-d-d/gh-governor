@@ -19,7 +19,9 @@
  * session's to keep, so every comment, review comment and review on it is
  * a `message` fire, mention or not, carrying the `dispatch` it would
  * otherwise have been as its fallback, which the task starts only if the
- * session refuses (archived). Any other session subscribes with a line in
+ * session refuses (archived) and the PR is still open. A session's post
+ * carries none: the owner's own is an echo, and another session's remark is
+ * not worth a takeover. Any other session subscribes with a line in
  * the body, a PR's or an issue's, and hears of the events it names
  * with no fallback: the task drops a subscriber that refuses. An issue a
  * session filed names it the same way, and it hears of every event there
@@ -62,7 +64,7 @@
 
 import { DISPATCH_MARKER, OVERRIDE_BUDGET, SIGN_POSTS, SUMMONERS, UNATTENDED, build, deployedTarget, isBranch, isCommit, overrideWeight } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
-import { isSessionPost, ownSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost } from './subscribe.mjs';
+import { ownSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
 
 export const MENTION = '@claude';
 
@@ -77,14 +79,24 @@ const MENTION_RE = /(?<![A-Za-z0-9@.-])@claude(?![\w-]|\.\w|\/)/i;
 /** Code GitHub links nothing in: a fence (to the end, unclosed), a span (within its paragraph). */
 const CODE_RE = /(`{3,}|~{3,})[\s\S]*?(?:\1|(?![\s\S]))|(`+)(?!`)(?:(?![ \t\r]*\n[ \t\r]*\n)[\s\S])+?\2/g;
 
-/** @param {unknown} text */
-export const mentions = (text) => MENTION_RE.test(String(text ?? '').replace(CODE_RE, ' '));
+/**
+ * Whether `text` mentions @claude itself: outside code and outside any
+ * quote. A reply quoting a post that named @claude does not repeat it.
+ * Quotes go first: GitHub closes a fence where its quote ends, and a code
+ * span blanked at the start of a line would leave a `>` that reads as one.
+ *
+ * @param {unknown} text
+ */
+export const mentions = (text) => MENTION_RE.test(withoutQuotes(String(text ?? '')).replace(CODE_RE, ' '));
 
 /** The events a mention can arrive in, beside `issues`. */
 export const MENTION_EVENTS = new Set(['issue_comment', 'pull_request_review_comment', 'pull_request_review']);
 
 /** How much of a body the prompt quotes; the URL carries the rest. */
 const EXCERPT_CHARS = 1500;
+
+/** The least of a quote worth keeping beside a reply: below it, the quote goes. */
+const MIN_QUOTE_CHARS = 100;
 
 const OWN_PR = 'This is your pull request. Decide what it needs: a code change (commit and push to its branch), a reply on the thread, or nothing. Do not open a new branch or PR.';
 
@@ -128,7 +140,32 @@ export const oneLine = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
 const excerpt = (body, limit = EXCERPT_CHARS) => {
   const text = String(body ?? '').trim();
   if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}\n[… ${text.length - limit} more characters at the URL above]`;
+  const { quote, reply } = splitQuote(text);
+  if (!quote || !reply) return cut(text, limit);
+  // A quote reply puts the quoted post first. The person's own words matter
+  // more than the quote, so the quote gives way before the reply does.
+  const room = limit - reply.length - 2;
+  if (room < MIN_QUOTE_CHARS) return `> [… a quote of ${quote.length} characters at the URL above]\n\n${cut(reply, limit)}`;
+  return `${quote.slice(0, room)}\n> [… ${quote.length - room} more characters of the quote at the URL above]\n\n${reply}`;
+};
+
+/**
+ * @param {string} text
+ * @param {number} limit
+ */
+const cut = (text, limit) => (text.length <= limit
+  ? text
+  : `${text.slice(0, limit)}\n[… ${text.length - limit} more characters at the URL above]`);
+
+/**
+ * A remark's leading quote, its `>` lines and the blank lines among them,
+ * and the rest. A remark that does not open with a quote has none.
+ *
+ * @param {string} text
+ */
+const splitQuote = (text) => {
+  const lead = /^(?:[ \t]*>[^\n]*(?:\n|$)|[ \t\r]*\n)*/.exec(text)?.[0] ?? '';
+  return { quote: lead.trimEnd(), reply: text.slice(lead.length).trim() };
 };
 
 /**
@@ -146,8 +183,10 @@ const excerpt = (body, limit = EXCERPT_CHARS) => {
  */
 
 /**
- * Why `body` by `user` is not a summons, or null when it is. An issue's
- * body (`issue`) that names its owner session is that session's own, even
+ * Why `body` by `user` is not a summons, or null when it is. A session's
+ * post is one whose footer stands outside any quote: a member's reply
+ * quoting a session's post is the member's. An issue's body (`issue`) that
+ * names its owner session outside any quote is that session's own, even
  * where the GitHub tool stripped its footer to the link on its last line.
  *
  * @param {{ body: unknown, user: User | undefined, association: unknown, issue?: boolean }} args
@@ -157,7 +196,7 @@ const notASummons = ({ body, user, association, issue = false }) => {
   const text = String(body ?? '');
   if (!mentions(text)) return `no ${MENTION} mention`;
   if (user?.type === 'Bot') return `a bot (${user?.login ?? 'unnamed'}) cannot summon a session`;
-  if (isSessionPost(text) || (issue && sessionNamedIn(text) !== null)) return 'a session cannot summon another';
+  if (ownSessionPost(text) || (issue && sessionNamedIn(withoutQuotes(text)) !== null)) return 'a session cannot summon another';
   if (!SUMMONERS.has(String(association))) {
     return `${user?.login ?? 'someone'} (${association ?? 'no association'}) has no say in the repository`;
   }
@@ -245,8 +284,7 @@ const summons = (prompt, on, reason) => ({
  *   reason: string,
  * }} args `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
  *   `unsigned`: a session's post naming no session, which the message says
- *   ({@link UNSIGNED}); the fallback's fresh session wrote nothing, and is
- *   not told.
+ *   ({@link UNSIGNED}). A session's post carries no fallback.
  * @returns {Queued}
  */
 const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, reason }) => {
@@ -540,8 +578,12 @@ const writtenFires = (written, event, payload, appId) => {
       event: subscribed,
       poster: postedBy(body),
       prompt: (role, limit) => prompt(told, role, limit),
-      // An issue's owner, its filer, has nothing to hand over.
-      fallback: pr,
+      // An issue's owner, its filer, has nothing to hand over. Nor does a
+      // session's post: the owner's own is an echo, and another session's
+      // remark is not worth a takeover. A fresh session started on one
+      // tends to post and sign off, and its post would start the next. A
+      // person's reply quoting a session's post is the person's remark.
+      fallback: pr && !ownSessionPost(body),
       issue: !pr,
       ownerOnly,
       byBranch,

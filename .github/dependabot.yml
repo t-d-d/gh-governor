@@ -1,0 +1,12 @@
+# Moves each outside action's pinned commit, and the tag comment beside it,
+# to the action's newest release. "/" covers .github/workflows. The glob
+# covers each composite action one level under .github/actions; a deeper
+# one needs its own line, and test/action-pins.test.ts says so.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly

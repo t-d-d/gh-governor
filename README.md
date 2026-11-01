@@ -148,7 +148,7 @@ A new periodic starts its first session one day limit, or one count, after the f
 - `name`: lower-case letters, digits and hyphens, unique in the file. It ends the hook's URL, and the session is named after it.
 - `prompt`: what the session runs, as text or `{ "file": "<path>" }` read from the default branch. Governor adds lines under it saying which hook fired and when, and quoting the caller's text as the caller's data.
 - `keyVersion` (required): the version of the hook's key a request must be signed with, a positive whole number of at most nine digits. It is not a secret.
-- `perHour`: the most fires governor queues for the hook in one clock hour, a positive whole number. Default 20. A fire past it gets `429`, so a leaked key cannot flood the queue every repo shares.
+- `perHour`: the most fires governor queues for the hook in one clock hour, a positive whole number up to 100. Default 20. A fire past it gets `429`, so a leaked key cannot flood the queue every repo shares. Each signed request counts once in its clock hour: sending the same request again in that hour, after a timeout or a `502`, takes no second place.
 
 ```json
 { "name": "operator-prod", "prompt": { "file": "ops/prod-alarm.md" }, "keyVersion": 1, "perHour": 20 }

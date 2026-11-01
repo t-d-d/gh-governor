@@ -138,9 +138,15 @@ runs:
 
     # Native arm64 (the caller's runner) — building linux/arm64 on x86_64
     # would route through qemu emulation and triple+ the wall-clock.
+    # The build record and the summary both name the image by its registry,
+    # which carries the account id. The log mask does not reach either, and
+    # anyone signed in can download a public repo's artifacts.
     - name: Build and push image (${{ inputs.repo_name }})
       if: steps.check.outputs.found != 'true'
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      env:
+        DOCKER_BUILD_RECORD_UPLOAD: false
+        DOCKER_BUILD_SUMMARY: false
       with:
         context: .
         file: ./${{ inputs.dockerfile }}

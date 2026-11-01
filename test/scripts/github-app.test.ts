@@ -370,10 +370,10 @@ describe('githubReader', () => {
       'https://api.github.com/repos/acme/factory/pulls/13': { number: 13, title: 'G', body: 'B', state: 'closed', head: { ref: 'main', sha: 'fed', repo: null } },
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    assert.deepEqual(await reader.pull(10), { number: 10, body: 'B', head: 'claude/x' });
-    assert.deepEqual(await reader.pull(11), { number: 11, body: '', head: '' });
-    assert.deepEqual(await reader.pull(12), { number: 12, body: 'B', head: '' }, 'a fork\'s branch');
-    assert.deepEqual(await reader.pull(13), { number: 13, body: 'B', head: '' }, 'a deleted fork\'s branch');
+    assert.deepEqual(await reader.pull(10), { number: 10, body: 'B', head: 'claude/x', open: true });
+    assert.deepEqual(await reader.pull(11), { number: 11, body: '', head: '', open: true });
+    assert.deepEqual(await reader.pull(12), { number: 12, body: 'B', head: '', open: true }, 'a fork\'s branch');
+    assert.deepEqual(await reader.pull(13), { number: 13, body: 'B', head: '', open: false }, 'a deleted fork\'s branch, on a closed PR');
   });
 
   test('updatePull patches the pull request\'s body and nothing else', async () => {
