@@ -515,6 +515,37 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertsTopic]
 
+  # Governor records every session it starts in the state table, so the PR
+  # review gives that session's PRs no human-only waiver from a ticket's
+  # mode label. A record that fails to write logs
+  # `dispatch-session-unrecorded` naming the session (dispatch/turn.mjs),
+  # and the turn carries on, since the session is already running.
+  DispatchSessionUnrecordedFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "dispatch-session-unrecorded" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: SessionsUnrecorded
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DispatchSessionUnrecordedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-session-unrecorded
+      AlarmDescription: '[tripwire] Governor started a session and could not record it in the state table, so the PR review treats that session as not its own: its PRs can clear a human-only path when the tickets they close carry one of that path''s unless labels, such as mode: hitl. Read /governor for the dispatch-session-unrecorded line; it names the session and the error. Put the item pk session#<session id>, sk started in the dispatcher''s state table, or review that session''s PRs yourself before any merge.'
+      Namespace: governor
+      MetricName: SessionsUnrecorded
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
   # A served repo's config file that fails its schema (dispatch/repos.mjs,
   # dispatch/repo-config.mjs) leaves the repo unserved until it is fixed: no
   # dispatch, no archiving. Each turn that reads it logs
@@ -646,6 +677,37 @@ Resources:
       AlarmDescription: '[tripwire] A periodic names a claude.ai connector the account has not connected, so its session did not start. Read /governor for the dispatch-connector-missing line; it names the repo, the periodic and the connector. Connect it on the claude.ai account under the name the file gives, or take it out of the repo''s .github/dispatch.json; the next fire the periodic comes due starts it.'
       Namespace: governor
       MetricName: ConnectorsMissing
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # A periodic whose routine the routines API refused before the fire, a
+  # 400 on the create or a routines list past one page among them, starts
+  # nothing, writes no record, and logs `dispatch-routine-refused` naming
+  # the repo and the periodic (dispatch/turn.mjs). The repo's tickets and
+  # other periodics still start: the CLI is not at fault.
+  DispatchRoutineRefusedFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "dispatch-routine-refused" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: RoutinesRefused
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DispatchRoutineRefusedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-routine-refused
+      AlarmDescription: '[tripwire] The routines API refused a periodic''s routine before the fire, so its session did not start; the repo''s other launches went on. Read /governor for the dispatch-routine-refused line; it names the repo and the periodic and says what the API answered, and the dispatch-routine-answer lines before it give each call''s shape. The periodic stays due, so the next fire tries again.'
+      Namespace: governor
+      MetricName: RoutinesRefused
       Statistic: Sum
       Period: 900
       EvaluationPeriods: 1

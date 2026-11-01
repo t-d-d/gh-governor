@@ -177,15 +177,6 @@ export const isSessionPost = (body) => String(body ?? '').includes(SESSION_FOOTE
 /** `text` with every blockquote line blanked, character for character. @param {string} text */
 const withoutQuotes = (text) => text.replace(/^[ \t]*>.*$/gm, (/** @type {string} */ quote) => quote.replace(/[^\n]/g, ' '));
 
-/**
- * Whether a session wrote `body` itself: {@link isSessionPost} over the text
- * outside its blockquotes, since a person's reply quoting a session's post
- * is the person's.
- *
- * @param {unknown} body
- */
-export const writtenBySession = (body) => isSessionPost(withoutQuotes(String(body ?? '')));
-
 /** Nothing but a rule and blank lines between a session's URL and the footer below it. */
 const ADJACENT = /^[\s*_-]*$/;
 
@@ -217,6 +208,15 @@ export const postedBy = (body) => {
  * @param {unknown} body
  */
 export const unsignedPost = (body) => withoutLines(withoutQuotes(String(body ?? ''))).includes(SESSION_FOOTER) && postedBy(body) === null;
+
+/**
+ * Whether a session posted `body` itself: {@link isSessionPost} read
+ * outside any quote. A person's reply quoting a session's post is the
+ * person's.
+ *
+ * @param {unknown} body
+ */
+export const ownSessionPost = (body) => isSessionPost(withoutQuotes(String(body ?? '')));
 
 /** A session's id, off its claude.ai/code URL or as given. @param {string} session */
 export const sessionId = (session) => session.slice(session.lastIndexOf('/') + 1);

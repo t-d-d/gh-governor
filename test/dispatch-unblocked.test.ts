@@ -65,11 +65,13 @@ describe('ticketRow', () => {
   const closedBlocker = [{ number: 41, state: 'closed', title: 'The parser' }];
   const stillBlocked = [...closedBlocker, { number: 43, state: 'open', title: 'Another' }];
 
-  // The table in the issue, one row each, in its order: the first row that fits.
+  // The table in dispatch/unblocked.mjs, one row each, in its order: the first row that fits.
   const cases: Array<[string, ReturnType<typeof ticket>, typeof closedBlocker, typeof unsaid, string]> = [
     ['closed', ticket(['mode: afk'], 'closed'), closedBlocker, done, 'closed'],
     ['still blocked by another open issue', ticket(['mode: afk']), stillBlocked, done, 'blocked'],
-    ['still blocked, its blocker dropped', ticket(['claimed']), stillBlocked, dropped, 'blocked'],
+    ['lost its blocker to a not-planned close, still blocked by another', ticket(['mode: afk']), stillBlocked, dropped, 'not-planned'],
+    ['claimed, its blocker dropped, still blocked by another', ticket(['claimed']), stillBlocked, dropped, 'not-planned'],
+    ['closed, its blocker dropped, still blocked by another', ticket(['mode: afk'], 'closed'), stillBlocked, dropped, 'closed'],
     ['lost its blocker to a not-planned close', ticket(['mode: afk']), closedBlocker, dropped, 'not-planned'],
     ['not planned, excluded too', ticket(['mode: human']), closedBlocker, dropped, 'not-planned'],
     ['carries an exclude label', ticket(['mode: human']), closedBlocker, done, 'excluded'],
@@ -88,6 +90,10 @@ describe('ticketRow', () => {
   // cannot see; where the ticket carries it, it decides.
   test('a summary counting an open blocker the rows leave out: blocked', () => {
     assert.equal(ticketRow({ ticket: { ...ticket(['mode: afk']), openBlockers: 1 }, blockers: closedBlocker, fire: done, labels }), 'blocked');
+  });
+
+  test('a summary counting an open blocker, its blocker dropped: not-planned', () => {
+    assert.equal(ticketRow({ ticket: { ...ticket(['mode: afk']), openBlockers: 1 }, blockers: undefined, fire: dropped, labels }), 'not-planned');
   });
 
   test('a summary counting no open blocker: not blocked, whatever the rows say', () => {
@@ -131,6 +137,15 @@ describe('the texts', () => {
   test('a not-planned close leaves a comment naming the blocker', () => {
     const text = notPlannedComment({ kind: 'unblocked', repo: FACTORY, issue: 7, blocker: { ...closed, reason: 'not_planned' } }, {});
     assert.match(text, /#41 \(`The parser`\) closed as not planned/);
+    assert.doesNotMatch(text, /still blocked/);
+  });
+
+  test('a not-planned close on a ticket still blocked says so, so nobody reads it as free', () => {
+    const text = notPlannedComment({ kind: 'unblocked', repo: FACTORY, issue: 7, blocker: { ...closed, reason: 'not_planned' } }, {}, { blocked: true });
+    assert.match(text, /#41 \(`The parser`\) closed as not planned/);
+    assert.match(text, /#7 is still blocked by another open issue/);
+    // The ask's "Its work" means the blocker's, so it follows the blocker's facts, not the ticket's.
+    assert.match(text, /It blocked #7\.\n\nIts work will not land/);
   });
 
   // A comment GitHub renders: a title's @handle or #N must not notify or link.

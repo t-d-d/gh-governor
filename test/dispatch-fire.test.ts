@@ -227,11 +227,10 @@ describe('a subscriber\'s message invocation', () => {
     assert.throws(() => parseFire({ ...base, event: 'close', closing: 'yes' }), /closing/);
   });
 
-  // The owner's message of a merge into main, which the task adds the blocked tickets to.
-  test('keeps a merged mark on a message on a PR, and refuses one that is not true or names no PR', () => {
-    assert.deepEqual(parseFire({ ...base, on: 724, event: 'close', merged: true }), { ...base, on: 724, event: 'close', merged: true });
-    assert.throws(() => parseFire({ ...base, on: 724, event: 'close', merged: 'yes' }), /merged/);
-    assert.throws(() => parseFire({ ...base, event: 'close', merged: true }), /merged/);
+  // A fire queued before the merged mark was dropped still parses, and loses the mark.
+  test('accepts a merged mark left on a queued message, and drops it', () => {
+    assert.deepEqual(parseFire({ ...base, on: 724, event: 'close', merged: true }), { ...base, on: 724, event: 'close' });
+    assert.deepEqual(parseFire({ ...base, event: 'close', merged: 'yes' }), { ...base, event: 'close' });
   });
 
   test('refuses an event outside the vocabulary, an on that is not a number, and a commit that is not one', () => {
@@ -408,7 +407,6 @@ describe('the builders', () => {
       build.message({ session: 'session_01ABC', text: 'hi' }),
       build.message({ session: 'https://claude.ai/code/session_01ABC', text: 'hi', on: 724, event: 'pushes', commit: SHA }),
       build.message({ session: 'session_01ABC', text: 'hi', on: 724, event: 'close', closing: true }),
-      build.message({ session: 'session_01ABC', text: 'hi', on: 724, event: 'close', merged: true }),
       build.message({ byBranch: true, poster: 'https://claude.ai/code/session_01ABC', text: 'hi', on: 724, event: 'comments', fallback: { prompt: 'p', sessionName: 'n', issue: 724 } }),
       build.workflow({ name: 'CI', branch: 'main', event: 'push', runId: 500, url: 'https://github.com/x/y/actions/runs/500', conclusion: 'failure', headSha: SHA }),
       build.workflow({ name: 'Deploy', path: '.github/workflows/deploy.yml', branch: 'trunk', runId: 500, url: 'https://github.com/x/y/actions/runs/500', conclusion: 'success', headSha: SHA, runAttempt: 2 }),

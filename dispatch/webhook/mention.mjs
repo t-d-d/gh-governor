@@ -64,7 +64,7 @@
 
 import { DISPATCH_MARKER, OVERRIDE_BUDGET, SIGN_POSTS, SUMMONERS, UNATTENDED, build, deployedTarget, isBranch, isCommit, overrideWeight } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
-import { isSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, writtenBySession } from './subscribe.mjs';
+import { isSessionPost, ownSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost } from './subscribe.mjs';
 
 export const MENTION = '@claude';
 
@@ -242,17 +242,15 @@ const summons = (prompt, on, reason) => ({
  *   fallback: boolean,
  *   commit?: string | undefined,
  *   closing?: boolean,
- *   merged?: boolean,
  *   issue?: boolean,
  *   unsigned?: boolean,
  *   reason: string,
- * }} args `merged`: `on` merged into main, which the owner's fire says.
- *   `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
+ * }} args `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
  *   `unsigned`: a session's post naming no session, which the message says
  *   ({@link UNSIGNED}). A session's post carries no fallback.
  * @returns {Queued}
  */
-const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, merged = false, issue = false, unsigned = false, reason }) => {
+const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, reason }) => {
   const role = owner ? 'owner' : 'subscriber';
   const number = Number.isInteger(on?.number) ? on.number : undefined;
   /** @param {string} text @returns {MessageFire} */
@@ -263,7 +261,6 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
     event,
     commit,
     closing,
-    merged: owner && merged,
     subscribed: !owner || issue,
     fallback: owner && fallback
       ? { prompt: `${text}\n${HANDOFF}\n${UNATTENDED}`, sessionName: sessionName(on?.number, on?.title), issue: number }
@@ -295,7 +292,6 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   fallback?: boolean,
  *   commit?: string,
  *   closing?: boolean,
- *   merged?: boolean,
  *   ownerOnly?: boolean,
  *   byBranch?: boolean,
  *   sessionPost?: boolean,
@@ -306,14 +302,14 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   `issue`: `on` is an issue, whose owner hears `deploys` only by a line.
  *   `byBranch`: `on` is a PR, and with no session its body names, the
  *   live session on its head branch is the owner; `sessionPost`, what was
- *   posted is a session's, which then is that session's own. `unsigned`: a
+ *   posted is a session's outside any quote (`ownSessionPost`), which then
+ *   is that session's own. `unsigned`: a
  *   session posted it and did not sign it (`unsignedPost`), so any
  *   subscriber may have written it, and each hears of it, told so
- *   ({@link UNSIGNED}). `merged`: `on` is a PR merged into
- *   main, which the owner's fire says.
+ *   ({@link UNSIGNED}).
  * @returns {Fanout}
  */
-const fanOut = ({ on, event, poster, prompt, fallback = false, commit, closing = false, merged = false, ownerOnly = false, byBranch = false, sessionPost = false, unsigned = false, issue = false, reason }) => {
+const fanOut = ({ on, event, poster, prompt, fallback = false, commit, closing = false, ownerOnly = false, byBranch = false, sessionPost = false, unsigned = false, issue = false, reason }) => {
   /** @type {Queued[]} */
   const fires = [];
   /** @type {string[]} */
@@ -321,7 +317,7 @@ const fanOut = ({ on, event, poster, prompt, fallback = false, commit, closing =
   const subscribers = subscribersFor(on?.body, event, { issue });
   if (byBranch && sessionNamedIn(on?.body) === null) {
     if (sessionPost && poster === null) skipped.push("a session's post naming no session, taken for the local session's own");
-    else fires.push(messageFire({ prompt, subscriber: { session: null, owner: true }, poster, on, event, fallback, commit, closing, merged, reason }));
+    else fires.push(messageFire({ prompt, subscriber: { session: null, owner: true }, poster, on, event, fallback, commit, closing, reason }));
   }
   for (const subscriber of subscribers) {
     if (ownerOnly && !subscriber.owner) continue;
@@ -329,7 +325,7 @@ const fanOut = ({ on, event, poster, prompt, fallback = false, commit, closing =
       skipped.push(`${sessionId(poster)}'s own post`);
       continue;
     }
-    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, merged, issue, unsigned, reason }));
+    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, issue, unsigned, reason }));
   }
   const heard = fires.length === 0 && skipped.length === 0 ? [`${reason}: nobody subscribes to ${event}`] : [];
   return { fires, reason: [...fires.map((f) => f.reason), ...skipped, ...heard].join('; ') };
@@ -550,11 +546,11 @@ const writtenFires = (written, event, payload, appId) => {
       // remark is not worth a takeover. A fresh session started on one
       // tends to post and sign off, and its post would start the next. A
       // person's reply quoting a session's post is the person's remark.
-      fallback: pr && !writtenBySession(body),
+      fallback: pr && !ownSessionPost(body),
       issue: !pr,
       ownerOnly,
       byBranch,
-      sessionPost: isSessionPost(body),
+      sessionPost: ownSessionPost(body),
       unsigned: unsignedPost(body),
       reason: `${what} ${by?.id} on #${on?.number}`,
     }));
@@ -675,7 +671,6 @@ export const pullRequestFires = (payload) => {
       poster: null,
       prompt: (role) => prClosedPrompt(payload, role),
       closing: !pr?.merged,
-      merged: pr?.merged === true && pr?.base?.ref === defaultBranch(payload),
       byBranch: true,
       reason: `#${pr?.number} ${pr?.merged ? 'merged' : 'closed'}`,
     });

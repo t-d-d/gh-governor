@@ -99,6 +99,22 @@ describe('exitCodeFor', () => {
     assert.equal(exitCodeFor(br({ ok: false, error: 'Unable to get organization UUID' })), 1, 'the session may be live and waiting');
   });
 
+  // A repo whose part of the turn failed fails the turn, whatever its kind.
+  test('a non-empty unread exits 1 on every kind, refusal or not', () => {
+    const unread = [{ repo: 'acme/factory', error: 'hook table: AccessDeniedException' }];
+    assert.equal(exitCodeFor({ kind: 'workflow', reason: null, deliveries: [], loginStored: false, unread } as never), 1);
+    assert.equal(exitCodeFor({ kind: 'job', deliveries: [], loginStored: false, unread } as never), 1);
+    assert.equal(exitCodeFor({ kind: 'branch-run', deliveries: [], loginStored: false, unread } as never), 1);
+    assert.equal(exitCodeFor({ kind: 'review', reviews: [], unread } as never), 1);
+    assert.equal(exitCodeFor({ kind: 'conflicts', checks: [], unread } as never), 1);
+    assert.equal(exitCodeFor({ kind: 'message', ok: true, sessionUrl: 'https://claude.ai/code/session_01ABC', error: null, loginStored: false, unread }), 1);
+    assert.equal(exitCodeFor({ kind: 'hook', messaged: { ok: true }, unread } as never), 1);
+    assert.equal(exitCodeFor({ kind: 'unblocked', messaged: { ok: true, refused: false }, dispatched: [], unread }), 1);
+    assert.equal(exitCodeFor({ kind: 'schedule', refusal: 'type: bug is not one of acme/factory\'s ready labels', unread } as never), 1);
+    assert.equal(exitCodeFor({ kind: 'message', refusal: 'acme/factory does not turn prMessages on', unread } as never), 1);
+    assert.equal(exitCodeFor({ kind: 'message', refusal: 'acme/factory does not turn prMessages on', unread: [] } as never), 0);
+  });
+
   test('a probe exits with what it proved', () => {
     assert.equal(exitCodeFor({ kind: 'probe', ok: true, detail: '' }), 0);
     assert.equal(exitCodeFor({ kind: 'probe', ok: false, detail: 'out of pty devices' }), 1);
@@ -147,6 +163,26 @@ describe('main', () => {
     });
     await main(args as never);
     assert.equal(logged[0]?.event, 'dispatch-result');
+    assert.deepEqual(exits, [1]);
+  });
+
+  test('a message into an archived session in a turn with an unread repo is a dispatcher failure', async () => {
+    const { args, logged, exits } = harness({
+      env: { DISPATCH_EVENT: '{"kind":"message","session":"session_01OLD","text":"hi"}' },
+      run: async () => ({ kind: 'message', ok: false, archived: true, sessionUrl: null, error: 'archived', loginStored: false, unread: [{ repo: 'acme/factory', error: 'hook table: AccessDeniedException' }] }),
+    });
+    await main(args as never);
+    assert.equal(logged[0]?.event, 'dispatch-failed');
+    assert.deepEqual(exits, [1]);
+  });
+
+  test('a message into an archived session in a turn whose heartbeat went unwritten is a dispatcher failure', async () => {
+    const { args, logged, exits } = harness({
+      env: { DISPATCH_EVENT: '{"kind":"message","session":"session_01OLD","text":"hi"}' },
+      run: async () => ({ kind: 'message', ok: false, archived: true, sessionUrl: null, error: 'archived', loginStored: false, heartbeatUnwritten: [{ repo: 'acme/factory', error: 'Bad credentials' }] }),
+    });
+    await main(args as never);
+    assert.equal(logged[0]?.event, 'dispatch-failed');
     assert.deepEqual(exits, [1]);
   });
 

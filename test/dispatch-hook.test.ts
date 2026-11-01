@@ -10,7 +10,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { HOOK_CLOCK_SKEW_MS, HOOK_TEXT_LIMIT, hookKey, hookPath, hookSignature, readSignature } from '../dispatch/webhook/hook.mjs';
+import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_DEDUP_WINDOW_MS, HOOK_TEXT_LIMIT, hookKey, hookPath, hookSignature, readSignature } from '../dispatch/webhook/hook.mjs';
 import { handle } from '../dispatch/webhook/route.mjs';
 import { hookTable } from '../dispatch/webhook/hook-table.mjs';
 import { HOOK_KEY_STALE } from '../dispatch/hooks.mjs';
@@ -143,15 +143,24 @@ describe('handle — a hook fire', () => {
     assert.equal(queued.length, 0);
   });
 
-  test('a timestamp more than five minutes from the receiver\'s clock gets 401, either way; one inside it is taken', async () => {
-    const skew = HOOK_CLOCK_SKEW_MS / 1000;
-    assert.equal(skew, 300);
-    for (const [t, status] of [[T - skew - 1, 401], [T + skew + 1, 401], [T - skew, 202], [T + skew, 202]] as const) {
+  test('a timestamp more than 30 seconds ahead of the receiver\'s clock, or more than 4 minutes 30 seconds behind it, gets 401; one inside is taken', async () => {
+    for (const [t, status] of [[T + 31, 401], [T + 29, 202], [T + 30, 202], [T - 269, 202], [T - 270, 202], [T - 271, 401]] as const) {
       const { deps, queued } = harness();
       const response = await handle(fire(TEXT, { t }), deps);
       assert.equal(response.statusCode, status, `t ${t - T}`);
       assert.equal(queued.length, status === 202 ? 1 : 0);
     }
+  });
+
+  // A valid request can be replayed for as long as it stays valid, which is
+  // the sum of the two limits. The queue drops a duplicate only inside its
+  // deduplication window, so a sum past that window leaves a gap in which a
+  // replay starts a second session.
+  test('the clock limits ahead and behind add up to no more than the queue\'s deduplication window', () => {
+    assert.equal(HOOK_DEDUP_WINDOW_MS, 5 * 60 * 1000, 'an SQS FIFO queue deduplicates for five minutes');
+    assert.equal(HOOK_CLOCK_AHEAD_MS, 30 * 1000);
+    assert.equal(HOOK_CLOCK_BEHIND_MS, 270 * 1000);
+    assert.ok(HOOK_CLOCK_AHEAD_MS + HOOK_CLOCK_BEHIND_MS <= HOOK_DEDUP_WINDOW_MS, `${HOOK_CLOCK_AHEAD_MS} + ${HOOK_CLOCK_BEHIND_MS} > ${HOOK_DEDUP_WINDOW_MS}`);
   });
 
   test('never logs the signature or the key', async () => {
