@@ -130,8 +130,8 @@ const oneTurn = async (eventOf, tag, { run: turn, deps, log, exit, schedule, can
   // The deadline unwinds nothing, so it logs them itself.
   /** Each `owner/name#number`. @type {Set<string>} */
   const claims = new Set();
-  // The session records the turn is still writing. One the deadline cuts
-  // off may never land, so it is logged as unrecorded here.
+  // The session records the turn is still writing. One the deadline or a
+  // throw cuts off may never land, so it is logged as unrecorded here.
   /** @type {Set<import('./turn.mjs').PendingRecord>} */
   const unrecorded = new Set();
   // The deadline ends the task, not just the turn: a launcher that hangs
@@ -155,6 +155,9 @@ const oneTurn = async (eventOf, tag, { run: turn, deps, log, exit, schedule, can
     log(failed ? 'dispatch-failed' : 'dispatch-result', { ...result, ...tag(code) });
     return code;
   } catch (error) {
+    // The turn waits for its records before it throws, so none should be
+    // left; one that is ends with the task, as at the deadline.
+    for (const pending of unrecorded) log(SESSION_UNRECORDED, unrecordedLine(pending, 'the turn threw while its record was being written, so it may not have landed'));
     log('dispatch-failed', { reason: 'threw', error: String(/** @type {any} */ (error)?.stack ?? error), ...tag(1) });
     return 1;
   } finally {
