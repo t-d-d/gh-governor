@@ -380,6 +380,48 @@ describe('routeEvent — a mention', () => {
     }
   });
 
+  test('a quote reply to a long session post keeps the person\'s own words: the quote is shortened first', () => {
+    // GitHub's quote reply puts the quoted post first. Cutting from the top
+    // would keep only the session's own text and drop what the person said.
+    const quote = Array.from({ length: 60 }, (_, i) => `> Line ${i} of the session's long post, which says a great deal.`).join('\n');
+    const remark = 'Please drop the retry loop and keep the timeout.';
+    const { fire } = messageOf('issue_comment', commentEvent({ issue: prIssue(`The PR.${footer}`) }, { body: `${quote}\n\n${remark}` }));
+    assert.match(fire.text, /Please drop the retry loop and keep the timeout\./);
+    assert.match(fire.text, /> Line 0 of the session's long post/, 'the start of the quote stays for context');
+    assert.match(fire.text, /more characters of the quote at the URL above/);
+    assert.ok(fire.text.indexOf('Line 0') < fire.text.indexOf(remark), 'the quote still comes before the reply');
+  });
+
+  test('a quote reply whose own words alone run past the limit keeps the start of the words, not the quote', () => {
+    const quote = Array.from({ length: 60 }, (_, i) => `> Line ${i} of the session's long post.`).join('\n');
+    const remark = `My reply starts here. ${'y'.repeat(5_000)}`;
+    const fire = dispatchOf('issue_comment', commentEvent({}, { body: `${quote}\n\n@claude ${remark}` }));
+    assert.match(fire.prompt, /My reply starts here\./);
+    assert.doesNotMatch(fire.prompt, /Line 0 of the session's long post/);
+    assert.match(fire.prompt, /more characters at the URL above/);
+    assert.ok(fire.prompt.length < 4_000, `${fire.prompt.length} chars`);
+    assert.match(fire.prompt, /a quote of \d+ characters at the URL above/, 'the session is told a quote was left out');
+  });
+
+  test('a quote reply whose own words fit but leave too little room for the quote says the quote was left out', () => {
+    const quote = Array.from({ length: 60 }, (_, i) => `> Line ${i} of the session's long post.`).join('\n');
+    const remark = `My reply starts here. ${'y'.repeat(1_430)}`;
+    const fire = dispatchOf('issue_comment', commentEvent({}, { body: `${quote}\n\n@claude ${remark}` }));
+    assert.ok(fire.prompt.includes(remark), 'the whole reply stays');
+    assert.doesNotMatch(fire.prompt, /Line 0 of the session's long post/);
+    assert.match(fire.prompt, /a quote of \d+ characters at the URL above/);
+  });
+
+  test('a quote reply posted with Windows line endings counts every quoted block as the quote', () => {
+    // GitHub's web editor posts CRLF, so the blank line between two quoted
+    // blocks is "\r\n". Missing it would take the second block for the reply.
+    const block = (n: number) => Array.from({ length: 30 }, (_, i) => `> Block ${n} line ${i} of the session's long post.`).join('\r\n');
+    const remark = 'Please drop the retry loop and keep the timeout.';
+    const { fire } = messageOf('issue_comment', commentEvent({ issue: prIssue(`The PR.${footer}`) }, { body: `${block(1)}\r\n\r\n${block(2)}\r\n\r\n${remark}` }));
+    assert.match(fire.text, /Please drop the retry loop and keep the timeout\./);
+    assert.match(fire.text, /more characters of the quote at the URL above/);
+  });
+
   test('a link the task would refuse, or one glued to more id characters, names no session', () => {
     for (const link of ['https://claude.ai/code/session_01', `https://claude.ai/code/session_${'A'.repeat(200)}`, `${SESSION_LINK}-older`]) {
       const decision = route({ event: 'issue_comment', payload: commentEvent({ issue: prIssue(`Footer.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${link}\n`) }), owners: OWNERS });
