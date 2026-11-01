@@ -77,7 +77,7 @@ const fakes = (over: {
   const reader = {
     comments: async () => [],
     comment: async (n: number, body: string) => { comments.push({ issue: n, body }); },
-    pull: async (n: number) => ({ number: n, body: PR_BODY, head: '' }),
+    pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: true }),
     updatePull: async (n: number, { body }: { body: string }) => { edits.push({ pr: n, body }); },
     issue: async (n: number) => ({ number: n, body: PR_BODY, pull: true }),
     updateIssue: async (n: number, { body }: { body: string }) => { issueEdits.push({ issue: n, body }); },
@@ -272,6 +272,28 @@ describe('deliver — with a fallback', () => {
     assert.deepEqual(told.fallback, { outcome: 'failed', sessionUrl: null });
     assert.deepEqual(f.comments, []);
     assert.deepEqual(f.edits, []);
+  });
+
+  // A remark can reach the turn after its PR merged or closed: it was
+  // posted while the PR was open, and its delivery came later. A fresh
+  // session told to take a finished PR over has nothing to do, so the PR is
+  // read when the owner refuses, not when the remark arrived.
+  test('a takeover on a PR that has closed or merged since the remark starts nothing, and leaves no marker', async () => {
+    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: false }) } });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'a person\'s remark', { fallback: onPr, takeover: true });
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(f.comments, []);
+    assert.deepEqual(f.edits, []);
+    assert.equal(told.refused, true);
+    assert.deepEqual(told.fallback, { outcome: 'skipped', sessionUrl: null });
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.outcome === 'skipped' && /closed/.test(String(l.reason))), JSON.stringify(f.logged));
+  });
+
+  test('a fallback that is not a takeover starts on a closed PR: a red run on a merge is meant for one', async () => {
+    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: false }) } });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'CI is red', { fallback: onPr, takeover: false });
+    assert.equal(f.launches.length, 1);
+    assert.deepEqual(told.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
   });
 
   test('a send failing for any reason but an archived session starts nothing: the owner may be live', async () => {
@@ -667,7 +689,7 @@ describe('deliver — to the owner of a PR', () => {
   const LOCAL = 'https://claude.ai/code/session_01LOCAL';
   const PR = 4492;
   const unnamed = (over: Record<string, unknown> = {}) => ({
-    pull: async (n: number) => ({ number: n, body: UNNAMED, head: BRANCH }),
+    pull: async (n: number) => ({ number: n, body: UNNAMED, head: BRANCH, open: true }),
     issue: async (n: number) => ({ number: n, body: UNNAMED, pull: true }),
     openPulls: async () => [{ number: PR, draft: false, base: 'main', head: BRANCH, title: 'Lessons', html_url: `https://github.com/${REPO}/pull/${PR}`, body: UNNAMED }],
     ...over,
@@ -699,7 +721,7 @@ describe('deliver — to the owner of a PR', () => {
   });
 
   test('a PR with no head branch has no owner to look for', async () => {
-    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: UNNAMED, head: '' }) }), sessions: () => { throw new Error('not asked'); } });
+    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: UNNAMED, head: '', open: true }) }), sessions: () => { throw new Error('not asked'); } });
     const told = await f.deliver({ pr: PR }, 'Why?');
     assert.equal(told.skipped, `no live session holds PR #${PR}'s head branch`);
   });
@@ -724,7 +746,7 @@ describe('deliver — to the owner of a PR', () => {
   });
 
   test('a body that has named its session since the fire was queued: that session is told, and the finder is not asked', async () => {
-    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH }) }), sessions: () => { throw new Error('not asked'); } });
+    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH, open: true }) }), sessions: () => { throw new Error('not asked'); } });
     await f.deliver({ pr: PR }, 'Why?', { on: [PR] });
     assert.deepEqual(f.sent.map((m) => m.session), ['https://claude.ai/code/session_01NAMED']);
   });

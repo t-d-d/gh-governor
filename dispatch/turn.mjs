@@ -219,7 +219,7 @@ export const sessionUrlFrom = (output) => {
  *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string }>>,
  *   closure: (n: number) => Promise<{ title: string, reason: string | null, pr: import('./webhook/fire.mjs').ClosingPull | null }>,
  *   ticket: (n: number) => Promise<import('../scripts/lib/github-app.mjs').TicketRow>,
- *   pull: (n: number) => Promise<{ number: number, body: string, head: string }>,
+ *   pull: (n: number) => Promise<{ number: number, body: string, head: string, open: boolean }>,
  *   updatePull: (n: number, change: { body: string }) => Promise<void>,
  *   issue: (n: number) => Promise<{ number: number, body: string, pull: boolean }>,
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,

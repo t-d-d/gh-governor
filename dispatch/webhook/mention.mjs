@@ -19,7 +19,9 @@
  * session's to keep, so every comment, review comment and review on it is
  * a `message` fire, mention or not, carrying the `dispatch` it would
  * otherwise have been as its fallback, which the task starts only if the
- * session refuses (archived). Any other session subscribes with a line in
+ * session refuses (archived) and the PR is still open. A session's post
+ * carries none: the owner's own is an echo, and another session's remark is
+ * not worth a takeover. Any other session subscribes with a line in
  * the body, a PR's or an issue's, and hears of the events it names
  * with no fallback: the task drops a subscriber that refuses. An issue a
  * session filed names it the same way, and it hears of every event there
@@ -245,8 +247,7 @@ const summons = (prompt, on, reason) => ({
  *   reason: string,
  * }} args `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
  *   `unsigned`: a session's post naming no session, which the message says
- *   ({@link UNSIGNED}); the fallback's fresh session wrote nothing, and is
- *   not told.
+ *   ({@link UNSIGNED}). A session's post carries no fallback.
  * @returns {Queued}
  */
 const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, reason }) => {
@@ -540,8 +541,12 @@ const writtenFires = (written, event, payload, appId) => {
       event: subscribed,
       poster: postedBy(body),
       prompt: (role, limit) => prompt(told, role, limit),
-      // An issue's owner, its filer, has nothing to hand over.
-      fallback: pr,
+      // An issue's owner, its filer, has nothing to hand over. Nor does a
+      // session's post: the owner's own is an echo, and another session's
+      // remark is not worth a takeover. A fresh session started on one
+      // tends to post and sign off, and its post would start the next. A
+      // person's reply quoting a session's post is the person's remark.
+      fallback: pr && !ownSessionPost(body),
       issue: !pr,
       ownerOnly,
       byBranch,
