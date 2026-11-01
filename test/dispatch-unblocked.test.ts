@@ -144,6 +144,8 @@ describe('the texts', () => {
     const text = notPlannedComment({ kind: 'unblocked', repo: FACTORY, issue: 7, blocker: { ...closed, reason: 'not_planned' } }, {}, { blocked: true });
     assert.match(text, /#41 \(`The parser`\) closed as not planned/);
     assert.match(text, /#7 is still blocked by another open issue/);
+    // The ask's "Its work" means the blocker's, so it follows the blocker's facts, not the ticket's.
+    assert.match(text, /It blocked #7\.\n\nIts work will not land/);
   });
 
   // A comment GitHub renders: a title's @handle or #N must not notify or link.

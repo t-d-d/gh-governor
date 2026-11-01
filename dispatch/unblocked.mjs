@@ -186,13 +186,15 @@ export const unblockedMessage = (fire, prompts) => `${unblockedFacts(fire)}\n\n$
 /**
  * The comment a ticket gets when its blocker closed as not planned, and its
  * session's message if it is claimed. `blocked`: another open issue still
- * blocks the ticket, which the text says, so nobody reads it as free.
+ * blocks the ticket, which the text says, so nobody reads it as free. That
+ * sentence comes after the ask, since the default ask's "Its work" means the
+ * blocker's and must follow the blocker's facts.
  *
  * @param {UnblockedFire & { repo?: string }} fire
  * @param {Record<string, string | undefined>} prompts
  * @param {{ blocked?: boolean }} [options]
  */
 export const notPlannedComment = (fire, prompts, { blocked = false } = {}) => {
-  const still = blocked ? ` #${fire.issue} is still blocked by another open issue, so this close does not free it.` : '';
-  return `${unblockedFacts(fire, { quote: true })}${still}\n\n${instruction(prompts, 'unblockedNotPlanned')}`;
+  const still = blocked ? `\n\n#${fire.issue} is still blocked by another open issue, so this close does not free it.` : '';
+  return `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}${still}`;
 };
