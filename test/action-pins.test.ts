@@ -136,6 +136,23 @@ function covers(patterns: string[], dir: string): boolean {
   });
 }
 
+type DependabotEntry = {
+  'package-ecosystem'?: string;
+  directory?: string;
+  directories?: string[];
+  schedule?: { interval?: string };
+  cooldown?: Record<string, unknown>;
+  groups?: unknown;
+};
+
+/** The committed Dependabot config, parsed. */
+function dependabotConfig(): { version?: number; updates?: DependabotEntry[] } {
+  return yaml.load(readFileSync(join(REPO_ROOT, '.github/dependabot.yml'), 'utf8')) as {
+    version?: number;
+    updates?: DependabotEntry[];
+  };
+}
+
 describe('Dependabot moves the pinned commits forward', () => {
   test('a path, a one-level glob and a deep glob each reach the folders they name', () => {
     assert.ok(covers(['/'], '/'));
@@ -150,10 +167,7 @@ describe('Dependabot moves the pinned commits forward', () => {
   });
 
   test('a github-actions entry watches the workflows and every local action', () => {
-    const config = yaml.load(readFileSync(join(REPO_ROOT, '.github/dependabot.yml'), 'utf8')) as {
-      version?: number;
-      updates?: { 'package-ecosystem'?: string; directory?: string; directories?: string[]; schedule?: { interval?: string } }[];
-    };
+    const config = dependabotConfig();
     assert.equal(config.version, 2);
     const entries = (config.updates ?? []).filter((u) => u['package-ecosystem'] === 'github-actions');
     assert.equal(entries.length, 1, 'one github-actions entry');
@@ -176,12 +190,11 @@ describe('Dependabot moves the pinned commits forward', () => {
   // Waiting a week gives the action's owners time to find and pull one. Each
   // action keeps its own pull request, so no groups.
   test('the github-actions entry waits 7 days for a release and groups nothing', () => {
-    const config = yaml.load(readFileSync(join(REPO_ROOT, '.github/dependabot.yml'), 'utf8')) as {
-      updates?: { 'package-ecosystem'?: string; cooldown?: { 'default-days'?: number }; groups?: unknown }[];
-    };
-    const entry = (config.updates ?? []).find((u) => u['package-ecosystem'] === 'github-actions');
+    const entry = (dependabotConfig().updates ?? []).find((u) => u['package-ecosystem'] === 'github-actions');
     assert.ok(entry, 'a github-actions entry');
-    assert.equal(entry.cooldown?.['default-days'], 7);
+    // Only the default: a semver-*-days key, an include or an exclude would
+    // let some releases through sooner than a week.
+    assert.deepEqual(entry.cooldown, { 'default-days': 7 });
     assert.equal(entry.groups, undefined);
   });
 });
