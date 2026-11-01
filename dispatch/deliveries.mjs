@@ -9,9 +9,9 @@
  * on a refusal (the CLI answers the session archived) forwards to the
  * session a dispatch marker inside the window names, or launches the
  * fallback, leaving the marker and, for a takeover, relinking the PR body
- * to it, unless the takeover's PR has closed since; with no fallback it drops the refusing subscriber, or disowns an
- * issue's filer. A session's own push, or a branch owner's own post, is
- * skipped. The owner of a PR whose body names no session is the live local
+ * to it, unless the takeover's PR has closed since; with no fallback it
+ * drops the refusing subscriber, or disowns an issue's filer. A session's
+ * own push, or a branch owner's own post, is skipped. The owner of a PR whose body names no session is the live local
  * session on its head branch.
  *
  * Every I/O is injected: the GitHub reader, the send into a session, the

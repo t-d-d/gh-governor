@@ -644,6 +644,9 @@ describe('routeEvent — subscribers', () => {
     }
     const person = messages('issue_comment', commentEvent({ issue: prIssue() }, { body: 'A remark.' }));
     assert.ok(person.sent.find((m) => m.session === OWNER)!.fallback, 'a person\'s remark is still taken over from');
+    const quoted = sessionPost('Fixed.', REVIEWER).split('\n').map((line) => `> ${line}`).join('\n');
+    const reply = messages('issue_comment', commentEvent({ issue: prIssue() }, { body: `${quoted}\n\nNot fixed: the test still fails.` }));
+    assert.ok(reply.sent.find((m) => m.session === OWNER)!.fallback, 'a person\'s reply quoting a session\'s post is a person\'s remark');
   });
 
   test('a session\'s post naming no session on an issue tells its filer the same', () => {

@@ -64,7 +64,7 @@
 
 import { DISPATCH_MARKER, OVERRIDE_BUDGET, SIGN_POSTS, SUMMONERS, UNATTENDED, build, deployedTarget, isBranch, isCommit, overrideWeight } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
-import { isSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost } from './subscribe.mjs';
+import { isSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, writtenBySession } from './subscribe.mjs';
 
 export const MENTION = '@claude';
 
@@ -249,8 +249,7 @@ const summons = (prompt, on, reason) => ({
  * }} args `merged`: `on` merged into main, which the owner's fire says.
  *   `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
  *   `unsigned`: a session's post naming no session, which the message says
- *   ({@link UNSIGNED}); the fallback's fresh session wrote nothing, and is
- *   not told.
+ *   ({@link UNSIGNED}). A session's post carries no fallback.
  * @returns {Queued}
  */
 const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, merged = false, issue = false, unsigned = false, reason }) => {
@@ -549,8 +548,9 @@ const writtenFires = (written, event, payload, appId) => {
       // An issue's owner, its filer, has nothing to hand over. Nor does a
       // session's post: the owner's own is an echo, and another session's
       // remark is not worth a takeover. A fresh session started on one
-      // tends to post and sign off, and its post would start the next.
-      fallback: pr && !isSessionPost(body),
+      // tends to post and sign off, and its post would start the next. A
+      // person's reply quoting a session's post is the person's remark.
+      fallback: pr && !writtenBySession(body),
       issue: !pr,
       ownerOnly,
       byBranch,
