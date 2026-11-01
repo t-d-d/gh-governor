@@ -26,11 +26,11 @@
  * or its claude.ai/code URL); one with a `fallback` names the prompt to
  * start a fresh session on, the name for it, and the PR it is on, should the
  * session refuse. A subscriber's names what it is `on`, the `event`,
- * a push's `commit`, and `closing` for a close; the owner's of a merge into
- * main carries `merged`.
- * One on a PR whose body names
+ * a push's `commit`, and `closing` for a close. One on a PR whose body names
  * no session carries `byBranch` in place of the session, and the `poster` to
- * skip. A `workflow` names a red run on the repo's default branch
+ * skip. A message queued before the receiver stopped marking a merge may
+ * still carry `merged`, which the parser drops. A `workflow` names a red
+ * run on the repo's default branch
  * (dispatch/workflow.mjs); a `job` a shipping job that succeeded there,
  * the one that earns a `deployed: ` label ({@link shippingJob});
  * a `branch-run` a finished run dispatched on another
@@ -257,10 +257,9 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  * @typedef {{ kind: 'probe' }} ProbeFire
  * @typedef {{ kind: 'dispatch', prompt: string, sessionName?: string, model?: string, scheduled?: ScheduledRun }} DispatchFire
  *   `scheduled`: the scheduled run gone red the session is for (route.mjs).
- * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, merged?: true, subscribed?: true }
+ * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
- *   `merged`: the owner's message of PR `on` merged into main.
  *   `subscribed`: the session hears by subscription, a `governor:subscribe`
  *   line or as an issue's filer, which the repo's subscribe-messages switch
  *   turns on; without it, it is the PR's owner, whose is the PR-messages
@@ -332,11 +331,11 @@ export const build = Object.freeze({
   /**
    * @param {({ session: string, byBranch?: undefined, poster?: undefined } | { session?: undefined, byBranch: true, poster?: string | undefined }) & {
    *   text: string, on?: number | undefined, event?: SubscriptionEvent | undefined, commit?: string | undefined,
-   *   closing?: boolean | undefined, merged?: boolean | undefined, subscribed?: boolean | undefined, fallback?: Fallback | undefined,
+   *   closing?: boolean | undefined, subscribed?: boolean | undefined, fallback?: Fallback | undefined,
    * }} args
    * @returns {MessageFire}
    */
-  message: ({ session, byBranch, poster, text, on, event, commit, closing, merged, subscribed, fallback }) => /** @type {MessageFire} */ ({
+  message: ({ session, byBranch, poster, text, on, event, commit, closing, subscribed, fallback }) => /** @type {MessageFire} */ ({
     kind: 'message',
     ...(byBranch === true ? { byBranch, ...present({ poster }) } : { session }),
     text,
@@ -345,7 +344,6 @@ export const build = Object.freeze({
       event,
       commit,
       closing: closing === true ? /** @type {true} */ (true) : undefined,
-      merged: merged === true ? /** @type {true} */ (true) : undefined,
       subscribed: subscribed === true ? /** @type {true} */ (true) : undefined,
       fallback: fallback && present(fallback),
     }),
@@ -689,9 +687,6 @@ const parseMessage = (e, event) => {
   if (e.subscribed !== undefined && e.subscribed !== true) {
     throw new Error(`a message invocation's subscribed is true or absent, got: ${JSON.stringify(e.subscribed)}`);
   }
-  if (e.merged !== undefined && (e.merged !== true || e.on === undefined)) {
-    throw new Error(`a message invocation's merged is true, on the PR it names, or absent, got: ${JSON.stringify(e.merged)} on ${JSON.stringify(e.on)}`);
-  }
   const to = e.byBranch === true
     ? { byBranch: /** @type {true} */ (true), on: Number(e.on), ...(typeof e.poster === 'string' ? { poster: e.poster } : {}) }
     : { session: /** @type {string} */ (e.session) };
@@ -704,7 +699,6 @@ const parseMessage = (e, event) => {
     ...(e.event === undefined ? {} : { event: /** @type {SubscriptionEvent} */ (e.event) }),
     ...(e.commit === undefined ? {} : { commit: e.commit }),
     ...(e.closing === true ? { closing: /** @type {true} */ (true) } : {}),
-    ...(e.merged === true ? { merged: /** @type {true} */ (true) } : {}),
     ...(e.subscribed === true ? { subscribed: /** @type {true} */ (true) } : {}),
   };
 };
