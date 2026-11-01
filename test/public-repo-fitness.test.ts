@@ -64,6 +64,19 @@ describe('fitness: the deploy\'s log never shows the AWS account id (public-repo
     assert.equal(credentials[0].with?.['mask-aws-account-id'], true);
   });
 
+  test('no step before the credentials step can reach AWS, and no other job holds AWS credentials', () => {
+    const steps: { uses?: string, run?: string }[] = workflow.jobs?.deploy?.steps ?? [];
+    const before = steps.slice(0, steps.indexOf(credentials[0]));
+    for (const step of before) {
+      assert.equal(step.run, undefined, 'a step before the credentials step runs a command the mask does not cover');
+      assert.match(step.uses ?? '', /^actions\/(checkout|setup-node)@/, 'a step before the credentials step');
+    }
+    for (const [name, job] of Object.entries(workflow.jobs ?? {}) as [string, { steps?: { uses?: string }[] }][]) {
+      if (name === 'deploy') continue;
+      assert.ok(!(job.steps ?? []).some((step) => step.uses?.startsWith('aws-actions/configure-aws-credentials@')), `${name} holds AWS credentials outside the masked job`);
+    }
+  });
+
   test('the deploy\'s switch reads the secret, never a variable of the same name', () => {
     assert.doesNotMatch(codeOnly, /vars\.AWS_DEPLOY_ROLE_ARN/);
     assert.equal(workflow.jobs?.deploy?.if, "${{ needs.role.outputs.set == 'true' }}");
