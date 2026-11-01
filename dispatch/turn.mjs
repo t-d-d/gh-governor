@@ -1586,17 +1586,26 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       }
       sources.push({ repo, reader: await readerFor(repo), labels: config.labels, prompts: config.prompts });
     }
-    // A fire naming its issue plans it alone, through the selection's own checks.
+    // A fire naming its issue plans it alone, through the selection's own
+    // checks, from a read of that issue rather than the ready list.
     only = invocation.issue === undefined ? undefined : [invocation.issue];
+    /** @type {import('../scripts/lib/dispatch-router.mjs').Seen[]} */
+    const seen = [];
     // In the bare fire one repo's refusal leaves the others to go; a fire
     // naming its repo throws on its own.
     const planned = await planSchedule({
       sources,
       cap: deps.cap,
       now: deps.now(),
-      ...(only === undefined ? {} : { only }),
+      ...(only === undefined ? {} : { only, seen }),
       ...(bare ? { unread, cut } : {}),
     });
+    if (only !== undefined && planned.length === 0) {
+      const why = deps.cap === 0 ? { outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' } : { outcome: 'not started: not ready, blocked, or dispatched inside the window' };
+      for (const { repo, issue, ...read } of seen) {
+        deps.log('dispatch-pickup', { level: 'info', repo, issue, ...why, reads: [read] });
+      }
+    }
     for (const { repo, error } of unread) deps.log('dispatch-backlog-unread', { level: 'error', repo, error });
     // Only when no repo was left out of the sweep: one due repo failing
     // while the others were not due is that repo's fault, not the turn's.
@@ -1669,12 +1678,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const { issue, blocker } = invocation;
     const config = configOf(fireRepo());
     const reader = await getReader();
-    // The ticket's dependency summary counts a blocker the rows leave out,
-    // so the rows are read only for a ticket without one.
-    const ticket = await reader.ticket(issue);
-    const blockers = ticket.openBlockers === undefined ? await reader.blockers(issue) : undefined;
+    const { ticket, blockers, reads } = await readUnblocked(reader, issue, deps.sleep);
     row = ticketRow({ ticket, blockers, fire: invocation, labels: config.labels });
-    const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row };
+    const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row, reads };
     const governs = ROW_SWITCH[row];
     if (governs === undefined) {
       deps.log('dispatch-unblocked', { ...about, outcome: 'nothing to do' });
@@ -1722,7 +1728,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       // As pickup does: the selection's own checks, the window included.
       const planned = await planSchedule({ sources: [{ repo: fireRepo(), reader, labels: config.labels, prompts }], cap: 1, now: deps.now(), only: [issue] });
       for (const d of planned) plan.push({ issue, repo: d.repo, prompt: readyPrompt(d.prompt, invocation, prompts), sessionName: d.sessionName, model: DEFAULT_MODEL });
-      deps.log('dispatch-unblocked', { ...about, outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, or no longer ready' : 'picking up' });
+      deps.log('dispatch-unblocked', { ...about, outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, blocked, or no longer ready' : 'picking up' });
     } else {
       // The spec session is not claimed: its marker keeps the sweep off the
       // ticket inside the window, and the claim it adds before it builds
@@ -1981,6 +1987,35 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   }
   const left = [...unread, ...sweepsUnread, ...periodicsUnread, ...hooksUnrecorded];
   return { kind: invocation.kind, ...(row === undefined ? {} : { row }), dispatched, heartbeat, loginStored, ...(left.length === 0 ? {} : { unread: left }) };
+};
+
+/** How often, and how far apart, an unblocked fire reads a ticket that still counts an open blocker. */
+const UNBLOCKED_READS = 4;
+const UNBLOCKED_WAIT_MS = 3000;
+
+/**
+ * An unblocked fire's ticket, and its `blocked_by` rows where it carries no
+ * dependency summary (the summary counts a blocker the rows leave out). The
+ * turn runs seconds after the blocker closed, and a read then may still
+ * count it open, so an open ticket that reads blocked is read again, a few
+ * times over about ten seconds, as the conflicts check re-reads a PR's
+ * mergeable state. `reads`: each read's labels and open blocker count, for
+ * the log.
+ *
+ * @param {Pick<Reader, 'ticket' | 'blockers'>} reader
+ * @param {number} issue
+ * @param {(ms: number) => Promise<void>} sleep
+ */
+const readUnblocked = async (reader, issue, sleep) => {
+  /** @type {Array<{ labels: string[], openBlockers: number }>} */
+  const reads = [];
+  for (let read = 1; ; read += 1) {
+    const ticket = await reader.ticket(issue);
+    const blockers = ticket.openBlockers === undefined ? await reader.blockers(issue) : undefined;
+    reads.push({ labels: ticket.labels, openBlockers: ticket.openBlockers ?? (blockers ?? []).filter((b) => b.state === 'open').length });
+    if (ticket.state !== 'open' || !isBlocked(ticket, blockers) || read >= UNBLOCKED_READS) return { ticket, blockers, reads };
+    await sleep(UNBLOCKED_WAIT_MS);
+  }
 };
 
 /**
