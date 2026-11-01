@@ -528,7 +528,7 @@ export const run = async (event, deps) => {
     if (invocation.kind === 'schedule' && invocation.label !== undefined && !one.config.labels.ready.includes(invocation.label)) {
       const reason = `${invocation.label} is not one of ${repo}'s ready labels (${one.config.labels.ready.join(', ')})`;
       deps.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, issue: invocation.issue, reason });
-      return { kind: invocation.kind, refusal: reason, signoffs: null };
+      return { kind: invocation.kind, refusal: reason, signoffs: null, ...(unread.length === 0 ? {} : { unread }) };
     }
     served = [one];
     const name = switchOf(invocation, one.config.workflows);

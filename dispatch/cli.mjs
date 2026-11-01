@@ -56,7 +56,8 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * every periodic's record and window was read and every periodic it
  * brought due that started launched.
  * In any kind, every governor heartbeat block the turn changed was read and
- * written (`heartbeatUnwritten`).
+ * written (`heartbeatUnwritten`), and no repo's part of the turn failed
+ * (`unread`), refusal or not.
  *
  * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean } | null }} result
  * @returns {0 | 1}
@@ -68,6 +69,9 @@ export const exitCodeFor = (result) => {
   // The periodics an event brought due are checked under their own switch,
   // so a fault there fails a turn whose own work was refused or went well.
   if (result.periodics != null && (result.periodics.unread.length > 0 || result.periodics.dispatched.some((d) => d.outcome === 'failed'))) return 1;
+  // A repo whose part of the turn failed, its config file or its hook table
+  // write, fails the turn of any kind, refused or not.
+  if ((result.unread?.length ?? 0) > 0) return 1;
   if (typeof result.refusal === 'string') return 0;
   /** A send's fault: the CLI never answered, answered anything but the session gone, or its fallback started nothing. @param {{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }} d */
   const faultedSend = (d) => !d.ok && (!d.refused || d.fallback?.outcome === 'failed');
@@ -92,7 +96,6 @@ export const exitCodeFor = (result) => {
     return result.ok || result.skipped != null || result.dropped != null
       || (result.fallback != null && result.fallback.outcome !== 'failed') ? 0 : 1;
   }
-  if ((result.unread?.length ?? 0) > 0) return 1;
   const dispatched = result.dispatched ?? [];
   return dispatched.length > 0 && dispatched.every((d) => d.outcome === 'failed') ? 1 : 0;
 };
@@ -130,8 +133,10 @@ export const main = async ({ env, run: turn, deps, log, exit, schedule }) => {
     const result = await turn(event, { ...deps(), claims });
     const code = exitCodeFor(result);
     // A message into an archived session exits 1 for its caller, but the
-    // dispatcher did not fail: nothing about it is the alarm's.
-    const failed = code === 1 && !('archived' in result && result.archived === true);
+    // dispatcher did not fail: nothing about it is the alarm's, unless a
+    // repo's part of the turn failed too.
+    const unread = 'unread' in result && Array.isArray(result.unread) && result.unread.length > 0;
+    const failed = code === 1 && (unread || !('archived' in result && result.archived === true));
     log(failed ? 'dispatch-failed' : 'dispatch-result', { ...result });
     exit(code);
   } catch (error) {
