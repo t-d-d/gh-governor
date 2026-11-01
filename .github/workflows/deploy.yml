@@ -6,15 +6,17 @@
 # cost no runner minutes, since EventBridge and the webhook receiver start
 # the task with no runner involved.
 #
-# The deploy job does nothing until the AWS_DEPLOY_ROLE_ARN variable is set,
+# The deploy job does nothing until the AWS_DEPLOY_ROLE_ARN secret is set,
 # so a fork's first merges run the gate alone. Its settings are repository
-# variables and a secret, never values in this file. Anyone can read a public
+# variables and secrets, never values in this file. Anyone can read a public
 # repo's run logs, and Actions masks only a secret's exact string, so the drop
 # box is a secret, and the alert email never passes through GitHub: the stack
-# reads it from Parameter Store, /governor/alert-email
-# (docs/constraints/public-repo.md).
+# reads it from Parameter Store, /governor/alert-email. The role's ARN, the
+# registry and the image URI all carry the AWS account id, so the role's ARN
+# is a secret and the credentials step masks the account id in every later
+# line (docs/constraints/public-repo.md).
 #
-#   AWS_DEPLOY_ROLE_ARN  variable: the role the job assumes through GitHub's
+#   AWS_DEPLOY_ROLE_ARN  secret: the role the job assumes through GitHub's
 #                        OIDC, the bootstrap stack's output
 #   AWS_REGION           variable: where the stacks live (default us-east-1)
 #   GOVERNOR_OWNERS      variable: the GitHub accounts served, comma-separated
@@ -23,7 +25,7 @@
 #   SELECT_LABELS        variable: the labels whose addition queues a selection fire
 #   DROP_BOX_URL         secret, optional: where the PR review's transcripts go
 #
-# One job, in order: apply the bootstrap stack (infra/bootstrap.cfn.yml),
+# The deploy job, in order: apply the bootstrap stack (infra/bootstrap.cfn.yml),
 # derive the image tag from the image's inputs, build only when that tag is
 # new, read the default VPC's subnets, package and apply the main stack, point
 # the App's webhook at the receiver, read back what GitHub and AWS now hold
@@ -68,9 +70,28 @@ jobs:
   gate:
     uses: ./.github/workflows/gate.yml
 
+  # A job's `if:` cannot read a secret, so this job reads whether the role's
+  # secret is set and hands the deploy job the answer.
+  role:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      set: ${{ steps.read.outputs.set }}
+    steps:
+      - name: Read whether the deploy role's secret is set
+        id: read
+        env:
+          ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [[ -n "$ROLE_ARN" ]]; then
+            echo "set=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "set=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
-    needs: gate
-    if: ${{ vars.AWS_DEPLOY_ROLE_ARN != '' }}
+    needs: [gate, role]
+    if: ${{ needs.role.outputs.set == 'true' }}
     # A probe-only run deploys nothing, and its name carries no label.
     name: "${{ inputs.probe_only && 'Probe only: build the image, apply the stack, probe the task' || format('Build the image, apply the stack, probe the task at {0} · deployed: governor', github.sha) }}"
     # Native arm64: the task runs on arm64 and the CLI's postinstall fetches
@@ -90,8 +111,11 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          # Every later line masks the account id: the registry, the image
+          # URI and the build bucket all carry it.
+          mask-aws-account-id: true
 
       # The bootstrap stack is applied before the main stack's guard runs, so
       # it has a guard of its own.

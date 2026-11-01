@@ -129,5 +129,5 @@ Resources:
 
 Outputs:
   DeployRoleArn:
-    Description: The value of the repository variable AWS_DEPLOY_ROLE_ARN
+    Description: The value of the repository secret AWS_DEPLOY_ROLE_ARN
     Value: !GetAtt DeployRole.Arn

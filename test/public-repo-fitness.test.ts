@@ -43,8 +43,33 @@ describe('fitness: the alert email never passes through GitHub, and the drop box
     assert.equal(apply?.env?.DROP_BOX_URL, '${{ secrets.DROP_BOX_URL }}');
   });
 
-  test('reads its other values from the six repository variables the README lists', () => {
+  test('reads its other values from the five repository variables the README lists', () => {
     const variables = [...new Set([...codeOnly.matchAll(/\bvars\.([A-Za-z_]+)/g)].map((m) => m[1]))].sort();
-    assert.deepEqual(variables, ['APP_ID', 'APP_SLUG', 'AWS_DEPLOY_ROLE_ARN', 'AWS_REGION', 'GOVERNOR_OWNERS', 'SELECT_LABELS']);
+    assert.deepEqual(variables, ['APP_ID', 'APP_SLUG', 'AWS_REGION', 'GOVERNOR_OWNERS', 'SELECT_LABELS']);
+  });
+});
+
+// The deploy role's ARN carries the account id, and so do the registry and
+// the image URI. Actions masks a secret's exact string, and the credentials
+// action masks the account id in every later line when it is asked to.
+describe('fitness: the deploy\'s log never shows the AWS account id (public-repo.md)', () => {
+  const { workflow, codeOnly } = loadWorkflow(resolve(REPO_ROOT, '.github/workflows/deploy.yml'));
+  const credentials = (workflow.jobs?.deploy?.steps ?? []).filter(
+    (step: { uses?: string }) => step.uses?.startsWith('aws-actions/configure-aws-credentials@'),
+  );
+
+  test('the deploy assumes the role named by a secret, and masks the account id', () => {
+    assert.equal(credentials.length, 1);
+    assert.equal(credentials[0].with?.['role-to-assume'], '${{ secrets.AWS_DEPLOY_ROLE_ARN }}');
+    assert.equal(credentials[0].with?.['mask-aws-account-id'], true);
+  });
+
+  test('the deploy\'s switch reads the secret, never a variable of the same name', () => {
+    assert.doesNotMatch(codeOnly, /vars\.AWS_DEPLOY_ROLE_ARN/);
+    assert.equal(workflow.jobs?.deploy?.if, "${{ needs.role.outputs.set == 'true' }}");
+    const role = workflow.jobs?.role;
+    assert.equal(role?.outputs?.set, '${{ steps.read.outputs.set }}');
+    const read = (role?.steps ?? []).find((step: { id?: string }) => step.id === 'read');
+    assert.equal(read?.env?.ROLE_ARN, '${{ secrets.AWS_DEPLOY_ROLE_ARN }}');
   });
 });

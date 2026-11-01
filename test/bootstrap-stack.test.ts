@@ -99,7 +99,7 @@ describe('infra/bootstrap.cfn.yml', () => {
     }
   });
 
-  test('outputs the role\'s ARN, the value of AWS_DEPLOY_ROLE_ARN', () => {
+  test('outputs the role\'s ARN, the value of the AWS_DEPLOY_ROLE_ARN secret', () => {
     assert.equal(bootstrap.Outputs?.DeployRoleArn?.Value, '${DeployRole.Arn}');
   });
 });
