@@ -192,7 +192,7 @@ const heartbeatSchema = z.strictObject({
 /**
  * Pickup's settings (dispatch/pickup.mjs). `sweepHours`: how many whole
  * hours the bare schedule fire leaves between two sweeps of the repo's ready
- * tickets, two when unset.
+ * tickets, one when unset.
  */
 const pickupSchema = z.strictObject({
   sweepHours: z.number().int().min(1).optional(),

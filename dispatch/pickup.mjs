@@ -6,7 +6,7 @@
  * stack's `SelectLabels` does not list waits for it too.
  *
  * A repo's config file may set the interval in whole hours (`pickup`,
- * dispatch/repo-config.mjs), two when unset. The bare fire sweeps a repo
+ * dispatch/repo-config.mjs), one when unset. The bare fire sweeps a repo
  * once its interval has passed since that repo's last sweep
  * ({@link sweepDue}), and records the sweep in the state table under
  * `pickup#<repo>` (`dynamoState`, dispatch/turn.mjs). The clock's tick is the
@@ -24,8 +24,12 @@
 
 import { HOUR_MS } from './periodics.mjs';
 
-/** The interval, in whole hours, for a file that sets none: the clock's own tick. */
-export const SWEEP_HOURS = 2;
+/**
+ * The interval, in whole hours, for a file that sets none: the clock's own
+ * hourly tick, so such a repo is swept at every fire. The heartbeat checker
+ * keeps a copy (checker/heartbeat-check.mjs), since it runs in another repo.
+ */
+export const SWEEP_HOURS = 1;
 
 /**
  * How far short of its interval a repo's last sweep may be and the fire

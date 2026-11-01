@@ -61,12 +61,14 @@ export const DAY_MS = 24 * HOUR_MS;
 
 /**
  * How far short of its day limit a periodic may be read and still be due:
- * half the schedule's two-hour interval, so the sweep nearest the limit
+ * half the schedule's hourly interval, so the sweep nearest the limit
  * fires it. The record holds the launch's time, minutes after the sweep
  * read it, so the sweep a day limit later reads it a little short. Without
- * this, every run would slip to the sweep after, and the slips add up.
+ * this, every run would slip to the sweep after, and the slips add up. A
+ * grace of a whole interval would fire it at the sweep before the limit,
+ * and every run would creep earlier instead.
  */
-export const SWEEP_GRACE_MS = HOUR_MS;
+export const SWEEP_GRACE_MS = HOUR_MS / 2;
 
 /**
  * How many of one kind's items a prompt lists before it says how many more:

@@ -33,8 +33,8 @@ export const HEARTBEAT_END = '<!-- governor:heartbeat-end -->';
 /** The served repo's config file, read from its default branch. */
 export const CONFIG_PATH = '.github/dispatch.json';
 
-/** Pickup's sweep interval when the file sets none. */
-export const SWEEP_HOURS = 2;
+/** Pickup's sweep interval when the file sets none: dispatch/pickup.mjs's, copied, since this runs in another repo. */
+export const SWEEP_HOURS = 1;
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
