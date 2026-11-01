@@ -248,9 +248,10 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   commit?: string | undefined,
  * }} DeliverOptions
  *   `source`: where the text comes from, which names the line it opens
- *   with; a fallback's prompt opens with the same line. `fallback`: what a refusal starts. A `takeover`'s fallback owns the PR,
- *   so the body is relinked to it; a red CI's fix session did not write the
- *   merged PR it is told of, so that body keeps its author. `on`: the PRs or
+ *   with; a fallback's prompt opens with the same line. `fallback`: what a
+ *   refusal starts. A `takeover`'s fallback owns the PR, so the body is
+ *   relinked to it; a red CI's fix session did not write the merged PR it
+ *   is told of, so that body keeps its author. `on`: the PRs or
  *   issue the message is about, left out of the standing. `closing`: a close
  *   or a change deployed. `dropFrom`: those of `on` the session subscribes
  *   to, which a refusal with no fallback drops it from. `commit`: the push
