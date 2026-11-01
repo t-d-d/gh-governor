@@ -8,7 +8,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import yaml from 'js-yaml';
 import { REPO_ROOT } from './helpers/repo-model.ts';
@@ -106,5 +106,40 @@ describe('third-party actions are named by their commit', () => {
       return [...unpinned(raw), ...unpinnedRefs(workflow)].map((line) => `${relative(REPO_ROOT, path)}: ${line}`);
     });
     assert.deepEqual(found, []);
+  });
+});
+
+/**
+ * The directories a Dependabot `github-actions` entry watches. An entry may
+ * name one `directory` or a `directories` list, and a list may hold a glob
+ * ending in `/*`.
+ */
+function watched(entry: { directory?: string; directories?: string[] }): string[] {
+  return [...(entry.directory ? [entry.directory] : []), ...(entry.directories ?? [])];
+}
+
+function covers(patterns: string[], dir: string): boolean {
+  return patterns.some((p) => p === dir || (p.endsWith('/*') && dir.startsWith(p.slice(0, -1)) && !dir.slice(p.length - 1).includes('/')));
+}
+
+describe('Dependabot moves the pinned commits forward', () => {
+  test('a github-actions entry watches the workflows and every local action', () => {
+    const config = yaml.load(readFileSync(join(REPO_ROOT, '.github/dependabot.yml'), 'utf8')) as {
+      version?: number;
+      updates?: { 'package-ecosystem'?: string; directory?: string; directories?: string[]; schedule?: { interval?: string } }[];
+    };
+    assert.equal(config.version, 2);
+    const entries = (config.updates ?? []).filter((u) => u['package-ecosystem'] === 'github-actions');
+    assert.equal(entries.length, 1, 'one github-actions entry');
+    const entry = entries[0]!;
+    assert.ok(entry.schedule?.interval, 'the entry has a schedule');
+    const patterns = watched(entry);
+    // Dependabot reads .github/workflows from the root directory, "/".
+    assert.ok(covers(patterns, '/'), 'the root, and so .github/workflows, is watched');
+    const actions = readdirSync(join(REPO_ROOT, '.github/actions'))
+      .filter((name) => statSync(join(REPO_ROOT, '.github/actions', name)).isDirectory())
+      .map((name) => `/.github/actions/${name}`);
+    assert.ok(actions.length > 0, 'found the local actions');
+    assert.deepEqual(actions.filter((dir) => !covers(patterns, dir)), []);
   });
 });

@@ -1,0 +1,11 @@
+# Moves each outside action's pinned commit, and the tag comment beside it,
+# to the action's newest release. "/" covers .github/workflows; each
+# composite action under .github/actions needs naming as well.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
