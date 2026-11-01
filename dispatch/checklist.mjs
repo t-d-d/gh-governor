@@ -230,23 +230,18 @@ export const dependabotAnswer = ({ files, commits, list }) => {
 const named = (labels) => labels.map((l) => `\`${l}\``).join(', ');
 
 /**
- * Whether a ticket is pickup's to claim and not yet claimed. Its labels are
- * read by `labelRow`, the rule the selection, the claim and the unblocked
- * row share: a ticket carrying an excluded label is not pickup's, and one
- * carrying the claim is claimed. Where the repo's claim takes labels off, a
- * ticket still carrying one of them is unclaimed; where it takes none off,
- * a ticket `labelRow` reads as ready is.
+ * Whether a ticket neither claimed nor excluded is still waiting for its
+ * claim. Where the repo's claim takes labels off, a ticket still carrying
+ * one of them is unclaimed; where it takes none off, a ticket `labelRow`
+ * reads as ready is.
  *
  * @param {TicketRow} ticket
- * @param {Rules['labels']} labels
+ * @param {'ready' | 'not-ready'} row The ticket's `labelRow`.
+ * @param {string[]} claimRemoves
  */
-const unclaimed = (ticket, labels) => {
-  const row = labelRow(ticket.labels, labels);
-  if (row === 'excluded' || row === 'claimed') return false;
-  return labels.claimRemoves.length > 0
-    ? labels.claimRemoves.some((l) => ticket.labels.includes(l))
-    : row === 'ready';
-};
+const unclaimed = (ticket, row, claimRemoves) => (claimRemoves.length > 0
+  ? claimRemoves.some((l) => ticket.labels.includes(l))
+  : row === 'ready');
 
 /**
  * The first of the repo's ticket rules `ticket` breaks, as a reason, or
@@ -334,7 +329,7 @@ const oneTicketFailure = (ticket, which, others, { tickets, labels }) => {
   }
   const row = labelRow(ticket.labels, labels);
   if (row === 'claimed' || row === 'excluded') return null;
-  if (unclaimed(ticket, labels)) return { reason: `${which}, ${n}, is not yet \`${labels.claim}\`: nobody claimed it`, editable: true, claim: true };
+  if (unclaimed(ticket, row, labels.claimRemoves)) return { reason: `${which}, ${n}, is not yet \`${labels.claim}\`: nobody claimed it`, editable: true, claim: true };
   return { reason: `${which}, ${n}, is not \`${labels.claim}\`, nor ready to claim`, editable: false };
 };
 

@@ -867,6 +867,11 @@ describe('the claim check reads a closing ticket by the shared ready-label rule'
     }
   });
 
+  test('an excluded ticket that is neither ready nor claimed passes too: it is not pickup\'s', () => {
+    assert.equal(decideInCode({ files: [], tickets: [ticket(['type: prd'])], rules: noRules }), null);
+    assert.equal(decideInCode({ files: [], tickets: [ticket(['mode: human'])], rules: { ...noRules, labels: own } }), null);
+  });
+
   test('a ready, unclaimed ticket with no excluded label is still told to claim it', () => {
     for (const [labels, on] of [[FACTORY_RULES.labels, ['mode: afk', 'workflow: ready for development']], [own, ['mode: afk']]] as const) {
       const answer = decideInCode({ files: [], tickets: [ticket([...on])], rules: { ...noRules, labels } });
