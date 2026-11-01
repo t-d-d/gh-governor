@@ -672,15 +672,16 @@ describe('run — the dispatcher claims what it launches', () => {
   });
 
   // The plan is read once, and each launch takes minutes: a ticket a person
-  // or another turn claimed, unreadied or closed in between is not the
-  // dispatcher's to claim, and its session would proceed on the prompt's
-  // claim line over someone else's work.
+  // or another turn claimed, unreadied, closed or gave an excluded label in
+  // between is not the dispatcher's to claim, and its session would proceed
+  // on the prompt's claim line over someone else's work.
   test('a ticket no longer ready when its turn comes is neither claimed nor launched', async () => {
     for (const taken of [
       { state: 'open', labels: [CLAIMED] },
-      { state: 'open', labels: [READY, CLAIMED] },
+      { state: 'open', labels: [READY, 'mode: afk', CLAIMED] },
       { state: 'open', labels: [] },
       { state: 'closed', labels: [READY] },
+      { state: 'open', labels: [READY, 'mode: afk', 'type: prd'] },
     ]) {
       const base = harness();
       const { deps, calls, launches, logged } = harness({
@@ -696,6 +697,7 @@ describe('run — the dispatcher claims what it launches', () => {
       assert.ok(!labelCalls(calls).some((c) => c.startsWith('label #7 ')), `#7 untouched: ${JSON.stringify(labelCalls(calls))}`);
       assert.deepEqual(result.dispatched.map((d) => d.issue), [9]);
       assert.deepEqual(stranded(logged), []);
+      assert.ok(logged.some((l) => l.event === 'dispatch-claim' && l.issue === 7 && l.outcome === 'skipped' && String(l.reason).startsWith('no longer ready to claim')), JSON.stringify(taken));
     }
   });
 
