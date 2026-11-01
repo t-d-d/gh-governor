@@ -304,7 +304,7 @@ describe('isWaiting', () => {
   });
 });
 
-describe('selectReadyWork — a ticket\'s own wait', () => {
+describe('selectReadyWork: a ticket\'s own wait', () => {
   const held = issue(1, { wait: { until: '2026-11-05' } });
 
   test('a ready ticket whose date is still to come is not selected, and is at the first sweep on or after it', () => {

@@ -20,7 +20,7 @@
 
 import { DISPATCH_WINDOW_MS, recentlyDispatched } from '../../dispatch/webhook/fire.mjs';
 import { promptFor, sessionName } from './dispatch-prompt.mjs';
-import { byAge, isBlocked, labelRow, selectReadyWork } from './ready-work.mjs';
+import { byAge, isBlocked, labelRow, selectReadyWork, unreadableOf } from './ready-work.mjs';
 
 /**
  * @typedef {{ issue?: number, repo: string, prompt: string, sessionName: string }} Dispatch
@@ -138,8 +138,9 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     // A ticket held by an unreadable `Blocked until:` line, one the
     // selection would otherwise consider, is reported for its comment.
     for (const row of rows) {
-      if (row.wait !== undefined && 'unreadable' in row.wait && (row.state ?? 'open') === 'open' && labelRow(row.labels, labels) === 'ready') {
-        unreadable?.push({ repo: source.repo, issue: row.number, value: row.wait.unreadable });
+      const value = unreadableOf(row);
+      if (value !== undefined && (row.state ?? 'open') === 'open' && labelRow(row.labels, labels) === 'ready') {
+        unreadable?.push({ repo: source.repo, issue: row.number, value });
       }
     }
     const ready = selectReadyWork(rows, { cap: Number.MAX_SAFE_INTEGER, labels, now });

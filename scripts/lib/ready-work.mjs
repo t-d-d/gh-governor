@@ -146,6 +146,15 @@ export const waitOf = (body) => {
 };
 
 /**
+ * The value of a ticket's `Blocked until:` line where governor could not
+ * read it as a date, or undefined for a readable line or none.
+ *
+ * @param {{ wait?: Wait }} issue
+ * @returns {string | undefined}
+ */
+export const unreadableOf = ({ wait }) => (wait !== undefined && 'unreadable' in wait ? wait.unreadable : undefined);
+
+/**
  * Whether a ticket's own `Blocked until:` line holds it at `now`: a date
  * still to come, whose wait ends at 00:00 UTC on that date, or a line
  * governor could not read. A row with no line is not held.

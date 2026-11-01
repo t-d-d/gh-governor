@@ -1425,17 +1425,12 @@ describe('run — an unblocked fire', () => {
  * the turn hands its fire to the delivery and stores the login after.
  */
 /**
- * Periodics (dispatch/periodics.mjs): on the bare schedule fire, each one
- * whose day limit has passed since its last fire starts a session on its
- * prompt, ahead of the tickets, and its record moves to this fire.
- */
-/**
  * A ticket whose body opens with `Blocked until: <YYYY-MM-DD>` is held until
  * 00:00 UTC on that date, in every served repo, with no switch: by the
  * selection, the claim's second read and the unblocked row alike. A line
  * governor cannot read holds the ticket and gets one comment saying so.
  */
-describe('run — a ticket held by its `Blocked until:` line', () => {
+describe('run: a ticket held by its `Blocked until:` line', () => {
   const READY = ['workflow: ready for development', 'mode: afk'];
   const LATER = new Date(NOW + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const held = { ...issue(7), wait: { until: LATER } };
@@ -1493,6 +1488,18 @@ describe('run — a ticket held by its `Blocked until:` line', () => {
     assert.match(String(line?.reason), new RegExp(`Blocked until: ${LATER}`));
   });
 
+  test('an unreadable line gained before the claim is said on a ticket still ready, and not on one claimed since', async () => {
+    for (const [labels, want] of [[READY, 1], [['workflow: under development'], 0]] as const) {
+      const h = waitTurn({
+        rows: [issue(7), issue(9)],
+        ticket: (n) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: n === 7 ? labels : READY, pull: false, ...(n === 7 ? { wait: { unreadable: 'soon' } } : {}) }),
+      });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9')], JSON.stringify(labels));
+      assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNREADABLE_MARKER)).length, want, JSON.stringify(labels));
+    }
+  });
+
   test('an unreadable line holds the ticket, logs at warn and comments once with the marker', async () => {
     const h = waitTurn({ rows: [unreadable, issue(9)] });
     await run({ source: 'aws.events' }, h.deps as never);
@@ -1548,6 +1555,11 @@ describe('run — a ticket held by its `Blocked until:` line', () => {
   });
 });
 
+/**
+ * Periodics (dispatch/periodics.mjs): on the bare schedule fire, each one
+ * whose day limit has passed since its last fire starts a session on its
+ * prompt, ahead of the tickets, and its record moves to this fire.
+ */
 describe('run — periodics', () => {
   const FACTORY_PERIODICS = JSON.parse(FACTORY_FILE).periodics as Array<{ name: string; prompt: string; days: number }>;
   const RETRO = FACTORY_PERIODICS.find((p) => p.name === 'Weekly retro')!;

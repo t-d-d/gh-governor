@@ -105,7 +105,7 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
-import { isBlocked, isWaiting, labelRow } from '../scripts/lib/ready-work.mjs';
+import { isBlocked, isWaiting, labelRow, unreadableOf } from '../scripts/lib/ready-work.mjs';
 import { reportUnreadable } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { RoutinesApiError, launchRoutine, observed } from './routines.mjs';
@@ -1607,12 +1607,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       ...(bare ? { unread, cut } : {}),
     });
     // A `Blocked until:` line governor cannot read holds its ticket, and is
-    // said once on the ticket whatever the repo's switches say.
-    for (const { repo, issue, value } of unreadable) {
-      await reportUnreadable({ reader: await readerFor(repo), repo, issue, value, log: deps.log });
-    }
+    // said once on the ticket whatever the repo's switches say. Each report
+    // catches its own failure, so they run side by side and keep the launch
+    // window for the launches.
+    await Promise.all(unreadable.map(async ({ repo, issue, value }) => reportUnreadable({ reader: await readerFor(repo), repo, issue, value, log: deps.log })));
     if (only !== undefined && planned.length === 0) {
-      const why = deps.cap === 0 ? { outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' } : { outcome: 'not started: not ready, blocked, or dispatched inside the window' };
+      const why = deps.cap === 0 ? { outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
       for (const { repo, issue, ...read } of seen) {
         deps.log('dispatch-pickup', { level: 'info', repo, issue, ...why, reads: [read] });
       }
@@ -1694,9 +1694,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row, reads, ...(ticket.wait === undefined ? {} : { wait: ticket.wait }) };
     // An unreadable `Blocked until:` line holds the ticket, which reads as
     // blocked, and is said once on it whatever the repo's switches say.
-    if (ticket.state === 'open' && ticket.wait !== undefined && 'unreadable' in ticket.wait) {
-      await reportUnreadable({ reader, repo: fireRepo(), issue, value: ticket.wait.unreadable, log: deps.log });
-    }
+    const unread = ticket.state === 'open' ? unreadableOf(ticket) : undefined;
+    if (unread !== undefined) await reportUnreadable({ reader, repo: fireRepo(), issue, value: unread, log: deps.log });
     const governs = ROW_SWITCH[row];
     if (governs === undefined) {
       deps.log('dispatch-unblocked', { ...about, outcome: 'nothing to do' });
@@ -1823,7 +1822,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       if (state !== 'open' || labelRow(on, labels) !== 'ready' || isWaiting(read, deps.now())) {
         const line = wait === undefined ? '' : `, Blocked until: ${'until' in wait ? wait.until : `${wait.unreadable} (unreadable)`}`;
         deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}${line}` });
-        if (state === 'open' && wait !== undefined && 'unreadable' in wait) await reportUnreadable({ reader: github, repo, issue, value: wait.unreadable, log: deps.log });
+        // Said only on a ticket still ready by its labels: one claimed or
+        // unreadied since is someone else's.
+        const unread = state === 'open' && labelRow(on, labels) === 'ready' ? unreadableOf(read) : undefined;
+        if (unread !== undefined) await reportUnreadable({ reader: github, repo, issue, value: unread, log: deps.log });
         return 'taken';
       }
     } catch (error) {
