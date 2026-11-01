@@ -535,6 +535,32 @@ describe('run — governor records each session it starts', () => {
     assert.ok(seen[0]!.some((p) => p.repo === REPO && p.sessionUrl === ABC), 'the pending record names its repo and session');
     assert.equal(unrecorded.size, 0, 'a record written or failed is no longer pending');
   });
+  // A throw after the launches, past turnFor's own catch, still waits for
+  // each record: the entrypoint's catch ends the task, and a record it cuts
+  // off never lands and is never logged.
+  test('a turn that throws after its launches waits for each record before it rejects', async () => {
+    const written: string[] = [];
+    let recording = false;
+    const unrecorded = new Set<{ repo: string; sessionName: string; sessionUrl: string }>();
+    const h = harness({
+      state: {
+        recordSession: async (session: string) => {
+          recording = true;
+          await new Promise((r) => { setTimeout(r, 30); });
+          written.push(session);
+        },
+      },
+    });
+    // The first read once turnFor is done (the wait for replies), not one inside it.
+    const readLogin = h.deps.workspace.readLogin;
+    h.deps.workspace.readLogin = () => {
+      if (recording && !String(new Error().stack).includes('turnFor')) throw new Error('the login on disk could not be read');
+      return readLogin();
+    };
+    await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, { ...h.deps, unrecorded } as never), /could not be read/);
+    assert.deepEqual(written, [ABC], 'the record landed before the turn rejected');
+    assert.equal(unrecorded.size, 0);
+  });
 });
 
 describe('run — schedule', () => {

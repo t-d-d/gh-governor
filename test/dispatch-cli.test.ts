@@ -226,6 +226,24 @@ describe('main', () => {
     assert.deepEqual(exits, [1]);
   });
 
+  // A turn that throws while a record is still pending ends the task, which
+  // cuts the record off, so the entrypoint's catch logs it as the deadline does.
+  test('a turn that threw logs each session record still pending, naming the session', async () => {
+    const { args, logged, exits } = harness({
+      run: async (_event: unknown, deps: { unrecorded: Set<{ repo: string; sessionName: string; sessionUrl: string }> }) => {
+        deps.unrecorded.add({ repo: 'acme/factory', sessionName: 'Issue 7', sessionUrl: 'https://claude.ai/code/session_01ABC' });
+        throw new Error('the heartbeat write threw');
+      },
+    });
+    await main(args as never);
+    assert.deepEqual(logged.map((l) => [l.event, l.repo, l.sessionUrl]), [['dispatch-session-unrecorded', 'acme/factory', 'https://claude.ai/code/session_01ABC'], ['dispatch-failed', undefined, undefined]]);
+    assert.equal(logged[0]?.level, 'error');
+    assert.equal(logged[0]?.sessionName, 'Issue 7');
+    assert.match(String(logged[0]?.error), /threw/);
+    assert.match(String(logged[0]?.reason), /human-only path/);
+    assert.deepEqual(exits, [1]);
+  });
+
   test('an event that is not JSON runs nothing', async () => {
     for (const env of [{ DISPATCH_EVENT: 'schedule' }, { DISPATCH_EVENT: '{' }]) {
       let ran = false;

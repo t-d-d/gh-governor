@@ -164,8 +164,9 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
 export const SESSION_UNRECORDED = 'dispatch-session-unrecorded';
 
 /**
- * A session record still being written: the deadline (dispatch/cli.mjs)
- * logs each one left as {@link SESSION_UNRECORDED}.
+ * A session record still being written: dispatch/cli.mjs logs each one
+ * left as {@link SESSION_UNRECORDED} when the deadline ends the turn or the
+ * turn throws.
  *
  * @typedef {{ repo: string, sessionName: string, sessionUrl: string }} PendingRecord
  */
@@ -317,8 +318,8 @@ export const sessionUrlFrom = (output) => {
  *   covers yet, each `owner/name#number`, shared with dispatch/cli.mjs, whose deadline unwinds
  *   nothing and logs what is left in it.
  *   `unrecorded`: the session records the turn is still writing, shared
- *   with dispatch/cli.mjs, whose deadline logs each one left as
- *   unrecorded, since a write the deadline cuts off never lands.
+ *   with dispatch/cli.mjs, which logs each one left as unrecorded when the
+ *   deadline ends the turn or the turn throws, since a write cut off never lands.
  *   `fires`: the fire lane ({@link sqsFires}); without it, a turn never
  *   waits for replies.
  *   `enqueue`: a fire onto that lane, deduplicated by the id given
@@ -459,10 +460,34 @@ const withinBudget = (launched, ms, sessionName) =>
  * for their replies while no fire is queued (`awaitReplies`), so a sign-off
  * in reply to it is archived by it.
  *
+ * Each launch's session record is written in the background, and the turn
+ * waits for every one before it ends, whether it returns or throws:
+ * dispatch/cli.mjs takes a throw as the turn's end, and the task may exit
+ * straight after (a by-hand turn's at once, the lane's once the lane stays
+ * empty), which would cut off a record still being written, and one cut off
+ * never lands.
+ *
  * @param {unknown} event The raw event: EventBridge's, or the by-hand script's.
  * @param {Deps} deps
  */
 export const run = async (event, deps) => {
+  /** Each launch's record. None rejects: a failed one logs itself. @type {Promise<void>[]} */
+  const records = [];
+  try {
+    return await turnOf(event, deps, records);
+  } finally {
+    await Promise.all(records);
+  }
+};
+
+/**
+ * {@link run}'s turn, which pushes each launch's record onto `records`.
+ *
+ * @param {unknown} event
+ * @param {Deps} deps
+ * @param {Promise<void>[]} records
+ */
+const turnOf = async (event, deps, records) => {
   const invocation = parseFire(event);
   if (invocation.kind === 'probe') return { kind: 'probe', ...(await deps.probe()) };
   const started = deps.now();
@@ -601,9 +626,7 @@ export const run = async (event, deps) => {
     if (find === undefined) finders.set(token, find = branchFinder({ list: (after) => deps.sessions.list(token, after), get: async (id) => sessionRecord(await deps.sessions.get(id, token)) }, repo, { log: deps.log }));
     return find;
   };
-  /** Each launch's record, awaited before the turn ends. @type {Promise<void>[]} */
-  const records = [];
-  /** The records still being written, which the deadline logs as unrecorded. */
+  /** The records still being written, which dispatch/cli.mjs logs as unrecorded at the deadline or a throw. */
   const unrecorded = deps.unrecorded ?? new Set();
   /** The login's access token for the routines API, read once a turn. */
   const routinesToken = loginToken({ ...deps, secret }, 'start a periodic as a routine run');
@@ -687,7 +710,6 @@ export const run = async (event, deps) => {
     // A periodic that launched has moved its record, so no later fire
     // writes its line: it goes before the turn fails.
     await writeBeats(deps, tokenFor, served, turnBeats);
-    await Promise.all(records);
     throw error;
   }
   // An event a periodic counts: the repo's periodics are checked after the
@@ -727,7 +749,6 @@ export const run = async (event, deps) => {
   // Only a periodic's line names a session, so only those repos are read.
   const marked = signoffs.archived.length === 0 ? { written: [], unwritten: [] } : await writeBeats(deps, tokenFor, served, served.filter((s) => turnsOn(s.config, 'periodics')).map((s) => ({ repo: s.repo, beat: { signedOff: signoffs.archived } })));
   const heartbeatUnwritten = [...beaten.unwritten, ...marked.unwritten];
-  await Promise.all(records);
   const left = [...unread, ...('unread' in turned && Array.isArray(turned.unread) ? turned.unread : [])];
   return {
     ...turned,
