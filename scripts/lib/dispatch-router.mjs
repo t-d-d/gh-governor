@@ -54,9 +54,10 @@ import { byAge, isBlocked, selectReadyWork } from './ready-work.mjs';
  * without it, the read's failure throws.
  *
  * With `cut`, the walk goes on past the cap to add each repo with a ticket
- * the selection would have started had the cap allowed it. It asks about a
- * repo's tickets only until it finds its first, so the reads past the cap
- * are at most a few per repo. The bare fire leaves such a repo's sweep
+ * the selection would have started had the cap allowed it. It stops asking
+ * about a repo's tickets once it finds the first: a recent-dispatch read for
+ * each ticket up to it, and a blockers read for each one whose row carries no
+ * dependency summary. The bare fire leaves such a repo's sweep
  * unrecorded: the cap limits load, and does not set how often a repo is
  * swept.
  *
@@ -99,40 +100,38 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
   // newest marker would otherwise sit past the page.
   const since = new Date(now - windowMs).toISOString();
   /**
-   * Whether the selection would have started a candidate past the cap; a
-   * read that fails says yes.
+   * Whether the selection starts a candidate: not blocked, and not
+   * dispatched inside the window. A read `read` answers with null starts
+   * nothing.
    * @param {(typeof candidates)[number]} candidate
+   * @param {typeof guarded} read
    */
-  const cutAt = async (candidate) => {
-    const { reader } = candidate.source;
-    try {
-      if (candidate.openBlockers === undefined && isBlocked(candidate, await reader.blockers(candidate.number))) return false;
-      return !recentlyDispatched(await reader.comments(candidate.number, { since }), now, windowMs);
-    } catch {
-      return true;
+  const starts = async (candidate, read) => {
+    const { reader, repo } = candidate.source;
+    // A row carrying its dependency summary was judged by it in the first
+    // pass, so only a row without one asks for its `blocked_by` rows.
+    if (candidate.openBlockers === undefined) {
+      const blocking = await read(repo, () => reader.blockers(candidate.number));
+      if (blocking === null || isBlocked(candidate, blocking)) return false;
     }
+    const comments = await read(repo, () => reader.comments(candidate.number, { since }));
+    return comments !== null && !recentlyDispatched(comments, now, windowMs);
   };
   /** @type {Dispatch[]} */
   const plan = [];
   for (const candidate of candidates) {
     const full = plan.length >= cap;
     if (full && cut === undefined) break;
-    const { reader, repo, labels, prompts } = candidate.source;
+    const { repo, labels, prompts } = candidate.source;
     if (failed.has(repo) || (full && cut?.has(repo))) continue;
     if (full) {
       // Past the cap a read that fails starts nothing, so it is no refusal:
       // the repo counts as cut, and the next fire sweeps it again.
-      if (await cutAt(candidate)) cut?.add(repo);
+      const cutHere = await starts(candidate, (_, read) => read()).catch(() => true);
+      if (cutHere) cut?.add(repo);
       continue;
     }
-    // A row carrying its dependency summary was judged by it in the first
-    // pass, so only a row without one asks for its `blocked_by` rows.
-    if (candidate.openBlockers === undefined) {
-      const blocking = await guarded(repo, () => reader.blockers(candidate.number));
-      if (blocking === null || isBlocked(candidate, blocking)) continue;
-    }
-    const comments = await guarded(repo, () => reader.comments(candidate.number, { since }));
-    if (comments === null || recentlyDispatched(comments, now, windowMs)) continue;
+    if (!(await starts(candidate, guarded))) continue;
     plan.push({
       issue: candidate.number,
       repo,
