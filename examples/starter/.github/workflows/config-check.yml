@@ -2,7 +2,8 @@
 # the code governor runs, so a file governor would refuse fails here rather
 # than unserving the repo once it merges. The check runs here, on this
 # repo's own token, pinned to a commit of gh-governor. To move to a newer
-# check, change the commit after `@` and in `commit:` together.
+# check, change the commit after `@`, in `commit:` and in dispatch.json's
+# `$schema` together, so the editor and the check read the same schema.
 #
 # If your prompts live in files ({ "file": "<path>" } in dispatch.json),
 # add their paths under `paths:` too, so a change to one runs the check.

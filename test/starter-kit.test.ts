@@ -1,8 +1,9 @@
 /**
  * The starter kit a new repo copies into its own `.github/` (examples/starter/):
- * a config file with pickup, the heartbeat and three periodics, the
- * workflow that calls the heartbeat checker, and the workflow that calls
- * the config check on pull requests. Its prompts are plain text that
+ * a config file that names its JSON Schema, lists every switch, and turns on
+ * pickup, the heartbeat and three periodics, the workflow that calls the
+ * heartbeat checker, and the workflow that calls the config check on pull
+ * requests. Its prompts are plain text that
  * works without any skill, and each acts on the window governor writes under
  * it (dispatch/periodics.mjs).
  */
@@ -49,7 +50,7 @@ describe('the starter kit\'s config file', () => {
     const m = /^https:\/\/raw\.githubusercontent\.com\/t-d-d\/gh-governor\/([0-9a-f]{40})\/schema\/dispatch\.schema\.json$/.exec(String($schema));
     assert.ok(m !== null, String($schema));
     const check = yaml.load(read(`${STARTER}.github/workflows/config-check.yml`)) as { jobs: Record<string, { uses?: string }> };
-    const pin = Object.values(check.jobs).map((j) => String(j.uses).split('@')[1]);
+    const pin = Object.values(check.jobs).map((j) => /^t-d-d\/gh-governor\/\.github\/workflows\/config-check\.yml@([0-9a-f]{40})$/.exec(String(j.uses))?.[1]);
     assert.deepEqual(pin, [m[1]], 'bump $schema and the config check together');
   });
 
