@@ -208,8 +208,22 @@ describe('reading the config file', () => {
   });
 });
 
-/** A fake of the REST calls the checker makes, over one repo in memory. */
-const github = (over: { config?: unknown, configStatus?: number, heartbeat?: unknown, heartbeatStatus?: number, configChanged?: string, issues?: Array<Record<string, unknown>>, failList?: boolean } = {}) => {
+/**
+ * A commit on the default branch's history, newest first as GitHub lists
+ * them. `parents[0]` is the first parent.
+ */
+type Commit = { sha: string, date: string, parents: string[] };
+
+/**
+ * A fake of the REST calls the checker makes, over one repo in memory.
+ * `history` is the default branch's history, newest first, and `touched`
+ * the commit in it that last changed the config file. Left out, the file
+ * changed in the one commit on the branch, at `configChanged`.
+ */
+const github = (over: { config?: unknown, configStatus?: number, heartbeat?: unknown, heartbeatStatus?: number, configChanged?: string, history?: Commit[], touched?: string, issues?: Array<Record<string, unknown>>, failList?: boolean } = {}) => {
+  const history: Commit[] = over.history ?? [{ sha: 'c0', date: over.configChanged ?? iso(NOW - 30 * DAY), parents: [] }];
+  const touched = history.find((c) => c.sha === (over.touched ?? history[0]?.sha));
+  const listed = (c: Commit) => ({ sha: c.sha, parents: c.parents.map((sha) => ({ sha })), commit: { committer: { date: c.date } } });
   const issues: Array<Record<string, unknown>> = over.issues ?? [];
   const calls: Array<{ method: string, path: string, body?: unknown }> = [];
   let next = 900;
@@ -225,8 +239,16 @@ const github = (over: { config?: unknown, configStatus?: number, heartbeat?: unk
       return { encoding: 'base64', content: Buffer.from(text).toString('base64') };
     }
     if (method === 'GET' && p === `/repos/${REPO}/commits`) {
-      assert.equal(url.searchParams.get('path'), '.github/dispatch.json');
-      return [{ commit: { committer: { date: over.configChanged ?? iso(NOW - 30 * DAY) } } }];
+      assert.equal(url.searchParams.get('sha'), null, 'the default branch');
+      const page = Number(url.searchParams.get('page') ?? '1');
+      const per = Number(url.searchParams.get('per_page') ?? '30');
+      const path = url.searchParams.get('path');
+      if (path !== null) {
+        assert.equal(path, '.github/dispatch.json');
+        assert.ok(touched !== undefined, 'the fake names the commit that touched the file');
+        return [listed(touched)].slice((page - 1) * per, page * per);
+      }
+      return history.slice((page - 1) * per, page * per).map(listed);
     }
     if (method === 'GET' && p === `/repos/${REPO}/issues/412`) {
       if (over.heartbeatStatus !== undefined) throw fail(over.heartbeatStatus);
@@ -433,7 +455,67 @@ describe('checking the heartbeat', () => {
   test('reads when the config file last changed once a run', async () => {
     const gh = github({ heartbeat: BODY });
     await run(gh);
-    assert.equal(gh.calls.filter((c) => c.path.startsWith(`/repos/${REPO}/commits`)).length, 1);
+    const commits = gh.calls.filter((c) => c.path.startsWith(`/repos/${REPO}/commits`));
+    assert.equal(commits.filter((c) => c.path.includes('path=')).length, 1, 'one read of the commit that changed the file');
+    assert.equal(commits.filter((c) => !c.path.includes('path=')).length, 1, 'one page of the default branch\'s history');
+  });
+
+  // A merge commit brings in a branch's commits with their own dates, so
+  // the commit that changed the file can be older than the merge.
+  const merged = (madeDaysAgo: number, mergedAgo: number): Commit[] => [
+    { sha: 'm2', date: iso(NOW - mergedAgo), parents: ['m1', 'b1'] },
+    { sha: 'm1', date: iso(NOW - mergedAgo - HOUR), parents: ['m0'] },
+    { sha: 'b1', date: iso(NOW - madeDaysAgo * DAY), parents: ['m0'] },
+    { sha: 'm0', date: iso(NOW - 40 * DAY), parents: [] },
+  ];
+  const pickupOnly = stampHeartbeat(BODY, { pickup: { at: iso(NOW - HOUR), started: 0 } });
+
+  test('a periodic added in a commit older than its day limit, merged by a merge commit just now, has no line yet but is not overdue', async () => {
+    const gh = github({ heartbeat: pickupOnly, history: merged(10, HOUR), touched: 'b1' });
+    await run(gh);
+    assert.deepEqual(gh.open().map((i) => i.title), []);
+  });
+
+  test('a change merged by a merge commit is measured from the merge, with commits on the default branch since', async () => {
+    const history = [{ sha: 'm3', date: iso(NOW - HOUR), parents: ['m2'] }, ...merged(30, 8 * DAY)];
+    const gh = github({ heartbeat: pickupOnly, history, touched: 'b1' });
+    await run(gh);
+    assert.equal(gh.open().length, 3, 'eight days since the merge: past every day limit');
+    assert.ok(gh.open().every((i) => String(i.body).includes(`last changed at ${iso(NOW - 8 * DAY)}`)), JSON.stringify(gh.open()));
+  });
+
+  test('a change merged through a branch that merged another branch is measured from its merge into the default branch', async () => {
+    const history: Commit[] = [
+      { sha: 'm2', date: iso(NOW - HOUR), parents: ['m1', 'f2'] },
+      { sha: 'f2', date: iso(NOW - 2 * DAY), parents: ['f1', 'g1'] },
+      { sha: 'm1', date: iso(NOW - 5 * DAY), parents: ['m0'] },
+      { sha: 'g1', date: iso(NOW - 12 * DAY), parents: ['m0'] },
+      { sha: 'f1', date: iso(NOW - 13 * DAY), parents: ['m0'] },
+      { sha: 'm0', date: iso(NOW - 40 * DAY), parents: [] },
+    ];
+    const gh = github({ heartbeat: pickupOnly, history, touched: 'g1' });
+    await run(gh);
+    assert.deepEqual(gh.open().map((i) => i.title), []);
+  });
+
+  test('a change committed on the default branch is measured from its commit, with commits since', async () => {
+    const history: Commit[] = [
+      { sha: 'm2', date: iso(NOW - HOUR), parents: ['m1'] },
+      { sha: 'm1', date: iso(NOW - 8 * DAY), parents: ['m0'] },
+      { sha: 'm0', date: iso(NOW - 40 * DAY), parents: [] },
+    ];
+    const gh = github({ heartbeat: pickupOnly, history, touched: 'm1' });
+    await run(gh);
+    assert.equal(gh.open().length, 3);
+  });
+
+  test('a change further back than the history it pages through is measured from its commit', async () => {
+    const history: Commit[] = Array.from({ length: 1200 }, (_, i) => ({ sha: `h${i}`, date: iso(NOW - HOUR - i * 60_000), parents: [`h${i + 1}`] }));
+    history.push({ sha: 'old', date: iso(NOW - 30 * DAY), parents: [] });
+    const gh = github({ heartbeat: pickupOnly, history, touched: 'old' });
+    await run(gh);
+    assert.equal(gh.open().length, 3);
+    assert.ok(gh.calls.filter((c) => c.path.startsWith(`/repos/${REPO}/commits?`) && !c.path.includes('path=')).length <= 10, 'the history read is bounded');
   });
 
   test('periodics in the block the file no longer lists are not checked', async () => {

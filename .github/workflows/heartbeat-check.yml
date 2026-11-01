@@ -351,6 +351,61 @@ jobs:
             }
           };
 
+          /** How many pages of the default branch's history the check reads at most. */
+          const HISTORY_PAGES = 10;
+
+          /**
+           * When the config file's last change reached the default branch. A merge
+           * commit brings in a branch's commits with the dates they were made, so the
+           * commit that changed the file can be older than the merge. The change
+           * reached the branch at the oldest commit on the default branch's
+           * first-parent line that has that commit in its history. Where that commit
+           * is further back than the pages read, its own date stands.
+           *
+           * @param {Api} api
+           * @param {string} repo
+           * @returns {Promise<number>}
+           */
+          export const configChangedAt = async (api, repo) => {
+            /** @type {Array<{ sha?: string, commit?: { committer?: { date?: string } } }>} */
+            const touched = await api('GET', `/repos/${repo}/commits?path=${encodeURIComponent(CONFIG_PATH)}&per_page=1`);
+            const made = touched[0];
+            const madeAt = Date.parse(String(made?.commit?.committer?.date ?? ''));
+            if (!Number.isFinite(madeAt)) throw new Error(`no commit found for ${CONFIG_PATH}`);
+            const sha = String(made?.sha ?? '');
+            /** @type {Map<string, { at: number, parents: string[] }>} */
+            const seen = new Map();
+            /** @type {string[]} */
+            const order = [];
+            for (let page = 1; page <= HISTORY_PAGES && !seen.has(sha); page++) {
+              /** @type {Array<{ sha: string, parents?: Array<{ sha: string }>, commit?: { committer?: { date?: string } } }>} */
+              const commits = await api('GET', `/repos/${repo}/commits?per_page=100&page=${page}`);
+              for (const c of commits) {
+                seen.set(c.sha, { at: Date.parse(String(c.commit?.committer?.date ?? '')), parents: (c.parents ?? []).map((p) => p.sha) });
+                order.push(c.sha);
+              }
+              if (commits.length < 100) break;
+            }
+            if (!seen.has(sha)) return madeAt;
+            // Every commit read that has the change in its history. Repeated until
+            // nothing changes, so a commit listed out of order is still counted.
+            const holds = new Set([sha]);
+            for (let grew = true; grew;) {
+              grew = false;
+              for (const s of order) {
+                if (!holds.has(s) && /** @type {{ parents: string[] }} */ (seen.get(s)).parents.some((p) => holds.has(p))) {
+                  holds.add(s);
+                  grew = true;
+                }
+              }
+            }
+            /** @type {string | undefined} */
+            let reached;
+            for (let s = order[0]; s !== undefined && holds.has(s); s = seen.get(s)?.parents[0]) reached = s;
+            const at = reached === undefined ? NaN : Number(seen.get(reached)?.at);
+            return Number.isFinite(at) ? Math.max(at, madeAt) : madeAt;
+          };
+
           /** @param {unknown} error */
           const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 
@@ -418,12 +473,7 @@ jobs:
                 beat,
                 now,
                 toleranceHours,
-                configChanged: async () => {
-                  const commits = await api('GET', `/repos/${repo}/commits?path=${encodeURIComponent(CONFIG_PATH)}&per_page=1`);
-                  const at = Date.parse(String(commits[0]?.commit?.committer?.date ?? ''));
-                  if (!Number.isFinite(at)) throw new Error(`no commit found for ${CONFIG_PATH}`);
-                  return at;
-                },
+                configChanged: () => configChangedAt(api, repo),
               });
             } catch (error) {
               return fault(`Reading when ${CONFIG_PATH} last changed failed: ${messageOf(error)}`);
