@@ -202,7 +202,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   issue: (n: number) => Promise<{ number: number, body: string, pull: boolean }>,
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
  *   openPulls: () => Promise<import('../scripts/lib/github-app.mjs').OpenPullRow[]>,
- *   openNaming: (term: string) => Promise<OpenRow[]>,
+ *   openNaming: (session: string) => Promise<OpenRow[]>,
  *   commit: (sha: string) => Promise<{ sha: string, message: string, parents?: string[] }>,
  * }} DeliveryReader
  *   The GitHub reads and writes a delivery makes.

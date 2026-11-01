@@ -119,7 +119,7 @@ import { STALE_RUNS_PAUSES_MS, baselineIn, freshRuns } from './runs.mjs';
 import { coverageOf } from './coverage.mjs';
 import { planBranchRun } from './branch-run.mjs';
 import { checkConflicts } from './conflicts.mjs';
-import { ROW_SWITCH, closingFires, notPlannedComment, readyPrompt, specPrompt, ticketRow, unblockedMessage } from './unblocked.mjs';
+import { ROW_SWITCH, closingFires, notPlannedComment, readyPrompt, readyToTakeOff, specPrompt, ticketRow, unblockedMessage } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
@@ -244,7 +244,7 @@ export const sessionUrlFrom = (output) => {
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
  *   openPulls: () => Promise<import('../scripts/lib/github-app.mjs').OpenPullRow[]>,
  *   branchHead: (branch: string) => Promise<string>,
- *   openNaming: (term: string) => Promise<OpenRow[]>,
+ *   openNaming: (session: string) => Promise<OpenRow[]>,
  *   commit: (sha: string) => Promise<{ sha: string, message: string, parents?: string[] }>,
  *   addLabels: (n: number, labels: string[]) => Promise<void>,
  *   removeLabel: (n: number, label: string) => Promise<void>,
@@ -1696,7 +1696,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // blocked, and is said once on it whatever the repo's switches say.
     const unread = ticket.state === 'open' ? unreadableOf(ticket) : undefined;
     if (unread !== undefined) await reportUnreadable({ reader, repo: fireRepo(), issue, value: unread, log: deps.log });
-    const governs = ROW_SWITCH[row];
+    // A not-planned close takes a ready, unclaimed ticket's ready labels off
+    // under pickup, the switch that could start it before anyone decides.
+    const takeOff = row === 'not-planned' && turnsOn(config, 'pickup') ? readyToTakeOff(ticket.labels, config.labels) : [];
+    const governs = takeOff.length > 0 ? 'pickup' : ROW_SWITCH[row];
     if (governs === undefined) {
       deps.log('dispatch-unblocked', { ...about, outcome: 'nothing to do' });
       return { kind: invocation.kind, row, dispatched: [] };
@@ -1709,13 +1712,34 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     if (row === 'not-planned' || row === 'claimed') {
       /** @type {boolean} */
       let commented = false;
-      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts, { blocked: isBlocked(ticket, blockers) }) : null;
+      /** @type {{ removed: string[], failed: string[] } | undefined} */
+      let unreadied;
+      if (takeOff.length > 0) {
+        unreadied = { removed: [], failed: [] };
+        /** @type {Array<{ label: string, error: string }>} */
+        const stayed = [];
+        for (const label of takeOff) {
+          try {
+            await reader.removeLabel(issue, label);
+            unreadied.removed.push(label);
+          } catch (error) {
+            stayed.push({ label, error: messageOf(error) });
+            unreadied.failed.push(label);
+          }
+        }
+        // Pickup needs every ready label, so one that came off holds the ticket.
+        const held = unreadied.removed.length > 0;
+        for (const { label, error } of stayed) {
+          deps.log('dispatch-unblocked-unlabelled', { level: 'error', ...about, label, error, reason: held ? 'a ready label stayed on a ticket whose blocker closed as not planned; another came off, so pickup does not start it' : 'a ready label stayed on a ticket whose blocker closed as not planned, and none came off, so pickup can still start it' });
+        }
+      }
+      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts, { blocked: isBlocked(ticket, blockers), ...(unreadied === undefined ? {} : { unreadied }) }) : null;
       if (notPlanned !== null) {
         await reader.comment(issue, notPlanned);
         commented = true;
       }
       if (!ticket.labels.includes(config.labels.claim)) {
-        deps.log('dispatch-unblocked', { ...about, outcome: 'commented' });
+        deps.log('dispatch-unblocked', { ...about, outcome: 'commented', ...(unreadied === undefined ? {} : { unreadied }) });
         return { kind: invocation.kind, row, commented, dispatched: [] };
       }
       // The claimed ticket's session: the newest dispatch marker names it,
