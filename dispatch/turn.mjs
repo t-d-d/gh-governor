@@ -107,7 +107,7 @@ import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { isBlocked, labelRow } from '../scripts/lib/ready-work.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
-import { launchRoutine, observed } from './routines.mjs';
+import { RoutinesApiError, launchRoutine, observed } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
@@ -628,7 +628,7 @@ export const run = async (event, deps) => {
     const result = await launchRoutine({ api, repo: begin.repo, periodic: begin.sessionName, prompt: begin.prompt, environment: begin.environment, model: begin.model, connectors, sleep: deps.sleep, uuid: deps.uuid });
     deps.log('dispatch-routine-output', { repo: begin.repo, periodic: begin.sessionName, status: result.status, tail: result.output.slice(-OUTPUT_TAIL) });
     // Nothing started for any other reason than a missing connector is the
-    // routines API refusing before the fire: the CLI is not at fault.
+    // routines API refusing the routine or its fire: the CLI is not at fault.
     return result.status === 1 && result.missing === undefined ? { ...result, refused: true } : result;
   };
   /**
@@ -985,8 +985,8 @@ const connectorMissing = ({ log }, repo, periodic, missing) => {
 
 /**
  * A routine launch that started nothing for a fault of its own periodic: a
- * connector the account lacks, or the routines API refusing before the
- * fire. Either logs an alarmed error naming the repo and the periodic, and
+ * connector the account lacks, or the routines API refusing the routine
+ * or its fire. Either logs an alarmed error naming the repo and the periodic, and
  * says so, so the caller writes no record and goes on with the repo's
  * other launches: `claude --cloud` would still start them. A launch through
  * the CLI that failed is neither, and still skips the repo.
@@ -1003,7 +1003,7 @@ const routineFault = (deps, repo, periodic, launched) => {
     return true;
   }
   if (launched.refused !== true) return false;
-  deps.log(ROUTINE_REFUSED, { level: 'error', repo, periodic, reason: `the routines API refused its routine before the fire, so its session was not started and it stays due; the repo's other launches go on: ${launched.output.slice(-OUTPUT_TAIL)}` });
+  deps.log(ROUTINE_REFUSED, { level: 'error', repo, periodic, reason: `the routines API refused its routine or its fire, so its session was not started and it stays due; the repo's other launches go on: ${launched.output.slice(-OUTPUT_TAIL)}` });
   return true;
 };
 
@@ -2311,8 +2311,10 @@ const CONNECTORS_BETA = 'mcp-servers-2025-12-04';
 /**
  * The routines API and the account's connector list (dispatch/routines.mjs)
  * under the login's token and organization, as the CLI's routine commands
- * call them: each answer parsed, and any answer but a 2xx thrown, naming
- * the path and status. A refusal's body is cut short: it may quote a prompt.
+ * call them: each answer parsed, and any answer but a 2xx thrown as a
+ * `RoutinesApiError` with its status, naming the path and status. A routine
+ * id the path cannot carry rejects before any request, with a status of
+ * null. A refusal's body is cut short: it may quote a prompt.
  *
  * @param {string} token
  * @param {string | null} organization
@@ -2334,20 +2336,20 @@ export const routinesApi = (token, organization) => {
       signal: AbortSignal.timeout(ARCHIVE_TIMEOUT_MS),
     });
     const text = await response.text();
-    if (!response.ok) throw new Error(`${method} ${path.replace(/\?.*$/, '')}: ${response.status} ${text.slice(0, 200)}`);
+    if (!response.ok) throw new RoutinesApiError(`${method} ${path.replace(/\?.*$/, '')}: ${response.status} ${text.slice(0, 200)}`, response.status);
     return text === '' ? {} : JSON.parse(text);
   };
   /** @param {string} id */
   const trigger = (id) => {
-    if (!/^[\w-]+$/.test(id)) throw new Error(`not a routine id: ${id}`);
+    if (!/^[\w-]+$/.test(id)) throw new RoutinesApiError(`not a routine id: ${id}`, null);
     return `/v1/code/triggers/${id}`;
   };
   return {
     connectors: () => call('GET', '/v1/mcp_servers?limit=1000', CONNECTORS_BETA),
     triggers: () => call('GET', '/v1/code/triggers', ROUTINES_BETA),
     create: (body) => call('POST', '/v1/code/triggers', ROUTINES_BETA, body),
-    update: (id, body) => call('POST', trigger(id), ROUTINES_BETA, body),
-    run: (id) => call('POST', `${trigger(id)}/run`, ROUTINES_BETA, {}),
+    update: async (id, body) => call('POST', trigger(id), ROUTINES_BETA, body),
+    run: async (id) => call('POST', `${trigger(id)}/run`, ROUTINES_BETA, {}),
     sessions: (id) => call('GET', `/v1/code/sessions?trigger_id=${encodeURIComponent(id)}&limit=100`, ROUTINES_BETA),
   };
 };
