@@ -10,8 +10,9 @@
  * caller signs a timestamp and the raw body with it ({@link hookSignature}),
  * so the key never travels, a stranger's post gets 401, and a replay is
  * either outside the clock window or carries the same signature, which is
- * the fire's deduplication id on the queue. The clock window is no longer
- * than the queue's deduplication window, so no replay falls between them.
+ * the fire's deduplication id on the queue. The clock window is 5 seconds
+ * shorter than the queue's deduplication window, so a replay slower than the
+ * first request to reach the queue still falls inside it.
  *
  * The receiver reads no config file. What it knows of a repo's hooks is the
  * repo's item in the hook table, which the task writes as it reads the file

@@ -619,7 +619,7 @@ export const handle = async (request, deps) => {
  * One hook request. 401 for one whose signature is missing, malformed, does
  * not match the key for its path's repo, hook and version, or whose time is
  * more than 30 seconds ahead of the receiver's clock or more than 4 minutes
- * 30 seconds behind it; 200 for one whose owner is not
+ * 25 seconds behind it; 200 for one whose owner is not
  * on the list; 401 for a hook the hook table's item does not list, or a key
  * version older than the item's; 503 for an item that could not be read; 400
  * for a body that holds no text; 413 for text too long; 429 for a fire past

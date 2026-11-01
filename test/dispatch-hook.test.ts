@@ -155,9 +155,9 @@ describe('handle — a hook fire', () => {
   // A valid request can be replayed for as long as it stays valid, which is
   // the sum of the two limits. The queue drops a duplicate only inside its
   // deduplication window, which runs from the first send, not from the clock
-  // check. A replay's own latency before its send is unbounded, so the sum
-  // stays a margin under the window, or a slow replay lands after the queue
-  // has forgotten the first send and starts a second session.
+  // check. A replay that takes longer than the first request to reach the
+  // queue could land after the queue has forgotten the first send and start
+  // a second session, so the sum stays a margin under the window.
   const DEDUP_MARGIN_MS = 5 * 1000;
   test('the clock limits ahead and behind add up to at least 5 seconds under the queue\'s deduplication window', () => {
     assert.equal(HOOK_DEDUP_WINDOW_MS, 5 * 60 * 1000, 'an SQS FIFO queue deduplicates for five minutes');
