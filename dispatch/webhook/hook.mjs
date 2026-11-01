@@ -10,8 +10,9 @@
  * caller signs a timestamp and the raw body with it ({@link hookSignature}),
  * so the key never travels, a stranger's post gets 401, and a replay is
  * either outside the clock window or carries the same signature, which is
- * the fire's deduplication id on the queue. The clock window is no longer
- * than the queue's deduplication window, so no replay falls between them.
+ * the fire's deduplication id on the queue. The clock window is 5 seconds
+ * shorter than the queue's deduplication window, so a replay slower than the
+ * first request to reach the queue still falls inside it.
  *
  * The receiver reads no config file. What it knows of a repo's hooks is the
  * repo's item in the hook table, which the task writes as it reads the file
@@ -36,12 +37,15 @@ export const HOOK_DEDUP_WINDOW_MS = 5 * 60 * 1000;
 
 /**
  * How far a signature's `t` may be ahead of the receiver's clock, and how far
- * behind it. A request is valid for the sum of the two, so the sum must not
- * pass {@link HOOK_DEDUP_WINDOW_MS}: then every replay of a valid request
- * lands inside the queue's window and is dropped.
+ * behind it. A request is valid for the sum of the two, so the sum stays at
+ * least 5 seconds under {@link HOOK_DEDUP_WINDOW_MS}. The queue's window runs
+ * from the first send, not from the clock check, and the margin covers a
+ * replay that takes longer than the first request to reach the queue. Then
+ * every replay of a valid request lands inside the queue's window and is
+ * dropped.
  */
 export const HOOK_CLOCK_AHEAD_MS = 30 * 1000;
-export const HOOK_CLOCK_BEHIND_MS = 4 * 60 * 1000 + 30 * 1000;
+export const HOOK_CLOCK_BEHIND_MS = 4 * 60 * 1000 + 25 * 1000;
 
 const PREFIX = '/hooks/';
 const OWNER = /^[A-Za-z0-9-]+$/;
