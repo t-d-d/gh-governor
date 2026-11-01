@@ -78,7 +78,7 @@
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { HOOK_KEY_STALE, HOOK_PER_HOUR, OVERRIDE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, overrideWeight, shippingJob } from './fire.mjs';
-import { HOOK_CLOCK_SKEW_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
+import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 
 /**
@@ -617,8 +617,9 @@ export const handle = async (request, deps) => {
 
 /**
  * One hook request. 401 for one whose signature is missing, malformed, does
- * not match the key for its path's repo, hook and version, or was made more
- * than five minutes from the receiver's clock; 200 for one whose owner is not
+ * not match the key for its path's repo, hook and version, or whose time is
+ * more than 30 seconds ahead of the receiver's clock or more than 4 minutes
+ * 30 seconds behind it; 200 for one whose owner is not
  * on the list; 401 for a hook the hook table's item does not list, or a key
  * version older than the item's; 503 for an item that could not be read; 400
  * for a body that holds no text; 413 for text too long; 429 for a fire past
@@ -646,9 +647,11 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
     return { statusCode: 401, body: 'signature does not match' };
   }
   const now = (deps.now ?? Date.now)();
-  if (Math.abs(now - signature.t * 1000) > HOOK_CLOCK_SKEW_MS) {
-    deps.log('hook-refused', { ...about, keyVersion: signature.version, t: signature.t, reason: 'the signature\'s time is more than five minutes from the receiver\'s clock' });
-    return { statusCode: 401, body: 'signature time is more than five minutes from the receiver\'s clock' };
+  const ahead = signature.t * 1000 - now;
+  if (ahead > HOOK_CLOCK_AHEAD_MS || -ahead > HOOK_CLOCK_BEHIND_MS) {
+    const reason = 'the signature\'s time is more than 30 seconds ahead of the receiver\'s clock or more than 4 minutes 30 seconds behind it';
+    deps.log('hook-refused', { ...about, keyVersion: signature.version, t: signature.t, reason });
+    return { statusCode: 401, body: 'signature time is more than 30 seconds ahead of the receiver\'s clock or more than 4 minutes 30 seconds behind it' };
   }
   const owner = repo.slice(0, repo.indexOf('/'));
   if (!ownerListed(deps.owners, owner)) {
