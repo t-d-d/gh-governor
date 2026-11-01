@@ -895,6 +895,31 @@ describe('the checklist\'s parts', () => {
     assert.deepEqual([ANSWER_SCHEMA.properties.test.minimum, ANSWER_SCHEMA.properties.test.maximum], [2, 6]);
   });
 
+  test('parseReview reads the run\'s tokens and cost from the result line, and leaves out what it does not carry', () => {
+    const usage = { input_tokens: 12, output_tokens: 340, cache_read_input_tokens: 5600, cache_creation_input_tokens: 780, server_tool_use: { web_search_requests: 0 } };
+    const line = (extra: Record<string, unknown>) => JSON.stringify({ ...JSON.parse(cliOutput(IAM, 's9')), ...extra });
+    assert.deepEqual(parseReview(line({ usage, total_cost_usd: 0.0421 })), {
+      sessionId: 's9',
+      answer: IAM,
+      usage: { inputTokens: 12, outputTokens: 340, cacheReadTokens: 5600, cacheCreationTokens: 780, costUsd: 0.0421 },
+    });
+    assert.deepEqual(parseReview(line({ usage: { input_tokens: 12, output_tokens: 'many' } })).usage, { inputTokens: 12 });
+    assert.deepEqual(parseReview(line({ total_cost_usd: 0.5 })).usage, { costUsd: 0.5 });
+    assert.ok(!('usage' in parseReview(line({ usage: null, total_cost_usd: 'free' }))), 'a line with no numbers gives no usage');
+    // A failed run still says what it spent.
+    const failed = JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'You\'ve hit your session limit', session_id: 's', usage, total_cost_usd: 0.01 });
+    assert.throws(() => parseReview(failed), (error: { usage?: unknown, limit?: string }) => {
+      assert.deepEqual(error.usage, { inputTokens: 12, outputTokens: 340, cacheReadTokens: 5600, cacheCreationTokens: 780, costUsd: 0.01 });
+      assert.equal(error.limit, 'session');
+      return true;
+    });
+    const refused = JSON.stringify({ type: 'result', is_error: false, session_id: 's', result: 'no', total_cost_usd: 0.02 });
+    assert.throws(() => parseReview(refused), (error: { usage?: unknown }) => {
+      assert.deepEqual(error.usage, { costUsd: 0.02 });
+      return true;
+    });
+  });
+
   test('parseReview takes test 7 only under the schema that leaves constraint files to the model', () => {
     const MEANING = { answer: 'fail' as const, test: 7, reason: 'a rule changes', editable: false };
     assert.deepEqual(parseReview(cliOutput(MEANING), CONSTRAINT_ANSWER_SCHEMA).answer, MEANING);
