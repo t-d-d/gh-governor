@@ -9,8 +9,8 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { scanRepo, trackedFiles } from '../scripts/public-repo-scan.mjs';
 import { loadTemplate } from './helpers/cfn.ts';
-import { appliesStack, REPO_ROOT } from './helpers/repo-model.ts';
-import { loadWorkflow } from './helpers/workflow.ts';
+import { appliesStack, REPO_ROOT, usesAction } from './helpers/repo-model.ts';
+import { loadWorkflow, type WorkflowStep } from './helpers/workflow.ts';
 
 describe('fitness: no file names the old home, holds an id, or cites an issue of four or more digits (public-repo.md)', () => {
   test('the scan reads every tracked file, with none exempted', () => {
@@ -84,5 +84,38 @@ describe('fitness: the deploy\'s log never shows the AWS account id (public-repo
     assert.equal(role?.outputs?.set, '${{ steps.read.outputs.set }}');
     const read = (role?.steps ?? []).find((step: { id?: string }) => step.id === 'read');
     assert.equal(read?.env?.ROLE_ARN, '${{ secrets.AWS_DEPLOY_ROLE_ARN }}');
+  });
+});
+
+// Masking a log line does not reach a run artifact or a job summary, and
+// anyone signed in to GitHub can download a public repo's artifacts. The
+// build action uploads a build record and writes a summary by default, and
+// both name the image by its registry, which carries the account id.
+describe('fitness: the image build uploads no build record and writes no summary (public-repo.md)', () => {
+  const action = loadWorkflow(resolve(REPO_ROOT, '.github/actions/image/action.yml'));
+  const deploy = loadWorkflow(resolve(REPO_ROOT, '.github/workflows/deploy.yml'));
+  const steps: WorkflowStep[] = action.workflow.runs?.steps ?? [];
+  const off = (value: unknown) => String(value).toLowerCase() === 'false';
+
+  test('every build step turns off the build record and the summary', () => {
+    const builds = steps.filter(usesAction('docker/build-push-action'));
+    assert.ok(builds.length > 0);
+    for (const build of builds) {
+      assert.ok(off(build.env?.DOCKER_BUILD_RECORD_UPLOAD), 'the build uploads its record');
+      assert.ok(off(build.env?.DOCKER_BUILD_SUMMARY), 'the build writes a summary');
+    }
+  });
+
+  // The deploy job holds the registry and the image URI too, so its own
+  // steps are held to the same rule as the image action's.
+  test('no step of the image action or the deploy writes a job summary or uploads an artifact', () => {
+    const deploySteps: WorkflowStep[] = deploy.workflow.jobs?.deploy?.steps ?? [];
+    assert.ok(deploySteps.length > 0);
+    for (const { codeOnly } of [action, deploy]) {
+      assert.doesNotMatch(codeOnly, /GITHUB_STEP_SUMMARY/);
+    }
+    for (const step of [...steps, ...deploySteps]) {
+      assert.doesNotMatch(step.uses ?? '', /^actions\/upload-artifact[@/]/);
+    }
   });
 });
