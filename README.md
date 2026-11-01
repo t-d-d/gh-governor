@@ -290,13 +290,9 @@ Rotating `governor/hook-secret` replaces every hook's key at once.
 
 **Revoking a key.** Raise the hook's `keyVersion` in the file in a pull request and merge it. Until governor next reads the file, the task refuses each fire signed with the old key. After that read, the receiver answers each one `401` before it reaches the queue. Either way each one logs `hook-key-stale` and pages as `governor-hook-key-stale`. Then mint the new version's key and give it to the caller. The repo's other hooks keep working throughout. To retire a hook, remove it from the file: once governor has read the file, the receiver answers its caller `401` and logs it at warn, which pages nobody.
 
-### Immediate pickup needs the ready label in `SelectLabels`
-
-A label added to an issue starts a selection at once only if the deployment's `SelectLabels` parameter lists it, or is empty. A repo whose ready label is not listed is still served: its tickets wait for the repo's pickup sweep. To have a new ready label picked up at once, add it to `SelectLabels` (the `SELECT_LABELS` repository variable) and deploy.
-
 ### Pickup's sweep interval
 
-A ready label listed in `SelectLabels`, and the close of a ready ticket's last open blocker, pick a ticket up at once. The sweep catches what those miss: a lost event, a label `SelectLabels` does not list. It runs at the hourly fire, once `pickup.sweepHours` have passed since the repo's last sweep, and every hour when the file sets none. A repo that trusts its events can sweep less often:
+A ready label a person adds, and the close of a ready ticket's last open blocker, pick a ticket up at once. A new ready label in the file is picked up at once from the repo's next turn after the merge, which reads the file; no deploy is needed. The sweep catches what those miss: a lost event, or a new ready label added to a ticket before that turn. It runs at the hourly fire, once `pickup.sweepHours` have passed since the repo's last sweep, and every hour when the file sets none. A repo that trusts its events can sweep less often:
 
 ```json
 "pickup": { "sweepHours": 6 }
@@ -488,7 +484,6 @@ Under the repo's **Settings → Secrets and variables → Actions**. Anyone can 
 | `GOVERNOR_OWNERS` | The GitHub accounts whose installations are served, comma-separated. |
 | `APP_ID` | The App's numeric ID. |
 | `APP_SLUG` | The App's slug, for the deploy's check of its events. |
-| `SELECT_LABELS` | The labels whose addition starts a selection at once, comma-separated, such as `mode: afk`. Empty means every label. |
 
 | Secret | Value |
 |---|---|

@@ -7,9 +7,10 @@
  * served repo's file it writes that repo's one item here ({@link hookTable}
  * `publish`): `hooks#<repo>` / `listed`, a map from each hook's name to its
  * `keyVersion`, empty when the file turns hooks off or lists none, beside
- * it a map from each name to its `perHour`, and a map from each of the
- * repo's switches to whether the file turns it on. Each list is an attribute
- * of its own, so another can join the item without reshaping it. The
+ * it a map from each name to its `perHour`, a map from each of the repo's
+ * switches to whether the file turns it on, and the file's ready labels.
+ * Each list is an attribute of its own, so another can join the item
+ * without reshaping it. The
  * receiver reads the item after
  * a request's signature checks out (route.mjs). A hook the map does not name
  * is refused, and so is a key version older than the map's, as {@link
@@ -17,11 +18,13 @@
  * task decides (dispatch/hooks.mjs), so a lost item costs task starts and
  * nothing more.
  *
- * The receiver also reads the item's switches ({@link hookTable} `switches`)
- * for a GitHub delivery that would queue a fire, and drops a fire whose
- * switch it says is off (switches.mjs). There a missing item, one written
- * before it held switches, and a read that fails all queue the fire, which
- * leaves the task to decide, as it did before the item held them.
+ * The receiver also reads the item's switches and ready labels ({@link
+ * hookTable} `item`) for a GitHub delivery that would queue a fire, in one
+ * read. It drops a fire whose switch it says is off (switches.mjs), and a
+ * selection fire for a label that is not one of the ready labels (route.mjs).
+ * There a missing item, one written before it held either, and a read that
+ * fails all queue the fire, which leaves the task to decide, as it did
+ * before the item held them.
  *
  * The receiver also counts each hook's fires here ({@link hookTable}
  * `count`), one item per hook and clock hour, `fires#<repo>#<hook>` /
@@ -64,14 +67,52 @@ const positive = (n) => Number.isSafeInteger(n) && n >= 1;
 const keyOf = (repo) => ({ pk: { S: `hooks#${repo.toLowerCase()}` }, sk: { S: 'listed' } });
 
 /**
+ * The item's switches, null for an item written before it held them.
+ * Malformed switches are a failed read, never a missing one.
+ *
+ * @param {string} repo
+ * @param {import('@aws-sdk/client-dynamodb').AttributeValue | undefined} value
+ * @returns {ReadonlyMap<string, boolean> | null}
+ */
+const switchesOf = (repo, value) => {
+  if (value === undefined) return null;
+  const entries = Object.entries(value.M ?? {});
+  if (value.M === undefined || entries.some(([, on]) => typeof on.BOOL !== 'boolean')) {
+    throw new Error(`the hook table's switches for ${repo} are malformed: ${JSON.stringify(value)}`);
+  }
+  return new Map(entries.map(([name, on]) => [name, /** @type {boolean} */ (on.BOOL)]));
+};
+
+/**
+ * The item's ready labels, null for an item written before it held them.
+ * Malformed labels are a failed read, never a missing one.
+ *
+ * @param {string} repo
+ * @param {import('@aws-sdk/client-dynamodb').AttributeValue | undefined} value
+ * @returns {readonly string[] | null}
+ */
+const readyOf = (repo, value) => {
+  if (value === undefined) return null;
+  const labels = value.L?.map((label) => label.S);
+  if (labels === undefined || labels.some((label) => typeof label !== 'string')) {
+    throw new Error(`the hook table's ready labels for ${repo} are malformed: ${JSON.stringify(value)}`);
+  }
+  return /** @type {string[]} */ (labels);
+};
+
+/**
  * @typedef {{ keyVersion: number, perHour: number }} Listed A hook as the
  *   repo's file named it when the task last read it.
- * @typedef {{ hooks: ReadonlyArray<{ name: string } & Listed>, switches: Readonly<Record<string, boolean>> }} Listing
- *   What the task writes of a repo's file: its hooks, and each switch as
- *   `turnsOn` reads it.
+ * @typedef {{ hooks: ReadonlyArray<{ name: string } & Listed>, switches: Readonly<Record<string, boolean>>, ready: readonly string[] }} Listing
+ *   What the task writes of a repo's file: its hooks, each switch as
+ *   `turnsOn` reads it, and its ready labels (`labels.ready`).
+ * @typedef {{ switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null }} Known
+ *   What the receiver reads of a repo's item for a GitHub delivery: each
+ *   switch, on or off, and the ready labels, each null where the item was
+ *   written before it held them.
  * @typedef {{
  *   listed: (repo: string) => Promise<ReadonlyMap<string, Listed> | null>,
- *   switches: (repo: string) => Promise<ReadonlyMap<string, boolean> | null>,
+ *   item: (repo: string) => Promise<Known | null>,
  *   publish: (repo: string, listing: Listing, at: string) => Promise<boolean>,
  *   count: (repo: string, hook: string, at: number, cap: number, signature: string) => Promise<Counted>,
  * }} HookTable
@@ -79,11 +120,10 @@ const keyOf = (repo) => ({ pk: { S: `hooks#${repo.toLowerCase()}` }, sk: { S: 'l
  *   its key version and its cap; null when the repo has no item. An item
  *   written before hooks had a cap gives each one 20. A read that fails, or
  *   an item that is malformed, throws: never a missing item.
- *   `switches`: each of the repo's switches, on or off, as the file read
- *   when the task last read it; null when the repo has no item or its item
- *   holds no switches. A read that fails, or switches that are malformed,
- *   throw.
- *   `publish`: the repo's hooks and switches, as the file read at `at` holds them, put
+ *   `item`: the repo's switches and ready labels, as the file read when the
+ *   task last read it; null when the repo has no item. A read that fails,
+ *   or switches or ready labels that are malformed, throw.
+ *   `publish`: the repo's hooks, switches and ready labels, as the file read at `at` holds them, put
  *   unless a write from a later read stands, false then. Any other failure
  *   throws.
  *   `count`: one more fire of the hook in the clock hour holding `at`, taken
@@ -123,20 +163,14 @@ export const hookTable = (client, table) => {
       }
       return new Map(entries);
     },
-    switches: async (repo) => {
+    item: async (repo) => {
       const item = await read(repo);
-      if (item?.switches === undefined) return null;
-      const map = item.switches.M;
-      const entries = Object.entries(map ?? {});
-      // Malformed switches are a failed read, never a missing one.
-      if (map === undefined || entries.some(([, value]) => typeof value.BOOL !== 'boolean')) {
-        throw new Error(`the hook table's switches for ${repo} are malformed: ${JSON.stringify(item.switches)}`);
-      }
-      return new Map(entries.map(([name, value]) => [name, /** @type {boolean} */ (value.BOOL)]));
+      if (item === undefined) return null;
+      return { switches: switchesOf(repo, item.switches), ready: readyOf(repo, item.ready) };
     },
     // Only over an item from an earlier read: two turns racing cannot put an
     // older file's list back.
-    publish: async (repo, { hooks, switches }, at) => {
+    publish: async (repo, { hooks, switches, ready }, at) => {
       try {
         await client.send(new PutItemCommand({
           TableName: table,
@@ -146,6 +180,7 @@ export const hookTable = (client, table) => {
             hooks: { M: Object.fromEntries(hooks.map(({ name, keyVersion }) => [name, { N: String(keyVersion) }])) },
             perHour: { M: Object.fromEntries(hooks.map(({ name, perHour }) => [name, { N: String(perHour) }])) },
             switches: { M: Object.fromEntries(Object.entries(switches).map(([name, on]) => [name, { BOOL: on }])) },
+            ready: { L: ready.map((label) => ({ S: label })) },
           },
           ConditionExpression: 'attribute_not_exists(pk) OR #at <= :at',
           ExpressionAttributeNames: { '#at': 'at' },

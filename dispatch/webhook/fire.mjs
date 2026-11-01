@@ -11,8 +11,9 @@
  * edit here and one test.
  *
  * Twelve kinds. A `schedule` fire (EventBridge, every hour) selects
- * ready work up to the cap; one naming an `issue` (an issue just given a
- * label on the stack's SelectLabels) selects that issue alone, if the label
+ * ready work up to the cap; one naming an `issue` (an issue a person just
+ * gave a label the repo's hook-table item lists as ready, or one the
+ * receiver could not judge) selects that issue alone, if the label
  * is one of the repo's ready labels and the selection would; one naming a
  * `freed` issue (an issue just closed) selects nothing: its turn queues an
  * `unblocked` fire for each open ticket the issue blocked, in whichever
@@ -492,16 +493,6 @@ const parseScheduled = (value) => {
  * @returns {string[]}
  */
 export const ownersOf = (raw) => (raw ?? '').split(',').map((o) => o.trim()).filter((o) => o !== '');
-
-/**
- * The stack's SelectLabels, off its comma-separated
- * `SELECT_LABELS`: the labels whose addition queues a selection fire.
- * Unset or empty is every label. The receiver's.
- *
- * @param {string | undefined} raw
- * @returns {string[]}
- */
-export const selectLabelsOf = ownersOf;
 
 /**
  * Whether `account` is on the owner list, in any case.
