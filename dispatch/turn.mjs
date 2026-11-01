@@ -120,7 +120,7 @@ import { ROW_SWITCH, closingFires, notPlannedComment, readyPrompt, specPrompt, t
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
-import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
+import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, hookSource, refusedAsArchived } from './deliveries.mjs';
 import { DISPATCH_WINDOW_MS, HOOK_PER_HOUR, LANE, RED, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, recentlyDispatched, SIGN_POSTS } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
@@ -1151,6 +1151,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         'byBranch' in invocation ? { pr: invocation.on, ...(invocation.poster === undefined ? {} : { poster: invocation.poster }) } : { session: invocation.session },
         text,
         {
+          source: GITHUB_SOURCE,
           fallback,
           takeover: true,
           on: on === undefined ? [] : [on],
@@ -1247,7 +1248,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       }
       if (before !== null) {
         if (plan.triage !== null) {
-          const launched = await start({ prompt: fromDispatcher(plan.triage.prompt), sessionName: plan.triage.sessionName, model: DEFAULT_MODEL });
+          const launched = await start({ prompt: fromDispatcher(plan.triage.prompt, GITHUB_SOURCE), sessionName: plan.triage.sessionName, model: DEFAULT_MODEL });
           triage = { outcome: launched.outcome, sessionUrl: launched.sessionUrl };
           deps.log('dispatch-workflow', { ...about, triage, reason: 'no one session to tell: one fresh session owns the fix' });
         }
@@ -1267,7 +1268,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
             deps.log('dispatch-workflow', { ...about, untold: owed.slice(i).map((n) => ({ session: n.session, prs: n.prs })), reason: `out of time: past ${WORKFLOW_SEND_WINDOW_MS} ms, another delivery might outrun the deadline` });
             break;
           }
-          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { fallback: note.fallback, on: note.prs, closing: note.closing, dropFrom: note.subscribed });
+          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, fallback: note.fallback, on: note.prs, closing: note.closing, dropFrom: note.subscribed });
           deliveries.push({ prs: note.prs, session: note.session, ok, answered, refused, error, fallback });
           // As dispatch/cli.mjs counts a fault: a refusal with no fallback is a gone session, told enough.
           if (ok || (refused && fallback?.outcome !== 'failed')) {
@@ -1326,7 +1327,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       reason = plan.reason;
       deps.log('dispatch-branch-run', { ...about, session: plan.session, reason });
       if (plan.session !== null && plan.text !== null) {
-        const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: plan.session }, plan.text);
+        const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: plan.session }, plan.text, { source: GITHUB_SOURCE });
         deliveries.push({ prs: [], session: plan.session, ok, answered, refused, error, fallback });
       }
     } finally {
@@ -1574,7 +1575,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       let told;
       let loginStored = false;
       try {
-        told = await delivery().deliver({ session: read.session }, hookMessage(invocation));
+        told = await delivery().deliver({ session: read.session }, hookMessage(invocation), { source: hookSource(name) });
       } finally {
         loginStored = await storeIfRefreshed(deps, original, account);
       }
@@ -1632,7 +1633,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       let told;
       let loginStored = false;
       try {
-        told = await delivery().deliver({ session }, text, { on: [issue] });
+        told = await delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue] });
       } finally {
         loginStored = await storeIfRefreshed(deps, original, account);
       }
