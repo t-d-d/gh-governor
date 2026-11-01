@@ -463,6 +463,37 @@ describe('run — governor records each session it starts', () => {
     assert.deepEqual(h.recorded, []);
   });
 
+  // A launch that may have started a session but printed no URL leaves a
+  // session governor cannot name: its PRs would keep a mode label's waiver,
+  // so it pages, and the operator finds it by name and time.
+  for (const status of [0, 3]) {
+    test(`a launch with status ${status} that printed no session pages with its name`, async () => {
+      const h = harness({ launch: async () => ({ status, output: 'no url here' }) });
+      await run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never);
+      const lines = h.logged.filter((l) => l.event === 'dispatch-session-unrecorded');
+      assert.equal(lines.length, 1, JSON.stringify(h.logged));
+      assert.equal(lines[0]!.level, 'error');
+      assert.equal(lines[0]!.sessionUrl, null);
+      assert.equal(lines[0]!.sessionName, 'TEST');
+      assert.equal(lines[0]!.repo, REPO);
+      assert.equal(lines[0]!.status, status);
+      assert.match(String(lines[0]!.reason), /could not be named/);
+    });
+  }
+
+  test('a failed launch started nothing, so it pages nothing', async () => {
+    const h = harness({ launch: async () => ({ status: 1, output: 'refused' }) });
+    await run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never);
+    assert.deepEqual(h.logged.filter((l) => l.event === 'dispatch-session-unrecorded'), []);
+  });
+
+  test('a launch that printed its session pages nothing', async () => {
+    const h = harness();
+    await run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never);
+    assert.deepEqual(h.recorded, [ABC]);
+    assert.deepEqual(h.logged.filter((l) => l.event === 'dispatch-session-unrecorded'), []);
+  });
+
   test('a record that fails is an error logged, and the turn goes on: the session is running', async () => {
     const h = harness({ state: { recordSession: async () => { throw new Error('ProvisionedThroughputExceededException'); } } });
     const result = turn(await run({ source: 'aws.events' }, h.deps as never));

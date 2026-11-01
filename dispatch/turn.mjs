@@ -602,7 +602,8 @@ export const run = async (event, deps) => {
   };
   /**
    * Every launch, recorded as governor's own session wherever the launcher
-   * printed one, whatever outcome it reported: the PR review reads the
+   * printed one, whatever outcome it reported, and paged where it may have
+   * started one it did not print: the PR review reads the
    * record back, and a ticket's mode label waives no human-only path for a
    * session nobody watched. A record that fails is an error, not a turn
    * that fails: the session is running either way. The record spends none
@@ -621,6 +622,10 @@ export const run = async (event, deps) => {
       records.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
         deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl, error: messageOf(error), reason: 'its PRs may clear a human-only path on a ticket\'s mode label' });
       }));
+    } else if (launchOutcome(launched.status) !== null) {
+      // The launch may have started a session but named none, so nothing
+      // can record it: the operator finds it by its name and the line's time.
+      deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, status: launched.status, reason: 'the launch may have started a session, but it printed no session URL, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label' });
     }
     return launched;
   };
