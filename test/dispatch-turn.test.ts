@@ -1945,7 +1945,7 @@ describe('run — a message into a session', () => {
 describe('run — the merge message', () => {
   const PR = 925;
   const MERGED = 'Your pull request was merged.\n\nPR #925: Order work with native blockers only (https://github.com/acme/factory/pull/925), by owner';
-  const fire = { kind: 'message', session: 'https://claude.ai/code/session_01OLD', text: MERGED, on: PR, event: 'close', merged: true };
+  const fire = { kind: 'message', session: 'https://claude.ai/code/session_01OLD', text: MERGED, on: PR, event: 'close' };
 
   test('goes as the receiver wrote it, reading nothing of what the PR\'s closed issues blocked', async () => {
     const asked: string[] = [];
@@ -4904,7 +4904,7 @@ describe('run — every served repo', () => {
 
   test('a merge in another repo sends its message, the standing naming that repo', async () => {
     const h = twoRepos({ askmeFile: askmeWith({ prMessages: true }) });
-    await run({ ...owners, event: 'close', merged: true }, h.deps as never);
+    await run({ ...owners, event: 'close' }, h.deps as never);
     assert.equal(h.messages.length, 1);
     assert.ok(h.messages[0]!.text.endsWith(standingLine([], { repo: ASKME, closing: false })), `the standing names the fire's repo: ${h.messages[0]!.text}`);
   });

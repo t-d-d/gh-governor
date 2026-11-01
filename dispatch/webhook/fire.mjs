@@ -26,12 +26,11 @@
  * or its claude.ai/code URL); one with a `fallback` names the prompt to
  * start a fresh session on, the name for it, and the PR it is on, should the
  * session refuse. A subscriber's names what it is `on`, the `event`,
- * a push's `commit`, and `closing` for a close. A message queued before the
- * receiver stopped marking a merge may still carry `merged`, which the
- * parser accepts and drops.
- * One on a PR whose body names
+ * a push's `commit`, and `closing` for a close. One on a PR whose body names
  * no session carries `byBranch` in place of the session, and the `poster` to
- * skip. A `workflow` names a red run on the repo's default branch
+ * skip. A message queued before the receiver stopped marking a merge may
+ * still carry `merged`, which the parser drops. A `workflow` names a red
+ * run on the repo's default branch
  * (dispatch/workflow.mjs); a `job` a shipping job that succeeded there,
  * the one that earns a `deployed: ` label ({@link shippingJob});
  * a `branch-run` a finished run dispatched on another
