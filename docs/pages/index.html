@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Governor pages</title>
+<style>
+  :root {
+    --bg: rgb(255 255 255);
+    --fg: rgb(31 35 40);
+    --muted: rgb(89 99 110);
+    --link: rgb(9 105 218);
+    --rule: rgb(209 217 224);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: rgb(13 17 23);
+      --fg: rgb(230 237 243);
+      --muted: rgb(145 152 161);
+      --link: rgb(68 147 248);
+      --rule: rgb(61 68 77);
+    }
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    max-width: 44rem;
+    margin: 0 auto;
+    padding: 2rem 1rem 3rem;
+  }
+  h1 { font-size: 1.6rem; margin: 0 0 0.5rem; }
+  p { margin: 0 0 1rem; }
+  a { color: var(--link); }
+  .muted { color: var(--muted); }
+  ul.pages { list-style: none; padding: 0; margin: 1.5rem 0; border-top: 1px solid var(--rule); }
+  ul.pages li { padding: 0.75rem 0; border-bottom: 1px solid var(--rule); }
+  ul.pages li span { display: block; color: var(--muted); font-size: 0.95rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Governor pages</h1>
+  <p>
+    Pages for <a href="https://github.com/t-d-d/gh-governor">gh-governor</a>
+    whose diagrams need motion or controls, which Markdown on GitHub cannot show.
+    The narrative is <a href="https://github.com/t-d-d/gh-governor/blob/main/docs/how-it-works.md">docs/how-it-works.md</a>,
+    which links here where a page helps.
+  </p>
+  <p class="muted">
+    Each page is one HTML file in <code>docs/pages/</code>, published from main after the gate passes.
+  </p>
+
+  <ul class="pages">
+    <!-- One item per page: <li><a href="name.html">Title</a><span>What it shows.</span></li> -->
+    <li class="muted">No pages yet.</li>
+  </ul>
+</main>
+</body>
+</html>

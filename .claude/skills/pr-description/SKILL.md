@@ -54,6 +54,11 @@ word next to an issue number. GitHub matches close, fix or resolve plus
 `#N` anywhere in the body and reads no negation, so "does not fix #N"
 closes it. Write "#N is not addressed here".
 
+**Pages.** When the pull request adds or changes a file in `docs/pages/`,
+link a preview of each such page under *Outcome*. Pages publishes only from
+main, so the link renders the branch's file through raw.githack.com:
+`https://raw.githack.com/t-d-d/gh-governor/<branch>/docs/pages/<page>.html`.
+
 **Verification.** A table with one row per acceptance criterion of each
 issue this closes. Every criterion gets a row, including ones nothing
 answers yet. The rows come from the issue, never from what the session
