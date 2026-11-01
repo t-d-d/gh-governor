@@ -8,7 +8,8 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { NEVER_DUE, ROUTINE_ANSWER, ROUTINE_SESSION_TRIES, answerShape, connectionsFor, launchRoutine, observed, routineName } from '../dispatch/routines.mjs';
+import { routinesApi } from '../dispatch/turn.mjs';
+import { NEVER_DUE, ROUTINE_ANSWER, ROUTINE_SESSION_TRIES, RoutinesApiError, answerShape, connectionsFor, launchRoutine, observed, routineName } from '../dispatch/routines.mjs';
 
 const REPO = 'acme/factory';
 const FEED = { uuid: 'mcpsrv_01FEED', name: 'feed_prod', url: 'https://feed.example/mcp' };
@@ -178,13 +179,51 @@ describe('a periodic\'s routine run', () => {
 
   test('a fire that throws with a body naming a session is unconfirmed, and its answer names no session for the turn to record', async () => {
     const { api } = fakeApi({
-      run: async () => { throw new Error('POST /v1/code/triggers/trig_01NEW/run: 409 {"error":"busy","session_id":"session_01OTHER"}'); },
+      run: async () => { throw new RoutinesApiError('POST /v1/code/triggers/trig_01NEW/run: 503 {"error":"busy","session_id":"session_01OTHER"}', 503); },
       sessions: async () => ({ data: [] }),
     });
     const result = await launch(api);
     assert.equal(result.status, 3, result.output);
-    assert.match(result.output, /409/, 'the unconfirmed answer still says how the fire threw');
+    assert.match(result.output, /503/, 'the unconfirmed answer still says how the fire threw');
     assert.doesNotMatch(result.output, /\b(?:session|cse)_[A-Za-z0-9]{4,}/);
+  });
+
+  test('a fire refused with a 4xx other than 408 and 429 started nothing: no run session is read, and none is taken as the fire\'s', async () => {
+    for (const status of [400, 401, 403, 404, 409, 422]) {
+      let fired = false;
+      const { api, calls } = fakeApi({
+        triggers: async () => ({ data: [{ id: 'trig_01OLD', name: routineName(REPO, 'Weekly retro') }] }),
+        run: async () => { fired = true; throw new RoutinesApiError(`POST /v1/code/triggers/trig_01OLD/run: ${status} {"session_id":"session_01OTHER"}`, status); },
+        // An earlier run still going shows as new: a refusal must not take it.
+        sessions: async (id: string) => { calls.push({ call: 'sessions', id }); return { data: fired ? [{ id: 'cse_01OTHER' }] : [] }; },
+      });
+      const result = await launch(api);
+      assert.equal(result.status, 1, `${status}: ${result.output}`);
+      assert.equal(result.missing, undefined);
+      assert.match(result.output, new RegExp(String(status)));
+      assert.doesNotMatch(result.output, /\b(?:session|cse)_[A-Za-z0-9]{4,}/);
+      assert.equal(calls.filter((c) => c.call === 'sessions').length, 1, `${status}: only the read before the fire`);
+    }
+  });
+
+  test('a fire that throws before its request is sent started nothing', async () => {
+    let reads = 0;
+    const { api } = fakeApi({
+      run: async () => { throw new RoutinesApiError('not a routine id: trig 01', null); },
+      sessions: async () => { reads += 1; return { data: [] }; },
+    });
+    const result = await launch(api);
+    assert.equal(result.status, 1, result.output);
+    assert.equal(result.missing, undefined);
+    assert.equal(reads, 0);
+  });
+
+  test('a fire that answers 408, 429 or a 5xx may have started, and is read as one that did', async () => {
+    for (const status of [408, 429, 500, 502, 503]) {
+      const { api } = fakeApi({ run: async () => { throw new RoutinesApiError(`POST /v1/code/triggers/trig_01NEW/run: ${status}`, status); }, sessions: async () => ({ data: [] }) });
+      const result = await launch(api);
+      assert.equal(result.status, 3, `${status}: ${result.output}`);
+    }
   });
 
   test('a refusal before the fire started nothing', async () => {
@@ -242,9 +281,9 @@ describe('what the routines API answered, logged by shape', () => {
     assert.ok(!JSON.stringify(logged.map((l) => l.answer)).includes('Weekly retro'), 'the routine\'s name in the list is not logged');
   });
 
-  test('a call that throws logs that it failed, with the status its error names, and still throws', async () => {
+  test('a call that throws logs that it failed, with the status its error carries, and still throws', async () => {
     const logged: Array<Record<string, unknown>> = [];
-    const api = observed({ ...fakeApi().api, run: async () => { throw new Error('POST /v1/code/triggers/trig_01OLD/run: 409 {"error":"busy"}'); } }, (event, context) => logged.push({ event, ...context }), { repo: REPO, periodic: 'Weekly retro' });
+    const api = observed({ ...fakeApi().api, run: async () => { throw new RoutinesApiError('POST /v1/code/triggers/trig_01OLD/run: 409 {"error":"busy"}', 409); } }, (event, context) => logged.push({ event, ...context }), { repo: REPO, periodic: 'Weekly retro' });
     await assert.rejects(api.run('trig_01OLD'), /409/);
     assert.deepEqual(logged, [{ event: ROUTINE_ANSWER, level: 'info', repo: REPO, periodic: 'Weekly retro', call: 'run', routine: 'trig_01OLD', failed: true, status: 409 }]);
   });
@@ -254,4 +293,33 @@ describe('what the routines API answered, logged by shape', () => {
     assert.deepEqual(answerShape([1, 2]), { type: 'array', rows: 2 });
     assert.deepEqual(answerShape({}), { keys: {}, ids: {} });
   });
+});
+
+describe('the routines API\'s errors', () => {
+  const answering = async (status: number, body: string, call: (api: ReturnType<typeof routinesApi>) => Promise<unknown>) => {
+    const real = globalThis.fetch;
+    let sent = 0;
+    globalThis.fetch = (async () => { sent += 1; return new Response(body, { status }); }) as typeof fetch;
+    try {
+      return { error: await (async () => call(routinesApi('token', null)))().then(() => null, (e: unknown) => e), sent };
+    } finally {
+      globalThis.fetch = real;
+    }
+  };
+
+  test('an answer that is not a 2xx throws a typed error carrying its HTTP status', async () => {
+    const { error, sent } = await answering(403, '{"error":"forbidden"}', (api) => api.run('trig_01OLD'));
+    assert.equal(sent, 1);
+    assert.ok(error instanceof RoutinesApiError, String(error));
+    assert.equal(error.status, 403);
+    assert.match(error.message, /POST \/v1\/code\/triggers\/trig_01OLD\/run: 403/);
+  });
+
+  test('a routine id the path cannot carry throws before any request is sent, with no status', async () => {
+    const { error, sent } = await answering(200, '{}', (api) => api.run('trig 01/../x'));
+    assert.equal(sent, 0);
+    assert.ok(error instanceof RoutinesApiError, String(error));
+    assert.equal(error.status, null);
+  });
+
 });

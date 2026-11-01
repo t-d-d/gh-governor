@@ -33,7 +33,7 @@ import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
-import { ROUTINE_ANSWER } from '../dispatch/routines.mjs';
+import { ROUTINE_ANSWER, RoutinesApiError } from '../dispatch/routines.mjs';
 
 const REPO = 'acme/factory';
 /** The factory's own config file (dispatch/repo-config.mjs): every feature on, and the factory's prompts. */
@@ -1566,6 +1566,21 @@ describe('run — periodics', () => {
     assert.deepEqual(h.periodics.get(key(REVIEW.name)), { at: new Date(NOW).toISOString(), session: null, baseline: false }, 'the record is written, so the next fire does not run it again');
     assert.equal(result.dispatched[0]?.outcome, 'unconfirmed');
     assert.ok(!h.logged.some((l) => l.event === ROUTINE_REFUSED), JSON.stringify(h.logged));
+  });
+
+  test('a routine fire refused with a 4xx, or before its request is sent, starts nothing: no record, and an alarmed dispatch-routine-refused error', async () => {
+    for (const refusal of [new RoutinesApiError('POST /v1/code/triggers/trig_01/run: 403 forbidden', 403), new RoutinesApiError('not a routine id: trig 01', null)]) {
+      const h = harness();
+      const base = h.deps.routines;
+      h.deps.routines = (token: string, organization: string | null) => ({ ...base(token, organization), run: async () => { throw refusal; } });
+      h.periodics.set(key(RETRO.name), fired(1));
+      h.periodics.set(key(REVIEW.name), fired(3));
+      const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+      assert.deepEqual(h.periodics.get(key(REVIEW.name)), fired(3), `${refusal.message}: no record, so the periodic stays due`);
+      const line = h.logged.find((l) => l.event === ROUTINE_REFUSED);
+      assert.ok(line !== undefined && line.level === 'error' && line.periodic === REVIEW.name, JSON.stringify(h.logged));
+      assert.ok(!result.dispatched.some((d) => d.outcome === 'unconfirmed'), JSON.stringify(result.dispatched));
+    }
   });
 
   test('after the baseline, the first run says so', async () => {

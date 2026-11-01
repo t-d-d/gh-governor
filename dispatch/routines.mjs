@@ -21,10 +21,11 @@
  * shape (`status`, `output`), so the turn records and holds it as it does a
  * session `claude --cloud` started: 0 with the session's link, 3 for a
  * fire whose session it could not find (unconfirmed), 1 for nothing
- * started. A fire that throws may still have started a run (a timeout, a
- * 502 after the server queued it), so it is read as a fire that answered
- * without its session: only the calls before the fire start nothing. A
- * named connector the account has not connected starts nothing and is
+ * started. A fire the API refused ({@link refusedFire}: a 4xx other than
+ * 408 and 429, or a call that threw before its request went out) started
+ * nothing. Any other fire that throws may still have started a run (a
+ * timeout, a 502 after the server queued it), so it is read as a fire that
+ * answered without its session. A named connector the account has not connected starts nothing and is
  * named in `missing`.
  *
  * Every shape here is read from the bundled CLI's routine commands, not a
@@ -40,6 +41,34 @@ import { CONNECTOR_NAME } from './repo-config.mjs';
  * `run_once_at`, and a `run_once_at` would come due one day.
  */
 export const NEVER_DUE = '0 0 30 2 *';
+
+/**
+ * A routines API call that failed with a known cause: the HTTP status of an
+ * answer that was not a 2xx, or null for a call that threw before any
+ * request was sent. A timeout or a network error is not one of these, as
+ * the request may have reached the server.
+ */
+export class RoutinesApiError extends Error {
+  /** @param {string} message @param {number | null} status */
+  constructor(message, status) {
+    super(message);
+    this.name = 'RoutinesApiError';
+    /** @type {number | null} */
+    this.status = status;
+  }
+}
+
+/**
+ * Whether a fire's error says no run started: an answer of 4xx other than
+ * 408 (timed out) and 429 (too many requests), or a call that threw before
+ * its request was sent. A 409 counts as a refusal: the run it may name is an
+ * earlier one, never this fire's. Any other error, a 5xx, a timeout or a
+ * network error, may follow a run the server queued.
+ *
+ * @param {unknown} error
+ */
+export const refusedFire = (error) => error instanceof RoutinesApiError
+  && (error.status === null || (error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429));
 
 /** How many times the routine's run sessions are read after a fire, and how long apart. */
 export const ROUTINE_SESSION_TRIES = 6;
@@ -62,7 +91,8 @@ const ANY_SESSION_ID = /\b(?:cse|session)_[A-Za-z0-9]+/g;
  * }} RoutinesApi
  *   The account's connector list (`GET /v1/mcp_servers`), its routines
  *   (`GET /v1/code/triggers`), a routine created or updated, one fired, and
- *   one's run sessions, each answer parsed. Any refusal throws.
+ *   one's run sessions, each answer parsed. Any refusal throws, as a
+ *   {@link RoutinesApiError} where its cause is known.
  * @typedef {{ connector_uuid: string, name: string, url: string }} Connection
  * @typedef {{ status: number, output: string, missing?: string[] }} RoutineResult
  */
@@ -129,7 +159,7 @@ export const answerShape = (answer) => {
  * ({@link answerShape}), and a call that throws logged as failed: the API's
  * answers are read from the bundled CLI, not a published shape, and the log
  * says what the live API answers. Each line names the repo and periodic
- * the call is for, and a failed call the HTTP status its error names.
+ * the call is for, and a failed call the HTTP status it was answered with.
  *
  * @param {RoutinesApi} api
  * @param {(event: string, context: Record<string, unknown>) => void} log
@@ -150,8 +180,8 @@ export const observed = (api, log, { repo, periodic }) => {
     try {
       answer = await begin();
     } catch (error) {
-      const status = /: (\d{3})\b/.exec(error instanceof Error ? error.message : String(error))?.[1];
-      log(ROUTINE_ANSWER, { ...at, failed: true, ...(status === undefined ? {} : { status: Number(status) }) });
+      const status = error instanceof RoutinesApiError ? error.status : null;
+      log(ROUTINE_ANSWER, { ...at, failed: true, ...(status === null ? {} : { status }) });
       throw error;
     }
     log(ROUTINE_ANSWER, { ...at, answer: answerShape(answer) });
@@ -301,19 +331,20 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
   } catch (error) {
     return { status: 1, output: `the routine for ${periodic} did not fire: ${messageOf(error)}` };
   }
-  // From the fire on, a failure leaves a run that may have started: a fire
-  // that times out, or answers 502 after the server queued the run, still
-  // starts a session. So a fire that throws is read as one that answered
-  // without its session, and only the calls above can refuse.
+  // From the fire on, a failure the API did not refuse leaves a run that may
+  // have started: a fire that times out, or answers 502 after the server
+  // queued the run, still starts a session. So such a fire is read as one
+  // that answered without its session. A refusal started nothing.
   /** Why the fire's own answer named no session, when it threw. @type {string | null} */
   let threw = null;
   try {
     const fired = firedSession(await api.run(id));
     if (fired !== null) return { status: 0, output: `Routine ${id} fired: ${fired}` };
   } catch (error) {
-    // The turn takes the session an unconfirmed answer names as this fire's,
-    // and a refusal's body may name another run's, so none is kept.
+    // The turn takes the session an answer names as this fire's, and a
+    // refusal's body may name another run's, so none is kept.
     threw = messageOf(error).replace(ANY_SESSION_ID, 'a session');
+    if (refusedFire(error)) return { status: 1, output: `the routine for ${periodic} did not fire: ${threw}` };
   }
   for (let tries = 0; tries < ROUTINE_SESSION_TRIES; tries += 1) {
     if (tries > 0) await sleep(ROUTINE_SESSION_PAUSE_MS);
