@@ -105,7 +105,8 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
-import { isBlocked, labelRow } from '../scripts/lib/ready-work.mjs';
+import { isBlocked, isWaiting, labelRow, unreadableOf } from '../scripts/lib/ready-work.mjs';
+import { reportUnreadable } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { RoutinesApiError, launchRoutine, observed } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
@@ -1593,17 +1594,25 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     only = invocation.issue === undefined ? undefined : [invocation.issue];
     /** @type {import('../scripts/lib/dispatch-router.mjs').Seen[]} */
     const seen = [];
+    /** @type {import('../scripts/lib/dispatch-router.mjs').Unreadable[]} */
+    const unreadable = [];
     // In the bare fire one repo's refusal leaves the others to go; a fire
     // naming its repo throws on its own.
     const planned = await planSchedule({
       sources,
       cap: deps.cap,
       now: deps.now(),
+      unreadable,
       ...(only === undefined ? {} : { only, seen }),
       ...(bare ? { unread, cut } : {}),
     });
+    // A `Blocked until:` line governor cannot read holds its ticket, and is
+    // said once on the ticket whatever the repo's switches say. Each report
+    // catches its own failure, so they run side by side and keep the launch
+    // window for the launches.
+    await Promise.all(unreadable.map(async ({ repo, issue, value }) => reportUnreadable({ reader: await readerFor(repo), repo, issue, value, log: deps.log })));
     if (only !== undefined && planned.length === 0) {
-      const why = deps.cap === 0 ? { outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' } : { outcome: 'not started: not ready, blocked, or dispatched inside the window' };
+      const why = deps.cap === 0 ? { outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
       for (const { repo, issue, ...read } of seen) {
         deps.log('dispatch-pickup', { level: 'info', repo, issue, ...why, reads: [read] });
       }
@@ -1681,8 +1690,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const config = configOf(fireRepo());
     const reader = await getReader();
     const { ticket, blockers, reads } = await readUnblocked(reader, issue, deps.sleep);
-    row = ticketRow({ ticket, blockers, fire: invocation, labels: config.labels });
-    const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row, reads };
+    row = ticketRow({ ticket, blockers, fire: invocation, labels: config.labels, now: deps.now() });
+    const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row, reads, ...(ticket.wait === undefined ? {} : { wait: ticket.wait }) };
+    // An unreadable `Blocked until:` line holds the ticket, which reads as
+    // blocked, and is said once on it whatever the repo's switches say.
+    const unread = ticket.state === 'open' ? unreadableOf(ticket) : undefined;
+    if (unread !== undefined) await reportUnreadable({ reader, repo: fireRepo(), issue, value: unread, log: deps.log });
     // A not-planned close takes a ready, unclaimed ticket's ready labels off
     // under pickup, the switch that could start it before anyone decides.
     const takeOff = row === 'not-planned' && turnsOn(config, 'pickup') ? readyToTakeOff(ticket.labels, config.labels) : [];
@@ -1814,8 +1827,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   /**
    * Claim one ticket: the claim label on, then the ready labels it takes
    * off. The plan was read before earlier launches that take minutes, so
-   * the ticket is read again first: one closed, unreadied, claimed or given
-   * one of the repo's excluded labels since is skipped, untouched, since its
+   * the ticket is read again first: one closed, unreadied, claimed, given
+   * one of the repo's excluded labels or held by a `Blocked until:` line
+   * since is skipped, untouched, since its
    * session would proceed on the prompt's claim line over someone else's
    * work. A claim that fails is released, and starts nothing.
    *
@@ -1826,9 +1840,16 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const { repo, issue } = ticket;
     const { labels } = configOf(repo);
     try {
-      const { state, labels: on } = await (await readerFor(repo)).ticket(issue);
-      if (state !== 'open' || labelRow(on, labels) !== 'ready') {
-        deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}` });
+      const github = await readerFor(repo);
+      const read = await github.ticket(issue);
+      const { state, labels: on, wait } = read;
+      if (state !== 'open' || labelRow(on, labels) !== 'ready' || isWaiting(read, deps.now())) {
+        const line = wait === undefined ? '' : `, Blocked until: ${'until' in wait ? wait.until : `${wait.unreadable} (unreadable)`}`;
+        deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}${line}` });
+        // Said only on a ticket still ready by its labels: one claimed or
+        // unreadied since is someone else's.
+        const unread = state === 'open' && labelRow(on, labels) === 'ready' ? unreadableOf(read) : undefined;
+        if (unread !== undefined) await reportUnreadable({ reader: github, repo, issue, value: unread, log: deps.log });
         return 'taken';
       }
     } catch (error) {

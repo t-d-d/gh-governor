@@ -32,6 +32,7 @@ import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, readLastRun } from '../
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
+import { WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER } from '../dispatch/waits.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
 import { ROUTINE_ANSWER, RoutinesApiError } from '../dispatch/routines.mjs';
 
@@ -1506,6 +1507,137 @@ describe('run — an unblocked fire', () => {
  * came of the send is test/dispatch-deliveries.test.ts; the cases here prove
  * the turn hands its fire to the delivery and stores the login after.
  */
+/**
+ * A ticket whose body opens with `Blocked until: <YYYY-MM-DD>` is held until
+ * 00:00 UTC on that date, in every served repo, with no switch: by the
+ * selection, the claim's second read and the unblocked row alike. A line
+ * governor cannot read holds the ticket and gets one comment saying so.
+ */
+describe('run: a ticket held by its `Blocked until:` line', () => {
+  const READY = ['workflow: ready for development', 'mode: afk'];
+  const LATER = new Date(NOW + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const held = { ...issue(7), wait: { until: LATER } };
+  const unreadable = { ...issue(7), wait: { unreadable: '2026-13-01' } };
+
+  /** A harness whose ready list is `rows`, whose thread for each issue is `thread`, at `now`. */
+  const waitTurn = ({ rows = [held, issue(9), issue(11)] as Array<Record<string, unknown>>, thread = [] as Array<{ id: number; body: string; created_at: string; ours: boolean }>, now = NOW, ticket = undefined as undefined | ((n: number) => Record<string, unknown>) } = {}) => {
+    const base = harness();
+    const h = harness({
+      now: () => now,
+      reader: () => ({
+        ...base.deps.reader(''),
+        readyIssues: async () => rows,
+        allComments: async () => thread,
+        comment: async (n: number, body: string) => { h.comments.push({ issue: n, body }); },
+        addLabels: async (n: number, labels: string[]) => { h.calls.push(`label #${n} +${labels.join(', ')}`); },
+        removeLabel: async (n: number, label: string) => { h.calls.push(`label #${n} -${label}`); },
+        ...(ticket === undefined ? {} : { ticket: async (n: number) => ticket(n) }),
+      }),
+    });
+    return h;
+  };
+
+  test('the factory\'s file turns on no switch for it: the hold needs none', () => {
+    const features = JSON.parse(FACTORY_FILE).features as Record<string, unknown>;
+    assert.ok(!('waits' in features), JSON.stringify(features));
+  });
+
+  test('a ready ticket whose date is still to come is not selected', async () => {
+    const h = waitTurn();
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9'), sessionName(11, 'Issue 11')]);
+    assert.ok(!labelCalls(h.calls).some((c) => c.startsWith('label #7 ')), JSON.stringify(h.calls));
+    assert.deepEqual(h.comments.filter((c) => c.issue === 7), []);
+  });
+
+  test('at the first sweep on or after its date, it is selected as usual', async () => {
+    const h = waitTurn({ now: Date.parse(`${LATER}T00:05:00Z`) });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7'), sessionName(9, 'Issue 9')]);
+  });
+
+  test('a ticket that gains the line after the plan is skipped by the claim\'s second read', async () => {
+    const h = waitTurn({
+      rows: [issue(7), issue(9), issue(11)],
+      ticket: (n) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: READY, pull: false, ...(n === 7 ? { wait: { until: LATER } } : {}) }),
+    });
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9')]);
+    assert.deepEqual(result.dispatched.map((d) => d.issue), [9]);
+    assert.ok(!labelCalls(h.calls).some((c) => c.startsWith('label #7 ')), JSON.stringify(h.calls));
+    const line = h.logged.find((l) => l.event === 'dispatch-claim' && l.issue === 7);
+    assert.equal(line?.outcome, 'skipped', JSON.stringify(h.logged));
+    assert.match(String(line?.reason), /^no longer ready to claim/);
+    assert.match(String(line?.reason), new RegExp(`Blocked until: ${LATER}`));
+  });
+
+  test('an unreadable line gained before the claim is said on a ticket still ready, and not on one claimed since', async () => {
+    for (const [labels, want] of [[READY, 1], [['workflow: under development'], 0]] as const) {
+      const h = waitTurn({
+        rows: [issue(7), issue(9)],
+        ticket: (n) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: n === 7 ? labels : READY, pull: false, ...(n === 7 ? { wait: { unreadable: 'soon' } } : {}) }),
+      });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9')], JSON.stringify(labels));
+      assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNREADABLE_MARKER)).length, want, JSON.stringify(labels));
+    }
+  });
+
+  test('an unreadable line holds the ticket, logs at warn and comments once with the marker', async () => {
+    const h = waitTurn({ rows: [unreadable, issue(9)] });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9')]);
+    const warned = h.logged.filter((l) => l.event === WAIT_UNREADABLE);
+    assert.deepEqual(warned.map((l) => [l.level, l.repo, l.issue, l.value]), [['warn', REPO, 7, '2026-13-01']]);
+    const told = h.comments.filter((c) => c.issue === 7);
+    assert.equal(told.length, 1, JSON.stringify(h.comments));
+    assert.ok(told[0]!.body.includes(WAIT_UNREADABLE_MARKER));
+    assert.match(told[0]!.body, /cannot read the date/);
+    assert.match(told[0]!.body, /2026-13-01/);
+  });
+
+  test('a second sweep finds the marker and does not comment again', async () => {
+    const h = waitTurn({ rows: [unreadable, issue(9)], thread: [{ id: 1, body: `Earlier.\n${WAIT_UNREADABLE_MARKER}`, created_at: new Date(NOW - 3600_000).toISOString(), ours: true }] });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.comments.filter((c) => c.issue === 7), []);
+    assert.ok(h.logged.some((l) => l.event === WAIT_UNREADABLE && l.level === 'warn'), JSON.stringify(h.logged));
+  });
+
+  test('a thread that cannot be read gets no comment, and the sweep goes on', async () => {
+    const base = waitTurn({ rows: [unreadable, issue(9)] });
+    const h = harness({
+      reader: () => ({ ...base.deps.reader(''), allComments: async () => { throw new Error('GET /comments failed: 502'); } }),
+    });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9')]);
+    assert.deepEqual(base.comments.filter((c) => c.issue === 7), []);
+    assert.ok(h.logged.some((l) => l.event === WAIT_UNREADABLE && l.level === 'error' && /502/.test(String(l.error))), JSON.stringify(h.logged));
+  });
+
+  describe('a blocker\'s close', () => {
+    const blocker = { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' };
+    const fire = { kind: 'unblocked', repo: REPO, issue: 7, blocker, pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' } };
+    const ticketOf = (labels: string[], wait: Record<string, string>) => (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels, pull: false, openBlockers: 0, wait });
+
+    test('starts nothing for a ticket its line holds, ready or not', async () => {
+      for (const labels of [READY, ['enhancement']]) {
+        const h = waitTurn({ ticket: ticketOf(labels, { until: LATER }) });
+        const result = await run(fire, h.deps as never) as Record<string, unknown>;
+        assert.equal(result.row, 'blocked', JSON.stringify(labels));
+        assert.deepEqual([h.launches, h.messages, h.comments, labelCalls(h.calls)], [[], [], [], []], JSON.stringify(labels));
+      }
+    });
+
+    test('an unreadable line holds the ticket and comments once, whatever the switches say', async () => {
+      const h = waitTurn({ ticket: ticketOf(['enhancement'], { unreadable: 'next week' }) });
+      const result = await run(fire, h.deps as never) as Record<string, unknown>;
+      assert.equal(result.row, 'blocked');
+      assert.deepEqual(h.launches, []);
+      assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNREADABLE_MARKER)).length, 1, JSON.stringify(h.comments));
+    });
+  });
+});
+
 /**
  * Periodics (dispatch/periodics.mjs): on the bare schedule fire, each one
  * whose day limit has passed since its last fire starts a session on its

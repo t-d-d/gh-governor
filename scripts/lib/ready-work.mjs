@@ -31,6 +31,15 @@
  * @property {number} [openBlockers] The issue's open blockers, from its
  *   dependency summary (`issue_dependencies_summary.blocked_by`), where the
  *   row carries one.
+ * @property {Wait} [wait] What the body's `Blocked until:` line says
+ *   (`waitOf`), where it has one.
+ */
+
+/**
+ * What a ticket's `Blocked until:` line says: the date it waits for, as
+ * `YYYY-MM-DD`, or the value governor could not read as one.
+ *
+ * @typedef {{ until: string } | { unreadable: string }} Wait
  */
 
 /**
@@ -106,18 +115,77 @@ const hasOpenBlocker = (rows) => (rows ?? []).some((b) => b.state === 'open');
 export const isBlocked = (issue, rows) =>
   issue.openBlockers === undefined ? hasOpenBlocker(rows) : issue.openBlockers > 0;
 
+/** The line a ticket waits by: its body's first non-empty line, in any case. */
+const WAIT_LINE = /^blocked until:\s*(.*)$/i;
+
+/**
+ * What a ticket's body says about waiting, as `{ wait }`, or `{}` where it
+ * has no `Blocked until:` line. Only the body's first non-empty line counts,
+ * so a body that quotes the line further down holds nothing. The value is a
+ * date, `YYYY-MM-DD`, that exists on the calendar; text after it, past a
+ * space, is a reason and is ignored. Any other value is unreadable, which
+ * holds the ticket too (`isWaiting`): a line a person wrote must never be
+ * silently ignored.
+ *
+ * @param {string | null | undefined} body
+ * @returns {{ wait?: Wait }}
+ */
+export const waitOf = (body) => {
+  const first = (body ?? '').split(/\r?\n/).map((line) => line.trim()).find((line) => line !== '');
+  const match = first === undefined ? null : WAIT_LINE.exec(first);
+  if (match === null) return {};
+  const value = (match[1] ?? '').trim();
+  const date = value.split(/\s/, 1)[0] ?? '';
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (parts !== null) {
+    const [year, month, day] = [Number(parts[1]), Number(parts[2]), Number(parts[3])];
+    const at = new Date(Date.UTC(year, month - 1, day));
+    if (at.getUTCFullYear() === year && at.getUTCMonth() === month - 1 && at.getUTCDate() === day) return { wait: { until: date } };
+  }
+  return { wait: { unreadable: value } };
+};
+
+/**
+ * The value of a ticket's `Blocked until:` line where governor could not
+ * read it as a date, or undefined for a readable line or none.
+ *
+ * @param {{ wait?: Wait }} issue
+ * @returns {string | undefined}
+ */
+export const unreadableOf = ({ wait }) => (wait !== undefined && 'unreadable' in wait ? wait.unreadable : undefined);
+
+/**
+ * Whether a ticket's own `Blocked until:` line holds it at `now`: a date
+ * still to come, whose wait ends at 00:00 UTC on that date, or a line
+ * governor could not read. A row with no line is not held.
+ *
+ * Like `labelRow` and `isBlocked`, the selection, the claim's second read
+ * and the unblocked row all call this. It holds in every served repo,
+ * whatever its config file says.
+ *
+ * @param {{ wait?: Wait }} issue
+ * @param {number} now Epoch ms.
+ */
+export const isWaiting = ({ wait }, now) => {
+  if (wait === undefined) return false;
+  if ('unreadable' in wait) return true;
+  return now < Date.parse(`${wait.until}T00:00:00Z`);
+};
+
 /**
  * @param {IssueRow} issue
  * @param {Map<number, BlockerRow[]>} blockers
  * @param {Labels} labels
+ * @param {number} now
  */
-const isEligible = (issue, blockers, labels) => {
+const isEligible = (issue, blockers, labels, now) => {
   // `state` is defensive: the caller queries open issues, but a stale page or
   // a hand-assembled list should not be able to put a closed ticket in front
   // of an agent.
   if ((issue.state ?? 'open') !== 'open') return false;
   if (labelRow(issue.labels, labels) !== 'ready') return false;
   if (isBlocked(issue, blockers.get(issue.number))) return false;
+  if (isWaiting(issue, now)) return false;
   return true;
 };
 
@@ -153,13 +221,15 @@ export const byAge = (a, b) => {
  *   nothing.
  * @param {Map<number, BlockerRow[]>} [options.blockers]
  * @param {Labels} options.labels The repo's ready, claim and excluded labels.
+ * @param {number} [options.now] Epoch ms, which a ticket's `Blocked until:`
+ *   date is judged against. Defaults to the clock.
  * @returns {IssueRow[]}
  */
 export const selectReadyWork = (
   issues,
-  { cap = 1, blockers = new Map(), labels },
+  { cap = 1, blockers = new Map(), labels, now = Date.now() },
 ) =>
   issues
-    .filter((issue) => isEligible(issue, blockers, labels))
+    .filter((issue) => isEligible(issue, blockers, labels, now))
     .sort(byAge)
     .slice(0, Math.max(0, cap));

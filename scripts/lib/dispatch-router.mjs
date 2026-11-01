@@ -20,7 +20,7 @@
 
 import { DISPATCH_WINDOW_MS, recentlyDispatched } from '../../dispatch/webhook/fire.mjs';
 import { promptFor, sessionName } from './dispatch-prompt.mjs';
-import { byAge, isBlocked, selectReadyWork } from './ready-work.mjs';
+import { byAge, isBlocked, labelRow, selectReadyWork, unreadableOf } from './ready-work.mjs';
 
 /**
  * @typedef {{ issue?: number, repo: string, prompt: string, sessionName: string }} Dispatch
@@ -33,9 +33,13 @@ import { byAge, isBlocked, selectReadyWork } from './ready-work.mjs';
  *   comments: (number: number, options?: { since?: string }) => Promise<import('./github-app.mjs').CommentRow[]>,
  * }} Reader
  *
- * @typedef {{ repo: string, issue: number, labels: string[], openBlockers?: number }} Seen
- *   What a named issue's read saw: its labels, and its open blockers by its
- *   dependency summary or, where it has none and was read, its `blocked_by` rows.
+ * @typedef {{ repo: string, issue: number, labels: string[], openBlockers?: number, wait?: import('./ready-work.mjs').Wait }} Seen
+ *   What a named issue's read saw: its labels, its open blockers by its
+ *   dependency summary or, where it has none and was read, its `blocked_by`
+ *   rows, and its `Blocked until:` line, where it has one.
+ *
+ * @typedef {{ repo: string, issue: number, value: string }} Unreadable
+ *   A ticket held by a `Blocked until:` line whose value is no date.
  *
  * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, prompts?: Record<string, string | undefined> }} Source
  *   A served repo's tickets: its reader, its config file's ready, claim and
@@ -72,10 +76,15 @@ import { byAge, isBlocked, selectReadyWork } from './ready-work.mjs';
  * unrecorded: the cap limits load, and does not set how often a repo is
  * swept.
  *
- * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string> }} args
+ * With `unreadable`, each open, ready-labelled ticket that a `Blocked
+ * until:` line governor cannot read holds is recorded there, with the
+ * line's value, so the turn can say so on the ticket. A ticket whose date is
+ * still to come is held by the selection itself (`isWaiting`).
+ *
+ * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[] }} args
  * @returns {Promise<Dispatch[]>}
  */
-export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut }) => {
+export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut, unreadable }) => {
   /** @type {Set<string>} */
   const failed = new Set();
   /**
@@ -113,8 +122,8 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
       throw error;
     });
     const read = (await Promise.all([...new Set(only)].map(readOne))).filter((t) => t !== null);
-    for (const { number, labels: on, openBlockers } of read) {
-      const record = { repo, issue: number, labels: on, ...(openBlockers === undefined ? {} : { openBlockers }) };
+    for (const { number, labels: on, openBlockers, wait } of read) {
+      const record = { repo, issue: number, labels: on, ...(openBlockers === undefined ? {} : { openBlockers }), ...(wait === undefined ? {} : { wait }) };
       records.set(`${repo}#${number}`, record);
       seen.push(record);
     }
@@ -126,7 +135,15 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     const { labels } = source;
     const rows = await guarded(source.repo, () => rowsOf(source));
     if (rows === null) continue;
-    const ready = selectReadyWork(rows, { cap: Number.MAX_SAFE_INTEGER, labels });
+    // A ticket held by an unreadable `Blocked until:` line, one the
+    // selection would otherwise consider, is reported for its comment.
+    for (const row of rows) {
+      const value = unreadableOf(row);
+      if (value !== undefined && (row.state ?? 'open') === 'open' && labelRow(row.labels, labels) === 'ready') {
+        unreadable?.push({ repo: source.repo, issue: row.number, value });
+      }
+    }
+    const ready = selectReadyWork(rows, { cap: Number.MAX_SAFE_INTEGER, labels, now });
     tagged.push(...ready.map((row) => ({ ...row, source })));
   }
   const candidates = tagged.sort(byAge);

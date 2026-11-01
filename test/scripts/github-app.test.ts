@@ -153,6 +153,20 @@ describe('githubReader', () => {
     assert.ok(!('openBlockers' in issues[2]!), 'a row with no summary carries no count');
   });
 
+  test('readyIssues carries what each issue\'s `Blocked until:` line says, where it has one', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues': (_init: RequestInit | undefined, url: string) => (new URL(url).searchParams.get('page') === '2' ? [] : [
+        issueRow(10, ['mode: afk'], { body: 'Blocked until: 2026-11-05 for the stop-event lines\n\nWork.' }),
+        issueRow(11, ['mode: afk'], { body: 'blocked until: next week' }),
+        issueRow(12, ['mode: afk'], { body: 'Work.\nBlocked until: 2026-11-05' }),
+        issueRow(13, ['mode: afk'], { body: null }),
+      ]),
+    });
+    const issues = await githubReader({ token: 't', repo: 'acme/factory', fetch }).readyIssues(['mode: afk']);
+    assert.deepEqual(issues.map((i) => [i.number, i.wait]), [[10, { until: '2026-11-05' }], [11, { unreadable: 'next week' }], [12, undefined], [13, undefined]]);
+    assert.ok(!('wait' in issues[2]!), 'a row with no line carries no wait');
+  });
+
   test('blockers reads the native blocked_by relationship, in gh-deps row shape', async () => {
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues/10/dependencies/blocked_by': [
@@ -747,6 +761,13 @@ describe('githubReader', () => {
       'https://api.github.com/repos/acme/factory/issues/12': { number: 12, title: 'T', body: '', state: 'open', labels: [], created_at: '2026-09-12T00:00:00Z' },
     });
     assert.equal((await githubReader({ token: 't', repo: 'acme/factory', fetch }).ticket(12)).created_at, '2026-09-12T00:00:00Z');
+  });
+
+  test('ticket carries what its `Blocked until:` line says', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/12': { number: 12, title: 'T', body: 'Blocked until: 2026-11-05\n\nWork.', state: 'open', labels: [] },
+    });
+    assert.deepEqual((await githubReader({ token: 't', repo: 'acme/factory', fetch }).ticket(12)).wait, { until: '2026-11-05' });
   });
 
   test('ticket carries its open blocker count from its dependency summary, where it has one', async () => {

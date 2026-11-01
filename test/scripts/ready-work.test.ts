@@ -28,7 +28,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { labelRow, selectReadyWork } from '../../scripts/lib/ready-work.mjs';
+import { isWaiting, labelRow, selectReadyWork, waitOf } from '../../scripts/lib/ready-work.mjs';
 
 /** The factory's labels: two ready labels, the claim, and the default exclude. */
 const FACTORY_LABELS = { ready: ['workflow: ready for development', 'mode: afk'], claim: 'workflow: under development', exclude: ['type: prd'] };
@@ -40,6 +40,7 @@ type Issue = {
   labels: string[];
   created_at: string;
   openBlockers?: number;
+  wait?: { until: string } | { unreadable: string };
 };
 
 const READY = 'workflow: ready for development';
@@ -250,5 +251,68 @@ describe('labelRow, the ready-label rule the selection, the claim and the unbloc
   test('a label the repo adds to its excludes keeps a ready ticket out', () => {
     const labels = { ...FACTORY_LABELS, exclude: ['type: prd', 'needs: design'] };
     assert.equal(labelRow([READY, 'mode: afk', 'needs: design'], labels), 'excluded');
+  });
+});
+
+/**
+ * A ticket's body may open with `Blocked until: <YYYY-MM-DD>`. Governor
+ * holds the ticket until 00:00 UTC on that date, in every served repo,
+ * whatever its config file says. A line it cannot read holds the ticket too.
+ */
+describe('waitOf: the `Blocked until:` line', () => {
+  test('a body with no line carries no wait', () => {
+    assert.deepEqual(waitOf(''), {});
+    assert.deepEqual(waitOf(undefined), {});
+    assert.deepEqual(waitOf('## Summary\n\nWork.'), {});
+  });
+
+  test('the first non-empty line, in any case, gives the date', () => {
+    assert.deepEqual(waitOf('Blocked until: 2026-11-05\n\nParent PRD: #185'), { wait: { until: '2026-11-05' } });
+    assert.deepEqual(waitOf('\n  \r\nblocked UNTIL: 2026-11-05\r\n'), { wait: { until: '2026-11-05' } });
+    assert.deepEqual(waitOf('Blocked until:2026-11-05'), { wait: { until: '2026-11-05' } });
+  });
+
+  test('text after the date does not change the date read', () => {
+    assert.deepEqual(waitOf('Blocked until: 2026-11-05 for a few days of stop-event lines'), { wait: { until: '2026-11-05' } });
+  });
+
+  test('a line that is not the first non-empty line is no wait', () => {
+    assert.deepEqual(waitOf('Parent PRD: #185\nBlocked until: 2026-11-05'), {});
+    assert.deepEqual(waitOf('Not Blocked until: 2026-11-05'), {});
+  });
+
+  test('a line holding no date governor can read is unreadable', () => {
+    for (const value of ['2026-13-01', 'next week', '', '2026-02-30', '2026-11-5', '2026-11-05,', '05/11/2026']) {
+      assert.deepEqual(waitOf(`Blocked until: ${value}`), { wait: { unreadable: value } }, value);
+    }
+  });
+});
+
+describe('isWaiting', () => {
+  const at = (iso: string) => Date.parse(iso);
+
+  test('a date still to come holds the ticket, until 00:00 UTC on that date', () => {
+    const row = { wait: { until: '2026-11-05' } };
+    assert.equal(isWaiting(row, at('2026-11-04T23:59:59.999Z')), true);
+    assert.equal(isWaiting(row, at('2026-11-05T00:00:00Z')), false);
+    assert.equal(isWaiting(row, at('2026-12-01T00:00:00Z')), false);
+  });
+
+  test('an unreadable line holds the ticket, and no line holds nothing', () => {
+    assert.equal(isWaiting({ wait: { unreadable: 'next week' } }, at('2030-01-01T00:00:00Z')), true);
+    assert.equal(isWaiting({}, 0), false);
+  });
+});
+
+describe('selectReadyWork: a ticket\'s own wait', () => {
+  const held = issue(1, { wait: { until: '2026-11-05' } });
+
+  test('a ready ticket whose date is still to come is not selected, and is at the first sweep on or after it', () => {
+    assert.deepEqual(numbers(selectReadyWork([held, issue(2)], { labels: FACTORY_LABELS, cap: 5, now: Date.parse('2026-11-04T23:00:00Z') })), [2]);
+    assert.deepEqual(numbers(selectReadyWork([held, issue(2)], { labels: FACTORY_LABELS, cap: 5, now: Date.parse('2026-11-05T00:30:00Z') })), [1, 2]);
+  });
+
+  test('an unreadable line is not selected', () => {
+    assert.deepEqual(selectReadyWork([issue(1, { wait: { unreadable: 'next week' } })], { labels: FACTORY_LABELS, cap: 5, now: 0 }), []);
   });
 });
