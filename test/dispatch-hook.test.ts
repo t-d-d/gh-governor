@@ -586,13 +586,14 @@ describe('the hook table', () => {
     }
   });
 
-  test('an hour\'s item at the largest cap stays well under DynamoDB\'s 400 KB', async () => {
+  test('an hour\'s item at the largest cap stays under 7 KB, so a write costs at most 7 units', async () => {
     const c = client(() => ({}));
     await hookTable(c as never, 'T').count(REPO, HOOK, NOW, HOOK_PER_HOUR_MAX, SIG);
     // What one count adds to the set, times the most the set can hold; the key, the count and the ttl are a few dozen bytes more.
     const added = Buffer.byteLength(JSON.stringify(c.sent[0]?.input.ExpressionAttributeValues[':signatures'].SS));
     const bytes = HOOK_PER_HOUR_MAX * added + 'signatures'.length + 200;
-    assert.ok(bytes < 100 * 1024, `${bytes} bytes`);
+    // DynamoDB charges a write by the item's size in whole KB: a count or a 429 in a full hour costs at most 7 write units.
+    assert.ok(bytes <= 7 * 1024, `${bytes} bytes`);
   });
 
   test('a new signature in a full hour is full; any other failure throws', async () => {

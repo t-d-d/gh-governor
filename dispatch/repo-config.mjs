@@ -234,7 +234,7 @@ const periodicSchema = z.strictObject({
  * of the hook's key a fire must be signed with. Raising it revokes the key
  * before it. A version is not a secret: the key is derived from the stack's.
  * `perHour`, the most fires the receiver queues for the hook in a clock hour,
- * 20 when unset (`HOOK_PER_HOUR`, webhook/fire.mjs), and at most 1000
+ * 20 when unset (`HOOK_PER_HOUR`, webhook/fire.mjs), and at most 100
  * (`HOOK_PER_HOUR_MAX`).
  */
 const hookSchema = z.strictObject({

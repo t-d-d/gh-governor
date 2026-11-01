@@ -875,7 +875,7 @@
           "perHour": {
             "type": "integer",
             "exclusiveMinimum": 0,
-            "maximum": 1000
+            "maximum": 100
           }
         },
         "required": [

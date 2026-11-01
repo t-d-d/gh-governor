@@ -80,7 +80,7 @@ group.
   ends. The refusal returns the old item: a signature already counted takes
   no place and is queued again, and a new one at the cap answers `429`. Any
   other failure answers `503`. The set holds at most `perHour` signatures,
-  and `perHour` is at most 1000. A lost item lets at most one more hour's
+  and `perHour` is at most 100. A lost item lets at most one more hour's
   cap through.
 
 ## Do not
@@ -94,4 +94,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66. The hook record was added in #56.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56.
