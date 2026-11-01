@@ -502,9 +502,8 @@ describe('infra/governor.cfn.yml — the alarms', () => {
    * matches, so a log write EventBridge could not make still alarms.
    */
   test('a task that never started its container is logged and retried, read off the ECS stop event', () => {
-    const rules = resourcesOfType(template, 'AWS::Events::Rule').filter(([, r]) => r.Properties?.EventPattern);
-    assert.equal(rules.length, 1, 'one rule listens for the task stopping');
-    const [, rule] = rules[0]!;
+    const rule = template.Resources.DispatchNotRunRule;
+    assert.equal(rule?.Type, 'AWS::Events::Rule');
     assert.equal(rule.Properties?.State, 'ENABLED');
     assert.deepEqual(rule.Properties?.EventPattern, {
       source: ['aws.ecs'],
@@ -553,6 +552,77 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /\/governor\b/, 'the description names where the stop reason is');
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /stoppedReason/);
+  });
+
+  /**
+   * A task that ran leaves only its container's output in /governor, so
+   * nothing recorded how long it took to start, or how much of that was the
+   * image pull. A second rule writes every other stop event there, with its
+   * pull and start times, and no event is written twice.
+   */
+  describe('every dispatcher task\'s stop event is logged once', () => {
+    const stopRules = resourcesOfType(template, 'AWS::Events::Rule')
+      .filter(([, r]) => r.Properties?.EventPattern?.source?.includes('aws.ecs'));
+    const rule = template.Resources.DispatchTaskStoppedRule;
+    const logTarget = `arn:aws:logs:us-east-1:${ACCOUNT}:log-group:\${DispatchLogGroup}`;
+
+    test('a task that ran and stopped has its stop event written into /governor', () => {
+      assert.equal(rule?.Type, 'AWS::Events::Rule');
+      assert.equal(rule?.Properties?.State, 'ENABLED');
+      assert.match(String(rule?.Properties?.Name ?? ''), /^governor-/);
+      assert.deepEqual(rule?.Properties?.EventPattern, {
+        source: ['aws.ecs'],
+        'detail-type': ['ECS Task State Change'],
+        detail: {
+          clusterArn: ['${DispatchCluster.Arn}'],
+          lastStatus: ['STOPPED'],
+          stopCode: [{ 'anything-but': ['TaskFailedToStart'] }],
+        },
+      });
+      const targets: Array<{ Arn?: string }> = rule?.Properties?.Targets ?? [];
+      assert.deepEqual(targets.map((t) => t.Arn), [logTarget], 'it only logs: the retrier hears tasks that failed to start alone');
+    });
+
+    test('the two rules split the stop codes, so no stop is logged twice and the not-run rule is unchanged', () => {
+      assert.deepEqual(stopRules.map(([id]) => id).sort(), ['DispatchNotRunRule', 'DispatchTaskStoppedRule']);
+      assert.deepEqual(template.Resources.DispatchNotRunRule?.Properties?.EventPattern?.detail?.stopCode, ['TaskFailedToStart']);
+      for (const [id, r] of resourcesOfType(template, 'AWS::CloudWatch::Alarm')) {
+        const dims: Array<{ Value?: string }> = r.Properties?.Dimensions ?? [];
+        assert.ok(!dims.some((d) => d.Value === '${DispatchTaskStoppedRule}'), `${id} counts the stop-event log rule`);
+      }
+      const invokers = Object.values(template.Resources).filter((r) => r.Type === 'AWS::Lambda::Permission' && String(r.Properties?.SourceArn).includes('DispatchTaskStoppedRule'));
+      assert.equal(invokers.length, 0, 'nothing but a log group hears the stop-event log rule');
+    });
+
+    test('no metric filter on /governor counts a stop event', () => {
+      // An ECS Task State Change as EventBridge writes it into the group.
+      const stopEvent = {
+        version: '0',
+        id: 'e1',
+        'detail-type': 'ECS Task State Change',
+        source: 'aws.ecs',
+        account: ACCOUNT,
+        time: '2026-11-01T16:43:10Z',
+        region: 'us-east-1',
+        resources: [],
+        detail: {
+          lastStatus: 'STOPPED',
+          stopCode: 'EssentialContainerExited',
+          createdAt: '2026-11-01T16:42:16Z',
+          pullStartedAt: '2026-11-01T16:42:20Z',
+          pullStoppedAt: '2026-11-01T16:42:41Z',
+          startedAt: '2026-11-01T16:42:44Z',
+          stoppedAt: '2026-11-01T16:43:09Z',
+        },
+      };
+      const filters = resourcesOfType(template, 'AWS::Logs::MetricFilter').filter(([, f]) => f.Properties?.LogGroupName === '${DispatchLogGroup}');
+      assert.ok(filters.length > 0);
+      for (const [id, f] of filters) {
+        const match = /^\{ \$\.(\w+) = "[^"]+" \}$/.exec(String(f.Properties?.FilterPattern));
+        assert.ok(match, `${id} matches more than one top-level key`);
+        assert.ok(!(match[1]! in stopEvent), `${id} matches a key a stop event carries`);
+      }
+    });
   });
 
   test('every alarm publishes to the stack\'s own alerts topic, which emails the address in Parameter Store', () => {

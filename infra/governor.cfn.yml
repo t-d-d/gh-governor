@@ -112,8 +112,8 @@ Resources:
   # ── The task ───────────────────────────────────────────────────────────────
   # The awslogs driver writes one stream per task beneath it,
   # named <prefix>/<container>/<task id>, which is how the probe finds the
-  # run it started. DispatchNotRunRule writes a stop event into its own
-  # stream here too.
+  # run it started. DispatchNotRunRule and DispatchTaskStoppedRule write
+  # each task's stop event into its own stream here too.
   DispatchLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -770,6 +770,31 @@ Resources:
           RetryPolicy:
             MaximumRetryAttempts: 2
             MaximumEventAgeInSeconds: 3600
+
+  # A task that ran leaves only its container's output in /governor, so
+  # nothing else records how long it took to start. This rule writes every
+  # other stop event of the cluster there too, one stream per event: each
+  # carries createdAt, pullStartedAt, pullStoppedAt, startedAt and stoppedAt.
+  # It matches every stop code but TaskFailedToStart, which the not-run rule
+  # writes, so no stop is logged twice. It only logs: no alarm counts its
+  # matches and the retrier never hears it. Every metric filter on the group
+  # matches a top-level `event` key, which an ECS event lacks.
+  DispatchTaskStoppedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: governor-task-stopped
+      Description: A dispatcher task stopped, for its pull and start times
+      State: ENABLED
+      EventPattern:
+        source: [aws.ecs]
+        detail-type: [ECS Task State Change]
+        detail:
+          clusterArn: [!GetAtt DispatchCluster.Arn]
+          lastStatus: [STOPPED]
+          stopCode: [{ anything-but: [TaskFailedToStart] }]
+      Targets:
+        - Id: log
+          Arn: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DispatchLogGroup}'
 
   # A log-group target takes no role: EventBridge writes on the group's
   # resource policy, both principals, the one group.

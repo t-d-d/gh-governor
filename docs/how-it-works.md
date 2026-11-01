@@ -404,6 +404,8 @@ A message an archived session refused, with no fallback tried, is not an error. 
 
 **A session was not archived.** Its last reply's last line must start `Signing off`, and the session must be idle. `dispatch-signoff` in `/governor` names each candidate and the decision.
 
+**A task was slow to start.** Every dispatcher task's ECS stop event is in `/governor`, as an `ECS Task State Change` line. Its `detail` carries `createdAt`, `pullStartedAt`, `pullStoppedAt`, `startedAt` and `stoppedAt`: the image pull is `pullStartedAt` to `pullStoppedAt`, and the whole start is `createdAt` to `startedAt`. Find the task's line by its task ARN, which the fire's `fire-started` line in `/aws/lambda/governor-starter` names. The `governor-not-run` rule writes the stop of a task that failed to start, and the `governor-task-stopped` rule writes every other stop, so each task has one line. ECS itself forgets a stopped task after about an hour, so `aws ecs describe-tasks` answers only for a recent one.
+
 **The deploy's probe is red.** The probe prints the task's log, which says whether the task could not reach the network, hold a pseudo-terminal or find the CLI. A task that never ran its container, such as one whose image pull was refused, has no log, and the probe prints its stop reason instead.
 
 ## Pages
