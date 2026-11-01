@@ -28,9 +28,14 @@ import { byAge, isBlocked, selectReadyWork } from './ready-work.mjs';
  * @typedef {import('./github-app.mjs').IssueRow} IssueRow
  * @typedef {{
  *   readyIssues: (labels: readonly string[]) => Promise<IssueRow[]>,
+ *   ticket: (number: number) => Promise<import('./github-app.mjs').TicketRow>,
  *   blockers: (number: number) => Promise<import('./github-app.mjs').BlockerRow[]>,
  *   comments: (number: number, options?: { since?: string }) => Promise<import('./github-app.mjs').CommentRow[]>,
  * }} Reader
+ *
+ * @typedef {{ repo: string, issue: number, labels: string[], openBlockers?: number }} Seen
+ *   What a named issue's read saw: its labels, and its open blockers by its
+ *   dependency summary or, where it has none and was read, its `blocked_by` rows.
  *
  * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, prompts?: Record<string, string | undefined> }} Source
  *   A served repo's tickets: its reader, its config file's ready, claim and
@@ -49,6 +54,12 @@ import { byAge, isBlocked, selectReadyWork } from './ready-work.mjs';
  * is a session each and not the cap's worth per label. A fire naming
  * issues names one repo, so `only` is for one source.
  *
+ * A named issue is read on its own (`reader.ticket`), never found in the
+ * ready list: GitHub's filtered list shows a label change about four seconds
+ * after it, and a label fire's turn runs inside that, while the single
+ * issue shows it on its first read. `seen` gets what each named issue's read
+ * saw, so a fire that starts nothing can log why.
+ *
  * With `unread`, a source whose read fails is recorded there and left out
  * of the rest of the plan, so one repo's refusal does not stop the others;
  * without it, the read's failure throws.
@@ -61,10 +72,10 @@ import { byAge, isBlocked, selectReadyWork } from './ready-work.mjs';
  * unrecorded: the cap limits load, and does not set how often a repo is
  * swept.
  *
- * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string> }} args
+ * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string> }} args
  * @returns {Promise<Dispatch[]>}
  */
-export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, unread, cut }) => {
+export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut }) => {
   /** @type {Set<string>} */
   const failed = new Set();
   /**
@@ -83,18 +94,33 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
       return null;
     }
   };
+  /** Each named issue's record in `seen`, by repo and number. @type {Map<string, Seen>} */
+  const records = new Map();
+  /**
+   * The source's rows: the named issues, each read on its own, or else its ready list.
+   * @param {Source} source
+   * @returns {Promise<import('./ready-work.mjs').IssueRow[]>}
+   */
+  const rowsOf = async ({ repo, reader, labels }) => {
+    if (only === undefined) return reader.readyIssues(labels.ready);
+    const read = await Promise.all([...new Set(only)].map((n) => reader.ticket(n)));
+    for (const { number, labels: on, openBlockers } of read) {
+      const record = { repo, issue: number, labels: on, ...(openBlockers === undefined ? {} : { openBlockers }) };
+      records.set(`${repo}#${number}`, record);
+      seen.push(record);
+    }
+    return read.filter((t) => !t.pull);
+  };
   /** @type {Array<import('./ready-work.mjs').IssueRow & { source: Source }>} */
   const tagged = [];
   for (const source of sources) {
     const { labels } = source;
-    const rows = await guarded(source.repo, () => source.reader.readyIssues(labels.ready));
+    const rows = await guarded(source.repo, () => rowsOf(source));
     if (rows === null) continue;
     const ready = selectReadyWork(rows, { cap: Number.MAX_SAFE_INTEGER, labels });
     tagged.push(...ready.map((row) => ({ ...row, source })));
   }
-  const ranked = tagged.sort(byAge);
-  const named = only && new Set(only);
-  const candidates = named ? ranked.filter((c) => named.has(c.number)) : ranked;
+  const candidates = tagged.sort(byAge);
   // Only the window's comments: a marker older than the window would not
   // count, and the endpoint pages oldest first, so on a long thread the
   // newest marker would otherwise sit past the page.
@@ -112,6 +138,8 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     // pass, so only a row without one asks for its `blocked_by` rows.
     if (candidate.openBlockers === undefined) {
       const blocking = await read(repo, () => reader.blockers(candidate.number));
+      const record = records.get(`${repo}#${candidate.number}`);
+      if (record !== undefined && blocking !== null) record.openBlockers = blocking.filter((b) => b.state === 'open').length;
       if (blocking === null || isBlocked(candidate, blocking)) return false;
     }
     const comments = await read(repo, () => reader.comments(candidate.number, { since }));
