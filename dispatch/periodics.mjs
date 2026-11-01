@@ -65,8 +65,9 @@ export const DAY_MS = 24 * HOUR_MS;
  * fires it. The record holds the launch's time, minutes after the sweep
  * read it, so the sweep a day limit later reads it a little short. Without
  * this, every run would slip to the sweep after, and the slips add up. A
- * grace of a whole interval would fire it at the sweep before the limit,
- * and every run would creep earlier instead.
+ * grace of a whole interval could fire it at the sweep before the limit,
+ * whenever that sweep's turn ran later after its fire than the last launch
+ * did after its own, and the runs would creep earlier instead.
  */
 export const SWEEP_GRACE_MS = HOUR_MS / 2;
 

@@ -65,6 +65,14 @@ describe('when a repo\'s sweep is due', () => {
     assert.equal(sweepDue(ago(2 * HOUR - SWEEP_SLACK_MS - 1), 2, NOW), false);
   });
 
+  // A fire waits on the lane behind the turns ahead of it, so the last
+  // sweep's turn can have run most of an hour after its fire. One sweep per
+  // tick is all the clock allows, so an interval of one tick needs no slack.
+  test('an interval of the clock\'s own tick sweeps at every fire, however late the last sweep\'s turn ran', () => {
+    assert.equal(sweepDue(ago(20 * 60 * 1000), 1, NOW), true, 'the last sweep ran 40 minutes after its fire');
+    assert.equal(sweepDue(ago(HOUR), 2, NOW), false, 'a longer interval keeps its slack');
+  });
+
   test('an interval shorter than the clock\'s tick sweeps at every fire', () => {
     assert.equal(sweepDue(ago(2 * HOUR), 1, NOW), true);
     assert.equal(sweepDue(ago(HOUR), 1, NOW), true);
