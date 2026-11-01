@@ -854,6 +854,35 @@ describe('the state of the tickets a PR names', () => {
   });
 });
 
+describe('the claim check reads a closing ticket by the shared ready-label rule', () => {
+  // No ticket rules, so only the claim check speaks to an excluded ticket.
+  const noRules = { ...FACTORY_RULES, humanOnly: [], tickets: { require: [], forbid: [] } };
+  const ticket = (labels: string[]) => ({ number: 748, title: 'T', body: '', state: 'open', labels, pull: false });
+  const own = { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [], exclude: ['type: prd', 'mode: human'] };
+
+  test('a ready, unclaimed ticket carrying an excluded label passes, where the claim removes labels and where it removes none', () => {
+    assert.equal(decideInCode({ files: [], tickets: [ticket(['mode: afk', 'workflow: ready for development', 'type: prd'])], rules: noRules }), null);
+    for (const excluded of ['type: prd', 'mode: human']) {
+      assert.equal(decideInCode({ files: [], tickets: [ticket(['mode: afk', excluded])], rules: { ...noRules, labels: own } }), null, excluded);
+    }
+  });
+
+  test('an excluded ticket that is neither ready nor claimed passes too: it is not pickup\'s', () => {
+    assert.equal(decideInCode({ files: [], tickets: [ticket(['type: prd'])], rules: noRules }), null);
+    assert.equal(decideInCode({ files: [], tickets: [ticket(['mode: human'])], rules: { ...noRules, labels: own } }), null);
+  });
+
+  test('a ready, unclaimed ticket with no excluded label is still told to claim it', () => {
+    for (const [labels, on] of [[FACTORY_RULES.labels, ['mode: afk', 'workflow: ready for development']], [own, ['mode: afk']]] as const) {
+      const answer = decideInCode({ files: [], tickets: [ticket([...on])], rules: { ...noRules, labels } });
+      assert.ok(answer?.answer === 'fail', JSON.stringify(answer));
+      assert.equal(answer.test, 1);
+      assert.equal(answer.claim, true);
+      assert.match(answer.reason, /#748, is not yet `[^`]+`: nobody claimed it/);
+    }
+  });
+});
+
 describe('the checklist\'s parts', () => {
   test('decideInCode fails test 1 for an edit on a prose closing, and a fail no edit meets still comes first', () => {
     const ticket = { number: 748, title: 'T', body: '', state: 'open', labels: ['mode: afk', 'type: nfr', 'workflow: under development'], pull: false };
