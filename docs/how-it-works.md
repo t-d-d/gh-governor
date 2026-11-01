@@ -69,7 +69,7 @@ The closing turn cannot read another repo's switches, so it queues the fire anyw
 
 ## Triggers
 
-The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`, `hook.mjs`) queues a fire for each of these, and the task checks the repo's switch before acting.
+The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`, `hook.mjs`) queues a fire for each of these, unless the repo's hook-table item says the fire's switch is off ([The webhook](#the-webhook)). The task checks the repo's switch again before acting.
 
 | Event | Condition | What happens | Switch |
 |---|---|---|---|
@@ -293,7 +293,8 @@ A file in the older shape, `"heartbeat": { "issue": <number>, "marker": "<!-- â€
 | A hook fire for a repo whose file turns `hooks` off, or lists no hook of that name | `dispatch-refused`, at warn | none |
 | A hook fire signed with a key version other than the hook's `keyVersion` | `hook-key-stale`, at error, naming the repo, hook and version | `governor-hook-key-stale` |
 | A hook's record, or its last session, could not be read, its record written after a launch, or its session started inside the launch window | the turn throws, or `dispatch-hook-unrecorded` or `dispatch-hook-unstarted`; the turn exits 1 | `governor-errors` |
-| The repo's hooks could not be written to the hook table | `hook-table-unwritten`, at error; the receiver keeps the last list, and the repo counts as unread and the turn exits 1, whatever its kind | `governor-errors` |
+| The repo's hooks and switches could not be written to the hook table | `hook-table-unwritten`, at error; the receiver keeps the last item, and the repo counts as unread and the turn exits 1, whatever its kind | `governor-errors` |
+| The receiver could not read a repo's switches from the hook table | `webhook-switches-unread`, at error, in `/aws/lambda/governor-webhook`; every fire is queued and the task decides | none |
 | A periodic's record, or its last run's session, could not be read, or its baseline written | `dispatch-periodic-unread` or `dispatch-periodic-unrecorded`; that periodic waits and the turn exits 1 | `governor-errors` |
 | The installation list or a token mint failed | `dispatch-failed` | `governor-errors` |
 
@@ -303,6 +304,7 @@ GitHub posts every installation's events to one Lambda Function URL (`governor-w
 
 - A repo whose owner is not on `DispatchOwners` queues nothing: `200`, and `webhook-ignored` at info. An outsider who installs the public App can page nobody.
 - Every fire names the repo its delivery came from. The task reads that repo's file and refuses a fire its switches do not turn on.
+- A refused fire still costs a whole task, so the receiver drops a fire whose switch is off before it reaches the lane. It reads no file. Each time the task reads a served repo's file, it writes every switch, as the turn reads it, to the repo's item in the hook table, in the same write as the hooks (below), and before it refuses its own fire. A delivery that would queue a fire reads that item once (`droppedBy`, `dispatch/webhook/switches.mjs`). Three kinds of fire are handled apart. A red run on the default branch is dropped only when `ciMessages` and `deployMessages` are both off, since the receiver cannot tell CI from a deploy. A fire carrying `counted` is kept wherever `periodics` is on. A merge's `conflicts` fire is never dropped: its turn reads the file the merge may have changed and writes the item, so a switch just turned on stops being dropped once that turn has run. A missing item, one written before it held switches, and a read that fails all queue every fire, and the task decides. A failed read logs `webhook-switches-unread` at error and never answers `503`, since GitHub does not redeliver a failed delivery by itself. A delivery whose fires are all dropped answers `200` with a reason naming the switch. Fewer refused turns also means fewer sign-off sweeps, so a signed-off session in a busy repo may wait a little longer to be archived.
 - Workflow and merge events are routed by the default branch the payload names, never by `main`.
 - A label added by a bot queues no selection, since governor's own claim and release are a bot's. Subscribers still hear it.
 - A delivery's id is its deduplication id on the queue, so a redelivery is not a second fire.
@@ -327,7 +329,7 @@ The App's **Advanced â†’ Recent Deliveries** shows each answer:
 | Answer | Meaning |
 |---|---|
 | `202` | A fire was queued. |
-| `200` | Nothing was queued; the body says why (an unlisted owner, a stranger's mention, a bot, a session's own post). |
+| `200` | Nothing was queued; the body says why (an unlisted owner, a stranger's mention, a bot, a session's own post, or a switch the repo's file turns off). |
 | `401` | The signature does not match the stack's key. |
 | `403` with no receiver log line | AWS refused the URL before the receiver ran. The stack grants both `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction`. |
 | `502` | The receiver threw, or the queue refused the fire. Redeliver retries it. |
