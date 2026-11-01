@@ -196,7 +196,7 @@ const notASummons = ({ body, user, association, issue = false }) => {
   const text = String(body ?? '');
   if (!mentions(text)) return `no ${MENTION} mention`;
   if (user?.type === 'Bot') return `a bot (${user?.login ?? 'unnamed'}) cannot summon a session`;
-  if (ownSessionPost(text) || (issue && sessionNamedIn(withoutQuotes(text)) !== null)) return 'a session cannot summon another';
+  if (ownSessionPost(text) || (issue && sessionNamedIn(text) !== null)) return 'a session cannot summon another';
   if (!SUMMONERS.has(String(association))) {
     return `${user?.login ?? 'someone'} (${association ?? 'no association'}) has no say in the repository`;
   }
