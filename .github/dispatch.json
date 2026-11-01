@@ -1,5 +1,5 @@
 {
   "environment": "askme",
   "labels": { "ready": ["mode: afk"], "claim": "claimed", "claimRemoves": [], "exclude": ["type: prd", "mode: human"] },
-  "features": { "pickup": true, "summons": true, "prMessages": true, "subscribeMessages": true, "conflicts": true }
+  "features": { "pickup": true, "summons": true, "prMessages": true, "subscribeMessages": true, "unblocked": true, "conflicts": true }
 }
