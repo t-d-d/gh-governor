@@ -217,15 +217,15 @@ describe('duePeriodics', () => {
   // The record holds the launch's time, minutes after the sweep read it.
   // The sweep a day limit later reads it a little short of the limit, and
   // must still fire it, or each run slips a sweep and the slips add up.
-  test('the sweep nearest the day limit fires it: within half the two-hourly interval, never earlier', async () => {
+  test('the sweep nearest the day limit fires it: within half the hourly interval, never earlier', async () => {
     const minutes = (n: number) => n * 60 * 1000;
-    const near = store({ 'Weekly retro': { at: new Date(NOW - 7 * DAY_MS + minutes(5)).toISOString(), session: 's', baseline: false } });
-    assert.equal((await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: near, now: NOW, log })).due.length, 1);
-    const edge = store({ 'Weekly retro': { at: new Date(NOW - 7 * DAY_MS + minutes(60)).toISOString(), session: 's', baseline: false } });
-    assert.equal((await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: edge, now: NOW, log })).due.length, 1);
-    const early = store({ 'Weekly retro': { at: new Date(NOW - 7 * DAY_MS + minutes(61)).toISOString(), session: 's', baseline: false } });
-    assert.equal((await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: early, now: NOW, log })).due.length, 0, 'the sweep after is nearer');
-    assert.equal(SWEEP_GRACE_MS, minutes(60));
+    const recordedAgo = (short: number) => store({ 'Weekly retro': { at: new Date(NOW - 7 * DAY_MS + minutes(short)).toISOString(), session: 's', baseline: false } });
+    const dueAt = async (short: number) => (await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: recordedAgo(short), now: NOW, log })).due.length;
+    assert.equal(await dueAt(5), 1, 'the launch landed minutes after its sweep read it');
+    assert.equal(await dueAt(30), 1);
+    assert.equal(await dueAt(31), 0, 'the sweep after is nearer');
+    assert.equal(await dueAt(60), 0, 'the sweep an hour before the limit does not fire it');
+    assert.equal(SWEEP_GRACE_MS, minutes(30));
   });
 
   test('with no record, the baseline is now, and nothing is due', async () => {
