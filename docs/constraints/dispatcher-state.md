@@ -19,8 +19,9 @@ group.
   the state table holds records other checks trust. It is built the same
   way. It holds only what the receiver reads and counts: one item per served
   repo, `hooks#<repo>` / `listed`, each hook's name, `keyVersion` and
-  `perHour`, and each of the repo's switches as the task read them, which
-  the task puts in one write each time it reads the repo's file; and one
+  `perHour`, each of the repo's switches and its ready labels as the task
+  read them, which the task puts in one write each time it reads the repo's
+  file; and one
   item per hook and clock hour, `fires#<repo>#<hook>` / `<hour>`, the
   receiver's count of that hook's fires and the signatures it counted,
   raised by one conditional `UpdateItem` while under the cap and only for a
@@ -33,9 +34,9 @@ group.
 - A missing item means the use's fallback (the first turn after a deploy, a
   lost item); a read that fails means the turn refuses. Never treat a failed
   read as a missing item. The one exception is the receiver's read of a
-  repo's switches: a missing item, an item without them and a failed read
-  all queue the fire, which leaves the task to decide, and the failed read
-  is logged at error.
+  repo's switches and ready labels: a missing item, an item without them
+  and a failed read all queue the fire, which leaves the task to decide, and
+  the failed read is logged at error.
 - Every use survives a lost item: there is no point-in-time recovery. A new
   deployment starts with an empty table, and every workflow finds its
   baseline in its runs list.
@@ -87,6 +88,13 @@ group.
   answers `503`, since GitHub does not send a failed delivery again by
   itself. Each list is an attribute of its own, so another can join the
   item without reshaping it.
+- What the receiver knows of a repo's ready labels: the same item's
+  `ready`, the file's `labels.ready`, written in the same `PutItem` as the
+  hooks and switches and read in the same one read as the switches. A
+  person's label that it does not list queues no selection fire, and the
+  delivery's reason says so. A missing item, one without `ready`, malformed
+  labels and a failed read queue the selection fire, as for the switches
+  (dispatch/webhook/route.mjs).
 - A hook's fires this hour: `fires#<repo>#<hook>` / `<hour>` in the hook
   table, raised by the receiver in one `UpdateItem` conditioned on the count
   being under the hook's cap and the request's signature not yet in the
@@ -108,4 +116,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180.

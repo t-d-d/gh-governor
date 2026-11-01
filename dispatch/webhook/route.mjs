@@ -8,9 +8,10 @@
  * keyed by the secret both sides hold), decides what it means for the
  * dispatcher, and queues its fires on the lane the dispatcher task reads
  * (dispatch/lane.mjs). Three kinds of fire for issues and remarks: a `schedule`
- * fire naming the issue and a label on the stack's `SelectLabels` just added
- * to it, which the task dispatches if the label is one of the repo's ready
- * labels and the selection would, and no other; a `dispatch` fire with a prompt of its
+ * fire naming the issue and a label a person just added to it, queued only
+ * where the repo's hook-table item lists the label as ready or cannot say
+ * ({@link handle}), which the task dispatches if the label is one of the
+ * repo's ready labels and the selection would, and no other; a `dispatch` fire with a prompt of its
  * own, for a mention of @claude (mention.mjs); and a `message` fire per
  * session subscribed to what happened (subscribe.mjs): a comment or review
  * on a PR whose body names the session that wrote it, carrying the prompt
@@ -440,29 +441,27 @@ const mergedFire = (payload, main) => {
  * table says the repo's file leaves `prReview` off, and the task refuses it
  * where the file does.
  *
- * @param {{ event: string | undefined, payload: any, owners: readonly string[], appId?: number | undefined, selectLabels?: readonly string[] | undefined }} args
+ * @param {{ event: string | undefined, payload: any, owners: readonly string[], appId?: number | undefined }} args
  * `owners`: the stack's owner list. `appId`: the dispatcher's own App,
  * whose comment alone is the PR review's; without it, no comment is.
- * `selectLabels`: the stack's SelectLabels, the labels whose addition
- * queues a selection fire in any repo; empty or absent, every label does.
  * @returns {Decision}
  */
-export const routeEvent = ({ event, payload, owners, appId, selectLabels = [] }) => {
+export const routeEvent = ({ event, payload, owners, appId }) => {
   const repo = payload?.repository?.full_name;
   if (typeof repo !== 'string' || !REPO_NAME.test(repo)) return nothing(`${event ?? 'unnamed'} delivery names no repository`);
   const owner = repo.slice(0, repo.indexOf('/'));
   if (!ownerListed(owners, owner)) return nothing(`delivery is for ${repo}, whose owner ${owner} is not on the owner list`);
-  const decision = routeFor({ event, payload, appId, selectLabels });
+  const decision = routeFor({ event, payload, appId });
   return { ...decision, fires: decision.fires.map((queued) => ({ ...queued, fire: { ...queued.fire, repo } })) };
 };
 
 /**
  * A listed repo's delivery, routed.
  *
- * @param {{ event: string | undefined, payload: any, appId?: number | undefined, selectLabels: readonly string[] }} args
+ * @param {{ event: string | undefined, payload: any, appId?: number | undefined }} args
  * @returns {Decision}
  */
-const routeFor = ({ event, payload, appId, selectLabels }) => {
+const routeFor = ({ event, payload, appId }) => {
   const main = defaultBranch(payload);
   const unbranched = nothing(`${event} delivery names no default branch: no run or merge on it to read`);
   if (event === 'issues') {
@@ -478,12 +477,11 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
     if (action === 'labeled' && payload?.sender?.type === 'Bot') {
       selection = nothing(`issue #${number} labelled ${label} by ${payload.sender.login ?? 'a bot'}: the dispatcher's own, no selection`);
     } else if (action === 'labeled' && typeof label === 'string' && label !== '' && typeof number === 'number') {
-      // The receiver reads no repo's ready labels: the stack's list names
-      // the labels worth a turn, and the task ends the turn before
-      // the login when the label is not one of the repo's.
-      selection = selectLabels.length === 0 || selectLabels.includes(label)
-        ? one({ fire: build.schedule({ issue: number, label }), reason: `issue #${number} labelled ${label}: the turn checks it against the repo's ready labels` })
-        : null;
+      // Routing reads only the payload: {@link handle} drops this fire where
+      // the repo's hook-table item says the label is not one of its ready
+      // labels, and the task ends the turn before the login where the file
+      // says so.
+      selection = one({ fire: build.schedule({ issue: number, label }), reason: `issue #${number} labelled ${label}: select it if it is one of the repo's ready labels` });
     } else if (action === 'closed') {
       // The close is counted on the fire that queues what it blocked.
       selection = typeof number === 'number'
@@ -519,10 +517,9 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
  *   hookSecret: () => Promise<string>,
  *   listedHooks: import('./hook-table.mjs').HookTable['listed'],
  *   countFire: import('./hook-table.mjs').HookTable['count'],
- *   repoSwitches: import('./hook-table.mjs').HookTable['switches'],
+ *   repoItem: import('./hook-table.mjs').HookTable['item'],
  *   now?: () => number,
  *   owners: readonly string[],
- *   selectLabels?: readonly string[] | undefined,
  *   appId: number | undefined,
  *   enqueue: (message: FireMessage, dedupId?: string) => Promise<string>,
  *   log: (event: string, context?: Record<string, unknown>) => void,
@@ -532,8 +529,8 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
  *   hook table (hook-table.mjs), the hooks its file listed when the task last
  *   read it. `countFire`: one more fire of a hook in the clock hour, taken
  *   only under its cap and once per signature (hook-table.mjs).
- *   `repoSwitches`: the repo's switches in the hook table, as its file read
- *   when the task last read it (hook-table.mjs). `now`: the
+ *   `repoItem`: the repo's switches and ready labels in the hook table, as
+ *   its file read when the task last read it (hook-table.mjs). `now`: the
  *   receiver's clock, which a hook's timestamp is held to and an hour's
  *   count is kept by.
  *
@@ -582,8 +579,8 @@ const queueFire = async (message, dedupId, deps) => {
  * one under it that names no repo and hook), or else one delivery. A
  * delivery's status is what GitHub records against it: 401 for a
  * delivery that is not GitHub's, 400 for one it could not read, 200 for one
- * that changes nothing, its fires all dropped by the repo's switches among
- * them, 202 for one that queued a fire. A queue that refused
+ * that changes nothing, its fires all dropped by the repo's switches or
+ * ready labels among them, 202 for one that queued a fire. A queue that refused
  * the fire leaves as a throw, and GitHub records the 502 the Function URL
  * answers with, which an operator can redeliver.
  *
@@ -610,7 +607,7 @@ export const handle = async (request, deps) => {
   }
   const event = headers['x-github-event'];
   const delivery = headers['x-github-delivery'];
-  const decision = await switchedOn(routeEvent({ event, payload, owners: deps.owners, appId: deps.appId, selectLabels: deps.selectLabels }), delivery, deps);
+  const decision = await switchedOn(routeEvent({ event, payload, owners: deps.owners, appId: deps.appId }), delivery, deps);
   if (decision.fires.length === 0) {
     // Never an error: an outsider who installed the App must not page anyone.
     deps.log('webhook-ignored', { level: 'info', delivery: delivery ?? null, github: event, reason: decision.reason });
@@ -631,13 +628,17 @@ export const handle = async (request, deps) => {
 };
 
 /**
- * A delivery's fires less those the repo's switches drop: each fire whose
- * switch the repo's item in the hook table says is off ({@link droppedBy}).
- * The item is read once, and only for a delivery that would queue a fire.
- * A read that fails is logged at error and drops nothing: the task still
- * refuses a fire whose switch is off, and a 503 would lose the delivery,
- * which GitHub does not send again by itself. A dropped fire's reason names
- * its switch, so the App's Recent Deliveries says why it went nowhere.
+ * A delivery's fires less those the repo's item in the hook table drops: a
+ * selection fire for a label the item's ready labels do not list, and each
+ * fire whose switch the item says is off ({@link droppedBy}). The item is
+ * read once, and only for a delivery that would queue a fire. An item
+ * without ready labels drops no selection fire, and one without switches
+ * drops nothing by switch. A read that fails, or an item that is malformed,
+ * is logged at error and drops nothing: the task still refuses a fire its
+ * repo's file does not allow, and a 503 would lose the delivery, which
+ * GitHub does not send again by itself. A dropped fire's reason names the
+ * label or the switch, so the App's Recent Deliveries says why it went
+ * nowhere.
  *
  * @param {Decision} decision
  * @param {string | undefined} delivery
@@ -647,10 +648,10 @@ export const handle = async (request, deps) => {
 const switchedOn = async (decision, delivery, deps) => {
   const repo = decision.fires[0]?.fire.repo;
   if (repo === undefined) return decision;
-  /** @type {ReadonlyMap<string, boolean> | null} */
-  let switches;
+  /** @type {import('./hook-table.mjs').Known | null} */
+  let item;
   try {
-    switches = await deps.repoSwitches(repo);
+    item = await deps.repoItem(repo);
   } catch (error) {
     deps.log('webhook-switches-unread', { level: 'error', delivery: delivery ?? null, repo, error: String(/** @type {any} */ (error)?.message ?? error) });
     return decision;
@@ -660,9 +661,15 @@ const switchedOn = async (decision, delivery, deps) => {
   /** @type {string[]} */
   const dropped = [];
   for (const queued of decision.fires) {
-    const off = droppedBy(queued.fire, switches);
+    const { fire } = queued;
+    const label = fire.kind === 'schedule' ? fire.label : undefined;
+    if (label !== undefined && item?.ready && !item.ready.includes(label)) {
+      dropped.push(`its ${fire.kind} fire, as ${label} is not one of ${repo}'s ready labels`);
+      continue;
+    }
+    const off = droppedBy(fire, item?.switches ?? null);
     if (off === null) kept.push(queued);
-    else dropped.push(`its ${queued.fire.kind} fire, as ${repo}'s file turns ${off.join(' and ')} off`);
+    else dropped.push(`its ${fire.kind} fire, as ${repo}'s file turns ${off.join(' and ')} off`);
   }
   if (dropped.length === 0) return decision;
   const reason = `${decision.reason}; dropped ${dropped.join(', and ')}`;

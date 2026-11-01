@@ -139,8 +139,8 @@ const harness = (over: Record<string, unknown> = {}) => {
   const eventsRead: Array<{ id: string; token: string }> = [];
   // Each session the turn recorded as governor's own.
   const recorded: string[] = [];
-  // Each write to the receiver's hook table: a repo's hooks and switches as its file was read.
-  const published: Array<{ repo: string; hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; at: string }> = [];
+  // Each write to the receiver's hook table: a repo's hooks, switches and ready labels as its file was read.
+  const published: Array<{ repo: string; hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; at: string }> = [];
   let loginOnDisk: string | null = null;
   const accounts: unknown[] = [];
   const deps = {
@@ -284,8 +284,8 @@ const harness = (over: Record<string, unknown> = {}) => {
     }),
     uuid: () => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
     hookTable: {
-      publish: async (repo: string, { hooks, switches }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean> }, at: string) => {
-        published.push({ repo, hooks, switches, at });
+      publish: async (repo: string, { hooks, switches, ready }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[] }, at: string) => {
+        published.push({ repo, hooks, switches, ready, at });
         return true;
       },
     },
@@ -5542,7 +5542,8 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
  * when unset, has passed since that repo's last sweep. The last sweep lives
  * in the state table under `pickup#<repo>`, and a lost item means sweep now.
  * A ready label and a close that unblocks a ready ticket still pick up at once, so a
- * repo whose ready label `SelectLabels` does not list waits for its sweep.
+ * label added before the repo's next turn writes it to the receiver's hook
+ * table waits for the sweep.
  * Pickup's heartbeat line records each sweep, and only a sweep.
  */
 describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval its file sets (dispatcher-repos.md)', () => {
@@ -6070,7 +6071,17 @@ describe('run: the hook table', () => {
   test('a fire naming its repo writes that repo\'s hooks, their key versions and their caps, stamped with the turn\'s time', async () => {
     const h = harness();
     await run(hookFire, h.deps as never);
-    assert.deepEqual(h.published, [{ repo: REPO, hooks: FACTORY_HOOKS, switches: Object.fromEntries(GENERIC_SWITCHES.map((n) => [n, true])), at: new Date(NOW).toISOString() }]);
+    assert.deepEqual(h.published, [{ repo: REPO, hooks: FACTORY_HOOKS, switches: Object.fromEntries(GENERIC_SWITCHES.map((n) => [n, true])), ready: JSON.parse(FACTORY_FILE).labels.ready, at: new Date(NOW).toISOString() }]);
+  });
+
+  // The receiver queues a selection fire only for a label the item lists
+  // as ready (dispatch/webhook/route.mjs), so a ready label added to the
+  // file reaches it at the repo's next turn, with no deploy.
+  test('the item holds the repo\'s ready labels as its file reads now', async () => {
+    const labels = { ...JSON.parse(FACTORY_FILE).labels, ready: ['mode: afk', 'agent: go'], claimRemoves: [] };
+    const h = harness({ configFile: fileWith({ labels }) });
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.published.map((p) => p.ready), [['mode: afk', 'agent: go']]);
   });
 
   // The receiver drops a fire whose switch the item says is off
