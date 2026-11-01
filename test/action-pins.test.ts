@@ -170,4 +170,18 @@ describe('Dependabot moves the pinned commits forward', () => {
     assert.ok(actions.length > 0, 'found the local actions');
     assert.deepEqual(actions.filter((dir) => !covers(patterns, dir)), []);
   });
+
+  // The deploy job runs these actions with an administrator role, so a
+  // compromised release would reach it as soon as its pull request merged.
+  // Waiting a week gives the action's owners time to find and pull one. Each
+  // action keeps its own pull request, so no groups.
+  test('the github-actions entry waits 7 days for a release and groups nothing', () => {
+    const config = yaml.load(readFileSync(join(REPO_ROOT, '.github/dependabot.yml'), 'utf8')) as {
+      updates?: { 'package-ecosystem'?: string; cooldown?: { 'default-days'?: number }; groups?: unknown }[];
+    };
+    const entry = (config.updates ?? []).find((u) => u['package-ecosystem'] === 'github-actions');
+    assert.ok(entry, 'a github-actions entry');
+    assert.equal(entry.cooldown?.['default-days'], 7);
+    assert.equal(entry.groups, undefined);
+  });
 });
