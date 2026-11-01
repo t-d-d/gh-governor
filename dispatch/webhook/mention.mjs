@@ -80,10 +80,12 @@ const CODE_RE = /(`{3,}|~{3,})[\s\S]*?(?:\1|(?![\s\S]))|(`+)(?!`)(?:(?![ \t\r]*\
 /**
  * Whether `text` mentions @claude itself: outside code and outside any
  * quote. A reply quoting a post that named @claude does not repeat it.
+ * Quotes go first: GitHub closes a fence where its quote ends, and a code
+ * span blanked at the start of a line would leave a `>` that reads as one.
  *
  * @param {unknown} text
  */
-export const mentions = (text) => MENTION_RE.test(withoutQuotes(String(text ?? '').replace(CODE_RE, ' ')));
+export const mentions = (text) => MENTION_RE.test(withoutQuotes(String(text ?? '')).replace(CODE_RE, ' '));
 
 /** The events a mention can arrive in, beside `issues`. */
 export const MENTION_EVENTS = new Set(['issue_comment', 'pull_request_review_comment', 'pull_request_review']);
@@ -154,8 +156,8 @@ const excerpt = (body, limit = EXCERPT_CHARS) => {
  * Why `body` by `user` is not a summons, or null when it is. A session's
  * post is one whose footer stands outside any quote: a member's reply
  * quoting a session's post is the member's. An issue's body (`issue`) that
- * names its owner session is that session's own, even where the GitHub
- * tool stripped its footer to the link on its last line.
+ * names its owner session outside any quote is that session's own, even
+ * where the GitHub tool stripped its footer to the link on its last line.
  *
  * @param {{ body: unknown, user: User | undefined, association: unknown, issue?: boolean }} args
  * @returns {string | null}
@@ -164,7 +166,7 @@ const notASummons = ({ body, user, association, issue = false }) => {
   const text = String(body ?? '');
   if (!mentions(text)) return `no ${MENTION} mention`;
   if (user?.type === 'Bot') return `a bot (${user?.login ?? 'unnamed'}) cannot summon a session`;
-  if (ownSessionPost(text) || (issue && sessionNamedIn(text) !== null)) return 'a session cannot summon another';
+  if (ownSessionPost(text) || (issue && sessionNamedIn(withoutQuotes(text)) !== null)) return 'a session cannot summon another';
   if (!SUMMONERS.has(String(association))) {
     return `${user?.login ?? 'someone'} (${association ?? 'no association'}) has no say in the repository`;
   }

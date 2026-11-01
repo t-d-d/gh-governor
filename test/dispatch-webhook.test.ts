@@ -526,6 +526,22 @@ describe('routeEvent — a mention', () => {
     assert.notEqual(opened.fire?.kind, 'dispatch', 'an issue quoting a session\'s @claude summons nobody');
   });
 
+  test('a quote is read before code: a span opening a line, or a fence the quote cuts off, hides no @claude of the member\'s own', () => {
+    for (const body of [
+      '`retries` > 3 is too many, @claude please lower it.',
+      '> ```ts\n> const retries = 3;\n\n@claude please lower it.',
+    ]) {
+      const decision = route({ event: 'issue_comment', payload: commentEvent({}, { body }), owners: OWNERS });
+      assert.equal(decision.fire?.kind, 'dispatch', `${JSON.stringify(body)}: ${decision.reason}`);
+    }
+  });
+
+  test('a member\'s issue quoting a session\'s PR body, its link under the footer, is the member\'s: their own @claude summons', () => {
+    const quoted = '> Stalled on the retry budget.\n>\n> 🤖 Generated with [Claude Code](https://claude.com/claude-code)\n>\n> https://claude.ai/code/session_01GONEAAAA';
+    const opened = route({ event: 'issues', payload: issuesEvent('opened', { issue: { ...issuesEvent('opened').issue, body: `@claude please take this over.\n\nFrom the PR:\n\n${quoted}` } }), owners: OWNERS });
+    assert.equal(opened.fire?.kind, 'dispatch', opened.reason);
+  });
+
   test('a bot, a stranger and a first-time contributor summon nothing', () => {
     for (const [what, comment] of [
       ['a bot', { user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE' }],
