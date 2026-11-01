@@ -1,18 +1,19 @@
 /**
- * The starter kit's workflow calls the heartbeat checker pinned to a commit
- * of this repo. The inputs it passes have to match the checker as it is at
- * that commit, not as it is on the current tree: a change could rename an
- * input, update the starter's `with:` to match and leave the pin behind, and
- * a repo copying the starter would then call a checker that rejects it.
+ * The starter kit's two workflows each call a workflow of this repo pinned
+ * to a commit: the heartbeat checker and the config check. The inputs each
+ * passes have to match the called workflow as it is at that commit, not as
+ * it is on the current tree: a change could rename an input, update the
+ * starter's `with:` to match and leave the pin behind, and a repo copying the
+ * starter would then call a workflow that rejects it.
  *
  * The check reads the pinned commit from git history, so the gate's
  * checkout fetches the whole history (.github/workflows/gate.yml).
  *
- * test/starter-kit.test.ts still checks the same inputs against the checker
- * on the current tree, so the starter works once its pin moves. Between the
- * two, one pull request cannot rename an input. Add the new input beside the
- * old one, then move the pin and the starter's `with:` to it, then drop the
- * old one. Every repo already pinned keeps working at each step.
+ * test/starter-kit.test.ts still checks the same inputs against each called
+ * workflow on the current tree, so the starter works once its pin moves.
+ * Between the two, one pull request cannot rename an input. Add the new input
+ * beside the old one, then move the pin and the starter's `with:` to it, then
+ * drop the old one. Every repo already pinned keeps working at each step.
  */
 
 import { test, describe, before, after } from 'node:test';
@@ -106,19 +107,36 @@ describe('pinnedInputProblems', () => {
   });
 });
 
+// The one job in a starter workflow that calls `workflow` pinned to a commit of
+// this repo, and the problems pinnedInputProblems finds with it.
+function starterPinProblems(starter: string, workflow: string) {
+  const doc = yaml.load(readFileSync(join(REPO_ROOT, 'examples/starter/.github/workflows', starter), 'utf8')) as {
+    jobs: Record<string, { uses?: string, with?: Record<string, unknown> }>,
+  };
+  const jobs = Object.values(doc.jobs);
+  assert.equal(jobs.length, 1);
+  const path = `.github/workflows/${workflow}`;
+  const uses = String(jobs[0]?.uses);
+  const prefix = `t-d-d/gh-governor/${path}@`;
+  assert.ok(uses.startsWith(prefix), uses);
+  const sha = uses.slice(prefix.length);
+  assert.match(sha, /^[0-9a-f]{40}$/);
+  return pinnedInputProblems({ cwd: REPO_ROOT, main: 'origin/main', sha, path, passed: jobs[0]?.with ?? {} });
+}
+
 describe('the starter kit\'s heartbeat workflow at its pinned commit', () => {
   test('passes only inputs the checker at the pin takes, and the pin is on main', () => {
-    const workflow = yaml.load(readFileSync(join(REPO_ROOT, 'examples/starter/.github/workflows/heartbeat.yml'), 'utf8')) as {
-      jobs: Record<string, { uses?: string, with?: Record<string, unknown> }>,
-    };
-    const jobs = Object.values(workflow.jobs);
-    assert.equal(jobs.length, 1);
-    const m = /^t-d-d\/gh-governor\/(\.github\/workflows\/heartbeat-check\.yml)@([0-9a-f]{40})$/.exec(String(jobs[0]?.uses));
-    assert.ok(m !== null, String(jobs[0]?.uses));
-    const [, path, sha] = m;
-    assert.deepEqual(pinnedInputProblems({ cwd: REPO_ROOT, main: 'origin/main', sha: String(sha), path: String(path), passed: jobs[0]?.with ?? {} }), []);
+    assert.deepEqual(starterPinProblems('heartbeat.yml', 'heartbeat-check.yml'), []);
   });
+});
 
+describe('the starter kit\'s config check at its pinned commit', () => {
+  test('passes only inputs the check at the pin takes, and the pin is on main', () => {
+    assert.deepEqual(starterPinProblems('config-check.yml', 'config-check.yml'), []);
+  });
+});
+
+describe('the gate\'s checkout', () => {
   test('the gate checks out the whole history, so the pinned commit is there to read', () => {
     const gate = yaml.load(readFileSync(join(REPO_ROOT, '.github/workflows/gate.yml'), 'utf8')) as {
       jobs: { gate: { steps: Array<{ uses?: string, with?: Record<string, unknown> }> } },
