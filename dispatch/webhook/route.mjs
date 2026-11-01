@@ -520,8 +520,9 @@ const routeFor = ({ event, payload, appId, selectLabels }) => {
  *   every hook key's root (hook.mjs). `listedHooks`: the repo's item in the
  *   hook table (hook-table.mjs), the hooks its file listed when the task last
  *   read it. `countFire`: one more fire of a hook in the clock hour, taken
- *   only under its cap and once per signature (hook-table.mjs). `now`: the receiver's clock, which a
- *   hook's timestamp is held to and an hour's count is kept by.
+ *   only under its cap and once per signature (hook-table.mjs). `now`: the
+ *   receiver's clock, which a hook's timestamp is held to and an hour's
+ *   count is kept by.
  *
  * @typedef {{ path?: string | undefined, headers: Record<string, string | undefined>, body?: string | undefined, isBase64Encoded?: boolean | undefined }} Request
  *   `path`: the Function URL's raw path, a hook's (`/hooks/…`) or GitHub's.
