@@ -30,7 +30,7 @@
  */
 
 import { z } from 'zod';
-import { COUNTS, HOOK_NAME, HOOK_PER_HOUR_MAX, WORKFLOW_PATH } from './webhook/fire.mjs';
+import { COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
 
 /** Where the file lives, on the repo's default branch. */
@@ -59,11 +59,35 @@ export const GENERIC_SWITCHES = Object.freeze([
 export const RETIRED_SWITCHES = Object.freeze({ mergeHandoff: 'unblocked' });
 
 /**
+ * What each switch turns on, as the config file's JSON Schema describes it
+ * and the README's switch table says it (test/config-schema.test.ts).
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const SWITCH_DESCRIPTIONS = Object.freeze({
+  pickup: 'A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `pickup.sweepHours` sets.',
+  summons: 'A session per `@claude` remark, and a dispatch started by hand.',
+  prMessages: 'Messages into the session a PR names, or the local session holding its branch.',
+  subscribeMessages: 'Messages to sessions subscribed by a `governor:subscribe` line, and to an issue\'s filer. A filer hears a `deployed:` label on its issue only through a subscribe line for `deploys`.',
+  redScheduledRun: 'A fresh session on a scheduled run on the default branch that went red.',
+  unblocked: 'What a blocker\'s close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket\'s session, and a session to rewrite a not-ready ticket\'s spec from what merged. A file that still sets the older `mergeHandoff` reads as this.',
+  ciMessages: 'A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`.',
+  deployMessages: 'A shipping job, or a red deploy, tells the sessions of the merges it shipped.',
+  branchRunMessages: 'A run dispatched on a branch tells the session that wrote its commit.',
+  conflicts: 'A merge into the default branch tells each PR it left conflicted.',
+  deployedLabels: 'A shipping job labels the tickets it shipped `deployed: <target>`. Needs `deployMessages`.',
+  prReview: 'The PR review, run from the `review` section.',
+  heartbeat: 'Governor records each fire on the issue the `heartbeat` section names: a line for pickup and one per periodic. In the older shape with a `marker`, the hourly sweep stamps the issue\'s `last-run:` line instead.',
+  periodics: 'A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached.',
+  hooks: 'A session on a hook\'s prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook\'s last session is open goes into that session as a message.',
+});
+
+/**
  * The `features` section: every generic switch, and the retired ones read
  * as theirs.
  */
 const featuresSchema = z.strictObject({
-  ...Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, z.boolean().optional()])),
+  ...Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, z.boolean().optional().meta({ description: /** @type {string} */ (SWITCH_DESCRIPTIONS[name]) })])),
   ...Object.fromEntries(Object.entries(RETIRED_SWITCHES).map(([old, now]) => [old, z.boolean().optional().meta({ deprecated: true, description: `Retired: read as ${now}.` })])),
 }).transform((features) => {
   /** @type {Record<string, boolean | undefined>} */
@@ -98,7 +122,22 @@ const fillsFault = (kind, text) => {
 const repoPath = z.string().trim().min(1).refine((p) => !p.startsWith('/') && !p.split('/').includes('..') && !p.includes('\0'), 'a path in the repo, from its root');
 
 /** A prompt in a file: the file, read from the default branch beside the config file. */
-const promptFile = z.strictObject({ file: repoPath });
+const promptFile = z.strictObject({
+  file: repoPath.meta({ description: 'The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file\'s frontmatter is dropped.' }),
+});
+
+/**
+ * What a prompt for `kind` replaces, and the facts it may name, for the
+ * JSON Schema's description of its key.
+ *
+ * @param {string} kind
+ */
+const promptDescription = (kind) => {
+  const { replaces = kind, fills = [] } = PROMPTS[kind] ?? {};
+  const named = fills.map((n) => `{${n}}`);
+  const facts = named.length === 0 ? 'It may name no fact.' : `It may name ${named.length === 1 ? 'the fact' : 'the facts'} ${named.length === 1 ? named[0] : `${named.slice(0, -1).join(', ')} and ${named.at(-1)}`}, which governor writes in.`;
+  return `Replaces the default wording of ${replaces}. ${facts} The text, or { "file": "<path>" }.`;
+};
 
 /**
  * A prompt for `kind`: some text naming only the facts the kind has, or a
@@ -114,7 +153,7 @@ const prompt = (kind) => z.union([
     if (fault !== null) ctx.addIssue({ code: 'custom', message: fault });
   }),
   promptFile,
-]);
+]).meta({ description: promptDescription(kind) });
 
 // A glob a review list matches changed paths with (dispatch/checklist.mjs's `globMatches`).
 const glob = z.string().trim().min(1);
@@ -124,7 +163,10 @@ const glob = z.string().trim().min(1);
  * waive it. Under `require`, a ticket carries one of `labels`; under
  * `forbid`, none; either unless it carries one of `unless`.
  */
-const ticketRule = z.strictObject({ labels: z.array(label).min(1), unless: z.array(label).default([]) });
+const ticketRule = z.strictObject({
+  labels: z.array(label).min(1).meta({ description: 'The labels the rule is about.' }),
+  unless: z.array(label).default([]).meta({ description: 'Labels that waive the rule for a ticket carrying one of them. Default none.' }),
+});
 
 /**
  * The PR review's settings: `checklist`, the model's prompt;
@@ -139,13 +181,20 @@ const ticketRule = z.strictObject({ labels: z.array(label).min(1), unless: z.arr
  * they cannot express is the repo's CI, read as a required status check.
  */
 const reviewSchema = z.strictObject({
-  checklist: z.union([z.string().trim().min(1), promptFile]),
-  humanOnly: z.array(z.strictObject({ glob, reason: z.string().trim().min(1), unless: z.array(label).default([]) })).default([]),
-  tickets: z.strictObject({ require: z.array(ticketRule).default([]), forbid: z.array(ticketRule).default([]) }).default({ require: [], forbid: [] }),
-  quote: z.array(z.string().trim().regex(/^!?[^!\s]/, 'a glob, or `!` and a glob')).default([]),
-  decides: z.array(label).default([]),
-  dependabot: z.array(glob).default([]),
-  merge: z.boolean().default(true),
+  checklist: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'Required. What is appended to the review model\'s system prompt: the text, or { "file": "<path>" }.' }),
+  humanOnly: z.array(z.strictObject({
+    glob: glob.meta({ description: 'The paths a PR may not change without a person, as a glob.' }),
+    reason: z.string().trim().min(1).meta({ description: 'Why a person must see a change to these paths, which the review says.' }),
+    unless: z.array(label).default([]).meta({ description: 'Labels that waive the wait when every ticket the PR closes carries one. Default none.' }),
+  })).default([]).meta({ description: 'Paths a PR may not change without a person: a PR changing a matching path waits for one, unless every ticket it closes carries one of the entry\'s `unless` labels. Default none.' }),
+  tickets: z.strictObject({
+    require: z.array(ticketRule).default([]).meta({ description: 'Rules each ticket the PR closes meets by carrying one of the rule\'s labels, unless it carries one of its `unless` labels. Default none.' }),
+    forbid: z.array(ticketRule).default([]).meta({ description: 'Rules each ticket the PR closes meets by carrying none of the rule\'s labels, unless it carries one of its `unless` labels. Default none.' }),
+  }).default({ require: [], forbid: [] }).meta({ description: 'The label rules every ticket the PR closes must meet: `require` and `forbid`.' }),
+  quote: z.array(z.string().trim().regex(/^!?[^!\s]/, 'a glob, or `!` and a glob')).default([]).meta({ description: 'Globs of changed files the review model reads whole. A `!` entry takes a path back out. Default none.' }),
+  decides: z.array(label).default([]).meta({ description: 'Labels of a ticket that may decide a quoted file\'s change: its body\'s first line, `Constraint now lives at <path>, …`, names the files it decides, which then pass unread. Default none.' }),
+  dependabot: z.array(glob).default([]).meta({ description: 'Globs of the manifests a Dependabot PR may change and pass with no model. Default none.' }),
+  merge: z.boolean().default(true).meta({ description: 'Whether a pass merges the PR. With false, a pass approves and the owner merges. Default true.' }),
 });
 
 // A deploy target, as a shipping job's name ends `deployed: <target>`.
@@ -158,9 +207,9 @@ const target = z.string().trim().min(1).max(50 - 'deployed: '.length).regex(/^[^
  * target's deploy moves, which its messages name.
  */
 const workflowsSchema = z.strictObject({
-  ci: z.string().regex(WORKFLOW_PATH, 'a workflow file under .github/workflows/').optional(),
-  triage: z.array(target).default([]),
-  tags: z.record(target, z.string().trim().min(1).regex(/^[\w./-]+$/, 'a tag name')).default({}),
+  ci: z.string().regex(WORKFLOW_PATH, 'a workflow file under .github/workflows/').optional().meta({ description: 'The CI workflow\'s file, under `.github/workflows/`. A red run of it tells the sessions of the merges it may blame. Without it, no run is CI.' }),
+  triage: z.array(target).default([]).meta({ description: 'The deploy targets whose failure starts one fresh session, rather than messages to the sessions of the merges it shipped. Default none.' }),
+  tags: z.record(target, z.string().trim().min(1).regex(/^[\w./-]+$/, 'a tag name')).default({}).meta({ description: 'The tag each deploy target\'s deploy moves, keyed by target, which deploy messages name. Default none.' }),
 }).default({ triage: [], tags: {} });
 
 /** A repo's `workflows` when its file names none: no CI, no triage, no tags. @type {Readonly<Workflows>} */
@@ -179,8 +228,8 @@ export { isCi, switchOf } from './webhook/switches.mjs';
  * overwrite someone's ticket.
  */
 const heartbeatSchema = z.strictObject({
-  issue: z.number().int().positive(),
-  marker: z.string().trim().regex(/^<!--[^\n]*-->$/, 'an HTML comment on one line, `<!-- … -->`').optional(),
+  issue: z.number().int().positive().meta({ description: 'The number of the issue governor records its fires on. Its body must already carry the marker, or governor writes nothing into it.' }),
+  marker: z.string().trim().regex(/^<!--[^\n]*-->$/, 'an HTML comment on one line, `<!-- … -->`').optional().meta({ description: 'The older shape: the repo\'s own marker, an HTML comment on one line, under which the hourly sweep keeps one `last-run:` line. Without it, governor keeps a line for pickup and one per periodic under `<!-- governor:heartbeat -->`.' }),
 });
 
 /**
@@ -189,7 +238,7 @@ const heartbeatSchema = z.strictObject({
  * tickets, one when unset.
  */
 const pickupSchema = z.strictObject({
-  sweepHours: z.number().int().min(1).optional(),
+  sweepHours: z.number().int().min(1).optional().meta({ description: 'How many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one. Default one, which sweeps at every fire.' }),
 });
 
 /**
@@ -207,18 +256,27 @@ const pickupSchema = z.strictObject({
 /** A claude.ai connector's name as a routine's `mcp_connections` takes it. */
 export const CONNECTOR_NAME = /^[A-Za-z0-9_-]+$/;
 
+/** What each of a periodic's counts counts. @type {Readonly<Record<string, string>>} */
+const COUNT_DESCRIPTIONS = Object.freeze({
+  merges: 'Pull requests merged into the default branch',
+  issuesOpened: 'Issues opened',
+  issuesClosed: 'Issues closed',
+});
+
 const periodicSchema = z.strictObject({
-  name: z.string().trim().min(1).max(100).regex(/^[^\n]*$/, 'a name is one line'),
-  prompt: z.union([z.string().trim().min(1), promptFile]),
-  days: z.number().int().min(1),
-  counts: z.strictObject(Object.fromEntries(COUNTS.map((kind) => [kind, z.number().int().min(1).optional()])))
+  name: z.string().trim().min(1).max(100).regex(/^[^\n]*$/, 'a name is one line').meta({ description: 'The periodic\'s name: one line, unique in the file. Its session is named after it, and governor keys its record by it.' }),
+  prompt: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'What the periodic\'s session runs: the text, or { "file": "<path>" }. Governor adds a line under it giving the last fire\'s time, and lists what each count counted since then.' }),
+  days: z.number().int().min(1).meta({ description: 'Required. The day limit, in whole days, at least one: the periodic is due on the sweep nearest that many days after its last fire.' }),
+  counts: z.strictObject(Object.fromEntries(COUNTS.map((kind) => [kind, z.number().int().min(1).optional().meta({ description: `${COUNT_DESCRIPTIONS[kind]} since the last fire that bring the periodic due, a whole number of at least one.` })])))
     .refine((c) => Object.values(c).some((n) => n !== undefined), 'counts names at least one of merges, issuesOpened and issuesClosed')
-    .optional(),
-  gapHours: z.number().int().min(1).optional(),
+    .optional()
+    .meta({ description: 'Counts that bring the periodic due before its day limit, once any reaches its number since the last fire: `merges`, `issuesOpened` and `issuesClosed`. At its day limit, a periodic whose counts counted nothing starts no session.' }),
+  gapHours: z.number().int().min(1).optional().meta({ description: 'The fewest whole hours between two of the periodic\'s runs, at least one. A count reached inside the gap fires on the first event or sweep after it.' }),
   connectors: z.array(z.string().regex(CONNECTOR_NAME, 'a connector name is letters, digits, hyphens and underscores'))
     .min(1, 'connectors names at least one connector, or is left out')
     .refine((names) => new Set(names).size === names.length, 'connectors names each connector once')
-    .optional(),
+    .optional()
+    .meta({ description: 'The claude.ai connectors the periodic\'s session needs, each named once by its name in the account\'s connector list. A periodic naming any starts as a run of a routine governor keeps for it, with those connectors attached and no others.' }),
 });
 
 /**
@@ -232,43 +290,50 @@ const periodicSchema = z.strictObject({
  * (`HOOK_PER_HOUR_MAX`).
  */
 const hookSchema = z.strictObject({
-  name: z.string().regex(HOOK_NAME, 'lower-case letters, digits and hyphens, safe in a URL path'),
-  prompt: z.union([z.string().trim().min(1), promptFile]),
+  name: z.string().regex(HOOK_NAME, 'lower-case letters, digits and hyphens, safe in a URL path').meta({ description: 'The hook\'s name: lower-case letters, digits and hyphens, unique in the file. It ends the hook\'s URL, and its session is named after it.' }),
+  prompt: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'What the hook\'s session runs: the text, or { "file": "<path>" }. Governor adds lines under it saying which hook fired and when, and quoting the caller\'s text as the caller\'s data.' }),
   // At most nine digits, as a request's `v=` and scripts/hook-key.mjs take:
   // a larger version could never be signed.
-  keyVersion: z.number().int().positive().max(999_999_999),
+  keyVersion: z.number().int().positive().max(999_999_999).meta({ description: 'Required. The version of the hook\'s key a request must be signed with, a positive whole number of at most nine digits. Raising it revokes the key before it. It is not a secret.' }),
   // An hour's count item holds each signature it counted: a larger cap
   // could outgrow the item.
-  perHour: z.number().int().positive().max(HOOK_PER_HOUR_MAX).optional(),
+  perHour: z.number().int().positive().max(HOOK_PER_HOUR_MAX).optional().meta({ description: `The most fires governor queues for the hook in one clock hour, a positive whole number up to ${HOOK_PER_HOUR_MAX}. A fire past it gets 429. Default ${HOOK_PER_HOUR}.` }),
 });
 
 /**
  * The file's schema. It is the same in every repo: no switch is any one
- * repo's.
+ * repo's. Each key's description is what the exported JSON Schema shows on
+ * hover, and the README's key table says the same
+ * (test/config-schema.test.ts). `$schema` names that JSON Schema for an
+ * editor, and {@link readConfig} drops it unread; any other unknown key, and
+ * `$schema` below the top, is a fault.
  */
 export const configSchema = z.strictObject({
-  environment: z.string().trim().min(1, 'a cloud environment name, or its ID (env_…)'),
+  $schema: z.string().optional().meta({ description: 'The URL of this file\'s JSON Schema, for an editor to describe and check each key. Governor ignores it. Use the schema at the commit the config check is pinned to, and bump both together.' }),
+  environment: z.string().trim().min(1, 'a cloud environment name, or its ID (env_…)').meta({ description: 'The claude.ai cloud environment the repo\'s sessions start in: its name as `/remote-env` lists it, or its ID. A public repo should use the name.' }),
   labels: z.strictObject({
-    ready: z.array(label).min(1),
-    claim: label,
-    claimRemoves: z.array(label).default([]),
-    exclude: z.array(label).default(['type: prd']),
+    ready: z.array(label).min(1).meta({ description: 'Every label a ready ticket carries.' }),
+    claim: label.meta({ description: 'The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up.' }),
+    claimRemoves: z.array(label).default([]).meta({ description: 'The ready labels the claim takes off, and a failed launch puts back. Default none.' }),
+    exclude: z.array(label).default(['type: prd']).meta({ description: 'Labels that keep a ticket out: a ticket carrying any of them is never picked up, and a blocker\'s close starts no session for it. It cannot name a ready label. Default `["type: prd"]`. A hold label, one that marks a ticket as needing a person or staying not ready (`mode: human`, say), belongs here, or a blocker\'s close starts a session to rewrite that ticket\'s spec.' }),
   }).refine((l) => !l.ready.includes(l.claim), 'the claim label cannot be a ready label')
     .refine((l) => l.claimRemoves.every((r) => l.ready.includes(r)), 'claimRemoves names only ready labels')
     // A ready ticket carries every ready label, so excluding one would
     // keep every ticket out.
-    .refine((l) => !l.exclude.some((e) => l.ready.includes(e)), 'exclude cannot name a ready label'),
-  features: featuresSchema,
+    .refine((l) => !l.exclude.some((e) => l.ready.includes(e)), 'exclude cannot name a ready label')
+    .meta({ description: 'The labels governor reads and writes on tickets: `ready`, `claim`, `claimRemoves` and `exclude`.' }),
+  features: featuresSchema.meta({ description: 'The switches that turn governor\'s features on, each `true` or `false`. A switch left out is off.' }),
   // A retired prompt is still valid, and dropped unread: governor sends
   // no message of its kind, so its file is never read.
   prompts: z.strictObject({
     ...Object.fromEntries(Object.keys(PROMPTS).map((kind) => [kind, prompt(kind).optional()])),
     ...Object.fromEntries(RETIRED_PROMPTS.map((kind) => [kind, z.union([z.string(), promptFile]).optional().meta({ deprecated: true, description: 'Retired: governor sends no message of this kind, so it is never read.' })])),
-  }).transform((prompts) => Object.fromEntries(Object.entries(prompts).filter(([kind]) => !RETIRED_PROMPTS.includes(kind)))).default({}),
-  workflows: workflowsSchema,
-  review: reviewSchema.optional(),
-  heartbeat: heartbeatSchema.optional(),
-  pickup: pickupSchema.optional(),
+  }).transform((prompts) => Object.fromEntries(Object.entries(prompts).filter(([kind]) => !RETIRED_PROMPTS.includes(kind)))).default({})
+    .meta({ description: 'Replacement wording for the instruction in each kind of message, keyed by kind.' }),
+  workflows: workflowsSchema.meta({ description: 'What the repo\'s workflows are to governor: `ci`, `triage` and `tags`.' }),
+  review: reviewSchema.optional().meta({ description: 'The PR review\'s settings: its checklist, and the lists it checks a PR against. Needed when `prReview` is on.' }),
+  heartbeat: heartbeatSchema.optional().meta({ description: '`{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo\'s own marker, which the hourly sweep updates. Needed when `heartbeat` is on.' }),
+  pickup: pickupSchema.optional().meta({ description: '`{ "sweepHours": <number> }`: how many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one. Default one, which sweeps at every fire.' }),
   periodics: z.array(periodicSchema).default([])
     .superRefine((list, ctx) => {
       const seen = new Set();
@@ -276,7 +341,8 @@ export const configSchema = z.strictObject({
         if (seen.has(name)) ctx.addIssue({ code: 'custom', message: `two periodics are named "${name}": a name is unique in the file` });
         seen.add(name);
       }
-    }),
+    })
+    .meta({ description: 'The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on.' }),
   hooks: z.array(hookSchema).default([])
     .superRefine((list, ctx) => {
       const seen = new Set();
@@ -284,7 +350,8 @@ export const configSchema = z.strictObject({
         if (seen.has(name)) ctx.addIssue({ code: 'custom', message: `two hooks are named "${name}": a name is unique in the file` });
         seen.add(name);
       }
-    }),
+    })
+    .meta({ description: 'The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on.' }),
 }).refine((c) => c.features.prReview !== true || c.review !== undefined, { message: 'prReview is on, so the file needs a review section with its checklist', path: ['review'] })
   .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue', path: ['heartbeat'] })
   .refine((c) => c.features.periodics !== true || c.periodics.length > 0, { message: 'periodics is on, so the file lists at least one periodic', path: ['periodics'] })
@@ -347,7 +414,9 @@ export const readConfig = (text) => {
   if (!result.success) {
     return { ok: false, fault: result.error.issues.map((i) => `${i.path.join('.') || '(file)'}: ${i.message}`).join('; ') };
   }
-  return { ok: true, config: /** @type {FileConfig} */ (result.data) };
+  // `$schema` is for the editor, and governor does nothing with it.
+  const { $schema: _editor, ...config } = result.data;
+  return { ok: true, config: /** @type {FileConfig} */ (config) };
 };
 
 /**

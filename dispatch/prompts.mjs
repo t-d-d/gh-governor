@@ -21,8 +21,10 @@ import { SIGN_OFF } from '../scripts/lib/session-signoff.mjs';
 const LOGS = "Read the failed jobs' logs and find the cause.";
 
 /**
- * @typedef {{ text: string, fills: readonly string[] }} Kind
+ * @typedef {{ text: string, fills: readonly string[], replaces: string }} Kind
  *   `text`: the default. `fills`: the facts a prompt may name, as `{name}`.
+ *   `replaces`: what a repo's prompt of the kind replaces, which the config
+ *   file's JSON Schema describes the key with.
  */
 
 /** Every message kind, its default and the facts it may name. @type {Readonly<Record<string, Kind>>} */
@@ -35,17 +37,20 @@ export const PROMPTS = Object.freeze({
       'Unattended session: push and raise the PR without asking, `Closes #{issue}`.',
     ].join('\n'),
     fills: ['issue', 'repo', 'claim'],
+    replaces: "a pickup session's opening prompt, below `Pickup #N 'title'`",
   },
   // The standing line's ask, when nothing else names the session (dispatch/deliveries.mjs).
   signOff: {
     text: `Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make \`${SIGN_OFF}\` the last line of your reply, and the dispatcher archives the session.`,
     fills: [],
+    replaces: "the standing line's ask to sign off",
   },
   // A blocker's close, in the blocked ticket's own repo (dispatch/unblocked.mjs).
   // A ready ticket's pickup prompt, after the facts of the close.
   unblockedReady: {
     text: "Before you build, check the spec against what merged, and fix the ticket's body where the merge changed what it builds on.",
     fills: [],
+    replaces: "a ready ticket's ask, below its pickup prompt and the facts of its blocker's close",
   },
   // A ticket not ready to pick up: a fresh session with no claim.
   unblockedSpec: {
@@ -54,64 +59,78 @@ export const PROMPTS = Object.freeze({
       'Otherwise label it {ready} and stop, or build it: add `{claim}` to it first, then take it through to a reviewable PR, `Closes #{issue}`.',
     ].join('\n'),
     fills: ['issue', 'ready', 'claim'],
+    replaces: "a not-ready ticket's spec session's ask, below the facts of its blocker's close",
   },
   // A claimed ticket's session, told its blocker closed.
   unblockedClaimed: {
     text: 'Check your work on #{issue} against what merged, and change it where the merge calls for that.',
     fills: ['issue'],
+    replaces: "a claimed ticket's session's ask, below the facts of its blocker's close",
   },
   // A blocker closed as not planned: a comment on the ticket, and its session's message if it is claimed.
   unblockedNotPlanned: {
     text: 'Its work will not land as planned. Decide whether this ticket still stands, and what it needs instead.',
     fills: [],
+    replaces: "the ask in the comment, and message, when a ticket's blocker closed as not planned",
   },
   // The red scheduled run's fresh session (dispatch/webhook/route.mjs gives the facts).
   redScheduledRun: {
     text: `${LOGS} First search the open issues and PRs for it: if one already covers this failure, comment this run on it and stop. If the fix is in the repo, push it on a new branch from the default branch with a new PR. If it is not (a lapsed credential, a third-party outage), raise an issue saying what failed and what it needs.`,
     fills: [],
+    replaces: "a red scheduled run's session prompt, below the run",
   },
   // The CI and deploy notices and triage prompts (dispatch/workflow.mjs).
   ciBreaker: {
     text: `${LOGS} If the cause is in your change, push the fix on a new branch from the default branch with a new PR: PR #{pr} is merged and its branch is done. If it is not, comment on PR #{pr} with what you found instead.`,
     fills: ['pr'],
+    replaces: "a red CI run's ask to its one suspect's session",
   },
   ciTriage: {
     text: `${LOGS} Work out which merge caused it, and push the fix on a new branch from the default branch with a new PR naming that PR. Then comment on the culprit PR with what broke and a link to your fix.`,
     fills: [],
+    replaces: "a red CI run's fresh session over several suspects",
   },
   ciBumpTriage: {
     text: `${LOGS} If the bump caused it, push the fix on a new branch from the default branch with a new PR naming PR #{pr}: the change the new version needs. Where none is in reach, revert the bump in that PR instead and raise an issue naming the bump and what broke, since Dependabot raises it again. Then comment on PR #{pr} with what broke and a link to your fix. If the bump did not cause it, comment on PR #{pr} with what you found instead.`,
     fills: ['pr'],
+    replaces: "a red CI run's fresh session over a Dependabot bump",
   },
   prodTriage: {
     text: `${LOGS} If a merge caused it, push the fix on a new branch from the default branch with a new PR naming that PR, and comment on it with what broke and a link to your fix. If none did (a prod-only secret, store or quota), raise an issue saying what broke and what the operator must do.`,
     fills: [],
+    replaces: "a failed `triage` target's fresh session",
   },
   deployGreen: {
     text: 'Run any check your PR promised for the {target} deploy, and report the result on PR #{pr}. If it promised none, nothing is owed.',
     fills: ['pr', 'target'],
+    replaces: "a green deploy's ask, for one PR",
   },
   deployGreenMany: {
     text: 'Run any check their PRs promised for the {target} deploy, and report the results in one comment on PR #{pr}, the newest. If none promised any, nothing is owed.',
     fills: ['pr', 'target'],
+    replaces: "a green deploy's ask, for several PRs",
   },
   deployRed: {
     text: `${LOGS} If your change caused it, push the fix on a new branch from the default branch with a new PR. If it did not, nothing is owed; say what you found on PR #{pr}.`,
     fills: ['pr'],
+    replaces: "a red deploy's ask, for one PR",
   },
   deployRedMany: {
     text: `${LOGS} If one of your changes caused it, push the fix on a new branch from the default branch with a new PR. If none did, nothing is owed; say what you found in one comment on PR #{pr}, the newest.`,
     fills: ['pr'],
+    replaces: "a red deploy's ask, for several PRs",
   },
   // What a subscriber to a PR it did not write is asked to do with a CI or deploy notice.
   subscribed: {
     text: 'Act only on what is yours: a check you promised, a change of yours this bears on.',
     fills: [],
+    replaces: "a CI or deploy notice's ask to a subscriber",
   },
   // A PR a merge left conflicted, to its session or the fallback's (dispatch/conflicts.mjs).
   conflicts: {
     text: 'Merge {base} into your branch, resolve the conflicts, run the checks and push.',
     fills: ['base'],
+    replaces: "a conflicted PR's ask, to its session or the fallback's",
   },
 });
 

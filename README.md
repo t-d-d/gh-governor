@@ -72,7 +72,7 @@ Governor writes pickup's line after its next sweep. A periodic's line appears wh
 
 ### The schema
 
-The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.mjs). An unknown key anywhere is a fault.
+The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.mjs). An unknown key anywhere is a fault, except a top-level `$schema`, which names the JSON Schema for an editor ([Editing the file with its JSON Schema](#editing-the-file-with-its-json-schema)) and which governor ignores.
 
 | Key | Required | What it holds |
 |---|---|---|
@@ -81,14 +81,14 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.
 | `labels.claim` | yes | The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up. |
 | `labels.claimRemoves` | no | The ready labels the claim takes off, and a failed launch puts back. Default none. |
 | `labels.exclude` | no | Labels that keep a ticket out: a ticket carrying any of them is never picked up, and a blocker's close starts no session for it. It cannot name a ready label. Default `["type: prd"]`. A hold label, one that marks a ticket as needing a person or staying not ready (`mode: human`, say), belongs here, or a blocker's close starts a session to rewrite that ticket's spec. |
-| `features` | yes | The switches below, each `true` or `false`. A switch left out is off. |
+| `features` | yes | The switches that turn governor's features on, each `true` or `false`. A switch left out is off. |
 | `workflows` | no | What the repo's workflows are to governor: `ci`, `triage` and `tags`. |
-| `review` | when `prReview` is on | The PR review's settings. |
-| `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the hourly sweep updates. |
+| `review` | when `prReview` is on | The PR review's settings: its checklist, and the lists it checks a PR against. Needed when `prReview` is on. |
+| `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the hourly sweep updates. Needed when `heartbeat` is on. |
 | `pickup` | no | `{ "sweepHours": <number> }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default one, which sweeps at every fire. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
-| `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the switch is on. |
-| `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request ([Hooks](#hooks)), each with an optional `perHour` cap on fires. At least one when the switch is on. |
+| `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on. |
+| `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on. |
 
 The switches in `features`:
 
@@ -106,9 +106,9 @@ The switches in `features`:
 | `conflicts` | A merge into the default branch tells each PR it left conflicted. |
 | `deployedLabels` | A shipping job labels the tickets it shipped `deployed: <target>`. Needs `deployMessages`. |
 | `prReview` | The PR review, run from the `review` section. |
-| `heartbeat` | Governor records each fire on the issue `heartbeat` names: a line for pickup and one per periodic. In the older shape with a `marker`, the hourly sweep stamps the issue's `last-run:` line instead. |
+| `heartbeat` | Governor records each fire on the issue the `heartbeat` section names: a line for pickup and one per periodic. In the older shape with a `marker`, the hourly sweep stamps the issue's `last-run:` line instead. |
 | `periodics` | A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached. |
-| `hooks` | A session on a hook's prompt when a signed request fires one of the `hooks` listed. A fire while the hook's last session is open goes into that session as a message. |
+| `hooks` | A session on a hook's prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook's last session is open goes into that session as a message. |
 
 `workflows`:
 
@@ -205,20 +205,18 @@ And the lines that match it in `dispatch.json`:
 
 ### Editing the file with its JSON Schema
 
-[schema/dispatch.schema.json](schema/dispatch.schema.json) is `configSchema` exported as a JSON Schema. An editor that reads it completes key names as the file is written, and flags an unknown key. To use it in VS Code, a repo maps the file to the schema at a pinned commit of this repo in its `.vscode/settings.json`:
+[schema/dispatch.schema.json](schema/dispatch.schema.json) is `configSchema` exported as a JSON Schema. It describes every key: what governor does with it, and for a switch, what the switch turns on. An editor that reads it shows each key's description on hover and in completion, keys the file leaves out included, and flags an unknown key. A repo names the schema in the file's own `$schema` key, at a pinned commit of this repo, so it needs no editor settings, and anyone reading the file, an AI included, finds the descriptions from the file itself:
 
 ```json
 {
-  "json.schemas": [
-    {
-      "fileMatch": ["/.github/dispatch.json"],
-      "url": "https://raw.githubusercontent.com/t-d-d/gh-governor/<commit>/schema/dispatch.schema.json"
-    }
-  ]
+  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/<commit>/schema/dispatch.schema.json",
+  "environment": "my-env"
 }
 ```
 
-Use the commit the config check is pinned to, so the editor and the check read the same schema. A pin older than the schema has no such file, so the editor reports it cannot load the schema; bump both pins together. Do not add a `$schema` key to `dispatch.json` instead: the schema refuses any key it does not know, that one included, and so does governor.
+Use the commit the config check is pinned to, so the editor and the check read the same schema, and bump both together. Governor ignores `$schema`. It refuses the key anywhere but the top, as it does any other unknown key.
+
+Add `$schema` only with a config-check pin at or after the commit that taught governor the key. Before that commit, governor and the config check both refuse a file that sets it, and governor skips the repo with `governor-config-invalid`. A pin older than the schema file has no such file either, so the editor reports it cannot load the schema.
 
 The JSON Schema covers the file's shape only. It leaves out the rules across keys, such as a claim label that is also a ready label, and the checks on one value that are not a shape, such as a prompt naming a fact its kind lacks or a prompt file's path leaving the repo. It cannot read prompt files either, so a file it accepts can still be refused. [The config check](#the-config-check) is the full check. After a change to `configSchema`, run `node scripts/export-config-schema.mjs` and commit the result; the gate fails while the committed file differs from a fresh export.
 

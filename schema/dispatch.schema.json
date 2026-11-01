@@ -4,9 +4,14 @@
   "description": "The shape of governor's config file, .github/dispatch.json, for an editor to complete and check keys while the file is written. It covers the shape only: it leaves out the rules across keys and the checks on a prompt's text or a prompt file's path, and cannot read prompt files, so a file it accepts can still be refused. The config check, the reusable workflow .github/workflows/config-check.yml in t-d-d/gh-governor, is the full check.",
   "type": "object",
   "properties": {
+    "$schema": {
+      "description": "The URL of this file's JSON Schema, for an editor to describe and check each key. Governor ignores it. Use the schema at the commit the config check is pinned to, and bump both together.",
+      "type": "string"
+    },
     "environment": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "description": "The claude.ai cloud environment the repo's sessions start in: its name as `/remote-env` lists it, or its ID. A public repo should use the name."
     },
     "labels": {
       "type": "object",
@@ -19,16 +24,19 @@
             "minLength": 1,
             "maxLength": 50,
             "pattern": "^[^,]*$"
-          }
+          },
+          "description": "Every label a ready ticket carries."
         },
         "claim": {
           "type": "string",
           "minLength": 1,
           "maxLength": 50,
-          "pattern": "^[^,]*$"
+          "pattern": "^[^,]*$",
+          "description": "The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up."
         },
         "claimRemoves": {
           "default": [],
+          "description": "The ready labels the claim takes off, and a failed launch puts back. Default none.",
           "type": "array",
           "items": {
             "type": "string",
@@ -41,6 +49,7 @@
           "default": [
             "type: prd"
           ],
+          "description": "Labels that keep a ticket out: a ticket carrying any of them is never picked up, and a blocker's close starts no session for it. It cannot name a ready label. Default `[\"type: prd\"]`. A hold label, one that marks a ticket as needing a person or staying not ready (`mode: human`, say), belongs here, or a blocker's close starts a session to rewrite that ticket's spec.",
           "type": "array",
           "items": {
             "type": "string",
@@ -54,54 +63,71 @@
         "ready",
         "claim"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "The labels governor reads and writes on tickets: `ready`, `claim`, `claimRemoves` and `exclude`."
     },
     "features": {
+      "description": "The switches that turn governor's features on, each `true` or `false`. A switch left out is off.",
       "type": "object",
       "properties": {
         "pickup": {
+          "description": "A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `pickup.sweepHours` sets.",
           "type": "boolean"
         },
         "summons": {
+          "description": "A session per `@claude` remark, and a dispatch started by hand.",
           "type": "boolean"
         },
         "prMessages": {
+          "description": "Messages into the session a PR names, or the local session holding its branch.",
           "type": "boolean"
         },
         "subscribeMessages": {
+          "description": "Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. A filer hears a `deployed:` label on its issue only through a subscribe line for `deploys`.",
           "type": "boolean"
         },
         "redScheduledRun": {
+          "description": "A fresh session on a scheduled run on the default branch that went red.",
           "type": "boolean"
         },
         "unblocked": {
+          "description": "What a blocker's close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket's session, and a session to rewrite a not-ready ticket's spec from what merged. A file that still sets the older `mergeHandoff` reads as this.",
           "type": "boolean"
         },
         "ciMessages": {
+          "description": "A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`.",
           "type": "boolean"
         },
         "deployMessages": {
+          "description": "A shipping job, or a red deploy, tells the sessions of the merges it shipped.",
           "type": "boolean"
         },
         "branchRunMessages": {
+          "description": "A run dispatched on a branch tells the session that wrote its commit.",
           "type": "boolean"
         },
         "conflicts": {
+          "description": "A merge into the default branch tells each PR it left conflicted.",
           "type": "boolean"
         },
         "deployedLabels": {
+          "description": "A shipping job labels the tickets it shipped `deployed: <target>`. Needs `deployMessages`.",
           "type": "boolean"
         },
         "prReview": {
+          "description": "The PR review, run from the `review` section.",
           "type": "boolean"
         },
         "heartbeat": {
+          "description": "Governor records each fire on the issue the `heartbeat` section names: a line for pickup and one per periodic. In the older shape with a `marker`, the hourly sweep stamps the issue's `last-run:` line instead.",
           "type": "boolean"
         },
         "periodics": {
+          "description": "A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached.",
           "type": "boolean"
         },
         "hooks": {
+          "description": "A session on a hook's prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook's last session is open goes into that session as a message.",
           "type": "boolean"
         },
         "mergeHandoff": {
@@ -113,6 +139,7 @@
       "additionalProperties": false
     },
     "prompts": {
+      "description": "Replacement wording for the instruction in each kind of message, keyed by kind.",
       "type": "object",
       "properties": {
         "pickup": {
@@ -126,7 +153,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -134,7 +162,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a pickup session's opening prompt, below `Pickup #N 'title'`. It may name the facts {issue}, {repo} and {claim}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "signOff": {
           "anyOf": [
@@ -147,7 +176,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -155,7 +185,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of the standing line's ask to sign off. It may name no fact. The text, or { \"file\": \"<path>\" }."
         },
         "unblockedReady": {
           "anyOf": [
@@ -168,7 +199,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -176,7 +208,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a ready ticket's ask, below its pickup prompt and the facts of its blocker's close. It may name no fact. The text, or { \"file\": \"<path>\" }."
         },
         "unblockedSpec": {
           "anyOf": [
@@ -189,7 +222,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -197,7 +231,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its blocker's close. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "unblockedClaimed": {
           "anyOf": [
@@ -210,7 +245,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -218,7 +254,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a claimed ticket's session's ask, below the facts of its blocker's close. It may name the fact {issue}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "unblockedNotPlanned": {
           "anyOf": [
@@ -231,7 +268,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -239,7 +277,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of the ask in the comment, and message, when a ticket's blocker closed as not planned. It may name no fact. The text, or { \"file\": \"<path>\" }."
         },
         "redScheduledRun": {
           "anyOf": [
@@ -252,7 +291,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -260,7 +300,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a red scheduled run's session prompt, below the run. It may name no fact. The text, or { \"file\": \"<path>\" }."
         },
         "ciBreaker": {
           "anyOf": [
@@ -273,7 +314,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -281,7 +323,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a red CI run's ask to its one suspect's session. It may name the fact {pr}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "ciTriage": {
           "anyOf": [
@@ -294,7 +337,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -302,7 +346,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a red CI run's fresh session over several suspects. It may name no fact. The text, or { \"file\": \"<path>\" }."
         },
         "ciBumpTriage": {
           "anyOf": [
@@ -315,7 +360,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -323,7 +369,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a red CI run's fresh session over a Dependabot bump. It may name the fact {pr}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "prodTriage": {
           "anyOf": [
@@ -336,7 +383,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -344,7 +392,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a failed `triage` target's fresh session. It may name no fact. The text, or { \"file\": \"<path>\" }."
         },
         "deployGreen": {
           "anyOf": [
@@ -357,7 +406,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -365,7 +415,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a green deploy's ask, for one PR. It may name the facts {pr} and {target}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "deployGreenMany": {
           "anyOf": [
@@ -378,7 +429,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -386,7 +438,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a green deploy's ask, for several PRs. It may name the facts {pr} and {target}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "deployRed": {
           "anyOf": [
@@ -399,7 +452,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -407,7 +461,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a red deploy's ask, for one PR. It may name the fact {pr}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "deployRedMany": {
           "anyOf": [
@@ -420,7 +475,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -428,7 +484,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a red deploy's ask, for several PRs. It may name the fact {pr}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "subscribed": {
           "anyOf": [
@@ -441,7 +498,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -449,7 +507,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a CI or deploy notice's ask to a subscriber. It may name no fact. The text, or { \"file\": \"<path>\" }."
         },
         "conflicts": {
           "anyOf": [
@@ -462,7 +521,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -470,7 +530,8 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Replaces the default wording of a conflicted PR's ask, to its session or the fallback's. It may name the fact {base}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "mergeHandoff": {
           "deprecated": true,
@@ -484,7 +545,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -506,7 +568,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -524,14 +587,17 @@
         "triage": [],
         "tags": {}
       },
+      "description": "What the repo's workflows are to governor: `ci`, `triage` and `tags`.",
       "type": "object",
       "properties": {
         "ci": {
+          "description": "The CI workflow's file, under `.github/workflows/`. A red run of it tells the sessions of the merges it may blame. Without it, no run is CI.",
           "type": "string",
           "pattern": "^\\.github\\/workflows\\/[\\w.-]+\\.ya?ml$"
         },
         "triage": {
           "default": [],
+          "description": "The deploy targets whose failure starts one fresh session, rather than messages to the sessions of the merges it shipped. Default none.",
           "type": "array",
           "items": {
             "type": "string",
@@ -542,6 +608,7 @@
         },
         "tags": {
           "default": {},
+          "description": "The tag each deploy target's deploy moves, keyed by target, which deploy messages name. Default none.",
           "type": "object",
           "propertyNames": {
             "type": "string",
@@ -559,6 +626,7 @@
       "additionalProperties": false
     },
     "review": {
+      "description": "The PR review's settings: its checklist, and the lists it checks a PR against. Needed when `prReview` is on.",
       "type": "object",
       "properties": {
         "checklist": {
@@ -572,7 +640,8 @@
               "properties": {
                 "file": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                 }
               },
               "required": [
@@ -580,24 +649,29 @@
               ],
               "additionalProperties": false
             }
-          ]
+          ],
+          "description": "Required. What is appended to the review model's system prompt: the text, or { \"file\": \"<path>\" }."
         },
         "humanOnly": {
           "default": [],
+          "description": "Paths a PR may not change without a person: a PR changing a matching path waits for one, unless every ticket it closes carries one of the entry's `unless` labels. Default none.",
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
               "glob": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "The paths a PR may not change without a person, as a glob."
               },
               "reason": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Why a person must see a change to these paths, which the review says."
               },
               "unless": {
                 "default": [],
+                "description": "Labels that waive the wait when every ticket the PR closes carries one. Default none.",
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -619,10 +693,12 @@
             "require": [],
             "forbid": []
           },
+          "description": "The label rules every ticket the PR closes must meet: `require` and `forbid`.",
           "type": "object",
           "properties": {
             "require": {
               "default": [],
+              "description": "Rules each ticket the PR closes meets by carrying one of the rule's labels, unless it carries one of its `unless` labels. Default none.",
               "type": "array",
               "items": {
                 "type": "object",
@@ -635,10 +711,12 @@
                       "minLength": 1,
                       "maxLength": 50,
                       "pattern": "^[^,]*$"
-                    }
+                    },
+                    "description": "The labels the rule is about."
                   },
                   "unless": {
                     "default": [],
+                    "description": "Labels that waive the rule for a ticket carrying one of them. Default none.",
                     "type": "array",
                     "items": {
                       "type": "string",
@@ -656,6 +734,7 @@
             },
             "forbid": {
               "default": [],
+              "description": "Rules each ticket the PR closes meets by carrying none of the rule's labels, unless it carries one of its `unless` labels. Default none.",
               "type": "array",
               "items": {
                 "type": "object",
@@ -668,10 +747,12 @@
                       "minLength": 1,
                       "maxLength": 50,
                       "pattern": "^[^,]*$"
-                    }
+                    },
+                    "description": "The labels the rule is about."
                   },
                   "unless": {
                     "default": [],
+                    "description": "Labels that waive the rule for a ticket carrying one of them. Default none.",
                     "type": "array",
                     "items": {
                       "type": "string",
@@ -692,6 +773,7 @@
         },
         "quote": {
           "default": [],
+          "description": "Globs of changed files the review model reads whole. A `!` entry takes a path back out. Default none.",
           "type": "array",
           "items": {
             "type": "string",
@@ -700,6 +782,7 @@
         },
         "decides": {
           "default": [],
+          "description": "Labels of a ticket that may decide a quoted file's change: its body's first line, `Constraint now lives at <path>, …`, names the files it decides, which then pass unread. Default none.",
           "type": "array",
           "items": {
             "type": "string",
@@ -710,6 +793,7 @@
         },
         "dependabot": {
           "default": [],
+          "description": "Globs of the manifests a Dependabot PR may change and pass with no model. Default none.",
           "type": "array",
           "items": {
             "type": "string",
@@ -718,6 +802,7 @@
         },
         "merge": {
           "default": true,
+          "description": "Whether a pass merges the PR. With false, a pass approves and the owner merges. Default true.",
           "type": "boolean"
         }
       },
@@ -727,14 +812,17 @@
       "additionalProperties": false
     },
     "heartbeat": {
+      "description": "`{ \"issue\": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ \"issue\": <number>, \"marker\": \"<!-- … -->\" }` keeps one `last-run:` line under the repo's own marker, which the hourly sweep updates. Needed when `heartbeat` is on.",
       "type": "object",
       "properties": {
         "issue": {
           "type": "integer",
           "exclusiveMinimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 9007199254740991,
+          "description": "The number of the issue governor records its fires on. Its body must already carry the marker, or governor writes nothing into it."
         },
         "marker": {
+          "description": "The older shape: the repo's own marker, an HTML comment on one line, under which the hourly sweep keeps one `last-run:` line. Without it, governor keeps a line for pickup and one per periodic under `<!-- governor:heartbeat -->`.",
           "type": "string",
           "pattern": "^<!--[^\\n]*-->$"
         }
@@ -745,9 +833,11 @@
       "additionalProperties": false
     },
     "pickup": {
+      "description": "`{ \"sweepHours\": <number> }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default one, which sweeps at every fire.",
       "type": "object",
       "properties": {
         "sweepHours": {
+          "description": "How many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default one, which sweeps at every fire.",
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
@@ -757,6 +847,7 @@
     },
     "periodics": {
       "default": [],
+      "description": "The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on.",
       "type": "array",
       "items": {
         "type": "object",
@@ -765,7 +856,8 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 100,
-            "pattern": "^[^\\n]*$"
+            "pattern": "^[^\\n]*$",
+            "description": "The periodic's name: one line, unique in the file. Its session is named after it, and governor keys its record by it."
           },
           "prompt": {
             "anyOf": [
@@ -778,7 +870,8 @@
                 "properties": {
                   "file": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                   }
                 },
                 "required": [
@@ -786,27 +879,33 @@
                 ],
                 "additionalProperties": false
               }
-            ]
+            ],
+            "description": "What the periodic's session runs: the text, or { \"file\": \"<path>\" }. Governor adds a line under it giving the last fire's time, and lists what each count counted since then."
           },
           "days": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 9007199254740991
+            "maximum": 9007199254740991,
+            "description": "Required. The day limit, in whole days, at least one: the periodic is due on the sweep nearest that many days after its last fire."
           },
           "counts": {
+            "description": "Counts that bring the periodic due before its day limit, once any reaches its number since the last fire: `merges`, `issuesOpened` and `issuesClosed`. At its day limit, a periodic whose counts counted nothing starts no session.",
             "type": "object",
             "properties": {
               "merges": {
+                "description": "Pull requests merged into the default branch since the last fire that bring the periodic due, a whole number of at least one.",
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 9007199254740991
               },
               "issuesOpened": {
+                "description": "Issues opened since the last fire that bring the periodic due, a whole number of at least one.",
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 9007199254740991
               },
               "issuesClosed": {
+                "description": "Issues closed since the last fire that bring the periodic due, a whole number of at least one.",
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 9007199254740991
@@ -815,11 +914,13 @@
             "additionalProperties": false
           },
           "gapHours": {
+            "description": "The fewest whole hours between two of the periodic's runs, at least one. A count reached inside the gap fires on the first event or sweep after it.",
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991
           },
           "connectors": {
+            "description": "The claude.ai connectors the periodic's session needs, each named once by its name in the account's connector list. A periodic naming any starts as a run of a routine governor keeps for it, with those connectors attached and no others.",
             "minItems": 1,
             "type": "array",
             "items": {
@@ -838,13 +939,15 @@
     },
     "hooks": {
       "default": [],
+      "description": "The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on.",
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
           "name": {
             "type": "string",
-            "pattern": "^[a-z0-9-]{1,64}$"
+            "pattern": "^[a-z0-9-]{1,64}$",
+            "description": "The hook's name: lower-case letters, digits and hyphens, unique in the file. It ends the hook's URL, and its session is named after it."
           },
           "prompt": {
             "anyOf": [
@@ -857,7 +960,8 @@
                 "properties": {
                   "file": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
                   }
                 },
                 "required": [
@@ -865,14 +969,17 @@
                 ],
                 "additionalProperties": false
               }
-            ]
+            ],
+            "description": "What the hook's session runs: the text, or { \"file\": \"<path>\" }. Governor adds lines under it saying which hook fired and when, and quoting the caller's text as the caller's data."
           },
           "keyVersion": {
             "type": "integer",
             "exclusiveMinimum": 0,
-            "maximum": 999999999
+            "maximum": 999999999,
+            "description": "Required. The version of the hook's key a request must be signed with, a positive whole number of at most nine digits. Raising it revokes the key before it. It is not a secret."
           },
           "perHour": {
+            "description": "The most fires governor queues for the hook in one clock hour, a positive whole number up to 100. A fire past it gets 429. Default 20.",
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 100
