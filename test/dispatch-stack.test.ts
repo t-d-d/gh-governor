@@ -423,6 +423,34 @@ describe('infra/governor.cfn.yml — the alarms', () => {
   });
 
   /**
+   * A session governor started whose record failed to write gets no
+   * human-only check from the PR review, so its PRs can clear a ticket's
+   * mode label: it pages, read off its own event.
+   */
+  test('an unrecorded session pages, read off its own event, never off a level', () => {
+    const filter = template.Resources.DispatchSessionUnrecordedFilter;
+    assert.equal(filter?.Type, 'AWS::Logs::MetricFilter');
+    assert.equal(filter?.Properties?.LogGroupName, '${DispatchLogGroup}');
+    assert.match(filter?.Properties?.FilterPattern ?? '', /\$\.event = "dispatch-session-unrecorded"/);
+    assert.doesNotMatch(filter?.Properties?.FilterPattern ?? '', /\$\.level/);
+    const published = filter?.Properties?.MetricTransformations?.[0];
+    const others = Object.entries(template.Resources)
+      .filter(([name, r]) => name !== 'DispatchSessionUnrecordedFilter' && (r as { Type?: string }).Type === 'AWS::Logs::MetricFilter')
+      .map(([, f]) => (f as { Properties?: { MetricTransformations?: Array<{ MetricName?: string }> } }).Properties?.MetricTransformations?.[0]?.MetricName);
+    assert.ok(published?.MetricName, 'the filter publishes a metric');
+    assert.ok(!others.includes(published?.MetricName), 'its own metric');
+    const alarm = template.Resources.DispatchSessionUnrecordedAlarm;
+    assert.equal(alarm?.Type, 'AWS::CloudWatch::Alarm');
+    assert.equal(alarm?.Properties?.Namespace, published?.MetricNamespace);
+    assert.equal(alarm?.Properties?.MetricName, published?.MetricName);
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /dispatch-session-unrecorded/);
+    assert.equal(alarm?.Properties?.Threshold, 1);
+    assert.equal(alarm?.Properties?.TreatMissingData, 'notBreaching');
+    assert.deepEqual(alarm?.Properties?.AlarmActions, template.Resources.DispatchErrorsAlarm?.Properties?.AlarmActions, 'the same action as the errors alarm');
+  });
+
+  /**
    * A served repo's config file that fails its schema, a repo whose
    * launch started nothing, and a periodic naming a connector the account
    * has not connected, each page off their own event; a repo with no file

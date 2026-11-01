@@ -515,6 +515,37 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertsTopic]
 
+  # Governor records every session it starts in the state table, so the PR
+  # review gives that session's PRs no human-only waiver from a ticket's
+  # mode label. A record that fails to write logs
+  # `dispatch-session-unrecorded` naming the session (dispatch/turn.mjs),
+  # and the turn carries on, since the session is already running.
+  DispatchSessionUnrecordedFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "dispatch-session-unrecorded" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: SessionsUnrecorded
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DispatchSessionUnrecordedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-session-unrecorded
+      AlarmDescription: '[tripwire] Governor started a session and could not record it in the state table, so the PR review treats that session as not its own: its PRs can clear a human-only path on a ticket''s mode: hitl or mode: human label. Read /governor for the dispatch-session-unrecorded line; it names the session and the error. Until the record is put, review that session''s PRs yourself before any merge.'
+      Namespace: governor
+      MetricName: SessionsUnrecorded
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
   # A served repo's config file that fails its schema (dispatch/repos.mjs,
   # dispatch/repo-config.mjs) leaves the repo unserved until it is fixed: no
   # dispatch, no archiving. Each turn that reads it logs
