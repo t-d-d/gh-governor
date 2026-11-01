@@ -46,6 +46,19 @@ describe('the config file\'s JSON Schema', () => {
   });
 });
 
+describe('the zod the schema is exported with', () => {
+  test('the root dev dependency is the zod dispatch/package-lock.json installs', () => {
+    // dispatch/repo-config.mjs takes zod from dispatch/node_modules when it is
+    // installed, and from the root otherwise. The gate installs only the root.
+    // If the two differ, an export made with dispatch/ installed can differ
+    // from the gate's, and the tests run the schema under a zod the task does
+    // not ship.
+    const root = JSON.parse(read('package.json')).devDependencies.zod;
+    const dispatch = JSON.parse(read('dispatch/package-lock.json')).packages['node_modules/zod']?.version;
+    assert.equal(root, dispatch, 'set the root zod in package.json to the version dispatch/package-lock.json resolves');
+  });
+});
+
 describe('the README on the schema', () => {
   const readme = read('README.md');
 
