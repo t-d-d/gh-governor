@@ -18,7 +18,11 @@ jobs:
     name: gate
     runs-on: ubuntu-24.04
     steps:
+      # The whole history, so test/starter-pin.test.ts can read the checker
+      # at the commit the starter kit pins and check it is on main.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
