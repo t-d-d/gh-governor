@@ -444,6 +444,7 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     assert.equal(alarm?.Properties?.MetricName, published?.MetricName);
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
     assert.ok((alarm?.Properties?.AlarmDescription ?? '').includes(SESSION_UNRECORDED), 'the page names the line to read');
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /names no session.*sessions list.*session name/, 'the page covers a launch that printed no session');
     assert.equal(alarm?.Properties?.Threshold, 1);
     assert.equal(alarm?.Properties?.TreatMissingData, 'notBreaching');
     assert.deepEqual(alarm?.Properties?.AlarmActions, template.Resources.DispatchErrorsAlarm?.Properties?.AlarmActions, 'the same action as the errors alarm');
