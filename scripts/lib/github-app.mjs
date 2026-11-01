@@ -526,10 +526,10 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       await call('POST', `/repos/${repo}/issues/${number}/comments`, { body });
     },
 
-    /** A pull request's body, a null one as '', and its head branch ({@link headOf}). @param {number} number @returns {Promise<{ number: number, body: string, head: string }>} */
+    /** A pull request's body, a null one as '', its head branch ({@link headOf}), and whether it is open, neither closed nor merged. @param {number} number @returns {Promise<{ number: number, body: string, head: string, open: boolean }>} */
     pull: async (number) => {
       const row = await call('GET', `/repos/${repo}/pulls/${number}`);
-      return { number: row.number, body: row.body ?? '', head: headOf(row) };
+      return { number: row.number, body: row.body ?? '', head: headOf(row), open: row.state === 'open' };
     },
 
     /** Rewrite a pull request's body. @param {number} number @param {{ body: string }} change */

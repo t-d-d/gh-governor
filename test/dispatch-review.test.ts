@@ -147,7 +147,7 @@ const harness = (over: {
       // The send path's reads: the standing line, a fallback's marker and relink.
       openNaming: async () => [],
       comments: async () => [],
-      pull: async (n: number) => ({ number: n, body: BODY }),
+      pull: async (n: number) => ({ number: n, body: BODY, open: true }),
       updatePull: async () => {},
       merge: async (pr: number, { sha }: { sha: string }) => {
         merges.push({ pr, sha });

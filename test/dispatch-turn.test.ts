@@ -190,7 +190,7 @@ const harness = (over: Record<string, unknown> = {}) => {
         calls.push(`ensure ${name}`);
       },
       ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: ['workflow: ready for development', 'mode: afk'], pull: false }),
-      pull: async (n: number) => ({ number: n, body: PR_BODY }),
+      pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: true }),
       updatePull: async (n: number, { body }: { body: string }) => {
         edits.push({ pr: n, body });
       },
@@ -2986,7 +2986,7 @@ describe('run — a merge to main leaves PRs conflicted', () => {
         count[n] = (count[n] ?? 0) + 1;
         return row(n, seq[i] ?? null, rows[n]);
       },
-      pull: async (n: number) => ({ number: n, body: String(rows[n]?.body ?? BODY), head: `claude/branch-${n}` }),
+      pull: async (n: number) => ({ number: n, body: String(rows[n]?.body ?? BODY), head: `claude/branch-${n}`, open: true }),
       updatePull: async () => {},
       comment: async (n: number, text: string) => { comments.push({ issue: n, body: text }); },
       updateComment: async () => { throw new Error('the check edits no comment'); },
@@ -3936,7 +3936,7 @@ describe('run — a PR whose body names no session', () => {
   const onBranch = { cse_01LOCAL: { id: 'cse_01LOCAL', session_status: 'SESSION_STATUS_IDLE', environment_kind: 'bridge', external_metadata: { current_branches: { 'acme/factory': BRANCH } } } };
   const unnamedReader = (over: Record<string, unknown> = {}) => () => ({
     ...harness().deps.reader(''),
-    pull: async (n: number) => ({ number: n, body: UNNAMED, head: BRANCH }),
+    pull: async (n: number) => ({ number: n, body: UNNAMED, head: BRANCH, open: true }),
     issue: async (n: number) => ({ number: n, body: UNNAMED, pull: true }),
     openPulls: async () => [{ number: PR, draft: false, base: 'main', head: BRANCH, title: 'Lessons', html_url: `https://github.com/${REPO}/pull/${PR}`, body: UNNAMED }],
     ...over,
@@ -5575,7 +5575,7 @@ describe('fitness: a merge into a served repo\'s default branch reaches its conf
       branchHead: async (branch: string) => { asked.push(`head ${branch}`); return TRUNK; },
       openPulls: async () => [{ number: 12, draft: false, base: 'trunk' }, { number: 13, draft: false, base: 'main' }],
       pullRequest: async (n: number) => { asked.push(`pull ${n}`); return { number: n, title: `PR ${n}`, body: BODY, state: 'open', draft: false, base: 'trunk', headSha: 'f'.repeat(40), mergeable: false, html_url: `https://github.com/${TDD}/pull/${n}`, association: 'OWNER' }; },
-      pull: async (n: number) => ({ number: n, body: BODY, head: `claude/branch-${n}` }),
+      pull: async (n: number) => ({ number: n, body: BODY, head: `claude/branch-${n}`, open: true }),
     };
     const h = harness({ configFile: async (repo: string) => (repo === TDD ? FILE : FACTORY_FILE), reader: () => reader, sleep: async () => {} });
     await run(fire, h.deps as never);
