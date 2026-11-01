@@ -387,12 +387,15 @@ jobs:
               if (commits.length < 100) break;
             }
             if (!seen.has(sha)) return madeAt;
-            // Every commit read that has the change in its history. Repeated until
-            // nothing changes, so a commit listed out of order is still counted.
+            // Every commit read that has the change in its history. Read oldest first,
+            // so one pass covers a listing with each parent after its children, and
+            // repeated until nothing changes, so a commit listed out of order is still
+            // counted.
             const holds = new Set([sha]);
+            const oldestFirst = [...order].reverse();
             for (let grew = true; grew;) {
               grew = false;
-              for (const s of order) {
+              for (const s of oldestFirst) {
                 if (!holds.has(s) && /** @type {{ parents: string[] }} */ (seen.get(s)).parents.some((p) => holds.has(p))) {
                   holds.add(s);
                   grew = true;

@@ -498,6 +498,20 @@ describe('checking the heartbeat', () => {
     assert.deepEqual(gh.open().map((i) => i.title), []);
   });
 
+  // GitHub lists by date, so a commit dated before its parent is listed after it.
+  test('a change merged by a merge commit is measured from the merge when a branch commit is listed after the commit it follows', async () => {
+    const history: Commit[] = [
+      { sha: 'm2', date: iso(NOW - HOUR), parents: ['m1', 'b2'] },
+      { sha: 'm1', date: iso(NOW - 2 * HOUR), parents: ['m0'] },
+      { sha: 'b1', date: iso(NOW - 10 * DAY), parents: ['m0'] },
+      { sha: 'b2', date: iso(NOW - 11 * DAY), parents: ['b1'] },
+      { sha: 'm0', date: iso(NOW - 40 * DAY), parents: [] },
+    ];
+    const gh = github({ heartbeat: pickupOnly, history, touched: 'b1' });
+    await run(gh);
+    assert.deepEqual(gh.open().map((i) => i.title), []);
+  });
+
   test('a change committed on the default branch is measured from its commit, with commits since', async () => {
     const history: Commit[] = [
       { sha: 'm2', date: iso(NOW - HOUR), parents: ['m1'] },
