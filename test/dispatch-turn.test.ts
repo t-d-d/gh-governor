@@ -5884,6 +5884,24 @@ describe('run: the hook table', () => {
     assert.deepEqual(h.launches.map((l) => l.sessionName), [FACTORY_HOOKS[0]!.name]);
   });
 
+  // A write that fails counts the repo unread on any kind of turn, so the
+  // owner hears of it on the next CI run or comment, not the next schedule fire.
+  test('a message turn whose write failed exits 1, though the session took the message', async () => {
+    const h = harness({ hookTable: { publish: async () => { throw new Error('AccessDeniedException'); } } });
+    const result = await run({ kind: 'message', session: 'session_01ABC', text: 'a comment on your pull request' }, h.deps as never) as Record<string, any>;
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.unread, [{ repo: REPO, error: 'hook table: AccessDeniedException' }]);
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  test('a label the repo does not list keeps the turn\'s unread repos, and exits 1', async () => {
+    const h = harness({ hookTable: { publish: async () => { throw new Error('AccessDeniedException'); } } });
+    const result = await run({ kind: 'schedule', repo: REPO, issue: 2, label: 'type: bug' }, h.deps as never) as Record<string, any>;
+    assert.match(String(result.refusal), /not one of .*ready labels/);
+    assert.deepEqual(result.unread, [{ repo: REPO, error: 'hook table: AccessDeniedException' }]);
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
   test('a write a later read beat is not a fault', async () => {
     const h = harness({ hookTable: { publish: async () => false } });
     const result = await run(hookFire, h.deps as never) as Record<string, any>;
