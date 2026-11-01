@@ -50,8 +50,9 @@ Each `unblocked` fire runs in the ticket's repo's own turn, under that repo's co
 
 | The ticket | What the turn does | Switch |
 |---|---|---|
-| Is closed, or still blocked by another open issue, by the same count pickup reads | Nothing. That blocker's close sends its own fire. | |
-| Lost its blocker to a "not planned" close | Comments on the ticket naming the blocker, and messages its session if it is claimed. Nothing starts. | `unblocked` |
+| Is closed | Nothing. | |
+| Lost its blocker to a "not planned" close | Comments on the ticket naming the blocker, and messages its session if it is claimed. If another open issue still blocks it, the comment and the message say so. Nothing starts. | `unblocked` |
+| Is still blocked by another open issue, by the same count pickup reads | Nothing. That blocker's close sends its own fire. | |
 | Carries an `exclude` label | Nothing. | |
 | Is claimed | Messages the session the newest dispatch marker names: its blocker closed, and by which PR. | `unblocked` |
 | Is ready | Picks it up as pickup does: claim, marker, launch. The prompt adds the close's facts and asks the session to check the spec against what merged first. | `pickup` |

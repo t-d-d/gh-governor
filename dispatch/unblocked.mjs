@@ -15,8 +15,9 @@
  *
  * | The ticket | The turn | Switch |
  * |---|---|---|
- * | closed, or still blocked by another open issue | nothing: that blocker's close sends its own fire | |
- * | lost its blocker to a "not planned" close | comments, and messages its session if claimed | `unblocked` |
+ * | closed | nothing | |
+ * | lost its blocker to a "not planned" close | comments, and messages its session if claimed, saying so if another open issue still blocks it | `unblocked` |
+ * | still blocked by another open issue | nothing: that blocker's close sends its own fire | |
  * | carries an `exclude` label | nothing | |
  * | is claimed | messages the session its dispatch marker names | `unblocked` |
  * | is ready | picks it up as pickup does, the close's facts in the prompt | `pickup` |
@@ -104,7 +105,9 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
 
 /**
  * The first row of the table that fits the ticket, read in its own repo.
- * The closed blocker reads closed, so any open one is another. A ticket
+ * The closed blocker reads closed, so any open one is another. A
+ * not-planned close is told even while another blocker is open, so nobody
+ * starts on a spec that assumed the dropped work. A ticket
  * carrying its dependency summary is judged by it (`isBlocked`), since the
  * rows leave out a blocker the App cannot see; `blockers` is read only for
  * a ticket without one.
@@ -119,8 +122,8 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
  */
 export const ticketRow = ({ ticket, blockers, fire, labels }) => {
   if (ticket.state !== 'open') return 'closed';
-  if (isBlocked(ticket, blockers)) return 'blocked';
   if (fire.blocker.reason === NOT_PLANNED) return 'not-planned';
+  if (isBlocked(ticket, blockers)) return 'blocked';
   if (labels.exclude.some((l) => ticket.labels.includes(l))) return 'excluded';
   if (ticket.labels.includes(labels.claim)) return 'claimed';
   if (labels.ready.every((l) => ticket.labels.includes(l))) return 'ready';
@@ -181,9 +184,15 @@ export const specPrompt = ({ fire, title, labels, prompts }) => {
 export const unblockedMessage = (fire, prompts) => `${unblockedFacts(fire)}\n\n${instruction(prompts, 'unblockedClaimed', { issue: fire.issue })}`;
 
 /**
- * The comment a ticket gets when its blocker closed as not planned.
+ * The comment a ticket gets when its blocker closed as not planned, and its
+ * session's message if it is claimed. `blocked`: another open issue still
+ * blocks the ticket, which the text says, so nobody reads it as free.
  *
  * @param {UnblockedFire & { repo?: string }} fire
  * @param {Record<string, string | undefined>} prompts
+ * @param {{ blocked?: boolean }} [options]
  */
-export const notPlannedComment = (fire, prompts) => `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}`;
+export const notPlannedComment = (fire, prompts, { blocked = false } = {}) => {
+  const still = blocked ? ` #${fire.issue} is still blocked by another open issue, so this close does not free it.` : '';
+  return `${unblockedFacts(fire, { quote: true })}${still}\n\n${instruction(prompts, 'unblockedNotPlanned')}`;
+};

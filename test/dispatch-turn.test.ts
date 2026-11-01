@@ -1140,6 +1140,25 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(h.launches, []);
   });
 
+  test('not planned, and still blocked by another open issue: the comment says it is still blocked, and nothing starts', async () => {
+    const h = ticketTurn({ blockers: [{ number: 41, state: 'closed', title: 'x' }, { number: 43, state: 'open', title: 'y' }] });
+    const result = await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'not-planned');
+    assert.deepEqual(h.comments.map((c) => c.issue), [7]);
+    assert.match(h.comments[0]!.body, /closed as not planned/);
+    assert.match(h.comments[0]!.body, /still blocked by another open issue/);
+    assert.deepEqual([h.launches, h.messages, labelCalls(h.calls)], [[], [], []]);
+  });
+
+  test('not planned, claimed, and still blocked by a blocker only the summary counts: its session hears it, still blocked', async () => {
+    const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }], openBlockers: 1 });
+    await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never);
+    assert.deepEqual(h.comments.map((c) => c.issue), [7]);
+    assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK']);
+    assert.match(h.messages[0]!.text, /closed as not planned[\s\S]*still blocked by another open issue/);
+    assert.deepEqual(h.launches, []);
+  });
+
   test('carries an exclude label: nothing', async () => {
     const h = ticketTurn({ labels: [...READY, 'type: prd'] });
     const result = await run(fire(), h.deps as never) as Record<string, unknown>;

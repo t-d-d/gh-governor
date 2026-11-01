@@ -104,6 +104,7 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
+import { isBlocked } from '../scripts/lib/ready-work.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { launchRoutine, observed } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
@@ -1608,7 +1609,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     if (row === 'not-planned' || row === 'claimed') {
       /** @type {boolean} */
       let commented = false;
-      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts) : null;
+      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts, { blocked: isBlocked(ticket, blockers) }) : null;
       if (notPlanned !== null) {
         await reader.comment(issue, notPlanned);
         commented = true;
