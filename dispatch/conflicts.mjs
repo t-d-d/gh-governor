@@ -29,6 +29,7 @@ import { SUMMONERS, UNATTENDED } from './webhook/fire.mjs';
 import { HANDOFF, oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
+import { GITHUB_SOURCE } from './deliveries.mjs';
 
 /**
  * @typedef {import('./webhook/fire.mjs').ConflictsFire} ConflictsFire
@@ -130,7 +131,7 @@ const tell = async ({ pr, text, fallback, record, deliver }) => {
   /** @type {import('./deliveries.mjs').Delivery} */
   let sent;
   try {
-    sent = await deliver({ pr: pr.number }, text, { fallback, takeover: true, on: [pr.number] });
+    sent = await deliver({ pr: pr.number }, text, { source: GITHUB_SOURCE, fallback, takeover: true, on: [pr.number] });
   } catch (error) {
     // A send past its budget, or a GitHub read in the fallback, throws: this
     // PR's check fails, and the PRs after it are still told.
