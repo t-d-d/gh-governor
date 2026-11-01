@@ -43,7 +43,8 @@ import { isBlocked, labelRow } from '../scripts/lib/ready-work.mjs';
  * @typedef {{ repo: string, number: number, state: string }} BlockedRow A ticket the closed issue blocked, in its repo.
  * @typedef {{ fire: UnblockedFire & { repo: string }, dedupId: string }} Queued
  * @typedef {{ repo: string, issue: number, reason: string }} Skipped
- * @typedef {'closed' | 'blocked' | 'not-planned' | 'excluded' | 'claimed' | 'ready' | 'not-ready'} Row
+ * @typedef {import('../scripts/lib/ready-work.mjs').Labels} Labels
+ * @typedef {'closed' | 'blocked' | 'not-planned' | ReturnType<typeof labelRow>} Row
  */
 
 /** The close reason GitHub gives an issue closed as not planned. */
@@ -116,7 +117,7 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
  *   ticket: { state: string, labels: readonly string[], openBlockers?: number },
  *   blockers: ReadonlyArray<{ state: string }> | undefined,
  *   fire: Pick<UnblockedFire, 'blocker'>,
- *   labels: { ready: readonly string[], claim: string, exclude: readonly string[] },
+ *   labels: Labels,
  * }} args
  * @returns {Row}
  */
