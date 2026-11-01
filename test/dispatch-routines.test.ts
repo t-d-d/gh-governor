@@ -124,7 +124,6 @@ describe('a periodic\'s routine run', () => {
     const { api, calls } = fakeApi();
     const result = await launch(api, { connectors: ['feed_prod', 'slack'] });
     assert.deepEqual(result.missing, ['slack']);
-    assert.equal(result.refused, undefined, 'a missing connector has its own event');
     assert.notEqual(result.status, 0);
     assert.notEqual(result.status, 3);
     assert.deepEqual(calls, [], 'no routine created, updated or fired');
@@ -165,7 +164,6 @@ describe('a periodic\'s routine run', () => {
       const result = await launch(api);
       assert.equal(result.status, 1, JSON.stringify(Object.keys(over)));
       assert.equal(result.missing, undefined);
-      assert.equal(result.refused, true, 'the routines API refused, not the login or the environment');
     }
   });
 
@@ -173,7 +171,6 @@ describe('a periodic\'s routine run', () => {
     const { api, calls } = fakeApi({ triggers: async () => ({ data: [], has_more: true }) });
     const result = await launch(api);
     assert.equal(result.status, 1);
-    assert.equal(result.refused, true);
     assert.match(result.output, /page/);
     assert.ok(!calls.some((c) => c.call === 'create'));
   });

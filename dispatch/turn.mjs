@@ -594,7 +594,9 @@ export const run = async (event, deps) => {
     }
     const result = await launchRoutine({ api, repo: begin.repo, periodic: begin.sessionName, prompt: begin.prompt, environment: begin.environment, model: begin.model, connectors, sleep: deps.sleep, uuid: deps.uuid });
     deps.log('dispatch-routine-output', { repo: begin.repo, periodic: begin.sessionName, status: result.status, tail: result.output.slice(-OUTPUT_TAIL) });
-    return result;
+    // Nothing started for any other reason than a missing connector is the
+    // routines API refusing before the fire: the CLI is not at fault.
+    return result.status === 1 && result.missing === undefined ? { ...result, refused: true } : result;
   };
   /**
    * Every launch, recorded as governor's own session wherever the launcher
@@ -951,7 +953,7 @@ const connectorMissing = ({ log }, repo, periodic, missing) => {
  * @param {Pick<Deps, 'log'>} deps
  * @param {string} repo
  * @param {string} periodic
- * @param {{ status: number | null, output: string, missing?: string[], refused?: true }} launched
+ * @param {LaunchResult} launched
  * @returns {boolean} Whether the launch was one of these.
  */
 const routineFault = (deps, repo, periodic, launched) => {
@@ -960,7 +962,7 @@ const routineFault = (deps, repo, periodic, launched) => {
     return true;
   }
   if (launched.refused !== true) return false;
-  deps.log(ROUTINE_REFUSED, { level: 'error', repo, periodic, status: launched.status, reason: `the routines API refused its routine before the fire, so its session was not started and it stays due; the repo's other launches go on: ${launched.output.slice(-OUTPUT_TAIL)}` });
+  deps.log(ROUTINE_REFUSED, { level: 'error', repo, periodic, reason: `the routines API refused its routine before the fire, so its session was not started and it stays due; the repo's other launches go on: ${launched.output.slice(-OUTPUT_TAIL)}` });
   return true;
 };
 

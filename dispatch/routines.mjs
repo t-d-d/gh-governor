@@ -22,9 +22,7 @@
  * session `claude --cloud` started: 0 with the session's link, 3 for a
  * fire whose session it could not find (unconfirmed), 1 for nothing
  * started. A named connector the account has not connected starts nothing
- * and is named in `missing`. Any other answer that starts nothing is the
- * routines API refusing before the fire, and is marked `refused`: the CLI
- * would still start the repo's other sessions.
+ * and is named in `missing`.
  *
  * Every shape here is read from the bundled CLI's routine commands, not a
  * published API, so the turn logs each answer's shape ({@link observed}).
@@ -59,7 +57,7 @@ const SESSION_ID = /^(?:cse|session)_([A-Za-z0-9]{4,128})$/;
  *   (`GET /v1/code/triggers`), a routine created or updated, one fired, and
  *   one's run sessions, each answer parsed. Any refusal throws.
  * @typedef {{ connector_uuid: string, name: string, url: string }} Connection
- * @typedef {{ status: number, output: string, missing?: string[], refused?: true }} RoutineResult
+ * @typedef {{ status: number, output: string, missing?: string[] }} RoutineResult
  */
 
 /**
@@ -279,13 +277,13 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
     };
     const { rows, more } = rowsOf(listedRoutines, 'the routines list');
     const existing = rows.find((r) => r?.name === name);
-    if (existing === undefined && more) return { status: 1, output: `the routines list runs past one page without ${name}: none is created, so no second routine stands beside it`, refused: true };
+    if (existing === undefined && more) return { status: 1, output: `the routines list runs past one page without ${name}: none is created, so no second routine stands beside it` };
     if (existing === undefined) {
       const created = /** @type {any} */ (await api.create(body));
-      if (typeof created?.id !== 'string' || created.id === '') return { status: 1, output: `the routine ${name} was created with no id`, refused: true };
+      if (typeof created?.id !== 'string' || created.id === '') return { status: 1, output: `the routine ${name} was created with no id` };
       id = created.id;
     } else {
-      if (typeof existing.id !== 'string' || existing.id === '') return { status: 1, output: `the routine ${name} is listed with no id`, refused: true };
+      if (typeof existing.id !== 'string' || existing.id === '') return { status: 1, output: `the routine ${name} is listed with no id` };
       id = existing.id;
       await api.update(id, body);
       for (const row of rowsOf(await api.sessions(id), 'the routine\'s run sessions').rows) {
@@ -296,7 +294,7 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
     const fired = firedSession(await api.run(id));
     if (fired !== null) return { status: 0, output: `Routine ${id} fired: ${fired}` };
   } catch (error) {
-    return { status: 1, output: `the routine for ${periodic} did not fire: ${error instanceof Error ? error.message : String(error)}`, refused: true };
+    return { status: 1, output: `the routine for ${periodic} did not fire: ${error instanceof Error ? error.message : String(error)}` };
   }
   // Fired: from here a failure leaves a run that may have started.
   for (let tries = 0; tries < ROUTINE_SESSION_TRIES; tries += 1) {
