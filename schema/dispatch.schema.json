@@ -654,7 +654,7 @@
         },
         "humanOnly": {
           "default": [],
-          "description": "Paths a PR may not change without a person: a PR changing a matching path waits for one, unless every ticket it closes carries one of the entry's `unless` labels. Default none.",
+          "description": "Paths a PR may not change without a person: a PR changing a matching path waits for one, unless every ticket it closes carries one of the entry's `unless` labels and the PR is not from a session governor started. Default none.",
           "type": "array",
           "items": {
             "type": "object",
@@ -671,7 +671,7 @@
               },
               "unless": {
                 "default": [],
-                "description": "Labels that waive the wait when every ticket the PR closes carries one. Default none.",
+                "description": "Labels that waive the wait when every ticket the PR closes carries one and passes the review's ticket checks. They waive nothing for a PR from a session governor started. Default none.",
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -773,7 +773,7 @@
         },
         "quote": {
           "default": [],
-          "description": "Globs of changed files the review model reads whole. A `!` entry takes a path back out. Default none.",
+          "description": "Globs of changed files the review model reads whole, at the merge base and at the head. Only a modified file is quoted: one added, removed or renamed waits for a person. A `!` entry takes a path back out. Default none.",
           "type": "array",
           "items": {
             "type": "string",

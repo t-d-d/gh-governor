@@ -76,6 +76,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.
 
 | Key | Required | What it holds |
 |---|---|---|
+| `$schema` | no | The URL of this file's JSON Schema, for an editor to describe and check each key. Governor ignores it. Use the schema at the commit the config check is pinned to, and bump both together. |
 | `environment` | yes | The claude.ai cloud environment the repo's sessions start in: its name as `/remote-env` lists it, or its ID. A public repo should use the name. |
 | `labels.ready` | yes | Every label a ready ticket carries. |
 | `labels.claim` | yes | The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up. |

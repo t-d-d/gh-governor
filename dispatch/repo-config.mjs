@@ -133,9 +133,10 @@ const promptFile = z.strictObject({
  * @param {string} kind
  */
 const promptDescription = (kind) => {
-  const { replaces = kind, fills = [] } = PROMPTS[kind] ?? {};
+  const { replaces, fills } = /** @type {import('./prompts.mjs').Kind} */ (PROMPTS[kind]);
   const named = fills.map((n) => `{${n}}`);
-  const facts = named.length === 0 ? 'It may name no fact.' : `It may name ${named.length === 1 ? 'the fact' : 'the facts'} ${named.length === 1 ? named[0] : `${named.slice(0, -1).join(', ')} and ${named.at(-1)}`}, which governor writes in.`;
+  const list = named.length === 1 ? `the fact ${named[0]}` : `the facts ${named.slice(0, -1).join(', ')} and ${named.at(-1)}`;
+  const facts = named.length === 0 ? 'It may name no fact.' : `It may name ${list}, which governor writes in.`;
   return `Replaces the default wording of ${replaces}. ${facts} The text, or { "file": "<path>" }.`;
 };
 
@@ -185,13 +186,13 @@ const reviewSchema = z.strictObject({
   humanOnly: z.array(z.strictObject({
     glob: glob.meta({ description: 'The paths a PR may not change without a person, as a glob.' }),
     reason: z.string().trim().min(1).meta({ description: 'Why a person must see a change to these paths, which the review says.' }),
-    unless: z.array(label).default([]).meta({ description: 'Labels that waive the wait when every ticket the PR closes carries one. Default none.' }),
-  })).default([]).meta({ description: 'Paths a PR may not change without a person: a PR changing a matching path waits for one, unless every ticket it closes carries one of the entry\'s `unless` labels. Default none.' }),
+    unless: z.array(label).default([]).meta({ description: 'Labels that waive the wait when every ticket the PR closes carries one and passes the review\'s ticket checks. They waive nothing for a PR from a session governor started. Default none.' }),
+  })).default([]).meta({ description: 'Paths a PR may not change without a person: a PR changing a matching path waits for one, unless every ticket it closes carries one of the entry\'s `unless` labels and the PR is not from a session governor started. Default none.' }),
   tickets: z.strictObject({
     require: z.array(ticketRule).default([]).meta({ description: 'Rules each ticket the PR closes meets by carrying one of the rule\'s labels, unless it carries one of its `unless` labels. Default none.' }),
     forbid: z.array(ticketRule).default([]).meta({ description: 'Rules each ticket the PR closes meets by carrying none of the rule\'s labels, unless it carries one of its `unless` labels. Default none.' }),
   }).default({ require: [], forbid: [] }).meta({ description: 'The label rules every ticket the PR closes must meet: `require` and `forbid`.' }),
-  quote: z.array(z.string().trim().regex(/^!?[^!\s]/, 'a glob, or `!` and a glob')).default([]).meta({ description: 'Globs of changed files the review model reads whole. A `!` entry takes a path back out. Default none.' }),
+  quote: z.array(z.string().trim().regex(/^!?[^!\s]/, 'a glob, or `!` and a glob')).default([]).meta({ description: 'Globs of changed files the review model reads whole, at the merge base and at the head. Only a modified file is quoted: one added, removed or renamed waits for a person. A `!` entry takes a path back out. Default none.' }),
   decides: z.array(label).default([]).meta({ description: 'Labels of a ticket that may decide a quoted file\'s change: its body\'s first line, `Constraint now lives at <path>, …`, names the files it decides, which then pass unread. Default none.' }),
   dependabot: z.array(glob).default([]).meta({ description: 'Globs of the manifests a Dependabot PR may change and pass with no model. Default none.' }),
   merge: z.boolean().default(true).meta({ description: 'Whether a pass merges the PR. With false, a pass approves and the owner merges. Default true.' }),

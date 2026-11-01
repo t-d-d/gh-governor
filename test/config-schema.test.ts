@@ -133,10 +133,13 @@ describe('the README on the schema', () => {
     return rows;
   };
 
-  test('the key table says what each key\'s description says', () => {
+  test('the key table says what each key\'s description says, and lists every top-level key', () => {
     const rows = tableRows('Key');
     assert.ok(rows.length > 10);
     for (const { key, cell } of rows) assert.equal(cell, nodeAt(key)?.description, `README's row for ${key}`);
+    const tops = new Set(rows.map((r) => r.key.split('.')[0]));
+    const unlisted = Object.keys((configJsonSchema() as Node).properties ?? {}).filter((k) => !tops.has(k));
+    assert.deepEqual(unlisted, [], 'give each top-level key a row in the README\'s key table');
   });
 
   test('the switch table says what each switch\'s description says, and lists every switch', () => {
