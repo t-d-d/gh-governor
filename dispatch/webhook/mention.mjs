@@ -62,7 +62,7 @@
 
 import { DISPATCH_MARKER, OVERRIDE_BUDGET, SIGN_POSTS, SUMMONERS, UNATTENDED, build, deployedTarget, isBranch, isCommit, overrideWeight } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
-import { isSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost } from './subscribe.mjs';
+import { isSessionPost, ownSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost } from './subscribe.mjs';
 
 export const MENTION = '@claude';
 
@@ -305,7 +305,8 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   `issue`: `on` is an issue, whose owner hears `deploys` only by a line.
  *   `byBranch`: `on` is a PR, and with no session its body names, the
  *   live session on its head branch is the owner; `sessionPost`, what was
- *   posted is a session's, which then is that session's own. `unsigned`: a
+ *   posted is a session's outside any quote (`ownSessionPost`), which then
+ *   is that session's own. `unsigned`: a
  *   session posted it and did not sign it (`unsignedPost`), so any
  *   subscriber may have written it, and each hears of it, told so
  *   ({@link UNSIGNED}). `merged`: `on` is a PR merged into
@@ -549,7 +550,7 @@ const writtenFires = (written, event, payload, appId) => {
       issue: !pr,
       ownerOnly,
       byBranch,
-      sessionPost: isSessionPost(body),
+      sessionPost: ownSessionPost(body),
       unsigned: unsignedPost(body),
       reason: `${what} ${by?.id} on #${on?.number}`,
     }));
