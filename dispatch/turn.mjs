@@ -1703,9 +1703,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    * Claim one ticket: the claim label on, then the ready labels it takes
    * off. The plan was read before earlier launches that take minutes, so
    * the ticket is read again first: one closed, unreadied, claimed or given
-   * one of the repo's excluded labels since is skipped, untouched, since its session would proceed on the prompt's
-   * claim line over someone else's work. A claim that fails is released,
-   * and starts nothing.
+   * one of the repo's excluded labels since is skipped, untouched, since its
+   * session would proceed on the prompt's claim line over someone else's
+   * work. A claim that fails is released, and starts nothing.
    *
    * @param {{ repo: string, issue: number }} ticket
    * @returns {Promise<'claimed' | 'taken' | 'failed'>}
