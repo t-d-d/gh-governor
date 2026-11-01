@@ -26,6 +26,13 @@ a reader at a ticket they cannot open, or at the wrong one here.
   passes through GitHub. Anyone can read a public repo's run logs, a step
   prints each value its env block is given, and Actions masks only a
   secret's exact string.
+- The deploy's run log does not show the AWS account id. The deploy reads
+  the deploy role's ARN, which carries the id, from the repository secret
+  `AWS_DEPLOY_ROLE_ARN`, and its credentials step sets
+  `mask-aws-account-id: true`, so every later line masks the id in the
+  registry, the image URI and the build bucket. A job's `if:` cannot read a
+  secret, so a first job reads whether the secret is set and the deploy job
+  runs only when it is.
 - The App key, the claude.ai login and the drop-box writer live in AWS
   Secrets Manager under `governor/`, in the bootstrap stack
   (infra/bootstrap.cfn.yml). The operator writes them with
@@ -43,6 +50,8 @@ a reader at a ticket they cannot open, or at the wrong one here.
 - The deploy's values: `fitness: the alert email never passes through
   GitHub, and the drop box is a repository secret (public-repo.md)`, in the
   same file.
+- The deploy's log: `fitness: the deploy's log never shows the AWS account
+  id (public-repo.md)`, in the same file.
 - A fixture repo shaped like a real served repo: test/fixtures/factory/,
   `acme/factory`.
 
@@ -50,11 +59,11 @@ a reader at a ticket they cannot open, or at the wrong one here.
 
 - Exempt a file from the scan: the exemption list becomes the place a real
   value hides.
-- Read the alert email or the drop box from a repository variable: the
-  deploy's log prints it for anyone to read.
+- Read the alert email, the drop box or the deploy role's ARN from a
+  repository variable: the deploy's log prints it for anyone to read.
 - Keep an operator's value in a workflow or the stack's defaults "to save
   looking it up": a fork deploys it.
 - Map another repo's issue numbers onto this repo's: the number then points
   at an unrelated issue here.
 
-History: Set when governor's code was extracted into this repo, October 2026. Earlier decisions are in a private repo. The alert email and the drop box moved from repository variables to secrets in #3, and the alert email to Parameter Store in #7.
+History: Set when governor's code was extracted into this repo, October 2026. Earlier decisions are in a private repo. The alert email and the drop box moved from repository variables to secrets in #3, the alert email to Parameter Store in #7, and the deploy role's ARN to a secret, with the account id masked in the deploy's log, in #5.

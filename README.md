@@ -478,13 +478,12 @@ From a machine with the AWS CLI signed in as an identity that may write the secr
 3. The address the alarms email, in Parameter Store: `aws ssm put-parameter --name /governor/alert-email --type String --value <address> --profile <p>`. The stack reads it there on every deploy, so it never passes through GitHub. To change it, put the new address with `--overwrite`, deploy, and confirm the subscription AWS emails to the new address.
 4. Optional, with a drop box: the drop-box writer, `node scripts/save-secret.mjs session-log-writer --file <writer.txt> --profile <p>`. The file holds 32 or more lowercase hex digits.
 
-### 5. Set the repository variables and secret
+### 5. Set the repository variables and secrets
 
-Under the repo's **Settings → Secrets and variables → Actions**. Anyone can read a public repo's run logs, and Actions masks only secrets, so the drop box is a secret.
+Under the repo's **Settings → Secrets and variables → Actions**. Anyone can read a public repo's run logs, and Actions masks only secrets, so the deploy role's ARN and the drop box are secrets.
 
 | Variable | Value |
 |---|---|
-| `AWS_DEPLOY_ROLE_ARN` | The deploy role's ARN, from step 3. Until it is set, a push to `main` runs the gate and deploys nothing. |
 | `AWS_REGION` | The region to deploy to, the bootstrap stack's. Default `us-east-1`. |
 | `GOVERNOR_OWNERS` | The GitHub accounts whose installations are served, comma-separated. |
 | `APP_ID` | The App's numeric ID. |
@@ -493,6 +492,7 @@ Under the repo's **Settings → Secrets and variables → Actions**. Anyone can 
 
 | Secret | Value |
 |---|---|
+| `AWS_DEPLOY_ROLE_ARN` | The deploy role's ARN, from step 3. It carries the AWS account id, so it is a secret. Until it is set, a push to `main` runs the gate and deploys nothing. |
 | `DROP_BOX_URL` | Optional. An https URL that the PR review's transcripts are PUT under. Unset ships none. |
 
 ### 6. Run the first deploy

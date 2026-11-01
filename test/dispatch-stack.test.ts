@@ -719,10 +719,11 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
     for (const line of lines) {
       assert.doesNotMatch(line, /echo "(?!::add-mask::).*(WEBHOOK_SECRET|APP_PRIVATE_KEY)|point-app-webhook\.mjs\s+\S/, 'the keys must reach the script through the environment');
     }
-    // GitHub holds only the drop box (public-repo.md); the App key lives in
-    // Secrets Manager, and the alert email in Parameter Store.
+    // GitHub holds only the deploy role's ARN and the drop box
+    // (public-repo.md); the App key lives in Secrets Manager, and the alert
+    // email in Parameter Store.
     const githubSecrets = [...new Set([...codeOnly.matchAll(/\bsecrets\.([A-Za-z_]+)/g)].map((m) => m[1]))].sort();
-    assert.deepEqual(githubSecrets, ['DROP_BOX_URL'], 'a GitHub secret beyond the drop box');
+    assert.deepEqual(githubSecrets, ['AWS_DEPLOY_ROLE_ARN', 'DROP_BOX_URL'], 'a GitHub secret beyond the deploy role and the drop box');
   });
 
   test('the workflow packages the receiver before the apply, and applies the packaged template', () => {
@@ -1025,11 +1026,11 @@ describe('.github/workflows/deploy.yml', () => {
     assert.deepEqual(Object.keys(workflow.on ?? {}).sort(), ['push', 'workflow_dispatch']);
     assert.deepEqual(workflow.on.push, { branches: ['main'] });
     assert.equal(workflow.jobs?.gate?.uses, './.github/workflows/gate.yml');
-    assert.equal(workflow.jobs?.deploy?.needs, 'gate');
+    assert.deepEqual(workflow.jobs?.deploy?.needs, ['gate', 'role']);
   });
 
   test('does nothing until the deploy role is set, and names no value of the operator\'s', () => {
-    assert.equal(workflow.jobs?.deploy?.if, "${{ vars.AWS_DEPLOY_ROLE_ARN != '' }}");
+    assert.equal(workflow.jobs?.deploy?.if, "${{ needs.role.outputs.set == 'true' }}");
     const apply = steps.find(appliesStack('governor'));
     for (const [parameter, variable, store] of [
       ['DispatchOwners', 'GOVERNOR_OWNERS', 'vars'],
