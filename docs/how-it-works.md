@@ -197,6 +197,8 @@ So a checklist numbers its own tests 2 to 6. Code also fails tests 5 and 6 when 
 
 **Transcripts.** With `DropBoxUrl` set and the writer saved, each review's transcript is redacted, gzipped and PUT to `<DropBoxUrl>/<date>/pr-review-<PR>-<session>.jsonl.gz` (`dispatch-review-transcript`).
 
+**Spend.** Each review's `dispatch-review` line carries `usage`, what its model run spent as the CLI's result line reports it: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens` and `costUsd`. A failed or `limited` run logs what its result line carried. A field the line lacks is left out, and a review with no model run, or whose run printed no result line, has no `usage`.
+
 ## Prompts
 
 A repo's `prompts` map replaces the instruction in a kind of message, or the opening prompt of a kind of session. Governor still writes the facts itself: what happened, the PR or issue, the run and commit, and the standing line. A prompt may name its kind's facts as `{fact}`. A kind the file leaves out gets the default in `dispatch/prompts.mjs`, which names no repo's skill or file.

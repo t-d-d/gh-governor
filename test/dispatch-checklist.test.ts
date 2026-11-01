@@ -903,7 +903,7 @@ describe('the checklist\'s parts', () => {
       answer: IAM,
       usage: { inputTokens: 12, outputTokens: 340, cacheReadTokens: 5600, cacheCreationTokens: 780, costUsd: 0.0421 },
     });
-    assert.deepEqual(parseReview(line({ usage: { input_tokens: 12, output_tokens: 'many' } })).usage, { inputTokens: 12 });
+    assert.deepEqual(parseReview(line({ usage: { input_tokens: 12, output_tokens: 'many', cache_read_input_tokens: -1, cache_creation_input_tokens: 1.5 } })).usage, { inputTokens: 12 });
     assert.deepEqual(parseReview(line({ total_cost_usd: 0.5 })).usage, { costUsd: 0.5 });
     assert.ok(!('usage' in parseReview(line({ usage: null, total_cost_usd: 'free' }))), 'a line with no numbers gives no usage');
     // A failed run still says what it spent.
@@ -918,6 +918,19 @@ describe('the checklist\'s parts', () => {
       assert.deepEqual(error.usage, { costUsd: 0.02 });
       return true;
     });
+  });
+
+  test('cliJudge\'s spend report failing changes no answer and drops no transcript', async () => {
+    const logged: Array<{ event: string, context: Record<string, unknown> }> = [];
+    const judge = cliJudge({
+      skill: SKILL,
+      run: async () => ({ output: JSON.stringify({ ...JSON.parse(cliOutput(PASS, 's1')), total_cost_usd: 0.03 }) }),
+      transcript: async () => ({ key: 'k' }),
+      log: (event, context) => { logged.push({ event, context }); },
+      spent: () => { throw new Error('the meter broke'); },
+    });
+    assert.deepEqual(await judge({ pull: pullRow() as never, files: FILES as never, tickets: [] }), PASS);
+    assert.ok(logged.some((l) => l.event === 'dispatch-review-transcript' && l.context.sessionId === 's1'), JSON.stringify(logged));
   });
 
   test('parseReview takes test 7 only under the schema that leaves constraint files to the model', () => {

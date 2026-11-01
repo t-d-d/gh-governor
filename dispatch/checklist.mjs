@@ -652,7 +652,7 @@ const objectIn = (text) => {
 /**
  * @typedef {{ inputTokens?: number, outputTokens?: number, cacheReadTokens?: number, cacheCreationTokens?: number, costUsd?: number }} Usage
  *   What a checklist run spent, as its result line reports it. A field the
- *   line does not carry as a number is left out.
+ *   line does not carry as a count, or a cost, of zero or more is left out.
  */
 
 /** The result line's field for each of `Usage`'s token counts. */
@@ -676,9 +676,9 @@ const usageOf = (result) => {
   const usage = {};
   const tokens = result.usage && typeof result.usage === 'object' ? result.usage : {};
   for (const [name, field] of USAGE_FIELDS) {
-    if (Number.isFinite(tokens[field])) usage[name] = tokens[field];
+    if (Number.isInteger(tokens[field]) && tokens[field] >= 0) usage[name] = tokens[field];
   }
-  if (Number.isFinite(result.total_cost_usd)) usage.costUsd = result.total_cost_usd;
+  if (Number.isFinite(result.total_cost_usd) && result.total_cost_usd >= 0) usage.costUsd = result.total_cost_usd;
   return Object.keys(usage).length === 0 ? null : usage;
 };
 
@@ -710,30 +710,30 @@ export const parseReview = (output, schema = ANSWER_SCHEMA) => {
   if (result === null) throw new Error(`the CLI printed no answer: ${output.trim().slice(-500) || '(nothing)'}`);
   const sessionId = typeof result.session_id === 'string' ? result.session_id : null;
   const usage = usageOf(result);
-  const spent = usage === null ? {} : { usage };
+  const reported = usage === null ? {} : { usage };
   if (result.is_error) {
     const text = String(result.result ?? result.subtype);
     const limit = usageLimit(text);
-    throw Object.assign(new Error(`the CLI's run failed: ${text.slice(0, 500)}`), { sessionId, ...spent, ...(limit === null ? {} : { limit }) });
+    throw Object.assign(new Error(`the CLI's run failed: ${text.slice(0, 500)}`), { sessionId, ...reported, ...(limit === null ? {} : { limit }) });
   }
   /** @type {any} */
   const a = result.structured_output ?? objectIn(String(result.result ?? ''));
-  const refuse = (/** @type {string} */ why) => Object.assign(new Error(`the answer is not the checklist's: ${why}: ${JSON.stringify(a)?.slice(0, 500)}`), { sessionId, ...spent });
+  const refuse = (/** @type {string} */ why) => Object.assign(new Error(`the answer is not the checklist's: ${why}: ${JSON.stringify(a)?.slice(0, 500)}`), { sessionId, ...reported });
   if (!a || typeof a !== 'object') throw refuse('no object');
   if (typeof a.reason !== 'string' || a.reason.trim() === '') throw refuse('no reason');
-  if (a.answer === 'pass') return { sessionId, ...spent, answer: { answer: 'pass', reason: a.reason.trim() } };
+  if (a.answer === 'pass') return { sessionId, ...reported, answer: { answer: 'pass', reason: a.reason.trim() } };
   if (a.answer !== 'fail') throw refuse('answer is neither pass nor fail');
   const { minimum, maximum } = schema.properties.test;
   if (!Number.isInteger(a.test) || a.test < minimum || a.test > maximum) throw refuse(`test is not one of ${minimum} to ${maximum}`);
   if (typeof a.editable !== 'boolean') throw refuse('editable is not a boolean');
   const fail = /** @type {const} */ ({ answer: 'fail', test: a.test, reason: a.reason.trim() });
-  if (a.person === undefined) return { sessionId, ...spent, answer: { ...fail, editable: a.editable } };
+  if (a.person === undefined) return { sessionId, ...reported, answer: { ...fail, editable: a.editable } };
   const { person } = a;
   if (!person || typeof person !== 'object') throw refuse('person is not an object');
   if (!Number.isInteger(person.test) || person.test <= a.test || person.test > maximum) throw refuse(`person's test is not one of ${a.test + 1} to ${maximum}`);
   if (typeof person.reason !== 'string' || person.reason.trim() === '') throw refuse('person has no reason');
   // The first test is the session's to meet; the PR still waits for a person.
-  return { sessionId, ...spent, answer: { ...fail, editable: false, person: { test: person.test, reason: person.reason.trim() } } };
+  return { sessionId, ...reported, answer: { ...fail, editable: false, person: { test: person.test, reason: person.reason.trim() } } };
 };
 
 /**
@@ -841,7 +841,14 @@ export const cliJudge = ({ skill, run, transcript, log, spent = () => {} }) => {
       if (/** @type {{ limit?: string }} */ (error)?.limit !== undefined) limited = { error, pr };
       throw error;
     } finally {
-      if (usage !== undefined) spent(pr, usage);
+      // The measurement must not fail a review: a throw here would replace the answer.
+      if (usage !== undefined) {
+        try {
+          spent(pr, usage);
+        } catch (error) {
+          log('dispatch-review-usage', { pr, error: messageOf(error) });
+        }
+      }
       if (sessionId !== null) {
         try {
           log('dispatch-review-transcript', { pr, sessionId, ...await transcript({ sessionId, pr }) });
