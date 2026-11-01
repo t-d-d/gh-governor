@@ -157,6 +157,7 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
 /**
  * A session governor started that its state table does not record: the
  * PR review would let a ticket's mode label waive a human-only path for it.
+ * Its own alarm pages on it (infra/governor.cfn.yml).
  */
 export const SESSION_UNRECORDED = 'dispatch-session-unrecorded';
 
@@ -1703,10 +1704,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   /**
    * Claim one ticket: the claim label on, then the ready labels it takes
    * off. The plan was read before earlier launches that take minutes, so
-   * the ticket is read again first: one closed, unreadied or claimed since
-   * is skipped, untouched, since its session would proceed on the prompt's
-   * claim line over someone else's work. A claim that fails is released,
-   * and starts nothing.
+   * the ticket is read again first: one closed, unreadied, claimed or given
+   * one of the repo's excluded labels since is skipped, untouched, since its
+   * session would proceed on the prompt's claim line over someone else's
+   * work. A claim that fails is released, and starts nothing.
    *
    * @param {{ repo: string, issue: number }} ticket
    * @returns {Promise<'claimed' | 'taken' | 'failed'>}
@@ -1716,7 +1717,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const { labels } = configOf(repo);
     try {
       const { state, labels: on } = await (await readerFor(repo)).ticket(issue);
-      if (state !== 'open' || !labels.ready.every((l) => on.includes(l)) || on.includes(labels.claim)) {
+      if (state !== 'open' || !labels.ready.every((l) => on.includes(l)) || on.includes(labels.claim) || labels.exclude.some((l) => on.includes(l))) {
         deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}` });
         return 'taken';
       }
