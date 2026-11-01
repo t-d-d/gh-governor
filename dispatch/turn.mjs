@@ -511,11 +511,13 @@ export const run = async (event, deps) => {
   const reads = { owners: deps.owners, token: tokenFor, config: deps.configFile, environments, log: deps.log };
   const readAt = new Date(deps.now()).toISOString();
   /**
-   * Each served repo's hooks, key versions and hourly caps, and each of its
-   * switches as {@link turnsOn} reads it, as its file reads now, to the
-   * receiver's hook table, in one write, so the receiver refuses a revoked
-   * key, a removed hook or a fire past the cap before the queue, and drops a
-   * delivery's fire whose switch is off (dispatch/webhook/switches.mjs). It
+   * Each served repo's hooks, key versions and hourly caps, each of its
+   * switches as {@link turnsOn} reads it, and its ready labels, as its file
+   * reads now, to the receiver's hook table, in one write, so the receiver
+   * refuses a revoked key, a removed hook or a fire past the cap before the
+   * queue, drops a delivery's fire whose switch is off
+   * (dispatch/webhook/switches.mjs), and queues a selection fire only for a
+   * ready label (dispatch/webhook/route.mjs). It
    * is written before the turn refuses its fire, so a turn whose own switch
    * is off still brings the item up to the file. A write that
    * fails is logged at error and counts the repo unread, and the turn goes
@@ -531,7 +533,7 @@ export const run = async (event, deps) => {
       const hooks = turnsOn(config, 'hooks') ? config.hooks.map(({ name, keyVersion, perHour }) => ({ name, keyVersion, perHour: perHour ?? HOOK_PER_HOUR })) : [];
       const switches = Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, turnsOn(config, name)]));
       try {
-        await deps.hookTable.publish(served, { hooks, switches }, readAt);
+        await deps.hookTable.publish(served, { hooks, switches, ready: config.labels.ready }, readAt);
         return null;
       } catch (error) {
         deps.log('hook-table-unwritten', { level: 'error', repo: served, error: messageOf(error) });

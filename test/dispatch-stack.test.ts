@@ -698,14 +698,14 @@ describe('infra/governor.cfn.yml — the webhook receiver', () => {
     assert.equal(env.FIRES_QUEUE_URL, '${DispatchFiresQueue}');
   });
 
-  // The receiver reads no repo's ready labels, so the stack names the
-  // labels whose addition is worth a selection fire, and the deploy sets the factory's.
-  test('knows the labels whose addition queues a selection fire, which the deploy sets', () => {
-    assert.equal(fn?.Properties?.Environment?.Variables?.SELECT_LABELS, '${SelectLabels}');
-    assert.equal(template.Parameters?.SelectLabels?.Type, 'String');
+  // The receiver judges a label against the repo's ready labels in its
+  // hook-table item, so no stack parameter lists labels and no deploy sets one.
+  test('takes no list of labels: the receiver reads each repo\'s ready labels from the hook table', () => {
+    assert.equal(fn?.Properties?.Environment?.Variables?.SELECT_LABELS, undefined);
+    assert.equal(template.Parameters?.SelectLabels, undefined);
     const apply = steps.find(appliesStack('governor'));
-    assert.match(apply?.run ?? '', /"SelectLabels=\$\{SELECT_LABELS\}"/);
-    assert.equal(apply?.env?.SELECT_LABELS, '${{ vars.SELECT_LABELS }}', 'the operator\'s labels are a repository variable, not a value here');
+    assert.doesNotMatch(apply?.run ?? '', /SelectLabels/);
+    assert.equal(apply?.env?.SELECT_LABELS, undefined);
   });
 
   test('knows the dispatcher\'s App, whose comment alone is the PR review\'s', () => {

@@ -16,7 +16,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { poking } from './poke.mjs';
 import { hookTable } from './hook-table.mjs';
-import { LANE, ownersOf, selectLabelsOf } from './fire.mjs';
+import { LANE, ownersOf } from './fire.mjs';
 import { appIdOf, cachedSecret, handle, handleSchedule } from './route.mjs';
 
 const env = process.env;
@@ -29,7 +29,7 @@ const lambda = new LambdaClient({});
 const unset = async () => { throw new Error('HOOK_TABLE is unset'); };
 const hooks = env.HOOK_TABLE
   ? hookTable(new DynamoDBClient({}), env.HOOK_TABLE)
-  : { listed: unset, count: unset, switches: unset };
+  : { listed: unset, count: unset, item: unset };
 
 /** @type {import('./route.mjs').Deps} */
 const deps = {
@@ -47,14 +47,13 @@ const deps = {
   listedHooks: hooks.listed,
   // Each hook's fires this clock hour, counted under its cap before it queues.
   countFire: hooks.count,
-  // Each repo's switches as the task last read its file: read once a
-  // delivery would queue a fire, to drop the fires whose switch is off.
-  repoSwitches: hooks.switches,
+  // Each repo's switches and ready labels as the task last read its file:
+  // read once a delivery would queue a fire, to drop the fires whose switch
+  // is off and a selection for a label that is not ready.
+  repoItem: hooks.item,
   now: Date.now,
   // The stack's owner list (DispatchOwners); unset is no owner, so nothing routes.
   owners: ownersOf(env.DISPATCH_OWNERS),
-  // The stack's SelectLabels; unset is every label.
-  selectLabels: selectLabelsOf(env.SELECT_LABELS),
   appId: appIdOf(env.APP_ID),
   enqueue: async (message, dedupId) => {
     const sent = await sqs.send(new SendMessageCommand({
