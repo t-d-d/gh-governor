@@ -4,7 +4,7 @@ Governor is built the way it builds any repo it serves. The owner writes the tic
 
 ## The numbers
 
-Governor started in a private repo. Its code moved here on 28 October 2026, in one commit of about 14,700 lines of source and 1,360 tests. In the five days to 12:00 UTC on 2 November 2026:
+Governor came out of building a production service with Claude Code agents, and that service's repo is private. Governor's code moved here on 28 October 2026, in one commit of about 14,700 lines of source and 1,360 tests. In the five days to 12:00 UTC on 2 November 2026:
 
 | | |
 |---|---|

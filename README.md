@@ -1,25 +1,29 @@
 # governor
 
-**A software factory for GitHub repos, built on Claude Code.** Label an issue, and an AI agent writes the pull request, answers its review, fixes what breaks, and signs off once the change ships. Each repo decides how much of that happens without a person.
+**A personal software factory, built on Claude Code.** Label an issue in one of your repos, and an AI agent writes the pull request, answers its review, fixes what breaks, and signs off once the change ships. You decide, repo by repo, how much of that happens without you.
 
 [![Deploy](https://github.com/t-d-d/gh-governor/actions/workflows/deploy.yml/badge.svg?branch=main)](https://github.com/t-d-d/gh-governor/actions/workflows/deploy.yml)
 [![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 [![Built by Claude Code sessions](https://img.shields.io/badge/built%20by-Claude%20Code%20sessions-d97757)](docs/building-with-agents.md)
 
-Coding agents can write a pull request. The work around one is still manual: picking the next ticket, starting the agent, passing on review comments, telling it CI went red or the deploy shipped. Governor does that work, as a team lead does for a team of developers. It watches each repo that installs its GitHub App, starts a Claude Code cloud session for each ready ticket, and relays everything that happens on that ticket's pull request back to the session that wrote it.
+Coding agents can write a pull request. The work around one is still manual: picking the next ticket, starting the agent, passing on review comments, telling it CI went red or the deploy shipped. Governor does that work for one developer and their repos, as a team lead does for a team. It watches each of your repos that installs its GitHub App, starts a Claude Code cloud session on your own subscription for each ready ticket, and relays everything that happens on that ticket's pull request back to the session that wrote it.
 
 The name comes from the governor on a steam engine, which holds the engine's speed with nobody at the throttle ([more below](#why-governor)).
 
+## Where it came from
+
+Governor is [Thomas Dickinson](https://github.com/t-d-d)'s personal software factory. It came out of building a production service with Claude Code agents. The practices, skills and automations that ran that service's backlog were distilled into governor, and that service's repo stays private. Thomas designed the factory and the rules its agents work under, writes the specs and tickets, and merges every pull request. Claude Code sessions write the code.
+
 ## It builds itself
 
-Governor started in a private repo. On 28 October 2026 its code moved here: about 14,700 lines of source and 1,360 tests. In the five days to 12:00 UTC on 2 November 2026, working its own backlog, it:
+On 28 October 2026 governor's code moved into this repo: about 14,700 lines of source and 1,360 tests. Since then it has worked its own backlog. In the five days to 12:00 UTC on 2 November 2026, it:
 
 - picked up **94 tickets** and started a Claude Code session on each;
-- merged **98 pull requests** written by Claude Code sessions. Over the 90 tickets they closed, pickup to merge took a median of **29 minutes**, and half of the tickets took between 16 and 94 minutes, the owner's review included;
+- merged **98 pull requests** written by Claude Code sessions. Over the 90 tickets they closed, pickup to merge took a median of **29 minutes**, and half of the tickets took between 16 and 94 minutes, review included;
 - closed **2** of those sessions' pull requests unmerged, a probe that closes its own pull request by design and a duplicate of another pull request, and reverted **none**;
 - grew by about **7,300 lines of source and 900 tests**, to more than 2,200 tests, every one of them offline.
 
-The owner writes the specs and tickets, and reviews and merges every pull request, often in batches, so these times include waiting for review. Sessions write the code, the tests and the pull request descriptions.
+Thomas reviews each pull request mainly from its description, which maps every acceptance criterion to the test that answers it, and merges it, often in batches, so these times include waiting for review. This repo turns on pickup, summons, PR messages, subscriptions, conflicts and blocker messages. It does not run governor's own PR review, so every merge is a person's.
 
 ### One feature, start to finish
 
@@ -32,7 +36,7 @@ The `Blocked until:` feature ([PRD #185](https://github.com/t-d-d/gh-governor/is
 | [#188](https://github.com/t-d-d/gh-governor/issues/188) Show a ticket's wait in its sidebar | 2 Nov 09:08 | [#235](https://github.com/t-d-d/gh-governor/pull/235), 11 files | 2 Nov 10:55 |
 | [#189](https://github.com/t-d-d/gh-governor/issues/189) Wait a number of days after a blocker closes | 2 Nov 09:08 | [#236](https://github.com/t-d-d/gh-governor/pull/236), 14 files | 2 Nov 10:45 |
 
-#213 opened 14 minutes after pickup, then waited almost nine hours, overnight, for the owner's review.
+#213 opened 14 minutes after pickup, then waited almost nine hours, overnight, for review.
 
 [How this repo is built](docs/building-with-agents.md) shows the loop each ticket goes through, and the files that keep the agents on track.
 
@@ -64,7 +68,7 @@ sequenceDiagram
     G->>S: Archive the session
 ```
 
-Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action can take an issue, write the change, and answer review comments on its pull request. Governor does not drive those tools. It starts its own Claude Code cloud sessions and runs the loop around the change, across every repo it serves. It takes work from the backlog unasked, and holds a ticket while its blockers are open or its date has not come. It keeps one session per ticket for the ticket's whole life, so the agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships. Each repo sets how far it runs and which paths always need a person. It runs on your own Claude subscription and AWS account.
+Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action can take an issue, write the change, and answer review comments on its pull request, and a Claude Code cloud session can watch its own pull request. Governor does not drive those tools. It starts its own Claude Code cloud sessions and runs the loop around the change, across every repo it serves. It takes work from the backlog unasked, and holds a ticket while its blockers are open or its date has not come. It keeps one session per ticket for the ticket's whole life, so the agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships. Each repo sets how far it runs and which paths always need a person. It runs on your own Claude subscription and AWS account.
 
 ## What it does
 
@@ -76,7 +80,7 @@ A repo turns each feature on with a switch in its `.github/dispatch.json`. Two b
 | Summons | `@claude` in an issue, a comment or a review starts a session on that remark. |
 | PR messages | Every comment, review, push and merge on a pull request goes to the session that wrote it. A fresh session takes over if that one is archived. |
 | CI and deploys | A red build tells the sessions whose merges may have broken it. A deploy tells the sessions whose work it shipped, and labels their tickets. |
-| PR review | A model checks each pull request against the repo's own checklist. A pass merges it, or approves it for a person to merge. |
+| PR review | A model checks each pull request's description and the tickets it closes against the repo's own checklist, and CI checks the code. A pass merges it, or approves it for a person to merge. |
 | Periodics | Recurring sessions, such as a code review every 10 merges or a weekly ticket review. |
 | Hooks | A system outside GitHub, such as a cloud alarm, starts a session with a signed request. |
 | Waits | A ticket that opens with `Blocked until: 2026-11-20` is not started before that date. |
@@ -123,13 +127,16 @@ Two CloudFormation stacks hold all of it, and GitHub Actions deploys them after 
 
 **[Watch a fire travel through the system, animated](https://t-d-d.github.io/gh-governor/fire-lane.html)**, from the webhook to the queue and the task.
 
-## Limits and risks
+## Personal, on purpose
+
+Governor is built for one developer running their own repos on their own Claude subscription. It is not a team or enterprise product, and does not try to be. One login, one queue and one task are enough for one person's backlog, and they keep the moving parts few. What that choice costs:
 
 - **The model judges intent, and CI judges the code.** The review's model reads no diff. It sees the pull request's description, the list of files it changes, the tickets it closes, and any files the repo asks it to quote whole. It judges whether the change does what its tickets ask and stays inside the repo's rules. The code itself is judged by the repo's CI and required checks, which the review will not pass while red.
 - **This repo does not run the automatic merge.** Governor does not review its own pull requests, since it would be marking its own work. A person merges every one.
 - **It depends on Claude Code internals.** Governor starts a session by driving `claude --cloud` in a pseudo-terminal, with flags the CLI does not document, and reads a session's last reply from the sessions API. A CLI release can break it. The probe after each deploy, and 17 CloudWatch alarms, are how that shows up.
-- **One subscription login.** Every session runs on one claude.ai login, copied from an interactive sign-in. The operator mints it again about every two weeks, and an alarm warns three days ahead. The subscription's usage limits, not AWS, set the real ceiling on throughput and cost.
-- **One lane.** One task runs one turn at a time, and the hourly sweep starts at most two ticket sessions by default. That keeps the login safe and is plenty for one owner's repos. It would not serve a large team without a different design.
+- **Your login, your terms.** Every session runs on your own claude.ai login, copied from an interactive sign-in, so governor is for your own repos, not a service for other people. Check your plan's terms before you leave it running unattended. The operator mints it again about every two weeks, and an alarm warns three days ahead. The subscription's usage limits, not AWS, set the real ceiling on throughput and cost.
+- **Nobody else runs it yet.** [Running your own governor](docs/self-hosting.md) has every step, but only its author has deployed it.
+- **One lane.** One task runs one turn at a time, and the hourly sweep starts at most two ticket sessions by default. That keeps the login safe and is plenty for one person's repos. A team would need a different design.
 
 ## Use the playbook without governor
 
@@ -142,9 +149,9 @@ Most of what keeps the agents on track here is plain files that work in any repo
 
 [How this repo is built](docs/building-with-agents.md) explains how they fit together.
 
-## Try it
+## Run your own
 
-Governor serves the GitHub accounts on its deployment's owner list, so you run your own. You need an AWS account you can administer, the AWS CLI, Node 22.18 or later, the Claude Code CLI, and a Claude Pro or Max subscription.
+Each deployment is one person's factory: it serves the GitHub accounts on its owner list, on one Claude subscription. To try it, you deploy your own. You need an AWS account you can administer, the AWS CLI, Node 22.18 or later, the Claude Code CLI, and a Claude Pro or Max subscription.
 
 1. **Deploy governor.** Create a GitHub App, apply two CloudFormation stacks, and save a claude.ai login. [Running your own governor](docs/self-hosting.md) has every step.
 2. **Opt a repo in.** Install the App, and copy the [starter kit](examples/starter/) into the repo's `.github/`. The smallest working config is:
@@ -175,10 +182,6 @@ Governor serves the GitHub accounts on its deployment's owner list, so you run y
 A governor is the part of an engine that holds its speed steady with nobody at the throttle. On James Watt's steam engines, two weights spin on a shaft the engine drives. When the engine speeds up they swing out and close the steam valve, and when it slows they drop and open it. James Clerk Maxwell's 1868 paper *On Governors* is often taken as the start of control theory. The word comes, through Latin, from the Greek *kybernētēs*, the steersman, which is also where Norbert Wiener took the name cybernetics in 1948.
 
 This governor does that job for a software factory. Agents do the work, and each repo's config file sets the limits: which tickets they may start, whether a passing review merges, and which files always wait for a person.
-
-## Who built it
-
-Governor is [Thomas Dickinson](https://github.com/t-d-d)'s project. Thomas designed the factory and the rules its agents work under, writes the specs and tickets, owns the architectural constraints, which change meaning only with Thomas's agreement, and merges every pull request. Claude Code sessions write the code.
 
 ## Licence
 
