@@ -55,6 +55,13 @@ import { waitLine } from '../../dispatch/webhook/fire.mjs';
 export const RELATIVE_WAIT = /^(\d+)\s+days?\s+after\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)\s+closes(?=\s|$)/i;
 
 /**
+ * The longest relative wait governor reads, a hundred years, so the date a
+ * close gives is always a `YYYY-MM-DD` the calendar holds. A longer count is
+ * unreadable.
+ */
+export const MAX_RELATIVE_DAYS = 36500;
+
+/**
  * @typedef {object} BlockerRow
  * @property {number} number
  * @property {string} [state] `open` or `closed`.
@@ -133,7 +140,8 @@ export const isBlocked = (issue, rows) =>
  * so a body that quotes the line further down holds nothing. The value is a
  * date, `YYYY-MM-DD`, that exists on the calendar; text after it, past a
  * space, is a reason and is ignored. So is a relative value,
- * `<N> days after #<issue> closes` with `N` at least 1 ({@link RELATIVE_WAIT}),
+ * `<N> days after #<issue> closes` with `N` from 1 to {@link MAX_RELATIVE_DAYS}
+ * ({@link RELATIVE_WAIT}),
  * which holds the ticket until governor rewrites it into its date
  * (dispatch/waits.mjs). Any other value is unreadable, which
  * holds the ticket too (`isWaiting`): a line a person wrote must never be
@@ -156,7 +164,7 @@ export const waitOf = (body) => {
   const relative = RELATIVE_WAIT.exec(value);
   const days = Number(relative?.[1]);
   const issue = Number(relative?.[3]);
-  if (relative !== null && Number.isSafeInteger(days) && days >= 1 && Number.isSafeInteger(issue) && issue >= 1) {
+  if (relative !== null && Number.isSafeInteger(days) && days >= 1 && days <= MAX_RELATIVE_DAYS && Number.isSafeInteger(issue) && issue >= 1) {
     return { wait: { after: { days, issue, ...(relative[2] === undefined ? {} : { repo: relative[2] }) } } };
   }
   return { wait: { unreadable: value } };

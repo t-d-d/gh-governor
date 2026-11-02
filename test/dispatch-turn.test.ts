@@ -6878,6 +6878,30 @@ describe('run: a relative wait on a declared blocker', () => {
     assert.match(String(result.refusal), /neither pickup nor unblocked/);
   });
 
+  test('a line deleted between the ticket\'s read and the rewrite is read again, and a ready ticket is picked up', async () => {
+    const h = relativeTurn();
+    const reader = h.deps.reader;
+    let reads = 0;
+    // A person deletes the line just before governor reads the body to rewrite it.
+    h.deps.reader = (token: string) => {
+      const r = reader(token);
+      return {
+        ...r,
+        ticket: async (n: number) => {
+          reads += 1;
+          return r.ticket(n);
+        },
+        issue: async (n: number) => {
+          await r.updateIssue(n, { body: 'The rest.' });
+          return r.issue(n);
+        },
+      };
+    };
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.ok(reads >= 2, String(reads));
+    assert.equal(result.row, 'ready', JSON.stringify(result));
+  });
+
   test('another repo\'s close rewrites a line naming that repo\'s issue', async () => {
     const h = relativeTurn({ body: 'Blocked until: 3 days after acme/tools#41 closes' });
     await run(fire({ blocker: { ...blocker, repo: 'acme/tools' } }), h.deps as never);

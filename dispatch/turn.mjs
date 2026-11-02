@@ -1702,9 +1702,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // catches its own failure, so they run side by side and keep the launch
     // window for the launches.
     await Promise.all(unreadable.map(async ({ repo, issue, value }) => reportUnreadable({ reader: await readerFor(repo), repo, issue, value, log: deps.log })));
-    // A relative line no open blocker holds: the sweep settles it, whatever
-    // the repo's switches say, or says once that it cannot. A failure is
-    // logged and left for the next sweep: the ticket stays held.
+    // A relative line no open blocker holds, in a repo pickup sweeps: the
+    // sweep settles it, whatever the repo's other switches say, or says once
+    // that it cannot. A failure is logged and left for the next sweep: the
+    // ticket stays held.
     await Promise.all(relative.map(async ({ repo, issue, after }) => {
       try {
         await repairRelative({ reader: await readerFor(repo), repo, issue, after, link: false, prompts: configOf(repo).prompts, now: deps.now(), log: deps.log });
@@ -1823,8 +1824,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const { blockers, reads } = read;
     let { ticket } = read;
     const settled = await settleRelative(ticket);
-    if (settled?.wait !== undefined) ticket = { ...ticket, wait: settled.wait };
-    if (settled !== null && settled.wait === undefined) {
+    // A line changed since the ticket's read is no longer this close's: the
+    // ticket is read again and takes its row as it now stands.
+    const changed = settled?.outcome === 'line changed';
+    if (changed) ticket = await reader.ticket(issue);
+    else if (settled?.wait !== undefined) ticket = { ...ticket, wait: settled.wait };
+    if (settled !== null && settled.wait === undefined && !changed) {
       deps.log('dispatch-unblocked', { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row: 'blocked', reads, outcome: `held by its relative line: ${settled.outcome}` });
       return { kind: invocation.kind, row: 'blocked', dispatched: [] };
     }

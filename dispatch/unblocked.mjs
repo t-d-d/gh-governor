@@ -70,8 +70,8 @@ export const NOT_PLANNED = 'not_planned';
  */
 export const ROW_SWITCH = Object.freeze({ 'not-planned': 'unblocked', claimed: 'unblocked', ready: 'pickup', 'not-ready': 'unblocked' });
 
-/** @param {string} a @param {string} b */
-const sameRepo = (a, b) => a.toLowerCase() === b.toLowerCase();
+/** Whether two repo names are the same repo: GitHub's compare in any case. @param {string} a @param {string} b */
+export const sameRepo = (a, b) => a.toLowerCase() === b.toLowerCase();
 
 /**
  * A fire's deduplication id: the closed issue and the ticket, so a retried

@@ -40,7 +40,8 @@
  */
 
 import { recentlyDispatched, waitLine } from './webhook/fire.mjs';
-import { specSession, unblockedFacts } from './unblocked.mjs';
+import { sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
+import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
 import { RELATIVE_WAIT, isBlocked, isWaiting, labelRow, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 
@@ -67,6 +68,22 @@ export const waitUnreadableComment = (value) => {
 };
 
 /**
+ * Say something once on a ticket: nothing where its thread carries `marker`.
+ *
+ * @param {Pick<RelativeReader, 'allComments' | 'comment'>} reader
+ * @param {number} issue
+ * @param {string} marker
+ * @param {string} text
+ * @returns {Promise<'commented' | 'already told'>}
+ */
+const sayOnce = async (reader, issue, marker, text) => {
+  const thread = await reader.allComments(issue);
+  if (thread.some((c) => String(c.body ?? '').includes(marker))) return 'already told';
+  await reader.comment(issue, text);
+  return 'commented';
+};
+
+/**
  * Say that a ticket's line cannot be read: a warning in the log every time,
  * and one comment on the ticket, unless its thread already carries the
  * marker. A thread or a comment that fails is logged at error and skipped:
@@ -85,10 +102,7 @@ export const waitUnreadableComment = (value) => {
 export const reportUnreadable = async ({ reader, repo, issue, value, log }) => {
   log(WAIT_UNREADABLE, { level: 'warn', repo, issue, value, reason: 'its `Blocked until:` line holds no date governor can read, so the ticket is held' });
   try {
-    const thread = await reader.allComments(issue);
-    if (thread.some((c) => String(c.body ?? '').includes(WAIT_UNREADABLE_MARKER))) return 'already told';
-    await reader.comment(issue, waitUnreadableComment(value));
-    return 'commented';
+    return await sayOnce(reader, issue, WAIT_UNREADABLE_MARKER, waitUnreadableComment(value));
   } catch (error) {
     log(WAIT_UNREADABLE, { level: 'error', repo, issue, value, error: error instanceof Error ? error.message : String(error), reason: 'the ticket is held, and governor could not say so on it this turn' });
     return 'failed';
@@ -383,8 +397,6 @@ export const waitNotPlannedMarker = (ref) => `${WAIT_NOT_PLANNED_MARKER}${ref} -
 /** The marker on governor's one comment about a relative line it cannot settle. */
 export const WAIT_RELATIVE_MARKER = '<!-- governor:wait-relative -->';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 /**
  * A relative wait's date: the first day whose 00:00 UTC is at least `days`
  * days after `closedAt`, so the wait is never shorter than it says.
@@ -432,14 +444,11 @@ export const datedBody = (body, until) => {
  *   allComments: (n: number) => Promise<Array<{ body: string }>>,
  *   comment: (n: number, body: string) => Promise<void>,
  *   blockers: (n: number) => Promise<Array<{ number: number, state: string, repo?: string }>>,
- *   issueClose: (n: number) => Promise<{ id: number, number: number, title: string, state: string, reason: string | null, closedAt: string | null }>,
+ *   issueClose: (n: number) => Promise<{ id: number, number: number, title: string, state: string, reason: string | null, closedAt: string | null, pull?: boolean }>,
  *   addBlocker: (n: number, id: number) => Promise<void>,
  * }} RelativeReader
  *   What a relative wait reads and writes, all in the ticket's own repo.
  */
-
-/** @param {string} a @param {string} b */
-const sameRepo = (a, b) => a.toLowerCase() === b.toLowerCase();
 
 /**
  * How a ticket of `repo` names `closed`: `#<issue>` in its own repo, or
@@ -480,22 +489,6 @@ export const waitRelativeComment = (ref) => [
 ].join('\n');
 
 /**
- * Say something once on a ticket: nothing where its thread carries `marker`.
- *
- * @param {Pick<RelativeReader, 'allComments' | 'comment'>} reader
- * @param {number} issue
- * @param {string} marker
- * @param {string} text
- * @returns {Promise<'commented' | 'already told'>}
- */
-const sayOnce = async (reader, issue, marker, text) => {
-  const thread = await reader.allComments(issue);
-  if (thread.some((c) => String(c.body ?? '').includes(marker))) return 'already told';
-  await reader.comment(issue, text);
-  return 'commented';
-};
-
-/**
  * Settle a relative line on `closed`'s close. A completed close, or one
  * GitHub gave no reason for, rewrites the line into its date, from the body
  * read just before the write, so a person's edit elsewhere stays. A body
@@ -531,12 +524,13 @@ const settle = async ({ reader, repo, issue, closed, facts, prompts, log }) => {
  * An `unblocked` turn's first step: where the ticket is open and its line
  * waits on the fire's blocker, settle it ({@link settle}), counting from
  * the close time the fire carries, or from `now` for a fire without one, so
- * the wait is never shorter. Null where the line is not this close's.
+ * the wait is never shorter. Null where the line is not this close's, or
+ * the ticket's read names another number: it moved to another repo.
  *
  * @param {{
  *   reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>,
  *   repo: string,
- *   ticket: { state: string, wait?: import('../scripts/lib/ready-work.mjs').Wait },
+ *   ticket: { number?: number, state: string, wait?: import('../scripts/lib/ready-work.mjs').Wait },
  *   fire: import('./webhook/fire.mjs').UnblockedFire & { repo?: string },
  *   prompts: Record<string, string | undefined>,
  *   now: number,
@@ -545,7 +539,7 @@ const settle = async ({ reader, repo, issue, closed, facts, prompts, log }) => {
  * @returns {Promise<{ outcome: string, wait?: { until: string } } | null>}
  */
 export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now, log }) => {
-  if (ticket.state !== 'open' || !waitsOnClose(ticket.wait, repo, fire.blocker)) return null;
+  if (ticket.state !== 'open' || (ticket.number !== undefined && ticket.number !== fire.issue) || !waitsOnClose(ticket.wait, repo, fire.blocker)) return null;
   const { blocker } = fire;
   const closed = { repo: blocker.repo, number: blocker.number, reason: blocker.reason ?? null, closedAt: blocker.closedAt ?? new Date(now).toISOString() };
   return settle({ reader, repo, issue: fire.issue, closed, facts: unblockedFacts({ ...fire, repo }, { quote: true }), prompts, log });
@@ -563,7 +557,8 @@ export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now
  *   linked. The sweep, which finds no open blocker, comments once.
  * - Another repo's issue: the `wait` turn leaves it, since a person must
  *   declare it. The sweep comments once.
- * - An issue that is gone or moved: one comment.
+ * - An issue that is gone or moved, a pull request, or the ticket itself,
+ *   none of which can be its blocker: one comment.
  *
  * @param {{ reader: RelativeReader, repo: string, issue: number, after: import('../scripts/lib/ready-work.mjs').After, link: boolean, prompts: Record<string, string | undefined>, now?: number, log: Log }} args
  * @returns {Promise<string>} What came of it.
@@ -592,6 +587,8 @@ export const repairRelative = async ({ reader, repo, issue, after, link, prompts
     throw error;
   });
   if (read === null) return cannot(`${ref} is gone or moved`);
+  if (read.pull === true) return cannot(`${ref} is a pull request, which cannot be a blocker`);
+  if (after.issue === issue) return cannot(`${ref} is the ticket itself`);
   if (read.state !== 'open') {
     const reason = read.reason ?? 'completed';
     const facts = `${ref} (\`${read.title.replace(/`/g, "'")}\`) closed as ${reason.replace(/_/g, ' ')}. It blocked #${issue}.`;

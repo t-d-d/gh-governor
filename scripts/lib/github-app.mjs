@@ -482,11 +482,12 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
 
     /**
      * An issue's id, title, state, GitHub's `state_reason` and when it
-     * closed, each null where it gives none: what a relative wait reads of
-     * the issue it names (dispatch/waits.mjs).
+     * closed, each null where it gives none, and whether it is a pull
+     * request: what a relative wait reads of the issue it names
+     * (dispatch/waits.mjs).
      *
      * @param {number} number
-     * @returns {Promise<{ id: number, number: number, title: string, state: string, reason: string | null, closedAt: string | null }>}
+     * @returns {Promise<{ id: number, number: number, title: string, state: string, reason: string | null, closedAt: string | null, pull: boolean }>}
      */
     issueClose: async (number) => {
       const row = await call('GET', `/repos/${repo}/issues/${number}`);
@@ -497,6 +498,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         state: row.state,
         reason: typeof row.state_reason === 'string' ? row.state_reason : null,
         closedAt: typeof row.closed_at === 'string' ? row.closed_at : null,
+        pull: Boolean(row.pull_request),
       };
     },
 

@@ -1206,14 +1206,16 @@ describe('githubReader: what a relative wait reads and writes', () => {
     assert.deepEqual(await githubReader({ token: 't', repo: 'acme/factory', fetch }).blockers(10), [{ number: 3, state: 'open', title: 'Elsewhere', repo: 'acme/tools' }]);
   });
 
-  test('issueClose reads an issue\'s id, state, close reason and close time', async () => {
+  test('issueClose reads an issue\'s id, state, close reason and close time, and whether it is a pull request', async () => {
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues/143': { id: 9001, number: 143, title: 'The change', state: 'closed', state_reason: 'not_planned', closed_at: '2026-11-02T09:00:00Z' },
       'https://api.github.com/repos/acme/factory/issues/144': { id: 9002, number: 144, title: 'Open', state: 'open', state_reason: null, closed_at: null },
+      'https://api.github.com/repos/acme/factory/issues/145': { id: 9003, number: 145, title: 'A PR', state: 'closed', state_reason: null, closed_at: '2026-11-02T09:00:00Z', pull_request: { url: 'x' } },
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    assert.deepEqual(await reader.issueClose(143), { id: 9001, number: 143, title: 'The change', state: 'closed', reason: 'not_planned', closedAt: '2026-11-02T09:00:00Z' });
-    assert.deepEqual(await reader.issueClose(144), { id: 9002, number: 144, title: 'Open', state: 'open', reason: null, closedAt: null });
+    assert.deepEqual(await reader.issueClose(143), { id: 9001, number: 143, title: 'The change', state: 'closed', reason: 'not_planned', closedAt: '2026-11-02T09:00:00Z', pull: false });
+    assert.deepEqual(await reader.issueClose(144), { id: 9002, number: 144, title: 'Open', state: 'open', reason: null, closedAt: null, pull: false });
+    assert.equal((await reader.issueClose(145)).pull, true);
   });
 
   test('addBlocker links an issue as a blocker by its id', async () => {

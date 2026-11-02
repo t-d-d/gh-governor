@@ -36,6 +36,13 @@ describe('the line', () => {
     }
   });
 
+  test('a count past a hundred years is unreadable, so a close always gives a four-digit year', () => {
+    assert.deepEqual(waitOf('Blocked until: 36500 days after #143 closes'), { wait: { after: { days: 36500, issue: 143 } } });
+    for (const value of ['36501 days after #143 closes', '999999999 days after #143 closes']) {
+      assert.deepEqual(waitOf(`Blocked until: ${value}`), { wait: { unreadable: value } }, value);
+    }
+  });
+
   test('holds the ticket at any time, as the receiver still sees the line', () => {
     assert.equal(isWaiting(waitOf('Blocked until: 3 days after #143 closes'), Date.parse('2099-01-01T00:00:00Z')), true);
     assert.notEqual(waitLine('Blocked until: 3 days after #143 closes'), null);
@@ -175,6 +182,13 @@ describe('at the close', () => {
     }
   });
 
+  test('a ticket moved to another repo is not this close\'s: its read names another number', async () => {
+    const f = fakeReader();
+    const moved = { ...ticketOf(f.state.body), number: 12 };
+    assert.equal(await relativeAtClose({ reader: f.reader, repo: REPO, ticket: moved, fire, prompts: {}, now: NOW, log: logs().log }), null);
+    assert.deepEqual([f.edits, f.comments], [[], []]);
+  });
+
   test('a line naming another repo\'s issue is that close\'s', async () => {
     const f = fakeReader({ body: 'Blocked until: 2 days after acme/tools#41 closes' });
     const other = { ...fire, blocker: { ...blocker, repo: 'acme/tools', number: 41 } };
@@ -205,6 +219,19 @@ describe('the wait turn, under `waits`', () => {
     const f = fakeReader({ issues: { 143: {} }, blockers: [{ number: 143, state: 'open' }] });
     await holdWait({ reader: f.reader as never, state: state(new Map()), repo: REPO, issue: 7, labels: LABELS, now: NOW, log: logs().log });
     assert.deepEqual([f.links, f.comments], [[], []]);
+  });
+
+  test('a pull request, or the ticket itself, is never linked: one comment saying to link an issue or write a date', async () => {
+    for (const [body, issues] of [
+      ['Blocked until: 3 days after #143 closes', { 143: { pull: true } }],
+      ['Blocked until: 3 days after #143 closes', { 143: { pull: true, state: 'closed', closedAt: CLOSED_AT } }],
+      ['Blocked until: 3 days after #7 closes', { 7: {} }],
+    ] as const) {
+      const f = fakeReader({ body, issues: issues as never });
+      assert.equal(await holdWait({ reader: f.reader as never, state: state(new Map()), repo: REPO, issue: 7, labels: LABELS, now: NOW, log: logs().log }), 'relative: commented', JSON.stringify(issues));
+      assert.deepEqual([f.links, f.edits], [[], []], JSON.stringify(issues));
+      assert.ok(f.comments[0]?.body.includes(WAIT_RELATIVE_MARKER), JSON.stringify(f.comments));
+    }
   });
 
   test('another repo\'s issue is not read: a turn calls GitHub only for its fire\'s repo', async () => {
