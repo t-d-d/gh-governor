@@ -34,7 +34,7 @@ const RULES = [
   { kind: 'account', pattern: /(?<![0-9])[0-9]{12}(?![0-9])/g, allow: (match) => match === '123456789012' },
   { kind: 'claude-id', pattern: /\b(?:env|session|cse)_[A-Za-z0-9]{20,}/g },
   { kind: 'installation', pattern: /installations?\b[^\n]{0,40}?(?<![0-9])[0-9]{7,}(?![0-9])/gi },
-  { kind: 'issue-number', pattern: /#[0-9]{4,}(?![0-9A-Za-z_])|\/(?:issues|pull)\/[0-9]{4,}(?![0-9])/g },
+  { kind: 'issue-number', pattern: /#[0-9]{4,}(?![0-9A-Za-z])|\/(?:issues|pull)\/[0-9]{4,}(?![0-9])/g },
 ];
 
 /** @typedef {{ path: string, line: number, kind: string, text: string }} Finding */
