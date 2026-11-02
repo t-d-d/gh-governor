@@ -7729,6 +7729,14 @@ describe('run: a relative wait on a declared blocker', () => {
     assert.ok(!h.launches.some((l) => l.sessionName === sessionName(7, 'Issue 7')));
   });
 
+  test('the sweep leaves a ticket its dependency summary says is blocked, though its rows show no blocker', async () => {
+    // A blocker in a repo the App cannot see is in the summary and not in the rows.
+    const row = { ...issue(7), openBlockers: 1, wait: { after: { days: 3, issue: 41 } } };
+    const h = relativeTurn({ rows: [row] });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual([h.issueEdits.filter((e) => e.issue === 7), h.comments.filter((c) => c.issue === 7)], [[], []]);
+  });
+
   test('the sweep comments once on a line it cannot repair', async () => {
     const row = { ...issue(7), openBlockers: 0, wait: { after: { days: 3, issue: 41 } } };
     const h = relativeTurn({ rows: [row] });

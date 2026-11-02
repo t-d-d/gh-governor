@@ -775,7 +775,11 @@ export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now
  * or one the bare schedule fire's sweep finds on a ready ticket. Only an
  * issue in the ticket's repo is read.
  *
- * - The sweep leaves a ticket an open blocker holds to that blocker's close.
+ * - The sweep leaves a ticket an open blocker holds to that blocker's close:
+ *   one its dependency summary (`openBlockers`) counts, which needs no read,
+ *   or one in its `blocked_by` rows, read where the summary counts none.
+ *   The rows are read even then because a summary can be a moment slow to
+ *   count a link just made, and the comments below are said only once.
  * - A same-repo issue that has closed: settled as at its close
  *   ({@link settle}).
  * - A same-repo issue still open: the `wait` turn links it where it is not
@@ -785,15 +789,16 @@ export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now
  * - An issue that is gone or moved, a pull request, or the ticket itself,
  *   none of which can be its blocker: one comment.
  *
- * @param {{ reader: RelativeReader, repo: string, issue: number, after: import('../scripts/lib/ready-work.mjs').After, link: boolean, prompts: Record<string, string | undefined>, now?: number, log: Log }} args
+ * @param {{ reader: RelativeReader, repo: string, issue: number, after: import('../scripts/lib/ready-work.mjs').After, openBlockers?: number, link: boolean, prompts: Record<string, string | undefined>, now?: number, log: Log }} args
  * @returns {Promise<string>} What came of it.
  */
-export const repairRelative = async ({ reader, repo, issue, after, link, prompts, now = Date.now(), log }) => {
+export const repairRelative = async ({ reader, repo, issue, after, openBlockers, link, prompts, now = Date.now(), log }) => {
   const named = { repo: after.repo ?? repo, number: after.issue };
   const ref = refOf(repo, named);
   /** @type {Array<{ number: number, state: string, repo?: string }> | null} */
   let rows = null;
   if (!link) {
+    if (openBlockers !== undefined && openBlockers > 0) return 'held by an open blocker';
     rows = await reader.blockers(issue);
     if (rows.some((r) => r.state === 'open')) return 'held by an open blocker';
   }
