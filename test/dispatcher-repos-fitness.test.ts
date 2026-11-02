@@ -26,6 +26,7 @@ import { HOOK_EVENTS, handle, routeEvent } from '../dispatch/webhook/route.mjs';
 import { PROMPTS, instruction } from '../dispatch/prompts.mjs';
 import { planWorkflow, redRunPrompt } from '../dispatch/workflow.mjs';
 import { notPlannedComment, readyPrompt, specPrompt, unblockedMessage } from '../dispatch/unblocked.mjs';
+import { waitSpecPrompt } from '../dispatch/waits.mjs';
 import { standingLine } from '../dispatch/deliveries.mjs';
 import { promptFor } from '../scripts/lib/dispatch-prompt.mjs';
 import { DEPENDABOT, UNATTENDED } from '../dispatch/webhook/fire.mjs';
@@ -313,6 +314,7 @@ const KINDS: Record<string, { build: (prompts: Record<string, string>) => Promis
   signOff: { build: (p) => standingLine([], { repo: FACTORY, closing: true, prompts: p }), facts: ['No other open PR or issue in acme/factory names this session.'] },
   unblockedReady: { build: (p) => readyPrompt(promptFor(7, 'Title', FACTORY, 'claimed'), UNBLOCKED, p), facts: ["Pickup #7 'Title'", ...CLOSE_FACTS] },
   unblockedSpec: { build: (p) => specPrompt({ fire: UNBLOCKED, title: 'Title', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: p }), facts: ["Spec #7 'Title'", ...CLOSE_FACTS, UNATTENDED] },
+  waitEndedSpec: { build: (p) => waitSpecPrompt({ issue: 7, title: 'Title', until: '2026-11-05', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: p }), facts: ["Spec #7 'Title'", "#7's wait has ended: its `Blocked until:` line named 2026-11-05", UNATTENDED] },
   unblockedClaimed: { build: (p) => unblockedMessage(UNBLOCKED, p), facts: CLOSE_FACTS },
   unblockedNotPlanned: { build: (p) => notPlannedComment({ ...UNBLOCKED, blocker: { ...UNBLOCKED.blocker, reason: 'not_planned' } }, p), facts: ['t-d-d/askme-mcp#41 (`The parser`) closed as not planned'] },
   redScheduledRun: { build: (p) => redRunPrompt('A scheduled run of Emulator on main ended failure.', p), facts: ['A scheduled run of Emulator on main ended failure.', UNATTENDED] },
@@ -370,6 +372,7 @@ const FACTORY_TEXTS: Record<string, [Record<string, string | number>, string]> =
   signOff: [{}, 'Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make `Signing off.` the last line of your reply, and the dispatcher archives the session. Above it, write any `Lesson:` lines CLAUDE.md § Lessons calls for; usually there are none.'],
   unblockedReady: [{}, "Before you build, check the spec against what merged, and fix the ticket's body where the merge changed what it builds on."],
   unblockedSpec: [{ issue: 7, ready: '`workflow: ready for development` and `mode: afk`', claim: 'workflow: under development' }, "Rewrite #7's spec from what merged (CLAUDE.md § After your PR merges). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it `workflow: ready for development` and `mode: afk` and stop, or add `workflow: under development` to it first and take it through to a PR, `Closes #7`."],
+  waitEndedSpec: [{ issue: 7, ready: '`workflow: ready for development` and `mode: afk`', claim: 'workflow: under development' }, "Rewrite #7's spec from what its wait was for (CLAUDE.md § After a wait ends). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it `workflow: ready for development` and `mode: afk` and stop, or add `workflow: under development` to it first and take it through to a PR, `Closes #7`."],
   unblockedClaimed: [{ issue: 7 }, 'Check your work on #7 against what merged, and change it where the merge calls for that.'],
   unblockedNotPlanned: [{}, 'Its work will not land as planned. Decide whether this ticket still stands, and what it needs instead.'],
   redScheduledRun: [{}, `${FACTORY_LOGS} Read the docs/constraints/ files that name the workflow file before re-running it: some tiers limit how soon one run may follow another. First search the open issues and PRs for it: if one already covers this failure, comment this run on it and stop. If the fix is in the repo, push it on a new branch from origin/main with a new PR. If it is not (a lapsed credential, a third-party outage), raise an issue saying what failed and what it needs.`],

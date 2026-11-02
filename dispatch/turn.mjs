@@ -98,7 +98,7 @@ import {
   PutSecretValueCommand,
   SecretsManagerClient,
 } from '@aws-sdk/client-secrets-manager';
-import { ConditionalCheckFailedException, DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { ConditionalCheckFailedException, DeleteItemCommand, DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { DEFAULT_MODEL, launchOutcome, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
@@ -106,7 +106,7 @@ import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '..
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { isBlocked, isWaiting, labelRow, unreadableOf } from '../scripts/lib/ready-work.mjs';
-import { reportUnreadable } from './waits.mjs';
+import { WAIT_PROMPT, endedWaits, holdWait, reportUnreadable, waitSpecPrompt } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { RoutinesApiError, launchRoutine, observed } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
@@ -335,7 +335,7 @@ export const sessionUrlFrom = (output) => {
  *   recordConflict: (repo: string, pr: number, merge: string) => Promise<boolean>,
  *   recordSession: (session: string) => Promise<void>,
  *   startedSession: (session: string) => Promise<boolean>,
- * } & import('./periodics.mjs').PeriodicState & import('./pickup.mjs').PickupState & import('./hooks.mjs').HookState} DispatchState
+ * } & import('./periodics.mjs').PeriodicState & import('./pickup.mjs').PickupState & import('./hooks.mjs').HookState & import('./waits.mjs').WaitState} DispatchState
  *   Each label's cursor, by its repo, its workflow's file name and the
  *   label (null for CI's, which earns none): read (null when it has none),
  *   and moved forward (false when a cursor at or past it already stood).
@@ -666,11 +666,15 @@ const turnOf = async (event, deps, records) => {
    * into one tried again; the turn waits for every record before it ends.
    * Every prompt ends in `SIGN_POSTS`, which no repo's prompts replace: the
    * receiver skips a session's own posts only where the session signed them.
+   * In a repo whose file turns `waits` on, the line on making a ticket wait
+   * follows it (`WAIT_PROMPT`, dispatch/waits.mjs).
    *
    * @type {Deps['launch']}
    */
   const launch = async (asked) => {
-    const begin = { ...asked, prompt: `${asked.prompt}\n\n${SIGN_POSTS}` };
+    const own = served.find((s) => s.repo.toLowerCase() === asked.repo.toLowerCase())?.config;
+    const waits = own !== undefined && turnsOn(own, 'waits') ? `\n\n${WAIT_PROMPT}` : '';
+    const begin = { ...asked, prompt: `${asked.prompt}\n\n${SIGN_POSTS}${waits}` };
     const launched = begin.connectors !== undefined && begin.connectors.length > 0 ? await routineLaunch(begin, begin.connectors) : await deps.launch(begin);
     const sessionUrl = sessionUrlFrom(launched.output);
     if (sessionUrl !== null) {
@@ -1518,6 +1522,13 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   // only under the closed issue's repo. No failed turn is tried again
   // (dispatch/lane.mjs), so a fire the lane refuses is logged at
   // error by its ticket, the rest still go, and the turn exits 1.
+  if (invocation.kind === 'wait') {
+    // A ticket opened or edited with a `Blocked until:` line: its wait item
+    // put, rewritten or deleted to match (dispatch/waits.mjs).
+    const outcome = await holdWait({ reader: await getReader(), state: deps.state, repo: fireRepo(), issue: invocation.issue, now: deps.now(), log: deps.log });
+    return { kind: invocation.kind, issue: invocation.issue, outcome };
+  }
+
   if (invocation.kind === 'schedule' && invocation.freed !== undefined) {
     const freed = invocation.freed;
     const reader = await getReader();
@@ -1556,7 +1567,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   }
 
   const started = deps.now();
-  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, connectors?: string[], unclaimed?: true, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, hook?: { name: string, read: import('./hooks.mjs').HookRecord | null } }>} */
+  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, connectors?: string[], unclaimed?: true, wait?: { read: string }, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, hook?: { name: string, read: import('./hooks.mjs').HookRecord | null } }>} */
   const plan = [];
   /** The issues a targeted schedule fire limits the plan to; undefined for the sweep. @type {number[] | undefined} */
   let only;
@@ -1564,6 +1575,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const unread = [];
   /** The periodics whose record the bare fire could not read, baseline, or write after a launch. @type {Array<{ repo: string, error: string }>} */
   const periodicsUnread = [];
+  /** The ended waits the bare fire could not read or act on, and the items it could not delete after a spec session started. @type {Array<{ repo: string, error: string }>} */
+  const waitsUnread = [];
   /** The hooks whose session the turn started and could not record, or ran out of time to start. @type {Array<{ repo: string, error: string }>} */
   const hooksUnrecorded = [];
   /** The served repos whose last sweep the bare fire could not read, or whose sweep it could not record. @type {Array<{ repo: string, error: string }>} */
@@ -1673,6 +1686,19 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           ...connectorsOf(periodic),
           periodic: { name: periodic.name, read, by, ...(asOf === undefined ? {} : { asOf }) },
         })));
+      }
+      // Each repo turning waits on: the waits whose date has passed
+      // (dispatch/waits.mjs). A ticket not ready gets its comment here, and,
+      // with unblocked on, a spec session after the tickets, unclaimed, as a
+      // blocker's close starts one. A cap of 0 starts none, and leaves its item.
+      for (const { repo, config } of served) {
+        if (!turnsOn(config, 'waits')) continue;
+        const ended = await endedWaits({ reader: await readerFor(repo), state: deps.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), now: deps.now(), log: deps.log });
+        waitsUnread.push(...ended.unread);
+        if (deps.cap === 0) continue;
+        for (const { issue, title, until, read } of ended.specs) {
+          plan.push({ issue, repo, prompt: waitSpecPrompt({ issue, title, until, labels: config.labels, prompts: config.prompts }), sessionName: ticketSessionName(issue, title), model: DEFAULT_MODEL, unclaimed: true, wait: { read } });
+        }
       }
     }
   } else if (invocation.kind === 'hook') {
@@ -1944,6 +1970,17 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         if (unrecorded !== null) periodicsUnread.push(unrecorded);
         beats.push({ repo: entry.repo, beat: { periodics: [{ name: entry.periodic.name, at: entry.periodic.asOf ?? firedAt, by: entry.periodic.by, session: sessionUrl, state: 'open' }] } });
       }
+      // An ended wait's item goes once its spec session started or may have:
+      // a failed launch leaves it, so the next fire tries again.
+      if (entry.wait !== undefined && entry.issue !== null && outcome !== 'failed') {
+        try {
+          const dropped = await deps.state.dropWait(entry.repo, entry.issue, entry.wait.read);
+          deps.log('dispatch-wait', { repo: entry.repo, issue: entry.issue, read: entry.wait.read, outcome: 'spec session started', item: dropped ? 'dropped' : 'not dropped: it changed since it was read' });
+        } catch (error) {
+          deps.log('dispatch-wait-unhandled', { level: 'error', repo: entry.repo, issue: entry.issue, read: entry.wait.read, error: messageOf(error), reason: 'its spec session started and its item stays: the next fire finds the session\'s dispatch marker and deletes it' });
+          waitsUnread.push({ repo: entry.repo, error: `wait #${entry.issue}: ${messageOf(error)}` });
+        }
+      }
       // A hook's record names a session only where the launch printed one,
       // over the record the turn read.
       if (entry.hook !== undefined && sessionUrl !== null) {
@@ -2053,7 +2090,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // the copy from before it would hold a dead refresh token.
     loginStored = await storeIfRefreshed(deps, original, account);
   }
-  const left = [...unread, ...sweepsUnread, ...periodicsUnread, ...hooksUnrecorded];
+  const left = [...unread, ...sweepsUnread, ...periodicsUnread, ...hooksUnrecorded, ...waitsUnread];
   return { kind: invocation.kind, ...(row === undefined ? {} : { row }), dispatched, heartbeat, loginStored, ...(left.length === 0 ? {} : { unread: left }) };
 };
 
@@ -2249,6 +2286,9 @@ const DELIVERED_TTL_S = 30 * 24 * 60 * 60;
 
 /** How long a PR's record of a merge's conflict is kept: a merge's fire is redelivered within hours, and never a month on. */
 const CONFLICT_TTL_S = 30 * 24 * 60 * 60;
+
+/** How long past its date a wait item stays, should no fire delete it: a month. */
+const WAIT_TTL_S = 30 * 24 * 60 * 60;
 
 /** The attribute the state table's TTL expires on (infra/governor.cfn.yml). */
 export const STATE_TTL_ATTRIBUTE = 'ttl';
@@ -2483,7 +2523,11 @@ export const cliEnv = (env, home, account) => ({
  * the item `pickup#<repo>` / `sweep`, put only where none or an earlier
  * one stands, and never expired: a lost one means sweep now. A hook's last
  * session is the item `hook#<repo>` / `<name>`, put only over the record the
- * turn read, and never expired: a lost one costs one extra session.
+ * turn read, and never expired: a lost one costs one extra session. A
+ * waiting ticket's item is `wait#<repo>` / `<issue>`, holding its date, put
+ * only where none or the date the turn read stands, deleted only over that
+ * date, and expired a month after its date: a lost one costs that ticket's
+ * wait-ended comment and spec session.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -2495,6 +2539,16 @@ export const dynamoState = (client, table) => {
   const periodicKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `periodic#${repo}` }, sk: { S: name } });
   const hookKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `hook#${repo}` }, sk: { S: name } });
   const sweepKey = (/** @type {string} */ repo) => ({ pk: { S: `pickup#${repo}` }, sk: { S: 'sweep' } });
+  const waitPk = (/** @type {string} */ repo) => ({ S: `wait#${repo.toLowerCase()}` });
+  const waitKey = (/** @type {string} */ repo, /** @type {number} */ issue) => ({ pk: waitPk(repo), sk: { S: String(issue) } });
+  /** An item's date, or a throw: a malformed item is a failed read, never a missing one. @param {Record<string, any>} item */
+  const untilOf = (item) => {
+    const until = item.until?.S;
+    if (typeof until !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(until) || Number.isNaN(Date.parse(`${until}T00:00:00Z`))) throw new Error(`the wait item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
+    return until;
+  };
+  /** @param {unknown} error */
+  const refused = (error) => error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException';
   const sessionKey = (/** @type {string} */ session) => ({ pk: { S: `session#${sessionId(session)}` }, sk: { S: 'started' } });
   const sent = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label, /** @type {number | null} */ from) => ({ pk: pk(repo, workflow), sk: { S: `delivered#${label === null ? '' : `${label}#`}${from ?? 'none'}` } });
   return {
@@ -2609,6 +2663,62 @@ export const dynamoState = (client, table) => {
         return true;
       } catch (error) {
         if (error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException') return false;
+        throw error;
+      }
+    },
+    waits: async (repo) => {
+      /** @type {Array<{ issue: number, until: string }>} */
+      const found = [];
+      /** @type {Record<string, any> | undefined} */
+      let after;
+      do {
+        const page = await client.send(new QueryCommand({
+          TableName: table,
+          KeyConditionExpression: 'pk = :pk',
+          ExpressionAttributeValues: { ':pk': waitPk(repo) },
+          ConsistentRead: true,
+          ...(after === undefined ? {} : { ExclusiveStartKey: after }),
+        }));
+        for (const item of page.Items ?? []) {
+          const issue = Number(item.sk?.S);
+          if (!Number.isSafeInteger(issue) || issue <= 0) throw new Error(`the wait item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
+          found.push({ issue, until: untilOf(item) });
+        }
+        after = page.LastEvaluatedKey;
+      } while (after !== undefined);
+      return found;
+    },
+    wait: async (repo, issue) => {
+      const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: waitKey(repo, issue), ConsistentRead: true }));
+      return item === undefined ? null : { until: untilOf(item) };
+    },
+    recordWait: async (repo, issue, read, until) => {
+      try {
+        await client.send(new PutItemCommand({
+          TableName: table,
+          Item: { ...waitKey(repo, issue), until: { S: until }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.parse(`${until}T00:00:00Z`) / 1000) + WAIT_TTL_S) } },
+          ...(read === null
+            ? { ConditionExpression: 'attribute_not_exists(pk)' }
+            : { ConditionExpression: '#until = :read', ExpressionAttributeNames: { '#until': 'until' }, ExpressionAttributeValues: { ':read': { S: read } } }),
+        }));
+        return true;
+      } catch (error) {
+        if (refused(error)) return false;
+        throw error;
+      }
+    },
+    dropWait: async (repo, issue, read) => {
+      try {
+        await client.send(new DeleteItemCommand({
+          TableName: table,
+          Key: waitKey(repo, issue),
+          ConditionExpression: '#until = :read',
+          ExpressionAttributeNames: { '#until': 'until' },
+          ExpressionAttributeValues: { ':read': { S: read } },
+        }));
+        return true;
+      } catch (error) {
+        if (refused(error)) return false;
         throw error;
       }
     },
@@ -2911,6 +3021,10 @@ export const realDeps = () => {
         recordConflict: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         startedSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        waits: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        wait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordWait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        dropWait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
       },
     // No table named: every write fails and is logged at error, and the
     // turn goes on, its own checks on a hook fire unchanged.

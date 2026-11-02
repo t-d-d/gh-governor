@@ -47,6 +47,9 @@
  * also counted for the repo's periodics: the fire the event queues carries
  * it as `counted`, and an issue opened that queues none queues a
  * `periodics` fire of its own ({@link counting}).
+ * An issue opened, or edited, whose new or old body opens with a `Blocked
+ * until:` line queues a `wait` fire naming it, whose turn keeps the
+ * ticket's wait item to match its line (dispatch/waits.mjs).
  * An issue closed queues a `schedule` fire naming it as `freed`. Its turn
  * starts nothing: it queues one `unblocked` fire for each open ticket the
  * issue directly blocked, in whichever listed owner's repo the ticket is,
@@ -86,7 +89,7 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob } from './fire.mjs';
+import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob, waitLine } from './fire.mjs';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 import { droppedBy } from './switches.mjs';
@@ -406,6 +409,27 @@ const counting = (decision, counted, carrier) => {
 };
 
 /**
+ * An issue opened whose body holds a `Blocked until:` line, or edited where
+ * its new or old body does (`changes.body.from`): a `wait` fire naming it,
+ * so its turn puts, rewrites or deletes the ticket's wait item
+ * (dispatch/waits.mjs). An edit that leaves the body alone queues none.
+ * Judged from the payload alone; the fire needs `waits`, so {@link handle}
+ * drops it where the repo's item says that switch is off.
+ *
+ * @param {any} payload
+ * @returns {Decision}
+ */
+const waitFire = (payload) => {
+  const number = payload?.issue?.number;
+  if (!Number.isInteger(number) || number <= 0) return nothing('');
+  const bodies = payload?.action === 'opened'
+    ? [payload?.issue?.body]
+    : payload?.action === 'edited' && payload?.changes?.body !== undefined ? [payload?.issue?.body, payload.changes.body.from] : [];
+  if (!bodies.some((body) => waitLine(typeof body === 'string' ? body : null) !== null)) return nothing('');
+  return one({ fire: build.wait({ issue: number }), reason: `issue #${number} ${payload.action} with a Blocked until: line: keep its wait item to match`, key: 'wait' });
+};
+
+/**
  * A PR merged into the default branch `main`: a `conflicts` fire naming
  * it, its merge commit and the branch, so every open PR the merge left
  * conflicted is told, carrying the merge for the periodics' count. Keyed
@@ -493,7 +517,8 @@ const routeFor = ({ event, payload, appId }) => {
     if (action === 'labeled' || action === 'unlabeled' || action === 'reopened') return issueEventFires(payload);
     const mentioned = mentionFires({ event, payload, appId }) ?? nothing(`issues ${action}: nothing to select from`);
     // An issue opened is counted on its summons, or on a fire of its own.
-    return action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened', 'dispatch') : mentioned;
+    const counted = action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened', 'dispatch') : mentioned;
+    return both(counted, waitFire(payload));
   }
   if (event === 'pull_request') {
     const reviewed = both(pullRequestFires(payload), reviewFire(payload));

@@ -32,7 +32,7 @@ import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, readLastRun } from '../
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
-import { WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER } from '../dispatch/waits.mjs';
+import { WAIT_PROMPT, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
 import { ROUTINE_ANSWER, RoutinesApiError } from '../dispatch/routines.mjs';
 
@@ -40,8 +40,14 @@ const REPO = 'acme/factory';
 /** The factory's own config file (dispatch/repo-config.mjs): every feature on, and the factory's prompts. */
 const FACTORY_FILE = factoryFile(CONFIG_PATH);
 const FACTORY_PROMPTS = JSON.parse(FACTORY_FILE).prompts;
-/** A launch's prompt as the launcher gets it: governor's line on signing posts ends every one. */
-const signed = (prompt: string) => `${prompt}\n\n${SIGN_POSTS}`;
+/** The factory's file without the `waits` switch: a repo that never turned it on. */
+const WAITS_OFF_FILE = (() => {
+  const file = JSON.parse(FACTORY_FILE);
+  delete file.features.waits;
+  return JSON.stringify(file);
+})();
+/** A launch's prompt as the launcher gets it: governor's line on signing posts, then, with the factory's `waits` on, its line on waiting, end every one. */
+const signed = (prompt: string) => `${prompt}\n\n${SIGN_POSTS}\n\n${WAIT_PROMPT}`;
 const FACTORY_CONFIG_LABELS = JSON.parse(FACTORY_FILE).labels;
 /** The dispatcher's own App, which posts the turn's comments. */
 const APP_ID = 5075844;
@@ -133,6 +139,9 @@ const harness = (over: Record<string, unknown> = {}) => {
   // Each hook's last session, keyed `<repo>#<name>`, and every write to one.
   const hooks = new Map<string, { session: string; at: string }>();
   const hookWrites: Array<{ repo: string; name: string; record: { session: string; at: string } }> = [];
+  // Each waiting ticket's item, keyed `<repo>#<issue>`, holding its date, and every write to one.
+  const waitItems = new Map<string, string>();
+  const waitWrites: Array<{ repo: string; issue: number; until: string | null }> = [];
   // The login's sessions, as the sessions list answers them, and each one's
   // events page, by `cse_` id; and every events read, with its token.
   const rows: Array<Record<string, unknown>> = [];
@@ -346,10 +355,25 @@ const harness = (over: Record<string, unknown> = {}) => {
       },
       recordSession: async (session: string) => { recorded.push(session); },
       startedSession: async (session: string) => recorded.includes(session),
+      waits: async (repo: string) => [...waitItems].filter(([k]) => k.startsWith(`${repo}#`)).map(([k, until]) => ({ issue: Number(k.slice(repo.length + 1)), until })),
+      wait: async (repo: string, issue: number) => (waitItems.has(`${repo}#${issue}`) ? { until: waitItems.get(`${repo}#${issue}`) } : null),
+      // Conditional writes, as the table's: only over the date the turn read.
+      recordWait: async (repo: string, issue: number, read: string | null, until: string) => {
+        if ((waitItems.get(`${repo}#${issue}`) ?? null) !== read) return false;
+        waitItems.set(`${repo}#${issue}`, until);
+        waitWrites.push({ repo, issue, until });
+        return true;
+      },
+      dropWait: async (repo: string, issue: number, read: string) => {
+        if (waitItems.get(`${repo}#${issue}`) !== read) return false;
+        waitItems.delete(`${repo}#${issue}`);
+        waitWrites.push({ repo, issue, until: null });
+        return true;
+      },
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, routineCalls, routinesHeld, recorded, published, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -585,7 +609,7 @@ describe('run — schedule', () => {
     await run({ kind: 'message', session: 'session_01OLD', text: 'hi', fallback: { prompt: 'take the PR over' } }, takeover.deps as never);
     const prompts = [...pickup.launches, ...byHand.launches, ...takeover.launches].map((l) => l.prompt);
     assert.equal(prompts.length, 4);
-    for (const prompt of prompts) assert.ok(prompt.endsWith(`\n\n${SIGN_POSTS}`), prompt);
+    for (const prompt of prompts) assert.ok(prompt.endsWith(`\n\n${SIGN_POSTS}\n\n${WAIT_PROMPT}`), prompt);
   });
 
   test('marks each issue with the session URL, and writes the heartbeat', async () => {
@@ -1563,9 +1587,12 @@ describe('run: a ticket held by its `Blocked until:` line', () => {
     return h;
   };
 
-  test('the factory\'s file turns on no switch for it: the hold needs none', () => {
-    const features = JSON.parse(FACTORY_FILE).features as Record<string, unknown>;
-    assert.ok(!('waits' in features), JSON.stringify(features));
+  test('the hold needs no switch: in a file that does not turn waits on, a ticket whose date is still to come is not selected', async () => {
+    const h = waitTurn();
+    h.deps.configFile = async (repo: string) => (repo === REPO ? WAITS_OFF_FILE : null);
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9'), sessionName(11, 'Issue 11')]);
+    assert.deepEqual(h.comments.filter((c) => c.issue === 7), []);
   });
 
   test('a ready ticket whose date is still to come is not selected', async () => {
@@ -1661,6 +1688,224 @@ describe('run: a ticket held by its `Blocked until:` line', () => {
       assert.deepEqual(h.launches, []);
       assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNREADABLE_MARKER)).length, 1, JSON.stringify(h.comments));
     });
+  });
+});
+
+/**
+ * With a repo's `waits` switch on, governor acts when a ticket's wait ends.
+ * The receiver queues a `wait` fire for an issue opened or edited with the
+ * line, whose turn keeps the ticket's item in the state table to match its
+ * line. The bare schedule fire reads each such repo's items, and for a
+ * ticket whose date has passed and that is not ready, comments once and,
+ * with `unblocked` on, starts its spec session.
+ */
+describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
+  const PAST = '2026-09-25';
+  const LATER = '2026-09-28';
+  const NOT_READY = ['enhancement'];
+  const READY = ['workflow: ready for development', 'mode: afk'];
+  type Thread = Array<{ id: number; body: string; created_at: string; ours: boolean }>;
+  const ticketWith = ({ wait, labels = NOT_READY, state = 'open' }: { wait?: Record<string, string>; labels?: string[]; state?: string }) => ({ number: 7, title: 'Issue 7', body: '', state, labels, pull: false, openBlockers: 0, ...(wait === undefined ? {} : { wait }) });
+
+  /** A harness whose ticket #7 is `ticket`, with nothing else ready, its thread `thread`, and its wait item `item`. */
+  const waitsTurn = ({ ticket = ticketWith({ wait: { until: PAST } }) as Record<string, unknown>, thread = [] as Thread, item = PAST as string | null, file = FACTORY_FILE, over = {} as Record<string, unknown> } = {}) => {
+    const base = harness();
+    const h = harness({
+      configFile: async (repo: string) => (repo === REPO ? file : null),
+      reader: () => ({
+        ...base.deps.reader(''),
+        readyIssues: async () => [],
+        ticket: async () => ticket,
+        allComments: async () => thread,
+        comment: async (n: number, body: string) => { h.comments.push({ issue: n, body }); },
+        addLabels: async (n: number, labels: string[]) => { h.calls.push(`label #${n} +${labels.join(', ')}`); },
+        removeLabel: async (n: number, label: string) => { h.calls.push(`label #${n} -${label}`); },
+      }),
+      ...over,
+    });
+    if (item !== null) h.waitItems.set(`${REPO}#7`, item);
+    return h;
+  };
+  const withoutUnblocked = (() => {
+    const file = JSON.parse(FACTORY_FILE);
+    file.features.unblocked = false;
+    return JSON.stringify(file);
+  })();
+  const specOf = (h: ReturnType<typeof harness>) => h.launches.filter((l) => l.sessionName === sessionName(7, 'Issue 7'));
+  const endedComments = (h: ReturnType<typeof harness>) => h.comments.filter((c) => c.issue === 7 && c.body.includes(waitEndedMarker(PAST)));
+
+  describe('the wait fire', () => {
+    const fire = { kind: 'wait', issue: 7 };
+
+    test('a date still to come puts the ticket\'s item, holding the date', async () => {
+      const h = waitsTurn({ ticket: ticketWith({ wait: { until: LATER } }), item: null });
+      const result = await run(fire, h.deps as never) as Record<string, unknown>;
+      assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
+      assert.equal(result.kind, 'wait');
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments, []);
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-wait' && l.issue === 7 && l.until === LATER), JSON.stringify(h.logged));
+    });
+
+    test('a date moved later rewrites the item; the same date writes nothing', async () => {
+      const moved = waitsTurn({ ticket: ticketWith({ wait: { until: LATER } }), item: '2026-09-27' });
+      await run(fire, moved.deps as never);
+      assert.deepEqual([...moved.waitItems], [[`${REPO}#7`, LATER]]);
+      const same = waitsTurn({ ticket: ticketWith({ wait: { until: LATER } }), item: LATER });
+      await run(fire, same.deps as never);
+      assert.deepEqual(same.waitWrites, []);
+    });
+
+    test('no line, a date that has passed, or a closed ticket deletes the item', async () => {
+      for (const ticket of [ticketWith({}), ticketWith({ wait: { until: PAST } }), ticketWith({ wait: { until: LATER }, state: 'closed' })]) {
+        const h = waitsTurn({ ticket, item: LATER });
+        await run(fire, h.deps as never);
+        assert.deepEqual([...h.waitItems], [], JSON.stringify(ticket));
+        assert.deepEqual([h.launches, h.comments], [[], []], JSON.stringify(ticket));
+      }
+      const none = waitsTurn({ ticket: ticketWith({}), item: null });
+      await run(fire, none.deps as never);
+      assert.deepEqual(none.waitWrites, []);
+    });
+
+    test('an unreadable line comments as the hold does, and deletes the item', async () => {
+      const h = waitsTurn({ ticket: ticketWith({ wait: { unreadable: 'next week' } }), item: LATER });
+      await run(fire, h.deps as never);
+      assert.deepEqual([...h.waitItems], []);
+      assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNREADABLE_MARKER)).length, 1, JSON.stringify(h.comments));
+    });
+
+    test('an item another turn changed since the read is left as it stands', async () => {
+      const h = waitsTurn({ ticket: ticketWith({ wait: { until: LATER } }), item: null });
+      h.deps.state.recordWait = async () => false;
+      await run(fire, h.deps as never);
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-wait' && /changed since/.test(String(l.outcome))), JSON.stringify(h.logged));
+    });
+
+    test('with waits off, the fire is refused and no item appears', async () => {
+      const h = waitsTurn({ ticket: ticketWith({ wait: { until: LATER } }), item: null, file: WAITS_OFF_FILE });
+      const result = await run(fire, h.deps as never) as Record<string, unknown>;
+      assert.match(String(result.refusal), /does not turn waits on/);
+      assert.deepEqual(h.waitWrites, []);
+    });
+  });
+
+  describe('the bare schedule fire', () => {
+    test('a ticket not ready whose date has passed gets one wait-ended comment and its spec session, and its item goes', async () => {
+      const h = waitsTurn();
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.equal(endedComments(h).length, 1, JSON.stringify(h.comments));
+      assert.match(endedComments(h)[0]!.body, new RegExp(PAST));
+      const spec = specOf(h);
+      assert.equal(spec.length, 1, JSON.stringify(h.launches.map((l) => l.sessionName)));
+      assert.equal(spec[0]!.prompt, signed(waitSpecPrompt({ issue: 7, title: 'Issue 7', until: PAST, labels: FACTORY_CONFIG_LABELS, prompts: FACTORY_PROMPTS })));
+      assert.deepEqual(labelCalls(h.calls).filter((c) => c.startsWith('label #7 ')), [], 'a spec session is not claimed');
+      assert.ok(h.comments.some((c) => c.issue === 7 && c.body.includes('governor:dispatched')), 'its dispatch marker keeps the sweep off it');
+      assert.deepEqual([...h.waitItems], []);
+    });
+
+    test('a second fire does nothing more: the marker and the dispatch are on the thread', async () => {
+      const first = waitsTurn();
+      await run({ source: 'aws.events' }, first.deps as never);
+      const thread = first.comments.filter((c) => c.issue === 7).map((c, i) => ({ id: i + 1, body: c.body, created_at: new Date(NOW).toISOString(), ours: true }));
+      const again = waitsTurn({ thread, item: null });
+      await run({ source: 'aws.events' }, again.deps as never);
+      assert.deepEqual([again.comments, specOf(again)], [[], []]);
+      const stale = waitsTurn({ thread, item: PAST });
+      await run({ source: 'aws.events' }, stale.deps as never);
+      assert.deepEqual([stale.comments, specOf(stale)], [[], []], 'an item left by a delete that failed');
+      assert.deepEqual([...stale.waitItems], []);
+    });
+
+    test('with unblocked off, the ticket gets the comment and no session', async () => {
+      const h = waitsTurn({ file: withoutUnblocked });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.equal(endedComments(h).length, 1);
+      assert.deepEqual(specOf(h), []);
+      assert.deepEqual([...h.waitItems], []);
+    });
+
+    test('a ticket whose date moved later is not released, and its item holds the new date', async () => {
+      const h = waitsTurn({ ticket: ticketWith({ wait: { until: LATER } }) });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual([h.comments, specOf(h)], [[], []]);
+      assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
+    });
+
+    test('a ticket closed or without its line loses its item, and nothing else happens', async () => {
+      for (const ticket of [ticketWith({ wait: { until: PAST }, state: 'closed' }), ticketWith({})]) {
+        const h = waitsTurn({ ticket });
+        await run({ source: 'aws.events' }, h.deps as never);
+        assert.deepEqual([h.comments, specOf(h), [...h.waitItems]], [[], [], []], JSON.stringify(ticket));
+      }
+    });
+
+    test('a ready, claimed or blocked ticket loses its item and gets no comment: pickup or its blocker\'s close takes it on', async () => {
+      for (const ticket of [ticketWith({ wait: { until: PAST }, labels: READY }), ticketWith({ wait: { until: PAST }, labels: ['workflow: under development'] }), { ...ticketWith({ wait: { until: PAST } }), openBlockers: 1 }]) {
+        const h = waitsTurn({ ticket });
+        await run({ source: 'aws.events' }, h.deps as never);
+        assert.deepEqual([endedComments(h), specOf(h), [...h.waitItems]], [[], [], []], JSON.stringify(ticket));
+      }
+    });
+
+    test('a date still to come is left alone', async () => {
+      const h = waitsTurn({ ticket: ticketWith({ wait: { until: LATER } }), item: LATER });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual([h.comments, specOf(h), h.waitWrites], [[], [], []]);
+    });
+
+    test('a spec session that starts nothing leaves the item, so the next fire tries again without a second comment', async () => {
+      const h = waitsTurn({ over: { launch: async (launch: Launch) => { h.launches.push(launch); return { status: 1, output: 'environment not found' }; } } });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.equal(endedComments(h).length, 1);
+      assert.equal(specOf(h).length, 1);
+      assert.deepEqual([...h.waitItems], [[`${REPO}#7`, PAST]]);
+    });
+
+    test('with DispatchCap 0, the ticket gets the comment, no session starts, and the item stays for a later fire', async () => {
+      const h = waitsTurn({ over: { cap: 0 } });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.equal(endedComments(h).length, 1);
+      assert.deepEqual(specOf(h), []);
+      assert.deepEqual([...h.waitItems], [[`${REPO}#7`, PAST]]);
+    });
+
+    test('a comment that fails leaves the item, starts nothing, and fails the turn', async () => {
+      const h = waitsTurn();
+      const reader = h.deps.reader;
+      h.deps.reader = ((...args: Parameters<typeof reader>) => ({ ...reader(...args), comment: async () => { throw new Error('POST /comments failed: 502'); } })) as typeof reader;
+      const result = await run({ source: 'aws.events' }, h.deps as never) as Record<string, unknown>;
+      assert.deepEqual(specOf(h), []);
+      assert.deepEqual([...h.waitItems], [[`${REPO}#7`, PAST]]);
+      assert.ok(JSON.stringify(result.unread).includes('502'), JSON.stringify(result));
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-wait-unhandled' && l.level === 'error' && l.issue === 7), JSON.stringify(h.logged));
+    });
+
+    test('with waits off, no item is read, and no comment or spec session appears', async () => {
+      const h = waitsTurn({ file: WAITS_OFF_FILE });
+      h.deps.state.waits = async () => { throw new Error('a repo with waits off reads no wait items'); };
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual([h.comments, specOf(h)], [[], []]);
+      for (const launch of h.launches) assert.ok(!launch.prompt.includes(WAIT_PROMPT), launch.sessionName);
+    });
+
+    test('a repo whose items cannot be read is left for the next fire, and the turn says so', async () => {
+      const h = waitsTurn();
+      h.deps.state.waits = async () => { throw new Error('AccessDeniedException: dynamodb:Query'); };
+      const result = await run({ source: 'aws.events' }, h.deps as never) as Record<string, unknown>;
+      assert.deepEqual([h.comments, specOf(h)], [[], []]);
+      assert.ok(JSON.stringify(result.unread).includes('dynamodb:Query'), JSON.stringify(result));
+    });
+  });
+
+  test('in a repo with waits on, every launch\'s prompt ends with the wait line; with it off, none carries it', async () => {
+    const on = harness();
+    await run({ kind: 'dispatch', prompt: 'hello' }, on.deps as never);
+    assert.ok(on.launches[0]!.prompt.endsWith(`\n\n${WAIT_PROMPT}`));
+    const off = harness({ configFile: async (repo: string) => (repo === REPO ? WAITS_OFF_FILE : null) });
+    await run({ kind: 'dispatch', prompt: 'hello' }, off.deps as never);
+    assert.ok(off.launches[0]!.prompt.endsWith(`\n\n${SIGN_POSTS}`));
+    assert.ok(!off.launches[0]!.prompt.includes(WAIT_PROMPT));
   });
 });
 
@@ -5428,7 +5673,8 @@ describe('run — every served repo', () => {
       await run(fire, h.deps as never);
       assert.equal(h.launches.length, 1, h.calls.join('; '));
       const { prompt } = h.launches[0] as { prompt: string };
-      assert.equal(prompt, signed(redRunPrompt(fire.prompt, prompts)));
+      // Askme's file does not turn waits on, so the signing line ends the prompt.
+      assert.equal(prompt, `${redRunPrompt(fire.prompt, prompts)}\n\n${SIGN_POSTS}`);
       assert.ok(prompt.startsWith(fire.prompt), prompt);
       if ('redScheduledRun' in prompts) assert.ok(prompt.includes(prompts.redScheduledRun), prompt);
       assert.doesNotMatch(prompt, /ops-tooling|docs\/constraints/, prompt);

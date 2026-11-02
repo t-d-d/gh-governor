@@ -41,13 +41,14 @@ export const CONFIG_PATH = '.github/dispatch.json';
  * subscribe messages, the red scheduled run, what a blocker's close does to
  * a ticket that is not ready to pick up (`unblocked`, dispatch/unblocked.mjs), CI and
  * deploy messages, branch-run messages, the conflicts check,
- * deployed-label job fires, the PR review, the heartbeat, periodics and
- * hooks. Every switch there is.
+ * deployed-label job fires, the PR review, the heartbeat, periodics,
+ * hooks, and what governor does when a ticket's wait ends (`waits`,
+ * dispatch/waits.mjs). Every switch there is.
  */
 export const GENERIC_SWITCHES = Object.freeze([
   'pickup', 'summons', 'prMessages', 'subscribeMessages', 'redScheduledRun', 'unblocked',
   'ciMessages', 'deployMessages', 'branchRunMessages', 'conflicts', 'deployedLabels', 'prReview',
-  'heartbeat', 'periodics', 'hooks',
+  'heartbeat', 'periodics', 'hooks', 'waits',
 ]);
 
 /**
@@ -80,6 +81,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   heartbeat: 'Governor records each fire on the issue the `heartbeat` section names: a line for pickup and one per periodic. In the older shape with a `marker`, the hourly sweep stamps the issue\'s `last-run:` line instead.',
   periodics: 'A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached.',
   hooks: 'A session on a hook\'s prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook\'s last session is open goes into that session as a message.',
+  waits: 'When a ticket\'s `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and a session to rewrite its spec if `unblocked` is on. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.',
 });
 
 /**

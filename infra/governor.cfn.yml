@@ -238,13 +238,16 @@ Resources:
               # Each label's cursor under its workflow (dispatch/turn.mjs
               # dynamoState): read once a turn, written forward
               # after its sends. What a held cursor's range delivered: read,
-              # and merged into.
+              # and merged into. Each waiting ticket's item: a repo's read
+              # in one query, and deleted when its wait ends (dispatch/waits.mjs).
               - Sid: ReadAndWriteTheState
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
+                  - dynamodb:Query
+                  - dynamodb:DeleteItem
                 Resource: !GetAtt DispatchStateTable.Arn
               # Each served repo's hooks and switches, put each time the turn
               # reads its file (dispatch/webhook/hook-table.mjs); never read

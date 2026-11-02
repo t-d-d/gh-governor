@@ -24,6 +24,8 @@ Each served repo turns on the features it wants, one switch each:
 
 One behaviour needs no switch. A ticket whose body opens with `Blocked until: 2026-11-05` is not started before that date, in every served repo. The wait ends at 00:00 UTC on the date, and a ready ticket is picked up at the first sweep on or after it. Text after the date can give the reason: `Blocked until: 2026-11-05 for a few days of log lines`. Only the body's first non-empty line counts, in any case. A line whose date governor cannot read, such as `2026-13-01` or `next week`, holds the ticket too, and governor comments once on the ticket to say so. To end a wait early, delete the line; to move it, change the date.
 
+With the `waits` switch on, governor also acts when a wait ends. A ticket that is not ready gets one comment at the first schedule fire after its date, and, with `unblocked` on too, a session to rewrite its spec, as a blocker's close starts one. Every session governor starts in the repo is told how to make a ticket wait. Governor learns of the line when the issue is opened or its body edited, so a ticket whose delivery was lost gets no comment or session; a ready one is still picked up.
+
 How dark the factory runs is the repo's choice: with pickup and the review on and `merge` true, a ticket can go from label to merged commit with no person, except where its PR touches a human-only path.
 
 [docs/how-it-works.md](docs/how-it-works.md) describes each feature in full. [docs/constraints/](docs/constraints/README.md) holds the rules the code keeps. Diagrams that need motion or controls are HTML pages in `docs/pages/`, published at <https://t-d-d.github.io/gh-governor/>; [docs/how-it-works.md](docs/how-it-works.md#pages) says how they publish and how to preview one from a branch.
@@ -112,6 +114,7 @@ The switches in `features`:
 | `heartbeat` | Governor records each fire on the issue the `heartbeat` section names: a line for pickup and one per periodic. In the older shape with a `marker`, the hourly sweep stamps the issue's `last-run:` line instead. |
 | `periodics` | A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached. |
 | `hooks` | A session on a hook's prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook's last session is open goes into that session as a message. |
+| `waits` | When a ticket's `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and a session to rewrite its spec if `unblocked` is on. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch. |
 
 `workflows`:
 
