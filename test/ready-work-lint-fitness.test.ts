@@ -36,6 +36,10 @@ describe('fitness: lint refuses a new caller of the readiness checks (dispatcher
     });
   }
 
+  test('a .js file in dispatch/ may not import a check either', async () => {
+    assert.equal((await refusals('dispatch/new-path.js', `import { isBlocked } from '../scripts/lib/ready-work.mjs';\nexport const x = isBlocked;\n`)).length, 1);
+  });
+
   test('ready-work.mjs, ticketStatus and the other exports stay importable', async () => {
     assert.deepEqual(await refusals('dispatch/new-path.mjs', `import { ticketStatus, mayPickUp, mayStartSpec } from '../scripts/lib/ready-work.mjs';\nexport const x = [ticketStatus, mayPickUp, mayStartSpec];\n`), []);
   });

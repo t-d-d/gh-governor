@@ -48,8 +48,10 @@ spends the one claude.ai login.
 - What keeps a ticket out of the selection, the claim's second read and the
   `unblocked` row's ready reading is what `ticketStatus`
   (scripts/lib/ready-work.mjs) reads, and no other file combines those
-  checks: the claim label, `labels.exclude`, an
-  open blocker, and the ticket's own `Blocked until: <YYYY-MM-DD>` line,
+  checks. Two read one check alone: the PR review's test 1
+  (dispatch/checklist.mjs) reads `labelRow`, and wait end
+  (dispatch/waits.mjs) reads `isWaiting`. The checks are the claim label,
+  `labels.exclude`, an open blocker, and the ticket's own `Blocked until: <YYYY-MM-DD>` line,
   when it is the body's first non-empty line, in any case, and the date is
   still to come (`isWaiting`, scripts/lib/ready-work.mjs). The wait ends at
   00:00 UTC on that date. Text after the date is a reason and changes

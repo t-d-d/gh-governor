@@ -52,7 +52,8 @@ export default [
     rules: { "governor/require-cli-env": "error" },
   },
   {
-    files: ["dispatch/**/*.mjs", "scripts/**/*.mjs"],
+    // Tests stay outside, since they test the checks directly.
+    files: ["dispatch/**/*.mjs", "dispatch/**/*.js", "scripts/**/*.mjs", "scripts/**/*.js"],
     ignores: ["scripts/lib/ready-work.mjs"],
     rules: { "no-restricted-imports": refuseChecks() },
   },
