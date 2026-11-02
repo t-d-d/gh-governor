@@ -116,6 +116,13 @@ export const exitCodeFor = (result) => {
  */
 
 /**
+ * A thrown value as the log carries it: its stack where it has one.
+ *
+ * @param {unknown} error
+ */
+const errorText = (error) => String(/** @type {any} */ (error)?.stack ?? error);
+
+/**
  * One turn under its own deadline. The result line carries `tag`: in the
  * lane, the fire's message id and the turn's exit code, so the by-hand
  * script finds its turn by its message (scripts/run-turn.mjs).
@@ -134,6 +141,10 @@ const oneTurn = async (eventOf, tag, { run: turn, deps, log, exit, schedule, can
   // throw cuts off may never land, so it is logged as unrecorded here.
   /** @type {Set<import('./turn.mjs').PendingRecord>} */
   const unrecorded = new Set();
+  // The error the turn threw, told before it waits for its records. A
+  // record write that hangs holds the throw past the deadline, which logs it.
+  /** @type {{ error: unknown } | null} */
+  let thrown = null;
   // The deadline ends the task, not just the turn: a launcher that hangs
   // cannot be unwound, and a second turn beside it would share its login.
   // A fire behind it was never received, so it waits on the lane for the
@@ -141,11 +152,11 @@ const oneTurn = async (eventOf, tag, { run: turn, deps, log, exit, schedule, can
   const deadline = schedule(() => {
     for (const key of claims) log(CLAIM_STRANDED, { ...ticketOf(key), reason: `claimed, and the deadline (${DEADLINE_MS} ms) ended the turn before a dispatch marker named its session` });
     for (const pending of unrecorded) log(SESSION_UNRECORDED, unrecordedLine(pending, `the deadline (${DEADLINE_MS} ms) ended the turn while its record was being written, so it may not have landed`));
-    log('dispatch-failed', { reason: 'deadline', deadlineMs: DEADLINE_MS, ...tag(1) });
+    log('dispatch-failed', { reason: 'deadline', deadlineMs: DEADLINE_MS, ...(thrown === null ? {} : { error: errorText(thrown.error) }), ...tag(1) });
     exit(1);
   }, DEADLINE_MS);
   try {
-    const result = await turn(eventOf(), { ...deps(), claims, unrecorded });
+    const result = await turn(eventOf(), { ...deps(), claims, unrecorded, threw: (error) => { thrown = { error }; } });
     const code = exitCodeFor(result);
     // A message into an archived session exits 1 for its caller, but the
     // dispatcher did not fail: the send counts as taken for the alarm, so
@@ -159,7 +170,7 @@ const oneTurn = async (eventOf, tag, { run: turn, deps, log, exit, schedule, can
     // left; one that is may be cut off when the task exits, so it is logged
     // as at the deadline.
     for (const pending of unrecorded) log(SESSION_UNRECORDED, unrecordedLine(pending, 'the turn threw while its record was being written, so it may not have landed'));
-    log('dispatch-failed', { reason: 'threw', error: String(/** @type {any} */ (error)?.stack ?? error), ...tag(1) });
+    log('dispatch-failed', { reason: 'threw', error: errorText(error), ...tag(1) });
     return 1;
   } finally {
     cancel(deadline);

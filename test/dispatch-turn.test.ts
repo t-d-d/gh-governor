@@ -644,6 +644,31 @@ describe('run — governor records each session it starts', () => {
     assert.deepEqual(written, [ABC], 'the record landed before the turn rejected');
     assert.equal(unrecorded.size, 0);
   });
+  // A record write that hangs holds the rejection to the deadline
+  // (dispatch/cli.mjs), whose line would otherwise never name what was thrown.
+  test('a turn that throws while a record hangs hands its error to threw before the wait', async () => {
+    let recording = false;
+    const thrown: unknown[] = [];
+    const h = harness({
+      state: {
+        recordSession: async () => {
+          recording = true;
+          return new Promise<void>(() => {});
+        },
+      },
+    });
+    const readLogin = h.deps.workspace.readLogin;
+    h.deps.workspace.readLogin = () => {
+      if (recording && !String(new Error().stack).includes('turnFor')) throw new Error('the login on disk could not be read');
+      return readLogin();
+    };
+    let settled = false;
+    void run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, { ...h.deps, threw: (error: unknown) => { thrown.push(error); } } as never).finally(() => { settled = true; });
+    for (let i = 0; i < 50 && thrown.length === 0; i += 1) await new Promise((r) => { setTimeout(r, 5); });
+    assert.equal(thrown.length, 1, 'the error is handed over while the record still hangs');
+    assert.match(String((thrown[0] as Error).message), /could not be read/);
+    assert.equal(settled, false, 'the turn still waits for its record');
+  });
 });
 
 describe('run — schedule', () => {
