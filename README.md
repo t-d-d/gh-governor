@@ -26,7 +26,7 @@ On 28 October 2026 governor's code moved into this repo: about 14,700 lines of s
 
 - governor picked up **94 tickets** and started a Claude Code session on each;
 - Thomas merged **98 pull requests** written by Claude Code sessions, from those tickets and from sessions started by a mention or by hand. Over the 90 tickets they closed, pickup to merge took a median of **29 minutes**, review included;
-- **none** of those pull requests was reverted, and only **2** of the sessions' pull requests were closed unmerged, neither of them rejected work;
+- **none** of those pull requests was reverted, and only **2** of the sessions' pull requests were closed unmerged, and neither of those was rejected work;
 - the code grew by about **7,300 lines of source and 900 tests**, to more than 2,200 tests, every one of them offline.
 
 Each session reviews its own diff before it pushes. Thomas then reviews each pull request by weighing the net complexity it adds against the value of the change. Its description makes that quick to judge: it lists what the change adds and removes, says whether the system got simpler or more complex and what the complexity buys, and maps every acceptance criterion to the test or check that answers it. Thomas often merges in batches, so these times include waiting for review. This repo leaves governor's own PR review off, so every merge is a person's. [How this repo is built](docs/building-with-agents.md) has the full numbers, and the switches this repo turns on.
