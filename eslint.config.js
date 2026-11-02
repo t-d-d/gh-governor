@@ -2,28 +2,16 @@ import js from "@eslint/js";
 import tsParser from "@typescript-eslint/parser";
 import globals from "globals";
 import requireCliEnv from "./eslint-rules/require-cli-env.mjs";
-import noDynamicReadinessChecks from "./eslint-rules/no-dynamic-readiness-checks.mjs";
+import noReadinessChecks from "./eslint-rules/no-readiness-checks.mjs";
 
 // Only scripts/lib/ready-work.mjs combines the readiness checks, through
 // `ticketStatus` (docs/constraints/dispatcher-repos.md). A caller elsewhere
 // asks it, `mayPickUp` or `mayStartSpec`, so no path puts the checks
 // together in its own order.
 const READINESS_CHECKS = ["isBlocked", "isWaiting", "waitHolds", "heldUnreadied", "labelRow"];
+// One rule reads static imports, export-from and `import()` alike, so the
+// import forms cannot drift apart.
 const refuseChecks = (allowed) => [
-  "error",
-  {
-    patterns: [
-      {
-        group: ["**/ready-work.mjs"],
-        importNames: READINESS_CHECKS.filter((name) => name !== allowed),
-        message: "Ask ticketStatus, mayPickUp or mayStartSpec in scripts/lib/ready-work.mjs instead of combining the readiness checks here.",
-      },
-    ],
-  },
-];
-// `no-restricted-imports` reads no names from `import()`, so a dynamic
-// import of ready-work.mjs answers to its own rule, with the same checks.
-const refuseDynamicChecks = (allowed) => [
   "error",
   { checks: READINESS_CHECKS, ...(allowed === undefined ? {} : { allowed }) },
 ];
@@ -40,7 +28,7 @@ export default [
       globals: { ...globals.node },
     },
     plugins: {
-      governor: { rules: { "require-cli-env": requireCliEnv, "no-dynamic-readiness-checks": noDynamicReadinessChecks } },
+      governor: { rules: { "require-cli-env": requireCliEnv, "no-readiness-checks": noReadinessChecks } },
     },
     rules: {
       ...js.configs.recommended.rules,
@@ -64,27 +52,18 @@ export default [
     // Tests stay outside, since they test the checks directly.
     files: ["dispatch/**/*.mjs", "dispatch/**/*.js", "scripts/**/*.mjs", "scripts/**/*.js"],
     ignores: ["scripts/lib/ready-work.mjs"],
-    rules: {
-      "no-restricted-imports": refuseChecks(),
-      "governor/no-dynamic-readiness-checks": refuseDynamicChecks(),
-    },
+    rules: { "governor/no-readiness-checks": refuseChecks() },
   },
   {
     // The PR review's test 1 asks only whether a ticket is claimed or
     // excluded, which its labels answer.
     files: ["dispatch/checklist.mjs"],
-    rules: {
-      "no-restricted-imports": refuseChecks("labelRow"),
-      "governor/no-dynamic-readiness-checks": refuseDynamicChecks("labelRow"),
-    },
+    rules: { "governor/no-readiness-checks": refuseChecks("labelRow") },
   },
   {
     // Wait end asks whether a person moved the line's date later, whatever
     // the labels say, so a claimed ticket's item is rewritten, not dropped.
     files: ["dispatch/waits.mjs"],
-    rules: {
-      "no-restricted-imports": refuseChecks("isWaiting"),
-      "governor/no-dynamic-readiness-checks": refuseDynamicChecks("isWaiting"),
-    },
+    rules: { "governor/no-readiness-checks": refuseChecks("isWaiting") },
   },
 ];
