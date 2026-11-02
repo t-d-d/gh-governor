@@ -8,9 +8,12 @@ a reader at a ticket they cannot open, or at the wrong one here.
 
 ## Rules
 
-- No file, and no file's path, names the private repo governor was
-  extracted from, in any case. Governor writes and reads only `governor:`
-  markers.
+- No file names or links the private repo governor was extracted from:
+  its `owner/name` path, its GitHub URL, or its issue numbers, in any
+  case. The service that repo builds shares its name. A doc, meaning the
+  README or a Markdown file under docs/, may name the service and link its
+  public site. No other file names it, and no file's path does. Governor
+  writes and reads only `governor:` markers.
 - No file holds an AWS account id, a claude.ai environment or session id,
   or a GitHub App installation id. Tests use AWS's documented example
   account, 123456789012, and short fake ids: `env_01FACTORY`,
@@ -43,7 +46,8 @@ a reader at a ticket they cannot open, or at the wrong one here.
   scripts/mint-claude-login.mjs and scripts/save-secret.mjs. Nothing reads
   them from GitHub.
 - scripts/public-repo-scan.mjs refuses each of the above, in every tracked
-  file and path, with no file exempted. A file that has to spell a refused
+  file and path, with no file exempted. Only the service's bare name is
+  allowed, and only in a doc. A file that has to spell a refused
   word to test the scan builds it from parts.
 
 ## Examples
@@ -72,4 +76,4 @@ a reader at a ticket they cannot open, or at the wrong one here.
 - Map another repo's issue numbers onto this repo's: the number then points
   at an unrelated issue here.
 
-History: Set when governor's code was extracted into this repo, October 2026. Earlier decisions are in a private repo. The alert email and the drop box moved from repository variables to secrets in #3, the alert email to Parameter Store in #7, and the deploy role's ARN to a secret, with the account id masked in the deploy's log, in #5. The image build stopped uploading its build record and writing a summary in #128. `SelectLabels` left the stack and the deploy's repository variables in #180.
+History: Set when governor's code was extracted into this repo, October 2026. Earlier decisions are in a private repo. The alert email and the drop box moved from repository variables to secrets in #3, the alert email to Parameter Store in #7, and the deploy role's ARN to a secret, with the account id masked in the deploy's log, in #5. The image build stopped uploading its build record and writing a summary in #128. `SelectLabels` left the stack and the deploy's repository variables in #180. A doc may name the service governor was distilled from, but no file names its repo, since #272.

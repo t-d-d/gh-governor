@@ -7,7 +7,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
-import { scanRepo, trackedFiles } from '../scripts/public-repo-scan.mjs';
+import { scanRepo, scanText, trackedFiles } from '../scripts/public-repo-scan.mjs';
 import { loadTemplate } from './helpers/cfn.ts';
 import { appliesStack, REPO_ROOT, usesAction } from './helpers/repo-model.ts';
 import { loadWorkflow, type WorkflowStep } from './helpers/workflow.ts';
@@ -18,6 +18,15 @@ describe('fitness: no file names the old home, holds an id, or cites an issue of
     assert.ok(files.includes('scripts/public-repo-scan.mjs'));
     assert.ok(files.includes('test/public-repo-scan.test.ts'));
     assert.ok(files.includes('LICENSE'));
+  });
+
+  test('a doc may name the service, and no file names the private repo\'s path or its URL', () => {
+    const name = ['pod', 'stow'].join('');
+    const kinds = (path: string, text: string) => scanText(path, text).map((f) => f.kind);
+    assert.deepEqual(kinds('README.md', `built while making ${name}, <https://${name}.com>`), []);
+    assert.deepEqual(kinds('scripts/x.mjs', `built while making ${name}`), ['name']);
+    assert.deepEqual(kinds('README.md', `see owner/${name}`), ['repo']);
+    assert.deepEqual(kinds('README.md', `https://github.com/Owner/${name.toUpperCase()}`), ['repo']);
   });
 
   test('no tracked file has a finding', () => {

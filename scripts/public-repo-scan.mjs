@@ -4,7 +4,12 @@
  * tracked file, and every tracked file's path, and refuses:
  *
  *   - name:          the name of the private repo governor was extracted
- *                    from, in any case;
+ *                    from, in any case, outside a doc. The service shares
+ *                    the repo's name, and a doc (the README, or Markdown
+ *                    under docs/) may name the service and link its site;
+ *   - repo:          the private repo itself, in every file: its
+ *                    `owner/name` path, which its GitHub URL holds too,
+ *                    in any case;
  *   - account:       a twelve-digit AWS account id, AWS's documented
  *                    example 123456789012 aside;
  *   - claude-id:     a claude.ai environment or session id (`env_`,
@@ -28,9 +33,13 @@ import { isCliEntry } from './lib/cli-entry.mjs';
 
 const OLD_HOME = new RegExp(['pod', 'stow'].join(''), 'i');
 
-/** @type {Array<{ kind: string, pattern: RegExp, allow?: (match: string) => boolean }>} */
+/** A doc may name the service: the README, or Markdown under docs/. */
+const isDoc = (/** @type {string} */ path) => path === 'README.md' || /^docs\/.+\.md$/.test(path);
+
+/** @type {Array<{ kind: string, pattern: RegExp, allow?: (match: string) => boolean, inDocs?: false }>} */
 const RULES = [
-  { kind: 'name', pattern: new RegExp(OLD_HOME.source, 'gi') },
+  { kind: 'name', pattern: new RegExp(OLD_HOME.source, 'gi'), inDocs: false },
+  { kind: 'repo', pattern: new RegExp(`[A-Za-z0-9_.-]+/${OLD_HOME.source}(?![A-Za-z0-9_-])`, 'gi') },
   { kind: 'account', pattern: /(?<![0-9])[0-9]{12}(?![0-9])/g, allow: (match) => match === '123456789012' },
   { kind: 'claude-id', pattern: /\b(?:env|session|cse)_[A-Za-z0-9]{20,}/g },
   { kind: 'installation', pattern: /installations?\b[^\n]{0,40}?(?<![0-9])[0-9]{7,}(?![0-9])/gi },
@@ -50,8 +59,9 @@ export const scanText = (path, text) => {
   /** @type {Finding[]} */
   const findings = [];
   if (OLD_HOME.test(path)) findings.push({ path, line: 0, kind: 'name', text: path });
+  const rules = isDoc(path) ? RULES.filter((rule) => rule.inDocs !== false) : RULES;
   text.split('\n').forEach((content, index) => {
-    for (const { kind, pattern, allow } of RULES) {
+    for (const { kind, pattern, allow } of rules) {
       for (const match of content.matchAll(pattern)) {
         if (allow?.(match[0])) continue;
         findings.push({ path, line: index + 1, kind, text: match[0] });

@@ -19,11 +19,29 @@ const OLD_HOME = ['pod', 'stow'].join('');
 const kinds = (text: string, path = 'a.txt') => scanText(path, text).map((f) => f.kind);
 
 describe('scanText', () => {
-  test('refuses the old home\'s name, in any case, in the text or the path', () => {
+  test('refuses the old home\'s name, in any case, in the text or the path of a file that is not a doc', () => {
     assert.deepEqual(kinds(`the ${OLD_HOME} dispatcher`), ['name']);
     assert.deepEqual(kinds(`${OLD_HOME.toUpperCase()}_LABELS`), ['name']);
     assert.deepEqual(kinds(`<!-- ${OLD_HOME[0]!.toUpperCase()}${OLD_HOME.slice(1)}:subscribe -->`), ['name']);
+    assert.deepEqual(kinds(`the ${OLD_HOME} dispatcher`, 'scripts/x.mjs'), ['name']);
+    assert.deepEqual(kinds(`the ${OLD_HOME} dispatcher`, '.claude/skills/x/SKILL.md'), ['name']);
     assert.deepEqual(kinds('nothing here', `docs/${OLD_HOME}.md`), ['name']);
+  });
+
+  test('passes the service\'s bare name and its site in a doc: the README or Markdown under docs/', () => {
+    assert.deepEqual(kinds(`Distilled from ${OLD_HOME[0]!.toUpperCase()}${OLD_HOME.slice(1)}, <https://${OLD_HOME}.com>.`, 'README.md'), []);
+    assert.deepEqual(kinds(`made while building ${OLD_HOME}`, 'docs/how-it-works.md'), []);
+    assert.deepEqual(kinds(`made while building ${OLD_HOME}`, 'docs/constraints/public-repo.md'), []);
+    assert.deepEqual(kinds(`made while building ${OLD_HOME}`, 'docs/pages/x.html'), ['name']);
+  });
+
+  test('refuses the private repo\'s owner/name path and its GitHub URL, in any case, in every file', () => {
+    for (const path of ['README.md', 'docs/how-it-works.md', 'scripts/x.mjs']) {
+      assert.deepEqual(kinds(`see owner/${OLD_HOME}`, path).filter((k) => k !== 'name'), ['repo'], path);
+      assert.deepEqual(kinds(`see Owner/${OLD_HOME.toUpperCase()}.git`, path).filter((k) => k !== 'name'), ['repo'], path);
+      assert.deepEqual(kinds(`https://github.com/owner/${OLD_HOME}/pull/12`, path).filter((k) => k !== 'name'), ['repo'], path);
+      assert.deepEqual(kinds(`https://GitHub.com/owner/${OLD_HOME}`, path).filter((k) => k !== 'name'), ['repo'], path);
+    }
   });
 
   test('refuses a twelve-digit AWS account id, but not AWS\'s documented example or a longer number', () => {
