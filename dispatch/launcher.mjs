@@ -82,15 +82,6 @@ export const sessionUrlFrom = (output) => {
 };
 
 /**
- * What a launch does when its budget refuses it, keyed by the launch's
- * promise: the launcher runs on, and may start a session nobody can name.
- * dispatch/turn.mjs's budget reads it.
- *
- * @type {WeakMap<Promise<unknown>, () => void>}
- */
-export const overBudget = new WeakMap();
-
-/**
  * A periodic that names connectors, as a run of its routine
  * (dispatch/routines.mjs), under the login's token and organization. A
  * token the turn cannot use started nothing.
@@ -122,11 +113,22 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
 };
 
 /**
+ * A call under the launch budget, cut to what is left before `until`, as
+ * dispatch/turn.mjs's `budgetedBy` builds it. `onOver` runs when the
+ * budget refuses a call it started.
+ *
+ * @typedef {<T>(begin: () => Promise<T>, name: string, until?: number, onOver?: () => void) => Promise<T>} Budgeted
+ */
+
+/**
  * @typedef {{
  *   cli: (launch: Launch) => Promise<LaunchResult>,
  *   routine: (launch: Launch, connectors: string[]) => Promise<LaunchResult>,
  *   recordSession: (sessionUrl: string) => Promise<void>,
  *   suffix: (repo: string) => string,
+ *   budgeted: Budgeted,
+ *   fireRepo?: string | undefined,
+ *   environment: (repo: string) => string,
  *   records: Records,
  *   pending?: Set<PendingRecord> | undefined,
  *   log: Log,
@@ -135,11 +137,22 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  *   periodic's routine ({@link routineLaunch}). `recordSession`: the state
  *   table's session record. `suffix`: what follows every prompt,
  *   `SIGN_POSTS` and then, in a repo whose file turns `waits` on,
- *   `WAIT_PROMPT`. `records`: the turn's record writes, which it waits for
+ *   `WAIT_PROMPT`. `budgeted`: the turn's launch budget, which its message
+ *   sends and the PR review's model run spend too. `fireRepo`: the fire's
+ *   repo, where a launch naming none starts; the bare schedule fire names
+ *   none. `environment`: a served repo's cloud environment, from its config
+ *   file. `records`: the turn's record writes, which it waits for
  *   before it ends. `pending`: the records still being written, shared with
  *   dispatch/cli.mjs, which logs each one left at the deadline or a throw.
  *
- * @typedef {{ start: (launch: Launch) => Promise<LaunchResult> }} Launcher
+ * @typedef {Omit<Launch, 'repo' | 'environment'> & Partial<Pick<Launch, 'repo' | 'environment'>>} Asked
+ *   A launch as its caller asks for it: in the fire's repo and that repo's
+ *   environment unless it names its own.
+ * @typedef {{ outcome: import('./deliveries.mjs').LaunchOutcome, sessionUrl: string | null, status: number | null, output: string, missing?: string[], refused?: true }} Started
+ *   What came of a launch, and the URL where the launcher printed one and
+ *   did not fail.
+ * @typedef {{ start: (launch: Asked, until?: number) => Promise<Started> }} Launcher
+ *   `until`: when the budget the launch shares with other calls runs out.
  */
 
 /**
@@ -155,9 +168,11 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  * receiver skips a session's own posts only where the session signed them.
  * In a repo whose file turns `waits` on, the line on making a ticket wait
  * follows it (`WAIT_PROMPT`, dispatch/waits.mjs).
- * A launch its budget refuses pages once, at the refusal, since the
- * launcher runs on. A session it prints later is logged at info with its
- * name and URL, so the operator can tie it to that page, and recorded.
+ * A launch runs under the turn's budget (`budgeted`), cut to `until`.
+ * One its budget refuses pages once, at the refusal, since the launcher
+ * runs on: the budget calls the page back. A session it prints later is
+ * logged at info with its name and URL, so the operator can tie it to that
+ * page, and recorded.
  * The turn waits for that record while it is still waiting for others.
  * Once it has ended, nothing waits for it, so it pages again, naming the
  * session, before the write is tried.
@@ -173,7 +188,8 @@ export const launcher = (deps) => {
    *
    * @param {Launch} begin
    * @param {() => boolean} paged Whether its budget already paged on it.
-   * @returns {Promise<LaunchResult>}
+   * @returns {Promise<LaunchResult & { sessionUrl: string | null }>} `sessionUrl`:
+   *   the one its output names, whatever its outcome.
    */
   const launchAndRecord = async (begin, paged) => {
     const launched = begin.connectors !== undefined && begin.connectors.length > 0 ? await deps.routine(begin, begin.connectors) : await deps.cli(begin);
@@ -211,18 +227,22 @@ export const launcher = (deps) => {
         : 'the routine was fired, but none of its run sessions could be named as this fire\'s, so the session could not be named or recorded: look in the routine\'s run sessions for one started shortly before this line\'s time. Its PRs may clear a human-only path on a ticket\'s mode label';
       deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, status: launched.status, ...routine, reason });
     }
-    return launched;
+    return { ...launched, sessionUrl };
   };
   /** @type {Launcher['start']} */
-  const start = (asked) => {
-    const begin = { ...asked, prompt: `${asked.prompt}\n\n${deps.suffix(asked.repo)}` };
+  const start = async (asked, until) => {
+    const repo = asked.repo ?? deps.fireRepo;
+    if (repo === undefined) throw new Error(`the bare fire names no repo to start ${asked.sessionName} in`);
+    const environment = asked.environment ?? deps.environment(repo);
+    const begin = { ...asked, repo, environment, prompt: `${asked.prompt}\n\n${deps.suffix(repo)}` };
     let paged = false;
-    const launching = launchAndRecord(begin, () => paged);
-    overBudget.set(launching, () => {
+    const onOver = () => {
       paged = true;
       deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, reason: 'the launch ran past its budget and may have started a session, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label' });
-    });
-    return launching;
+    };
+    const { status, output, missing, refused, sessionUrl } = await deps.budgeted(() => launchAndRecord(begin, () => paged), begin.sessionName, until, onOver);
+    const outcome = launchOutcome(status) ?? 'failed';
+    return { outcome, sessionUrl: outcome === 'failed' ? null : sessionUrl, status, output, ...(missing === undefined ? {} : { missing }), ...(refused === undefined ? {} : { refused }) };
   };
   return { start };
 };

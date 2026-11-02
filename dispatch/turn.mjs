@@ -101,7 +101,7 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import { ConditionalCheckFailedException, DeleteItemCommand, DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
-import { DEFAULT_MODEL, launchOutcome, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
+import { DEFAULT_MODEL, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
@@ -129,7 +129,7 @@ import { HOOK_PER_HOUR, LANE, LANE_COUNTS, RED, laneCount, dispatchMarker, lastD
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
-import { launcher, overBudget, routineLaunch, sessionUrlFrom } from './launcher.mjs';
+import { launcher, routineLaunch } from './launcher.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -400,20 +400,21 @@ const refreshedLogin = async (deps, credentials, account) => {
  * A launch that outlives its budget is a thrown turn. The task's deadline
  * (dispatch/cli.mjs) exits the process from a timer, which unwinds nothing:
  * a login the CLI refreshed before the launcher hung would never reach the
- * secret. A throw runs the `finally` below first. A launch registered in
- * `overBudget` pages before the throw; the lookup is by the very promise
- * passed here, so a caller must not wrap the launch's promise first.
+ * secret. A throw runs the `finally` below first. `onOver`, a launch's
+ * page where it may have started a session nobody can name
+ * (dispatch/launcher.mjs), runs before the throw.
  *
  * @template T
  * @param {Promise<T>} launched
  * @param {number} ms
  * @param {string} sessionName
+ * @param {() => void} [onOver]
  * @returns {Promise<T>}
  */
-const withinBudget = (launched, ms, sessionName) =>
+const withinBudget = (launched, ms, sessionName, onOver) =>
   new Promise((resolveLaunch, rejectLaunch) => {
     const timer = setTimeout(() => {
-      overBudget.get(launched)?.();
+      onOver?.();
       rejectLaunch(new Error(`the launcher for ${sessionName} ran past ${ms} ms`));
     }, ms);
     launched.then(
@@ -421,6 +422,24 @@ const withinBudget = (launched, ms, sessionName) =>
       (error) => { clearTimeout(timer); rejectLaunch(error); },
     );
   });
+
+/**
+ * The turn's launch budget: a call under it, cut to what is left before
+ * `until` where the call is one of several sharing a budget. With nothing
+ * left it is not started: a child left running past the store-back could
+ * refresh the login after it was read. The launcher, message sends and the
+ * PR review's model run all spend it, so one is built a turn and handed to
+ * each.
+ *
+ * @param {Pick<Deps, 'launchTimeoutMs' | 'now'>} deps
+ * @returns {import('./launcher.mjs').Budgeted}
+ */
+const budgetedBy = (deps) => async (begin, name, until, onOver) => {
+  if (deps.launchTimeoutMs === undefined) return begin();
+  const ms = Math.min(deps.launchTimeoutMs, (until ?? Infinity) - deps.now());
+  if (ms <= 0) throw new Error(`no budget left to start ${name}: the calls sharing it used it up`);
+  return withinBudget(begin(), ms, name, onOver);
+};
 
 /**
  * One turn, then the sign-off sweep (scripts/lib/session-signoff.mjs): every
@@ -471,6 +490,19 @@ export const run = async (event, deps) => {
  * @param {string} repo
  */
 const configIn = (served, repo) => served.find((s) => s.repo.toLowerCase() === repo.toLowerCase())?.config;
+
+/**
+ * A served repo's config, as {@link configIn} finds it, for a repo the turn
+ * must serve: one it does not is a throw.
+ *
+ * @param {import('./repos.mjs').Served[]} served
+ * @param {string} repo
+ */
+const servedConfig = (served, repo) => {
+  const found = configIn(served, repo);
+  if (found === undefined) throw new Error(`${repo} is not a repo this turn serves`);
+  return found;
+};
 
 /**
  * {@link run}'s turn, which pushes each launch's record onto `records`.
@@ -619,6 +651,8 @@ const turnOf = async (event, deps, records) => {
     if (find === undefined) finders.set(token, find = branchFinder({ list: (after) => deps.sessions.list(token, after), get: async (id) => sessionRecord(await deps.sessions.get(id, token)) }, repo, { log: deps.log }));
     return find;
   };
+  /** The turn's one launch budget. */
+  const budgeted = budgetedBy(deps);
   /** The turn's one launcher (dispatch/launcher.mjs). */
   const launches = launcher({
     cli: deps.launch,
@@ -628,6 +662,9 @@ const turnOf = async (event, deps, records) => {
       const own = configIn(served, launchRepo);
       return own !== undefined && turnsOn(own, 'waits') ? `${SIGN_POSTS}\n\n${WAIT_PROMPT}` : SIGN_POSTS;
     },
+    budgeted,
+    fireRepo: repo,
+    environment: (launchRepo) => servedConfig(served, launchRepo).environment,
     records,
     pending: deps.unrecorded,
     log: deps.log,
@@ -641,6 +678,7 @@ const turnOf = async (event, deps, records) => {
       ...deps,
       secret,
       githubToken: tokenFor,
+      // The launcher in place of the CLI, so nothing below starts a session past it.
       launch: launches.start,
       message: async (message) => {
         const session = sessionId(message.session);
@@ -651,7 +689,7 @@ const turnOf = async (event, deps, records) => {
         if (refusedAsArchived(sent)) woken.delete(session);
         return sent;
       },
-    }, finder, { served, bare, refusal, repo, beats: turnBeats });
+    }, finder, { served, bare, refusal, repo, beats: turnBeats, start: launches.start, budgeted });
   } catch (error) {
     // A periodic that launched has moved its record, so no later fire
     // writes its line: it goes before the turn fails.
@@ -669,6 +707,7 @@ const turnOf = async (event, deps, records) => {
     base: invocation.kind === 'conflicts' ? invocation.base : undefined,
     started,
     carried: 'dispatched' in turned && Array.isArray(turned.dispatched) ? turned.dispatched.filter((d) => d.repo.toLowerCase() === repo.toLowerCase()) : [],
+    start: launches.start,
     deps: { ...deps, secret, githubToken: tokenFor, launch: launches.start },
   });
   const eventBeats = checked?.beats ?? [];
@@ -837,13 +876,15 @@ const recordHook = async ({ state, log }, repo, { name, read }, record) => {
  *   base: string | undefined,
  *   started: number,
  *   carried: Dispatched[],
+ *   start: import('./launcher.mjs').Launcher['start'],
  *   deps: Deps,
  * }} args `base`: the default branch, where the fire names it.
- *   `carried`: the carrying turn's own launches in the repo.
+ *   `carried`: the carrying turn's own launches in the repo. `start`: the
+ *   turn's launcher, which runs each launch under the launch budget.
  * @returns {Promise<{ dispatched: Dispatched[], unread: Array<{ repo: string, error: string }>, beats: RepoBeat[] }>}
  *   `beats`: the heartbeat lines its fires, held fires and nothing-to-dos change.
  */
-const eventPeriodics = async ({ repo, config, counted, base, started, carried, deps }) => {
+const eventPeriodics = async ({ repo, config, counted, base, started, carried, start, deps }) => {
   /** @type {Dispatched[]} */
   const dispatched = [];
   /** @type {import('./periodics.mjs').Due[]} */
@@ -870,7 +911,7 @@ const eventPeriodics = async ({ repo, config, counted, base, started, carried, d
   // starts: a refresh to read a last run's session (`runOpen`) may have
   // rotated it and failed to write it back.
   try {
-    return await startPeriodics({ repo, config, counted, started, carried, deps, due, unread, dispatched, lines });
+    return await startPeriodics({ repo, config, counted, started, carried, start, deps, due, unread, dispatched, lines });
   } finally {
     await storeIfRefreshed(deps, stored, account);
   }
@@ -885,6 +926,7 @@ const eventPeriodics = async ({ repo, config, counted, base, started, carried, d
  *   counted: import('./webhook/fire.mjs').Count,
  *   started: number,
  *   carried: Dispatched[],
+ *   start: import('./launcher.mjs').Launcher['start'],
  *   deps: Deps,
  *   due: import('./periodics.mjs').Due[],
  *   unread: Array<{ repo: string, error: string }>,
@@ -893,7 +935,7 @@ const eventPeriodics = async ({ repo, config, counted, base, started, carried, d
  * }} args `lines`: the heartbeat lines the read changed, which each fire adds to.
  * @returns {Promise<{ dispatched: Dispatched[], unread: Array<{ repo: string, error: string }>, beats: RepoBeat[] }>}
  */
-const startPeriodics = async ({ repo, config, counted, started, carried, deps, due, unread, dispatched, lines }) => {
+const startPeriodics = async ({ repo, config, counted, started, carried, start, deps, due, unread, dispatched, lines }) => {
   const beats = () => (lines.length === 0 ? [] : [{ repo, beat: { periodics: lines } }]);
   if (due.length === 0) return { dispatched, unread, beats: beats() };
   const why = deps.cap === 0 ? 'DispatchCap is 0: no fire starts anything'
@@ -910,12 +952,9 @@ const startPeriodics = async ({ repo, config, counted, started, carried, deps, d
       break;
     }
     const firedAt = new Date(deps.now()).toISOString();
-    const begun = deps.launch({ prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, model: DEFAULT_MODEL, repo, environment: config.environment, ...connectorsOf(periodic) });
-    const launched = await (deps.launchTimeoutMs === undefined ? begun : withinBudget(begun, deps.launchTimeoutMs, periodic.name));
+    const launched = await start({ prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, model: DEFAULT_MODEL, repo, environment: config.environment, ...connectorsOf(periodic) });
     if (routineFault(deps, repo, periodic.name, launched)) continue;
-    const { status, output } = launched;
-    const outcome = launchOutcome(status) ?? 'failed';
-    const sessionUrl = outcome === 'failed' ? null : sessionUrlFrom(output);
+    const { status, outcome, sessionUrl } = launched;
     deps.log('dispatch-launch', { repo, issue: null, sessionName: periodic.name, periodic: periodic.name, counted, outcome, status, sessionUrl });
     dispatched.push({ repo, issue: null, outcome, sessionUrl });
     if (outcome === 'failed') {
@@ -1051,12 +1090,15 @@ const runOpen = (deps) => {
  * @param {import('./webhook/fire.mjs').Fire} invocation
  * @param {Deps} deps
  * @param {(token: string) => import('../scripts/lib/session-branch.mjs').FindOnBranch} finder
- * @param {{ served: import('./repos.mjs').Served[], bare: boolean, refusal: string | null, repo: string | undefined, beats: RepoBeat[] }} scope
+ * @param {{ served: import('./repos.mjs').Served[], bare: boolean, refusal: string | null, repo: string | undefined, beats: RepoBeat[], start: import('./launcher.mjs').Launcher['start'], budgeted: import('./launcher.mjs').Budgeted }} scope
  *   `repo`: the fire's, none for the bare schedule fire. `beats`: where the
  *   bare fire adds what it changes in each repo's governor heartbeat block,
- *   for `run` to write, whether the turn returns or throws.
+ *   for `run` to write, whether the turn returns or throws. `start`: the
+ *   turn's launcher, through which every session it starts goes.
+ *   `budgeted`: the turn's launch budget, which message sends and the PR
+ *   review's model run share with the launcher.
  */
-const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, beats }) => {
+const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, beats, start, budgeted }) => {
   if (invocation.kind === 'probe') throw new Error('a probe is not a turn: run answers it');
   /**
    * The fire's repo. The bare schedule fire names none, and reads
@@ -1091,49 +1133,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    *
    * @param {string} repo
    */
-  const configOf = (repo) => {
-    const found = configIn(served, repo);
-    if (found === undefined) throw new Error(`${repo} is not a repo this turn serves`);
-    return found;
-  };
-
-  /**
-   * A call under the launch budget, cut to what is left before `until`
-   * where the call is one of several sharing a budget. With nothing left
-   * it is not started: a child left running past the store-back could
-   * refresh the login after it was read.
-   *
-   * @template T
-   * @param {() => Promise<T>} begin
-   * @param {string} name
-   * @param {number} [until]
-   * @returns {Promise<T>}
-   */
-  const budgeted = async (begin, name, until) => {
-    if (deps.launchTimeoutMs === undefined) return begin();
-    const ms = Math.min(deps.launchTimeoutMs, (until ?? Infinity) - deps.now());
-    if (ms <= 0) throw new Error(`no budget left to start ${name}: the calls sharing it used it up`);
-    return withinBudget(begin(), ms, name);
-  };
-
-  /**
-   * One session through the launcher: what came of it, and the URL where
-   * the launcher printed one.
-   *
-   * In the fire's repo and its cloud environment unless the launch names
-   * its own.
-   *
-   * @param {Omit<Launch, 'repo' | 'environment'> & Partial<Pick<Launch, 'repo' | 'environment'>>} launch
-   * @param {number} [until] When the budget it shares runs out.
-   * @returns {Promise<{ outcome: Dispatched['outcome'], sessionUrl: string | null, status: number | null, output: string, missing?: string[], refused?: true }>}
-   */
-  const start = async (launch, until) => {
-    const repo = launch.repo ?? fireRepo();
-    const full = { ...launch, repo, environment: launch.environment ?? configOf(repo).environment };
-    const { status, output, missing, refused } = await budgeted(() => deps.launch(full), launch.sessionName, until);
-    const outcome = launchOutcome(status) ?? 'failed';
-    return { outcome, sessionUrl: outcome === 'failed' ? null : sessionUrlFrom(output), status, output, ...(missing === undefined ? {} : { missing }), ...(refused === undefined ? {} : { refused }) };
-  };
+  const configOf = (repo) => servedConfig(served, repo);
 
   /** One reader a repo a turn. @type {Map<string, Reader>} */
   const readers = new Map();
