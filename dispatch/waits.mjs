@@ -43,7 +43,7 @@ import { recentlyDispatched, waitLine } from './webhook/fire.mjs';
 import { sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
 import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
-import { RELATIVE_WAIT, isBlocked, isWaiting, labelRow, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
+import { RELATIVE_WAIT, isBlocked, isWaiting, labelRow, waitHolds, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** The log event for a `Blocked until:` line governor cannot read. */
@@ -190,17 +190,6 @@ export const waitSpecPrompt = ({ issue, title, until, labels, prompts }) => spec
  *
  * @typedef {(event: string, context?: Record<string, unknown>) => void} Log
  */
-
-/**
- * Whether an unreadable line holds a ticket from anyone, so its comment is
- * true: a ticket ready or not ready by its labels. A claimed ticket is
- * someone's work, and an excluded one is never picked up, so neither is
- * told it is held, as the claim's second read tells only a ready one.
- *
- * @param {readonly string[]} on
- * @param {import('../scripts/lib/ready-work.mjs').Labels} labels
- */
-const holds = (on, labels) => ['ready', 'not-ready'].includes(labelRow(on, labels));
 
 /** When a wait on `until` ends: 00:00 UTC on that date. @param {string} until */
 const endOf = (until) => Date.parse(`${until}T00:00:00Z`);
@@ -403,7 +392,7 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
     // wait ticket's link comes off, before any item goes.
     if (links !== undefined && found !== null) await links.hide(issue);
     const dropped = read === null ? null : await state.dropWait(repo, issue, read.until);
-    const settled = holds(ticket.labels, labels) ? await repairRelative({ reader, repo, issue, after: wait.after, link: true, prompts, now, log }) : 'not settled: the ticket is not held from anyone';
+    const settled = waitHolds(ticket.labels, labels) ? await repairRelative({ reader, repo, issue, after: wait.after, link: true, prompts, now, log }) : 'not settled: the ticket is not held from anyone';
     const outcome = `relative: ${settled}`;
     log(WAIT, { ...about, after: wait.after, outcome, ...(dropped === null ? {} : { item: dropped ? 'dropped' : 'not dropped: it changed since it was read' }) });
     return outcome;
@@ -429,7 +418,7 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
     else await softly(links, 'hide', repo, issue, log, 'its item stands, so the schedule fire takes the link off once the wait has ended');
     return outcome;
   }
-  if (wait !== undefined && 'unreadable' in wait && holds(ticket.labels, labels)) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
+  if (wait !== undefined && 'unreadable' in wait && waitHolds(ticket.labels, labels)) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
   if (links !== undefined && found !== null) {
     if (wait === undefined && read === null) {
       // No line and no item: governor never linked it, so a link is a
@@ -527,7 +516,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
         continue;
       }
       if ('unreadable' in wait) {
-        if (holds(ticket.labels, labels)) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
+        if (waitHolds(ticket.labels, labels)) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
         await drop(item, { outcome: 'its line cannot be read' });
         continue;
       }

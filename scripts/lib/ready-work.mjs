@@ -199,8 +199,9 @@ export const waitsOnClose = (wait, repo, closed) =>
  * not read. A row with no line is not held.
  *
  * Like `labelRow` and `isBlocked`, the selection, the claim's second read
- * and the unblocked row all call this. It holds in every served repo,
- * whatever its config file says.
+ * and the unblocked row all call this, the unblocked row only where
+ * `waitHolds` says the labels let the line hold. It holds in every served
+ * repo, whatever its config file says.
  *
  * @param {{ wait?: Wait }} issue
  * @param {number} now Epoch ms.
@@ -209,6 +210,21 @@ export const isWaiting = ({ wait }, now) => {
   if (wait === undefined) return false;
   if (!('until' in wait)) return true;
   return now < Date.parse(`${wait.until}T00:00:00Z`);
+};
+
+/**
+ * Whether a ticket's own `Blocked until:` line can hold it, by its labels:
+ * only where they read ready or not ready. A claimed ticket is someone's
+ * work, whose session is already running and still hears its blocker
+ * close, and an excluded one is never picked up, so the line holds neither
+ * and an unreadable one gets no comment on them.
+ *
+ * @param {readonly string[] | undefined} on The ticket's label names.
+ * @param {Labels} labels
+ */
+export const waitHolds = (on, labels) => {
+  const row = labelRow(on, labels);
+  return row === 'ready' || row === 'not-ready';
 };
 
 /**

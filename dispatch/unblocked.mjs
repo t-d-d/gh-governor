@@ -19,6 +19,7 @@
  * | lost its blocker to a "not planned" close | comments, and messages its session if claimed, saying so if another open issue still blocks it | `unblocked` |
  * | the same, and carries every ready label and no claim | also takes its ready labels off, and the comment says so | `pickup` |
  * | still blocked by another open issue | nothing: that blocker's close sends its own fire | |
+ * | ready or not ready by its labels, and held by its own `Blocked until:` line | nothing, but one comment on a line governor cannot read, whatever the switches say | |
  * | carries an `exclude` label | nothing | |
  * | is claimed | messages the session its dispatch marker names | `unblocked` |
  * | is ready | picks it up as pickup does, the close's facts in the prompt | `pickup` |
@@ -47,7 +48,7 @@ import { createHash } from 'node:crypto';
 import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
-import { isBlocked, isWaiting, labelRow, waitsOnClose } from '../scripts/lib/ready-work.mjs';
+import { isBlocked, isWaiting, labelRow, waitHolds, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 
 /**
  * @typedef {import('./webhook/fire.mjs').UnblockedFire} UnblockedFire
@@ -132,7 +133,9 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
  * rows leave out a blocker the App cannot see; `blockers` is read only for
  * a ticket without one. A ticket its own `Blocked until:` line holds at
  * `now` (`isWaiting`) reads as still blocked, so the close starts nothing
- * for it.
+ * for it. The line holds only where the labels read ready or not ready
+ * (`waitHolds`): a claimed ticket's session still hears the close, and an
+ * excluded ticket still reads excluded.
  *
  * @param {{
  *   ticket: { state: string, labels: readonly string[], openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait },
@@ -146,7 +149,8 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
 export const ticketRow = ({ ticket, blockers, fire, labels, now = Date.now() }) => {
   if (ticket.state !== 'open') return 'closed';
   if (fire.blocker.reason === NOT_PLANNED) return 'not-planned';
-  if (isBlocked(ticket, blockers) || isWaiting(ticket, now)) return 'blocked';
+  if (isBlocked(ticket, blockers)) return 'blocked';
+  if (waitHolds(ticket.labels, labels) && isWaiting(ticket, now)) return 'blocked';
   return labelRow(ticket.labels, labels);
 };
 
