@@ -191,6 +191,7 @@ const harness = (over: Record<string, unknown> = {}) => {
       blockers: async () => [],
       blocking: async () => [],
       comments: async () => [],
+      allComments: async () => [],
       comment: async (n: number, body: string) => {
         comments.push({ issue: n, body });
       },
@@ -1280,6 +1281,10 @@ describe('run — an unblocked fire', () => {
         comment: async (n: number, body: string) => {
           h.comments.push({ issue: n, body });
         },
+        allComments: async (n: number) => {
+          asked.push(`${repo} thread ${n}`);
+          return comments.map((c) => ({ ...c, ours: true }));
+        },
         addLabels: async (n: number, on: string[]) => { h.calls.push(`label #${n} +${on.join(', ')}`); },
         removeLabel: async (n: number, label: string) => {
           if (unlabelFails.includes(label)) throw new Error('HTTP 502');
@@ -1438,6 +1443,7 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(h.comments.map((c) => c.issue), [7]);
     assert.match(h.comments[0]!.body, /closed as not planned[\s\S]*took its ready labels, `workflow: ready for development` and `mode: afk`, off #7/);
     assert.match(h.comments[0]!.body, /Put them back once you decide #7 still stands/);
+    assert.match(h.comments[0]!.body, /<!-- governor:unreadied -->/, 'the retry\'s comment records the hold too');
     assert.deepEqual(labelCalls(h.calls), TAKEN_OFF);
   });
 
@@ -1635,6 +1641,66 @@ describe('run — an unblocked fire', () => {
   test('not ready, but dispatched inside the window: nothing starts', async () => {
     const h = ticketTurn({ labels: [], comments: [{ body: dispatchMarker({ at: new Date(NOW - 60_000).toISOString(), sessionUrl: null }) }] });
     await run(fire(), h.deps as never);
+    assert.deepEqual(h.launches, []);
+  });
+
+  // A ticket governor unreadied on a not-planned close waits for a person:
+  // a later close starts no spec session until someone answers.
+  const unreadiedTurn = ({ labels = READY, thread = [] as Array<{ body: string; ours: boolean }>, threadFails = false, blockers = [{ number: 41, state: 'closed', title: 'The parser' }, { number: 43, state: 'open', title: 'The lexer' }] } = {}) => {
+    const h = ticketTurn();
+    let on = [...labels];
+    let rows = blockers;
+    const base = h.deps.reader as (...a: unknown[]) => Record<string, unknown>;
+    h.deps.reader = ((...a: unknown[]) => ({
+      ...base(...a),
+      ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: [...on], pull: false }),
+      blockers: async () => rows,
+      removeLabel: async (n: number, label: string) => {
+        on = on.filter((l) => l !== label);
+        h.calls.push(`label #${n} -${label}`);
+      },
+      comments: async () => thread,
+      allComments: async () => {
+        if (threadFails) throw new Error('GET /comments failed: 502');
+        return thread;
+      },
+      comment: async (n: number, body: string) => {
+        thread.push({ body, ours: true });
+        h.comments.push({ issue: n, body });
+      },
+    })) as never;
+    const closeTheOther = () => { rows = rows.map((b) => ({ ...b, state: 'closed' })); };
+    const answer = (body: string) => { thread.push({ body, ours: false }); };
+    return { ...h, closeTheOther, answer };
+  };
+  const theOther = { blocker: { repo: 'acme/tools', number: 43, title: 'The lexer', reason: 'completed' } };
+
+  test('unreadied on a not-planned close, then its other blocker closes as completed: no spec session', async () => {
+    const h = unreadiedTurn();
+    await run(fire(dropped), h.deps as never);
+    assert.deepEqual(labelCalls(h.calls), TAKEN_OFF);
+    assert.match(h.comments[0]!.body, /<!-- governor:unreadied -->/);
+    h.closeTheOther();
+    const result = await run(fire(theOther), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'not-ready');
+    assert.deepEqual([h.launches, h.messages], [[], []]);
+    assert.equal(h.comments.length, 1, 'no dispatch marker either');
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-unblocked' && /not started: its ready labels came off on a not-planned close/.test(String(l.outcome))), JSON.stringify(h.logged));
+  });
+
+  test('the same, after a person answered governor\'s comment: the spec session starts', async () => {
+    const h = unreadiedTurn();
+    await run(fire(dropped), h.deps as never);
+    h.closeTheOther();
+    h.answer('Still stands. Rewrite it around the new lexer.');
+    await run(fire(theOther), h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
+  });
+
+  test('a not-ready ticket whose thread cannot be read: the turn fails, and nothing starts', async () => {
+    const h = unreadiedTurn({ labels: ['enhancement'], threadFails: true });
+    h.closeTheOther();
+    await assert.rejects(run(fire(theOther), h.deps as never), /502/);
     assert.deepEqual(h.launches, []);
   });
 
