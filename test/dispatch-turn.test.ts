@@ -7307,7 +7307,7 @@ describe('run: a relative wait on a declared blocker', () => {
   const UNTIL = new Date(Date.parse(CLOSED_AT) + 4 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const blocker = { repo: REPO, number: 41, title: 'The parser', reason: 'completed', closedAt: CLOSED_AT };
   const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, ...over });
-  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>> } = {}) => {
+  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>>, thread = [] as Array<{ body: string }> } = {}) => {
     const asked: string[] = [];
     const file = JSON.parse(FACTORY_FILE);
     file.features = { ...file.features, ...features };
@@ -7326,6 +7326,7 @@ describe('run: a relative wait on a declared blocker', () => {
         updateIssue: async (n: number, { body: next }: { body: string }) => { h.issueEdits.push({ issue: n, body: next }); state.body = next; },
         issueClose: async (n: number) => ({ id: 9000 + n, number: n, title: `Issue ${n}`, state: 'open', reason: null, closedAt: null, ...issues[n] }),
         allComments: async () => [],
+        comments: async () => thread,
         comment: async (n: number, text: string) => { h.comments.push({ issue: n, body: text }); },
         addLabels: async (n: number, on: string[]) => { h.calls.push(`label #${n} +${on.join(', ')}`); },
         removeLabel: async (n: number, label: string) => { h.calls.push(`label #${n} -${label}`); },
@@ -7351,6 +7352,38 @@ describe('run: a relative wait on a declared blocker', () => {
     assert.deepEqual(h.calls.filter((c) => c.startsWith('label ')), []);
     assert.deepEqual([h.launches, h.messages], [[], []]);
     assert.notEqual(result.row, 'not-planned');
+  });
+
+  // The line holds only a ticket ready or not ready by its labels. A claimed
+  // or excluded ticket takes its own row after the line's one comment, and
+  // that comment stands in for the not-planned row's.
+  const CLAIM = 'workflow: under development';
+  const SESSION = 'https://claude.ai/code/session_01WORK';
+  const MARKER = dispatchMarker({ at: new Date(NOW - 3 * 24 * 60 * 60 * 1000).toISOString(), sessionUrl: SESSION });
+
+  test('claimed, and a close that is not completed: one comment, and its session hears the close', async () => {
+    for (const [reason, row] of [['not_planned', 'not-planned'], ['duplicate', 'claimed']] as const) {
+      const h = relativeTurn({ labels: [CLAIM], thread: [{ body: MARKER }] });
+      const result = await run(fire({ blocker: { ...blocker, reason } }), h.deps as never) as Record<string, unknown>;
+      assert.deepEqual(h.issueEdits, [], reason);
+      assert.equal(result.row, row, reason);
+      assert.equal(h.comments.length, 1, `${reason}: ${JSON.stringify(h.comments)}`);
+      assert.ok(h.comments[0]!.body.includes(waitNotPlannedMarker('#41')), reason);
+      assert.deepEqual(h.messages.map((m) => m.session), [SESSION], reason);
+      assert.match(h.messages[0]!.text, new RegExp(`closed as ${reason.replace(/_/g, ' ')}`), reason);
+      assert.deepEqual([h.launches, h.calls.filter((c) => c.startsWith('label '))], [[], []], reason);
+    }
+  });
+
+  test('excluded, and a close that is not completed: the line\'s one comment, and the ticket takes its own row', async () => {
+    for (const [reason, row] of [['duplicate', 'excluded'], ['not_planned', 'not-planned']] as const) {
+      const h = relativeTurn({ labels: [...READY, 'type: prd'] });
+      const result = await run(fire({ blocker: { ...blocker, reason } }), h.deps as never) as Record<string, unknown>;
+      assert.equal(result.row, row, reason);
+      assert.equal(h.comments.length, 1, `${reason}: ${JSON.stringify(h.comments)}`);
+      assert.ok(h.comments[0]!.body.includes(waitNotPlannedMarker('#41')), reason);
+      assert.deepEqual([h.launches, h.messages, h.calls.filter((c) => c.startsWith('label '))], [[], [], []], reason);
+    }
   });
 
   test('with neither pickup nor unblocked on, the line is still rewritten, and the fire then refused', async () => {

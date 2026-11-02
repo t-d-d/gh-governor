@@ -1870,7 +1870,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // A relative `Blocked until:` line on this close is settled first,
     // whatever the switches say: rewritten into its date, or, on a close
     // that was not completed, left with one comment that replaces the
-    // not-planned row's (dispatch/waits.mjs).
+    // not-planned row's (dispatch/waits.mjs). Only a ticket ready or not
+    // ready by its labels is then held; a claimed or excluded one takes its
+    // own row, so a claimed ticket's session still hears the close.
     const settleRelative = (/** @type {{ state: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }} */ read) =>
       relativeAtClose({ reader, repo: fireRepo(), ticket: read, fire: invocation, prompts, now: deps.now(), log: deps.log });
     if (!turnsOn(config, 'pickup') && !turnsOn(config, 'unblocked')) {
@@ -1888,12 +1890,15 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const changed = settled?.outcome === 'line changed';
     if (changed) ticket = await reader.ticket(issue);
     else if (settled?.wait !== undefined) ticket = { ...ticket, wait: settled.wait };
-    if (settled !== null && settled.wait === undefined && !changed) {
+    // The line's comment on a close that was not completed stands in for
+    // the not-planned row's, which a claimed ticket's session still hears.
+    const lineSaid = settled !== null && settled.wait === undefined && !changed;
+    if (lineSaid && waitHolds(ticket.labels, config.labels)) {
       deps.log('dispatch-unblocked', { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row: 'blocked', reads, outcome: `held by its relative line: ${settled.outcome}` });
       return { kind: invocation.kind, row: 'blocked', dispatched: [] };
     }
     row = ticketRow({ ticket, blockers, fire: invocation, labels: config.labels, now: deps.now() });
-    const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row, reads, ...(ticket.wait === undefined ? {} : { wait: ticket.wait }) };
+    const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row, reads, ...(ticket.wait === undefined ? {} : { wait: ticket.wait }), ...(lineSaid ? { relative: settled.outcome } : {}) };
     // An unreadable `Blocked until:` line holds a ticket ready or not ready
     // by its labels, which reads as blocked, and is said once on it whatever
     // the repo's switches say. A claimed or excluded ticket is not held.
@@ -1943,7 +1948,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         }
       }
       const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts, { blocked: isBlocked(ticket, blockers), ...(unreadied === undefined ? {} : { unreadied }) }) : null;
-      if (notPlanned !== null) {
+      if (notPlanned !== null && !lineSaid) {
         await reader.comment(issue, notPlanned);
         commented = true;
       }
