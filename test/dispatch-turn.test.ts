@@ -2878,6 +2878,18 @@ describe('run — periodics', () => {
     assert.deepEqual(h.periodicWrites, []);
   });
 
+  test('a cap of 0 logs each due periodic it does not start, with the cap as the reason, as an event does', async () => {
+    const h = harness({ cap: 0 });
+    h.periodics.set(key(RETRO.name), fired(8));
+    h.periodics.set(key(REVIEW.name), fired(5));
+    h.periodics.set(key(CODE.name), fired(1));
+    await run({ source: 'aws.events' }, h.deps as never);
+    const lines = h.logged.filter((l) => l.event === 'dispatch-periodic' && l.outcome === 'not started');
+    assert.deepEqual(lines.map((l) => ({ repo: l.repo, periodics: l.periodics, reason: l.reason })), [
+      { repo: REPO, periodics: [REVIEW.name, RETRO.name], reason: 'DispatchCap is 0: no fire starts anything' },
+    ]);
+  });
+
   test('an unconfirmed launch records the fire with no session', async () => {
     const h = harness({ launch: async () => ({ status: 3, output: 'timed out' }) });
     h.periodics.set(key(RETRO.name), fired(7));
