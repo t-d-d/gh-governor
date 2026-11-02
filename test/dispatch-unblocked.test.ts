@@ -244,6 +244,11 @@ describe('unreadiedSince', () => {
     assert.equal(unreadiedSince(['ready', 'mode: afk'], [ours('ready')], labels, since), undefined);
     assert.equal(unreadiedSince(['claimed'], [ours('ready'), ours('mode: afk')], labels, since), undefined);
   });
+  test('a label the App took off, a person put back and then took off again: the person\'s, not this close\'s', () => {
+    const person = { label: 'ready', at: '2026-11-02T10:05:00Z', ours: false };
+    assert.equal(unreadiedSince(['mode: afk'], [ours('ready'), person], labels, since), undefined);
+    assert.deepEqual(unreadiedSince([], [person, ours('ready', '2026-11-02T10:06:00Z'), ours('mode: afk')], labels, since), { removed: ['ready', 'mode: afk'], failed: [] });
+  });
   test('mayBeUnreadied: some ready label off, and ready with them back', () => {
     assert.equal(mayBeUnreadied(['bug'], labels), true);
     assert.equal(mayBeUnreadied(['ready', 'mode: afk'], labels), false);

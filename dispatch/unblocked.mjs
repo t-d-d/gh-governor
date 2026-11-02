@@ -226,19 +226,23 @@ export const readyToTakeOff = (on, labels) => (labelRow(on, labels) === 'ready' 
  * The ready labels an earlier run of this close took off a ticket, read back
  * on a retry: the retry reads the ticket without them, so
  * {@link readyToTakeOff} finds nothing and the comment would not say they
- * came off. A label counts when the App removed it at or after the close
- * and it is still off; the ticket, with those labels back, must read as
- * ready. Those still on are the ones that would not come off.
+ * came off. A label counts when its latest removal is the App's, at or
+ * after the close, and it is still off; the ticket, with those labels
+ * back, must read as ready. Those still on are the ones that would not
+ * come off.
  *
  * @param {readonly string[]} on The ticket's labels.
- * @param {ReadonlyArray<{ label: string, at: string, ours: boolean }>} removals The ticket's label removals, each marked with whether the App made it.
+ * @param {ReadonlyArray<{ label: string, at: string, ours: boolean }>} removals The ticket's label removals, oldest first, each marked with whether the App made it.
  * @param {Pick<Labels, 'ready' | 'claim' | 'exclude'>} labels The repo's.
  * @param {string} since When the blocker closed.
  * @returns {{ removed: string[], failed: string[] } | undefined}
  */
 export const unreadiedSince = (on, removals, labels, since) => {
   const from = Date.parse(since);
-  const ours = new Set(removals.filter((r) => r.ours && Date.parse(r.at) >= from).map((r) => r.label));
+  // Each label's latest removal, so one the App made and a person undid and
+  // made again is the person's.
+  const latest = new Map(removals.map((r) => [r.label, r]));
+  const ours = new Set([...latest.values()].filter((r) => r.ours && Date.parse(r.at) >= from).map((r) => r.label));
   const removed = labels.ready.filter((l) => ours.has(l) && !on.includes(l));
   if (removed.length === 0 || labelRow([...on, ...removed], labels) !== 'ready') return undefined;
   return { removed, failed: labels.ready.filter((l) => on.includes(l)) };
