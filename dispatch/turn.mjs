@@ -107,7 +107,7 @@ import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { isBlocked, labelRow } from '../scripts/lib/ready-work.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
-import { RoutinesApiError, launchRoutine, observed } from './routines.mjs';
+import { RoutinesApiError, launchRoutine, observed, routineName } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
@@ -229,10 +229,12 @@ export const sessionUrlFrom = (output) => {
  *   environment, from the repo's config file. `connectors`: a periodic's
  *   claude.ai connectors, which start it as a run of its routine
  *   (dispatch/routines.mjs), the periodic named by `sessionName`.
- * @typedef {{ status: number | null, output: string, missing?: string[], refused?: true }} LaunchResult
+ * @typedef {{ status: number | null, output: string, missing?: string[], refused?: true, routine?: string }} LaunchResult
  *   `missing`: the connectors a routine launch named that the account has
  *   not connected. It started nothing. `refused`: the routines API refused
- *   a routine launch before the fire. It started nothing.
+ *   a routine launch before the fire. It started nothing. `routine`: the id
+ *   of the routine a routine launch fired, through which its run session is
+ *   found.
  * @typedef {import('../scripts/lib/dispatch-router.mjs').Reader & import('./workflow.mjs').WorkflowReader & {
  *   comment: (n: number, body: string) => Promise<void>,
  *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string }>>,
@@ -682,7 +684,17 @@ const turnOf = async (event, deps, records) => {
     } else if (launchOutcome(launched.status) !== null) {
       // The launch may have started a session but named none, so nothing
       // can record it: the operator finds it by its name and the line's time.
-      deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, status: launched.status, reason: 'the launch may have started a session, but it printed no session URL, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label' });
+      // A routine's run session is found through its routine, not by the
+      // periodic's name, so a routine launch's line names the routine.
+      const routine = launched.routine === undefined ? {} : {
+        routine: launched.routine,
+        routineName: routineName(begin.repo, begin.sessionName),
+        tail: launched.output.slice(-OUTPUT_TAIL),
+      };
+      const reason = launched.routine === undefined
+        ? 'the launch may have started a session, but it printed no session URL, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label'
+        : 'the routine was fired, but none of its run sessions could be named as this fire\'s, so the session could not be named or recorded: look in the routine\'s run sessions for one started shortly before this line\'s time. Its PRs may clear a human-only path on a ticket\'s mode label';
+      deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, status: launched.status, ...routine, reason });
     }
     return launched;
   };
