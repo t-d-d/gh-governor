@@ -522,7 +522,7 @@ export const deliveries = (deps) => {
     // a fresh session starts on the fallback's prompt, and on a PR leaves
     // the marker and, for a takeover, is written into the body's link.
     if (refused && withFallback) {
-      const { issue, prompt, branch } = withFallback;
+      const { issue, prompt } = withFallback;
       const sessionName = withFallback.sessionName ?? DEFAULT_SESSION_NAME;
       const now = deps.now();
       const marked = issue === undefined
@@ -541,24 +541,32 @@ export const deliveries = (deps) => {
       let relinked = false;
       /** Why nothing started, when the fallback was skipped for it. @type {string | null} */
       let reason = null;
+      /** The PR's head branch a takeover's session starts on and pushes to, or '' for none. */
+      let branch = '';
       // A takeover of a PR that has closed or merged since the remark was
       // posted has nothing to take over. It is read now, not when the remark
       // arrived: a remark posted while the PR was open can be delivered after
-      // it merged. A fallback that is not a takeover (a red run on a merge)
-      // is meant for a closed PR.
-      if (fallback === null && takeover && issue !== undefined && !(await (await deps.reader()).pull(issue)).open) {
-        fallback = { outcome: 'skipped', sessionUrl: null };
-        reason = `PR #${issue} has closed`;
+      // it merged. An open one's session starts on its head branch: from the
+      // default branch it would be given a new branch and open a second PR.
+      // A fork's head is '' here, so none is named. A fallback that is not a
+      // takeover (a red run on a merge) is meant for a closed PR, and starts
+      // a branch of its own.
+      if (fallback === null && takeover && issue !== undefined) {
+        const pr = await (await deps.reader()).pull(issue);
+        if (!pr.open) {
+          fallback = { outcome: 'skipped', sessionUrl: null };
+          reason = `PR #${issue} has closed`;
+        } else branch = pr.head;
       }
       if (fallback === null) {
-        const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL, ...(branch === undefined ? {} : { branch }) }, until);
+        const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL, ...(branch === '' ? {} : { branch }) }, until);
         fallback = { outcome: started.outcome, sessionUrl: started.sessionUrl };
         if (issue !== undefined && started.outcome !== 'failed') {
           await (await deps.reader()).comment(issue, dispatchMarker({ at: new Date(now).toISOString(), sessionUrl: started.sessionUrl }));
           if (takeover && started.sessionUrl !== null) relinked = await relink(issue, started.sessionUrl);
         }
       }
-      deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, branch: branch ?? null, ...fallback, relinked, ...(reason === null ? {} : { reason }) });
+      deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, branch: branch === '' ? null : branch, ...fallback, relinked, ...(reason === null ? {} : { reason }) });
     }
     // A refusal with none: a subscriber gone. Its line goes; the turn is not
     // a failure, since nothing was owed to a session that is not there.

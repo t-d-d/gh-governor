@@ -260,16 +260,34 @@ describe('deliver — with a fallback', () => {
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.outcome === 'dispatched'), JSON.stringify(f.logged));
   });
 
-  // A launch on a PR's branch the CLI refuses reads as any failed launch, so
-  // the line names the branch the operator looks for.
-  test('a fallback that names a branch launches on it, and its line names it', async () => {
-    const f = fakes({ send: archived });
-    await f.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: { ...fallback, branch: 'claude/branch-724' }, takeover: true });
+  // A takeover's session starts on the PR's head branch, read from the PR,
+  // and pushes there. A launch on it the CLI refuses reads as any failed
+  // launch, so the line names the branch the operator looks for.
+  test('a takeover\'s fallback launches on the PR\'s head branch, and its line names it', async () => {
+    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: 'claude/branch-724', open: true }) } });
+    await f.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: onPr, takeover: true });
     assert.equal(f.launches[0]!.branch, 'claude/branch-724');
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.branch === 'claude/branch-724'), JSON.stringify(f.logged));
+  });
+
+  // A fork's head is not this repo's branch: the reader gives '' for it.
+  test('a takeover of a PR from a fork, or a fallback on no PR, names no branch', async () => {
+    const fork = fakes({ send: archived });
+    await fork.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: onPr, takeover: true });
+    assert.equal(fork.launches[0]!.branch, undefined);
+    assert.ok(fork.logged.some((l) => l.event === 'dispatch-message-fallback' && l.branch === null), JSON.stringify(fork.logged));
     const plain = fakes({ send: archived });
     await plain.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback, takeover: true });
-    assert.ok(plain.logged.some((l) => l.event === 'dispatch-message-fallback' && l.branch === null), JSON.stringify(plain.logged));
+    assert.equal(plain.launches[0]!.branch, undefined);
+  });
+
+  // A fallback that is not a takeover (a red run on a merge) is for a merged
+  // PR, whose branch is done with: its session starts a branch of its own.
+  test('a fallback that is no takeover starts on no PR branch', async () => {
+    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: 'claude/branch-724', open: false }) } });
+    await f.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: onPr });
+    assert.equal(f.launches.length, 1);
+    assert.equal(f.launches[0]!.branch, undefined);
   });
 
   test('a fallback naming no session is launched as `dispatch`', async () => {

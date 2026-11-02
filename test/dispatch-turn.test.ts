@@ -3375,6 +3375,20 @@ describe('run — a message with a fallback', () => {
     assert.equal(exitCodeFor(result as never), 0);
   });
 
+  // A remark's fallback takes the PR over, so its session starts on the PR's
+  // head branch and pushes there: from the default branch it would be given
+  // a new branch and open a second PR beside the first.
+  test('a refused remark on a PR launches its fallback on the PR\'s head branch', async () => {
+    const base = harness();
+    const { deps, launches } = harness({
+      message: async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }),
+      reader: () => ({ ...base.deps.reader(''), pull: async (n: number) => ({ number: n, body: PR_BODY, head: 'claude/branch-724', open: true }) }),
+    });
+    await run({ kind: 'message', session: 'https://claude.ai/code/session_01OLD', text: 'hi', fallback: { ...fallback, issue: 724 } }, deps as never);
+    assert.equal(launches.length, 1);
+    assert.equal(launches[0]!.branch, 'claude/branch-724', 'the session starts on the PR\'s head branch, so it opens no new branch or PR');
+  });
+
   test('a send failing for any reason but an archived session starts no fallback: the owner may be live', async () => {
     const { deps, launches, comments } = harness({ message: async () => ({ status: 1, output: JSON.stringify({ ok: false, session_id: 'session_01OLD', error: 'Unable to get organization UUID' }) }) });
     const result = await run({ kind: 'message', session: 'session_01OLD', text: fallback.prompt, fallback: { ...fallback, issue: 724 } }, deps as never);
@@ -4294,7 +4308,7 @@ describe('run — a merge to main leaves PRs conflicted', () => {
         count[n] = (count[n] ?? 0) + 1;
         return row(n, seq[i] ?? null, rows[n]);
       },
-      pull: async (n: number) => ({ number: n, body: String(rows[n]?.body ?? BODY), head: `claude/branch-${n}`, open: true }),
+      pull: async (n: number) => ({ number: n, body: String(rows[n]?.body ?? BODY), head: pulls.find((p) => p.number === n)?.head ?? `claude/branch-${n}`, open: true }),
       updatePull: async () => {},
       comment: async (n: number, text: string) => { comments.push({ issue: n, body: text }); },
       updateComment: async () => { throw new Error('the check edits no comment'); },
