@@ -295,7 +295,7 @@ const harness = (over: Record<string, unknown> = {}) => {
     // connected, no routine stands until one is created, and a fired
     // routine's run session is listed at once.
     routines: (token: string, organization: string | null) => ({
-      connectors: async () => { routineCalls.push({ call: 'connectors', token, organization }); return { data: [{ id: 'mcpsrv_012rppKaSVsmTo6NqRDXQXNF', display_name: 'feed_prod', url: 'https://feed.example/mcp' }] }; },
+      connectors: async () => { routineCalls.push({ call: 'connectors', token, organization }); return { data: [{ id: 'mcpsrv_012rppKaSVsmUFrbthcgynUk', display_name: 'feed_prod', url: 'https://feed.example/mcp' }] }; },
       triggers: async () => ({ data: [...routinesHeld] }),
       create: async (body: { name: string }) => {
         routineCalls.push({ call: 'create', body, token, organization });
@@ -2717,7 +2717,7 @@ describe('run — periodics', () => {
     const created = h.routineCalls.find((c) => c.call === 'create')!;
     assert.match(created.body.name, /acme\/factory/);
     assert.match(created.body.name, new RegExp(REVIEW.name));
-    assert.deepEqual(created.body.mcp_connections, [{ connector_uuid: '0f0e0d0c-0b0a-0908-0706-050403020100', name: 'feed_prod', url: 'https://feed.example/mcp' }]);
+    assert.deepEqual(created.body.mcp_connections, [{ connector_uuid: '0f0e0d0c-0b0a-0908-a706-abcdef0f1e2d', name: 'feed_prod', url: 'https://feed.example/mcp' }]);
     assert.equal(created.body.job_config.ccr.events[0].data.message.content, signed(`${REVIEW.prompt}\n\nThis periodic last fired at ${ago(3)}.`));
     assert.equal(created.body.job_config.ccr.environment_id, JSON.parse(FACTORY_FILE).environment);
     assert.deepEqual(created.body.job_config.ccr.session_context.sources, [{ git_repository: { url: `https://github.com/${REPO}` } }]);

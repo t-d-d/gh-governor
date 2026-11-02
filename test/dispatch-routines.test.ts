@@ -14,9 +14,9 @@ import { NEVER_DUE, ROUTINE_ANSWER, ROUTINE_SESSION_TRIES, RoutinesApiError, ans
 const REPO = 'acme/factory';
 // Rows in the shape the live connector list answers: a tagged `id`, the
 // connector's `display_name`, its `url`, and fields governor does not read.
-const FEED = { id: 'mcpsrv_012rppKaSVsmTo6NqRDXQXNF', display_name: 'feed_prod', url: 'https://feed.example/mcp', type: 'mcp', additional_install: false, tools: [] };
+const FEED = { id: 'mcpsrv_012rppKaSVsmUFrbthcgynUk', display_name: 'feed_prod', url: 'https://feed.example/mcp', type: 'mcp', additional_install: false, tools: [] };
 const GMAIL = { id: 'mcprs_015Q', display_name: 'claude.ai Gmail', url: 'https://gmail.example/mcp', type: 'mcp', additional_install: false, tools: [] };
-const FEED_UUID = '0f0e0d0c-0b0a-0908-0706-050403020100';
+const FEED_UUID = '0f0e0d0c-0b0a-0908-a706-abcdef0f1e2d';
 const GMAIL_UUID = '00000000-0000-0000-0000-0000000000ff';
 
 /** A fake routines API that records every call. */
@@ -65,7 +65,7 @@ describe('a periodic\'s connectors', () => {
   });
 
   test('a connector\'s uuid comes from its tagged id: `mcpsrv_` and two characters dropped, the rest a base58 number written as 32 hex digits', () => {
-    assert.equal(connectorUuid('mcpsrv_012rppKaSVsmTo6NqRDXQXNF'), FEED_UUID);
+    assert.equal(connectorUuid('mcpsrv_012rppKaSVsmUFrbthcgynUk'), FEED_UUID);
     assert.equal(connectorUuid('mcpsrv_015Q'), GMAIL_UUID);
     assert.equal(connectorUuid('mcprs_015Q'), GMAIL_UUID, 'an id that starts mcprs reads as mcpsrv');
     for (const id of ['', 'mcpsrv_01', 'mcpsrv_0', 'srv_015Q', 'mcpsrv-015Q', 'mcpsrv_010OIl', `mcpsrv_01${'z'.repeat(23)}`]) {
