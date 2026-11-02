@@ -2154,11 +2154,58 @@ describe('run: a waiting ticket linked to the wait ticket', () => {
     assert.deepEqual(again.comments, []);
   });
 
+  test('a 422 whose text names no limit is still the cap when the wait ticket already blocks 50', async () => {
+    const full = Array.from({ length: 50 }, (_, i) => ({ number: 100 + i, state: 'open', title: `Issue ${100 + i}`, repo: REPO }));
+    const h = linksTurn({ blocking: full, addBlocker: async () => { throw Object.assign(new Error(`POST /repos/${REPO}/issues/7/dependencies/blocked_by failed: 422 Unprocessable Entity: Validation Failed`), { status: 422 }); } });
+    await run(fire, h.deps as never);
+    assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_FULL_MARKER)).length, 1, JSON.stringify(h.comments));
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
+  });
+
+  test('the bare fire takes the link off a ticket with no item whose line has passed or cannot be read, before the sweep', async () => {
+    for (const wait of [{ until: PAST }, { unreadable: 'soon' }]) {
+      const h = linksTurn({ ticket: ticketWith({ wait }), linked: true, blocking: [{ number: 7, state: 'open', title: 'Issue 7', repo: REPO }] });
+      await run({ source: 'aws.events' }, h.deps as never);
+      const unlink = h.calls.indexOf(`unblock #7 from ${BOARD_ID}`);
+      assert.ok(unlink >= 0 && unlink < h.calls.indexOf('read the backlog'), `${JSON.stringify(wait)}: ${h.calls.join('; ')}`);
+      assert.deepEqual(h.comments.filter((c) => c.body.includes(WAIT_UNLINED_MARKER)), []);
+    }
+    const waiting = linksTurn({ ticket: ticketWith({ wait: { until: LATER } }), linked: true, blocking: [{ number: 7, state: 'open', title: 'Issue 7', repo: REPO }] });
+    await run({ source: 'aws.events' }, waiting.deps as never);
+    assert.deepEqual(linkCalls(waiting), [], 'a wait still to come keeps its link');
+  });
+
   test('a closed wait ticket gets no links, and the turn logs at warn', async () => {
     const h = linksTurn({ board: { ...WAIT_BOARD, state: 'closed' } });
     await run(fire, h.deps as never);
     assert.deepEqual(linkCalls(h), []);
     assert.ok(h.logged.some((l) => l.event === 'dispatch-wait-link' && l.level === 'warn' && l.issue === 7), JSON.stringify(h.logged));
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
+  });
+
+  test('a 422 that is not the cap is not taken for a full wait ticket, though its path names issue 50', async () => {
+    const refusal = () => Object.assign(new Error('POST /repos/acme/factory/issues/50/dependencies/blocked_by failed: 422 Unprocessable Entity: Validation Failed'), { status: 422 });
+    const h = linksTurn({ addBlocker: async () => { throw refusal(); } });
+    await run(fire, h.deps as never);
+    assert.deepEqual(h.comments.filter((c) => c.body.includes(WAIT_FULL_MARKER)), []);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-wait-link' && l.level === 'error' && l.issue === 7), JSON.stringify(h.logged));
+  });
+
+  test('a link to a closed wait ticket is not taken off the count of open blockers when the wait ends', async () => {
+    // The summary's one open blocker is another issue: a closed wait ticket is not counted.
+    const h = linksTurn({ ticket: ticketWith({ wait: { until: PAST }, openBlockers: 1 }), linked: true, item: PAST, board: { ...WAIT_BOARD, state: 'closed' } });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.ok(h.calls.includes(`unblock #7 from ${BOARD_ID}`), h.calls.join('; '));
+    assert.deepEqual(h.comments.filter((c) => c.issue === 7 && c.body.includes(waitEndedMarker(PAST))), []);
+    assert.equal(h.launches.filter((l) => l.sessionName === sessionName(7, 'Issue 7')).length, 0);
+    assert.deepEqual([...h.waitItems], []);
+  });
+
+  test('a pull request named as the wait ticket gets no links', async () => {
+    const h = linksTurn({ board: { ...WAIT_BOARD, pull: true } });
+    await run(fire, h.deps as never);
+    assert.deepEqual(linkCalls(h), []);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-wait-link' && l.level === 'error' && l.issue === 7), JSON.stringify(h.logged));
     assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
   });
 });

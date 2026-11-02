@@ -29,6 +29,7 @@
 import { recentlyDispatched } from './webhook/fire.mjs';
 import { specSession } from './unblocked.mjs';
 import { isBlocked, isWaiting, labelRow } from '../scripts/lib/ready-work.mjs';
+import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** The log event for a `Blocked until:` line governor cannot read. */
 export const WAIT_UNREADABLE = 'dispatch-wait-unreadable';
@@ -76,7 +77,7 @@ export const reportUnreadable = async ({ reader, repo, issue, value, log }) => {
     await reader.comment(issue, waitUnreadableComment(value));
     return 'commented';
   } catch (error) {
-    log(WAIT_UNREADABLE, { level: 'error', repo, issue, value, error: error instanceof Error ? error.message : String(error), reason: 'the ticket is held, and governor could not say so on it this turn' });
+    log(WAIT_UNREADABLE, { level: 'error', repo, issue, value, error: messageOf(error), reason: 'the ticket is held, and governor could not say so on it this turn' });
     return 'failed';
   }
 };
@@ -147,7 +148,7 @@ export const waitSpecPrompt = ({ issue, title, until, labels, prompts }) => spec
  *   for no item.
  *
  * @typedef {{
- *   ticket: (n: number) => Promise<{ number: number, id?: number, title: string, state: string, labels: string[], openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
+ *   ticket: (n: number) => Promise<{ number: number, id?: number, title: string, state: string, labels: string[], pull?: boolean, openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
  *   blockers: (n: number) => Promise<Array<{ state: string, id?: number }>>,
  *   allComments: (n: number) => Promise<Array<{ body: string }>>,
  *   comment: (n: number, body: string) => Promise<void>,
@@ -197,6 +198,9 @@ const ticketOf = (reader, issue) => reader.ticket(issue).then((t) => (t.number =
 /** The log event for what a turn did with a ticket's link to the wait ticket. */
 export const WAIT_LINK = 'dispatch-wait-link';
 
+/** How many issues GitHub lets one issue block. */
+export const BLOCKING_CAP = 50;
+
 /** The marker on governor's one comment on a ticket linked to the wait ticket with no line. */
 export const WAIT_UNLINED_MARKER = '<!-- governor:wait-unlined -->';
 
@@ -229,12 +233,14 @@ export const waitFullComment = (board) => [
 
 /**
  * Whether a refused link is GitHub's cap on how many issues one issue may
- * block: a 422 whose text speaks of that limit.
+ * block: a 422 whose text from GitHub speaks of that limit. The request
+ * line before the status is left out, since its path carries an issue
+ * number, and issue #50's other refusals are not the cap.
  *
  * @param {unknown} error
  */
 const atCap = (error) => /** @type {{ status?: number }} */ (error)?.status === 422
-  && /\b50\b|\blimit\b|\bmaximum\b|\bat most\b/i.test(error instanceof Error ? error.message : String(error));
+  && /\b50\b|\blimit\b|\bmaximum\b|\bat most\b/i.test(messageOf(error).replace(/^\S+ \S+ failed: \d{3}\b/, ''));
 
 /**
  * Post `body` on `issue` unless its thread already carries `marker`.
@@ -255,14 +261,16 @@ const sayOnce = async (reader, issue, marker, body) => {
  *   show: (issue: number) => Promise<string>,
  *   hide: (issue: number) => Promise<'removed' | 'not linked'>,
  *   linked: (issue: number) => Promise<boolean>,
+ *   open: () => Promise<boolean>,
  *   unlined: (issue: number) => Promise<string>,
  * }} WaitLinks
  *   One turn's handle on a repo's wait ticket, read once, the first time a
  *   call needs it. `show` links a ticket as blocked by it, unless it is
  *   linked already, the wait ticket is closed, or GitHub's cap refuses the
  *   link, which is said once on the ticket. `hide` removes the link where
- *   it stands. `unlined` says once on a ticket that it is linked with no
- *   line. Any other failure throws.
+ *   it stands. `open` is whether the wait ticket is open, so a link to it
+ *   counts as an open blocker. `unlined` says once on a ticket that it is
+ *   linked with no line. Any other failure throws.
  */
 
 /**
@@ -277,7 +285,7 @@ export const waitLinks = ({ reader, repo, board, log }) => {
   /** @type {Promise<{ id: number, state: string }> | undefined} */
   let read;
   const boardOf = () => (read ??= reader.ticket(board).then((t) => {
-    if (t.number !== board || !Number.isInteger(t.id)) throw new Error(`the wait ticket #${board} is not an issue in ${repo}`);
+    if (t.number !== board || t.pull === true || !Number.isInteger(t.id)) throw new Error(`the wait ticket #${board} is not an issue in ${repo}`);
     return { id: /** @type {number} */ (t.id), state: t.state };
   }));
   /** @param {number} issue */
@@ -290,6 +298,7 @@ export const waitLinks = ({ reader, repo, board, log }) => {
   return {
     board,
     linked,
+    open: async () => (await boardOf()).state === 'open',
     show: async (issue) => {
       if (issue === board) return 'the wait ticket itself';
       const { id, state } = await boardOf();
@@ -301,9 +310,13 @@ export const waitLinks = ({ reader, repo, board, log }) => {
       try {
         await reader.addBlocker(issue, id);
       } catch (error) {
-        if (!atCap(error)) throw error;
+        // GitHub's text for its cap may sit outside the `message` the error
+        // carries, so a 422 is the cap too where the wait ticket already
+        // blocks as many as GitHub allows.
+        const full = /** @type {{ status?: number }} */ (error)?.status === 422 && (atCap(error) || (await reader.blocking(board)).length >= BLOCKING_CAP);
+        if (!full) throw error;
         const told = await sayOnce(reader, issue, WAIT_FULL_MARKER, waitFullComment(board));
-        log(WAIT_LINK, { level: 'warn', repo, issue, board, outcome: `not linked: the wait ticket is full, ${told}`, error: error instanceof Error ? error.message : String(error) });
+        log(WAIT_LINK, { level: 'warn', repo, issue, board, outcome: `not linked: the wait ticket is full, ${told}`, error: messageOf(error) });
         return 'wait ticket full';
       }
       log(WAIT_LINK, { repo, issue, board, outcome: 'linked' });
@@ -324,16 +337,16 @@ export const waitLinks = ({ reader, repo, board, log }) => {
 };
 
 /**
- * Show a wait in the sidebar, where `links` is set. A failure is logged at
- * error and taken for nothing: the link is only for display, and the line
- * holds the ticket either way.
+ * Show or hide a wait in the sidebar, where `links` is set. A failure is
+ * logged at error, with `reason`, and taken for nothing: the link is only
+ * for display, and the line holds the ticket either way.
  *
- * @param {WaitLinks | undefined} links @param {string} repo @param {number} issue @param {Log} log
+ * @param {WaitLinks | undefined} links @param {'show' | 'hide'} act @param {string} repo @param {number} issue @param {Log} log @param {string} reason
  */
-const showSoftly = async (links, repo, issue, log) => {
+const softly = async (links, act, repo, issue, log, reason) => {
   if (links === undefined) return;
-  await links.show(issue).catch((error) => {
-    log(WAIT_LINK, { level: 'error', repo, issue, board: links.board, error: error instanceof Error ? error.message : String(error), reason: 'the ticket is held by its line all the same; its sidebar does not show the wait' });
+  await links[act](issue).catch((error) => {
+    log(WAIT_LINK, { level: 'error', repo, issue, board: links.board, error: messageOf(error), reason });
   });
 };
 
@@ -381,8 +394,8 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, l
     }
     // The item stands at a passed date, so a removal that fails here is
     // tried again by the schedule fire.
-    if (isWaiting({ wait }, now)) await showSoftly(links, repo, issue, log);
-    else if (links !== undefined) await links.hide(issue).catch((error) => log(WAIT_LINK, { level: 'error', repo, issue, board: links.board, error: error instanceof Error ? error.message : String(error), reason: 'its item stands, so the schedule fire takes the link off once the wait has ended' }));
+    if (isWaiting({ wait }, now)) await softly(links, 'show', repo, issue, log, 'the ticket is held by its line all the same; its sidebar does not show the wait');
+    else await softly(links, 'hide', repo, issue, log, 'its item stands, so the schedule fire takes the link off once the wait has ended');
     return outcome;
   }
   if (wait !== undefined && 'unreadable' in wait && holds(ticket.labels, labels)) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
@@ -439,8 +452,10 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, l
  * reads the backlog, and a removal that fails keeps the item for the next
  * fire. A link just removed is not counted as an open blocker, though the
  * ticket's dependency summary may still count it. Then each open ticket in
- * this repo the wait ticket blocks, with no item and no line, was linked by
- * hand: it is told once, and its link stays.
+ * this repo the wait ticket blocks with no item: with no line, it was linked
+ * by hand, and is told once and keeps its link; with a line that has passed
+ * or cannot be read, its link comes off, as a turn that failed to take it
+ * off left it.
  *
  * @param {{ reader: WaitReader, state: WaitState, repo: string, labels: import('../scripts/lib/ready-work.mjs').Labels, spec: boolean, now: number, log: Log, links?: WaitLinks, blocking?: LinkReader['blocking'] }} args
  * @returns {Promise<{ specs: WaitSpec[], unread: Array<{ repo: string, error: string }> }>}
@@ -455,7 +470,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
   try {
     items = await state.waits(repo);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = messageOf(error);
     log(WAIT_UNHANDLED, { level: 'error', repo, error: message, reason: 'its wait items could not be read, so no ended wait is acted on this turn' });
     return { specs, unread: [{ repo, error: `wait items: ${message}` }] };
   }
@@ -490,8 +505,9 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: written ? 'moved later: not released' : 'moved later, and the item changed since it was read' });
         continue;
       }
-      // A link just removed may still be in the dependency summary.
-      const counted = removed && ticket.openBlockers !== undefined ? { ...ticket, openBlockers: Math.max(0, ticket.openBlockers - 1) } : ticket;
+      // A link just removed may still be in the dependency summary, which
+      // counts it only while the wait ticket is open.
+      const counted = removed && ticket.openBlockers !== undefined && await links?.open() ? { ...ticket, openBlockers: Math.max(0, ticket.openBlockers - 1) } : ticket;
       const blockers = counted.openBlockers === undefined ? await reader.blockers(issue) : undefined;
       const row = isBlocked(counted, blockers) ? 'blocked' : labelRow(ticket.labels, labels);
       if (row !== 'not-ready') {
@@ -509,7 +525,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       }
       await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: 'dispatched inside the window' } : {}) });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = messageOf(error);
       log(WAIT_UNHANDLED, { level: 'error', repo, issue, read: item.until, error: message, reason: 'its item stays, so the next fire tries again' });
       unread.push({ repo, error: `wait #${issue}: ${message}` });
     }
@@ -520,10 +536,15 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       const rows = (await blocking(links.board)).filter((r) => r.state === 'open' && (r.repo ?? repo).toLowerCase() === repo.toLowerCase() && !waiting.has(r.number));
       for (const { number } of rows) {
         const ticket = await ticketOf(reader, number);
-        if (ticket !== null && ticket.state === 'open' && ticket.wait === undefined) await links.unlined(number);
+        if (ticket === null || ticket.state !== 'open') continue;
+        // No line: a person's link, told once and left alone. A line that
+        // has passed or cannot be read: governor's link, which a turn could
+        // not take off, so it comes off now, before the sweep.
+        if (ticket.wait === undefined) await links.unlined(number);
+        else if ('unreadable' in ticket.wait || !isWaiting({ wait: ticket.wait }, now)) await links.hide(number);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = messageOf(error);
       log(WAIT_UNHANDLED, { level: 'error', repo, board: links.board, error: message, reason: 'the tickets the wait ticket blocks could not be read or told, so the next fire tries again' });
       unread.push({ repo, error: `wait ticket #${links.board}: ${message}` });
     }
