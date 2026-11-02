@@ -341,6 +341,74 @@ describe('main', () => {
 });
 
 /**
+ * The deadline's and the throw's rows of the launch outcomes
+ * (test/dispatch-turn.test.ts holds the rows through `run`). A record that
+ * landed has left the pending set, and so has one that failed, which `run`
+ * logged as it failed. Only a record still pending when the turn ends is
+ * logged here, whether a CLI launch or a routine run started its session.
+ */
+describe('main: the session records a turn leaves at its end', () => {
+  type Pending = { repo: string; sessionName: string; sessionUrl: string };
+  const LANDED: Pending = { repo: 'acme/factory', sessionName: 'Issue 7', sessionUrl: 'https://claude.ai/code/session_01LANDED' };
+  const FAILED: Pending = { repo: 'acme/factory', sessionName: 'Weekly retro', sessionUrl: 'https://claude.ai/code/session_01FAILED' };
+  const PENDING: Pending = { repo: 'acme/factory', sessionName: 'Ticket review', sessionUrl: 'https://claude.ai/code/session_01PENDING' };
+
+  const rows: Array<{ end: 'deadline' | 'throw'; error: RegExp }> = [
+    { end: 'deadline', error: /deadline/ },
+    { end: 'throw', error: /threw/ },
+  ];
+
+  for (const row of rows) {
+    test(`at the ${row.end}, only the record still pending is logged: none that landed or failed`, async () => {
+      const { args, logged, exits, timers } = harness({
+        run: async (_event: unknown, deps: { unrecorded: Set<Pending> }) => {
+          for (const p of [LANDED, FAILED, PENDING]) deps.unrecorded.add(p);
+          // The turn removes a record once it lands or fails.
+          deps.unrecorded.delete(LANDED);
+          deps.unrecorded.delete(FAILED);
+          if (row.end === 'throw') throw new Error('the heartbeat write threw');
+          return new Promise(() => {});
+        },
+      });
+      const ended = main(args as never);
+      if (row.end === 'deadline') {
+        await new Promise((settle) => setImmediate(settle));
+        timers[0]!.fn();
+      } else {
+        await ended;
+      }
+      assert.deepEqual(logged.map((l) => [l.event, l.sessionName, l.sessionUrl]), [
+        ['dispatch-session-unrecorded', PENDING.sessionName, PENDING.sessionUrl],
+        ['dispatch-failed', undefined, undefined],
+      ]);
+      assert.equal(logged[0]?.level, 'error');
+      assert.match(String(logged[0]?.error), row.error);
+      assert.deepEqual(exits, [1]);
+    });
+
+    test(`at the ${row.end}, a turn with no record pending logs no session`, async () => {
+      const { args, logged, exits, timers } = harness({
+        run: async (_event: unknown, deps: { unrecorded: Set<Pending> }) => {
+          deps.unrecorded.add(LANDED);
+          deps.unrecorded.delete(LANDED);
+          if (row.end === 'throw') throw new Error('the heartbeat write threw');
+          return new Promise(() => {});
+        },
+      });
+      const ended = main(args as never);
+      if (row.end === 'deadline') {
+        await new Promise((settle) => setImmediate(settle));
+        timers[0]!.fn();
+      } else {
+        await ended;
+      }
+      assert.deepEqual(logged.map((l) => l.event), ['dispatch-failed']);
+      assert.deepEqual(exits, [1]);
+    });
+  }
+});
+
+/**
  * With no event on its override, the task is the lane's reader
  * (dispatch/lane.mjs): each fire it takes is its own turn, under its own
  * deadline, and its result line names the fire's message.
