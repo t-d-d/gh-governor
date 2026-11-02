@@ -106,7 +106,7 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
-import { isBlocked, isWaiting, labelRow, unreadableOf, waitHolds } from '../scripts/lib/ready-work.mjs';
+import { isBlocked, mayPickUp, ticketStatus, unreadableOf, waitHolds } from '../scripts/lib/ready-work.mjs';
 import { WAIT_PROMPT, WAIT_RELATIVE, endedWaits, holdWait, relativeAtClose, repairRelative, reportUnreadable, waitLinks, waitSpecPrompt } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { RoutinesApiError } from './routines.mjs';
@@ -1894,10 +1894,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    * Claim one ticket: the claim label on, then the ready labels it takes
    * off. The plan was read before earlier launches that take minutes, so
    * the ticket is read again first: one closed, unreadied, claimed, given
-   * one of the repo's excluded labels, given an open blocker (`isBlocked`)
-   * or held by a `Blocked until:` line since is skipped, untouched, since its
-   * session would proceed on the prompt's claim line over someone else's
-   * work, or on work that waits on another. A claim that fails is
+   * one of the repo's excluded labels, given an open blocker or held by a
+   * `Blocked until:` line since (`ticketStatus`, `mayPickUp`) is skipped,
+   * untouched, since its session would proceed on the prompt's claim line
+   * over someone else's work, or on work that waits on another. A claim that fails is
    * released, and starts nothing.
    *
    * @param {{ repo: string, issue: number }} ticket
@@ -1910,18 +1910,21 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const github = await readerFor(repo);
       const read = await github.ticket(issue);
       const { state, labels: on, wait } = read;
-      const ready = state === 'open' && labelRow(on, labels) === 'ready';
+      const now = deps.now();
+      const first = ticketStatus(read, { labels, now });
+      const ready = first.open && first.labels === 'ready';
       // The rows are read only where the summary is missing and the rest
       // still reads ready, as the selection reads them.
       const rows = ready && read.openBlockers === undefined ? await github.blockers(issue) : undefined;
-      const blocked = ready && isBlocked(read, rows);
-      if (!ready || blocked || isWaiting(read, deps.now())) {
+      const status = rows === undefined ? first : ticketStatus(read, { labels, now, blockers: rows });
+      const blocked = ready && status.open && status.holds.includes('blocker');
+      if (!mayPickUp(status)) {
         const line = wait === undefined ? '' : `, Blocked until: ${'until' in wait ? wait.until : 'after' in wait ? `${wait.after.days} days after ${wait.after.repo ?? ''}#${wait.after.issue} closes` : `${wait.unreadable} (unreadable)`}`;
         const open = blocked ? `, ${read.openBlockers ?? (rows ?? []).filter((b) => b.state === 'open').length} open blocker(s)` : '';
         deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}${open}${line}` });
         // Said only on a ticket still ready by its labels: one claimed or
         // unreadied since is someone else's.
-        const unread = ready ? unreadableOf(read) : undefined;
+        const unread = ready && status.open && status.holds.includes('unreadable') ? unreadableOf(read) : undefined;
         if (unread !== undefined) await reportUnreadable({ reader: github, repo, issue, value: unread, log: deps.log });
         return 'taken';
       }
