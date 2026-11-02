@@ -64,19 +64,34 @@ The smallest useful file:
 
 ### The starter kit
 
-[examples/starter/](../examples/starter/) is a starter kit a new repo copies into its own `.github/`, so it gets recurring work from day one. It holds three files:
+[examples/starter/](../examples/starter/) is a starter kit a new repo copies into its own `.github/`, so it gets recurring work from day one. It offers two policies, one `dispatch.json` each, and a repo copies one of them:
+
+- **`.github/dispatch.json`, where the owner merges.** Pick it for a repo starting out, or one where a person reads every pull request before it merges. Sessions pick up tickets and hear their PRs, and governor reviews nothing.
+- **`.github/dispatch.dark-factory.json`, a dark factory.** Pick it for a repo whose CI you trust to stop a bad change, where a ticket should go from its label to a merged commit with no person. It turns on every switch but `hooks`, the PR review among them, with `merge` true.
+
+The kit holds four files:
 
 - `.github/dispatch.json` names its JSON Schema in `$schema`, at the commit the config check is pinned to, so an editor describes each key on hover. Its `features` lists every switch, so the file shows every feature governor has: the ones it leaves off are `false`. It turns on pickup, summons, PR messages, subscriptions, sign-off, the heartbeat and three periodics: a code review every 10 merges into the default branch, a ticket review every 5 issues opened, each also weekly when its count has counted anything, and a weekly review on its day limit alone. Each prompt is plain text that needs no skill, and acts on the window governor writes under it: the last fire's time, and what each count counted since. A repo can swap any prompt for one that calls its own skill.
+- `.github/dispatch.dark-factory.json` is the same file with every switch but `hooks` on. It keeps the placeholders and the three periodics, names the CI workflow `ciMessages` reads in `workflows.ci`, and has a `review` section: a plain-text checklist that needs no skill, `merge` true, and a human-only list that leaves every `CLAUDE.md`, `.claude/`, `.github/workflows/`, `.github/actions/`, `.github/dispatch.json` itself and `infra/` to a person, each with its reason. A PR touching one of them waits for a person to merge it.
 - `.github/workflows/heartbeat.yml` calls [the heartbeat checker](#the-heartbeat-checker) every hour, pinned to a commit of this repo.
 - `.github/workflows/config-check.yml` calls [the config check](#the-config-check) on each pull request that changes `dispatch.json`, pinned to a commit of this repo.
 
 To use it:
 
 1. Create the heartbeat issue. Its body must carry governor's marker, `<!-- governor:heartbeat -->`, or governor writes nothing into it. Put the marker on a line of its own: governor writes its block after it. Anything else in the body stays yours.
-2. Copy the three files into the repo's `.github/`.
+2. Copy the files into the repo's `.github/`, all but the policy you did not pick. For a dark factory, copy `dispatch.dark-factory.json` in place of `dispatch.json`, saved as `.github/dispatch.json`. Governor reads no other name.
 3. In `dispatch.json`, set `environment` to the repo's cloud environment, by name, in place of the `my-env` placeholder. Set `heartbeat.issue` to the issue's number, and the labels to the repo's own.
 4. Keep, edit or drop the periodics, and set the checker's labels in `heartbeat.yml`.
-5. Merge them into the default branch through a pull request. The config check runs on it.
+5. For a dark factory, also set these before the file merges:
+   - `workflows.ci` to the repo's own CI workflow, in place of `.github/workflows/ci.yml`.
+   - The human-only globs to the repo's own paths: `infra/**` stands for wherever the repo keeps its infrastructure. Add any other path a person should see change, such as billing or auth code.
+   - The checklist, if the repo has its own rules for a pull request.
+   - CI as a required status check on the default branch. The review waits only for required checks, so without one it merges a pass while CI still runs.
+   - Each shipping job's name, ending `· deployed: <target>`, and the deploy workflow's top-level `TICKET_LABEL_PATHS`, which deploy messages and `deployed:` labels read ([Deploy messages and labels](#deploy-messages-and-labels)).
+   - `merge` to false, if a person should merge each pass after all. The review then approves instead.
+6. Merge them into the default branch through a pull request. The config check runs on it.
+
+The dark factory keeps `hooks` off, since a hook needs a key the owner mints after the file merges. To add one, merge a `hooks` entry with `hooks` turned on, then mint its key as [Hooks](hooks.md) says.
 
 Governor writes pickup's line after its next sweep. A periodic's line appears when governor first reads it, on the next sweep or counted event, and says it has not fired yet. Its first fire comes one day limit or one count later, and replaces the line. Until a line appears, the checker measures from when `dispatch.json` last changed.
 

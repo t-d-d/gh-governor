@@ -175,7 +175,7 @@ Each deployment is one person's factory: it serves the GitHub accounts on its ow
    }
    ```
 
-   For a darker factory, copy the `dispatch.json` of a repo that already runs the way you want. [The test fixture's file](test/fixtures/factory/.github/dispatch.json) is an example with every feature on, the automatic merge included. It is written for a made-up repo, so set its environment, labels and paths to your own.
+   For a dark factory, copy [the kit's dark-factory file](examples/starter/.github/dispatch.dark-factory.json) in place of `dispatch.json`. It turns on every feature but hooks, with the PR review merging each pass, and leaves CLAUDE.md, the skills, the workflows, the config file and the infrastructure to a person. [The starter kit](docs/serving-a-repo.md#the-starter-kit) says which values to set before it merges.
 
 3. **Label a ticket `mode: afk`.** Governor starts a session on it, and comments the session's link on the ticket.
 
