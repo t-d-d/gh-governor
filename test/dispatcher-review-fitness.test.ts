@@ -32,8 +32,8 @@ const source = (path: string) => parseJs(path, read(path));
 
 const ROOT = join(import.meta.dirname, '..');
 
-/** What would run code: a process, a VM, an evaluated string, a fork, a require that loads child_process, an inspector that evaluates. */
-const RUNS_CODE = /^(node:)?(child_process|vm|worker_threads|cluster|module|inspector)$/;
+/** What would run code: a process, a VM, an evaluated string, a fork, a require that loads child_process, an inspector that evaluates. A subpath such as `inspector/promises` is the same module. */
+const RUNS_CODE = /^(node:)?(child_process|vm|worker_threads|cluster|module|inspector)(\/.*)?$/;
 
 /**
  * Each `path imports spec` that runs code, in every module the entries load
@@ -77,8 +77,8 @@ describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)',
   test('the check refuses cluster, module and inspector: each can fork, load child_process or evaluate code', () => {
     const root = mkdtempSync(join(tmpdir(), 'governor-review-builtins-'));
     try {
-      writeFileSync(join(root, 'entry.mjs'), "import cluster from 'node:cluster';\nimport { createRequire } from 'module';\nexport { Session } from 'node:inspector';\nexport const x = [cluster, createRequire];\n");
-      assert.deepEqual(codeRunners(root, 'entry.mjs').sort(), ['entry.mjs imports module', 'entry.mjs imports node:cluster', 'entry.mjs imports node:inspector']);
+      writeFileSync(join(root, 'entry.mjs'), "import cluster from 'node:cluster';\nimport { createRequire } from 'module';\nexport { Session } from 'node:inspector';\nexport const later = () => import('node:inspector/promises');\nexport const x = [cluster, createRequire];\n");
+      assert.deepEqual(codeRunners(root, 'entry.mjs').sort(), ['entry.mjs imports module', 'entry.mjs imports node:cluster', 'entry.mjs imports node:inspector', 'entry.mjs imports node:inspector/promises']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
