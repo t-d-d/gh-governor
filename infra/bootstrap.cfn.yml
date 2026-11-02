@@ -5,7 +5,7 @@ Description: >
   deploy. Stack governor-bootstrap, in the main stack's region.
 
 # Applied once by hand as an administrator, since nothing can assume a role
-# that does not exist yet (README, Fork and deploy). Every deploy applies it
+# that does not exist yet (docs/self-hosting.md, Fork and deploy). Every deploy applies it
 # again before the main stack (.github/workflows/deploy.yml), naming the repo
 # and its ids from the run.
 
