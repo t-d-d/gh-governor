@@ -763,7 +763,7 @@ const settle = async ({ reader, repo, issue, closed, facts, prompts, log, holds 
  * the close time the fire carries, or from `now` for a fire without one, so
  * the wait is never shorter. Null where the line is not this close's, or
  * the ticket's read names another number: it moved to another repo.
- * `holds`: whether the line holds the ticket by its labels (`waitHolds`),
+ * `holds`: whether the line holds the ticket by its status (`ticketStatus`),
  * true where unset.
  *
  * @param {{

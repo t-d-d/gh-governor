@@ -33,6 +33,9 @@ const bodyOf = (path: string, start: string): string => {
 
 const CHECKS = /\b(labelRow|isBlocked|isWaiting|waitHolds)\s*\(/;
 
+/** The checks, and `heldUnreadied`, which the unblocked row and wait end read through `mayStartSpec`. */
+const ALL_CHECKS = /\b(labelRow|isBlocked|isWaiting|waitHolds|heldUnreadied)\s*\(/;
+
 describe('the selection and the claim decide through ticketStatus', () => {
   const paths = [
     { name: 'isEligible', path: 'scripts/lib/ready-work.mjs', start: 'const isEligible =' },
@@ -62,7 +65,7 @@ describe('the unblocked row and wait end decide through ticketStatus and mayStar
       // Wait end asks whether a person moved the line's date later, whatever
       // the labels say: a read of the line alone, `isWaiting({ wait }, now)`.
       const left = body.replace(/\bisWaiting\(\{ wait(: [\w.]+)? \}, now\)/g, '');
-      assert.doesNotMatch(left, /\b(labelRow|isBlocked|isWaiting|waitHolds|heldUnreadied)\s*\(/);
+      assert.doesNotMatch(left, ALL_CHECKS);
     });
   }
 });
@@ -88,7 +91,7 @@ describe('outside ready-work.mjs, the readiness checks are called only where #29
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/^\s*\/\/.*$/gm, '');
       const left = code.replace(allowed[path] ?? /$^/g, '');
-      assert.doesNotMatch(left, /\b(labelRow|isBlocked|isWaiting|waitHolds|heldUnreadied)\s*\(/);
+      assert.doesNotMatch(left, ALL_CHECKS);
     });
   }
 });
