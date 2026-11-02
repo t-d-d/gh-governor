@@ -3634,10 +3634,12 @@ describe('run — a message with a fallback', () => {
   });
 
   /**
-   * A send spends the same budget: a forward the first send left nothing
-   * for is not sent, and the refusal names the session it was for.
+   * A send spends the same budget: a forward the first send and the
+   * marker read left nothing for is not sent, and the refusal names the
+   * session it was for. The send takes all of its own cap; the read, which
+   * no cap holds, takes the rest.
    */
-  test('a forward the first send left no budget for is not sent, and the turn throws naming it with the login stored', async () => {
+  test('a forward the first send and the marker read left no budget for is not sent, and the turn throws naming it with the login stored', async () => {
     const at = new Date(NOW - 5 * 60_000).toISOString();
     let clock = NOW;
     const sent: string[] = [];
@@ -3646,11 +3648,18 @@ describe('run — a message with a fallback', () => {
       launchTimeoutMs: 100,
       message: async (m: { session: string; text: string }) => {
         sent.push(m.session);
-        clock += 200;
+        clock += 100;
         setLoginOnDisk(REFRESHED);
         return archived(m);
       },
-      reader: () => ({ ...harness().deps.reader(''), comments: async () => [{ id: 5, body: dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_01NEW' }), created_at: at }], comment: async () => {} }),
+      reader: () => ({
+        ...harness().deps.reader(''),
+        comments: async () => {
+          clock += 100;
+          return [{ id: 5, body: dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_01NEW' }), created_at: at }];
+        },
+        comment: async () => {},
+      }),
     });
     await assert.rejects(run({ kind: 'message', session: 'session_01OLD', text: 'hi', fallback: onPr }, deps as never), /no budget left to start https:\/\/claude\.ai\/code\/session_01NEW/);
     assert.deepEqual(sent, ['session_01OLD'], 'the forward is not sent');
