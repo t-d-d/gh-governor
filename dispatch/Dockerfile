@@ -49,6 +49,9 @@ COPY dispatch/lane.mjs dispatch/turn.mjs dispatch/deliveries.mjs dispatch/unbloc
 # receiver does, and the error text the task logs the way the receiver does
 # (error-text.mjs).
 COPY dispatch/webhook/error-text.mjs dispatch/webhook/fire.mjs dispatch/webhook/mention.mjs dispatch/webhook/subscribe.mjs dispatch/webhook/review-comment.mjs dispatch/webhook/hook-table.mjs dispatch/webhook/switches.mjs ./dispatch/webhook/
+# The markdown parser subscribe.mjs reads quotes with, and the notices of the
+# three packages it carries (dispatch/webhook/vendor/README.md).
+COPY dispatch/webhook/vendor/commonmark.cjs dispatch/webhook/vendor/LICENSE.commonmark dispatch/webhook/vendor/LICENSE.entities dispatch/webhook/vendor/LICENSE.mdurl ./dispatch/webhook/vendor/
 
 USER dispatch
 ENV HOME=/home/dispatch
