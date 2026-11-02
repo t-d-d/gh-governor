@@ -17,7 +17,8 @@
     "prReview": false,
     "heartbeat": true,
     "periodics": true,
-    "hooks": false
+    "hooks": false,
+    "waits": false
   },
   "heartbeat": { "issue": 1 },
   "pickup": { "sweepHours": 1 },

@@ -243,7 +243,7 @@ describe('infra/governor.cfn.yml — the grants', () => {
   test('the task reads its three secrets, writes the login alone, and nothing else', () => {
     assert.deepEqual(
       [...new Set(taskStatements.flatMap(actionsOf))].sort(),
-      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'secretsmanager:GetSecretValue', 'secretsmanager:PutSecretValue', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:ReceiveMessage', 'sqs:SendMessage'],
+      ['dynamodb:DeleteItem', 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Query', 'dynamodb:UpdateItem', 'secretsmanager:GetSecretValue', 'secretsmanager:PutSecretValue', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:ReceiveMessage', 'sqs:SendMessage'],
     );
     const puts = taskStatements.filter((s) => actionsOf(s).includes('secretsmanager:PutSecretValue'));
     assert.equal(puts.length, 1);

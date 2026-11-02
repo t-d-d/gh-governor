@@ -98,7 +98,7 @@ import {
   PutSecretValueCommand,
   SecretsManagerClient,
 } from '@aws-sdk/client-secrets-manager';
-import { ConditionalCheckFailedException, DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { ConditionalCheckFailedException, DeleteItemCommand, DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { DEFAULT_MODEL, launchOutcome, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
@@ -106,7 +106,7 @@ import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '..
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { isBlocked, isWaiting, labelRow, unreadableOf } from '../scripts/lib/ready-work.mjs';
-import { reportUnreadable } from './waits.mjs';
+import { WAIT_PROMPT, endedWaits, holdWait, reportUnreadable, waitSpecPrompt } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { RoutinesApiError, launchRoutine, observed, routineName } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
@@ -337,7 +337,7 @@ export const sessionUrlFrom = (output) => {
  *   recordConflict: (repo: string, pr: number, merge: string) => Promise<boolean>,
  *   recordSession: (session: string) => Promise<void>,
  *   startedSession: (session: string) => Promise<boolean>,
- * } & import('./periodics.mjs').PeriodicState & import('./pickup.mjs').PickupState & import('./hooks.mjs').HookState} DispatchState
+ * } & import('./periodics.mjs').PeriodicState & import('./pickup.mjs').PickupState & import('./hooks.mjs').HookState & import('./waits.mjs').WaitState} DispatchState
  *   Each label's cursor, by its repo, its workflow's file name and the
  *   label (null for CI's, which earns none): read (null when it has none),
  *   and moved forward (false when a cursor at or past it already stood).
@@ -495,6 +495,15 @@ export const run = async (event, deps) => {
     await Promise.all(records);
   }
 };
+
+/**
+ * A served repo's config, its name matched in any case, or undefined for a
+ * repo the turn does not serve.
+ *
+ * @param {import('./repos.mjs').Served[]} served
+ * @param {string} repo
+ */
+const configIn = (served, repo) => served.find((s) => s.repo.toLowerCase() === repo.toLowerCase())?.config;
 
 /**
  * {@link run}'s turn, which pushes each launch's record onto `records`.
@@ -681,6 +690,8 @@ const turnOf = async (event, deps, records) => {
    * into one tried again; the turn waits for every record before it ends.
    * Every prompt ends in `SIGN_POSTS`, which no repo's prompts replace: the
    * receiver skips a session's own posts only where the session signed them.
+   * In a repo whose file turns `waits` on, the line on making a ticket wait
+   * follows it (`WAIT_PROMPT`, dispatch/waits.mjs).
    * A launch its budget refuses pages once, at the refusal, since the
    * launcher runs on. A session it prints later is recorded only if the
    * task is still running then: the turn has ended, so nothing waits for
@@ -689,7 +700,9 @@ const turnOf = async (event, deps, records) => {
    * @type {Deps['launch']}
    */
   const launch = (asked) => {
-    const begin = { ...asked, prompt: `${asked.prompt}\n\n${SIGN_POSTS}` };
+    const own = configIn(served, asked.repo);
+    const waits = own !== undefined && turnsOn(own, 'waits') ? `\n\n${WAIT_PROMPT}` : '';
+    const begin = { ...asked, prompt: `${asked.prompt}\n\n${SIGN_POSTS}${waits}` };
     let paged = false;
     const launching = launchAndRecord(begin, () => paged);
     overBudget.set(launching, () => {
@@ -1189,9 +1202,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    * @param {string} repo
    */
   const configOf = (repo) => {
-    const found = served.find((s) => s.repo.toLowerCase() === repo.toLowerCase());
+    const found = configIn(served, repo);
     if (found === undefined) throw new Error(`${repo} is not a repo this turn serves`);
-    return found.config;
+    return found;
   };
 
   /**
@@ -1557,6 +1570,13 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     return { kind: 'review', reviews, loginStored };
   }
 
+  if (invocation.kind === 'wait') {
+    // A ticket opened or edited with a `Blocked until:` line: its wait item
+    // put, rewritten or deleted to match (dispatch/waits.mjs).
+    const outcome = await holdWait({ reader: await getReader(), state: deps.state, repo: fireRepo(), issue: invocation.issue, labels: configOf(fireRepo()).labels, now: deps.now(), log: deps.log });
+    return { kind: invocation.kind, issue: invocation.issue, outcome };
+  }
+
   // A close: one `unblocked` fire for each open ticket the issue blocked,
   // in whichever repo, for that repo's own turn (dispatch/unblocked.mjs).
   // It starts nothing, so DispatchCap does not hold it, and calls GitHub
@@ -1601,7 +1621,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   }
 
   const started = deps.now();
-  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, connectors?: string[], unclaimed?: true, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, hook?: { name: string, read: import('./hooks.mjs').HookRecord | null } }>} */
+  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, connectors?: string[], unclaimed?: true, wait?: { read: string }, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, hook?: { name: string, read: import('./hooks.mjs').HookRecord | null } }>} */
   const plan = [];
   /** The issues a targeted schedule fire limits the plan to; undefined for the sweep. @type {number[] | undefined} */
   let only;
@@ -1609,6 +1629,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const unread = [];
   /** The periodics whose record the bare fire could not read, baseline, or write after a launch. @type {Array<{ repo: string, error: string }>} */
   const periodicsUnread = [];
+  /** The ended waits the bare fire could not read or act on, and the items it could not delete after a spec session started. @type {Array<{ repo: string, error: string }>} */
+  const waitsUnread = [];
   /** The hooks whose session the turn started and could not record, or ran out of time to start. @type {Array<{ repo: string, error: string }>} */
   const hooksUnrecorded = [];
   /** The served repos whose last sweep the bare fire could not read, or whose sweep it could not record. @type {Array<{ repo: string, error: string }>} */
@@ -1718,6 +1740,23 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           ...connectorsOf(periodic),
           periodic: { name: periodic.name, read, by, ...(asOf === undefined ? {} : { asOf }) },
         })));
+      }
+      // Each repo turning waits on: the waits whose date has passed
+      // (dispatch/waits.mjs). A ticket not ready gets its comment here, and,
+      // with unblocked on, a spec session after the tickets, unclaimed, as a
+      // blocker's close starts one. At most DispatchCap of them start a fire,
+      // apart from pickup's; one past it keeps its item for the next fire.
+      let room = deps.cap;
+      for (const { repo, config } of served) {
+        if (!turnsOn(config, 'waits')) continue;
+        const ended = await endedWaits({ reader: await readerFor(repo), state: deps.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), now: deps.now(), log: deps.log });
+        waitsUnread.push(...ended.unread);
+        const taken = ended.specs.slice(0, Math.max(0, room));
+        room -= taken.length;
+        if (taken.length < ended.specs.length) deps.log('dispatch-wait', { repo, outcome: 'spec sessions past DispatchCap left for the next fire', left: ended.specs.slice(taken.length).map((w) => w.issue) });
+        for (const { issue, title, until, read } of taken) {
+          plan.push({ issue, repo, prompt: waitSpecPrompt({ issue, title, until, labels: config.labels, prompts: config.prompts }), sessionName: ticketSessionName(issue, title), model: DEFAULT_MODEL, unclaimed: true, wait: { read } });
+        }
       }
     }
   } else if (invocation.kind === 'hook') {
@@ -1947,13 +1986,17 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const leftOver = new Set();
   /** How many ticket sessions a repo's own entries started. @param {Dispatched[]} own */
   const startedOf = (own) => own.filter((d) => d.issue !== null && d.outcome !== 'failed').length;
+  /** The tickets whose entry is an ended wait's spec session, `repo#issue`: none of pickup's. */
+  const waitSpecs = new Set(plan.filter((e) => e.wait !== undefined && e.issue !== null).map((e) => `${e.repo}#${e.issue}`));
+  /** A repo's own launches by pickup: its dispatches, an ended wait's spec sessions left out. @param {string} repo */
+  const pickupOwn = (repo) => dispatched.filter((d) => d.repo === repo && !waitSpecs.has(`${d.repo}#${d.issue}`));
   let heartbeat = false;
   let loginStored = false;
   try {
     for (const [i, entry] of plan.entries()) {
       if (deps.now() - started > SCHEDULE_LAUNCH_WINDOW_MS) {
         deps.log('dispatch-launch', { undispatched: plan.slice(i).map((e) => ({ repo: e.repo, issue: e.issue })), reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, another launch might outrun the deadline; each is left unmarked for the next fire` });
-        for (const e of plan.slice(i)) if (e.issue !== null) leftOver.add(e.repo);
+        for (const e of plan.slice(i)) if (e.issue !== null && e.wait === undefined) leftOver.add(e.repo);
         // A hook fire is not tried again: one left unstarted fails the turn,
         // so the alarm it carried is not lost quietly.
         for (const e of plan.slice(i)) {
@@ -1965,7 +2008,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       }
       const ticket = entry.issue === null ? null : { repo: entry.repo, issue: entry.issue };
       if (skipped.has(entry.repo)) {
-        if (ticket !== null) leftOver.add(entry.repo);
+        if (ticket !== null && entry.wait === undefined) leftOver.add(entry.repo);
         continue;
       }
       // A spec session's ticket is not claimed: the session claims it before it builds.
@@ -1989,6 +2032,17 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         if (unrecorded !== null) periodicsUnread.push(unrecorded);
         beats.push({ repo: entry.repo, beat: { periodics: [{ name: entry.periodic.name, at: entry.periodic.asOf ?? firedAt, by: entry.periodic.by, session: sessionUrl, state: 'open' }] } });
       }
+      // An ended wait's item goes once its spec session started or may have:
+      // a failed launch leaves it, so the next fire tries again.
+      if (entry.wait !== undefined && entry.issue !== null && outcome !== 'failed') {
+        try {
+          const dropped = await deps.state.dropWait(entry.repo, entry.issue, entry.wait.read);
+          deps.log('dispatch-wait', { repo: entry.repo, issue: entry.issue, read: entry.wait.read, outcome: 'spec session started', item: dropped ? 'dropped' : 'not dropped: it changed since it was read' });
+        } catch (error) {
+          deps.log('dispatch-wait-unhandled', { level: 'error', repo: entry.repo, issue: entry.issue, read: entry.wait.read, error: messageOf(error), reason: 'its spec session started and its item stays: the next fire finds the session\'s dispatch marker and deletes it' });
+          waitsUnread.push({ repo: entry.repo, error: `wait #${entry.issue}: ${messageOf(error)}` });
+        }
+      }
       // A hook's record names a session only where the launch printed one,
       // over the record the turn read.
       if (entry.hook !== undefined && sessionUrl !== null) {
@@ -1998,7 +2052,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       if ((ticket !== null || entry.periodic !== undefined) && outcome === 'failed') {
         if (ticket !== null) {
           if (entry.unclaimed !== true) await release(ticket);
-          leftOver.add(ticket.repo);
+          if (entry.wait === undefined) leftOver.add(ticket.repo);
         }
         // A launch that started nothing is the repo's environment or the
         // login: the repo's next ticket or periodic would fail the same way.
@@ -2021,7 +2075,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // next interval, and nor is one with a ready ticket the cap cut: the cap
     // limits load, and does not set how often a repo is swept.
     for (const [repo, at] of swept) {
-      const own = dispatched.filter((d) => d.repo === repo);
+      const own = pickupOwn(repo);
       if (unread.some((u) => u.repo === repo) || (own.length > 0 && own.every((d) => d.outcome === 'failed'))) {
         swept.delete(repo);
         continue;
@@ -2060,7 +2114,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const unwritten = [];
       for (const { repo, config } of served) {
         if (!turnsOn(config, 'heartbeat') || config.heartbeat === undefined || unread.some((u) => u.repo === repo)) continue;
-        const own = dispatched.filter((d) => d.repo === repo);
+        const own = pickupOwn(repo);
         if (own.length > 0 && own.every((d) => d.outcome === 'failed')) continue;
         const { issue, marker } = config.heartbeat;
         // The `{ issue }` shape: pickup's line, for a repo whose file turns
@@ -2098,7 +2152,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // the copy from before it would hold a dead refresh token.
     loginStored = await storeIfRefreshed(deps, original, account);
   }
-  const left = [...unread, ...sweepsUnread, ...periodicsUnread, ...hooksUnrecorded];
+  const left = [...unread, ...sweepsUnread, ...periodicsUnread, ...hooksUnrecorded, ...waitsUnread];
   return { kind: invocation.kind, ...(row === undefined ? {} : { row }), dispatched, heartbeat, loginStored, ...(left.length === 0 ? {} : { unread: left }) };
 };
 
@@ -2294,6 +2348,9 @@ const DELIVERED_TTL_S = 30 * 24 * 60 * 60;
 
 /** How long a PR's record of a merge's conflict is kept: a merge's fire is redelivered within hours, and never a month on. */
 const CONFLICT_TTL_S = 30 * 24 * 60 * 60;
+
+/** How long past its date a wait item stays, should no fire delete it: a month. */
+const WAIT_TTL_S = 30 * 24 * 60 * 60;
 
 /** The attribute the state table's TTL expires on (infra/governor.cfn.yml). */
 export const STATE_TTL_ATTRIBUTE = 'ttl';
@@ -2528,7 +2585,11 @@ export const cliEnv = (env, home, account) => ({
  * the item `pickup#<repo>` / `sweep`, put only where none or an earlier
  * one stands, and never expired: a lost one means sweep now. A hook's last
  * session is the item `hook#<repo>` / `<name>`, put only over the record the
- * turn read, and never expired: a lost one costs one extra session.
+ * turn read, and never expired: a lost one costs one extra session. A
+ * waiting ticket's item is `wait#<repo>` / `<issue>`, holding its date, put
+ * only where none or the date the turn read stands, deleted only over that
+ * date, and expired a month after its date: a lost one costs that ticket's
+ * wait-ended comment and spec session.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -2540,6 +2601,16 @@ export const dynamoState = (client, table) => {
   const periodicKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `periodic#${repo}` }, sk: { S: name } });
   const hookKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `hook#${repo}` }, sk: { S: name } });
   const sweepKey = (/** @type {string} */ repo) => ({ pk: { S: `pickup#${repo}` }, sk: { S: 'sweep' } });
+  const waitPk = (/** @type {string} */ repo) => ({ S: `wait#${repo.toLowerCase()}` });
+  const waitKey = (/** @type {string} */ repo, /** @type {number} */ issue) => ({ pk: waitPk(repo), sk: { S: String(issue) } });
+  /** An item's date, or a throw: a malformed item is a failed read, never a missing one. @param {Record<string, any>} item */
+  const untilOf = (item) => {
+    const until = item.until?.S;
+    if (typeof until !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(until) || Number.isNaN(Date.parse(`${until}T00:00:00Z`))) throw new Error(`the wait item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
+    return until;
+  };
+  /** @param {unknown} error */
+  const refused = (error) => error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException';
   const sessionKey = (/** @type {string} */ session) => ({ pk: { S: `session#${sessionId(session)}` }, sk: { S: 'started' } });
   const sent = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label, /** @type {number | null} */ from) => ({ pk: pk(repo, workflow), sk: { S: `delivered#${label === null ? '' : `${label}#`}${from ?? 'none'}` } });
   return {
@@ -2654,6 +2725,62 @@ export const dynamoState = (client, table) => {
         return true;
       } catch (error) {
         if (error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException') return false;
+        throw error;
+      }
+    },
+    waits: async (repo) => {
+      /** @type {Array<{ issue: number, until: string }>} */
+      const found = [];
+      /** @type {Record<string, any> | undefined} */
+      let after;
+      do {
+        const page = await client.send(new QueryCommand({
+          TableName: table,
+          KeyConditionExpression: 'pk = :pk',
+          ExpressionAttributeValues: { ':pk': waitPk(repo) },
+          ConsistentRead: true,
+          ...(after === undefined ? {} : { ExclusiveStartKey: after }),
+        }));
+        for (const item of page.Items ?? []) {
+          const issue = Number(item.sk?.S);
+          if (!Number.isSafeInteger(issue) || issue <= 0) throw new Error(`the wait item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
+          found.push({ issue, until: untilOf(item) });
+        }
+        after = page.LastEvaluatedKey;
+      } while (after !== undefined);
+      return found;
+    },
+    wait: async (repo, issue) => {
+      const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: waitKey(repo, issue), ConsistentRead: true }));
+      return item === undefined ? null : { until: untilOf(item) };
+    },
+    recordWait: async (repo, issue, read, until) => {
+      try {
+        await client.send(new PutItemCommand({
+          TableName: table,
+          Item: { ...waitKey(repo, issue), until: { S: until }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.parse(`${until}T00:00:00Z`) / 1000) + WAIT_TTL_S) } },
+          ...(read === null
+            ? { ConditionExpression: 'attribute_not_exists(pk)' }
+            : { ConditionExpression: '#until = :read', ExpressionAttributeNames: { '#until': 'until' }, ExpressionAttributeValues: { ':read': { S: read } } }),
+        }));
+        return true;
+      } catch (error) {
+        if (refused(error)) return false;
+        throw error;
+      }
+    },
+    dropWait: async (repo, issue, read) => {
+      try {
+        await client.send(new DeleteItemCommand({
+          TableName: table,
+          Key: waitKey(repo, issue),
+          ConditionExpression: '#until = :read',
+          ExpressionAttributeNames: { '#until': 'until' },
+          ExpressionAttributeValues: { ':read': { S: read } },
+        }));
+        return true;
+      } catch (error) {
+        if (refused(error)) return false;
         throw error;
       }
     },
@@ -2956,6 +3083,10 @@ export const realDeps = () => {
         recordConflict: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         startedSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        waits: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        wait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordWait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        dropWait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
       },
     // No table named: every write fails and is logged at error, and the
     // turn goes on, its own checks on a hook fire unchanged.

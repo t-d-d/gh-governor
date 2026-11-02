@@ -10,7 +10,7 @@
  * where a field is spelled, so a new kind of fire, or a new field, is one
  * edit here and one test.
  *
- * Twelve kinds. A `schedule` fire (EventBridge, every hour) selects
+ * Thirteen kinds. A `schedule` fire (EventBridge, every hour) selects
  * ready work up to the cap; one naming an `issue` (an issue a person just
  * gave a label the repo's hook-table item lists as ready, or one the
  * receiver could not judge) selects that issue alone, if the label
@@ -44,6 +44,9 @@
  * repo's config file that an outside system fired, the key version it was
  * signed with, when the receiver took it, and the caller's text: no prompt,
  * since the task reads the hook's from the file (route.mjs, dispatch/hooks.mjs).
+ * A `wait` names an issue opened or edited with a `Blocked until:` line,
+ * judged from the payload ({@link waitLine}); its turn keeps the ticket's
+ * wait item to match its line (dispatch/waits.mjs).
  *
  * Pure, and a leaf: the Lambda packages dispatch/webhook/ whole, and the
  * task image copies this file (dispatch/Dockerfile).
@@ -176,6 +179,26 @@ export const SIGN_POSTS = "On every comment, review and reply you post on GitHub
  */
 export const LANE = 'dispatch';
 
+// ── A ticket's wait ──────────────────────────────────────────────────────
+
+/** A ticket's wait line: its body's first non-empty line, in any case. */
+const WAIT_LINE = /^blocked until:\s*(.*)$/i;
+
+/**
+ * What follows `Blocked until:` on a body's first non-empty line, trimmed,
+ * or null where that line is not a wait line. The receiver judges a
+ * delivery by it, and the reader parses its value (`waitOf`,
+ * scripts/lib/ready-work.mjs), so both read the same line.
+ *
+ * @param {string | null | undefined} body
+ * @returns {string | null}
+ */
+export const waitLine = (body) => {
+  const first = (body ?? '').split(/\r?\n/).map((line) => line.trim()).find((line) => line !== '');
+  const match = first === undefined ? null : WAIT_LINE.exec(first);
+  return match === null ? null : (match[1] ?? '').trim();
+};
+
 // ── The dispatch marker ──────────────────────────────────────────────────
 
 /**
@@ -284,11 +307,13 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  *   An issue that closed: its repo, number and title, and GitHub's
  *   `state_reason` for the close where it gave one.
  * @typedef {{ number: number, title: string, url: string }} ClosingPull The PR whose merge closed a blocker, in the blocker's repo.
+ * @typedef {{ kind: 'wait', issue: number }} WaitFire
+ *   An issue opened or edited whose new or old body holds a `Blocked until:` line.
  * @typedef {{ kind: 'unblocked', issue: number, blocker: Blocker, pr?: ClosingPull }} UnblockedFire
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit
  *   the lane ({@link FIRE_BUDGET}).
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire) & { repo?: string, counted?: Count }} Fire
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
@@ -378,6 +403,9 @@ export const build = Object.freeze({
 
   /** @param {Omit<HookFire, 'kind'>} args @returns {HookFire} */
   hook: ({ hook, keyVersion, text, at }) => ({ kind: 'hook', hook, keyVersion, text, at }),
+
+  /** @param {{ issue: number }} args @returns {WaitFire} */
+  wait: ({ issue }) => ({ kind: 'wait', issue }),
 
   /**
    * Each title on one line and at most {@link TITLE_LIMIT} characters, so
@@ -615,6 +643,10 @@ const parseKind = (event) => {
   if (kind === 'periodics') return { kind };
   if (kind === 'hook') return parseHook(e);
   if (kind === 'unblocked') return parseUnblocked(e);
+  if (kind === 'wait') {
+    if (!isPositiveInt(e?.issue)) throw new Error(`a wait invocation's issue must be a positive integer, got: ${JSON.stringify(e?.issue)}`);
+    return { kind, issue: Number(e?.issue) };
+  }
   if (kind === 'conflicts') {
     if (!isPositiveInt(e?.pr)) {
       throw new Error(`a conflicts invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);

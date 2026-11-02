@@ -130,6 +130,10 @@
           "description": "A session on a hook's prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook's last session is open goes into that session as a message.",
           "type": "boolean"
         },
+        "waits": {
+          "description": "When a ticket's `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and a session to rewrite its spec if `unblocked` is on. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.",
+          "type": "boolean"
+        },
         "mergeHandoff": {
           "deprecated": true,
           "description": "Retired: read as unblocked.",
@@ -233,6 +237,29 @@
             }
           ],
           "description": "Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its blocker's close. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { \"file\": \"<path>\" }."
+        },
+        "waitEndedSpec": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "description": "Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "unblockedClaimed": {
           "anyOf": [

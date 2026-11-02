@@ -61,6 +61,15 @@ export const PROMPTS = Object.freeze({
     fills: ['issue', 'ready', 'claim'],
     replaces: "a not-ready ticket's spec session's ask, below the facts of its blocker's close",
   },
+  // A ticket not ready to pick up whose `Blocked until:` date passed (dispatch/waits.mjs).
+  waitEndedSpec: {
+    text: [
+      "Rewrite #{issue}'s spec from what is now known. If it needs a decision only a person can make, write that into its body as a question and stop.",
+      'Otherwise label it {ready} and stop, or build it: add `{claim}` to it first, then take it through to a reviewable PR, `Closes #{issue}`.',
+    ].join('\n'),
+    fills: ['issue', 'ready', 'claim'],
+    replaces: "a not-ready ticket's spec session's ask, below the facts of its ended wait",
+  },
   // A claimed ticket's session, told its blocker closed.
   unblockedClaimed: {
     text: 'Check your work on #{issue} against what merged, and change it where the merge calls for that.',

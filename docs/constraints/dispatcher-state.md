@@ -72,6 +72,15 @@ group.
   and never expired. The PR review reads it, and a failed read fails the review. A
   lost item lets a ticket's mode label waive a human-only path, so the item
   outlasts every PR it guards (dispatcher-review.md).
+- A waiting ticket's date: `wait#<repo>` / `<issue>` in `dynamoState`, in
+  a repo whose file turns `waits` on. The `wait` turn puts it only where
+  none or the date it read stands, and deletes it only over that date; the
+  bare schedule fire reads a repo's items in one query and deletes or
+  rewrites each over the date it read. It expires a month after its date.
+  The ticket's `Blocked until:` line stays the record people read and edit:
+  the item only tells governor when to look. A lost item costs that
+  ticket's wait-ended comment and spec session, and a failed read refuses
+  the repo's ended waits for the turn (dispatch/waits.mjs).
 
 - What the receiver knows of a repo's hooks: `hooks#<repo>` / `listed` in
   the hook table (dispatch/webhook/hook-table.mjs), put by the task only
@@ -116,4 +125,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185.

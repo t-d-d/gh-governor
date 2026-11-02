@@ -20,6 +20,8 @@
  * Unit-tested in `test/scripts/ready-work.test.ts`.
  */
 
+import { waitLine } from '../../dispatch/webhook/fire.mjs';
+
 /**
  * @typedef {object} IssueRow
  * @property {number} number
@@ -115,9 +117,6 @@ const hasOpenBlocker = (rows) => (rows ?? []).some((b) => b.state === 'open');
 export const isBlocked = (issue, rows) =>
   issue.openBlockers === undefined ? hasOpenBlocker(rows) : issue.openBlockers > 0;
 
-/** The line a ticket waits by: its body's first non-empty line, in any case. */
-const WAIT_LINE = /^blocked until:\s*(.*)$/i;
-
 /**
  * What a ticket's body says about waiting, as `{ wait }`, or `{}` where it
  * has no `Blocked until:` line. Only the body's first non-empty line counts,
@@ -131,10 +130,9 @@ const WAIT_LINE = /^blocked until:\s*(.*)$/i;
  * @returns {{ wait?: Wait }}
  */
 export const waitOf = (body) => {
-  const first = (body ?? '').split(/\r?\n/).map((line) => line.trim()).find((line) => line !== '');
-  const match = first === undefined ? null : WAIT_LINE.exec(first);
-  if (match === null) return {};
-  const value = (match[1] ?? '').trim();
+  // The line is found as the receiver finds it (dispatch/webhook/fire.mjs).
+  const value = waitLine(body);
+  if (value === null) return {};
   const date = value.split(/\s/, 1)[0] ?? '';
   const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
   if (parts !== null) {
