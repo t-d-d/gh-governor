@@ -17,7 +17,7 @@ Governor came out of building a production service with Claude Code agents, and 
 | Tests | 1,360 at the move, 2,261 at the end of that window |
 | Constraint files, and the fitness-function suites that hold them | 6 and 28 |
 
-A person still reviews and merges every pull request here. Governor does not review this repo's pull requests, since it would be marking its own work. The owner reads each description first: the `pr-description` skill writes it so its intent, and any drift from the ticket, can be judged before the diff.
+A person still reviews and merges every pull request here. Governor does not review this repo's pull requests, since it would be marking its own work. The owner weighs each pull request's net complexity against the value of the change. The `pr-description` skill writes the description for that review: what the change adds and removes, a net line saying whether the system got simpler or more complex and what the complexity buys, any drift from the ticket, and a table mapping each acceptance criterion to its test.
 
 ## The loop
 
