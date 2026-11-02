@@ -154,11 +154,10 @@ describe('pinnedInputProblems', () => {
     const shallow = mkdtempSync(join(tmpdir(), 'starter-pin-shallow-'));
     try {
       execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repo.dir}`, shallow]);
-      execFileSync('git', ['fetch', '-q', '--depth', '1', 'origin', repo.onMain], { cwd: shallow });
+      // Protocol v2 lets a fetch name a commit no ref points at.
+      execFileSync('git', ['-c', 'protocol.version=2', 'fetch', '-q', '--depth', '1', 'origin', repo.onMain], { cwd: shallow });
       const got = pinnedInputProblems({ cwd: shallow, main: 'origin/main', sha: repo.onMain, path: CHECKER, passed: STARTER_WITH });
-      assert.equal(got.length, 1, JSON.stringify(got));
-      assert.doesNotMatch(got[0] ?? '', /is not on main/);
-      assert.match(got[0] ?? '', /shallow.*git fetch --unshallow origin/);
+      assert.deepEqual(got, [`this clone is shallow, so it cannot tell whether the pinned commit ${repo.onMain.slice(0, 12)} is on main: run git fetch --unshallow origin, or check out with fetch-depth: 0`]);
     } finally {
       rmSync(shallow, { recursive: true, force: true });
     }

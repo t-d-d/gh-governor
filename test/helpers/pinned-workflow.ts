@@ -22,11 +22,12 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
   };
   const short = sha.slice(0, 12);
   const shallow = () => git('rev-parse', '--is-shallow-repository').stdout.trim() === 'true';
+  const unshallow = 'run git fetch --unshallow origin, or check out with fetch-depth: 0';
   if (git('cat-file', '-e', `${sha}^{commit}`).status !== 0) {
     // git refuses --unshallow in a full clone, where a stale origin/main
     // is the only way to lack the pin.
     if (shallow()) {
-      return [`the pinned commit ${short} is not in this clone: run git fetch --unshallow origin, or check out with fetch-depth: 0`];
+      return [`the pinned commit ${short} is not in this clone: ${unshallow}`];
     }
     return [`the pinned commit ${short} is not in this clone: run git fetch origin`];
   }
@@ -39,7 +40,7 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
     // joins them, so a failed check there says nothing about the pin.
     const branch = main.replace(/^origin\//, '');
     problems.push(shallow()
-      ? `this clone is shallow, so it cannot tell whether the pinned commit ${short} is on ${branch}: run git fetch --unshallow origin, or check out with fetch-depth: 0`
+      ? `this clone is shallow, so it cannot tell whether the pinned commit ${short} is on ${branch}: ${unshallow}`
       : `the pinned commit ${short} is not on ${branch}`);
   }
   const shown = git('show', `${sha}:${path}`);
