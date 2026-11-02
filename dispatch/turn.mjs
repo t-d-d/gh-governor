@@ -297,6 +297,7 @@ export const sessionUrlFrom = (output) => {
  *   hookTable: Pick<import('./webhook/hook-table.mjs').HookTable, 'publish'>,
  *   claims?: Set<string> | undefined,
  *   unrecorded?: Set<PendingRecord> | undefined,
+ *   threw?: ((error: unknown) => void) | undefined,
  * }} Deps
  *   `owners`: the stack's owner list. The stack names no repo: every fire
  *   but the bare schedule fire names its own, and the bare one
@@ -326,6 +327,9 @@ export const sessionUrlFrom = (output) => {
  *   `unrecorded`: the session records the turn is still writing, shared
  *   with dispatch/cli.mjs, which logs each one left as unrecorded when the
  *   deadline ends the turn or the turn throws, since a write cut off never lands.
+ *   `threw`: told the error a turn threw before the turn waits for its
+ *   records, shared with dispatch/cli.mjs, whose deadline logs it when a
+ *   record write that hangs holds the rejection past it.
  *   `fires`: the fire lane ({@link sqsFires}); without it, a turn never
  *   waits for replies.
  *   `enqueue`: a fire onto that lane, deduplicated by the id given
@@ -494,6 +498,11 @@ export const run = async (event, deps) => {
   const records = [];
   try {
     return await turnOf(event, deps, records);
+  } catch (error) {
+    // Handed over before the wait below: a record write that hangs holds
+    // the rejection until the deadline, which then names the error.
+    deps.threw?.(error);
+    throw error;
   } finally {
     await Promise.all(records);
   }
