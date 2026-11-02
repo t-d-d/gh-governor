@@ -54,6 +54,19 @@ export const stampLastRun = (body, marker, at) => {
   return end === -1 ? `${text}\n${line}` : `${text.slice(0, end + 1)}${line}\n${text.slice(end + 1)}`;
 };
 
+/**
+ * A heartbeat the repo's file names an issue for, refused because the
+ * issue's body lacks the marker. Logged as an error and not
+ * alarmed: the repo's own watchdog reports the lapse that follows.
+ */
+export const HEARTBEAT_REFUSED = 'dispatch-heartbeat-refused';
+
+/**
+ * A heartbeat whose issue could not be read or written. Logged as an error,
+ * and the turn fails once every other repo's heartbeat has gone.
+ */
+export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
+
 /** Where governor's block starts: the body must carry it before any write. */
 export const HEARTBEAT_MARKER = '<!-- governor:heartbeat -->';
 

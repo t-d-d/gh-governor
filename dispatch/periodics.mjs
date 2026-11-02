@@ -7,8 +7,8 @@
  * ({@link duePeriodics}): the time of its last fire and the session it
  * started. One whose day limit has passed since, or will within the hour
  * ({@link SWEEP_GRACE_MS}), is due, and so is one whose count of an event
- * since then has reached its number. The turn
- * (dispatch/turn.mjs) starts a session on its prompt, ahead of the tickets,
+ * since then has reached its number. The turn starts a session on its
+ * prompt, ahead of the tickets (`planSweep`, dispatch/sweep.mjs),
  * with lines governor writes under it ({@link periodicPrompt}). The turn
  * writes the record only for a launch that started or may have, and only
  * over the record it read, so two turns never both record one fire. The
@@ -368,4 +368,39 @@ const noOpen = async (session) => {
 /** @type {Window} */
 const noWindow = async (kind) => {
   throw new Error(`no reader for ${kind} was given`);
+};
+
+/**
+ * A periodic's connectors as its launch carries them: none where it names none.
+ *
+ * @param {{ connectors?: string[] }} periodic
+ * @returns {{ connectors?: string[] }}
+ */
+export const connectorsOf = (periodic) => (periodic.connectors === undefined ? {} : { connectors: periodic.connectors });
+
+/**
+ * Move a periodic's record to a launch that started, or may have, over the
+ * record the turn read. A record that moved since the read is left and
+ * logged; a write that failed is returned, since the next fire may start
+ * the periodic again, and the turn fails on it.
+ *
+ * @param {{ state: Pick<PeriodicState, 'recordPeriodic'>, log: (event: string, context?: Record<string, unknown>) => void }} deps
+ * @param {string} repo
+ * @param {{ name: string, read: PeriodicRecord }} periodic
+ * @param {string} at
+ * @param {string | null} sessionUrl
+ * @returns {Promise<{ repo: string, error: string } | null>}
+ */
+export const recordFire = async ({ state, log }, repo, { name, read }, at, sessionUrl) => {
+  try {
+    if (await state.recordPeriodic(repo, name, read, { at, session: sessionUrl, baseline: false })) {
+      log('dispatch-periodic', { repo, periodic: name, outcome: 'recorded', at, sessionUrl });
+    } else {
+      log('dispatch-periodic-unrecorded', { level: 'error', repo, periodic: name, sessionUrl, reason: `its record moved since this turn read it (last fire ${read.at}): another turn fired it too` });
+    }
+    return null;
+  } catch (error) {
+    log('dispatch-periodic-unrecorded', { level: 'error', repo, periodic: name, sessionUrl, error: messageOf(error), reason: 'its record could not be written, so the next fire may start it again' });
+    return { repo, error: `periodic ${name}: its record could not be written: ${messageOf(error)}` };
+  }
 };

@@ -101,18 +101,18 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import { ConditionalCheckFailedException, DeleteItemCommand, DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
-import { DEFAULT_MODEL, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
+import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
-import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { mayPickUp, ticketStatus, unreadableOf } from '../scripts/lib/ready-work.mjs';
-import { WAIT_PROMPT, WAIT_RELATIVE, endedWaits, holdWait, repairRelative, reportUnreadable, waitLinks, waitSpecPrompt } from './waits.mjs';
-import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
+import { WAIT_PROMPT, holdWait, reportUnreadable, waitLinks } from './waits.mjs';
+import { connectorsOf, duePeriodics, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { RoutinesApiError } from './routines.mjs';
 import { hookFor, planHook } from './hooks.mjs';
 import { planDispatch } from './dispatch-fire.mjs';
 import { planUnblocked } from './unblocked-fire.mjs';
+import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
 import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
@@ -128,8 +128,7 @@ import { sessionId } from './webhook/subscribe.mjs';
 import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, LANE_COUNTS, laneCount, dispatchMarker, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
-import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
-import { sweepDue, sweepHoursOf } from './pickup.mjs';
+import { HEARTBEAT_MARKER, HEARTBEAT_REFUSED, HEARTBEAT_UNWRITTEN, readHeartbeat, stampHeartbeat } from './heartbeat.mjs';
 import { launcher, routineLaunch } from './launcher.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -146,19 +145,6 @@ export const CLAIM_STRANDED = 'dispatch-claim-stranded';
  * rest of its tickets. Its own alarm pages on it (infra/governor.cfn.yml).
  */
 export const REPO_SKIPPED = 'dispatch-repo-skipped';
-
-/**
- * A heartbeat the repo's file names an issue for, refused because the
- * issue's body lacks the marker. Logged as an error and not
- * alarmed: the repo's own watchdog reports the lapse that follows.
- */
-export const HEARTBEAT_REFUSED = 'dispatch-heartbeat-refused';
-
-/**
- * A heartbeat whose issue could not be read or written. Logged as an error,
- * and the turn fails once every other repo's heartbeat has gone.
- */
-export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
 
 /**
  * The event a periodic logs when it names a connector the account has not
@@ -806,33 +792,6 @@ const writeBeats = async (deps, tokenFor, served, beats) => {
 };
 
 /**
- * Move a periodic's record to a launch that started, or may have, over the
- * record the turn read. A record that moved since the read is left and
- * logged; a write that failed is returned, since the next fire may start
- * the periodic again, and the turn fails on it.
- *
- * @param {Pick<Deps, 'state' | 'log'>} deps
- * @param {string} repo
- * @param {{ name: string, read: import('./periodics.mjs').PeriodicRecord }} periodic
- * @param {string} at
- * @param {string | null} sessionUrl
- * @returns {Promise<{ repo: string, error: string } | null>}
- */
-const recordFire = async ({ state, log }, repo, { name, read }, at, sessionUrl) => {
-  try {
-    if (await state.recordPeriodic(repo, name, read, { at, session: sessionUrl, baseline: false })) {
-      log('dispatch-periodic', { repo, periodic: name, outcome: 'recorded', at, sessionUrl });
-    } else {
-      log('dispatch-periodic-unrecorded', { level: 'error', repo, periodic: name, sessionUrl, reason: `its record moved since this turn read it (last fire ${read.at}): another turn fired it too` });
-    }
-    return null;
-  } catch (error) {
-    log('dispatch-periodic-unrecorded', { level: 'error', repo, periodic: name, sessionUrl, error: messageOf(error), reason: 'its record could not be written, so the next fire may start it again' });
-    return { repo, error: `periodic ${name}: its record could not be written: ${messageOf(error)}` };
-  }
-};
-
-/**
  * The periodics an event brought due (dispatch/periodics.mjs), started
  * after the carrying turn's own work, on the login it left restored. Each
  * launch runs under the launch budget and starts only inside
@@ -940,14 +899,6 @@ const startPeriodics = async ({ repo, config, counted, started, carried, start, 
   }
   return { dispatched, unread, beats: beats() };
 };
-
-/**
- * A periodic's connectors as its launch carries them: none where it names none.
- *
- * @param {{ connectors?: string[] }} periodic
- * @returns {{ connectors?: string[] }}
- */
-const connectorsOf = (periodic) => (periodic.connectors === undefined ? {} : { connectors: periodic.connectors });
 
 /**
  * A periodic whose connectors the account has not connected started
@@ -1096,15 +1047,17 @@ const runOpen = (deps) => {
  *   claim: boolean,
  *   holdsRepo: boolean,
  *   asked: import('./launcher.mjs').Asked,
+ *   periodic?: string,
  *   started?: (outcome: import('./launcher.mjs').Started, firedAt: string) => Promise<void>,
  * }} PlannedLaunch
  *   One session a planner wants started, on `asked`, which the launcher's
  *   `start` takes with the repo. `claim`: the ticket is claimed
  *   before the launch and released on a failure (a picked-up ticket, not a
  *   spec session). `holdsRepo`: a failed launch skips the repo's later
- *   launches (a ticket's or a periodic's). `started`: the record this launch
- *   moves, called after the launch line with what the launch printed and
- *   when it was fired, unless a routine fault skipped it.
+ *   launches (a ticket's or a periodic's). `periodic`: the periodic's name,
+ *   which its launch line and a repo skip's line carry. `started`: the
+ *   record this launch moves, called after the launch line with what the
+ *   launch printed and when it was fired, unless a routine fault skipped it.
  *
  * @typedef {{
  *   launches: PlannedLaunch[],
@@ -1113,10 +1066,11 @@ const runOpen = (deps) => {
  *   result?: Record<string, unknown>,
  * } | { answer: { kind: import('./webhook/fire.mjs').Fire['kind'], dispatched: Dispatched[], loginStored?: boolean, messaged?: import('./deliveries.mjs').Delivery | null, row?: import('./unblocked.mjs').Row, refusal?: string, commented?: boolean } }} Plan
  *   What a planner for a fire kind that starts sessions hands the turn
- *   (`planHook` in dispatch/hooks.mjs, `planUnblocked` in
+ *   (`planSweep` in dispatch/sweep.mjs, `planHook` in dispatch/hooks.mjs, `planUnblocked` in
  *   dispatch/unblocked-fire.mjs, `planDispatch` in dispatch/dispatch-fire.mjs). `unread`: what failed the turn, which
  *   `started` and `done` may add to. `done`: called after every launch, with
- *   what the launch window or a repo skip left unstarted. `result`: the
+ *   the launches that ran, a failed claim's included, and what the launch
+ *   window or a repo skip left unstarted. `result`: the
  *   kind's own fields in the turn's result. `answer`: the turn's whole
  *   result where the kind starts nothing.
  */
@@ -1570,169 +1524,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     cap: deps.cap,
   };
   const started = deps.now();
-  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, connectors?: string[], unclaimed?: true, holdsRepo?: boolean, wait?: { read: string }, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, planned?: PlannedLaunch }>} */
-  const plan = [];
-  /** The plan a kind's planner returned: the hook's, the unblocked fire's or the dispatch fire's. @type {Plan | undefined} */
+  /** The plan a kind's planner returned. @type {Plan | undefined} */
   let planned;
-  /** The issues a targeted schedule fire limits the plan to; undefined for the sweep. @type {number[] | undefined} */
-  let only;
-  /** The served repos whose backlog the bare fire could not read. @type {Array<{ repo: string, error: string }>} */
-  const unread = [];
-  /** The periodics whose record the bare fire could not read, baseline, or write after a launch. @type {Array<{ repo: string, error: string }>} */
-  const periodicsUnread = [];
-  /** The ended waits the bare fire could not read or act on, and the items it could not delete after a spec session started. @type {Array<{ repo: string, error: string }>} */
-  const waitsUnread = [];
-  /** The served repos whose last sweep the bare fire could not read, or whose sweep it could not record. @type {Array<{ repo: string, error: string }>} */
-  const sweepsUnread = [];
-  /** The repos the bare fire sweeps, each with the time the turn read their last sweep, which it records. @type {Map<string, string>} */
-  const swept = new Map();
-  /** The repos the bare fire sweeps with a ready ticket the cap cut: like a repo in `leftOver`, its sweep is not recorded. @type {Set<string>} */
-  const cut = new Set();
-  /** The served repos turning pickup on that the bare fire left out of this sweep: not due, or their last sweep unread. */
-  let held = 0;
-  /** The bare fire's ended waits, by repo, read before its sweep. @type {Array<{ repo: string, config: import('./repo-config.mjs').RepoConfig, ended: Awaited<ReturnType<typeof endedWaits>> }>} */
-  const endedByRepo = [];
   if (invocation.kind === 'schedule') {
-    // Each repo turning waits on: the waits whose date has passed
-    // (dispatch/waits.mjs), read before the sweep, since a ticket linked to
-    // the repo's wait ticket loses the link here, and pickup holds a ticket
-    // while its dependency summary counts an open blocker. The comments go
-    // now; the spec sessions join the plan after the tickets, below.
-    if (ctx.bare) {
-      for (const { repo, config } of ctx.served) {
-        if (!turnsOn(config, 'waits')) continue;
-        const reader = await ctx.readerFor(repo);
-        const links = waitLinks({ reader, repo, board: config.waits?.issue, log: ctx.log });
-        const ended = await endedWaits({ reader, state: ctx.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), now: ctx.now(), log: ctx.log, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
-        waitsUnread.push(...ended.unread);
-        endedByRepo.push({ repo, config, ended });
-      }
-    }
-    // Every served repo's ready tickets in one queue; a repo
-    // whose file turns pickup off is still swept, and its backlog unread.
-    /** @type {import('../scripts/lib/dispatch-router.mjs').Source[]} */
-    const sources = [];
-    for (const { repo, config } of ctx.served) {
-      if (!turnsOn(config, 'pickup')) {
-        ctx.log('dispatch-refused', { level: 'info', repo, kind: 'schedule', reason: `${repo}'s ${CONFIG_PATH} does not turn pickup on` });
-        continue;
-      }
-      // The bare fire sweeps a repo once its interval has passed since its
-      // last sweep; a fire for a label picks up at once.
-      if (ctx.bare) {
-        const now = ctx.now();
-        const sweepHours = sweepHoursOf(config);
-        /** @type {string | null} */
-        let last;
-        try {
-          last = await ctx.state.sweep(repo);
-        } catch (error) {
-          ctx.log('dispatch-pickup-unread', { level: 'error', repo, error: messageOf(error), reason: 'its last sweep could not be read, so it is not swept this turn' });
-          sweepsUnread.push({ repo, error: `pickup sweep: ${messageOf(error)}` });
-          held += 1;
-          continue;
-        }
-        if (!sweepDue(last, sweepHours, now)) {
-          ctx.log('dispatch-pickup', { level: 'info', repo, outcome: 'not due', last, sweepHours });
-          held += 1;
-          continue;
-        }
-        swept.set(repo, new Date(now).toISOString());
-      }
-      sources.push({ repo, reader: await ctx.readerFor(repo), labels: config.labels, prompts: config.prompts });
-    }
-    // A fire naming its issue plans it alone, through the selection's own
-    // checks, from a read of that issue rather than the ready list.
-    only = invocation.issue === undefined ? undefined : [invocation.issue];
-    /** @type {import('../scripts/lib/dispatch-router.mjs').Seen[]} */
-    const seen = [];
-    /** @type {import('../scripts/lib/dispatch-router.mjs').Unreadable[]} */
-    const unreadable = [];
-    /** @type {import('../scripts/lib/dispatch-router.mjs').Relative[]} */
-    const relative = [];
-    // In the bare fire one repo's refusal leaves the others to go; a fire
-    // naming its repo throws on its own.
-    const planned = await planSchedule({
-      sources,
-      cap: ctx.cap,
-      now: ctx.now(),
-      unreadable,
-      ...(only === undefined ? {} : { only, seen }),
-      ...(ctx.bare ? { unread, cut, relative } : {}),
-    });
-    // A `Blocked until:` line governor cannot read holds its ticket, and is
-    // said once on the ticket whatever the repo's switches say. Each report
-    // catches its own failure, so they run side by side and keep the launch
-    // window for the launches.
-    await Promise.all(unreadable.map(async ({ repo, issue, value }) => reportUnreadable({ reader: await ctx.readerFor(repo), repo, issue, value, log: ctx.log })));
-    // A relative line on a ready ticket, in a repo pickup sweeps: the sweep
-    // leaves it to an open blocker's close, or settles it, whatever the
-    // repo's other switches say, or says once that it cannot. A failure is
-    // logged and left for the next sweep: the ticket stays held.
-    await Promise.all(relative.map(async (report) => {
-      const { repo, issue, after } = report;
-      try {
-        await repairRelative({ ...report, reader: await ctx.readerFor(repo), link: false, prompts: ctx.configOf(repo).prompts, now: ctx.now(), log: ctx.log });
-      } catch (error) {
-        ctx.log(WAIT_RELATIVE, { level: 'error', repo, issue, after, error: messageOf(error), reason: 'the ticket stays held, and the next sweep tries again' });
-      }
-    }));
-    if (only !== undefined && planned.length === 0) {
-      const why = ctx.cap === 0 ? { outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
-      for (const { repo, issue, ...read } of seen) {
-        ctx.log('dispatch-pickup', { level: 'info', repo, issue, ...why, reads: [read] });
-      }
-    }
-    for (const { repo, error } of unread) ctx.log('dispatch-backlog-unread', { level: 'error', repo, error });
-    // Only when no repo was left out of the sweep: one due repo failing
-    // while the others were not due is that repo's fault, not the turn's.
-    if (sources.length > 0 && held === 0 && new Set(unread.map((u) => u.repo)).size === sources.length) {
-      throw new Error(`no served repo's backlog could be read: ${unread.map((u) => `${u.repo}: ${u.error}`).join('; ')}`);
-    }
-    for (const d of planned) {
-      plan.push({ issue: d.issue ?? null, repo: d.repo, prompt: d.prompt, sessionName: d.sessionName, model: DEFAULT_MODEL });
-    }
-    // The bare fire's due periodics go ahead of the tickets, oldest due
-    // first. They do not count against the cap, but a cap of 0 starts
-    // nothing; they share the launch window, and one left unlaunched has
-    // no new record, so it stays due for the next fire.
-    if (ctx.bare) {
-      /** @type {Array<import('./periodics.mjs').Due & { repo: string }>} */
-      const due = [];
-      // One open check for every served repo, so an expired login is refreshed once a turn.
-      for (const { repo, config } of ctx.served) {
-        if (!turnsOn(config, 'periodics')) continue;
-        const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(await ctx.readerFor(repo)), open: ctx.open });
-        due.push(...read.due.map((d) => ({ ...d, repo })));
-        periodicsUnread.push(...read.unread);
-        if (read.beats.length > 0) ctx.beats.push({ repo, beat: { periodics: read.beats } });
-      }
-      if (ctx.cap > 0) {
-        plan.unshift(...due.sort((a, b) => a.due - b.due).map(({ repo, periodic, read, by, windows, asOf }) => ({
-          issue: null,
-          repo,
-          prompt: periodicPrompt(periodic.prompt, read, windows),
-          sessionName: periodic.name,
-          model: DEFAULT_MODEL,
-          ...connectorsOf(periodic),
-          periodic: { name: periodic.name, read, by, ...(asOf === undefined ? {} : { asOf }) },
-        })));
-      }
-      // The waits read before the sweep, above. A ticket not ready got its
-      // comment there, and, with unblocked on, gets a spec session here,
-      // after the tickets, unclaimed, as a
-      // blocker's close starts one. At most DispatchCap of them start a fire,
-      // apart from pickup's; one past it keeps its item for the next fire.
-      let room = ctx.cap;
-      for (const { repo, config, ended } of endedByRepo) {
-        const taken = ended.specs.slice(0, Math.max(0, room));
-        room -= taken.length;
-        if (taken.length < ended.specs.length) ctx.log('dispatch-wait', { repo, outcome: 'spec sessions past DispatchCap left for the next fire', left: ended.specs.slice(taken.length).map((w) => w.issue) });
-        for (const { issue, title, until, read } of taken) {
-          plan.push({ issue, repo, prompt: waitSpecPrompt({ issue, title, until, labels: config.labels, prompts: config.prompts }), sessionName: ticketSessionName(issue, title), model: DEFAULT_MODEL, unclaimed: true, wait: { read } });
-        }
-      }
-    }
+    planned = await planSweep(invocation, ctx);
   } else if (invocation.kind === 'hook') {
     planned = await planHook(invocation, ctx);
   } else if (invocation.kind === 'unblocked') {
@@ -1741,11 +1536,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     planned = await planDispatch(invocation, ctx);
   }
   if (planned !== undefined && 'answer' in planned) return planned.answer;
-  /** The kind's plan, whose launches join the loop's. */
+  /** The kind's plan. */
   const kindPlan = planned;
-  // A claimed launch is a ticket's, and a failed one that holds its repo
-  // skips the repo's later launches, as the loop judges each entry below.
-  for (const p of kindPlan?.launches ?? []) plan.push({ ...p.asked, issue: p.issue, repo: p.repo, ...(p.claim ? {} : { unclaimed: true }), holdsRepo: p.holdsRepo, planned: p });
+  /** Its launches, run in turn below. A claimed launch is a ticket's, and a failed one that holds its repo skips the repo's later launches. */
+  const plan = kindPlan?.launches ?? [];
 
   // The dispatcher claims a ticket before its launch: a session that
   // never claims, or dies first, would leave it ready for the next fire. A
@@ -1842,164 +1636,60 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const dispatched = [];
   /** The repos whose launch started nothing: the rest of their tickets and periodics wait for the next fire. @type {Set<string>} */
   const skipped = new Set();
-  /** The repos whose planned tickets a failed launch, the launch window or a skip left for the next fire. @type {Set<string>} */
-  const leftOver = new Set();
-  /** How many ticket sessions a repo's own entries started. @param {Dispatched[]} own */
-  const startedOf = (own) => own.filter((d) => d.issue !== null && d.outcome !== 'failed').length;
-  /** The tickets whose entry is an ended wait's spec session, `repo#issue`: none of pickup's. */
-  const waitSpecs = new Set(plan.filter((e) => e.wait !== undefined && e.issue !== null).map((e) => `${e.repo}#${e.issue}`));
-  /** A repo's own launches by pickup: its dispatches, an ended wait's spec sessions left out. @param {string} repo */
-  const pickupOwn = (repo) => dispatched.filter((d) => d.repo === repo && !waitSpecs.has(`${d.repo}#${d.issue}`));
-  /** The kind's planned launches that ran, and those the window or a repo skip left. @type {Array<Dispatched & { planned: PlannedLaunch }>} */
+  /** The planned launches that ran, a failed claim's included, and those the window or a repo skip left. @type {Array<Dispatched & { planned: PlannedLaunch }>} */
   const ran = [];
   /** @type {PlannedLaunch[]} */
   const left = [];
-  let heartbeat = false;
   let loginStored = false;
   try {
     for (const [i, entry] of plan.entries()) {
       if (deps.now() - started > SCHEDULE_LAUNCH_WINDOW_MS) {
         deps.log('dispatch-launch', { undispatched: plan.slice(i).map((e) => ({ repo: e.repo, issue: e.issue })), reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, another launch might outrun the deadline; each is left unmarked for the next fire` });
-        for (const e of plan.slice(i)) if (e.issue !== null && e.wait === undefined) leftOver.add(e.repo);
-        for (const e of plan.slice(i)) if (e.planned !== undefined) left.push(e.planned);
+        left.push(...plan.slice(i));
         break;
       }
       const ticket = entry.issue === null ? null : { repo: entry.repo, issue: entry.issue };
       if (skipped.has(entry.repo)) {
-        if (ticket !== null && entry.wait === undefined) leftOver.add(entry.repo);
-        if (entry.planned !== undefined) left.push(entry.planned);
+        left.push(entry);
         continue;
       }
       // A spec session's ticket is not claimed: the session claims it before it builds.
-      const claimed = ticket === null || entry.unclaimed === true ? 'claimed' : await claim(ticket);
+      const claimed = ticket === null || !entry.claim ? 'claimed' : await claim(ticket);
       if (claimed === 'taken') continue;
       if (claimed === 'failed') {
-        dispatched.push({ repo: entry.repo, issue: entry.issue, outcome: 'failed', sessionUrl: null });
+        /** @type {Dispatched} */
+        const failed = { repo: entry.repo, issue: entry.issue, outcome: 'failed', sessionUrl: null };
+        dispatched.push(failed);
+        ran.push({ ...failed, planned: entry });
         continue;
       }
       const firedAt = new Date(deps.now()).toISOString();
-      const launched = await ctx.start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo, ...connectorsOf(entry) });
-      if (routineFault(deps, entry.repo, entry.sessionName, launched)) continue;
+      const launched = await ctx.start({ ...entry.asked, repo: entry.repo });
+      if (routineFault(deps, entry.repo, entry.asked.sessionName, launched)) continue;
       const { outcome, sessionUrl, status } = launched;
-      deps.log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.sessionName, ...(entry.periodic === undefined ? {} : { periodic: entry.periodic.name }), outcome, status, sessionUrl });
-      // A periodic's record moves to this fire only for a launch that started
-      // or may have, and only over the record the turn read. A failed launch
-      // writes nothing, so the periodic stays due.
-      if (entry.periodic !== undefined && outcome !== 'failed') {
-        const unrecorded = await recordFire(deps, entry.repo, entry.periodic, entry.periodic.asOf ?? firedAt, sessionUrl);
-        // The turn fails, so the alarm says a periodic may start twice.
-        if (unrecorded !== null) periodicsUnread.push(unrecorded);
-        ctx.beats.push({ repo: entry.repo, beat: { periodics: [{ name: entry.periodic.name, at: entry.periodic.asOf ?? firedAt, by: entry.periodic.by, session: sessionUrl, state: 'open' }] } });
-      }
-      // An ended wait's item goes once its spec session started or may have:
-      // a failed launch leaves it, so the next fire tries again.
-      if (entry.wait !== undefined && entry.issue !== null && outcome !== 'failed') {
-        try {
-          const dropped = await deps.state.dropWait(entry.repo, entry.issue, entry.wait.read);
-          deps.log('dispatch-wait', { repo: entry.repo, issue: entry.issue, read: entry.wait.read, outcome: 'spec session started', item: dropped ? 'dropped' : 'not dropped: it changed since it was read' });
-        } catch (error) {
-          deps.log('dispatch-wait-unhandled', { level: 'error', repo: entry.repo, issue: entry.issue, read: entry.wait.read, error: messageOf(error), reason: 'its spec session started and its item stays: the next fire finds the session\'s dispatch marker and deletes it' });
-          waitsUnread.push({ repo: entry.repo, error: `wait #${entry.issue}: ${messageOf(error)}` });
-        }
-      }
-      // The record a kind's planned launch moves, such as a hook's.
-      if (entry.planned?.started !== undefined) await entry.planned.started(launched, firedAt);
-      if ((entry.holdsRepo ?? (ticket !== null || entry.periodic !== undefined)) && outcome === 'failed') {
-        if (ticket !== null) {
-          if (entry.unclaimed !== true) await release(ticket);
-          if (entry.wait === undefined) leftOver.add(ticket.repo);
-        }
+      const periodic = entry.periodic === undefined ? {} : { periodic: entry.periodic };
+      deps.log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.asked.sessionName, ...periodic, outcome, status, sessionUrl });
+      // The record the launch moves: a periodic's, a wait item, a hook's.
+      if (entry.started !== undefined) await entry.started(launched, firedAt);
+      if (entry.holdsRepo && outcome === 'failed') {
+        if (ticket !== null && entry.claim) await release(ticket);
         // A launch that started nothing is the repo's environment or the
         // login: the repo's next ticket or periodic would fail the same way.
         // A routine the routines API refused is not (`routineFault`).
         skipped.add(entry.repo);
-        deps.log(REPO_SKIPPED, { level: 'error', repo: entry.repo, issue: entry.issue, ...(entry.periodic === undefined ? {} : { periodic: entry.periodic.name }), status, reason: 'its launch started nothing: the rest of its tickets and periodics wait for the next fire' });
+        deps.log(REPO_SKIPPED, { level: 'error', repo: entry.repo, issue: entry.issue, ...periodic, status, reason: 'its launch started nothing: the rest of its tickets and periodics wait for the next fire' });
       } else if (ticket !== null) {
         const at = new Date(deps.now()).toISOString();
         await (await readerFor(ticket.repo)).comment(ticket.issue, dispatchMarker({ at, sessionUrl }));
         if (sessionUrl !== null) claims.delete(keyOf(ticket));
       }
       dispatched.push({ repo: entry.repo, issue: entry.issue, outcome, sessionUrl });
-      if (entry.planned !== undefined) ran.push({ repo: entry.repo, issue: entry.issue, outcome, sessionUrl, planned: entry.planned });
+      ran.push({ repo: entry.repo, issue: entry.issue, outcome, sessionUrl, planned: entry });
     }
-    // A kind's plan settles what its launches left: a hook left unstarted
-    // fails the turn.
-    await kindPlan?.done?.({ dispatched: ran, left });
-
-    // A repo's sweep is recorded once its backlog was read and not every
-    // claim or launch failed, as pickup's heartbeat line is: a sweep that
-    // started nothing it planned is tried again at the next fire. A sweep
-    // that left planned tickets to a failed launch, the launch window or a
-    // skip is not recorded either, so the next fire picks them up, not the
-    // next interval, and nor is one with a ready ticket the cap cut: the cap
-    // limits load, and does not set how often a repo is swept.
-    for (const [repo, at] of swept) {
-      const own = pickupOwn(repo);
-      if (unread.some((u) => u.repo === repo) || (own.length > 0 && own.every((d) => d.outcome === 'failed'))) {
-        swept.delete(repo);
-        continue;
-      }
-      if (leftOver.has(repo) || cut.has(repo)) {
-        deps.log('dispatch-pickup', { level: 'info', repo, outcome: 'swept, with tickets left for the next fire, so not recorded', at, started: startedOf(own) });
-        continue;
-      }
-      try {
-        const written = await deps.state.recordSweep(repo, at);
-        deps.log('dispatch-pickup', { level: 'info', repo, outcome: written ? 'swept' : 'swept, and a later sweep was already recorded', at, started: startedOf(own) });
-      } catch (error) {
-        deps.log('dispatch-pickup-unrecorded', { level: 'error', repo, error: messageOf(error), reason: 'its sweep could not be recorded, so the next fire sweeps it again' });
-        sweepsUnread.push({ repo, error: `pickup sweep: ${messageOf(error)}` });
-      }
-    }
-
-    // The heartbeat says the sweep ran, runs with nothing to dispatch or
-    // nothing left to claim included, unless every claim or launch failed. A
-    // fire naming its repo or its issue (one labelled, or one a close left
-    // unblocked) is not the sweep: one per label or per merge would keep the
-    // heartbeat fresh while the schedule was dead, and the watchdog reads
-    // the heartbeat as the schedule's. It is written in each repo whose file
-    // turns it on, into the issue the file names, judged on that
-    // repo's own claims and launches (another repo's launch going through
-    // says nothing of this one's), and only where that issue's body already
-    // carries the marker: a wrong number refuses
-    // the write rather than overwrite someone's ticket, and the repo's
-    // watchdog then reports the lapse.
-    // A file in the `{ issue }` shape gets pickup's line in governor's own
-    // block instead, beside the turn's periodic lines, which `run` writes.
-    // One repo's read or write that fails leaves the rest to go, then fails
+    // The kind's plan settles what its launches left: the sweep's records
+    // and pickup's heartbeat line, or a hook left unstarted, which fails
     // the turn.
-    if (bare) {
-      /** @type {string[]} */
-      const unwritten = [];
-      for (const { repo, config } of served) {
-        if (!turnsOn(config, 'heartbeat') || config.heartbeat === undefined || unread.some((u) => u.repo === repo)) continue;
-        const own = pickupOwn(repo);
-        if (own.length > 0 && own.every((d) => d.outcome === 'failed')) continue;
-        const { issue, marker } = config.heartbeat;
-        // The `{ issue }` shape: pickup's line, for a repo whose file turns
-        // pickup on, written with the turn's other lines by `run`.
-        if (marker === undefined) {
-          if (swept.has(repo)) ctx.beats.push({ repo, beat: { pickup: { at: new Date(deps.now()).toISOString(), started: startedOf(own) } } });
-          continue;
-        }
-        try {
-          const github = await readerFor(repo);
-          const { body } = await github.issue(issue);
-          if (!body.includes(marker)) {
-            deps.log(HEARTBEAT_REFUSED, { level: 'error', repo, issue, marker, reason: 'the issue\'s body has no marker, so the heartbeat is not written: fix the issue number or marker in the repo\'s .github/dispatch.json, or add the marker to the issue' });
-            continue;
-          }
-          await github.updateIssue(issue, { body: stampLastRun(body, marker, deps.now()) });
-        } catch (error) {
-          deps.log(HEARTBEAT_UNWRITTEN, { level: 'error', repo, issue, error: messageOf(error) });
-          unwritten.push(`${repo}#${issue}: ${messageOf(error)}`);
-          continue;
-        }
-        deps.log('dispatch-heartbeat', { repo, issue });
-        heartbeat = true;
-      }
-      if (unwritten.length !== 0) throw new Error(`heartbeat not written: ${unwritten.join('; ')}`);
-    }
+    await kindPlan?.done?.({ dispatched: ran, left });
   } finally {
     // A claim no marker names a session for: an unconfirmed launch, one past
     // its budget, a marker refused, a release refused. Nothing puts the
@@ -2011,8 +1701,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // the copy from before it would hold a dead refresh token.
     loginStored = await storeIfRefreshed(deps, original, account);
   }
-  const failed = [...unread, ...sweepsUnread, ...periodicsUnread, ...(kindPlan?.unread ?? []), ...waitsUnread];
-  return { kind: invocation.kind, ...kindPlan?.result, dispatched, heartbeat, loginStored, ...(failed.length === 0 ? {} : { unread: failed }) };
+  const failed = kindPlan?.unread ?? [];
+  return { kind: invocation.kind, heartbeat: false, ...kindPlan?.result, dispatched, loginStored, ...(failed.length === 0 ? {} : { unread: failed }) };
 };
 
 // ── The real I/O ────────────────────────────────────────────────────────────

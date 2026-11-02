@@ -16,6 +16,9 @@ import { planDispatch } from '../dispatch/dispatch-fire.mjs';
 import { DEFAULT_SESSION_NAME, hookSource } from '../dispatch/deliveries.mjs';
 import { planUnblocked } from '../dispatch/unblocked-fire.mjs';
 import { specPrompt } from '../dispatch/unblocked.mjs';
+import { planSweep } from '../dispatch/sweep.mjs';
+import { periodicPrompt } from '../dispatch/periodics.mjs';
+import { waitSpecPrompt } from '../dispatch/waits.mjs';
 import { dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
@@ -333,5 +336,155 @@ describe('planUnblocked: an unblocked fire\'s plan', () => {
 
   test('a fire that names no repo is refused', async () => {
     await assert.rejects(planUnblocked(fire({ repo: undefined }), ticketContext().ctx), /names no repo/);
+  });
+});
+
+describe('planSweep: the bare schedule fire\'s plan', () => {
+  const RETRO = (FILE.periodics as Array<{ name: string, prompt: string, days: number }>)[0]!;
+  // One periodic, a heartbeat in governor's own block and no wait ticket, so
+  // the fakes need no window, marker or sidebar reads.
+  const SWEPT = (() => {
+    const { waits: _waits, ...rest } = FILE;
+    const read = readConfig(JSON.stringify({ ...rest, periodics: [RETRO], heartbeat: { issue: 412 } }));
+    assert.ok(read.ok);
+    return read.config;
+  })();
+  const LAST_FIRE = { at: new Date(NOW - 8 * 24 * 60 * 60 * 1000).toISOString(), session: null, baseline: false };
+  const URL = 'https://claude.ai/code/session_01SWEPT';
+  const READY_TICKET = { number: 5, title: 'Issue 5', body: '', state: 'open', labels: [...SWEPT.labels.ready], created_at: '2026-09-20T00:00:00Z', openBlockers: 0, pull: false };
+  const WAITING = { number: 9, title: 'Issue 9', body: 'Blocked until: 2026-09-20', state: 'open', labels: ['type: bug'], wait: { until: '2026-09-20' }, openBlockers: 0, pull: false };
+
+  /** A bare fire's context over one served repo, its reader and its state, each overridable. */
+  const sweepContext = ({ waits = [] as Array<{ issue: number, until: string }>, over = {} as Record<string, unknown> } = {}) => {
+    const swept: Array<{ repo: string, at: string }> = [];
+    const fired: Array<{ repo: string, name: string, read: unknown, record: unknown }> = [];
+    const dropped: Array<{ repo: string, issue: number, until: string }> = [];
+    const tickets = new Map<number, unknown>([[5, READY_TICKET], [9, WAITING]]);
+    const reader = {
+      readyIssues: async () => [READY_TICKET],
+      ticket: async (n: number) => tickets.get(n),
+      blockers: async () => [],
+      comments: async () => [],
+      allComments: async () => [],
+      comment: async () => {},
+    };
+    const beats: unknown[] = [];
+    const made = context({
+      readerFor: async () => reader,
+      configOf: () => SWEPT,
+      served: [{ repo: REPO, config: SWEPT }],
+      bare: true,
+      prompts: {},
+      beats,
+      state: {
+        sweep: async () => null,
+        recordSweep: async (repo: string, at: string) => { swept.push({ repo, at }); return true; },
+        periodic: async () => LAST_FIRE,
+        recordPeriodic: async (repo: string, name: string, read: unknown, record: unknown) => { fired.push({ repo, name, read, record }); return true; },
+        waits: async () => waits,
+        dropWait: async (repo: string, issue: number, until: string) => { dropped.push({ repo, issue, until }); return true; },
+      },
+      ...over,
+    });
+    return { ...made, swept, fired, dropped, beats };
+  };
+  const fire = { kind: 'schedule' } as never;
+  const ran = (planned: any, outcome: string, sessionUrl: string | null = outcome === 'failed' ? null : URL) => ({ repo: planned.repo, issue: planned.issue, outcome, sessionUrl, planned });
+
+  test('plans the due periodics first, then the ready tickets, then the ended waits\' spec sessions', async () => {
+    const { ctx } = sweepContext({ waits: [{ issue: 9, until: '2026-09-20' }] });
+    const plan = await planSweep(fire, ctx) as any;
+    assert.ok(!('answer' in plan));
+    const [periodic, ticket, spec, ...rest] = plan.launches;
+    assert.deepEqual(rest, []);
+    assert.deepEqual({ ...periodic, started: undefined }, {
+      repo: REPO,
+      issue: null,
+      claim: false,
+      holdsRepo: true,
+      periodic: RETRO.name,
+      asked: { prompt: periodicPrompt(RETRO.prompt, LAST_FIRE), sessionName: RETRO.name, model: DEFAULT_MODEL },
+      started: undefined,
+    });
+    assert.deepEqual({ repo: ticket.repo, issue: ticket.issue, claim: ticket.claim, holdsRepo: ticket.holdsRepo, sessionName: ticket.asked.sessionName }, { repo: REPO, issue: 5, claim: true, holdsRepo: true, sessionName: sessionName(5, 'Issue 5') });
+    assert.deepEqual({ ...spec, started: undefined }, {
+      repo: REPO,
+      issue: 9,
+      claim: false,
+      holdsRepo: true,
+      asked: { prompt: waitSpecPrompt({ issue: 9, title: 'Issue 9', until: '2026-09-20', labels: SWEPT.labels, prompts: SWEPT.prompts as never }), sessionName: sessionName(9, 'Issue 9'), model: DEFAULT_MODEL },
+      started: undefined,
+    });
+    assert.deepEqual(plan.unread, []);
+  });
+
+  test('a periodic\'s started records the fire over the record read and adds its heartbeat line, and a failed launch writes neither', async () => {
+    const { ctx, fired, beats } = sweepContext();
+    const plan = await planSweep(fire, ctx) as any;
+    const periodic = plan.launches[0];
+    await periodic.started({ outcome: 'failed', sessionUrl: null, status: 1, output: '' }, '2026-09-25T12:01:00.000Z');
+    assert.deepEqual(fired, []);
+    assert.deepEqual(beats, []);
+    await periodic.started({ outcome: 'dispatched', sessionUrl: URL, status: 0, output: '' }, '2026-09-25T12:01:00.000Z');
+    assert.deepEqual(fired, [{ repo: REPO, name: RETRO.name, read: LAST_FIRE, record: { at: '2026-09-25T12:01:00.000Z', session: URL, baseline: false } }]);
+    assert.deepEqual(beats, [{ repo: REPO, beat: { periodics: [{ name: RETRO.name, at: '2026-09-25T12:01:00.000Z', by: { days: 7 }, session: URL, state: 'open' }] } }]);
+  });
+
+  test('an ended wait\'s started drops its item once the session started, and a failed launch leaves it', async () => {
+    const { ctx, dropped } = sweepContext({ waits: [{ issue: 9, until: '2026-09-20' }] });
+    const plan = await planSweep(fire, ctx) as any;
+    const spec = plan.launches[2];
+    await spec.started({ outcome: 'failed', sessionUrl: null, status: 1, output: '' }, '2026-09-25T12:01:00.000Z');
+    assert.deepEqual(dropped, []);
+    await spec.started({ outcome: 'unconfirmed', sessionUrl: null, status: null, output: '' }, '2026-09-25T12:01:00.000Z');
+    assert.deepEqual(dropped, [{ repo: REPO, issue: 9, until: '2026-09-20' }]);
+  });
+
+  test('done records the sweep and adds pickup\'s heartbeat line once a launch started', async () => {
+    const { ctx, swept, beats } = sweepContext();
+    const plan = await planSweep(fire, ctx) as any;
+    const [, ticket] = plan.launches;
+    await plan.done({ dispatched: [ran(ticket, 'dispatched')], left: [] });
+    assert.deepEqual(swept, [{ repo: REPO, at: new Date(NOW).toISOString() }]);
+    assert.deepEqual(beats, [{ repo: REPO, beat: { pickup: { at: new Date(NOW).toISOString(), started: 1 } } }]);
+    assert.deepEqual(plan.unread, []);
+    assert.equal(plan.result.heartbeat, false, 'the { issue } shape\'s line is run\'s to write');
+  });
+
+  test('done leaves the sweep unrecorded where a ticket\'s launch failed or the window left it, and writes pickup\'s line all the same', async () => {
+    for (const how of ['failed', 'left']) {
+      const { ctx, swept, beats, logged } = sweepContext();
+      const plan = await planSweep(fire, ctx) as any;
+      const [periodic, ticket] = plan.launches;
+      if (how === 'failed') await ticket.started({ outcome: 'failed', sessionUrl: null, status: 1, output: '' }, '2026-09-25T12:01:00.000Z');
+      const dispatched = how === 'failed' ? [ran(periodic, 'dispatched'), ran(ticket, 'failed')] : [ran(periodic, 'dispatched')];
+      await plan.done({ dispatched, left: how === 'left' ? [ticket] : [] });
+      assert.deepEqual(swept, [], how);
+      assert.ok(logged.some((l) => l.event === 'dispatch-pickup' && l.outcome === 'swept, with tickets left for the next fire, so not recorded'), how);
+      assert.equal(beats.filter((b: any) => b.beat.pickup !== undefined).length, 1, how);
+    }
+  });
+
+  test('done records nothing, and writes no pickup line, where every claim or launch failed', async () => {
+    const { ctx, swept, beats } = sweepContext();
+    const plan = await planSweep(fire, ctx) as any;
+    const [periodic, ticket] = plan.launches;
+    await plan.done({ dispatched: [ran(periodic, 'failed'), ran(ticket, 'failed')], left: [] });
+    assert.deepEqual(swept, []);
+    assert.deepEqual(beats, []);
+  });
+
+  test('a repo whose last sweep is too recent is not swept, and its periodics still plan', async () => {
+    const { ctx, logged } = sweepContext({ over: {} });
+    (ctx as any).state.sweep = async () => new Date(NOW - 60 * 60 * 1000).toISOString();
+    const plan = await planSweep(fire, ctx) as any;
+    assert.deepEqual(plan.launches.map((l: any) => l.issue), [null]);
+    assert.ok(logged.some((l) => l.event === 'dispatch-pickup' && l.outcome === 'not due'));
+  });
+
+  test('with DispatchCap 0, plans nothing', async () => {
+    const { ctx } = sweepContext({ over: { cap: 0 } });
+    const plan = await planSweep(fire, ctx) as any;
+    assert.deepEqual(plan.launches, []);
   });
 });
