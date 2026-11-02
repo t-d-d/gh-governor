@@ -509,12 +509,9 @@ export const run = async (event, deps) => {
     deps.threw?.(error);
     throw error;
   } finally {
-    // A record added during the wait is waited for in turn.
-    for (let waited = 0; waited < records.writes.length;) {
-      const writing = records.writes.slice(waited);
-      waited = records.writes.length;
-      await Promise.all(writing);
-    }
+    // None rejects, so one at a time ends when they all have, and the
+    // length read each pass takes in a record added during the wait.
+    for (let i = 0; i < records.writes.length; i += 1) await records.writes[i];
     records.ended = true;
   }
 };
@@ -725,8 +722,9 @@ const turnOf = async (event, deps, records) => {
    * A launch its budget refuses pages once, at the refusal, since the
    * launcher runs on. A session it prints later is logged at info with its
    * name and URL, so the operator can tie it to that page, and recorded.
-   * The turn waits for that record while it is still waiting for others;
-   * once it has ended, nothing waits for it, which the line says.
+   * The turn waits for that record while it is still waiting for others.
+   * Once it has ended, nothing waits for it, so it pages again, naming the
+   * session, before the write is tried.
    *
    * @type {Deps['launch']}
    */
@@ -756,15 +754,20 @@ const turnOf = async (event, deps, records) => {
       /** @type {PendingRecord} */
       const pending = { repo: begin.repo, sessionName: begin.sessionName, sessionUrl };
       if (paged()) {
-        const record = records.ended
-          ? 'its turn has ended, so nothing waits for its record, which may not land if the task exits first'
-          : 'the turn waits for its record';
+        const record = records.ended ? 'its turn has ended, so nothing waits for its record' : 'the turn waits for its record';
         deps.log(SESSION_LATE, { level: 'info', ...pending, reason: `the launch ran past its budget and paged with no session URL; this is the session it started: ${record}` });
       }
-      unrecorded.add(pending);
-      records.writes.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
-        deps.log(SESSION_UNRECORDED, unrecordedLine(pending, messageOf(error)));
-      }).finally(() => { unrecorded.delete(pending); }));
+      if (records.ended) {
+        // Nothing waits for the write, and the task may exit before it
+        // lands, so it pages now, naming the session. It is still tried.
+        deps.log(SESSION_UNRECORDED, unrecordedLine(pending, 'the launcher printed it after its turn had ended, so nothing waits for its record and it may not land'));
+        void deps.state.recordSession(sessionUrl).catch(() => {});
+      } else {
+        unrecorded.add(pending);
+        records.writes.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
+          deps.log(SESSION_UNRECORDED, unrecordedLine(pending, messageOf(error)));
+        }).finally(() => { unrecorded.delete(pending); }));
+      }
     } else if (!paged() && launchOutcome(launched.status) !== null) {
       // The launch may have started a session but named none, so nothing
       // can record it: the operator finds it by its name and the line's time.
