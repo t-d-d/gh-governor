@@ -119,7 +119,7 @@ import { STALE_RUNS_PAUSES_MS, baselineIn, freshRuns } from './runs.mjs';
 import { coverageOf } from './coverage.mjs';
 import { planBranchRun } from './branch-run.mjs';
 import { checkConflicts } from './conflicts.mjs';
-import { ROW_SWITCH, closingFires, notPlannedComment, readyPrompt, readyToTakeOff, specPrompt, ticketRow, unblockedMessage } from './unblocked.mjs';
+import { ROW_SWITCH, closingFires, mayBeUnreadied, notPlannedComment, readyPrompt, readyToTakeOff, specPrompt, ticketRow, unblockedMessage, unreadiedSince } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
@@ -251,6 +251,7 @@ export const sessionUrlFrom = (output) => {
  *   commit: (sha: string) => Promise<{ sha: string, message: string, parents?: string[] }>,
  *   addLabels: (n: number, labels: string[]) => Promise<void>,
  *   removeLabel: (n: number, label: string) => Promise<void>,
+ *   labelRemovals: (n: number) => Promise<Array<{ label: string, at: string, ours: boolean }>>,
  *   addBlocker: (n: number, blockerId: number) => Promise<void>,
  *   removeBlocker: (n: number, blockerId: number) => Promise<void>,
  *   ensureLabel: (name: string) => Promise<void>,
@@ -1862,7 +1863,13 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // A not-planned close takes a ready, unclaimed ticket's ready labels off
     // under pickup, the switch that could start it before anyone decides.
     const takeOff = row === 'not-planned' && turnsOn(config, 'pickup') ? readyToTakeOff(ticket.labels, config.labels) : [];
-    const governs = takeOff.length > 0 ? 'pickup' : ROW_SWITCH[row];
+    // A retry of this close reads the ticket after its labels came off: the
+    // App's removals since the close say what the earlier run took off.
+    const closedAt = invocation.blocker.closedAt;
+    const earlier = row === 'not-planned' && takeOff.length === 0 && turnsOn(config, 'pickup') && closedAt !== undefined && mayBeUnreadied(ticket.labels, config.labels)
+      ? unreadiedSince(ticket.labels, await reader.labelRemovals(issue), config.labels, closedAt)
+      : undefined;
+    const governs = takeOff.length > 0 || earlier !== undefined ? 'pickup' : ROW_SWITCH[row];
     if (governs === undefined) {
       deps.log('dispatch-unblocked', { ...about, outcome: 'nothing to do' });
       return { kind: invocation.kind, row, dispatched: [] };
@@ -1876,7 +1883,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       /** @type {boolean} */
       let commented = false;
       /** @type {{ removed: string[], failed: string[] } | undefined} */
-      let unreadied;
+      let unreadied = earlier;
       if (takeOff.length > 0) {
         unreadied = { removed: [], failed: [] };
         /** @type {Array<{ label: string, error: string }>} */
