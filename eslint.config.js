@@ -4,7 +4,9 @@ import globals from "globals";
 import requireCliEnv from "./eslint-rules/require-cli-env.mjs";
 
 export default [
-  { ignores: ["node_modules/**", "dispatch/node_modules/**"] },
+  // The copied parser is kept unchanged (dispatch/webhook/vendor/README.md),
+  // and names rules this config does not load.
+  { ignores: ["node_modules/**", "dispatch/node_modules/**", "dispatch/webhook/vendor/**"] },
   {
     files: ["**/*.mjs", "**/*.js", "**/*.ts"],
     languageOptions: {
