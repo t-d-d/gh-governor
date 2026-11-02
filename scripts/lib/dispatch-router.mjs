@@ -41,9 +41,9 @@ import { byAge, mayPickUp, selectReadyWork, ticketStatus, unreadableOf } from '.
  * @typedef {{ repo: string, issue: number, value: string }} Unreadable
  *   A ticket held by a `Blocked until:` line whose value is no date.
  *
- * @typedef {{ repo: string, issue: number, after: import('./ready-work.mjs').After }} Relative
- *   A ticket held by a relative `Blocked until:` line that no open blocker
- *   holds by its dependency summary.
+ * @typedef {{ repo: string, issue: number, after: import('./ready-work.mjs').After, openBlockers?: number }} Relative
+ *   A ready ticket held by a relative `Blocked until:` line, with its open
+ *   blockers by its dependency summary where its read carries one.
  *
  * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, prompts?: Record<string, string | undefined> }} Source
  *   A served repo's tickets: its reader, its config file's ready, claim and
@@ -86,9 +86,11 @@ import { byAge, mayPickUp, selectReadyWork, ticketStatus, unreadableOf } from '.
  * still to come is held by the selection itself (`mayPickUp`).
  *
  * With `relative`, each open, ready-labelled ticket held by a relative
- * line (`3 days after #143 closes`) that no open blocker holds by its
- * dependency summary is recorded there, so the turn can settle it
- * (`repairRelative`, dispatch/waits.mjs).
+ * line (`3 days after #143 closes`) is recorded there, with its dependency
+ * summary, so the turn can settle it (`repairRelative`, dispatch/waits.mjs).
+ * Like `unreadable`, the report reads no blocker: the repair judges it, by
+ * the summary or, where the read carries none, by the `blocked_by` rows it
+ * reads, so the plan does not read them too.
  *
  * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[] }} args
  * @returns {Promise<Dispatch[]>}
@@ -145,9 +147,9 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     const rows = await guarded(source.repo, () => rowsOf(source));
     if (rows === null) continue;
     // A ticket held by an unreadable `Blocked until:` line, one the
-    // selection would otherwise consider, is reported for its comment.
-    // Both reports read the status with no `blocked_by` rows, so only a
-    // dependency summary counts as a blocker here.
+    // selection would otherwise consider, is reported for its comment, and
+    // one held by a relative line for its repair. Neither report asks
+    // about blockers.
     for (const row of rows) {
       const status = ticketStatus(row, { labels, now });
       if (!status.open || status.labels !== 'ready') continue;
@@ -156,8 +158,8 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
         unreadable?.push({ repo: source.repo, issue: row.number, value });
       }
       const { wait } = row;
-      if (wait !== undefined && 'after' in wait && !status.holds.includes('blocker')) {
-        relative?.push({ repo: source.repo, issue: row.number, after: wait.after });
+      if (wait !== undefined && 'after' in wait) {
+        relative?.push({ repo: source.repo, issue: row.number, after: wait.after, ...(row.openBlockers === undefined ? {} : { openBlockers: row.openBlockers }) });
       }
     }
     const ready = selectReadyWork(rows, { cap: Number.MAX_SAFE_INTEGER, labels, now });

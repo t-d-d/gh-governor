@@ -776,6 +776,9 @@ export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now
  * issue in the ticket's repo is read.
  *
  * - The sweep leaves a ticket an open blocker holds to that blocker's close.
+ *   The ticket's dependency summary (`openBlockers`) decides where the
+ *   sweep's read carried one, as it decides for the selection
+ *   (`isBlocked`); with none, its `blocked_by` rows do.
  * - A same-repo issue that has closed: settled as at its close
  *   ({@link settle}).
  * - A same-repo issue still open: the `wait` turn links it where it is not
@@ -785,17 +788,17 @@ export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now
  * - An issue that is gone or moved, a pull request, or the ticket itself,
  *   none of which can be its blocker: one comment.
  *
- * @param {{ reader: RelativeReader, repo: string, issue: number, after: import('../scripts/lib/ready-work.mjs').After, link: boolean, prompts: Record<string, string | undefined>, now?: number, log: Log }} args
+ * @param {{ reader: RelativeReader, repo: string, issue: number, after: import('../scripts/lib/ready-work.mjs').After, openBlockers?: number, link: boolean, prompts: Record<string, string | undefined>, now?: number, log: Log }} args
  * @returns {Promise<string>} What came of it.
  */
-export const repairRelative = async ({ reader, repo, issue, after, link, prompts, now = Date.now(), log }) => {
+export const repairRelative = async ({ reader, repo, issue, after, openBlockers, link, prompts, now = Date.now(), log }) => {
   const named = { repo: after.repo ?? repo, number: after.issue };
   const ref = refOf(repo, named);
   /** @type {Array<{ number: number, state: string, repo?: string }> | null} */
   let rows = null;
   if (!link) {
-    rows = await reader.blockers(issue);
-    if (rows.some((r) => r.state === 'open')) return 'held by an open blocker';
+    if (openBlockers === undefined) rows = await reader.blockers(issue);
+    if (isBlocked(openBlockers === undefined ? {} : { openBlockers }, rows ?? undefined)) return 'held by an open blocker';
   }
   const cannot = async (/** @type {string} */ why) => {
     const outcome = await sayOnce(reader, issue, waitRelativeMarker(ref), waitRelativeComment(ref));

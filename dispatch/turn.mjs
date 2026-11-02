@@ -1613,13 +1613,14 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // catches its own failure, so they run side by side and keep the launch
     // window for the launches.
     await Promise.all(unreadable.map(async ({ repo, issue, value }) => reportUnreadable({ reader: await readerFor(repo), repo, issue, value, log: deps.log })));
-    // A relative line no open blocker holds, in a repo pickup sweeps: the
-    // sweep settles it, whatever the repo's other switches say, or says once
-    // that it cannot. A failure is logged and left for the next sweep: the
-    // ticket stays held.
-    await Promise.all(relative.map(async ({ repo, issue, after }) => {
+    // A relative line on a ready ticket, in a repo pickup sweeps: the sweep
+    // leaves it to an open blocker's close, or settles it, whatever the
+    // repo's other switches say, or says once that it cannot. A failure is
+    // logged and left for the next sweep: the ticket stays held.
+    await Promise.all(relative.map(async (report) => {
+      const { repo, issue, after } = report;
       try {
-        await repairRelative({ reader: await readerFor(repo), repo, issue, after, link: false, prompts: configOf(repo).prompts, now: deps.now(), log: deps.log });
+        await repairRelative({ ...report, reader: await readerFor(repo), link: false, prompts: configOf(repo).prompts, now: deps.now(), log: deps.log });
       } catch (error) {
         deps.log(WAIT_RELATIVE, { level: 'error', repo, issue, after, error: messageOf(error), reason: 'the ticket stays held, and the next sweep tries again' });
       }

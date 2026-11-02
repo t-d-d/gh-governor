@@ -111,7 +111,7 @@ const fakeReader = ({ body = 'Blocked until: 3 days after #143 closes\n\nThe res
       if (read === undefined || read === 'gone') throw Object.assign(new Error(`GET /issues/${n} failed: 404`), { status: 404 });
       return { id: 9000 + n, number: n, title: `Issue ${n}`, state: 'open', reason: null, closedAt: null, ...read };
     },
-    blockers: async () => blockers,
+    blockers: async () => { asked.push('blockers'); return blockers; },
     addBlocker: async (n: number, id: number) => { links.push({ issue: n, id }); },
     ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: state.body, state: 'open', labels, pull: false, openBlockers: 0, ...waitOf(state.body) }),
   };
@@ -326,15 +326,26 @@ describe('the sweep\'s repair', () => {
     assert.deepEqual([f.edits, f.comments], [[], []]);
   });
 
-  test('the selection reports a ready ticket held by a relative line, and does not start it', async () => {
+  test('a dependency summary decides the hold where the read carries one, and no blocker rows are read for it', async () => {
+    // A blocker in a repo the App cannot see is left out of the rows, and
+    // the summary still counts it.
+    const held = fakeReader({ issues: { 143: {} } });
+    assert.equal(await repairRelative({ reader: held.reader as never, repo: REPO, issue: 7, after, openBlockers: 1, link: false, prompts: {}, log: logs().log }), 'held by an open blocker');
+    assert.deepEqual([held.edits, held.comments, held.asked], [[], [], []]);
+    const free = fakeReader({ issues: { 143: { state: 'closed', reason: 'completed', closedAt: CLOSED_AT } }, blockers: [{ number: 143, state: 'open' }] });
+    assert.equal(await repairRelative({ reader: free.reader as never, repo: REPO, issue: 7, after, openBlockers: 0, link: false, prompts: {}, log: logs().log }), 'rewritten');
+    assert.ok(!free.asked.includes('blockers'), JSON.stringify(free.asked));
+  });
+
+  test('the selection reports every ready ticket held by a relative line, with its dependency summary, and starts none', async () => {
     const rows = [
       { number: 7, title: 'Issue 7', state: 'open', created_at: '2026-10-01T00:00:00Z', labels: LABELS.ready, openBlockers: 0, wait: { after } },
       { number: 8, title: 'Issue 8', state: 'open', created_at: '2026-10-01T00:00:00Z', labels: LABELS.ready, openBlockers: 1, wait: { after } },
     ];
     const reader = { readyIssues: async () => rows, ticket: async () => { throw new Error('unread'); }, blockers: async () => [], comments: async () => [] };
-    const relative: Array<{ repo: string; issue: number; after: { days: number; issue: number; repo?: string } }> = [];
+    const relative: Array<{ repo: string; issue: number; after: { days: number; issue: number; repo?: string }; openBlockers?: number }> = [];
     const planned = await planSchedule({ sources: [{ repo: REPO, reader: reader as never, labels: LABELS }], cap: 5, now: NOW, relative });
     assert.deepEqual(planned, []);
-    assert.deepEqual(relative, [{ repo: REPO, issue: 7, after }]);
+    assert.deepEqual(relative, [{ repo: REPO, issue: 7, after, openBlockers: 0 }, { repo: REPO, issue: 8, after, openBlockers: 1 }]);
   });
 });
