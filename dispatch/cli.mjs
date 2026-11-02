@@ -78,7 +78,7 @@ export const exitCodeFor = (result) => {
   // write, fails the turn of any kind, refused or not.
   if ((result.unread?.length ?? 0) > 0) return 1;
   if (typeof result.refusal === 'string') return 0;
-  /** A send's fault: the CLI never answered, answered anything but the session gone, or its fallback started nothing. @param {{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }} d */
+  /** A send's fault: the CLI never answered, answered anything but the session gone, or its fallback started nothing. @param {{ ok: boolean, refused?: boolean, fallback?: { outcome: string } | null }} d */
   const faultedSend = (d) => !d.ok && (!d.refused || d.fallback?.outcome === 'failed');
   // A refusal with no fallback is a gone session, which owes a deploy check
   // nothing and waits on no branch run.
@@ -98,7 +98,7 @@ export const exitCodeFor = (result) => {
   // An unblocked fire's message to a claimed ticket's session, or to a
   // not-ready ticket's owner: a gone session is told enough, unless the spec
   // session in its place started nothing.
-  if (result.kind === 'unblocked' && result.messaged != null) return result.messaged.ok || (result.messaged.refused === true && result.messaged.fallback?.outcome !== 'failed') ? 0 : 1;
+  if (result.kind === 'unblocked' && result.messaged != null) return faultedSend(result.messaged) ? 1 : 0;
   if (result.kind === 'message') {
     return result.ok || result.skipped != null || result.dropped != null
       || (result.fallback != null && result.fallback.outcome !== 'failed') ? 0 : 1;

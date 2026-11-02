@@ -246,6 +246,21 @@ export const launchPlan = async (plan, ctx, started) => {
         ran.push({ repo: entry.repo, issue: entry.issue, outcome: 'failed', sessionUrl: null, planned: entry });
         continue;
       }
+      // A message in place of the launch: an ended wait's owner, asked to
+      // rewrite its own spec, with this launch as the message's fallback,
+      // which leaves its own marker. It runs here so the window and a repo
+      // skip hold it as they hold a launch.
+      if (entry.ask !== undefined) {
+        const fell = await entry.ask();
+        if (fell === null) continue;
+        log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.asked.sessionName, outcome: fell.outcome, sessionUrl: fell.sessionUrl, fallback: true });
+        if (entry.holdsRepo && fell.outcome === 'failed') {
+          skipped.add(entry.repo);
+          log(REPO_SKIPPED, { level: 'error', repo: entry.repo, issue: entry.issue, reason: 'its launch started nothing: the rest of its tickets and periodics wait for the next fire' });
+        }
+        ran.push({ repo: entry.repo, issue: entry.issue, outcome: fell.outcome, sessionUrl: fell.sessionUrl, planned: entry });
+        continue;
+      }
       const firedAt = new Date(now()).toISOString();
       const launched = await start({ ...entry.asked, repo: entry.repo });
       if (routineFault(ctx, entry.repo, entry.asked.sessionName, launched)) continue;

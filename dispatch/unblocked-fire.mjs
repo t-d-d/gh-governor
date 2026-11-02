@@ -20,9 +20,9 @@ import { GITHUB_SOURCE } from './deliveries.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
-import { ROW_SWITCH, UNREADIED_HELD, mayBeUnreadied, notPlannedComment, ownerSpecMessage, readyPrompt, readyToTakeOff, rowOf, specPrompt, unblockedMessage, unreadiedSince } from './unblocked.mjs';
+import { ROW_SWITCH, UNREADIED_HELD, mayBeUnreadied, notPlannedComment, ownerOutcome, ownerSpecMessage, readyPrompt, readyToTakeOff, rowOf, specPrompt, unblockedMessage, unreadiedSince } from './unblocked.mjs';
 import { relativeAtClose, reportUnreadable } from './waits.mjs';
-import { lastDispatch } from './webhook/fire.mjs';
+import { dispatchMarker, lastDispatch } from './webhook/fire.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
 
 /** @typedef {import('./turn.mjs').Reader} Reader */
@@ -223,13 +223,14 @@ export const planUnblocked = async (invocation, ctx) => {
     let loginStored = false;
     try {
       told = await ctx.delivery().deliver({ session: owner }, ownerSpecMessage(invocation, ctx.prompts, config.labels), { source: GITHUB_SOURCE, on: [issue], fallback });
+      // An owner that took it is marked as a spec session's launch is, so
+      // the claimed row finds the session that builds, and the sweep stays
+      // off the ticket inside the window.
+      if (told.ok) await reader.comment(issue, dispatchMarker({ at: new Date(ctx.now()).toISOString(), sessionUrl: owner }));
     } finally {
       loginStored = await ctx.storeLogin();
     }
-    const outcome = told.ok ? 'its owner was asked to rewrite its spec'
-      : told.fallback !== null ? `its owner is archived; the spec session: ${told.fallback.outcome}`
-        : told.refused ? `its owner is archived, and no spec session starts: ${CAP_ZERO_REASON}`
-          : 'its owner was not messaged';
+    const outcome = ownerOutcome(told, `no spec session starts: ${CAP_ZERO_REASON}`);
     ctx.log('dispatch-unblocked', { ...about, owner, outcome });
     return { answer: { kind: invocation.kind, row, messaged: told, dispatched: [], loginStored } };
   }

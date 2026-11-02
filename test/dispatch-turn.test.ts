@@ -1940,7 +1940,7 @@ describe('run — an unblocked fire', () => {
     assert.ok(text.includes(ownerSpecMessage(fire() as never, FACTORY_PROMPTS, FACTORY_CONFIG_LABELS)), text);
     assert.match(text, /your ticket/);
     assert.match(text, new RegExp(`add \`${CLAIM}\` to it first`));
-    assert.deepEqual(h.comments, [], 'no dispatch marker: nothing started');
+    assert.deepEqual(h.comments, [{ issue: 7, body: dispatchMarker({ at: new Date(NOW).toISOString(), sessionUrl: OWNER }) }], 'a marker naming the owner, so the claimed row finds it');
     assert.deepEqual(labelCalls(h.calls), []);
     assert.equal((result.messaged as { ok: boolean }).ok, true);
     assert.equal(exitCodeFor(result as never), 0);
@@ -2393,7 +2393,7 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       const text = h.messages[0]!.text;
       assert.ok(text.includes(waitOwnerMessage({ issue: 7, until: PAST, labels: FACTORY_CONFIG_LABELS, prompts: FACTORY_PROMPTS })), text);
       assert.match(text, /your ticket/);
-      assert.ok(!h.comments.some((c) => c.body.includes('governor:dispatched')), 'no dispatch marker: nothing started');
+      assert.deepEqual(h.comments.filter((c) => c.body.includes('governor:dispatched')).map((c) => c.body), [dispatchMarker({ at: new Date(NOW).toISOString(), sessionUrl: OWNER })], 'a marker naming the owner');
       assert.deepEqual([...h.waitItems], []);
       assert.equal(result.unread, undefined, JSON.stringify(result));
     });
@@ -2415,6 +2415,15 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       assert.deepEqual(specOf(h), []);
       assert.deepEqual([...h.waitItems], [[`${REPO}#7`, PAST]]);
       assert.ok(JSON.stringify(result.unread).includes('wait #7'), JSON.stringify(result));
+    });
+
+    test('an owner archived whose spec session starts nothing skips the repo\'s later launches, as a spec session does', async () => {
+      const h = waitsTurn({ ticket: owned, over: { message: archived, launch: async (launch: Launch) => { h.launches.push(launch); return { status: 1, output: 'environment not found' }; } } });
+      const result = await run({ source: 'aws.events' }, h.deps as never) as Record<string, unknown>;
+      assert.equal(specOf(h).length, 1);
+      assert.deepEqual([...h.waitItems], [[`${REPO}#7`, PAST]]);
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-repo-skipped' && l.repo === REPO && l.issue === 7), JSON.stringify(h.logged.filter((l) => String(l.event).startsWith('dispatch-repo'))));
+      assert.deepEqual((result.dispatched as Array<{ issue: number, outcome: string }>).filter((d) => d.issue === 7).map((d) => d.outcome), ['failed']);
     });
 
     test('an owned ticket governor unreadied, with no answer since: the owner is not asked', async () => {
