@@ -145,6 +145,10 @@ describe('fitness: lint refuses a dynamic import of the readiness checks (dispat
     assert.deepEqual(await refusals('dispatch/new-path.mjs', `export const x = import('../scripts/lib/ready-work.mjs').then(function ({ ticketStatus }) { return [ticketStatus, ticketStatus.arguments, function () { return arguments; }]; });\n`), []);
   });
 
+  test('a then() callback that calls eval, which can read arguments unseen, is refused', async () => {
+    assert.equal((await refusals('dispatch/new-path.mjs', `export const x = import('../scripts/lib/ready-work.mjs').then(function () { return eval('arguments')[0].isBlocked; });\n`)).length, 1);
+  });
+
   test('ready-work.mjs itself and tests stay outside', async () => {
     assert.deepEqual(await refusals('scripts/lib/ready-work.mjs', `const { isBlocked } = await import('./ready-work.mjs');\nexport const x = isBlocked;\n`), []);
     assert.deepEqual(await refusals('test/new-path.test.ts', `const { isBlocked } = await import('../scripts/lib/ready-work.mjs');\nexport const x = isBlocked;\n`), []);
@@ -158,6 +162,14 @@ describe('fitness: lint refuses a require of ready-work.mjs (dispatcher-repos.md
     assert.match(found[0] ?? '', /ticketStatus/);
     assert.equal((await refusals('dispatch/new-path.js', `export const x = require('../scripts/lib/ready-work.mjs').ticketStatus;\n`)).length, 1);
     assert.equal((await refusals('scripts/lib/new-path.mjs', `import { createRequire } from 'node:module';\nconst load = createRequire(import.meta.url);\nexport const x = load(\`./ready-work.mjs?v=1\`);\n`)).length, 1);
+  });
+
+  test('a require through call, apply, a spread or a variable is refused', async () => {
+    const load = `import { createRequire } from 'node:module';\nconst load = createRequire(import.meta.url);\n`;
+    assert.equal((await refusals('dispatch/new-path.mjs', `${load}export const x = load.call(null, '../scripts/lib/ready-work.mjs').isBlocked;\n`)).length, 1);
+    assert.equal((await refusals('dispatch/new-path.mjs', `${load}export const x = load.apply(null, ['../scripts/lib/ready-work.mjs']).isBlocked;\n`)).length, 1);
+    assert.equal((await refusals('dispatch/new-path.mjs', `${load}export const x = load(...['../scripts/lib/ready-work.mjs']).isBlocked;\n`)).length, 1);
+    assert.equal((await refusals('dispatch/new-path.mjs', `${load}const path = '../scripts/lib/ready-work.mjs';\nexport const x = load(path).isBlocked;\n`)).length, 1);
   });
 
   test('a kept caller may not require ready-work.mjs either', async () => {

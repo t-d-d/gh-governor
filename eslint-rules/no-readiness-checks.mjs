@@ -14,14 +14,16 @@
  * Where the names cannot be read, such as a module kept whole in a variable
  * or a rest element, the import is refused too, since it could reach any
  * check. Such a caller destructures the names it needs instead. A `then()`
- * callback written as a `function` that reads `arguments` could take any
- * check that way, so it is refused too. An `import()` whose path is not a
- * plain string is not seen.
+ * callback written as a `function` that reads `arguments`, or calls `eval`,
+ * which can read it unseen, could take any check that way, so it is refused
+ * too. An `import()` whose path is not a plain string is not seen.
  *
- * A call that names ready-work.mjs as its first argument is refused
- * whatever it takes, even in a kept caller. That is `require`, or a
- * `createRequire` result under any name, which loads ESM on some Node
- * versions. No caller needs one, since an import names what it takes.
+ * A plain string that names ready-work.mjs anywhere but as an import's path
+ * is refused whatever it takes, even in a kept caller. That covers `require`,
+ * or a `createRequire` result under any name, which loads ESM on some Node
+ * versions, however the path reaches it: as an argument, through `call` or
+ * `apply`, a spread, or a variable. No caller needs one, since an import
+ * names what it takes. A path built from pieces at run time is not seen.
  *
  * Armed over dispatch/ and scripts/ in eslint.config.js, with each of the
  * two kept callers allowed its one check.
@@ -155,8 +157,8 @@ const rule = {
         '`{{name}}` taken from ready-work.mjs. Ask ticketStatus, mayPickUp or mayStartSpec '
         + 'in scripts/lib/ready-work.mjs instead of combining the readiness checks here.',
       required:
-        'ready-work.mjs loaded by a call such as require. Import the exports it needs, '
-        + 'and ask ticketStatus, mayPickUp or mayStartSpec for readiness.',
+        'ready-work.mjs named outside an import, where it could be loaded by a call such as require. '
+        + 'Import the exports it needs, and ask ticketStatus, mayPickUp or mayStartSpec for readiness.',
       unreadable:
         'An import of ready-work.mjs whose names lint cannot read, so it could reach a readiness check. '
         + 'Name the exports it needs, and ask ticketStatus, mayPickUp or mayStartSpec for readiness.',
@@ -166,9 +168,15 @@ const rule = {
     const { checks, allowed } = /** @type {{ checks: string[], allowed?: string }} */ (context.options[0] ?? { checks: [] });
     const refused = new Set(checks.filter((name) => name !== allowed));
     // Scope analysis counts a read from an arrow inside the function, and
-    // not a property that happens to be named `arguments`.
+    // not a property that happens to be named `arguments`. A direct `eval`
+    // can read it from a string scope analysis does not see, so a call to an
+    // unshadowed `eval` counts as a read.
     /** @param {import('estree').FunctionExpression} fn */
-    const readsArguments = (fn) => (context.sourceCode.getScope(fn).set.get('arguments')?.references.length ?? 0) > 0;
+    const readsArguments = (fn) => {
+      const scope = context.sourceCode.getScope(fn);
+      return (scope.set.get('arguments')?.references.length ?? 0) > 0
+        || scope.through.some((ref) => ref.identifier.name === 'eval');
+    };
     /**
      * @param {Node} node
      * @param {string[] | undefined} names
@@ -200,11 +208,11 @@ const rule = {
       ImportExpression(node) {
         if (targets(node.source)) judge(node, namesTaken(node, readsArguments));
       },
-      CallExpression(node) {
-        const [first] = node.arguments;
-        if (first !== undefined && first.type !== 'SpreadElement' && targets(first)) {
-          context.report({ node, messageId: 'required' });
-        }
+      // An import's own path is judged above by the names it takes.
+      'Literal, TemplateLiteral'(/** @type {Node & { parent?: Node }} */ node) {
+        const { parent } = node;
+        if (parent !== undefined && 'source' in parent && parent.source === node) return;
+        if (targets(node)) context.report({ node, messageId: 'required' });
       },
     };
   },
