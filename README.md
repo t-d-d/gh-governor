@@ -6,22 +6,26 @@
 [![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 [![Built by Claude Code sessions](https://img.shields.io/badge/built%20by-Claude%20Code%20sessions-d97757)](docs/building-with-agents.md)
 
-Coding agents can write a pull request. The work around one is still manual: picking the next ticket, starting the agent, passing on review comments, telling it CI went red or the deploy shipped. Governor does that work for one developer and their repos, as a team lead does for a team. It watches each of your repos that installs its GitHub App, starts a Claude Code cloud session on your own subscription for each ready ticket, and relays everything that happens on that ticket's pull request back to the session that wrote it. Each repo keeps its policy in one file: which tickets an agent may take, what the review checks, and which paths need a person. So a new repo starts with a whole factory policy on day one, copied from the starter kit or from a repo that already runs the way you want.
+Coding agents can write a pull request. The work around one is still manual: picking the next ticket, starting the agent, passing on review comments, telling it CI went red or the deploy shipped. Governor does that work for one developer and their repos, as a team lead does for a team.
+
+It watches each of your repos that installs its GitHub App, starts a Claude Code cloud session on your own subscription for each ready ticket, and relays everything that happens on that ticket's pull request back to the session that wrote it.
+
+Each repo keeps its policy in one file: which tickets an agent may take, what the review checks, and which paths need a person. A new repo starts with a whole factory policy on day one, copied from the starter kit or from a repo that already runs the way you want.
 
 The name comes from the governor on a steam engine, which holds the engine's speed with nobody at the throttle ([more below](#why-governor)).
 
-Built by [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/), and distilled from running [Podstow](https://podstow.com), a paid production service whose code agents write and whose pull requests mostly merge with no person. [More on who built it](#who-built-it-and-where-it-came-from).
+I'm [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/). I built governor out of running [Podstow](https://podstow.com), a paid production service whose code is written by agents and whose pull requests mostly merge with no person. [More about me, and where governor came from](#who-built-it-and-where-it-came-from).
 
 ## It builds itself
 
 On 28 October 2026 governor's code moved into this repo: about 14,700 lines of source and 1,360 tests. Since then governor has worked its own backlog. In the five days to 12:00 UTC on 2 November 2026:
 
 - governor picked up **94 tickets** and started a Claude Code session on each;
-- Thomas merged **98 pull requests** written by Claude Code sessions, from those tickets and from sessions started by a mention or by hand. Over the 90 tickets they closed, pickup to merge took a median of **29 minutes**, review included;
-- the build on main never broke, and the repo rolls forward rather than reverting. Two deploys failed: the first, run by hand while the stack was set up, and one on 30 October, when the probe each deploy runs against the new task caught a fault. The **47 deploys** after that all passed;
-- the code grew by about **7,300 lines of source and 900 tests**, to more than 2,200 tests, every one of them offline.
+- Thomas merged **98 pull requests** written by Claude Code sessions, most of them for those tickets. From pickup to merge took a median of **29 minutes**, review included;
+- the build on main never broke: every merge passed the gate's lint, type checks and tests. A fault in a merge is fixed forward by the next change, not by reverting the merge. Two deploys failed: the first, run by hand while the stack was set up, and one on 30 October, when the probe each deploy runs against the new task caught a fault. The **47 deploys** after that all passed;
+- the test suite grew by about **900 tests**, to more than 2,200, every one of them offline.
 
-Each session reviews its own diff before it pushes. Thomas then reviews each pull request by weighing the net complexity it adds against the value of the change. Its description makes that quick to judge: it lists what the change adds and removes, says whether the system got simpler or more complex and what the complexity buys, and maps every acceptance criterion to the test or check that answers it. Thomas often merges in batches, so these times include waiting for review. This repo leaves governor's own PR review off, so every merge is a person's. [How this repo is built](docs/building-with-agents.md) has the full numbers, and the switches this repo turns on.
+Before each push, a clean-room reviewer, a sub-agent with a fresh context that did not write the code, reviews the session's diff. Thomas then reviews each pull request by weighing the net complexity it adds against the value of the change. Its description makes that quick to judge: it lists what the change adds and removes, says whether the system got simpler or more complex and what the complexity buys, and maps every acceptance criterion to the test or check that answers it. Thomas often merges in batches, so these times include waiting for review. This repo leaves governor's own PR review off, so every merge is a person's. [How this repo is built](docs/building-with-agents.md) has the full numbers, and the switches this repo turns on.
 
 ### One feature, start to finish
 
@@ -72,12 +76,12 @@ Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action wr
 
 - **It finds the work.** It takes tickets from the backlog unasked, and holds one while its blockers are open or its date has not come.
 - **One session per ticket, for the ticket's whole life.** The agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships.
-- **Policy in one place.** Each repo keeps its rules in one file, `.github/dispatch.json`: the features it runs, the labels that mark a ticket ready, the review's checklist, the paths that need a person, and the recurring sessions. A change to policy is a pull request, which the config check can validate before it merges. A new repo copies a policy into that file, and governor serves it from the next fire, with no deploy.
-- **Your own accounts.** It runs on your Claude subscription and your AWS account.
+- **Policy in one place.** Each repo keeps its rules in one file, `.github/dispatch.json`: the features it runs, the labels that mark a ticket ready, the review's checklist, the paths that need a person, the recurring sessions, and the prompts governor gives its sessions. A change to policy is a pull request, which the config check can validate before it merges. A new repo copies a policy into that file, and governor picks it up with no deploy.
+- **Your own accounts.** It runs on your Claude subscription, your AWS account, and your GitHub accounts and organisations. A free GitHub plan is enough.
 
 ## What it does
 
-A repo turns each feature on with a switch in its `.github/dispatch.json`. Two behaviours are always on: sign-off, and the `Blocked until:` hold.
+A repo turns each feature on with a switch in its `.github/dispatch.json`.
 
 | Feature | What happens |
 |---|---|
@@ -89,7 +93,7 @@ A repo turns each feature on with a switch in its `.github/dispatch.json`. Two b
 | Periodics | Recurring sessions, such as a code review every 10 merges or a weekly ticket review. |
 | Hooks | A system outside GitHub, such as a cloud alarm, starts a session with a signed request. |
 | Waits | A ticket that opens with `Blocked until: 2026-11-20` is not started before that date. |
-| Sign-off | A session whose last reply ends `Signing off.` is archived. |
+| Sign-off | A session whose last reply ends `Signing off.` is archived, and a message about a close or a deploy, with nothing else open, asks the session to sign off. |
 
 ### How dark the factory runs
 
@@ -126,7 +130,7 @@ Some of the problems it solves, for engineers building something similar:
 - **A Fargate task, not a Lambda.** `claude --cloud` will not run without a terminal, and Lambda has no pseudo-terminal. The task starts when a fire is queued and exits after a minute idle, so the AWS bill is a fraction of a cent a fire.
 - **One login, one lane.** Every turn refreshes a single stored claude.ai login, and each refresh rotates the token, so two turns at once would leave one holding a dead login. Every fire goes through one FIFO queue to one task, one turn at a time.
 - **Code decides before the model does.** The PR review checks the tickets a pull request closes, its human-only paths and its required checks in code, before any model call. The model has no tools, answers in a fixed JSON shape, and judges only what code cannot.
-- **Code review is the repo's, not governor's.** Governor does not decide where code gets reviewed. This repo reviews it before every push: the `pre-push` skill has the session review its own diff at high effort, and each finding ends fixed, filed as an issue, or dismissed only after the session has traced it through the code or run it. The PR review's model reads no diff. It reads the description, the tickets and the list of changed files, and judges whether the change does what its tickets ask. The only file text it reads is a rule file the repo lists in `review.quote`, whole before and after the change, to judge whether a rule changed. The code itself is judged by the repo's CI and required checks, which the review will not pass while red.
+- **Code review is the repo's, not governor's.** Governor does not decide where code gets reviewed. This repo reviews it before every push: the `pre-push` skill has a clean-room sub-agent, with a fresh context and no part in writing the code, review the diff at high effort, and each finding ends fixed, filed as an issue, or dismissed only after the session has traced it through the code or run it. The PR review's model reads no diff. It reads the description, the tickets and the list of changed files, and judges whether the change does what its tickets ask. The only file text it reads is a rule file the repo lists in `review.quote`, whole before and after the change, to judge whether a rule changed. The code itself is judged by the repo's CI and required checks, which the review will not pass while red.
 - **Relayed text names who wrote it, a check on prompt injection.** Every message governor relays into a session opens with a line saying it came from GitHub, not from the operator, so the session weighs each quoted remark by who wrote it. The line does not tell the session to ignore the text, since a remark from the pull request's owner is work to do. Only people with a say in the repo can summon a session. A hook's prompt lives in the repo, where a pull request reviews it, and the caller's text is quoted as data.
 - **Hook keys governor never stores.** Each hook's key is derived from one secret, the repo, the hook and a version, so revoking a key is a one-line pull request. A per-hour cap stops a leaked key flooding the shared queue, and a test checks that a signed request expires before the queue forgets it.
 - **A heartbeat that runs somewhere else.** Governor cannot report that it has stopped, so a served repo can run a checker on GitHub Actions that opens an issue when a sweep or a recurring session is overdue.
@@ -161,7 +165,7 @@ Most of what keeps the agents on track here is plain files that work in any repo
 Each deployment is one person's factory: it serves the GitHub accounts on its owner list, on one Claude subscription. To try it, you deploy your own. You need an AWS account you can administer, the AWS CLI, Node 22.18 or later, the Claude Code CLI, and a Claude Pro or Max subscription.
 
 1. **Deploy governor.** Create a GitHub App, apply two CloudFormation stacks, and save a claude.ai login. [Running your own governor](docs/self-hosting.md) has every step.
-2. **Opt a repo in.** Install the App, and copy the [starter kit](examples/starter/) into the repo's `.github/`. It turns on pickup, summons, PR and subscription messages, a heartbeat and three recurring reviews. The smallest working config is:
+2. **Opt a repo in.** Install the App, and copy the [starter kit](examples/starter/) into the repo's `.github/`. It turns on pickup, summons, PR and subscription messages, sign-off, a heartbeat and three recurring reviews. The smallest working config is:
 
    ```json
    {
@@ -177,13 +181,15 @@ Each deployment is one person's factory: it serves the GitHub accounts on its ow
 
 ## Who built it, and where it came from
 
-Governor is [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/)'s personal software factory, distilled from the practices and automations built while making Podstow, a production service that agents build.
+Governor is my personal software factory, distilled from the practices and automations I built while making Podstow, a production service that agents build.
 
-**The service.** Thomas founded and runs Podstow, a paid article-to-podcast service, live on the web, iOS, macOS and Android, and inside Claude, ChatGPT and Gemini. Coding agents write all of its code, TypeScript on AWS serverless, and automated checks decide what merges. Thomas's approval sits on the specification, before the code exists. Every agent session is archived and evaluated afterwards. Governor serves Podstow's repo with its PR review on and `merge` on, so most pull requests merge with no person, and the repo's review rules name the paths that still wait for one. That repo stays private.
+**Podstow.** I founded and run Podstow, a paid article-to-podcast service, live on the web, iOS, macOS and Android, and inside Claude, ChatGPT and Gemini. Coding agents write all of its code, TypeScript on AWS serverless, and automated checks decide what merges. My approval sits on the specification, before the code exists. Every agent session is archived and evaluated afterwards. Governor serves Podstow's repo with its PR review on and `merge` on, so most pull requests merge with no person, and the repo's review rules name the paths that still wait for one. That repo stays private.
 
-**Before that.** For eight years Thomas was Engineering Manager and Platform Lead for Standard Chartered Bank's delivery platform, in Singapore and London: CI/CD and release engineering for more than 800 applications, run by a team of up to 16 engineers across Singapore, the UK and India. Manual release gates became automated checks, designed with the security and risk teams, and teams' lead time to production fell from months to weeks, and in places to days. Governor applies the same idea to agents: specification first, quality built into the pipeline as automated checks, and a person's approval only where no check can replace it.
+**Before that.** For eight years I was Engineering Manager and Platform Lead for Standard Chartered Bank's delivery platform, in Singapore and London: CI/CD and release engineering for more than 800 applications, run by a team of up to 16 engineers across Singapore, the UK and India. Manual release gates became automated checks, designed with the security and risk teams, and teams' lead time to production fell from months to weeks, and in places to days. Governor applies the same idea to agents: specification first, quality built into the pipeline as automated checks, and a person's approval only where no check can replace it.
 
-Thomas designed governor and the rules its agents work under, shapes and approves every PRD and its technical design, and merges every pull request in this repo. Claude Code sessions write the code. [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/) · [GitHub](https://github.com/t-d-d)
+I designed governor and the rules its agents work under, I shape and approve every PRD and its technical design, and I merge every pull request in this repo. Claude Code sessions write the code.
+
+Thomas Dickinson · [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/) · [GitHub](https://github.com/t-d-d)
 
 ## Documentation
 

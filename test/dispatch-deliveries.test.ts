@@ -62,6 +62,7 @@ const fakes = (over: {
   now?: () => number;
   launchTimeoutMs?: number;
   repo?: string;
+  signOff?: boolean;
 } = {}) => {
   const sent: Message[] = [];
   const untils: number[] = [];
@@ -88,6 +89,7 @@ const fakes = (over: {
   };
   const delivery = deliveries({
     prompts: FACTORY_PROMPTS,
+    signOff: over.signOff ?? true,
     reader: async () => { readers += 1; return reader as never; },
     repo: over.repo ?? REPO,
     send: async (m: Message, until: number) => {
@@ -505,6 +507,15 @@ describe('deliver — a session\'s standing', () => {
     await busy.deliver({ session: OWNER }, 'Your pull request was merged.', { on: [724], closing: true });
     assert.match(busy.sent[0]!.text, /PR #730/);
     assert.ok(!busy.sent[0]!.text.includes(SIGN_OFF));
+  });
+
+  // The sign-off switch: a repo that leaves it off is never asked to sign
+  // off, since nothing would archive the session.
+  test('with sign-off off, a close says nothing else is open and asks nothing more', async () => {
+    const closed = fakes({ signOff: false });
+    await closed.deliver({ session: OWNER }, 'Your pull request was merged.', { on: [724], closing: true });
+    assert.ok(closed.sent[0]!.text.endsWith(standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })));
+    assert.ok(!closed.sent[0]!.text.includes(SIGN_OFF));
   });
 
   test('the standing names the repo it searched: a message fired from another repo does not speak for the factory', async () => {

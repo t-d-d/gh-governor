@@ -534,7 +534,7 @@ Resources:
   # Governor records every session it starts in the state table, so the PR
   # review gives that session's PRs no human-only waiver from a ticket's
   # mode label. A record that fails to write logs
-  # `dispatch-session-unrecorded` naming the session (dispatch/turn.mjs),
+  # `dispatch-session-unrecorded` naming the session (dispatch/launcher.mjs),
   # and the turn carries on, since the session is already running. A launch
   # that may have started a session but printed no URL logs the same line
   # with no session, only the session name.

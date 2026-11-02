@@ -18,7 +18,8 @@
     "heartbeat": true,
     "periodics": true,
     "hooks": false,
-    "waits": true
+    "waits": true,
+    "signOff": true
   },
   "heartbeat": { "issue": 1 },
   "pickup": { "sweepHours": 1 },

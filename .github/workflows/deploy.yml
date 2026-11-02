@@ -32,6 +32,19 @@
 # gate test cannot: that the task can pull its image, reach the network, hold
 # a pseudo-terminal and find the CLI. A red probe is a red deploy.
 #
+# A red probe after an apply rolls the stack back. Before the apply, the job
+# reads the image the stack runs, which is the image before this deploy. It
+# is not always one whose probe passed: a red step between the apply and the
+# probe, or a rollback that failed, leaves the new image in place. On a red
+# probe that changed the image, the job applies the same template again with
+# the image before it, changing nothing else, and probes again.
+# The deploy stays red either way. A rollback that does not bring the task
+# back, because its apply or its probe failed, pages the operator through the
+# stack's alerts topic: governor is then down. The rest of a template change,
+# such as a new alarm or role, stays: that applies or fails with
+# CloudFormation's own rollback. A probe-only run applies nothing, so it rolls
+# nothing back.
+#
 # No secret is written here. The operator saves the claude.ai login, the App
 # key and the drop-box writer into the bootstrap stack's secrets once, before
 # the first deploy (scripts/mint-claude-login.mjs, scripts/save-secret.mjs);
@@ -96,7 +109,9 @@ jobs:
     # Native arm64: the task runs on arm64 and the CLI's postinstall fetches
     # the platform binary.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    # Room for a rollback's apply and second probe after the first, inside the
+    # deploy role's one-hour session.
+    timeout-minutes: 55
     permissions:
       id-token: write   # OIDC token for AWS assume-role
       contents: read    # checkout
@@ -153,7 +168,8 @@ jobs:
         run: |
           set -o pipefail
           IMAGE_TAG=$(git ls-tree -r HEAD -- \
-                dispatch/Dockerfile dispatch/lane.mjs dispatch/turn.mjs dispatch/deliveries.mjs dispatch/unblocked.mjs dispatch/waits.mjs dispatch/cli.mjs dispatch/workflow.mjs dispatch/runs.mjs dispatch/coverage.mjs dispatch/labels.mjs dispatch/branch-run.mjs dispatch/review.mjs dispatch/checklist.mjs dispatch/pr-body.mjs dispatch/conflicts.mjs dispatch/prompts.mjs dispatch/repo-config.mjs dispatch/repos.mjs dispatch/heartbeat.mjs dispatch/periodics.mjs dispatch/pickup.mjs dispatch/hooks.mjs dispatch/routines.mjs dispatch/launch-session.py dispatch/webhook/error-text.mjs dispatch/webhook/fire.mjs dispatch/webhook/mention.mjs dispatch/webhook/subscribe.mjs dispatch/webhook/review-comment.mjs dispatch/webhook/hook-table.mjs dispatch/webhook/switches.mjs \
+                dispatch/Dockerfile dispatch/lane.mjs dispatch/turn.mjs dispatch/launcher.mjs dispatch/deliveries.mjs dispatch/unblocked.mjs dispatch/waits.mjs dispatch/cli.mjs dispatch/workflow.mjs dispatch/runs.mjs dispatch/coverage.mjs dispatch/labels.mjs dispatch/branch-run.mjs dispatch/review.mjs dispatch/checklist.mjs dispatch/pr-body.mjs dispatch/conflicts.mjs dispatch/prompts.mjs dispatch/repo-config.mjs dispatch/repos.mjs dispatch/heartbeat.mjs dispatch/periodics.mjs dispatch/pickup.mjs dispatch/hooks.mjs dispatch/routines.mjs dispatch/launch-session.py dispatch/webhook/error-text.mjs dispatch/webhook/fire.mjs dispatch/webhook/mention.mjs dispatch/webhook/subscribe.mjs dispatch/webhook/review-comment.mjs dispatch/webhook/hook-table.mjs dispatch/webhook/switches.mjs \
+                dispatch/webhook/vendor/commonmark.cjs dispatch/webhook/vendor/LICENSE.commonmark dispatch/webhook/vendor/LICENSE.entities dispatch/webhook/vendor/LICENSE.mdurl \
                 dispatch/package.json dispatch/package-lock.json \
                 scripts/lib/claude-login.mjs scripts/lib/cli-entry.mjs scripts/lib/dispatch-prompt.mjs scripts/lib/dispatch-router.mjs scripts/lib/error-message.mjs scripts/lib/github-app.mjs scripts/lib/ready-work.mjs scripts/lib/session-branch.mjs scripts/lib/session-signoff.mjs \
               | git hash-object --stdin)
@@ -210,7 +226,33 @@ jobs:
             --s3-prefix governor \
             --output-template-file "$RUNNER_TEMP/governor.packaged.yml"
 
+      # The image a red probe rolls back to. A stack that does not exist yet
+      # runs no image, so a red probe on its first apply has nothing to roll
+      # back to, and nor does one whose deploy left the image as it was; any
+      # other error stops the deploy before it changes anything.
+      - name: Read the image the stack runs now
+        id: previous
+        if: ${{ !inputs.probe_only }}
+        run: |
+          # stderr apart from the value, so a warning never becomes the image.
+          if ! PREVIOUS=$(aws cloudformation describe-stacks --stack-name governor \
+              --query "Stacks[0].Parameters[?ParameterKey=='ImageUri'].ParameterValue" --output text 2>"$RUNNER_TEMP/previous.err"); then
+            if ! grep -q "does not exist" "$RUNNER_TEMP/previous.err"; then
+              echo "::error::could not read the image the stack runs: $(cat "$RUNNER_TEMP/previous.err")"
+              exit 1
+            fi
+            PREVIOUS=""
+          fi
+          if [[ -z "$PREVIOUS" || "$PREVIOUS" == None ]]; then
+            echo "::notice::the stack runs no image yet, so a red probe has nothing to roll back to"
+            PREVIOUS=""
+          else
+            echo "the stack runs ${PREVIOUS}; a red probe rolls back to it"
+          fi
+          echo "image_uri=${PREVIOUS}" >> "$GITHUB_OUTPUT"
+
       - name: Apply the stack
+        id: apply
         if: ${{ !inputs.probe_only }}
         env:
           IMAGE_URI: ${{ steps.image.outputs.image_uri }}
@@ -283,4 +325,48 @@ jobs:
       # 1 when the runtime cannot hold a pseudo-terminal or find the CLI, and
       # prints the task's log first.
       - name: Probe the task
+        id: probe
         run: node scripts/run-turn.mjs --kind probe
+
+      # Every step from here runs only after a red probe. The packaged
+      # template is the one just applied, and `aws cloudformation deploy`
+      # keeps every parameter it is not given, so the image is the one thing
+      # the rollback changes.
+      - name: Roll the stack back to the image it ran before this deploy
+        id: rollback
+        if: ${{ failure() && !inputs.probe_only && steps.probe.outcome == 'failure' && steps.previous.outputs.image_uri != '' && steps.previous.outputs.image_uri != steps.image.outputs.image_uri }}
+        env:
+          PREVIOUS_IMAGE_URI: ${{ steps.previous.outputs.image_uri }}
+        run: |
+          echo "::error::the probe failed; rolling the stack back to ${PREVIOUS_IMAGE_URI}, the image it ran before this deploy"
+          aws cloudformation deploy \
+            --stack-name governor \
+            --template-file "$RUNNER_TEMP/governor.packaged.yml" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "ImageUri=${PREVIOUS_IMAGE_URI}"
+
+      - name: Probe the task on the image it rolled back to
+        id: reprobe
+        if: ${{ failure() && steps.rollback.outcome == 'success' }}
+        env:
+          PREVIOUS_IMAGE_URI: ${{ steps.previous.outputs.image_uri }}
+        run: |
+          node scripts/run-turn.mjs --kind probe
+          echo "::notice::rolled the stack back to ${PREVIOUS_IMAGE_URI}, and its probe passed. The deploy stays red: this commit's image failed its probe."
+
+      # The deploy's red run reaches whoever watches Actions; governor down
+      # reaches the operator, through the topic every alarm publishes to.
+      - name: Page the operator, since the rollback did not bring the task back
+        id: page
+        if: ${{ failure() && (steps.rollback.outcome == 'failure' || steps.reprobe.outcome == 'failure') }}
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          echo "::error::the rollback did not bring the task back; governor is down. Paging the operator."
+          TOPIC_ARN=$(aws cloudformation describe-stack-resource --stack-name governor --logical-resource-id AlertsTopic \
+            --query StackResourceDetail.PhysicalResourceId --output text)
+          aws sns publish --topic-arn "$TOPIC_ARN" \
+            --subject "[governor] A deploy's probe failed, and so did its rollback" \
+            --message "Governor is down. The deploy at ${GITHUB_SHA} failed its probe, and rolling the stack back to the image it ran before did not bring the task back: the rollback's apply or its probe failed. Read the run: ${RUN_URL}" \
+            > /dev/null

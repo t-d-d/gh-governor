@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { STALE_RUNS_PAUSES_MS } from '../dispatch/runs.mjs';
 import { RUNS_PER_PAGE } from '../scripts/lib/github-app.mjs';
-import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed, sessionUrlFrom } from '../dispatch/turn.mjs';
+import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed } from '../dispatch/turn.mjs';
 import { DEFAULT_SESSION_NAME, DISPATCHER_LABEL, GITHUB_SOURCE, fromDispatcher, hookLabel, standingLine } from '../dispatch/deliveries.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
@@ -57,6 +57,8 @@ const WAIT_BOARD = { number: WAIT_TICKET, id: 9000 + WAIT_TICKET, title: 'Waits'
 /** The dispatcher's own App, which posts the turn's comments. */
 const APP_ID = 5075844;
 const NOW = Date.parse('2026-09-25T12:00:00Z');
+/** `value`, after `ms`. */
+const later = <T>(ms: number, value: T) => new Promise<T>((r) => { setTimeout(() => r(value), ms); });
 
 const LOGIN = JSON.stringify({
   claudeAiOauth: {
@@ -422,14 +424,6 @@ const turn = (result: Awaited<ReturnType<typeof run>>): Turn => {
   return result as Turn;
 };
 
-describe('sessionUrlFrom', () => {
-  test('reads the session URL the CLI prints, or builds it from the id', () => {
-    assert.equal(sessionUrlFrom(CONFIRMED), 'https://claude.ai/code/session_01ABC');
-    assert.equal(sessionUrlFrom('Resume with: claude --teleport session_01XYZ\n'), 'https://claude.ai/code/session_01XYZ');
-    assert.equal(sessionUrlFrom('nothing here'), null);
-  });
-});
-
 describe('dispatchCap', () => {
   test('reads the stack parameter, keeps 0 as 0, and refuses a value that is not a count', () => {
     assert.equal(dispatchCap(undefined), 2);
@@ -521,7 +515,6 @@ describe('run — governor records each session it starts', () => {
   // A launch refused as over budget may still start a session: the launcher
   // runs on. It pages once, at the refusal, whatever the launcher prints later.
   const overBudget = (lines: Array<Record<string, unknown>>) => lines.filter((l) => l.event === 'dispatch-session-unrecorded');
-  const later = <T>(ms: number, value: T) => new Promise<T>((r) => { setTimeout(() => r(value), ms); });
 
   test('a launch past its budget pages with its name, and no session', async () => {
     const h = harness({ launchTimeoutMs: 20, launch: () => new Promise<never>(() => {}) });
@@ -731,6 +724,148 @@ describe('run — governor records each session it starts', () => {
     assert.match(String((thrown[0] as Error).message), /could not be read/);
     assert.equal(settled, false, 'the turn still waits for its record');
   });
+});
+
+/**
+ * Every outcome of one launch, one row each. A launch goes through the CLI,
+ * or as a routine run for a periodic that names connectors. It prints a
+ * session URL or none. It prints inside its budget; after the budget
+ * refused it, while the thrown turn still waits for an earlier launch's
+ * record; or after the budget refused it and the turn has ended. Its record
+ * lands or fails, on the turn's normal path or while a throw after the
+ * launches waits for it. Each row asserts the records written and the
+ * `dispatch-session-unrecorded` and `dispatch-session-late` lines logged.
+ *
+ * The rows here are those the suite above leaves out. The ones it holds: a
+ * CLI launch with no URL, inside its budget or refused; one inside its
+ * budget whose record lands, fails, is slow, or lands while a throw waits
+ * for it; one that prints after its turn ended, whose record lands or
+ * fails; a routine launch with no URL inside its budget (`run — periodics`).
+ * A row on the turn's own path asserts as the turn settles, so a record the
+ * turn did not wait for fails it.
+ * The deadline's rows are in test/dispatch-cli.test.ts.
+ *
+ * The turn is a bare schedule fire with no ready ticket, so its launches are
+ * the factory's periodics: Weekly retro through the CLI, and Ticket review,
+ * which names a connector, as a routine run.
+ */
+describe('run: every launch outcome, in one table', () => {
+  const CLI = 'Weekly retro';
+  const ROUTINE = 'Ticket review';
+  const DAYS = Object.fromEntries((JSON.parse(FACTORY_FILE).periodics as Array<{ name: string; days: number }>).map((p) => [p.name, p.days]));
+  const DAY = 24 * 60 * 60 * 1000;
+  const fired = (days: number) => ({ at: new Date(NOW - days * DAY).toISOString(), session: null, baseline: false });
+  const SUBJECT = 'https://claude.ai/code/session_01SUBJECT';
+  const OTHER = 'https://claude.ai/code/session_01OTHER';
+  const BUDGET_MS = 20;
+
+  type Row = {
+    launch: 'cli' | 'routine';
+    prints: boolean;
+    /** `inside` its budget; `waiting`: refused, and printed while the thrown turn waits for an earlier record; `ended`: refused, and printed after the turn ended. */
+    when: 'inside' | 'waiting' | 'ended';
+    /** On the turn's normal path, or while a throw after the launches waits for it. */
+    record: 'lands' | 'fails' | 'lands at a throw' | 'fails at a throw';
+    recorded: string[];
+    /** Each `dispatch-session-unrecorded` line for the launch: its session URL, and its reason and error. */
+    unrecorded: Array<[string | null, RegExp]>;
+    /** The launch's `dispatch-session-late` line's reason, or none. */
+    late: RegExp | null;
+    rejects: RegExp | null;
+  };
+
+  const PAST = /ran past its budget/;
+  const FAILED = /ProvisionedThroughputExceededException/;
+  const rows: Row[] = [
+    { launch: 'cli', prints: true, when: 'waiting', record: 'lands', recorded: [SUBJECT], unrecorded: [[null, PAST]], late: /the turn waits for its record/, rejects: /ran past 20 ms/ },
+    { launch: 'cli', prints: true, when: 'waiting', record: 'fails', recorded: [], unrecorded: [[null, PAST], [SUBJECT, FAILED]], late: /the turn waits for its record/, rejects: /ran past 20 ms/ },
+    { launch: 'cli', prints: true, when: 'inside', record: 'fails at a throw', recorded: [], unrecorded: [[SUBJECT, FAILED]], late: null, rejects: /could not be read/ },
+    { launch: 'routine', prints: true, when: 'inside', record: 'lands', recorded: [SUBJECT], unrecorded: [], late: null, rejects: null },
+    { launch: 'routine', prints: true, when: 'inside', record: 'fails', recorded: [], unrecorded: [[SUBJECT, FAILED]], late: null, rejects: null },
+    { launch: 'routine', prints: true, when: 'inside', record: 'lands at a throw', recorded: [SUBJECT], unrecorded: [], late: null, rejects: /could not be read/ },
+    { launch: 'routine', prints: true, when: 'inside', record: 'fails at a throw', recorded: [], unrecorded: [[SUBJECT, FAILED]], late: null, rejects: /could not be read/ },
+    { launch: 'cli', prints: false, when: 'waiting', record: 'lands', recorded: [], unrecorded: [[null, PAST]], late: null, rejects: /ran past 20 ms/ },
+    { launch: 'routine', prints: false, when: 'waiting', record: 'lands', recorded: [], unrecorded: [[null, PAST]], late: null, rejects: /ran past 20 ms/ },
+    { launch: 'routine', prints: false, when: 'ended', record: 'lands', recorded: [], unrecorded: [[null, PAST]], late: null, rejects: /ran past 20 ms/ },
+    { launch: 'routine', prints: true, when: 'waiting', record: 'lands', recorded: [SUBJECT], unrecorded: [[null, PAST]], late: /the turn waits for its record/, rejects: /ran past 20 ms/ },
+    { launch: 'routine', prints: true, when: 'waiting', record: 'fails', recorded: [], unrecorded: [[null, PAST], [SUBJECT, FAILED]], late: /the turn waits for its record/, rejects: /ran past 20 ms/ },
+    { launch: 'routine', prints: true, when: 'ended', record: 'lands', recorded: [SUBJECT], unrecorded: [[null, PAST], [SUBJECT, /after its turn had ended/]], late: /turn has ended/, rejects: /ran past 20 ms/ },
+    { launch: 'routine', prints: true, when: 'ended', record: 'fails', recorded: [], unrecorded: [[null, PAST], [SUBJECT, /after its turn had ended/]], late: /turn has ended/, rejects: /ran past 20 ms/ },
+  ];
+
+  for (const row of rows) {
+    const title = `${row.launch}, ${row.prints ? 'a URL' : 'no URL'}, ${row.when === 'inside' ? 'inside its budget' : row.when === 'waiting' ? 'past its budget while the turn waits' : 'past its budget after the turn ended'}${row.prints ? `, its record ${row.record}` : ''}`;
+    test(title, async () => {
+      const subject = row.launch === 'cli' ? CLI : ROUTINE;
+      const other = row.launch === 'cli' ? ROUTINE : CLI;
+      // The launch prints inside its budget, or once the budget refused it.
+      const delay = row.when === 'inside' ? 1 : 60;
+      const written: string[] = [];
+      let recording = false;
+      const h = harness({
+        launchTimeoutMs: row.when === 'inside' ? 200 : BUDGET_MS,
+        launch: (launch: Launch) => (launch.sessionName === subject
+          ? later(delay, row.prints ? { status: 0, output: `Created cloud session: ${SUBJECT}\n` } : { status: 3, output: 'no url here' })
+          : Promise.resolve({ status: 0, output: `Created cloud session: ${OTHER}\n` })),
+        state: {
+          recordSession: async (session: string) => {
+            // The other launch's record is slow, so a thrown turn is still waiting for it.
+            if (session === OTHER) { await later(300, null); written.push(session); return; }
+            if (row.record.endsWith('at a throw')) { recording = true; await later(30, null); }
+            if (row.record.startsWith('fails')) throw new Error('ProvisionedThroughputExceededException');
+            written.push(session);
+          },
+        },
+      });
+      const reader = h.deps.reader;
+      h.deps.reader = (token: string) => ({ ...reader(token), readyIssues: async () => [] });
+      const routines = h.deps.routines;
+      h.deps.routines = (token: string, organization: string | null) => ({
+        ...routines(token, organization),
+        run: async () => (other === ROUTINE ? { session_id: 'session_01OTHER' } : later(delay, row.prints ? { session_id: 'session_01SUBJECT' } : {})),
+        sessions: async () => ({ data: [] }),
+      });
+      // The launch is due. The other launch goes first, and is due only where the turn waits for its record.
+      h.periodics.set(`${REPO}#${subject}`, fired(DAYS[subject]! + 1));
+      h.periodics.set(`${REPO}#${other}`, fired(row.when === 'waiting' ? DAYS[other]! + 7 : 1));
+      if (row.record.endsWith('at a throw')) {
+        // The first read once turnFor is done, not one inside it.
+        const readLogin = h.deps.workspace.readLogin;
+        h.deps.workspace.readLogin = () => {
+          if (recording && !String(new Error().stack).includes('turnFor')) throw new Error('the login on disk could not be read');
+          return readLogin();
+        };
+      }
+      const turned = run({ source: 'aws.events' }, h.deps as never);
+      if (row.rejects === null) await turned;
+      else await assert.rejects(turned, row.rejects);
+      // A launcher the budget refused prints after the turn has ended. Every
+      // other row asserts now, so a record the turn did not wait for fails it.
+      if (row.when === 'ended') await later(200, null);
+      const seen = JSON.stringify(h.logged);
+      assert.deepEqual(written.filter((s) => s !== OTHER), row.recorded, seen);
+      if (row.when === 'waiting') assert.deepEqual(written.filter((s) => s === OTHER), [OTHER], 'the earlier launch is recorded');
+      const unrecorded = h.logged.filter((l) => l.event === 'dispatch-session-unrecorded');
+      assert.equal(unrecorded.length, row.unrecorded.length, seen);
+      row.unrecorded.forEach(([url, text], i) => {
+        const line = unrecorded[i]!;
+        assert.equal(line.level, 'error');
+        assert.equal(line.repo, REPO);
+        assert.equal(line.sessionName, subject);
+        assert.equal(line.sessionUrl, url, seen);
+        assert.match(`${line.reason} ${line.error}`, text);
+      });
+      const late = h.logged.filter((l) => l.event === 'dispatch-session-late');
+      if (row.late === null) assert.deepEqual(late, []);
+      else {
+        assert.equal(late.length, 1, seen);
+        assert.equal(late[0]!.level, 'info');
+        assert.equal(late[0]!.sessionName, subject);
+        assert.equal(late[0]!.sessionUrl, SUBJECT);
+        assert.match(String(late[0]!.reason), row.late);
+      }
+    });
+  }
 });
 
 describe('run — schedule', () => {
@@ -949,9 +1084,10 @@ describe('run — the dispatcher claims what it launches', () => {
   });
 
   // The plan is read once, and each launch takes minutes: a ticket a person
-  // or another turn claimed, unreadied, closed or gave an excluded label in
-  // between is not the dispatcher's to claim, and its session would proceed
-  // on the prompt's claim line over someone else's work.
+  // or another turn claimed, unreadied, closed, gave an excluded label or
+  // linked a blocker to in between is not the dispatcher's to claim, and its
+  // session would proceed on the prompt's claim line over someone else's
+  // work, or on work that waits on another.
   test('a ticket no longer ready when its turn comes is neither claimed nor launched', async () => {
     for (const taken of [
       { state: 'open', labels: [CLAIMED] },
@@ -959,14 +1095,20 @@ describe('run — the dispatcher claims what it launches', () => {
       { state: 'open', labels: [] },
       { state: 'closed', labels: [READY] },
       { state: 'open', labels: [READY, 'mode: afk', 'type: prd'] },
+      { state: 'open', labels: [READY, 'mode: afk'], openBlockers: 1 },
+      { state: 'open', labels: [READY, 'mode: afk'], rows: [{ number: 43, state: 'open', title: 'y' }] },
     ]) {
       const base = harness();
+      const { rows = [], ...read } = taken as typeof taken & { rows?: Array<{ number: number, state: string, title: string }> };
+      let reads7 = 0;
       const { deps, calls, launches, logged } = harness({
         reader: () => ({
           ...base.deps.reader(''),
+          // The link lands after the plan's read of the rows.
+          blockers: async (n: number) => (n === 7 && reads7++ > 0 ? rows : []),
           addLabels: async (n: number, labels: string[]) => { calls.push(`label #${n} +${labels.join(', ')}`); },
           removeLabel: async (n: number, label: string) => { calls.push(`label #${n} -${label}`); },
-          ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', pull: false, ...(n === 7 ? taken : { state: 'open', labels: [READY, 'mode: afk'] }) }),
+          ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', pull: false, ...(n === 7 ? read : { state: 'open', labels: [READY, 'mode: afk'] }) }),
         }),
       });
       const result = turn(await run({ source: 'aws.events' }, deps as never));
@@ -975,6 +1117,32 @@ describe('run — the dispatcher claims what it launches', () => {
       assert.deepEqual(result.dispatched.map((d) => d.issue), [9]);
       assert.deepEqual(stranded(logged), []);
       assert.ok(logged.some((l) => l.event === 'dispatch-claim' && l.issue === 7 && l.outcome === 'skipped' && String(l.reason).startsWith('no longer ready to claim')), JSON.stringify(taken));
+      if ('openBlockers' in taken || 'rows' in taken) assert.ok(logged.some((l) => l.event === 'dispatch-claim' && l.issue === 7 && /, 1 open blocker\(s\)/.test(String(l.reason))), JSON.stringify(logged));
+    }
+  });
+
+  // The second read judges blockers as the selection does: a closed row or
+  // a summary of none is no blocker, so the ticket is claimed.
+  test('a ticket whose blockers are all closed when its turn comes is claimed and launched', async () => {
+    for (const still of [
+      { state: 'open', labels: [READY, 'mode: afk'], rows: [{ number: 43, state: 'closed', title: 'y' }] },
+      { state: 'open', labels: [READY, 'mode: afk'], openBlockers: 0, rows: [{ number: 43, state: 'open', title: 'y' }] },
+    ]) {
+      const base = harness();
+      const { rows, ...read } = still;
+      let reads7 = 0;
+      const { deps, calls } = harness({
+        reader: () => ({
+          ...base.deps.reader(''),
+          blockers: async (n: number) => (n === 7 && reads7++ > 0 ? rows : []),
+          addLabels: async (n: number, labels: string[]) => { calls.push(`label #${n} +${labels.join(', ')}`); },
+          removeLabel: async (n: number, label: string) => { calls.push(`label #${n} -${label}`); },
+          ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', pull: false, ...(n === 7 ? read : { state: 'open', labels: [READY, 'mode: afk'] }) }),
+        }),
+      });
+      const result = turn(await run({ source: 'aws.events' }, deps as never));
+      assert.deepEqual(result.dispatched.map((d) => d.issue).sort(), [7, 9], JSON.stringify(still));
+      assert.ok(labelCalls(calls).includes(`label #7 +${CLAIMED}`), JSON.stringify(labelCalls(calls)));
     }
   });
 
@@ -4554,6 +4722,35 @@ describe('run — sessions that signed off', () => {
     assert.ok(h.eventsRead.every((r) => r.token === 'sk-ant-oat01-a'));
   });
 
+  // Sign-off is a switch like every other feature: a repo whose file leaves
+  // it off has none of its sessions archived, whatever their last reply says.
+  test('a repo whose file leaves sign-off off has no session archived, and none read', async () => {
+    const file = JSON.parse(FACTORY_FILE);
+    const off = JSON.stringify({ ...file, features: { ...file.features, signOff: false } });
+    for (const event of [MESSAGE, { kind: 'schedule' }]) {
+      const h = harness({ configFile: async (repo: string) => (repo === REPO ? off : null) });
+      h.rows.push(sessionRow('cse_01DONE'));
+      h.pages.set('cse_01DONE', cloudSignedOff);
+      const result = await run(event, h.deps as never);
+      assert.deepEqual(h.archives, [], JSON.stringify(event));
+      assert.deepEqual(h.eventsRead, [], 'a repo with sign-off off has no candidate');
+      assert.deepEqual(sweepOf(result).archived, []);
+    }
+  });
+
+  // With no repo to sweep, the sessions list has nothing to answer.
+  test('a turn with no repo that turns sign-off on does not list the sessions', async () => {
+    const file = JSON.parse(FACTORY_FILE);
+    const off = JSON.stringify({ ...file, features: { ...file.features, signOff: false } });
+    const h = harness({ configFile: async (repo: string) => (repo === REPO ? off : null) });
+    let listed = 0;
+    const list = h.deps.sessions.list;
+    h.deps.sessions.list = async (token: string) => { listed += 1; return list(token); };
+    const result = await run({ kind: 'schedule' }, h.deps as never);
+    assert.equal(listed, 0);
+    assert.ok(sweepOf(result).skipped !== null, JSON.stringify(sweepOf(result)));
+  });
+
   test('archives with the login as the turn leaves it: a refresh during the turn is the token used', async () => {
     const h = harness();
     h.deps.message = async () => {
@@ -4799,6 +4996,18 @@ describe('run — waiting for the replies to its messages', () => {
     assert.equal(waits(h.slept), 0);
     assert.equal(sweep.skipped, null);
     assert.ok(h.logged.some((l) => l.event === 'dispatch-signoff-wait' && /AccessDenied/.test(String(l.error))), JSON.stringify(h.logged));
+  });
+
+  // The wait is for the sweep, which archives nothing in a repo whose file
+  // leaves sign-off off: a reply there is not worth three minutes.
+  test('a repo whose file leaves sign-off off is not waited for', async () => {
+    const { h, asked } = quiet();
+    const file = JSON.parse(FACTORY_FILE);
+    h.deps.configFile = async (repo: string) => (repo === REPO ? JSON.stringify({ ...file, features: { ...file.features, signOff: false } }) : null);
+    await run(MESSAGE, h.deps as never);
+    assert.ok(h.messages.length > 0, 'the message is still sent');
+    assert.equal(asked.length, 0, 'the lane is not read');
+    assert.equal(waits(h.slept), 0, String(h.slept));
   });
 
   test('a turn that messaged nobody does not read the lane', async () => {
@@ -5832,7 +6041,7 @@ describe('run — the tickets a green run shipped', () => {
  */
 describe('run — every served repo', () => {
   const ASKME = 't-d-d/askme-mcp';
-  const ASKME_FILE = JSON.stringify({ environment: 'env_01ASK', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { pickup: true } });
+  const ASKME_FILE = JSON.stringify({ environment: 'env_01ASK', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { pickup: true, signOff: true } });
   const FACTORY_ENV = JSON.parse(FACTORY_FILE).environment;
 
   /** A harness serving the factory and askme-mcp, each repo with its own reader over its own tickets. */
@@ -6155,7 +6364,7 @@ describe('run — every served repo', () => {
   });
 
   test('pickup off: the repo gets no dispatch, and its signed-off sessions are still archived', async () => {
-    const h = twoRepos({ askmeFile: JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: false } }) });
+    const h = twoRepos({ askmeFile: JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: false, signOff: true } }) });
     h.rows.push(sessionRow('cse_01ASK', { repo: ASKME }));
     h.pages.set('cse_01ASK', cloudSignedOff);
     await run({ source: 'aws.events' }, h.deps as never);
@@ -6241,7 +6450,7 @@ describe('run — every served repo', () => {
   // and a repo's `signOff` prompt replaces it.
   test('a close asks a session to sign off, in its repo\'s signOff prompt or the default', async () => {
     for (const prompts of [{}, { signOff: 'End your reply with `Signing off.` once the docs are tidy.' }]) {
-      const h = twoRepos({ askmeFile: JSON.stringify({ ...JSON.parse(askmeWith({ prMessages: true })), prompts }) });
+      const h = twoRepos({ askmeFile: JSON.stringify({ ...JSON.parse(askmeWith({ prMessages: true, signOff: true })), prompts }) });
       await run({ ...owners, text: 'Your pull request was closed.', closing: true }, h.deps as never);
       const text = (h.messages[0] as { text: string }).text;
       assert.ok(text.endsWith(standingLine([], { repo: ASKME, closing: true, prompts })), text);

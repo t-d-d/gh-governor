@@ -22,7 +22,7 @@ Each served repo turns on the features it wants, one switch each:
 - **Subscriptions.** Any other session hears a PR or issue it is party to by adding a `<!-- governor:subscribe <session URL> events=… -->` line to its body.
 - **CI and deploys.** A red CI run on the default branch tells the sessions whose merges may have broken it. A shipping job tells the sessions of the merges it shipped, and can label their tickets `deployed: <target>`.
 - **The PR review.** A model reviews each PR against the repo's checklist. Paths on the repo's human-only list wait for a person, unless an entry's `unless` labels waive it. A PR closes tickets in its own repo only; work spanning repos marks the other repo's ticket as blocked by an issue here. A pass merges the PR, or, with `merge` off, approves it for the owner to merge.
-- **Sign-off.** A session whose last reply ends `Signing off.` is archived by the next turn. No session writes anything for this.
+- **Sign-off.** A session whose last reply ends `Signing off.` is archived by the next turn, and a message about a close or a deploy, with nothing else open, asks the session to sign off. No session writes anything for this.
 
 How dark the factory runs is the repo's choice: with pickup and the review on and `merge` true, a ticket can go from label to merged commit with no person, except where its PR touches a human-only path.
 
@@ -71,7 +71,7 @@ The smallest useful file:
 
 The kit holds four files:
 
-- `.github/dispatch.json` names its JSON Schema in `$schema`, at the commit the config check is pinned to, so an editor describes each key on hover. Its `features` lists every switch, so the file shows every feature governor has: the ones it leaves off are `false`. It turns on pickup, summons, PR messages, subscriptions, the heartbeat and three periodics: a code review every 10 merges into the default branch, a ticket review every 5 issues opened, each also weekly when its count has counted anything, and a weekly review on its day limit alone. Each prompt is plain text that needs no skill, and acts on the window governor writes under it: the last fire's time, and what each count counted since. A repo can swap any prompt for one that calls its own skill.
+- `.github/dispatch.json` names its JSON Schema in `$schema`, at the commit the config check is pinned to, so an editor describes each key on hover. Its `features` lists every switch, so the file shows every feature governor has: the ones it leaves off are `false`. It turns on pickup, summons, PR messages, subscriptions, sign-off, the heartbeat and three periodics: a code review every 10 merges into the default branch, a ticket review every 5 issues opened, each also weekly when its count has counted anything, and a weekly review on its day limit alone. Each prompt is plain text that needs no skill, and acts on the window governor writes under it: the last fire's time, and what each count counted since. A repo can swap any prompt for one that calls its own skill.
 - `.github/dispatch.dark-factory.json` is the same file with every switch but `hooks` on. It keeps the placeholders and the three periodics, names the CI workflow `ciMessages` reads in `workflows.ci`, and has a `review` section: a plain-text checklist that needs no skill, `merge` true, and a human-only list that leaves every `CLAUDE.md`, `.claude/`, `.github/workflows/`, `.github/actions/`, `.github/dispatch.json` itself and `infra/` to a person, each with its reason. A PR touching one of them waits for a person to merge it.
 - `.github/workflows/heartbeat.yml` calls [the heartbeat checker](#the-heartbeat-checker) every hour, pinned to a commit of this repo.
 - `.github/workflows/config-check.yml` calls [the config check](#the-config-check) on each pull request that changes `dispatch.json`, pinned to a commit of this repo.
@@ -137,6 +137,7 @@ The switches in `features`:
 | `periodics` | A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached. |
 | `hooks` | A session on a hook's prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook's last session is open goes into that session as a message. |
 | `waits` | When a ticket's `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and a session to rewrite its spec if `unblocked` is on. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch. |
+| `signOff` | Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off. |
 
 `workflows`:
 

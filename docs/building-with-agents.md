@@ -12,13 +12,13 @@ Governor came out of building [Podstow](https://podstow.com), a production servi
 | Pull requests merged after the move, written by Claude Code sessions | 98 |
 | Median time from pickup to merge, the owner's review included | 29 minutes, over the 90 tickets a merged pull request closed, and half of them between 16 and 94 minutes |
 | Sessions' pull requests closed unmerged | 2, a probe that closes its own pull request by design and a duplicate of another |
-| Deploys of main | The gate never failed on main. Two deploys failed: the first, run by hand while the stack was set up, and one on 30 October that the post-deploy probe caught. The 47 since then all passed. The repo rolls forward and never reverts. |
+| Deploys of main | The gate never failed on main. Two deploys failed: the first, run by hand while the stack was set up, and one on 30 October that the post-deploy probe caught. The 47 since then all passed. A fault in a merge is fixed forward by the next change, not by reverting the merge. |
 | Commits authored by Claude, merges aside, the move included | 207 of 211 |
 | Source, stack and scripts | about 14,700 lines at the move, about 22,000 after |
 | Tests | 1,360 at the move, 2,261 at the end of that window |
 | Constraint files, and the fitness-function suites that hold them | 6 and 28 |
 
-This repo's [dispatch.json](../.github/dispatch.json) turns on `pickup`, `summons`, `prMessages`, `subscribeMessages`, `unblocked` and `conflicts`, and leaves every other switch off, the PR review, CI messages and deploy messages among them. A person still reviews and merges every pull request here. Governor does not review this repo's pull requests, since it would be marking its own work. The owner weighs each pull request's net complexity against the value of the change. The `pr-description` skill writes the description for that review: what the change adds and removes, a net line saying whether the system got simpler or more complex and what the complexity buys, any drift from the ticket, and a table mapping each acceptance criterion to the test or check that answers it.
+This repo's [dispatch.json](../.github/dispatch.json) turns on `pickup`, `summons`, `prMessages`, `subscribeMessages`, `unblocked`, `conflicts` and `signOff`, and leaves every other switch off, the PR review, CI messages and deploy messages among them. A person still reviews and merges every pull request here. Governor does not review this repo's pull requests, since it would be marking its own work. The owner weighs each pull request's net complexity against the value of the change. The `pr-description` skill writes the description for that review: what the change adds and removes, a net line saying whether the system got simpler or more complex and what the complexity buys, any drift from the ticket, and a table mapping each acceptance criterion to the test or check that answers it.
 
 ## The loop
 
@@ -27,7 +27,7 @@ This repo's [dispatch.json](../.github/dispatch.json) turns on `pickup`, `summon
 3. **Pickup.** Governor claims the ticket, starts a Claude Code cloud session on it, and comments the session's link on the ticket.
 4. **Context.** The session reads [CLAUDE.md](../CLAUDE.md), then runs the `fetch-ticket` skill: the ticket, its blockers, its PRD, the issues those cite, and the constraint files that bind the work. A ticket with an open blocker, or one that conflicts with a constraint, stops there with a comment.
 5. **Tests first.** The session writes the failing test, watches it fail for the reason it expects, and then writes the code.
-6. **Pre-push.** The `pre-push` skill merges main in, runs the gate on the merged tree, and reviews the diff at high effort. Each finding is fixed, dismissed only after the session has traced it through the code, or filed as a new issue. Then the session pushes and raises the pull request, written to the `pr-description` skill.
+6. **Pre-push.** The `pre-push` skill merges main in, runs the gate on the merged tree, and has a clean-room sub-agent, with a fresh context and no part in writing the code, review the diff at high effort. Each finding is fixed, dismissed only after the session has traced it through the code, or filed as a new issue. Then the session pushes and raises the pull request, written to the `pr-description` skill.
 7. **Review.** Governor relays everything on the pull request to the session that wrote it: the owner's comments and reviews, pushes, and the conflicts that other merges leave. The session answers them on the same branch.
 8. **Merge and sign-off.** The owner merges. The session ends its last reply with `Signing off.`, and governor archives it at its next turn.
 

@@ -66,8 +66,9 @@
  * one queue over every served repo's ready tickets, each claimed with its
  * repo's labels and launched in its repo's cloud environment.
  * Every turn but a probe ends with the sign-off sweep: it archives each
- * idle session in a served repo (the fire's, or every one for the bare
- * schedule fire) whose last reply, read from its own events, ends
+ * idle session in a served repo whose file turns `signOff` on (the fire's,
+ * or every one for the bare schedule fire) whose last reply, read from its
+ * own events, ends
  * `Signing off.`; a turn that messaged sessions first waits, on a quiet fire
  * lane, for their replies (scripts/lib/session-signoff.mjs).
  * A PR whose body names no session was raised from a local session, which
@@ -108,7 +109,7 @@ import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { isBlocked, isWaiting, labelRow, unreadableOf, waitHolds } from '../scripts/lib/ready-work.mjs';
 import { WAIT_PROMPT, WAIT_RELATIVE, endedWaits, holdWait, relativeAtClose, repairRelative, reportUnreadable, waitLinks, waitSpecPrompt } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
-import { RoutinesApiError, launchRoutine, observed, routineName } from './routines.mjs';
+import { RoutinesApiError } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
@@ -128,6 +129,7 @@ import { HOOK_PER_HOUR, LANE, LANE_COUNTS, RED, laneCount, dispatchMarker, lastD
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
+import { launcher, overBudget, routineLaunch, sessionUrlFrom } from './launcher.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -158,34 +160,6 @@ export const HEARTBEAT_REFUSED = 'dispatch-heartbeat-refused';
 export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
 
 /**
- * A session governor started that its state table does not record: the
- * PR review would let a ticket's mode label waive a human-only path for it.
- * Its own alarm pages on it (infra/governor.cfn.yml).
- */
-export const SESSION_UNRECORDED = 'dispatch-session-unrecorded';
-
-/** A session a launch its budget refused printed after all, which ties it to that refusal's page. */
-export const SESSION_LATE = 'dispatch-session-late';
-
-/**
- * A session record still being written: dispatch/cli.mjs logs each one
- * left as {@link SESSION_UNRECORDED} when the deadline ends the turn or the
- * turn throws.
- *
- * @typedef {{ repo: string, sessionName: string, sessionUrl: string }} PendingRecord
- */
-
-/**
- * The {@link SESSION_UNRECORDED} line for a record that did not land, from
- * the turn's own catch or from dispatch/cli.mjs when the turn is cut off.
- * The reason matters to whoever reads the line.
- *
- * @param {PendingRecord} pending
- * @param {string} error
- */
-export const unrecordedLine = (pending, error) => ({ level: 'error', ...pending, error, reason: 'its PRs may clear a human-only path on a ticket\'s mode label' });
-
-/**
  * The event a periodic logs when it names a connector the account has not
  * connected: it starts nothing (infra/governor.cfn.yml pages on it).
  */
@@ -213,34 +187,11 @@ export const ticketOf = (key) => {
 const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
 
 /**
- * The session URL the launcher's output names, or null. The CLI prints the
- * URL on creation and the id on the "Resume with:" line; either will do.
- *
- * @param {string} output
- * @returns {string | null}
- */
-export const sessionUrlFrom = (output) => {
-  const url = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/.exec(output)?.[0];
-  if (url) return url;
-  const id = /\bsession_[A-Za-z0-9]{4,}\b/.exec(output)?.[0];
-  return id ? `https://claude.ai/code/${id}` : null;
-};
-
-/**
  * @typedef {import('./deliveries.mjs').OpenRow} OpenRow
- * @typedef {{ prompt: string, sessionName: string, model: string, repo: string, environment: string, connectors?: string[], branch?: string }} Launch
- *   `repo`, `environment`: the repo the session is for and its cloud
- *   environment, from the repo's config file. `branch`: the branch the
- *   session starts on and pushes to, a PR's head for a takeover, in place
- *   of the default branch (dispatch/launch-session.py). `connectors`: a periodic's
- *   claude.ai connectors, which start it as a run of its routine
- *   (dispatch/routines.mjs), the periodic named by `sessionName`.
- * @typedef {{ status: number | null, output: string, missing?: string[], refused?: true, routine?: string }} LaunchResult
- *   `missing`: the connectors a routine launch named that the account has
- *   not connected. It started nothing. `refused`: the routines API refused
- *   a routine launch before the fire. It started nothing. `routine`: the id
- *   of the routine a routine launch fired, through which its run session is
- *   found.
+ * @typedef {import('./launcher.mjs').Launch} Launch
+ * @typedef {import('./launcher.mjs').LaunchResult} LaunchResult
+ * @typedef {import('./launcher.mjs').PendingRecord} PendingRecord
+ * @typedef {import('./launcher.mjs').Records} Records
  * @typedef {import('../scripts/lib/dispatch-router.mjs').Reader & import('./workflow.mjs').WorkflowReader & {
  *   comment: (n: number, body: string) => Promise<void>,
  *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }>>,
@@ -446,14 +397,6 @@ const refreshedLogin = async (deps, credentials, account) => {
 };
 
 /**
- * What a launch does when its budget refuses it, keyed by the launch's
- * promise: the launcher runs on, and may start a session nobody can name.
- *
- * @type {WeakMap<Promise<unknown>, () => void>}
- */
-const overBudget = new WeakMap();
-
-/**
  * A launch that outlives its budget is a thrown turn. The task's deadline
  * (dispatch/cli.mjs) exits the process from a timer, which unwinds nothing:
  * a login the CLI refreshed before the launcher hung would never reach the
@@ -482,9 +425,11 @@ const withinBudget = (launched, ms, sessionName) =>
 /**
  * One turn, then the sign-off sweep (scripts/lib/session-signoff.mjs): every
  * turn but a probe archives the sessions whose last turn signed off, in the
- * repos it serves, with the login as the turn leaves it. A fire naming a
+ * repos it serves whose file turns `signOff` on, with the login as the turn
+ * leaves it. A fire naming a
  * repo that is not served does nothing, archiving included; one whose kind
- * the repo's file does not turn on restores the login and only sweeps. A turn that messaged sessions first waits
+ * the repo's file does not turn on restores the login and only sweeps. A turn that messaged sessions, in a repo
+ * that turns `signOff` on, first waits
  * for their replies while no fire is queued (`awaitReplies`), so a sign-off
  * in reply to it is archived by it.
  *
@@ -517,12 +462,6 @@ export const run = async (event, deps) => {
     records.ended = true;
   }
 };
-
-/**
- * @typedef {{ writes: Promise<void>[], ended: boolean }} Records
- *   `writes`: each launch's record. `ended`: whether {@link run} has
- *   stopped waiting for them, after which nothing waits for a new one.
- */
 
 /**
  * A served repo's config, its name matched in any case, or undefined for a
@@ -680,113 +619,19 @@ const turnOf = async (event, deps, records) => {
     if (find === undefined) finders.set(token, find = branchFinder({ list: (after) => deps.sessions.list(token, after), get: async (id) => sessionRecord(await deps.sessions.get(id, token)) }, repo, { log: deps.log }));
     return find;
   };
-  /** The records still being written, which dispatch/cli.mjs logs as unrecorded at the deadline or a throw. */
-  const unrecorded = deps.unrecorded ?? new Set();
-  /** The login's access token for the routines API, read once a turn. */
-  const routinesToken = loginToken({ ...deps, secret }, 'start a periodic as a routine run');
-  /**
-   * A periodic that names connectors, as a run of its routine
-   * (dispatch/routines.mjs), under the login's token and organization. A
-   * token the turn cannot use started nothing.
-   *
-   * @param {Launch} begin
-   * @param {string[]} connectors
-   * @returns {Promise<LaunchResult>}
-   */
-  const routineLaunch = async (begin, connectors) => {
-    /** @type {import('./routines.mjs').RoutinesApi} */
-    let api;
-    try {
-      const { account } = readStoredLogin(await secret.get());
-      api = observed(deps.routines(await routinesToken(), account?.organizationUuid ?? null), deps.log, { repo: begin.repo, periodic: begin.sessionName });
-    } catch (error) {
-      return { status: 1, output: messageOf(error) };
-    }
-    const result = await launchRoutine({ api, repo: begin.repo, periodic: begin.sessionName, prompt: begin.prompt, environment: begin.environment, model: begin.model, connectors, sleep: deps.sleep, uuid: deps.uuid });
-    deps.log('dispatch-routine-output', { repo: begin.repo, periodic: begin.sessionName, status: result.status, tail: result.output.slice(-OUTPUT_TAIL) });
-    // Nothing started for any other reason than a missing connector is the
-    // routines API refusing the routine or its fire: the CLI is not at fault.
-    return result.status === 1 && result.missing === undefined ? { ...result, refused: true } : result;
-  };
-  /**
-   * Every launch, recorded as governor's own session wherever the launcher
-   * printed one, whatever outcome it reported, and paged where it may have
-   * started one it did not print: the PR review reads the
-   * record back, and a ticket's mode label waives no human-only path for a
-   * session nobody watched. A record that fails is an error, not a turn
-   * that fails: the session is running either way. The record spends none
-   * of the launch's budget, so a slow one never turns a launch that started
-   * into one tried again; the turn waits for every record before it ends.
-   * Every prompt ends in `SIGN_POSTS`, which no repo's prompts replace: the
-   * receiver skips a session's own posts only where the session signed them.
-   * In a repo whose file turns `waits` on, the line on making a ticket wait
-   * follows it (`WAIT_PROMPT`, dispatch/waits.mjs).
-   * A launch its budget refuses pages once, at the refusal, since the
-   * launcher runs on. A session it prints later is logged at info with its
-   * name and URL, so the operator can tie it to that page, and recorded.
-   * The turn waits for that record while it is still waiting for others.
-   * Once it has ended, nothing waits for it, so it pages again, naming the
-   * session, before the write is tried.
-   *
-   * @type {Deps['launch']}
-   */
-  const launch = (asked) => {
-    const own = configIn(served, asked.repo);
-    const waits = own !== undefined && turnsOn(own, 'waits') ? `\n\n${WAIT_PROMPT}` : '';
-    const begin = { ...asked, prompt: `${asked.prompt}\n\n${SIGN_POSTS}${waits}` };
-    let paged = false;
-    const launching = launchAndRecord(begin, () => paged);
-    overBudget.set(launching, () => {
-      paged = true;
-      deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, reason: 'the launch ran past its budget and may have started a session, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label' });
-    });
-    return launching;
-  };
-  /**
-   * The launch itself, and its record or page once it ends.
-   *
-   * @param {Launch} begin
-   * @param {() => boolean} paged Whether its budget already paged on it.
-   * @returns {Promise<LaunchResult>}
-   */
-  const launchAndRecord = async (begin, paged) => {
-    const launched = begin.connectors !== undefined && begin.connectors.length > 0 ? await routineLaunch(begin, begin.connectors) : await deps.launch(begin);
-    const sessionUrl = sessionUrlFrom(launched.output);
-    if (sessionUrl !== null) {
-      /** @type {PendingRecord} */
-      const pending = { repo: begin.repo, sessionName: begin.sessionName, sessionUrl };
-      if (paged()) {
-        const record = records.ended ? 'its turn has ended, so nothing waits for its record' : 'the turn waits for its record';
-        deps.log(SESSION_LATE, { level: 'info', ...pending, reason: `the launch ran past its budget and paged with no session URL; this is the session it started: ${record}` });
-      }
-      if (records.ended) {
-        // Nothing waits for the write, and the task may exit before it
-        // lands, so it pages now, naming the session. It is still tried.
-        deps.log(SESSION_UNRECORDED, unrecordedLine(pending, 'the launcher printed it after its turn had ended, so nothing waits for its record and it may not land'));
-        void deps.state.recordSession(sessionUrl).catch(() => {});
-      } else {
-        unrecorded.add(pending);
-        records.writes.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
-          deps.log(SESSION_UNRECORDED, unrecordedLine(pending, messageOf(error)));
-        }).finally(() => { unrecorded.delete(pending); }));
-      }
-    } else if (!paged() && launchOutcome(launched.status) !== null) {
-      // The launch may have started a session but named none, so nothing
-      // can record it: the operator finds it by its name and the line's time.
-      // A routine's run session is found through its routine, not by the
-      // periodic's name, so a routine launch's line names the routine.
-      const routine = launched.routine === undefined ? {} : {
-        routine: launched.routine,
-        routineName: routineName(begin.repo, begin.sessionName),
-        tail: launched.output.slice(-OUTPUT_TAIL),
-      };
-      const reason = launched.routine === undefined
-        ? 'the launch may have started a session, but it printed no session URL, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label'
-        : 'the routine was fired, but none of its run sessions could be named as this fire\'s, so the session could not be named or recorded: look in the routine\'s run sessions for one started shortly before this line\'s time. Its PRs may clear a human-only path on a ticket\'s mode label';
-      deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, status: launched.status, ...routine, reason });
-    }
-    return launched;
-  };
+  /** The turn's one launcher (dispatch/launcher.mjs). */
+  const launches = launcher({
+    cli: deps.launch,
+    routine: routineLaunch({ secret, token: loginToken({ ...deps, secret }, 'start a periodic as a routine run'), routines: deps.routines, log: deps.log, sleep: deps.sleep, uuid: deps.uuid }),
+    recordSession: (sessionUrl) => deps.state.recordSession(sessionUrl),
+    suffix: (launchRepo) => {
+      const own = configIn(served, launchRepo);
+      return own !== undefined && turnsOn(own, 'waits') ? `${SIGN_POSTS}\n\n${WAIT_PROMPT}` : SIGN_POSTS;
+    },
+    records,
+    pending: deps.unrecorded,
+    log: deps.log,
+  });
   /** What the turn changes in each repo's governor heartbeat block, written below. @type {RepoBeat[]} */
   const turnBeats = [];
   /** @type {Awaited<ReturnType<typeof turnFor>>} */
@@ -796,7 +641,7 @@ const turnOf = async (event, deps, records) => {
       ...deps,
       secret,
       githubToken: tokenFor,
-      launch,
+      launch: launches.start,
       message: async (message) => {
         const session = sessionId(message.session);
         if (!woken.has(session)) woken.set(session, deps.now());
@@ -824,7 +669,7 @@ const turnOf = async (event, deps, records) => {
     base: invocation.kind === 'conflicts' ? invocation.base : undefined,
     started,
     carried: 'dispatched' in turned && Array.isArray(turned.dispatched) ? turned.dispatched.filter((d) => d.repo.toLowerCase() === repo.toLowerCase()) : [],
-    deps: { ...deps, secret, githubToken: tokenFor, launch },
+    deps: { ...deps, secret, githubToken: tokenFor, launch: launches.start },
   });
   const eventBeats = checked?.beats ?? [];
   const periodics = checked === null ? null : { dispatched: checked.dispatched, unread: checked.unread };
@@ -834,7 +679,10 @@ const turnOf = async (event, deps, records) => {
   // Read when called: a turn whose sweep skips never touches `sessions`.
   /** @type {import('../scripts/lib/session-signoff.mjs').Events} */
   const events = (id, token, cursor) => deps.sessions.events(id, token, cursor);
-  await awaitReplies({ fires: deps.fires, woken, login: deps.workspace.readLogin(), started, now: deps.now, sleep: deps.sleep, log: deps.log, events });
+  // Only a repo whose file turns sign-off on has its sessions archived, so
+  // only there is a reply worth waiting for.
+  const signing = served.filter((s) => turnsOn(s.config, 'signOff')).map((s) => s.repo);
+  if (signing.length > 0) await awaitReplies({ fires: deps.fires, woken, login: deps.workspace.readLogin(), started, now: deps.now, sleep: deps.sleep, log: deps.log, events });
   const signoffs = await sweepSignoffs({
     archive: deps.archive,
     login: deps.workspace.readLogin(),
@@ -842,7 +690,7 @@ const turnOf = async (event, deps, records) => {
     now: deps.now,
     log: deps.log,
     woken,
-    repos: served.map((s) => s.repo),
+    repos: signing,
     list: (token) => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
     lookup: sweepLookup(deps),
     events,
@@ -1324,6 +1172,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   let made = null;
   const delivery = () => (made ??= turnDeliveries({
     prompts,
+    signOff: repo !== undefined && turnsOn(configOf(repo), 'signOff'),
     reader: getReader,
     repo: fireRepo(),
     send: (message, until) => budgeted(() => deps.message(message), message.session, until),
@@ -2047,10 +1896,11 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    * Claim one ticket: the claim label on, then the ready labels it takes
    * off. The plan was read before earlier launches that take minutes, so
    * the ticket is read again first: one closed, unreadied, claimed, given
-   * one of the repo's excluded labels or held by a `Blocked until:` line
-   * since is skipped, untouched, since its
+   * one of the repo's excluded labels, given an open blocker (`isBlocked`)
+   * or held by a `Blocked until:` line since is skipped, untouched, since its
    * session would proceed on the prompt's claim line over someone else's
-   * work. A claim that fails is released, and starts nothing.
+   * work, or on work that waits on another. A claim that fails is
+   * released, and starts nothing.
    *
    * @param {{ repo: string, issue: number }} ticket
    * @returns {Promise<'claimed' | 'taken' | 'failed'>}
@@ -2062,17 +1912,23 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const github = await readerFor(repo);
       const read = await github.ticket(issue);
       const { state, labels: on, wait } = read;
-      if (state !== 'open' || labelRow(on, labels) !== 'ready' || isWaiting(read, deps.now())) {
+      const ready = state === 'open' && labelRow(on, labels) === 'ready';
+      // The rows are read only where the summary is missing and the rest
+      // still reads ready, as the selection reads them.
+      const rows = ready && read.openBlockers === undefined ? await github.blockers(issue) : undefined;
+      const blocked = ready && isBlocked(read, rows);
+      if (!ready || blocked || isWaiting(read, deps.now())) {
         const line = wait === undefined ? '' : `, Blocked until: ${'until' in wait ? wait.until : 'after' in wait ? `${wait.after.days} days after ${wait.after.repo ?? ''}#${wait.after.issue} closes` : `${wait.unreadable} (unreadable)`}`;
-        deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}${line}` });
+        const open = blocked ? `, ${read.openBlockers ?? (rows ?? []).filter((b) => b.state === 'open').length} open blocker(s)` : '';
+        deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}${open}${line}` });
         // Said only on a ticket still ready by its labels: one claimed or
         // unreadied since is someone else's.
-        const unread = state === 'open' && labelRow(on, labels) === 'ready' ? unreadableOf(read) : undefined;
+        const unread = ready ? unreadableOf(read) : undefined;
         if (unread !== undefined) await reportUnreadable({ reader: github, repo, issue, value: unread, log: deps.log });
         return 'taken';
       }
     } catch (error) {
-      deps.log('dispatch-claim', { repo, issue, outcome: 'not claimed', error: `the ticket could not be read: ${messageOf(error)}` });
+      deps.log('dispatch-claim', { repo, issue, outcome: 'not claimed', error: `the ticket or its blockers could not be read: ${messageOf(error)}` });
       return 'failed';
     }
     claims.add(keyOf(ticket));

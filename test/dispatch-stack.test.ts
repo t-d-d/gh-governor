@@ -28,7 +28,8 @@ import { appliesStack, runsCommand, runsScript, usesAction, withId } from './hel
 import { importClosure, relativeImports } from './helpers/imports.ts';
 import { OUTPUT_KEYS, START_BUDGET_MS } from '../scripts/run-turn.mjs';
 import { DEADLINE_MS } from '../dispatch/cli.mjs';
-import { SESSION_LATE, SESSION_UNRECORDED, STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
+import { STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
+import { SESSION_LATE, SESSION_UNRECORDED } from '../dispatch/launcher.mjs';
 import { MAX_START_ATTEMPTS } from '../dispatch/webhook/starter.mjs';
 import { HOOK_EVENTS } from '../dispatch/webhook/route.mjs';
 import { HOOK_KEY_STALE } from '../dispatch/webhook/hook-table.mjs';
@@ -1060,7 +1061,17 @@ describe('the task\'s modules in the image', () => {
     assert.ok(closure.has('dispatch/turn.mjs') && closure.has('scripts/lib/github-app.mjs'), [...closure].join(', '));
     const copied = copiedPaths();
     assert.deepEqual(copied.filter((c) => c.endsWith('/')), [], 'a directory COPY carries modules beyond the closure');
-    assert.deepEqual(copied.filter((c) => c.endsWith('.mjs')).sort(), [...closure].sort());
+    assert.deepEqual(copied.filter((c) => /\.[cm]js$/.test(c)).sort(), [...closure].sort());
+  });
+
+  // A module copied to another folder than its own fails the import that
+  // names it by its repo path.
+  test('copies each module to its own path', () => {
+    for (const [, sources, target] of dockerfile.matchAll(/^COPY\s+(.+?)\s+(\S+)\s*$/gm)) {
+      for (const source of sources!.split(/\s+/).filter((path) => /\.([cm]js|py)$/.test(path))) {
+        assert.ok([`./${source.slice(0, source.lastIndexOf('/') + 1)}`, `./${source}`].includes(target!), `${source} is copied to ${target}`);
+      }
+    }
   });
 
   // The fire module is the one the task shares with the receiver;
@@ -1130,10 +1141,18 @@ describe('.github/workflows/deploy.yml', () => {
     assert.doesNotMatch(apply?.run ?? '', /ReservedConcurrency/, 'a task has no reserved concurrency to set');
   });
 
-  test('ends on the probe, run through the by-hand script so the two cannot drift, on every invocation of the workflow', () => {
-    const probe = steps[steps.length - 1];
+  test('probes the task through the by-hand script so the two cannot drift, on every invocation of the workflow', () => {
+    const probe = steps.find(withId('probe'));
     assert.match(probe?.run ?? '', /node scripts\/run-turn\.mjs --kind probe/);
     assert.equal(probe?.if, undefined, 'the probe must run on every invocation of the workflow');
+  });
+
+  // Every step after the probe is the rollback, so a green probe is the end
+  // of a green deploy.
+  test('runs nothing after a green probe', () => {
+    const after = steps.slice(steps.findIndex(withId('probe')) + 1);
+    assert.ok(after.length > 0, 'nothing follows the probe');
+    for (const step of after) assert.match(step.if ?? '', /^\$\{\{ failure\(\) && /, `'${step.name}' can run after a green probe`);
   });
 
   test('secrets reach the scripts through env, never inline', () => {
@@ -1149,5 +1168,131 @@ describe('.github/workflows/deploy.yml', () => {
   // uses or run).
   test('never writes the login: that is the operator\'s mint, not a deploy', () => {
     assert.doesNotMatch(codeOnly, /governor\/claude-login|mint-claude-login/);
+  });
+});
+
+/**
+ * The deploy job as Actions runs it, as far as its steps' `if:` reads: each
+ * step runs when its condition holds (with `success() &&` before it when it
+ * names no status function, as Actions reads it), and a
+ * step that runs takes the outcome `outcomes` gives it, or success.
+ * Returns the ids (or names) of the steps that ran, in order.
+ */
+const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success' | 'failure'>, previousImage = 'governor@sha256:good', newImage = 'governor@sha256:new' } = {}) => {
+  const outputsOf: Record<string, Record<string, string>> = { previous: { image_uri: previousImage }, image: { image_uri: newImage } };
+  const state: Record<string, { outcome: string; outputs: Record<string, string> }> = {};
+  const ran: string[] = [];
+  let failed = false;
+  for (const step of steps) {
+    const key = step.id ?? step.name ?? '';
+    const condition = (step.if ?? '').replace(/^\$\{\{\s*|\s*\}\}$/g, '');
+    // A condition that names no status function runs only while every step before it passed.
+    const expression = /\b(success|failure|always|cancelled)\(\)/.test(condition) ? condition : `success()${condition ? ` && (${condition})` : ''}`;
+    // GitHub's expression syntax, for the subset these steps use, read as JavaScript.
+    const js = expression.replace(/!=/g, '!==').replace(/(?<![!=])==/g, '===');
+    const runs = Boolean(new Function('success', 'failure', 'always', 'steps', 'inputs', `return (${js});`)(
+      () => !failed, () => failed, () => true,
+      new Proxy(state, { get: (target, id: string) => target[id] ?? { outcome: '', outputs: {} } }),
+      { probe_only: probeOnly },
+    ));
+    if (!runs) {
+      if (step.id) state[step.id] = { outcome: 'skipped', outputs: {} };
+      continue;
+    }
+    ran.push(key);
+    const outcome = outcomes[key] ?? 'success';
+    if (outcome === 'failure') failed = true;
+    if (step.id) state[step.id] = { outcome, outputs: outputsOf[step.id] ?? {} };
+  }
+  return { ran, failed };
+};
+
+describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
+  const after = (ran: string[], id: string) => ran.slice(ran.indexOf(id) + 1);
+
+  test('reads the image the stack runs before the apply, from the stack\'s own ImageUri parameter', () => {
+    const previous = steps.find(withId('previous'));
+    assert.ok(previous, 'no step reads the image the stack runs now');
+    assert.match(previous.run ?? '', /describe-stacks --stack-name governor(?![\w-])/);
+    assert.match(previous.run ?? '', /ParameterKey=='ImageUri'/);
+    assert.match(previous.run ?? '', /image_uri=/);
+    assert.equal(previous.if, '${{ !inputs.probe_only }}');
+    // A warning the CLI prints on stderr would otherwise become the image a rollback applies.
+    assert.doesNotMatch(previous.run ?? '', /PREVIOUS=\$\(aws [^)]*2>&1/, 'the image read takes the CLI\'s stderr into its value');
+  });
+
+  test('holds the order: read the current image, apply, probe, and on a red probe re-apply the previous image and probe again', () => {
+    const { ran, failed } = runDeploy({ outcomes: { probe: 'failure' } });
+    const order = ['previous', 'apply', 'probe', 'rollback', 'reprobe'];
+    assert.deepEqual(ran.filter((id) => order.includes(id)), order);
+    assert.deepEqual(after(ran, 'probe'), ['rollback', 'reprobe'], 'a rollback whose probe passed pages no one');
+    assert.ok(failed, 'a deploy that rolled back is still red');
+  });
+
+  test('a green probe rolls nothing back', () => {
+    const { ran, failed } = runDeploy();
+    assert.equal(ran.at(-1), 'probe');
+    assert.equal(failed, false);
+  });
+
+  test('the rollback re-applies the stack with the previous image and nothing else, and says so in the log', () => {
+    const rollback = steps.find(withId('rollback'));
+    assert.ok(rollback && appliesStack('governor')(rollback), 'the rollback does not apply the main stack');
+    const run = rollback.run ?? '';
+    // The template just applied, so the image is the one thing that changes:
+    // `aws cloudformation deploy` keeps every parameter it is not given.
+    assert.match(run, /--template-file "\$RUNNER_TEMP\/governor\.packaged\.yml"/);
+    assert.match(run, /--capabilities CAPABILITY_IAM(?=\s)/);
+    const overrides = run.slice(run.indexOf('--parameter-overrides'));
+    assert.deepEqual([...overrides.matchAll(/"(\w+)=/g)].map((m) => m[1]), ['ImageUri']);
+    assert.match(overrides, /"ImageUri=\$\{PREVIOUS_IMAGE_URI\}"/);
+    assert.equal(rollback.env?.PREVIOUS_IMAGE_URI, '${{ steps.previous.outputs.image_uri }}');
+    assert.match(run, /::error::[^\n]*rolling the stack back to \$\{PREVIOUS_IMAGE_URI\}/);
+  });
+
+  test('probes again through the same script once the rollback applied, and logs the image it rolled back to', () => {
+    const reprobe = steps.find(withId('reprobe'));
+    assert.match(reprobe?.run ?? '', /node scripts\/run-turn\.mjs --kind probe/);
+    assert.match(reprobe?.run ?? '', /::notice::[^\n]*\$\{PREVIOUS_IMAGE_URI\}/);
+    assert.equal(reprobe?.env?.PREVIOUS_IMAGE_URI, '${{ steps.previous.outputs.image_uri }}');
+  });
+
+  test('a rollback whose probe also fails pages the operator through the stack\'s alerts topic', () => {
+    const { ran, failed } = runDeploy({ outcomes: { probe: 'failure', reprobe: 'failure' } });
+    assert.deepEqual(after(ran, 'probe'), ['rollback', 'reprobe', 'page']);
+    assert.ok(failed);
+    const page = steps.find(withId('page'));
+    assert.match(page?.run ?? '', /describe-stack-resource --stack-name governor --logical-resource-id AlertsTopic/);
+    assert.match(page?.run ?? '', /aws sns publish --topic-arn "\$TOPIC_ARN"/);
+    assert.equal(template.Resources?.AlertsTopic?.Type, 'AWS::SNS::Topic');
+    assert.equal(template.Resources?.AlertsTopic?.Properties?.Subscription?.[0]?.Protocol, 'email');
+  });
+
+  test('a rollback that cannot apply pages the operator, and probes nothing', () => {
+    const { ran } = runDeploy({ outcomes: { probe: 'failure', rollback: 'failure' } });
+    assert.deepEqual(after(ran, 'probe'), ['rollback', 'page']);
+  });
+
+  test('a probe-only run rolls nothing back', () => {
+    const { ran, failed } = runDeploy({ probeOnly: true, outcomes: { probe: 'failure' } });
+    assert.ok(!ran.includes('previous') && !ran.includes('apply'), 'a probe-only run applied the stack');
+    assert.equal(ran.at(-1), 'probe');
+    assert.ok(failed);
+  });
+
+  test('a stack that ran no image before the apply has nothing to roll back to', () => {
+    const { ran } = runDeploy({ outcomes: { probe: 'failure' }, previousImage: '' });
+    assert.equal(ran.at(-1), 'probe');
+  });
+
+  test('a deploy that left the image as it was has no other image to roll back to', () => {
+    const { ran, failed } = runDeploy({ outcomes: { probe: 'failure' }, previousImage: 'governor@sha256:same', newImage: 'governor@sha256:same' });
+    assert.equal(ran.at(-1), 'probe');
+    assert.ok(failed);
+  });
+
+  test('a red step before the probe rolls nothing back', () => {
+    const { ran } = runDeploy({ outcomes: { apply: 'failure' } });
+    assert.equal(ran.at(-1), 'apply');
   });
 });
