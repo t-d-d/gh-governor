@@ -325,7 +325,7 @@ export const UNREADIED_MARKER = '<!-- governor:unreadied -->';
  * @param {ReadonlyArray<{ body?: string | null, ours?: boolean }>} thread The ticket's whole thread, oldest first.
  */
 export const heldUnreadied = (thread) => {
-  const marked = thread.map((c, i) => (c.ours === true && String(c.body ?? '').includes(UNREADIED_MARKER) ? i : -1));
-  const at = Math.max(...marked, -1);
+  let at = thread.length - 1;
+  while (at >= 0 && !(thread[at]?.ours === true && String(thread[at]?.body ?? '').includes(UNREADIED_MARKER))) at -= 1;
   return at !== -1 && thread.slice(at + 1).every((c) => c.ours === true);
 };
