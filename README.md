@@ -12,9 +12,9 @@ The name comes from the governor on a steam engine, which holds the engine's spe
 
 ## Who built it, and where it came from
 
-Governor is [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/)'s personal software factory, distilled from running a production service that agents build.
+Governor is [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/)'s personal software factory, distilled from the practices and automations built while making [Podstow](https://podstow.com), a production service that agents build.
 
-**The service.** Thomas founded and runs a paid article-to-podcast service, live on the web, iOS, macOS and Android, and inside Claude, ChatGPT and Gemini. Coding agents write all of its code, TypeScript on AWS serverless, and automated checks decide what merges. Thomas's approval sits on the specification, before the code exists. Every agent session is archived and evaluated afterwards. The practices, skills and automations that run that backlog were distilled into governor. Governor serves that repo with its PR review on and `merge` on, so most pull requests merge with no person, and the repo's review rules name the paths that still wait for one. The service's repo stays private.
+**The service.** Thomas founded and runs [Podstow](https://podstow.com), a paid article-to-podcast service, live on the web, iOS, macOS and Android, and inside Claude, ChatGPT and Gemini. Coding agents write all of its code, TypeScript on AWS serverless, and automated checks decide what merges. Thomas's approval sits on the specification, before the code exists. Every agent session is archived and evaluated afterwards. The practices, skills and automations that run that backlog were distilled into governor. Governor serves that repo with its PR review on and `merge` on, so most pull requests merge with no person, and the repo's review rules name the paths that still wait for one. Podstow's repo stays private.
 
 **Before that.** For eight years Thomas was Engineering Manager and Platform Lead for Standard Chartered Bank's delivery platform, in Singapore and London: CI/CD and release engineering for more than 800 applications, run by a team of up to 16 engineers across Singapore, the UK and India. Manual release gates became automated checks, designed with the security and risk teams, and teams' lead time to production fell from months to weeks, and in places to days. Governor applies the same idea to agents: specification first, quality built into the pipeline as automated checks, and a person's approval only where no check can replace it.
 
@@ -107,7 +107,7 @@ A dark factory runs with the lights off, because nobody works on the floor. Each
 |---|---|
 | Pickup and PR messages | Review and merge every pull request. This repo runs this way. |
 | The PR review, with `merge` off | Merge the pull requests the model approved. |
-| The PR review, with `merge` on | Only what the review cannot pass, such as a change to a human-only path. The production service's repo runs this way, and most of its pull requests merge with no person. |
+| The PR review, with `merge` on | Only what the review cannot pass, such as a change to a human-only path. Podstow's repo runs this way, and most of its pull requests merge with no person. |
 
 The rules for what a person keeps are plain config. [The test fixture's file](test/fixtures/factory/.github/dispatch.json) shows what they look like for a repo with the merge on: 37 human-only paths, each with its reason. They cover the architectural rules, the agents' own instructions and skills, the infrastructure, and the deploy and promotion gates.
 
@@ -147,7 +147,7 @@ Two CloudFormation stacks hold all of it, and GitHub Actions deploys them after 
 
 Governor is built for one developer running their own repos on their own Claude subscription. It is not a team or enterprise product, and does not try to be. One login, one queue and one task are enough for one person's backlog, and they keep the moving parts few. What that choice costs:
 
-- **This repo does not run the automatic merge.** Governor does not review its own pull requests, since it would be marking its own work, so a person merges every one here. The production service's repo does run it.
+- **This repo does not run the automatic merge.** Governor does not review its own pull requests, since it would be marking its own work, so a person merges every one here. Podstow's repo does run it.
 - **It depends on Claude Code internals.** Governor starts a session by driving `claude --cloud` in a pseudo-terminal, with flags the CLI does not document, and reads a session's last reply from the sessions API. A CLI release can break it. The probe after each deploy, and 17 CloudWatch alarms, are how that shows up.
 - **Your login, your terms.** Every session runs on your own claude.ai login, copied from an interactive sign-in, so governor is for your own repos, not a service for other people. Check your plan's terms before you leave it running unattended. The operator mints it again about every two weeks, and an alarm warns three days ahead. The subscription's usage limits, not AWS, set the real ceiling on throughput and cost.
 - **Nobody else runs it yet.** [Running your own governor](docs/self-hosting.md) has every step, but only its author has deployed it.
