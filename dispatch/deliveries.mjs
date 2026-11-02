@@ -317,6 +317,7 @@ export const deliveries = (deps) => {
    */
   const standingFor = async (session, { exclude, closing }) => {
     const id = sessionId(session);
+    const asks = closing && deps.signOff;
     try {
       if (searchRefused !== null) throw new Error(searchRefused);
       let found = standings.get(id);
@@ -328,7 +329,7 @@ export const deliveries = (deps) => {
           return [...named, ...held.filter((p) => !named.some((n) => n.number === p.number))];
         }));
       }
-      return standingLine((await found).filter((o) => !exclude.includes(o.number)), { repo: deps.repo, closing: closing && deps.signOff, prompts: deps.prompts });
+      return standingLine((await found).filter((o) => !exclude.includes(o.number)), { repo: deps.repo, closing: asks, prompts: deps.prompts });
     } catch (error) {
       const message = messageOf(error);
       standings.delete(id);
@@ -339,7 +340,7 @@ export const deliveries = (deps) => {
         searchRefused ??= `an earlier search this turn was refused: ${message.replace(/^.*? failed: /, '')}`;
       }
       deps.log('dispatch-standing', { session, error: message });
-      return standingLine(null, { repo: deps.repo, closing: closing && deps.signOff, prompts: deps.prompts, error: message });
+      return standingLine(null, { repo: deps.repo, closing: asks, prompts: deps.prompts, error: message });
     }
   };
 

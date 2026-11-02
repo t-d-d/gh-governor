@@ -386,7 +386,8 @@ export const accessToken = (login, now) => {
  * archived, not signed off, kept and deferred, and the rows each test turned
  * away. The access token is
  * the one the turn leaves on disk, which the CLI has refreshed if the turn
- * ran it; an expired one sweeps nothing. Nothing here throws: a sweep that
+ * ran it; an expired one sweeps nothing, and so does an empty `repos`,
+ * without listing the sessions. Nothing here throws: a sweep that
  * cannot run says why in `skipped`.
  *
  * @param {{
@@ -411,6 +412,7 @@ export const sweepSignoffs = async ({ archive, login, started, now, log, woken =
     log('dispatch-signoff', { skipped: reason });
     return { ...sweep, skipped: reason };
   };
+  if (repos.length === 0) return skip('no served repo turns sign-off on');
   if (now() - started > SIGNOFF_LATEST_START_MS) return skip(`too late in the turn: past ${SIGNOFF_LATEST_START_MS} ms`);
   const usable = accessToken(login, now());
   if ('reason' in usable) return skip(usable.reason);

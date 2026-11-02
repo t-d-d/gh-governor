@@ -45,8 +45,9 @@ session's own last reply is current and needs nothing in the repo.
 ## Examples
 
 - `sweepSignoffs` and `awaitReplies` in scripts/lib/session-signoff.mjs,
-  wired by `run` in dispatch/turn.mjs with `repos` the served repos: the
-  fire's, or every one for the bare schedule fire (dispatch/repos.mjs).
+  wired by `run` in dispatch/turn.mjs with `repos` the served repos whose
+  file turns `signOff` on: the fire's, or every one for the bare schedule
+  fire (dispatch/repos.mjs).
 
 ## Do not
 

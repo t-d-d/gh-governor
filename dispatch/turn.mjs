@@ -66,8 +66,9 @@
  * one queue over every served repo's ready tickets, each claimed with its
  * repo's labels and launched in its repo's cloud environment.
  * Every turn but a probe ends with the sign-off sweep: it archives each
- * idle session in a served repo (the fire's, or every one for the bare
- * schedule fire) whose last reply, read from its own events, ends
+ * idle session in a served repo whose file turns `signOff` on (the fire's,
+ * or every one for the bare schedule fire) whose last reply, read from its
+ * own events, ends
  * `Signing off.`; a turn that messaged sessions first waits, on a quiet fire
  * lane, for their replies (scripts/lib/session-signoff.mjs).
  * A PR whose body names no session was raised from a local session, which
@@ -482,9 +483,11 @@ const withinBudget = (launched, ms, sessionName) =>
 /**
  * One turn, then the sign-off sweep (scripts/lib/session-signoff.mjs): every
  * turn but a probe archives the sessions whose last turn signed off, in the
- * repos it serves, with the login as the turn leaves it. A fire naming a
+ * repos it serves whose file turns `signOff` on, with the login as the turn
+ * leaves it. A fire naming a
  * repo that is not served does nothing, archiving included; one whose kind
- * the repo's file does not turn on restores the login and only sweeps. A turn that messaged sessions first waits
+ * the repo's file does not turn on restores the login and only sweeps. A turn that messaged sessions, in a repo
+ * that turns `signOff` on, first waits
  * for their replies while no fire is queued (`awaitReplies`), so a sign-off
  * in reply to it is archived by it.
  *
@@ -834,7 +837,10 @@ const turnOf = async (event, deps, records) => {
   // Read when called: a turn whose sweep skips never touches `sessions`.
   /** @type {import('../scripts/lib/session-signoff.mjs').Events} */
   const events = (id, token, cursor) => deps.sessions.events(id, token, cursor);
-  await awaitReplies({ fires: deps.fires, woken, login: deps.workspace.readLogin(), started, now: deps.now, sleep: deps.sleep, log: deps.log, events });
+  // Only a repo whose file turns sign-off on has its sessions archived, so
+  // only there is a reply worth waiting for.
+  const signing = served.filter((s) => turnsOn(s.config, 'signOff')).map((s) => s.repo);
+  if (signing.length > 0) await awaitReplies({ fires: deps.fires, woken, login: deps.workspace.readLogin(), started, now: deps.now, sleep: deps.sleep, log: deps.log, events });
   const signoffs = await sweepSignoffs({
     archive: deps.archive,
     login: deps.workspace.readLogin(),
@@ -842,8 +848,7 @@ const turnOf = async (event, deps, records) => {
     now: deps.now,
     log: deps.log,
     woken,
-    // Only a repo whose file turns sign-off on has its sessions archived.
-    repos: served.filter((s) => turnsOn(s.config, 'signOff')).map((s) => s.repo),
+    repos: signing,
     list: (token) => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
     lookup: sweepLookup(deps),
     events,

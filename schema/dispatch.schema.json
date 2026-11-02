@@ -135,7 +135,7 @@
           "type": "boolean"
         },
         "signOff": {
-          "description": "Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message with nothing else open asks the session to sign off.",
+          "description": "Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off.",
           "type": "boolean"
         },
         "mergeHandoff": {
