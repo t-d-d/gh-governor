@@ -37,6 +37,8 @@
  * real ones.
  */
 
+import { errorText } from './error-text.mjs';
+
 /**
  * @typedef {'receiver' | 'stop' | 'backstop'} Caller
  * @typedef {{
@@ -93,9 +95,6 @@ export const callerOf = (event) => {
   if (e?.caller === 'receiver' || e?.caller === 'backstop') return e.caller;
   return undefined;
 };
-
-/** @param {unknown} error */
-const errorText = (error) => String(/** @type {any} */ (error)?.stack ?? error);
 
 /**
  * Start the next dispatcher task, if a fire waits and none runs.
