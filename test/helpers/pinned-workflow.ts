@@ -45,12 +45,13 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
     return [...problems, `${path} at ${short} is not valid YAML: ${(error as Error).message.split('\n')[0]}`];
   }
   const on = (doc as { on?: unknown } | null | undefined)?.on;
+  const onMap = typeof on === 'object' && on !== null && !Array.isArray(on);
   const callable = on === 'workflow_call'
     || (Array.isArray(on) && on.includes('workflow_call'))
-    || (typeof on === 'object' && on !== null && !Array.isArray(on) && Object.hasOwn(on, 'workflow_call'));
+    || (onMap && Object.hasOwn(on, 'workflow_call'));
   if (!callable) return [...problems, `${path} at ${short} is not a reusable workflow: it has no on: workflow_call`];
   type Input = { type?: string, required?: boolean } | null;
-  const call = typeof on === 'object' && on !== null && !Array.isArray(on)
+  const call = onMap
     ? (on as { workflow_call?: { inputs?: Record<string, Input> | null } | null }).workflow_call
     : undefined;
   const inputs = call?.inputs ?? {};
@@ -69,7 +70,9 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
 }
 
 // YAML reads a `${{ ... }}` expression as a string, and GitHub evaluates it
-// before it checks the input's type, so it can stand for any type.
+// before it checks the input's type, so it can stand for any type. Only a
+// value that is one whole expression counts: text around or between
+// expressions makes GitHub join them into a string.
 function isExpression(value: unknown): boolean {
-  return typeof value === 'string' && /^\s*\$\{\{[\s\S]*\}\}\s*$/.test(value);
+  return typeof value === 'string' && /^\s*\$\{\{(?:(?!\}\})[\s\S])*\}\}\s*$/.test(value);
 }

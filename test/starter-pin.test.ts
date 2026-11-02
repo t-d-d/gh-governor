@@ -40,33 +40,10 @@ const TODAY = {
   labels: { type: 'string', default: '' },
 };
 
-// A throwaway repo: main holds the checker with today's inputs, then one that
-// adds a required input; a side branch holds one that renamed an input. A test
-// can pin any of the three commits.
-function fixtureRepo() {
-  const dir = mkdtempSync(join(tmpdir(), 'starter-pin-'));
-  const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: dir, encoding: 'utf8' }).trim();
-  const commit = (inputs: Record<string, unknown>) => {
-    mkdirSync(join(dir, '.github/workflows'), { recursive: true });
-    writeFileSync(join(dir, CHECKER), checkerAt(inputs));
-    git('add', '.');
-    git('commit', '-qm', 'checker');
-    return git('rev-parse', 'HEAD');
-  };
-  git('init', '-q', '-b', 'main');
-  const onMain = commit(TODAY);
-  const renamed = commit({ 'tolerance-hours': TODAY['tolerance-hours'], 'issue-labels': { type: 'string', default: '' } });
-  git('branch', '-q', 'side');
-  git('reset', '-q', '--hard', onMain);
-  const required = commit({ ...TODAY, repo: { type: 'string', required: true } });
-  return { dir, onMain, renamed, required, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
-}
-
-// A second throwaway repo whose main holds, in turn: a checker with a number
-// and a boolean input, a workflow that is not reusable, and a file that is
-// not valid YAML.
-function oddCheckersRepo() {
-  const dir = mkdtempSync(join(tmpdir(), 'starter-pin-odd-'));
+// An empty git repo on main in a temporary folder, and a way to commit a new
+// text for the checker and get the commit back.
+function throwawayRepo(prefix: string) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
   const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: dir, encoding: 'utf8' }).trim();
   const commit = (text: string) => {
     mkdirSync(join(dir, '.github/workflows'), { recursive: true });
@@ -76,10 +53,31 @@ function oddCheckersRepo() {
     return git('rev-parse', 'HEAD');
   };
   git('init', '-q', '-b', 'main');
+  return { dir, git, commit, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+// A throwaway repo: main holds the checker with today's inputs, then one that
+// adds a required input; a side branch holds one that renamed an input. A test
+// can pin any of the three commits.
+function fixtureRepo() {
+  const { dir, git, commit, cleanup } = throwawayRepo('starter-pin-');
+  const onMain = commit(checkerAt(TODAY));
+  const renamed = commit(checkerAt({ 'tolerance-hours': TODAY['tolerance-hours'], 'issue-labels': { type: 'string', default: '' } }));
+  git('branch', '-q', 'side');
+  git('reset', '-q', '--hard', onMain);
+  const required = commit(checkerAt({ ...TODAY, repo: { type: 'string', required: true } }));
+  return { dir, onMain, renamed, required, cleanup };
+}
+
+// A second throwaway repo whose main holds, in turn: a checker with a number
+// and a boolean input, a workflow that is not reusable, and a file that is
+// not valid YAML.
+function oddCheckersRepo() {
+  const { dir, commit, cleanup } = throwawayRepo('starter-pin-odd-');
   const typed = commit(checkerAt({ 'tolerance-hours': { type: 'number', default: 3 }, strict: { type: 'boolean', default: false } }));
   const notCallable = commit(yaml.dump({ name: 'heartbeat check', on: { push: null }, jobs: { check: { 'runs-on': 'ubuntu-24.04', steps: [{ run: 'true' }] } } }));
   const broken = commit('name: [unclosed\non: {workflow_call: \n');
-  return { dir, typed, notCallable, broken, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, typed, notCallable, broken, cleanup };
 }
 
 const STARTER_WITH = { 'tolerance-hours': 3, labels: 'heartbeat' };
@@ -87,8 +85,15 @@ const STARTER_WITH = { 'tolerance-hours': 3, labels: 'heartbeat' };
 describe('pinnedInputProblems', () => {
   // Every test only reads the repo, so one serves them all.
   let repo: ReturnType<typeof fixtureRepo> & { extra: ReturnType<typeof oddCheckersRepo> };
-  before(() => { repo = { ...fixtureRepo(), extra: oddCheckersRepo() }; });
-  after(() => { repo.cleanup(); repo.extra.cleanup(); });
+  let main: ReturnType<typeof fixtureRepo> | undefined;
+  let extra: ReturnType<typeof oddCheckersRepo> | undefined;
+  before(() => {
+    main = fixtureRepo();
+    extra = oddCheckersRepo();
+    repo = { ...main, extra };
+  });
+  // Either repo may be missing if building the other threw.
+  after(() => { main?.cleanup(); extra?.cleanup(); });
 
   test('finds nothing when the pin is on main and takes every input passed', () => {
     assert.deepEqual(pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: repo.onMain, path: CHECKER, passed: STARTER_WITH }), []);
@@ -143,6 +148,11 @@ describe('pinnedInputProblems', () => {
   test('accepts an expression passed to a number or boolean input, as GitHub does', () => {
     const got = pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.typed, path: CHECKER, passed: { 'tolerance-hours': '${{ vars.HOURS }}', strict: '${{ inputs.strict }}' } });
     assert.deepEqual(got, []);
+  });
+
+  test('reports two expressions joined by text, which GitHub reads as a string, passed to a number input', () => {
+    const got = pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.typed, path: CHECKER, passed: { 'tolerance-hours': '${{ vars.A }}-${{ vars.B }}' } });
+    assert.deepEqual(got, [`the checker at ${repo.extra.typed.slice(0, 12)} takes tolerance-hours as a number, not a string`]);
   });
 
   test('reports a null value as null, not as an object', () => {
