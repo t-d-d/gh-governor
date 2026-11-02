@@ -56,6 +56,18 @@ the fix is to update the CLI. The `--remote` generation predates the flag and
 the bundle path alike, so it gets no `--ref` at all: there the flag would buy
 nothing and kill every dispatch.
 
+## Why a takeover starts on the PR's branch
+
+A session started from `main` is given a fresh branch of its own and a rule
+to push only to it. A session that takes over a PR (a conflicted PR whose
+owner session archived) then merges on that fresh branch and opens a second
+PR beside the first, which stays conflicted. So a launch that names a branch
+in CLAUDE_ON_BRANCH passes `--on-branch <branch>` in place of `--ref main`:
+the session checks that branch out and pushes to it. The CLI refuses the two
+together. Like `--ref` it names a revision, so a failed GitHub preflight is
+still a refusal rather than a bundle. It is hidden as `--ref` is, and the
+`--remote` generation gets neither.
+
 ## Why the session runs in the auto permission mode
 
 Nobody answers a permission prompt in a dispatched session, so it is launched
@@ -206,6 +218,9 @@ if len(sys.argv) != 2:
 prompt = open(sys.argv[1]).read()
 model = os.environ.get("CLAUDE_MODEL", "")
 session_name = os.environ.get("CLAUDE_SESSION_NAME", "")
+# The branch a session takes over, when it is given one; see the module
+# docstring § Why a takeover starts on the PR's branch.
+on_branch = os.environ.get("CLAUDE_ON_BRANCH", "")
 # How long the child may stay SILENT before the dispatch is unconfirmed.
 confirm_timeout = float(os.environ.get("DISPATCH_CONFIRM_TIMEOUT") or 30.0)
 # The budget for the whole dispatch, silent or not. A real one confirms in
@@ -282,7 +297,12 @@ if pid == 0:
         # only: the `--remote` one predates the `auto` choice and would refuse
         # the argv, as it does `--ref`.
         cmd += ["--permission-mode", "auto"]
-        cmd += ["--ref", CLOUD_REF]
+        # A takeover starts on the PR's own branch instead, and pushes there.
+        # The CLI refuses the two flags together.
+        if on_branch:
+            cmd += ["--on-branch", on_branch]
+        else:
+            cmd += ["--ref", CLOUD_REF]
         # Temporary; see the module docstring § Why feature-flag evaluation is
         # off for the child. Same generation as `--ref`: only this one has the
         # bundle path the variable steers.

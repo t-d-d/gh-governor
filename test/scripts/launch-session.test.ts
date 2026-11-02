@@ -269,7 +269,7 @@ const argvFrom = (env: Record<string, string>, help = CLOUD_HELP) => {
   return argv;
 };
 
-const NO_ENV = { CLAUDE_MODEL: '', CLAUDE_SESSION_NAME: '' };
+const NO_ENV = { CLAUDE_MODEL: '', CLAUDE_SESSION_NAME: '', CLAUDE_ON_BRANCH: '' };
 /** The launcher's "unconfirmed" status, asserted below to be one the
  *  interpreter cannot produce on its own. */
 const UNCONFIRMED = 3;
@@ -325,6 +325,25 @@ describe('launch-session.py argv', () => {
     assert.ok(argv, 'the launcher dispatched nothing, so there is no argv to assert on');
     assert.ok(!argv.includes('--ref'), `--ref would kill this generation: ${argv.join(' ')}`);
     assert.equal(childGrowthBook, '');
+  });
+
+  /**
+   * A session that takes over a PR (a conflicted PR whose owner archived)
+   * must push to that PR's head branch. Started from `main`, the cloud
+   * session is given a new branch of its own and a rule to push only there,
+   * so it merges on that branch and opens a second PR. `--on-branch` checks
+   * the branch out and makes it the one the session pushes to. It takes the
+   * place of `--ref main`, with which the CLI refuses to combine it.
+   */
+  test('starts a session on the branch it is given, in place of main, on a --cloud CLI', () => {
+    const argv = argvFrom({ ...NO_ENV, CLAUDE_ON_BRANCH: 'claude/stale-clock' }, CLOUD_HELP);
+    assert.deepEqual(argv.slice(-4), ['--on-branch', 'claude/stale-clock', '--cloud', 'do the thing']);
+    assert.ok(!argv.includes('--ref'), `--ref and --on-branch are mutually exclusive: ${argv.join(' ')}`);
+  });
+
+  test('passes no --on-branch to a --remote CLI, which has no such option', () => {
+    const argv = argvFrom({ ...NO_ENV, CLAUDE_ON_BRANCH: 'claude/stale-clock' }, REMOTE_HELP);
+    assert.ok(!argv.includes('--on-branch'), argv.join(' '));
   });
 
   /**
