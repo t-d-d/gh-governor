@@ -5,8 +5,8 @@
  * - the dispatcher image carries no repo's checklist or lists: no `.claude/`
  *   path;
  * - the review's modules, and every module they load by relative import,
- *   start no process, and the one process a review turn starts is the
- *   CLI's model run, with no tools;
+ *   import no builtin but the few they need, and the one process a review
+ *   turn starts is the CLI's model run, with no tools;
  * - the factory's file holds its checklist and lists, and its checklist
  *   names the file as the list, the shape the review tests read.
  *
@@ -18,6 +18,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import ts from 'typescript';
@@ -33,18 +34,38 @@ const source = (path: string) => parseJs(path, read(path));
 const ROOT = join(import.meta.dirname, '..');
 
 /**
- * What would run code: a process, a VM, an evaluated string, a fork, a require that loads child_process, an inspector that evaluates,
- * a REPL that evaluates, a test runner that starts processes, a WebAssembly program. A subpath such as `inspector/promises` is the
- * same module. `test` is a builtin only as `node:test`: a bare `test` is a package name.
+ * The builtins the review's modules import today, each in its `node:` form. Any other builtin fails the check, so one a review
+ * module comes to need is added here on purpose, in a pull request a person reads. Most others run code: a process, a VM, a fork,
+ * an evaluated string, a native library.
  */
-const RUNS_CODE = /^((node:)?(child_process|vm|worker_threads|cluster|module|inspector|repl|wasi)|node:test)(\/.*)?$/;
+const ALLOWED_BUILTINS = new Set(['node:crypto', 'node:util']);
 
 /**
- * Each `path imports spec` that runs code, in every module the entries load
- * by relative import, re-exports and `import()` included.
+ * A specifier's `node:` form when it names a builtin, or null for a package or a relative path. Every `node:` specifier is a
+ * builtin, so a builtin newer than this node still counts. `test` and `sqlite` are builtins only with the prefix: bare, each
+ * names a package.
  */
-const codeRunners = (root: string, ...entries: string[]) => [...importClosure(root, ...entries)].flatMap((path) =>
-  moduleSpecifiers(readFileSync(join(root, path), 'utf8')).filter((spec) => RUNS_CODE.test(spec)).map((spec) => `${path} imports ${spec}`));
+const builtin = (spec: string): string | null => {
+  if (spec.startsWith('node:')) return spec;
+  return isBuiltin(spec) ? `node:${spec}` : null;
+};
+
+/**
+ * Each builtin import in every module the entries load by relative import, re-exports and `import()` included: the module's
+ * path, the specifier as written, and its `node:` form.
+ */
+const builtinImports = (root: string, ...entries: string[]) => [...importClosure(root, ...entries)].flatMap((path) =>
+  moduleSpecifiers(readFileSync(join(root, path), 'utf8')).flatMap((spec) => {
+    const name = builtin(spec);
+    return name === null ? [] : [{ path, spec, name }];
+  }));
+
+/** Each `path imports spec` that loads a builtin off the allowed list. */
+const codeRunners = (root: string, ...entries: string[]) =>
+  builtinImports(root, ...entries).filter(({ name }) => !ALLOWED_BUILTINS.has(name)).map(({ path, spec }) => `${path} imports ${spec}`);
+
+/** Every builtin, in its `node:` form, the entries' modules import. */
+const builtinsImported = (root: string, ...entries: string[]) => new Set(builtinImports(root, ...entries).map(({ name }) => name));
 
 /** The modules a review reads and judges with. */
 const REVIEW_MODULES = ['dispatch/review.mjs', 'dispatch/checklist.mjs', 'dispatch/repo-config.mjs', 'dispatch/pr-body.mjs', 'dispatch/webhook/review-comment.mjs'];
@@ -98,9 +119,24 @@ describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)',
     }
   });
 
-  test('a package named test is not node:test: only the prefixed name is the builtin', () => {
-    assert.ok(!RUNS_CODE.test('test'));
-    assert.ok(!RUNS_CODE.test('test/lib'));
+  test('the check refuses sqlite, whose loadExtension loads a native library, and any builtin off the list', () => {
+    const root = mkdtempSync(join(tmpdir(), 'governor-review-sqlite-'));
+    try {
+      writeFileSync(join(root, 'entry.mjs'), "import { DatabaseSync } from 'node:sqlite';\nimport { createHash } from 'node:crypto';\nimport { format } from 'util';\nimport { z } from 'zod';\nexport { readFile } from 'node:fs';\nexport const later = () => import('node:some-future-builtin');\nexport const x = [DatabaseSync, createHash, format, z];\n");
+      assert.deepEqual(codeRunners(root, 'entry.mjs').sort(), ['entry.mjs imports node:fs', 'entry.mjs imports node:some-future-builtin', 'entry.mjs imports node:sqlite']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a package named test or sqlite is not the builtin: only the prefixed name is', () => {
+    for (const spec of ['test', 'test/lib', 'sqlite']) assert.equal(builtin(spec), null, spec);
+    assert.equal(builtin('node:sqlite'), 'node:sqlite');
+    assert.equal(builtin('crypto'), 'node:crypto');
+  });
+
+  test('the allowed list holds only builtins the review\'s modules import today', () => {
+    assert.deepEqual([...builtinsImported(ROOT, ...REVIEW_MODULES)].sort(), [...ALLOWED_BUILTINS].sort());
   });
 
   test('the review\'s modules, and every module they load, import nothing that runs code', () => {
