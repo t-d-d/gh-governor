@@ -5,8 +5,9 @@
  * - the dispatcher image carries no repo's checklist or lists: no `.claude/`
  *   path;
  * - the review's modules, and every module they load by relative import,
- *   import no builtin but the few they need, and the one process a review
- *   turn starts is the CLI's model run, with no tools;
+ *   import no builtin but the few they need, call no global that runs code
+ *   (`eval`, `Function`, WebAssembly's compilers, `process.dlopen`), and the
+ *   one process a review turn starts is the CLI's model run, with no tools;
  * - the factory's file holds its checklist and lists, and its checklist
  *   names the file as the list, the shape the review tests read.
  *
@@ -66,6 +67,48 @@ const codeRunners = (root: string, ...entries: string[]) =>
 
 /** Every builtin, in its `node:` form, the entries' modules import. */
 const builtinsImported = (root: string, ...entries: string[]) => new Set(builtinImports(root, ...entries).map(({ name }) => name));
+
+/**
+ * The globals that run code with no import: `eval` and `Function` evaluate a string, `WebAssembly` compiles and runs a program,
+ * and `process.dlopen` loads a native library.
+ */
+const EVALUATORS = new Set([
+  'eval', 'Function',
+  'WebAssembly.instantiate', 'WebAssembly.compile', 'WebAssembly.instantiateStreaming', 'WebAssembly.compileStreaming',
+  'WebAssembly.Module', 'WebAssembly.Instance',
+  'process.dlopen',
+]);
+
+/** The names that reach the global object: a leading one is dropped, so `global.eval` reads as `eval`. */
+const GLOBAL_OBJECTS = new Set(['globalThis', 'global']);
+
+/**
+ * The dotted name a call, `new` or tagged template reaches, or null when it is not a plain name: parentheses and `(0, f)`
+ * unwrapped, a string index read as a property, and a leading `globalThis.` or `global.` dropped.
+ */
+const calleeName = (node: ts.Expression): string | null => {
+  if (ts.isParenthesizedExpression(node)) return calleeName(node.expression);
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.CommaToken) return calleeName(node.right);
+  if (ts.isIdentifier(node)) return node.text;
+  const property = ts.isPropertyAccessExpression(node) ? node.name.text
+    : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression.text
+      : null;
+  if (property === null) return null;
+  const object = calleeName((node as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression);
+  if (object === null) return null;
+  return GLOBAL_OBJECTS.has(object) ? property : `${object}.${property}`;
+};
+
+/** Each `path:line calls name` where a module the entries load calls, constructs or tags a template with an evaluating global. */
+const codeEvaluators = (root: string, ...entries: string[]) => [...importClosure(root, ...entries)].flatMap((path) => {
+  const file = parseJs(path, readFileSync(join(root, path), 'utf8'));
+  return nodes(file).flatMap((n) => {
+    if (!ts.isCallExpression(n) && !ts.isNewExpression(n) && !ts.isTaggedTemplateExpression(n)) return [];
+    const name = calleeName(ts.isTaggedTemplateExpression(n) ? n.tag : n.expression);
+    if (name === null || !EVALUATORS.has(name)) return [];
+    return [`${path}:${file.getLineAndCharacterOfPosition(n.getStart()).line + 1} calls ${name}`];
+  });
+});
 
 /** The modules a review reads and judges with. */
 const REVIEW_MODULES = ['dispatch/review.mjs', 'dispatch/checklist.mjs', 'dispatch/repo-config.mjs', 'dispatch/pr-body.mjs', 'dispatch/webhook/review-comment.mjs'];
@@ -141,6 +184,45 @@ describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)',
 
   test('the review\'s modules, and every module they load, import nothing that runs code', () => {
     assert.deepEqual(codeRunners(ROOT, ...REVIEW_MODULES), []);
+  });
+
+  test('the check finds eval, Function, WebAssembly\'s compilers, and process.dlopen, called, constructed or tagged', () => {
+    const root = mkdtempSync(join(tmpdir(), 'governor-review-globals-'));
+    try {
+      const files = {
+        'entry.mjs': "import './lib/inner.mjs';\nexport const a = eval('1');\nexport const b = new Function('return 1');\nexport const c = Function('return 2');\nexport const d = (0, eval)('3');\n",
+        'lib/inner.mjs': "export const e = (bytes) => WebAssembly.instantiate(bytes);\nexport const f = (bytes) => globalThis.WebAssembly.compile(bytes);\nexport const g = (m) => process.dlopen(m, 'x.node');\nexport const h = () => globalThis.eval?.('4');\nexport const i = (bytes) => WebAssembly['compile'](bytes);\n",
+        'lib/clean.mjs': "export const evaluate = (x) => x;\nexport const j = { eval: 1, Function: 2 };\nexport const k = (o) => o.eval('5');\nexport const l = WebAssembly.validate;\n",
+        'lib/more.mjs': "export const o = (bytes) => new WebAssembly.Module(bytes);\nexport const p = (mod) => new globalThis.WebAssembly.Instance(mod);\nexport const q = (r) => WebAssembly.instantiateStreaming(r);\nexport const s = (r) => WebAssembly.compileStreaming(r);\nexport const t = () => global.eval('6');\nexport const u = () => Function`return 7`;\n",
+      };
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), text);
+      }
+      assert.deepEqual(codeEvaluators(root, 'entry.mjs', 'lib/clean.mjs', 'lib/more.mjs').sort(), [
+        'entry.mjs:2 calls eval',
+        'entry.mjs:3 calls Function',
+        'entry.mjs:4 calls Function',
+        'entry.mjs:5 calls eval',
+        'lib/inner.mjs:1 calls WebAssembly.instantiate',
+        'lib/inner.mjs:2 calls WebAssembly.compile',
+        'lib/inner.mjs:3 calls process.dlopen',
+        'lib/inner.mjs:4 calls eval',
+        'lib/inner.mjs:5 calls WebAssembly.compile',
+        'lib/more.mjs:1 calls WebAssembly.Module',
+        'lib/more.mjs:2 calls WebAssembly.Instance',
+        'lib/more.mjs:3 calls WebAssembly.instantiateStreaming',
+        'lib/more.mjs:4 calls WebAssembly.compileStreaming',
+        'lib/more.mjs:5 calls eval',
+        'lib/more.mjs:6 calls Function',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('the review\'s modules, and every module they load, call no global that runs code', () => {
+    assert.deepEqual(codeEvaluators(ROOT, ...REVIEW_MODULES), []);
   });
 
   test('the review turn\'s one process is the CLI\'s model run, with no tools', () => {
