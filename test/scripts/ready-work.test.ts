@@ -28,7 +28,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { UNREADIED_MARKER, heldUnreadied, isWaiting, labelRow, mayPickUp, mayStartSpec, selectReadyWork, ticketStatus, waitOf } from '../../scripts/lib/ready-work.mjs';
+import { UNREADIED_MARKER, isWaiting, labelRow, mayPickUp, mayStartSpec, selectReadyWork, ticketStatus, waitOf } from '../../scripts/lib/ready-work.mjs';
 import * as unblocked from '../../dispatch/unblocked.mjs';
 import { dispatchMarker } from '../../dispatch/webhook/fire.mjs';
 
@@ -432,9 +432,9 @@ describe('mayStartSpec', () => {
   });
 });
 
-describe('heldUnreadied and UNREADIED_MARKER live here, and unblocked.mjs re-exports them', () => {
-  test('the same values from both files', () => {
-    assert.equal(unblocked.heldUnreadied, heldUnreadied);
-    assert.equal(unblocked.UNREADIED_MARKER, UNREADIED_MARKER);
+describe('heldUnreadied and UNREADIED_MARKER live here alone', () => {
+  test('unblocked.mjs no longer re-exports them', () => {
+    assert.equal('heldUnreadied' in unblocked, false);
+    assert.equal('UNREADIED_MARKER' in unblocked, false);
   });
 });

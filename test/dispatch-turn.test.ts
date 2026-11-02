@@ -34,7 +34,7 @@ import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
 import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitNotPlannedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
 import { waitOf } from '../scripts/lib/ready-work.mjs';
-import { UNREADIED_MARKER } from '../dispatch/unblocked.mjs';
+import { UNREADIED_MARKER } from '../scripts/lib/ready-work.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
 import { ROUTINE_ANSWER, RoutinesApiError } from '../dispatch/routines.mjs';
 
