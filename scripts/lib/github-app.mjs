@@ -452,23 +452,34 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      */
     issuesClosedSince: async (since) => after(await allPages(call, `/repos/${repo}/issues`, { state: 'closed', since, sort: 'updated', direction: 'desc' }), 'closed_at', since),
 
-    /** The native `blocked by` relationships. @param {number} number @returns {Promise<BlockerRow[]>} */
+    /**
+     * The native `blocked by` relationships, each naming its repo where
+     * GitHub says it. A relative wait reads whether its issue is linked
+     * (dispatch/waits.mjs).
+     *
+     * @param {number} number
+     * @returns {Promise<Array<BlockerRow & { repo?: string }>>}
+     */
     blockers: async (number) => {
       /** @type {any[]} */
       const rows = await call('GET', `/repos/${repo}/issues/${number}/dependencies/blocked_by?per_page=100`);
-      return rows.map((row) => ({ number: row.number, state: row.state, title: row.title, ...(Number.isInteger(row.id) ? { id: row.id } : {}) }));
+      return rows.map((row) => {
+        const named = repoOf(row.repository_url);
+        return { number: row.number, state: row.state, title: row.title, ...(named === null || named === undefined ? {} : { repo: named }), ...(Number.isInteger(row.id) ? { id: row.id } : {}) };
+      });
     },
 
     /**
-     * Link an issue as blocked by another, named by its id (`blocked_by`).
+     * Link an issue as blocked by another, named by its id (`blocked_by`):
+     * a relative wait's blocker (`issueClose`), or the repo's wait ticket.
      * A refusal throws with its status, as every call does; GitHub's cap of
      * 50 issues one issue may block is a 422.
      *
      * @param {number} number
-     * @param {number} blockerId
+     * @param {number} id
      */
-    addBlocker: async (number, blockerId) => {
-      await call('POST', `/repos/${repo}/issues/${number}/dependencies/blocked_by`, { issue_id: blockerId });
+    addBlocker: async (number, id) => {
+      await call('POST', `/repos/${repo}/issues/${number}/dependencies/blocked_by`, { issue_id: id });
     },
 
     /**
@@ -485,15 +496,38 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         if (/** @type {{ status?: number }} */ (error)?.status !== 404) throw error;
       }
     },
+    /**
+     * An issue's id, title, state, GitHub's `state_reason` and when it
+     * closed, each null where it gives none, and whether it is a pull
+     * request: what a relative wait reads of the issue it names
+     * (dispatch/waits.mjs).
+     *
+     * @param {number} number
+     * @returns {Promise<{ id: number, number: number, title: string, state: string, reason: string | null, closedAt: string | null, pull: boolean }>}
+     */
+    issueClose: async (number) => {
+      const row = await call('GET', `/repos/${repo}/issues/${number}`);
+      return {
+        id: row.id,
+        number: row.number,
+        title: row.title ?? '',
+        state: row.state,
+        reason: typeof row.state_reason === 'string' ? row.state_reason : null,
+        closedAt: typeof row.closed_at === 'string' ? row.closed_at : null,
+        pull: Boolean(row.pull_request),
+      };
+    },
 
     /**
      * The native `blocking` relationships, the reverse of `blockers`, each
      * naming its repo: a dependency can cross repositories, so a number
      * alone would read another repo's #12 as this one's. A row naming no
-     * repository is this one's.
+     * repository is this one's. Each carries what its body's `Blocked
+     * until:` line says (`waitOf`), so a close can tell a ticket that waits
+     * on it (dispatch/unblocked.mjs).
      *
      * @param {number} number
-     * @returns {Promise<Array<BlockerRow & { repo: string }>>}
+     * @returns {Promise<Array<BlockerRow & { repo: string, wait?: import('./ready-work.mjs').Wait }>>}
      */
     blocking: async (number) => {
       /** @type {any[]} */
@@ -503,6 +537,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         state: row.state,
         title: row.title,
         repo: repoOf(row.repository_url) ?? repo,
+        ...waitOf(row.body),
       }));
     },
 
@@ -519,15 +554,18 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      * another repository is never named.
      *
      * @param {number} number
-     * @returns {Promise<{ title: string, reason: string | null, pr: { number: number, title: string, url: string } | null }>}
+     * Where GitHub gives it, also when the issue closed (`closedAt`).
+     *
+     * @returns {Promise<{ title: string, reason: string | null, pr: { number: number, title: string, url: string } | null, closedAt?: string }>}
      */
     closure: async (number) => {
       const issue = await call('GET', `/repos/${repo}/issues/${number}`);
       const title = issue.title ?? '';
       const reason = typeof issue.state_reason === 'string' ? issue.state_reason : null;
+      const when = typeof issue.closed_at === 'string' ? { closedAt: issue.closed_at } : {};
       const events = await allPages(call, `/repos/${repo}/issues/${number}/events`, {});
       const closed = events.filter((e) => e.event === 'closed').at(-1);
-      if (closed === undefined) return { title, reason, pr: null };
+      if (closed === undefined) return { title, reason, pr: null, ...when };
       const at = Date.parse(closed.created_at);
       const since = Math.max(at - CLOSE_LAG_MS, ...events.filter((e) => e.event === 'reopened').map((e) => Date.parse(e.created_at)).filter((t) => t <= at));
       const justBefore = (/** @type {unknown} */ merged) => typeof merged === 'string' && Date.parse(merged) <= at && Date.parse(merged) >= since;
@@ -538,7 +576,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         /** @type {any[]} */
         const pulls = await call('GET', `/repos/${repo}/commits/${sha}/pulls?per_page=100`);
         const row = lastMerged(pulls.filter((p) => justBefore(p.merged_at)), (p) => p.merged_at);
-        if (row !== undefined) return { title, reason, pr: named(row) };
+        if (row !== undefined) return { title, reason, pr: named(row), ...when };
       }
       const timeline = await allPages(call, `/repos/${repo}/issues/${number}/timeline`, {});
       const closers = timeline
@@ -549,7 +587,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
           && justBefore(i.pull_request.merged_at)
           && closedBy(i.body ?? '', repo).includes(number));
       const row = lastMerged(closers, (i) => i.pull_request.merged_at);
-      return { title, reason, pr: row === undefined ? null : named(row) };
+      return { title, reason, pr: row === undefined ? null : named(row), ...when };
     },
 
     /** Post a comment. @param {number} number @param {string} body */

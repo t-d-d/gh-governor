@@ -266,7 +266,7 @@ describe('a waiting ticket that is gone or moved', () => {
   test('a wait fire for a ticket that is gone drops its item, and does not throw', async () => {
     const { state, dropped } = stateWith();
     const { reader } = readerWith(async () => { throw gone(410); });
-    assert.equal(await holdWait({ reader, state, repo: REPO, issue: 7, labels: LABELS, now: NOW, log: () => {} }), 'dropped');
+    assert.equal(await holdWait({ reader: reader as never, state, repo: REPO, issue: 7, labels: LABELS, now: NOW, log: () => {} }), 'dropped');
     assert.deepEqual(dropped, [[REPO, 7, '2026-11-05']]);
   });
 });

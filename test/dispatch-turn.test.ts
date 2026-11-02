@@ -32,7 +32,8 @@ import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, readLastRun } from '../
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
-import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
+import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitNotPlannedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
+import { waitOf } from '../scripts/lib/ready-work.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
 import { ROUTINE_ANSWER, RoutinesApiError } from '../dispatch/routines.mjs';
 
@@ -1585,11 +1586,14 @@ describe('run — an unblocked fire', () => {
     assert.equal(spec.launches.length, 1);
   });
 
-  test('a file turning neither pickup nor unblocked on refuses the fire before it reads the ticket', async () => {
+  // The ticket is read once, for a relative `Blocked until:` line on this
+  // close, which is honoured whatever the switches say (dispatch/waits.mjs).
+  test('a file turning neither pickup nor unblocked on reads the ticket once, and refuses the fire', async () => {
     const h = ticketTurn({ features: { pickup: false, unblocked: false, mergeHandoff: false } });
     const result = await run(fire(), h.deps as never) as Record<string, unknown>;
     assert.match(String(result.refusal), /neither pickup nor unblocked/);
-    assert.deepEqual(h.asked, []);
+    assert.deepEqual(h.asked, [`${REPO} ticket 7`]);
+    assert.deepEqual([h.launches, h.messages, h.comments], [[], [], []]);
   });
 
   test('a file that still sets mergeHandoff turns unblocked on', async () => {
@@ -2173,6 +2177,13 @@ describe('run: a waiting ticket linked to the wait ticket', () => {
     const waiting = linksTurn({ ticket: ticketWith({ wait: { until: LATER } }), linked: true, blocking: [{ number: 7, state: 'open', title: 'Issue 7', repo: REPO }] });
     await run({ source: 'aws.events' }, waiting.deps as never);
     assert.deepEqual(linkCalls(waiting), [], 'a wait still to come keeps its link');
+  });
+
+  test('a line that turns relative takes the wait ticket\'s link off: its own blocker shows in the sidebar', async () => {
+    const h = linksTurn({ ticket: ticketWith({ wait: { after: { days: 3, issue: 143 } } as never, labels: ['type: prd'] }), linked: true, item: LATER });
+    await run(fire, h.deps as never);
+    assert.deepEqual(linkCalls(h), [`unblock #7 from ${BOARD_ID}`]);
+    assert.deepEqual([...h.waitItems], []);
   });
 
   test('a closed wait ticket gets no links, and the turn logs at warn', async () => {
@@ -7012,5 +7023,132 @@ describe('run: the hook table', () => {
     turn(result as never);
     assert.equal(result.unread, undefined);
     assert.ok(!h.logged.some((l) => l.event === 'hook-table-unwritten'));
+  });
+});
+
+/**
+ * A relative wait: `Blocked until: 3 days after #41 closes`, on a ticket
+ * that #41 blocks (dispatch/waits.mjs). The ticket's own turn rewrites the
+ * line once into its date when #41 closes as completed, whatever the repo's
+ * switches say, and the date hold does the rest.
+ */
+describe('run: a relative wait on a declared blocker', () => {
+  const READY = ['workflow: ready for development', 'mode: afk'];
+  const RELATIVE = 'Blocked until: 3 days after #41 closes\n\nThe rest.';
+  const CLOSED_AT = new Date(NOW - 60 * 60 * 1000).toISOString();
+  const UNTIL = new Date(Date.parse(CLOSED_AT) + 4 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const blocker = { repo: REPO, number: 41, title: 'The parser', reason: 'completed', closedAt: CLOSED_AT };
+  const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, ...over });
+  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>> } = {}) => {
+    const asked: string[] = [];
+    const file = JSON.parse(FACTORY_FILE);
+    file.features = { ...file.features, ...features };
+    const state = { body };
+    const base = harness();
+    const h = harness({
+      configFile: async (repo: string) => (repo === REPO ? JSON.stringify(file) : null),
+      reader: () => ({
+        ...base.deps.reader(''),
+        readyIssues: async () => rows,
+        ticket: async (n: number) => {
+          asked.push(`ticket ${n}`);
+          return { number: n, title: `Issue ${n}`, body: state.body, state: 'open', labels, pull: false, openBlockers: 0, ...waitOf(state.body) };
+        },
+        issue: async (n: number) => ({ number: n, body: state.body, pull: false }),
+        updateIssue: async (n: number, { body: next }: { body: string }) => { h.issueEdits.push({ issue: n, body: next }); state.body = next; },
+        issueClose: async (n: number) => ({ id: 9000 + n, number: n, title: `Issue ${n}`, state: 'open', reason: null, closedAt: null, ...issues[n] }),
+        allComments: async () => [],
+        comment: async (n: number, text: string) => { h.comments.push({ issue: n, body: text }); },
+        addLabels: async (n: number, on: string[]) => { h.calls.push(`label #${n} +${on.join(', ')}`); },
+        removeLabel: async (n: number, label: string) => { h.calls.push(`label #${n} -${label}`); },
+      }),
+    });
+    return { ...h, asked };
+  };
+
+  test('a completed close rewrites the line into its date, and the ticket is then held: nothing starts', async () => {
+    const h = relativeTurn();
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.deepEqual(h.issueEdits, [{ issue: 7, body: `Blocked until: ${UNTIL} (3 days after #41 closed)\n\nThe rest.` }]);
+    assert.equal(result.row, 'blocked');
+    assert.deepEqual([h.launches, h.messages, h.comments], [[], [], []]);
+  });
+
+  test('a close that is not completed leaves the line, and the ticket held, with one comment and no ready label taken off', async () => {
+    const h = relativeTurn();
+    const result = await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never) as Record<string, unknown>;
+    assert.deepEqual(h.issueEdits, []);
+    assert.equal(h.comments.length, 1, JSON.stringify(h.comments));
+    assert.ok(h.comments[0]!.body.includes(waitNotPlannedMarker('#41')));
+    assert.deepEqual(h.calls.filter((c) => c.startsWith('label ')), []);
+    assert.deepEqual([h.launches, h.messages], [[], []]);
+    assert.notEqual(result.row, 'not-planned');
+  });
+
+  test('with neither pickup nor unblocked on, the line is still rewritten, and the fire then refused', async () => {
+    const h = relativeTurn({ features: { pickup: false, unblocked: false, mergeHandoff: false } });
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.equal(h.issueEdits.length, 1);
+    assert.match(String(result.refusal), /neither pickup nor unblocked/);
+  });
+
+  test('a line deleted between the ticket\'s read and the rewrite is read again, and a ready ticket is picked up', async () => {
+    const h = relativeTurn();
+    const reader = h.deps.reader;
+    let reads = 0;
+    // A person deletes the line just before governor reads the body to rewrite it.
+    h.deps.reader = (token: string) => {
+      const r = reader(token);
+      return {
+        ...r,
+        ticket: async (n: number) => {
+          reads += 1;
+          return r.ticket(n);
+        },
+        issue: async (n: number) => {
+          await r.updateIssue(n, { body: 'The rest.' });
+          return r.issue(n);
+        },
+      };
+    };
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.ok(reads >= 2, String(reads));
+    assert.equal(result.row, 'ready', JSON.stringify(result));
+  });
+
+  test('another repo\'s close rewrites a line naming that repo\'s issue', async () => {
+    const h = relativeTurn({ body: 'Blocked until: 3 days after acme/tools#41 closes' });
+    await run(fire({ blocker: { ...blocker, repo: 'acme/tools' } }), h.deps as never);
+    assert.deepEqual(h.issueEdits.map((e) => e.body), [`Blocked until: ${UNTIL} (3 days after acme/tools#41 closed)`]);
+  });
+
+  test('the closing turn gives each fire the blocker\'s close time', async () => {
+    const queued: Array<Record<string, unknown>> = [];
+    const base = harness();
+    const h = harness({
+      reader: () => ({
+        ...base.deps.reader(''),
+        blocking: async () => [{ repo: REPO, number: 7, state: 'open', title: 'Ticket 7' }],
+        closure: async () => ({ title: 'The parser', reason: 'completed', pr: null, closedAt: CLOSED_AT }),
+      }),
+      enqueue: async (message: { fire: Record<string, unknown> }) => { queued.push(message.fire); return 'm-1'; },
+    });
+    await run({ kind: 'schedule', freed: 41 }, h.deps as never);
+    assert.deepEqual(queued, [{ kind: 'unblocked', repo: REPO, issue: 7, blocker }]);
+  });
+
+  test('the sweep repairs a ready ticket held by a relative line with no open blocker', async () => {
+    const row = { ...issue(7), openBlockers: 0, wait: { after: { days: 3, issue: 41 } } };
+    const h = relativeTurn({ rows: [row], issues: { 41: { state: 'closed', reason: 'completed', closedAt: CLOSED_AT } } });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.issueEdits.filter((e) => e.issue === 7).map((e) => e.body), [`Blocked until: ${UNTIL} (3 days after #41 closed)\n\nThe rest.`]);
+    assert.ok(!h.launches.some((l) => l.sessionName === sessionName(7, 'Issue 7')));
+  });
+
+  test('the sweep comments once on a line it cannot repair', async () => {
+    const row = { ...issue(7), openBlockers: 0, wait: { after: { days: 3, issue: 41 } } };
+    const h = relativeTurn({ rows: [row] });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_RELATIVE_MARKER)).length, 1, JSON.stringify(h.comments));
   });
 });

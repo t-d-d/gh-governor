@@ -1171,3 +1171,57 @@ describe('appInstallations', () => {
     await assert.rejects(appInstallations({ appId: '1', privateKeyPem: PEM, fetch, owners: ['acme'] }), /401/);
   });
 });
+
+// A relative wait, `Blocked until: 3 days after #143 closes` (dispatch/waits.mjs).
+describe('githubReader: what a relative wait reads and writes', () => {
+  test('closure carries when the issue closed', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/10': { number: 10, title: 'The parser', state: 'closed', state_reason: 'completed', closed_at: '2026-11-02T09:00:00Z' },
+      'https://api.github.com/repos/acme/factory/issues/10/events': [],
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual(await reader.closure(10), { title: 'The parser', reason: 'completed', pr: null, closedAt: '2026-11-02T09:00:00Z' });
+  });
+
+  test('blocking carries each ticket\'s `Blocked until:` line', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/10/dependencies/blocking': [
+        { number: 11, state: 'open', title: 'Waits', body: 'Blocked until: 3 days after #10 closes' },
+        { number: 12, state: 'open', title: 'Plain', body: 'x' },
+      ],
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual(await reader.blocking(10), [
+      { number: 11, state: 'open', title: 'Waits', repo: 'acme/factory', wait: { after: { days: 3, issue: 10 } } },
+      { number: 12, state: 'open', title: 'Plain', repo: 'acme/factory' },
+    ]);
+  });
+
+  test('blockers names a blocker\'s repo where GitHub says it', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/10/dependencies/blocked_by': [
+        { number: 3, state: 'open', title: 'Elsewhere', repository_url: 'https://api.github.com/repos/acme/tools' },
+      ],
+    });
+    assert.deepEqual(await githubReader({ token: 't', repo: 'acme/factory', fetch }).blockers(10), [{ number: 3, state: 'open', title: 'Elsewhere', repo: 'acme/tools' }]);
+  });
+
+  test('issueClose reads an issue\'s id, state, close reason and close time, and whether it is a pull request', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/143': { id: 9001, number: 143, title: 'The change', state: 'closed', state_reason: 'not_planned', closed_at: '2026-11-02T09:00:00Z' },
+      'https://api.github.com/repos/acme/factory/issues/144': { id: 9002, number: 144, title: 'Open', state: 'open', state_reason: null, closed_at: null },
+      'https://api.github.com/repos/acme/factory/issues/145': { id: 9003, number: 145, title: 'A PR', state: 'closed', state_reason: null, closed_at: '2026-11-02T09:00:00Z', pull_request: { url: 'x' } },
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual(await reader.issueClose(143), { id: 9001, number: 143, title: 'The change', state: 'closed', reason: 'not_planned', closedAt: '2026-11-02T09:00:00Z', pull: false });
+    assert.deepEqual(await reader.issueClose(144), { id: 9002, number: 144, title: 'Open', state: 'open', reason: null, closedAt: null, pull: false });
+    assert.equal((await reader.issueClose(145)).pull, true);
+  });
+
+  test('addBlocker links an issue as a blocker by its id', async () => {
+    const { fetch, calls } = fakeFetch({ 'https://api.github.com/repos/acme/factory/issues/7/dependencies/blocked_by': {} });
+    await githubReader({ token: 't', repo: 'acme/factory', fetch }).addBlocker(7, 9001);
+    assert.equal(calls[0]?.init?.method, 'POST');
+    assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), { issue_id: 9001 });
+  });
+});

@@ -39,10 +39,27 @@ import { waitLine } from '../../dispatch/webhook/fire.mjs';
 
 /**
  * What a ticket's `Blocked until:` line says: the date it waits for, as
- * `YYYY-MM-DD`, or the value governor could not read as one.
+ * `YYYY-MM-DD`; a number of days after an issue closes (`after`), with that
+ * issue's repo where it is not the ticket's; or the value governor could
+ * not read as either.
  *
- * @typedef {{ until: string } | { unreadable: string }} Wait
+ * @typedef {{ days: number, issue: number, repo?: string }} After
+ * @typedef {{ until: string } | { after: After } | { unreadable: string }} Wait
  */
+
+/**
+ * A relative line's value: `<N> days after #<issue> closes`, or
+ * `<owner>/<repo>#<issue>` for another repo's issue, in any case, with any
+ * text after `closes` past a space.
+ */
+export const RELATIVE_WAIT = /^(\d+)\s+days?\s+after\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)\s+closes(?=\s|$)/i;
+
+/**
+ * The longest relative wait governor reads, a hundred years, so the date a
+ * close gives is always a `YYYY-MM-DD` the calendar holds. A longer count is
+ * unreadable.
+ */
+export const MAX_RELATIVE_DAYS = 36500;
 
 /**
  * @typedef {object} BlockerRow
@@ -122,7 +139,11 @@ export const isBlocked = (issue, rows) =>
  * has no `Blocked until:` line. Only the body's first non-empty line counts,
  * so a body that quotes the line further down holds nothing. The value is a
  * date, `YYYY-MM-DD`, that exists on the calendar; text after it, past a
- * space, is a reason and is ignored. Any other value is unreadable, which
+ * space, is a reason and is ignored. So is a relative value,
+ * `<N> days after #<issue> closes` with `N` from 1 to {@link MAX_RELATIVE_DAYS}
+ * ({@link RELATIVE_WAIT}),
+ * which holds the ticket until governor rewrites it into its date
+ * (dispatch/waits.mjs). Any other value is unreadable, which
  * holds the ticket too (`isWaiting`): a line a person wrote must never be
  * silently ignored.
  *
@@ -140,6 +161,12 @@ export const waitOf = (body) => {
     const at = new Date(Date.UTC(year, month - 1, day));
     if (at.getUTCFullYear() === year && at.getUTCMonth() === month - 1 && at.getUTCDate() === day) return { wait: { until: date } };
   }
+  const relative = RELATIVE_WAIT.exec(value);
+  const days = Number(relative?.[1]);
+  const issue = Number(relative?.[3]);
+  if (relative !== null && Number.isSafeInteger(days) && days >= 1 && days <= MAX_RELATIVE_DAYS && Number.isSafeInteger(issue) && issue >= 1) {
+    return { wait: { after: { days, issue, ...(relative[2] === undefined ? {} : { repo: relative[2] }) } } };
+  }
   return { wait: { unreadable: value } };
 };
 
@@ -153,9 +180,23 @@ export const waitOf = (body) => {
 export const unreadableOf = ({ wait }) => (wait !== undefined && 'unreadable' in wait ? wait.unreadable : undefined);
 
 /**
+ * Whether a ticket of `repo` has a relative line waiting on `closed`: the
+ * issue its line names, in the line's repo, or the ticket's where it names
+ * none. Repo names compare in any case, as GitHub's do.
+ *
+ * @param {Wait | undefined} wait
+ * @param {string} repo The ticket's.
+ * @param {{ repo: string, number: number }} closed
+ */
+export const waitsOnClose = (wait, repo, closed) =>
+  wait !== undefined && 'after' in wait && wait.after.issue === closed.number
+  && (wait.after.repo ?? repo).toLowerCase() === closed.repo.toLowerCase();
+
+/**
  * Whether a ticket's own `Blocked until:` line holds it at `now`: a date
- * still to come, whose wait ends at 00:00 UTC on that date, or a line
- * governor could not read. A row with no line is not held.
+ * still to come, whose wait ends at 00:00 UTC on that date, a relative line
+ * governor has not rewritten into its date yet, or a line governor could
+ * not read. A row with no line is not held.
  *
  * Like `labelRow` and `isBlocked`, the selection, the claim's second read
  * and the unblocked row all call this. It holds in every served repo,
@@ -166,7 +207,7 @@ export const unreadableOf = ({ wait }) => (wait !== undefined && 'unreadable' in
  */
 export const isWaiting = ({ wait }, now) => {
   if (wait === undefined) return false;
-  if ('unreadable' in wait) return true;
+  if (!('until' in wait)) return true;
   return now < Date.parse(`${wait.until}T00:00:00Z`);
 };
 
