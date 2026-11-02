@@ -6,8 +6,9 @@
  *   path;
  * - the review's modules, and every module they load by relative import,
  *   import no builtin but the few they need, call no global that runs code
- *   (`eval`, `Function`, WebAssembly's compilers, `process.dlopen`), and the
- *   one process a review turn starts is the CLI's model run, with no tools;
+ *   (`eval`, `Function`, WebAssembly's compilers, `process.dlopen`,
+ *   `process.getBuiltinModule`), and the one process a review turn starts
+ *   is the CLI's model run, with no tools;
  * - the factory's file holds its checklist and lists, and its checklist
  *   names the file as the list, the shape the review tests read.
  *
@@ -70,13 +71,14 @@ const builtinsImported = (root: string, ...entries: string[]) => new Set(builtin
 
 /**
  * The globals that run code with no import: `eval` and `Function` evaluate a string, `WebAssembly` compiles and runs a program,
- * and `process.dlopen` loads a native library.
+ * `process.dlopen` loads a native library, and `process.getBuiltinModule` loads any builtin, `child_process` among them, with no
+ * import for the allowed list to see.
  */
 const EVALUATORS = new Set([
   'eval', 'Function',
   'WebAssembly.instantiate', 'WebAssembly.compile', 'WebAssembly.instantiateStreaming', 'WebAssembly.compileStreaming',
   'WebAssembly.Module', 'WebAssembly.Instance',
-  'process.dlopen',
+  'process.dlopen', 'process.getBuiltinModule',
 ]);
 
 /** The names that reach the global object: a leading one is dropped, so `global.eval` reads as `eval`. */
@@ -215,6 +217,21 @@ describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)',
         'lib/more.mjs:4 calls WebAssembly.compileStreaming',
         'lib/more.mjs:5 calls eval',
         'lib/more.mjs:6 calls Function',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('the check finds process.getBuiltinModule, which loads a builtin with no import', () => {
+    const root = mkdtempSync(join(tmpdir(), 'governor-review-getbuiltin-'));
+    try {
+      writeFileSync(join(root, 'entry.mjs'), "export const a = process.getBuiltinModule('child_process');\nexport const b = globalThis.process.getBuiltinModule('node:vm');\nexport const c = process['getBuiltinModule']('fs');\nexport const d = global.process?.getBuiltinModule?.('wasi');\nexport const e = (o) => o.getBuiltinModule('x');\n");
+      assert.deepEqual(codeEvaluators(root, 'entry.mjs').sort(), [
+        'entry.mjs:1 calls process.getBuiltinModule',
+        'entry.mjs:2 calls process.getBuiltinModule',
+        'entry.mjs:3 calls process.getBuiltinModule',
+        'entry.mjs:4 calls process.getBuiltinModule',
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
