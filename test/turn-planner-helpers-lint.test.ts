@@ -52,6 +52,17 @@ describe('lint keeps the planners\' helpers out of turn.mjs', () => {
     assert.ok((await reported('dispatch/turn.mjs', `export { planSchedule } from '../scripts/lib/dispatch-router.mjs';\n`)).includes('no-restricted-imports'));
   });
 
+  test('a namespace import or export * of a planner module, which could reach a helper, is refused', async () => {
+    assert.ok((await reported('dispatch/turn.mjs', `import * as w from './waits.mjs';\nexport const x = w;\n`)).includes('no-restricted-imports'));
+    assert.ok((await reported('dispatch/turn.mjs', `export * from './unblocked.mjs';\n`)).includes('no-restricted-imports'));
+  });
+
+  test('a query or fragment on the path does not hide the module', async () => {
+    for (const suffix of ['?x', '#x']) {
+      assert.ok((await reported('dispatch/turn.mjs', importOf('endedWaits', `./waits.mjs${suffix}`))).includes('no-restricted-imports'), `./waits.mjs${suffix} passed lint`);
+    }
+  });
+
   test('turn.mjs keeps hookFor, duePeriodics and periodicPrompt', async () => {
     const code = `import { hookFor } from './hooks.mjs';\nimport { duePeriodics, periodicPrompt } from './periodics.mjs';\nexport const x = [hookFor, duePeriodics, periodicPrompt];\n`;
     assert.deepEqual(await reported('dispatch/turn.mjs', code), []);

@@ -11,11 +11,16 @@ import noReadinessChecks from "./eslint-rules/no-readiness-checks.mjs";
 const READINESS_CHECKS = ["isBlocked", "isWaiting", "waitHolds", "heldUnreadied", "labelRow"];
 // One rule reads static imports, export-from and `import()` alike, so the
 // import forms cannot drift apart.
+const refuseChecks = (allowed) => [
+  "error",
+  { checks: READINESS_CHECKS, ...(allowed === undefined ? {} : { allowed }) },
+];
+
 // The kinds that start sessions plan in their own modules and hand `turnFor`
 // a plan for `launchPlan`. turn.mjs may not take a planner's own helpers, so
 // a new feature that starts sessions goes in its planner, not in `turnFor`.
 // `hookFor`, `duePeriodics` and `periodicPrompt` stay allowed: an event fire
-// and `run` use them.
+// and `run` use them. no-restricted-imports does not see `import()`.
 const PLANNER_HELPERS = [
   { module: "dispatch-router", importNames: ["planSchedule"] },
   { module: "waits", importNames: ["endedWaits", "waitSpecPrompt"] },
@@ -27,15 +32,12 @@ const refusePlannerHelpers = [
   "error",
   {
     patterns: PLANNER_HELPERS.map(({ module, importNames }) => ({
-      regex: `(^|/)${module}\\.mjs$`,
+      // A query or fragment on the path still loads the same module.
+      regex: `(^|/)${module}\\.mjs([?#].*)?$`,
       importNames,
       message: "turn.mjs hands a plan to launchPlan. Plan in the kind's planner module instead.",
     })),
   },
-];
-const refuseChecks = (allowed) => [
-  "error",
-  { checks: READINESS_CHECKS, ...(allowed === undefined ? {} : { allowed }) },
 ];
 
 export default [
