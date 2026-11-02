@@ -171,7 +171,7 @@ Each deployment is one person's factory: it serves the GitHub accounts on its ow
    }
    ```
 
-   For a darker factory, copy the `dispatch.json` of a repo that already runs the way you want. [The test fixture's file](test/fixtures/factory/.github/dispatch.json) has every feature on, the automatic merge included.
+   For a darker factory, copy the `dispatch.json` of a repo that already runs the way you want. [The test fixture's file](test/fixtures/factory/.github/dispatch.json) is an example with every feature on, the automatic merge included. It is written for a made-up repo, so set its environment, labels and paths to your own.
 
 3. **Label a ticket `mode: afk`.** Governor starts a session on it, and comments the session's link on the ticket.
 
