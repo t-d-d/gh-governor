@@ -57,6 +57,8 @@ const WAIT_BOARD = { number: WAIT_TICKET, id: 9000 + WAIT_TICKET, title: 'Waits'
 /** The dispatcher's own App, which posts the turn's comments. */
 const APP_ID = 5075844;
 const NOW = Date.parse('2026-09-25T12:00:00Z');
+/** `value`, after `ms`. */
+const later = <T>(ms: number, value: T) => new Promise<T>((r) => { setTimeout(() => r(value), ms); });
 
 const LOGIN = JSON.stringify({
   claudeAiOauth: {
@@ -521,7 +523,6 @@ describe('run — governor records each session it starts', () => {
   // A launch refused as over budget may still start a session: the launcher
   // runs on. It pages once, at the refusal, whatever the launcher prints later.
   const overBudget = (lines: Array<Record<string, unknown>>) => lines.filter((l) => l.event === 'dispatch-session-unrecorded');
-  const later = <T>(ms: number, value: T) => new Promise<T>((r) => { setTimeout(() => r(value), ms); });
 
   test('a launch past its budget pages with its name, and no session', async () => {
     const h = harness({ launchTimeoutMs: 20, launch: () => new Promise<never>(() => {}) });
@@ -748,6 +749,8 @@ describe('run — governor records each session it starts', () => {
  * budget whose record lands, fails, is slow, or lands while a throw waits
  * for it; one that prints after its turn ended, whose record lands or
  * fails; a routine launch with no URL inside its budget (`run — periodics`).
+ * A row on the turn's own path asserts as the turn settles, so a record the
+ * turn did not wait for fails it.
  * The deadline's rows are in test/dispatch-cli.test.ts.
  *
  * The turn is a bare schedule fire with no ready ticket, so its launches are
@@ -757,13 +760,12 @@ describe('run — governor records each session it starts', () => {
 describe('run: every launch outcome, in one table', () => {
   const CLI = 'Weekly retro';
   const ROUTINE = 'Ticket review';
-  const DAYS: Record<string, number> = { [CLI]: 7, [ROUTINE]: 3 };
+  const DAYS = Object.fromEntries((JSON.parse(FACTORY_FILE).periodics as Array<{ name: string; days: number }>).map((p) => [p.name, p.days]));
   const DAY = 24 * 60 * 60 * 1000;
   const fired = (days: number) => ({ at: new Date(NOW - days * DAY).toISOString(), session: null, baseline: false });
   const SUBJECT = 'https://claude.ai/code/session_01SUBJECT';
   const OTHER = 'https://claude.ai/code/session_01OTHER';
   const BUDGET_MS = 20;
-  const later = <T>(ms: number, value: T) => new Promise<T>((r) => { setTimeout(() => r(value), ms); });
 
   type Row = {
     launch: 'cli' | 'routine';
@@ -790,6 +792,8 @@ describe('run: every launch outcome, in one table', () => {
     { launch: 'routine', prints: true, when: 'inside', record: 'fails', recorded: [], unrecorded: [[SUBJECT, FAILED]], late: null, rejects: null },
     { launch: 'routine', prints: true, when: 'inside', record: 'lands at a throw', recorded: [SUBJECT], unrecorded: [], late: null, rejects: /could not be read/ },
     { launch: 'routine', prints: true, when: 'inside', record: 'fails at a throw', recorded: [], unrecorded: [[SUBJECT, FAILED]], late: null, rejects: /could not be read/ },
+    { launch: 'cli', prints: false, when: 'waiting', record: 'lands', recorded: [], unrecorded: [[null, PAST]], late: null, rejects: /ran past 20 ms/ },
+    { launch: 'routine', prints: false, when: 'waiting', record: 'lands', recorded: [], unrecorded: [[null, PAST]], late: null, rejects: /ran past 20 ms/ },
     { launch: 'routine', prints: false, when: 'ended', record: 'lands', recorded: [], unrecorded: [[null, PAST]], late: null, rejects: /ran past 20 ms/ },
     { launch: 'routine', prints: true, when: 'waiting', record: 'lands', recorded: [SUBJECT], unrecorded: [[null, PAST]], late: /the turn waits for its record/, rejects: /ran past 20 ms/ },
     { launch: 'routine', prints: true, when: 'waiting', record: 'fails', recorded: [], unrecorded: [[null, PAST], [SUBJECT, FAILED]], late: /the turn waits for its record/, rejects: /ran past 20 ms/ },
@@ -798,7 +802,7 @@ describe('run: every launch outcome, in one table', () => {
   ];
 
   for (const row of rows) {
-    const title = `${row.launch}, ${row.prints ? 'a URL' : 'no URL'}, ${row.when === 'inside' ? 'inside its budget' : row.when === 'waiting' ? 'past its budget while the turn waits' : 'past its budget after the turn ended'}, its record ${row.record}`;
+    const title = `${row.launch}, ${row.prints ? 'a URL' : 'no URL'}, ${row.when === 'inside' ? 'inside its budget' : row.when === 'waiting' ? 'past its budget while the turn waits' : 'past its budget after the turn ended'}${row.prints ? `, its record ${row.record}` : ''}`;
     test(title, async () => {
       const subject = row.launch === 'cli' ? CLI : ROUTINE;
       const other = row.launch === 'cli' ? ROUTINE : CLI;
@@ -843,8 +847,9 @@ describe('run: every launch outcome, in one table', () => {
       const turned = run({ source: 'aws.events' }, h.deps as never);
       if (row.rejects === null) await turned;
       else await assert.rejects(turned, row.rejects);
-      // A launcher the budget refused prints after the turn has ended.
-      await later(200, null);
+      // A launcher the budget refused prints after the turn has ended. Every
+      // other row asserts now, so a record the turn did not wait for fails it.
+      if (row.when === 'ended') await later(200, null);
       const seen = JSON.stringify(h.logged);
       assert.deepEqual(written.filter((s) => s !== OTHER), row.recorded, seen);
       if (row.when === 'waiting') assert.deepEqual(written.filter((s) => s === OTHER), [OTHER], 'the earlier launch is recorded');
