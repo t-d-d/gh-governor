@@ -67,6 +67,7 @@ const withoutLines = (text) => text.replace(LINE, (line) => line.replace(/[^\n]/
 
 /** `line` with every tab expanded to the next multiple of four columns. @param {string} line */
 const expandTabs = (line) => {
+  if (!line.includes('\t')) return line;
   let out = '';
   for (const char of line) out += char === '\t' ? ' '.repeat(4 - (out.length % 4)) : char;
   return out;
@@ -176,6 +177,8 @@ const quotedLines = (lines) => {
   let blockBase = 0;
   /** The marker of the open fence inside the quote, or null. @type {string | null} */
   let quoteFence = null;
+  /** What ends the open HTML block inside the quote, or null. @type {RegExp | typeof TO_BLANK | null} */
+  let quoteHtml = null;
   /** Whether a paragraph is open, and whether it is inside a quote. */
   let paragraph = false;
   let quoteParagraph = false;
@@ -194,12 +197,11 @@ const quotedLines = (lines) => {
       } else {
         // A line left of the item's content ends the item, and the block in it.
         fence = html = null;
-        itemsAt(items, indent);
       }
     }
     if (blank) {
       paragraph = quoteParagraph = false;
-      quoteFence = null;
+      quoteFence = quoteHtml = null;
       return false;
     }
     const indent = indentOf(line);
@@ -230,9 +232,15 @@ const quotedLines = (lines) => {
       items.push(base);
       rest = rest.slice(width);
     }
+    // A new item opens no paragraph and closes the quote above it: its content starts fresh.
+    if (startsItem) {
+      paragraph = false;
+      quoteFence = quoteHtml = null;
+    }
+    const wasQuoteParagraph = quoteParagraph;
     quoteParagraph = false;
     if (indentOf(rest) >= 4 && !paragraph) {
-      quoteFence = null;
+      quoteFence = quoteHtml = null;
       return false;
     }
     const opener = FENCE.exec(rest);
@@ -240,30 +248,35 @@ const quotedLines = (lines) => {
       fence = opener[1];
       blockBase = base;
       paragraph = false;
-      quoteFence = null;
+      quoteFence = quoteHtml = null;
       return false;
     }
-    const htmlEnd = htmlBlockEnd(rest, paragraph && !startsItem);
+    const htmlEnd = htmlBlockEnd(rest, paragraph);
     if (htmlEnd !== undefined) {
-      html = htmlEnd instanceof RegExp && htmlEnd.test(rest.replace(/^ *<[!?]?/, '')) ? null : htmlEnd;
+      html = htmlEnd instanceof RegExp && htmlEnd.test(rest) ? null : htmlEnd;
       blockBase = base;
       paragraph = false;
-      quoteFence = null;
+      quoteFence = quoteHtml = null;
       return false;
     }
     if (!/^ {0,3}>/.test(rest)) {
-      quoteFence = null;
+      quoteFence = quoteHtml = null;
       paragraph = !HEADING_OR_RULE.test(rest);
       return false;
     }
     let inner = rest;
     while (/^ {0,3}>/.test(inner)) inner = inner.replace(/^ {0,3}> ?/, '');
+    const innerBlank = /^ *$/.test(inner);
     if (quoteFence !== null) {
       if (closesFence(inner, quoteFence)) quoteFence = null;
+    } else if (quoteHtml !== null) {
+      if (quoteHtml === TO_BLANK ? innerBlank : quoteHtml.test(inner)) quoteHtml = null;
     } else {
       const quoted = FENCE.exec(inner)?.[1];
+      const quotedHtml = quoted ? undefined : htmlBlockEnd(inner, wasQuoteParagraph);
       if (quoted) quoteFence = quoted;
-      else quoteParagraph = !/^ *$/.test(inner) && !HEADING_OR_RULE.test(inner) && htmlBlockEnd(inner, false) === undefined && indentOf(inner) < 4;
+      else if (quotedHtml !== undefined) quoteHtml = quotedHtml instanceof RegExp && quotedHtml.test(inner) ? null : quotedHtml;
+      else quoteParagraph = !innerBlank && !HEADING_OR_RULE.test(inner) && indentOf(inner) < 4;
     }
     paragraph = false;
     return true;

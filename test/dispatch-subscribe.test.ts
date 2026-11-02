@@ -377,6 +377,13 @@ describe('quotes as GitHub renders them', () => {
     assert.equal(quoted(`- <details>\n  > ${FILER}`, `  > ${FILER}`), false, 'in a list item');
     assert.equal(quoted(`- <details>\n> ${FILER}`, `> ${FILER}`), true, 'a line left of the item ends it, and its block');
     assert.equal(quoted('> <span>\nfoo', 'foo'), false, 'a quoted HTML block takes no lazy line');
+    assert.equal(quoted('> <details>\n> text\nfoo', 'foo'), false, 'nor after a later line of the block');
+    assert.equal(quoted('> <!--\n> a\n> -->\n> b\nfoo', 'foo'), true, 'once the quoted block ends, a quoted paragraph takes one');
+    assert.equal(quoted('> a\n> <span>\nfoo', 'foo'), true, 'a lone inline tag in a quoted paragraph does not end it');
+    assert.equal(quoted(`<?>\n> ${FILER}`, `> ${FILER}`), true, 'a processing instruction can end on the line it opens');
+    assert.equal(quoted('a\n-     x\n<span>\n  > y', '  > y'), false, 'a new item opens no paragraph, so a lone tag after its code starts a block');
+    assert.equal(quoted('> <div>\n- > x\nfoo', 'foo'), true, 'a quote in a new item is a new quote, outside the block above');
+    assert.equal(quoted('> ```\n- > x\nfoo', 'foo'), true, 'and outside the fence above');
   });
 
   test('a quote in a fenced block inside a quote stays quoted, and the quote ends with the fence\'s quote', () => {
