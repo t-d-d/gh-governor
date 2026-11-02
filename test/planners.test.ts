@@ -475,7 +475,7 @@ describe('planSweep: the bare schedule fire\'s plan', () => {
   });
 
   test('a repo whose last sweep is too recent is not swept, and its periodics still plan', async () => {
-    const { ctx, logged } = sweepContext({ over: {} });
+    const { ctx, logged } = sweepContext();
     (ctx as any).state.sweep = async () => new Date(NOW - 60 * 60 * 1000).toISOString();
     const plan = await planSweep(fire, ctx) as any;
     assert.deepEqual(plan.launches.map((l: any) => l.issue), [null]);

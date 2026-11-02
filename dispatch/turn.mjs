@@ -1632,8 +1632,6 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     }
   };
 
-  /** @type {Dispatched[]} */
-  const dispatched = [];
   /** The repos whose launch started nothing: the rest of their tickets and periodics wait for the next fire. @type {Set<string>} */
   const skipped = new Set();
   /** The planned launches that ran, a failed claim's included, and those the window or a repo skip left. @type {Array<Dispatched & { planned: PlannedLaunch }>} */
@@ -1657,10 +1655,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const claimed = ticket === null || !entry.claim ? 'claimed' : await claim(ticket);
       if (claimed === 'taken') continue;
       if (claimed === 'failed') {
-        /** @type {Dispatched} */
-        const failed = { repo: entry.repo, issue: entry.issue, outcome: 'failed', sessionUrl: null };
-        dispatched.push(failed);
-        ran.push({ ...failed, planned: entry });
+        ran.push({ repo: entry.repo, issue: entry.issue, outcome: 'failed', sessionUrl: null, planned: entry });
         continue;
       }
       const firedAt = new Date(deps.now()).toISOString();
@@ -1683,7 +1678,6 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         await (await readerFor(ticket.repo)).comment(ticket.issue, dispatchMarker({ at, sessionUrl }));
         if (sessionUrl !== null) claims.delete(keyOf(ticket));
       }
-      dispatched.push({ repo: entry.repo, issue: entry.issue, outcome, sessionUrl });
       ran.push({ repo: entry.repo, issue: entry.issue, outcome, sessionUrl, planned: entry });
     }
     // The kind's plan settles what its launches left: the sweep's records
@@ -1702,6 +1696,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     loginStored = await storeIfRefreshed(deps, original, account);
   }
   const failed = kindPlan?.unread ?? [];
+  /** @type {Dispatched[]} */
+  const dispatched = ran.map(({ repo, issue, outcome, sessionUrl }) => ({ repo, issue, outcome, sessionUrl }));
   return { kind: invocation.kind, heartbeat: false, ...kindPlan?.result, dispatched, loginStored, ...(failed.length === 0 ? {} : { unread: failed }) };
 };
 

@@ -43,8 +43,6 @@ import { sweepDue, sweepHoursOf } from './pickup.mjs';
 export const planSweep = async (invocation, ctx) => {
   /** @type {import('./turn.mjs').PlannedLaunch[]} */
   const launches = [];
-  /** The issues a targeted schedule fire limits the plan to; undefined for the sweep. @type {number[] | undefined} */
-  let only;
   /** The served repos whose backlog the bare fire could not read. @type {Array<{ repo: string, error: string }>} */
   const unread = [];
   /** The periodics whose record the bare fire could not read, baseline, or write after a launch. @type {Array<{ repo: string, error: string }>} */
@@ -112,8 +110,9 @@ export const planSweep = async (invocation, ctx) => {
     sources.push({ repo, reader: await ctx.readerFor(repo), labels: config.labels, prompts: config.prompts });
   }
   // A fire naming its issue plans it alone, through the selection's own
-  // checks, from a read of that issue rather than the ready list.
-  only = invocation.issue === undefined ? undefined : [invocation.issue];
+  // checks, from a read of that issue rather than the ready list; the sweep
+  // plans the ready list.
+  const only = invocation.issue === undefined ? undefined : [invocation.issue];
   /** @type {import('../scripts/lib/dispatch-router.mjs').Seen[]} */
   const seen = [];
   /** @type {import('../scripts/lib/dispatch-router.mjs').Unreadable[]} */
@@ -159,14 +158,13 @@ export const planSweep = async (invocation, ctx) => {
   if (sources.length > 0 && held === 0 && new Set(unread.map((u) => u.repo)).size === sources.length) {
     throw new Error(`no served repo's backlog could be read: ${unread.map((u) => `${u.repo}: ${u.error}`).join('; ')}`);
   }
-  for (const d of planned) {
-    const repo = d.repo;
+  for (const { repo, issue, prompt, sessionName } of planned) {
     launches.push({
       repo,
-      issue: d.issue ?? null,
+      issue: issue ?? null,
       claim: true,
       holdsRepo: true,
-      asked: { prompt: d.prompt, sessionName: d.sessionName, model: DEFAULT_MODEL },
+      asked: { prompt, sessionName, model: DEFAULT_MODEL },
       // A failed launch leaves the repo's tickets for the next fire, so its
       // sweep is not recorded.
       started: async ({ outcome }) => {
