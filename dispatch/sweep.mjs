@@ -210,6 +210,14 @@ export const planSweep = async (invocation, ctx) => {
           ctx.beats.push({ repo, beat: { periodics: [{ name: periodic.name, at, by, session: sessionUrl, state: 'open' }] } });
         },
       })));
+    } else {
+      // A cap of 0 starts no periodic, as on an event: each repo's due
+      // periodics are said, oldest due first, and their records stay, so
+      // each stays due.
+      /** @type {Map<string, string[]>} */
+      const left = new Map();
+      for (const { repo, periodic } of due.sort((a, b) => a.due - b.due)) left.set(repo, [...(left.get(repo) ?? []), periodic.name]);
+      for (const [repo, periodics] of left) ctx.log('dispatch-periodic', { repo, periodics, outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' });
     }
     // The waits read before the sweep, above. A ticket not ready got its
     // comment there, and, with unblocked on, gets a spec session here,
