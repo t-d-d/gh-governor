@@ -506,6 +506,54 @@ describe('run — governor records each session it starts', () => {
     });
   }
 
+  // A launch refused as over budget may still start a session: the launcher
+  // runs on. It pages once, at the refusal, whatever the launcher prints later.
+  const overBudget = (lines: Array<Record<string, unknown>>) => lines.filter((l) => l.event === 'dispatch-session-unrecorded');
+  const later = <T>(ms: number, value: T) => new Promise<T>((r) => { setTimeout(() => r(value), ms); });
+
+  test('a launch past its budget pages with its name, and no session', async () => {
+    const h = harness({ launchTimeoutMs: 20, launch: () => new Promise<never>(() => {}) });
+    await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
+    const lines = overBudget(h.logged);
+    assert.equal(lines.length, 1, JSON.stringify(h.logged));
+    assert.equal(lines[0]!.level, 'error');
+    assert.equal(lines[0]!.sessionUrl, null);
+    assert.equal(lines[0]!.sessionName, 'TEST');
+    assert.equal(lines[0]!.repo, REPO);
+    assert.match(String(lines[0]!.reason), /ran past its budget/);
+  });
+
+  test('a launch past its budget that prints its session later pages once, and the session is still recorded', async () => {
+    const h = harness({ launchTimeoutMs: 20, launch: () => later(40, { status: 0, output: ABC }) });
+    await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
+    await later(200, null);
+    assert.equal(overBudget(h.logged).length, 1, JSON.stringify(h.logged));
+    assert.deepEqual(h.recorded, [ABC]);
+  });
+
+  test('a launch past its budget that later prints no session pages once', async () => {
+    const h = harness({ launchTimeoutMs: 20, launch: () => later(40, { status: 3, output: 'no url here' }) });
+    await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
+    await later(200, null);
+    assert.equal(overBudget(h.logged).length, 1, JSON.stringify(h.logged));
+  });
+
+  test('a ticket\'s launch past its budget pages with its name', async () => {
+    const h = harness({ launchTimeoutMs: 20, launch: () => new Promise<never>(() => {}) });
+    await assert.rejects(run({ kind: 'schedule', issue: 9 }, h.deps as never), /20 ms/);
+    const lines = overBudget(h.logged);
+    assert.equal(lines.length, 1, JSON.stringify(h.logged));
+    assert.equal(lines[0]!.sessionUrl, null);
+    assert.equal(typeof lines[0]!.sessionName, 'string');
+  });
+
+  test('a launch inside its budget that printed its session pages nothing', async () => {
+    const h = harness({ launchTimeoutMs: 100, launch: () => later(10, { status: 0, output: ABC }) });
+    await run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never);
+    assert.deepEqual(h.recorded, [ABC]);
+    assert.deepEqual(overBudget(h.logged), []);
+  });
+
   test('a failed launch started nothing, so it pages nothing', async () => {
     const h = harness({ launch: async () => ({ status: 1, output: 'refused' }) });
     await run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never);
@@ -2042,6 +2090,29 @@ describe('run — periodics', () => {
     assert.equal(result.dispatched[0]?.outcome, 'unconfirmed');
   });
 
+  // A routine's run session is found through its routine, not by the
+  // periodic's name, so the page names the routine and carries the tail.
+  test('a routine launch that comes back unconfirmed with no session pages with its routine named', async () => {
+    const h = harness();
+    const base = h.deps.routines;
+    h.deps.routines = (token: string, organization: string | null) => ({ ...base(token, organization), sessions: async () => ({ data: [] }) });
+    h.periodics.set(key(RETRO.name), fired(1));
+    h.periodics.set(key(REVIEW.name), fired(3));
+    await run({ source: 'aws.events' }, h.deps as never);
+    const lines = h.logged.filter((l) => l.event === 'dispatch-session-unrecorded' && l.sessionName === REVIEW.name);
+    assert.equal(lines.length, 1, JSON.stringify(h.logged));
+    const line = lines[0]!;
+    assert.equal(line.level, 'error');
+    assert.equal(line.sessionUrl, null);
+    assert.equal(line.status, 3);
+    assert.equal(line.routine, 'trig_01');
+    assert.equal(line.routineName, `governor ${REPO}: ${REVIEW.name}`);
+    assert.match(String(line.tail), /Routine trig_01 fired, and none of its run sessions is new/);
+    assert.match(String(line.reason), /routine/);
+    // The line comes after the run-session reads, so the session started before it.
+    assert.match(String(line.reason), /shortly before this line's time/);
+  });
+
   test('a routine fire that throws and shows no new run session is recorded as an unconfirmed launch, never refused', async () => {
     const h = harness();
     const base = h.deps.routines;
@@ -2507,6 +2578,16 @@ describe('run — periodics an event brings due', () => {
     const h = counting({ merges: merged(20) }, { launchTimeoutMs: 5, launch: () => new Promise(() => {}) });
     h.periodics.set(key(CODE.name), fired(DAY));
     await assert.rejects(run(MERGE, h.deps as never), /ran past 5 ms/);
+  });
+
+  test('a periodic\'s launch past its budget pages with its name', async () => {
+    const h = counting({ merges: merged(20) }, { launchTimeoutMs: 5, launch: () => new Promise(() => {}) });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await assert.rejects(run(MERGE, h.deps as never), /ran past 5 ms/);
+    const lines = h.logged.filter((l) => l.event === 'dispatch-session-unrecorded');
+    assert.equal(lines.length, 1, JSON.stringify(h.logged));
+    assert.equal(lines[0]!.sessionName, CODE.name);
+    assert.equal(lines[0]!.sessionUrl, null);
   });
 
   test('a login the launch refreshed goes back to the secret', async () => {

@@ -108,7 +108,7 @@ import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { isBlocked, isWaiting, labelRow, unreadableOf } from '../scripts/lib/ready-work.mjs';
 import { WAIT_PROMPT, endedWaits, holdWait, reportUnreadable, waitSpecPrompt } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
-import { RoutinesApiError, launchRoutine, observed } from './routines.mjs';
+import { RoutinesApiError, launchRoutine, observed, routineName } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
@@ -230,10 +230,12 @@ export const sessionUrlFrom = (output) => {
  *   environment, from the repo's config file. `connectors`: a periodic's
  *   claude.ai connectors, which start it as a run of its routine
  *   (dispatch/routines.mjs), the periodic named by `sessionName`.
- * @typedef {{ status: number | null, output: string, missing?: string[], refused?: true }} LaunchResult
+ * @typedef {{ status: number | null, output: string, missing?: string[], refused?: true, routine?: string }} LaunchResult
  *   `missing`: the connectors a routine launch named that the account has
  *   not connected. It started nothing. `refused`: the routines API refused
- *   a routine launch before the fire. It started nothing.
+ *   a routine launch before the fire. It started nothing. `routine`: the id
+ *   of the routine a routine launch fired, through which its run session is
+ *   found.
  * @typedef {import('../scripts/lib/dispatch-router.mjs').Reader & import('./workflow.mjs').WorkflowReader & {
  *   comment: (n: number, body: string) => Promise<void>,
  *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string }>>,
@@ -432,10 +434,20 @@ const refreshedLogin = async (deps, credentials, account) => {
 };
 
 /**
+ * What a launch does when its budget refuses it, keyed by the launch's
+ * promise: the launcher runs on, and may start a session nobody can name.
+ *
+ * @type {WeakMap<Promise<unknown>, () => void>}
+ */
+const overBudget = new WeakMap();
+
+/**
  * A launch that outlives its budget is a thrown turn. The task's deadline
  * (dispatch/cli.mjs) exits the process from a timer, which unwinds nothing:
  * a login the CLI refreshed before the launcher hung would never reach the
- * secret. A throw runs the `finally` below first.
+ * secret. A throw runs the `finally` below first. A launch registered in
+ * `overBudget` pages before the throw; the lookup is by the very promise
+ * passed here, so a caller must not wrap the launch's promise first.
  *
  * @template T
  * @param {Promise<T>} launched
@@ -445,7 +457,10 @@ const refreshedLogin = async (deps, credentials, account) => {
  */
 const withinBudget = (launched, ms, sessionName) =>
   new Promise((resolveLaunch, rejectLaunch) => {
-    const timer = setTimeout(() => rejectLaunch(new Error(`the launcher for ${sessionName} ran past ${ms} ms`)), ms);
+    const timer = setTimeout(() => {
+      overBudget.get(launched)?.();
+      rejectLaunch(new Error(`the launcher for ${sessionName} ran past ${ms} ms`));
+    }, ms);
     launched.then(
       (value) => { clearTimeout(timer); resolveLaunch(value); },
       (error) => { clearTimeout(timer); rejectLaunch(error); },
@@ -668,13 +683,33 @@ const turnOf = async (event, deps, records) => {
    * receiver skips a session's own posts only where the session signed them.
    * In a repo whose file turns `waits` on, the line on making a ticket wait
    * follows it (`WAIT_PROMPT`, dispatch/waits.mjs).
+   * A launch its budget refuses pages once, at the refusal, since the
+   * launcher runs on. A session it prints later is recorded only if the
+   * task is still running then: the turn has ended, so nothing waits for
+   * that record, and the page is what the operator can rely on.
    *
    * @type {Deps['launch']}
    */
-  const launch = async (asked) => {
+  const launch = (asked) => {
     const own = served.find((s) => s.repo.toLowerCase() === asked.repo.toLowerCase())?.config;
     const waits = own !== undefined && turnsOn(own, 'waits') ? `\n\n${WAIT_PROMPT}` : '';
     const begin = { ...asked, prompt: `${asked.prompt}\n\n${SIGN_POSTS}${waits}` };
+    let paged = false;
+    const launching = launchAndRecord(begin, () => paged);
+    overBudget.set(launching, () => {
+      paged = true;
+      deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, reason: 'the launch ran past its budget and may have started a session, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label' });
+    });
+    return launching;
+  };
+  /**
+   * The launch itself, and its record or page once it ends.
+   *
+   * @param {Launch} begin
+   * @param {() => boolean} paged Whether its budget already paged on it.
+   * @returns {Promise<LaunchResult>}
+   */
+  const launchAndRecord = async (begin, paged) => {
     const launched = begin.connectors !== undefined && begin.connectors.length > 0 ? await routineLaunch(begin, begin.connectors) : await deps.launch(begin);
     const sessionUrl = sessionUrlFrom(launched.output);
     if (sessionUrl !== null) {
@@ -684,10 +719,20 @@ const turnOf = async (event, deps, records) => {
       records.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
         deps.log(SESSION_UNRECORDED, unrecordedLine(pending, messageOf(error)));
       }).finally(() => { unrecorded.delete(pending); }));
-    } else if (launchOutcome(launched.status) !== null) {
+    } else if (!paged() && launchOutcome(launched.status) !== null) {
       // The launch may have started a session but named none, so nothing
       // can record it: the operator finds it by its name and the line's time.
-      deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, status: launched.status, reason: 'the launch may have started a session, but it printed no session URL, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label' });
+      // A routine's run session is found through its routine, not by the
+      // periodic's name, so a routine launch's line names the routine.
+      const routine = launched.routine === undefined ? {} : {
+        routine: launched.routine,
+        routineName: routineName(begin.repo, begin.sessionName),
+        tail: launched.output.slice(-OUTPUT_TAIL),
+      };
+      const reason = launched.routine === undefined
+        ? 'the launch may have started a session, but it printed no session URL, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label'
+        : 'the routine was fired, but none of its run sessions could be named as this fire\'s, so the session could not be named or recorded: look in the routine\'s run sessions for one started shortly before this line\'s time. Its PRs may clear a human-only path on a ticket\'s mode label';
+      deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, status: launched.status, ...routine, reason });
     }
     return launched;
   };

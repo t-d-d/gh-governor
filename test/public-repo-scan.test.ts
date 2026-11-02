@@ -52,6 +52,14 @@ describe('scanText', () => {
     assert.deepEqual(kinds('Closes #412, see #7 and https://github.com/acme/factory/pull/123'), []);
   });
 
+  test('passes a hex colour with a letter after four or more digits, and still refuses a bare four-digit reference', () => {
+    assert.deepEqual(kinds('color: #59' + '636e;'), []);
+    assert.deepEqual(kinds('background: #12' + '34ab'), []);
+    assert.deepEqual(kinds(`see #${'12'}${'34'}.`), ['issue-number']);
+    assert.deepEqual(kinds(`_see #${'12'}${'34'}_`), ['issue-number']);
+    assert.deepEqual(kinds(`/issues/${'12'}${'34'}`), ['issue-number']);
+  });
+
   test('reports each finding with its line', () => {
     assert.deepEqual(scanText('a.md', `one\ntwo #${'12'}${'34'}\n`), [{ path: 'a.md', line: 2, kind: 'issue-number', text: `#${'12'}${'34'}` }]);
   });
