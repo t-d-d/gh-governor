@@ -23,7 +23,7 @@ On 28 October 2026 governor's code moved into this repo: about 14,700 lines of s
 - closed **2** of those sessions' pull requests unmerged, a probe that closes its own pull request by design and a duplicate of another pull request, and reverted **none**;
 - grew by about **7,300 lines of source and 900 tests**, to more than 2,200 tests, every one of them offline.
 
-Thomas reviews each pull request mainly from its description, which maps every acceptance criterion to the test that answers it, and merges it, often in batches, so these times include waiting for review. This repo turns on pickup, summons, PR messages, subscriptions, conflicts and blocker messages. It does not run governor's own PR review, so every merge is a person's.
+Each session reviews its own diff before it pushes. Thomas then reviews each pull request mainly from its description, which maps every acceptance criterion to the test that answers it, and merges it, often in batches, so these times include waiting for review. This repo turns on pickup, summons, PR messages, subscriptions, conflicts and blocker messages. It does not run governor's own PR review, so every merge is a person's.
 
 ### One feature, start to finish
 
@@ -80,7 +80,7 @@ A repo turns each feature on with a switch in its `.github/dispatch.json`. Two b
 | Summons | `@claude` in an issue, a comment or a review starts a session on that remark. |
 | PR messages | Every comment, review, push and merge on a pull request goes to the session that wrote it. A fresh session takes over if that one is archived. |
 | CI and deploys | A red build tells the sessions whose merges may have broken it. A deploy tells the sessions whose work it shipped, and labels their tickets. |
-| PR review | A model checks each pull request's description and the tickets it closes against the repo's own checklist, and CI checks the code. A pass merges it, or approves it for a person to merge. |
+| PR review | A model checks each pull request against the repo's own checklist, from its description, the tickets it closes and any files the repo quotes whole. A pass merges it, or approves it for a person to merge. |
 | Periodics | Recurring sessions, such as a code review every 10 merges or a weekly ticket review. |
 | Hooks | A system outside GitHub, such as a cloud alarm, starts a session with a signed request. |
 | Waits | A ticket that opens with `Blocked until: 2026-11-20` is not started before that date. |
@@ -119,6 +119,7 @@ Some of the problems it solves, for engineers building something similar:
 - **A Fargate task, not a Lambda.** `claude --cloud` will not run without a terminal, and Lambda has no pseudo-terminal. The task starts when a fire is queued and exits after a minute idle, so the AWS bill is a fraction of a cent a fire.
 - **One login, one lane.** Every turn refreshes a single stored claude.ai login, and each refresh rotates the token, so two turns at once would leave one holding a dead login. Every fire goes through one FIFO queue to one task, one turn at a time.
 - **Code decides before the model does.** The PR review checks the tickets a pull request closes, its human-only paths and its required checks in code, before any model call. The model has no tools, answers in a fixed JSON shape, and judges only what code cannot.
+- **Code review goes where the repo puts it.** Governor does not fix where code gets reviewed. This repo reviews it before every push: the `pre-push` skill has the session review its own diff at high effort, and each finding ends fixed, filed as an issue, or dismissed only after it has been traced through the code. A repo that wants code review at the PR review writes it into its checklist instead, and `review.quote` hands the model the changed files it names, whole. Without that, the PR review's model reads the description, the tickets and the list of changed files, and judges whether the change does what its tickets ask.
 - **Relayed text names who wrote it, a check on prompt injection.** Every message governor relays into a session opens with a line saying it came from GitHub, not from the operator, so the session weighs each quoted remark by who wrote it. The line does not tell the session to ignore the text, since a remark from the pull request's owner is work to do. Only people with a say in the repo can summon a session. A hook's prompt lives in the repo, where a pull request reviews it, and the caller's text is quoted as data.
 - **Hook keys governor never stores.** Each hook's key is derived from one secret, the repo, the hook and a version, so revoking a key is a one-line pull request. A per-hour cap stops a leaked key flooding the shared queue, and a test checks that a signed request expires before the queue forgets it.
 - **A heartbeat that runs somewhere else.** Governor cannot report that it has stopped, so a served repo can run a checker on GitHub Actions that opens an issue when a sweep or a recurring session is overdue.
@@ -131,7 +132,6 @@ Two CloudFormation stacks hold all of it, and GitHub Actions deploys them after 
 
 Governor is built for one developer running their own repos on their own Claude subscription. It is not a team or enterprise product, and does not try to be. One login, one queue and one task are enough for one person's backlog, and they keep the moving parts few. What that choice costs:
 
-- **The model judges intent, and CI judges the code.** The review's model reads no diff. It sees the pull request's description, the list of files it changes, the tickets it closes, and any files the repo asks it to quote whole. It judges whether the change does what its tickets ask and stays inside the repo's rules. The code itself is judged by the repo's CI and required checks, which the review will not pass while red.
 - **This repo does not run the automatic merge.** Governor does not review its own pull requests, since it would be marking its own work. A person merges every one.
 - **It depends on Claude Code internals.** Governor starts a session by driving `claude --cloud` in a pseudo-terminal, with flags the CLI does not document, and reads a session's last reply from the sessions API. A CLI release can break it. The probe after each deploy, and 17 CloudWatch alarms, are how that shows up.
 - **Your login, your terms.** Every session runs on your own claude.ai login, copied from an interactive sign-in, so governor is for your own repos, not a service for other people. Check your plan's terms before you leave it running unattended. The operator mints it again about every two weeks, and an alarm warns three days ahead. The subscription's usage limits, not AWS, set the real ceiling on throughput and cost.
