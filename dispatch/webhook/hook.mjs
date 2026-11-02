@@ -38,14 +38,16 @@ export const HOOK_DEDUP_WINDOW_MS = 5 * 60 * 1000;
 /**
  * How far a signature's `t` may be ahead of the receiver's clock, and how far
  * behind it. A request is valid for the sum of the two, so the sum stays at
- * least 5 seconds under {@link HOOK_DEDUP_WINDOW_MS}. The queue's window runs
- * from the first send, not from the clock check, and the margin covers a
- * replay that takes longer than the first request to reach the queue. Then
- * every replay of a valid request lands inside the queue's window and is
- * dropped.
+ * least the receiver's timeout (20 seconds, `governor-webhook` in
+ * infra/governor.cfn.yml) under {@link HOOK_DEDUP_WINDOW_MS}. The queue's
+ * window runs from the first send, not from the clock check, and between the
+ * two the receiver reads and writes the hook table and sends, each call
+ * retried by the SDK. Nothing reaches the queue once the receiver stops, so
+ * that margin covers the slowest replay. Then every replay of a valid
+ * request lands inside the queue's window and is dropped.
  */
 export const HOOK_CLOCK_AHEAD_MS = 30 * 1000;
-export const HOOK_CLOCK_BEHIND_MS = 4 * 60 * 1000 + 25 * 1000;
+export const HOOK_CLOCK_BEHIND_MS = 4 * 60 * 1000 + 10 * 1000;
 
 const PREFIX = '/hooks/';
 const OWNER = /^[A-Za-z0-9-]+$/;

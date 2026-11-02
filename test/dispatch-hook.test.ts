@@ -18,6 +18,9 @@ import { HOOK_PER_HOUR_MAX, FIRE_BUDGET, fireWeight, parseFire } from '../dispat
 import { configSchema, readConfig, resolveFiles, switchOf } from '../dispatch/repo-config.mjs';
 import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
 import { factoryFile } from './helpers/factory.ts';
+import { resolve } from 'node:path';
+import { loadTemplate } from './helpers/cfn.ts';
+import { REPO_ROOT } from './helpers/repo-model.ts';
 
 const HOOK_SECRET = 'hook-secret-test';
 const REPO = 'acme/factory';
@@ -143,8 +146,8 @@ describe('handle — a hook fire', () => {
     assert.equal(queued.length, 0);
   });
 
-  test('a timestamp more than 30 seconds ahead of the receiver\'s clock, or more than 4 minutes 25 seconds behind it, gets 401; one inside is taken', async () => {
-    for (const [t, status] of [[T + 31, 401], [T + 29, 202], [T + 30, 202], [T - 264, 202], [T - 265, 202], [T - 266, 401]] as const) {
+  test('a timestamp more than 30 seconds ahead of the receiver\'s clock, or more than 4 minutes 10 seconds behind it, gets 401; one inside is taken', async () => {
+    for (const [t, status] of [[T + 31, 401], [T + 29, 202], [T + 30, 202], [T - 249, 202], [T - 250, 202], [T - 251, 401]] as const) {
       const { deps, queued } = harness();
       const response = await handle(fire(TEXT, { t }), deps);
       assert.equal(response.statusCode, status, `t ${t - T}`);
@@ -155,15 +158,25 @@ describe('handle — a hook fire', () => {
   // A valid request can be replayed for as long as it stays valid, which is
   // the sum of the two limits. The queue drops a duplicate only inside its
   // deduplication window, which runs from the first send, not from the clock
-  // check. A replay that takes longer than the first request to reach the
-  // queue could land after the queue has forgotten the first send and start
-  // a second session, so the sum stays a margin under the window.
-  const DEDUP_MARGIN_MS = 5 * 1000;
-  test('the clock limits ahead and behind add up to at least 5 seconds under the queue\'s deduplication window', () => {
+  // check. A replay accepted near the end of its validity can reach the queue
+  // as late as the receiver's timeout after its clock check, since the
+  // receiver reads and writes the hook table and the SDK retries each call.
+  // Nothing reaches the queue once the Lambda stops, so the sum stays at
+  // least the receiver's timeout under the window.
+  const receiverTimeoutMs = (): number => {
+    const stack = loadTemplate(resolve(REPO_ROOT, 'infra/governor.cfn.yml'));
+    const functions = Object.values(stack.Resources ?? {}).filter((r) => r.Type === 'AWS::Lambda::Function' && r.Properties?.FunctionName === 'governor-webhook');
+    assert.equal(functions.length, 1, 'the stack holds one governor-webhook function');
+    const timeout = functions[0]?.Properties?.Timeout;
+    assert.equal(typeof timeout, 'number', 'the receiver sets its Timeout in seconds');
+    return (timeout as number) * 1000;
+  };
+  test('the clock limits ahead and behind add up to at least the receiver\'s timeout under the queue\'s deduplication window', () => {
     assert.equal(HOOK_DEDUP_WINDOW_MS, 5 * 60 * 1000, 'an SQS FIFO queue deduplicates for five minutes');
     assert.equal(HOOK_CLOCK_AHEAD_MS, 30 * 1000);
-    assert.equal(HOOK_CLOCK_BEHIND_MS, 265 * 1000);
-    assert.ok(HOOK_CLOCK_AHEAD_MS + HOOK_CLOCK_BEHIND_MS <= HOOK_DEDUP_WINDOW_MS - DEDUP_MARGIN_MS, `${HOOK_CLOCK_AHEAD_MS} + ${HOOK_CLOCK_BEHIND_MS} leaves less than ${DEDUP_MARGIN_MS} under ${HOOK_DEDUP_WINDOW_MS}`);
+    assert.equal(HOOK_CLOCK_BEHIND_MS, 250 * 1000);
+    const margin = receiverTimeoutMs();
+    assert.ok(HOOK_CLOCK_AHEAD_MS + HOOK_CLOCK_BEHIND_MS <= HOOK_DEDUP_WINDOW_MS - margin, `${HOOK_CLOCK_AHEAD_MS} + ${HOOK_CLOCK_BEHIND_MS} leaves less than the receiver's ${margin} timeout under ${HOOK_DEDUP_WINDOW_MS}`);
   });
 
   test('never logs the signature or the key', async () => {
