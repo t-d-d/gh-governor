@@ -237,7 +237,7 @@ const labelNames = (row) =>
  * @typedef {{ number: number, title: string, state: string, created_at: string, labels: string[], openBlockers?: number, wait?: import('./ready-work.mjs').Wait }} IssueRow
  *   `openBlockers`: the open blockers by its dependency summary, where it has one.
  *   `wait`: what its body's `Blocked until:` line says, where it has one (`waitOf`).
- * @typedef {{ number: number, state: string, title: string }} BlockerRow
+ * @typedef {{ number: number, state: string, title: string, id?: number }} BlockerRow
  * @typedef {{ id: number, body: string, created_at: string }} CommentRow
  * @typedef {{ number: number, title: string, html_url: string, body: string, merged_at: string | null, merge_commit_sha: string | null, head: string, author: string }} PullRow
  *   `head`: its head branch, '' for a fork's; `author`: the login that opened it.
@@ -251,7 +251,7 @@ const labelNames = (row) =>
  * @typedef {{ filename: string, status: string, previous?: string }} FileRow `previous`: the path a rename left.
  * @typedef {{ sha: string, author: string | null, committer: string | null, verified: boolean }} PullCommitRow
  *   `author`, `committer`: the logins GitHub ties them to, null for none; `verified`: GitHub verified its signature.
- * @typedef {{ number: number, title: string, body: string, state: string, labels: string[], pull: boolean, created_at?: string, openBlockers?: number, wait?: import('./ready-work.mjs').Wait }} TicketRow
+ * @typedef {{ number: number, id?: number, title: string, body: string, state: string, labels: string[], pull: boolean, created_at?: string, openBlockers?: number, wait?: import('./ready-work.mjs').Wait }} TicketRow
  * @typedef {{ id: number, body: string, created_at: string, ours: boolean }} ThreadRow `ours`: the reader's own App posted it.
  * @typedef {{ number: number, draft: boolean, base: string, head: string, title: string, html_url: string, body: string }} OpenPullRow
  */
@@ -465,13 +465,15 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       const rows = await call('GET', `/repos/${repo}/issues/${number}/dependencies/blocked_by?per_page=100`);
       return rows.map((row) => {
         const named = repoOf(row.repository_url);
-        return { number: row.number, state: row.state, title: row.title, ...(named === null || named === undefined ? {} : { repo: named }) };
+        return { number: row.number, state: row.state, title: row.title, ...(named === null || named === undefined ? {} : { repo: named }), ...(Number.isInteger(row.id) ? { id: row.id } : {}) };
       });
     },
 
     /**
-     * Link an issue of this repo as a blocker of `number`, by the blocker's
-     * id (`issueClose`).
+     * Link an issue as blocked by another, named by its id (`blocked_by`):
+     * a relative wait's blocker (`issueClose`), or the repo's wait ticket.
+     * A refusal throws with its status, as every call does; GitHub's cap of
+     * 50 issues one issue may block is a 422.
      *
      * @param {number} number
      * @param {number} id
@@ -480,6 +482,20 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       await call('POST', `/repos/${repo}/issues/${number}/dependencies/blocked_by`, { issue_id: id });
     },
 
+    /**
+     * Remove an issue's `blocked by` link to another, named by its id. A link
+     * already gone answers 404, which is the state removing it asked for.
+     *
+     * @param {number} number
+     * @param {number} blockerId
+     */
+    removeBlocker: async (number, blockerId) => {
+      try {
+        await call('DELETE', `/repos/${repo}/issues/${number}/dependencies/blocked_by/${blockerId}`);
+      } catch (error) {
+        if (/** @type {{ status?: number }} */ (error)?.status !== 404) throw error;
+      }
+    },
     /**
      * An issue's id, title, state, GitHub's `state_reason` and when it
      * closed, each null where it gives none, and whether it is a pull
@@ -943,7 +959,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     /** An issue as a PR's ticket: title, body, state, label names. @param {number} number @returns {Promise<TicketRow>} */
     ticket: async (number) => {
       const row = await call('GET', `/repos/${repo}/issues/${number}`);
-      return { number: row.number, title: row.title ?? '', body: row.body ?? '', state: row.state, labels: labelNames(row), pull: Boolean(row.pull_request), ...(typeof row.created_at === 'string' ? { created_at: row.created_at } : {}), ...openBlockersOf(row), ...waitOf(row.body) };
+      return { number: row.number, ...(Number.isInteger(row.id) ? { id: row.id } : {}), title: row.title ?? '', body: row.body ?? '', state: row.state, labels: labelNames(row), pull: Boolean(row.pull_request), ...(typeof row.created_at === 'string' ? { created_at: row.created_at } : {}), ...openBlockersOf(row), ...waitOf(row.body) };
     },
 
     /**

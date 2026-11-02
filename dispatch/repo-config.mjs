@@ -236,6 +236,16 @@ const heartbeatSchema = z.strictObject({
 });
 
 /**
+ * The wait ticket (dispatch/waits.mjs): with `waits` on, governor links each
+ * waiting ticket as blocked by it, so GitHub's sidebar shows the ticket is
+ * held, and removes the link when the wait ends. The link is only for
+ * display: the ticket's line holds it.
+ */
+const waitsSchema = z.strictObject({
+  issue: z.number().int().positive().meta({ description: 'The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50.' }),
+});
+
+/**
  * Pickup's settings (dispatch/pickup.mjs). `sweepHours`: how many whole
  * hours the bare schedule fire leaves between two sweeps of the repo's ready
  * tickets, one when unset.
@@ -336,6 +346,7 @@ export const configSchema = z.strictObject({
   workflows: workflowsSchema.meta({ description: 'What the repo\'s workflows are to governor: `ci`, `triage` and `tags`.' }),
   review: reviewSchema.optional().meta({ description: 'The PR review\'s settings: its checklist, and the lists it checks a PR against. Needed when `prReview` is on.' }),
   heartbeat: heartbeatSchema.optional().meta({ description: '`{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo\'s own marker, which the hourly sweep updates. Needed when `heartbeat` is on.' }),
+  waits: waitsSchema.optional().meta({ description: '`{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing.' }),
   pickup: pickupSchema.optional().meta({ description: '`{ "sweepHours": <number> }`: how many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one. Default one, which sweeps at every fire.' }),
   periodics: z.array(periodicSchema).default([])
     .superRefine((list, ctx) => {
@@ -380,7 +391,7 @@ export const configSchema = z.strictObject({
  * @typedef {{ sweepHours?: number }} Pickup
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
- * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, pickup?: Pickup, periodics: Periodic[], hooks: Hook[] }} RepoConfig
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, periodics: Periodic[], hooks: Hook[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
  *   ready labels the claim takes off, and a failed launch puts back.
@@ -391,6 +402,8 @@ export const configSchema = z.strictObject({
  *   `review`: the PR review's settings, where the file has them.
  *   `heartbeat`: the issue governor's heartbeat goes into, and the repo's
  *   marker in the old shape.
+ *   `waits`: the wait ticket waiting tickets are linked to, where the file
+ *   names one.
  *   `pickup`: pickup's sweep interval, where the file sets one.
  *   `periodics`: the recurring sessions the schedule fire starts.
  *   `hooks`: the hooks an outside system fires.

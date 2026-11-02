@@ -44,6 +44,7 @@ import { sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
 import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
 import { RELATIVE_WAIT, isBlocked, isWaiting, labelRow, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
+import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** The log event for a `Blocked until:` line governor cannot read. */
 export const WAIT_UNREADABLE = 'dispatch-wait-unreadable';
@@ -104,7 +105,7 @@ export const reportUnreadable = async ({ reader, repo, issue, value, log }) => {
   try {
     return await sayOnce(reader, issue, WAIT_UNREADABLE_MARKER, waitUnreadableComment(value));
   } catch (error) {
-    log(WAIT_UNREADABLE, { level: 'error', repo, issue, value, error: error instanceof Error ? error.message : String(error), reason: 'the ticket is held, and governor could not say so on it this turn' });
+    log(WAIT_UNREADABLE, { level: 'error', repo, issue, value, error: messageOf(error), reason: 'the ticket is held, and governor could not say so on it this turn' });
     return 'failed';
   }
 };
@@ -175,11 +176,17 @@ export const waitSpecPrompt = ({ issue, title, until, labels, prompts }) => spec
  *   for no item.
  *
  * @typedef {{
- *   ticket: (n: number) => Promise<{ number: number, title: string, state: string, labels: string[], openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
- *   blockers: (n: number) => Promise<Array<{ state: string }>>,
+ *   ticket: (n: number) => Promise<{ number: number, id?: number, title: string, state: string, labels: string[], pull?: boolean, openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
+ *   blockers: (n: number) => Promise<Array<{ state: string, id?: number }>>,
  *   allComments: (n: number) => Promise<Array<{ body: string }>>,
  *   comment: (n: number, body: string) => Promise<void>,
  * }} WaitReader
+ *
+ * @typedef {WaitReader & {
+ *   addBlocker: (n: number, blockerId: number) => Promise<void>,
+ *   removeBlocker: (n: number, blockerId: number) => Promise<void>,
+ *   blocking: (n: number) => Promise<Array<{ number: number, state: string, repo?: string }>>,
+ * }} LinkReader
  *
  * @typedef {(event: string, context?: Record<string, unknown>) => void} Log
  */
@@ -214,6 +221,150 @@ const ticketOf = (reader, issue) => reader.ticket(issue).then((t) => (t.number =
   throw error;
 });
 
+// ── The wait ticket, under the `waits` switch and the file's `waits.issue` ──
+
+/** The log event for what a turn did with a ticket's link to the wait ticket. */
+export const WAIT_LINK = 'dispatch-wait-link';
+
+/** How many issues GitHub lets one issue block. */
+export const BLOCKING_CAP = 50;
+
+/** The marker on governor's one comment on a ticket linked to the wait ticket with no line. */
+export const WAIT_UNLINED_MARKER = '<!-- governor:wait-unlined -->';
+
+/** The marker on governor's one comment on a ticket the wait ticket had no room for. */
+export const WAIT_FULL_MARKER = '<!-- governor:wait-full -->';
+
+/**
+ * The comment a ticket linked to the wait ticket with no line gets.
+ *
+ * @param {number} board The wait ticket.
+ */
+export const waitUnlinedComment = (board) => [
+  `This ticket is linked as blocked by #${board}, the wait ticket, but its body has no \`Blocked until:\` line. Governor holds a ticket by its line, not by that link, and leaves the link alone.`,
+  'While the link stands, pickup holds the ticket as blocked by an open issue. To make it wait, start its body with `Blocked until: YYYY-MM-DD`. To free it, remove the link.',
+  '',
+  WAIT_UNLINED_MARKER,
+].join('\n');
+
+/**
+ * The comment a waiting ticket gets when the wait ticket can block no more.
+ *
+ * @param {number} board The wait ticket.
+ */
+export const waitFullComment = (board) => [
+  `Governor could not link this ticket as blocked by #${board}, the wait ticket: GitHub lets one issue block at most 50, and it is full. The sidebar does not show this wait.`,
+  'The ticket\'s `Blocked until:` line still holds it.',
+  '',
+  WAIT_FULL_MARKER,
+].join('\n');
+
+/**
+ * Whether a refused link is GitHub's cap on how many issues one issue may
+ * block: a 422 whose text from GitHub speaks of that limit. The request
+ * line before the status is left out, since its path carries an issue
+ * number, and issue #50's other refusals are not the cap.
+ *
+ * @param {unknown} error
+ */
+const atCap = (error) => /** @type {{ status?: number }} */ (error)?.status === 422
+  && /\b50\b|\blimit\b|\bmaximum\b|\bat most\b/i.test(messageOf(error).replace(/^\S+ \S+ failed: \d{3}\b/, ''));
+
+/**
+ * @typedef {{
+ *   board: number,
+ *   show: (issue: number) => Promise<string>,
+ *   hide: (issue: number) => Promise<'removed' | 'not linked'>,
+ *   linked: (issue: number) => Promise<boolean>,
+ *   open: () => Promise<boolean>,
+ *   unlined: (issue: number) => Promise<string>,
+ * }} WaitLinks
+ *   One turn's handle on a repo's wait ticket, read once, the first time a
+ *   call needs it. `show` links a ticket as blocked by it, unless it is
+ *   linked already, the wait ticket is closed, or GitHub's cap refuses the
+ *   link, which is said once on the ticket. `hide` removes the link where
+ *   it stands. `open` is whether the wait ticket is open, so a link to it
+ *   counts as an open blocker. `unlined` says once on a ticket that it is
+ *   linked with no line. Any other failure throws.
+ */
+
+/**
+ * The wait ticket's links for one repo's turn, or undefined where its file
+ * names no wait ticket: then governor links nothing.
+ *
+ * @param {{ reader: LinkReader, repo: string, board: number | undefined, log: Log }} args
+ * @returns {WaitLinks | undefined}
+ */
+export const waitLinks = ({ reader, repo, board, log }) => {
+  if (board === undefined) return undefined;
+  /** @type {Promise<{ id: number, state: string }> | undefined} */
+  let read;
+  const boardOf = () => (read ??= reader.ticket(board).then((t) => {
+    if (t.number !== board || t.pull === true || !Number.isInteger(t.id)) throw new Error(`the wait ticket #${board} is not an issue in ${repo}`);
+    return { id: /** @type {number} */ (t.id), state: t.state };
+  }));
+  /** @param {number} issue */
+  const linked = async (issue) => {
+    const rows = await reader.blockers(issue);
+    if (rows.length === 0) return false;
+    const { id } = await boardOf();
+    return rows.some((r) => r.id === id);
+  };
+  return {
+    board,
+    linked,
+    open: async () => (await boardOf()).state === 'open',
+    show: async (issue) => {
+      if (issue === board) return 'the wait ticket itself';
+      const { id, state } = await boardOf();
+      if (state !== 'open') {
+        log(WAIT_LINK, { level: 'warn', repo, issue, board, outcome: 'not linked', reason: `the wait ticket #${board} is ${state}, so governor links no ticket to it` });
+        return 'wait ticket closed';
+      }
+      if (await linked(issue)) return 'already linked';
+      try {
+        await reader.addBlocker(issue, id);
+      } catch (error) {
+        // GitHub's text for its cap may sit outside the `message` the error
+        // carries, so a 422 is the cap too where the wait ticket already
+        // blocks as many as GitHub allows.
+        const full = /** @type {{ status?: number }} */ (error)?.status === 422 && (atCap(error) || (await reader.blocking(board)).length >= BLOCKING_CAP);
+        if (!full) throw error;
+        const told = await sayOnce(reader, issue, WAIT_FULL_MARKER, waitFullComment(board));
+        log(WAIT_LINK, { level: 'warn', repo, issue, board, outcome: `not linked: the wait ticket is full, ${told}`, error: messageOf(error) });
+        return 'wait ticket full';
+      }
+      log(WAIT_LINK, { repo, issue, board, outcome: 'linked' });
+      return 'linked';
+    },
+    hide: async (issue) => {
+      if (issue === board || !(await linked(issue))) return 'not linked';
+      await reader.removeBlocker(issue, (await boardOf()).id);
+      log(WAIT_LINK, { repo, issue, board, outcome: 'removed' });
+      return 'removed';
+    },
+    unlined: async (issue) => {
+      const told = await sayOnce(reader, issue, WAIT_UNLINED_MARKER, waitUnlinedComment(board));
+      log(WAIT_LINK, { repo, issue, board, outcome: `linked with no line: ${told}` });
+      return told;
+    },
+  };
+};
+
+/**
+ * Show or hide a wait in the sidebar, where `links` is set. A failure is
+ * logged at error, with `reason`, and taken for nothing: the link is only
+ * for display, and the line holds the ticket either way.
+ *
+ * @param {WaitLinks | undefined} links @param {'show' | 'hide'} act @param {string} repo @param {number} issue @param {Log} log @param {string} reason
+ */
+const softly = async (links, act, repo, issue, log, reason) => {
+  if (links === undefined) return;
+  await links[act](issue).catch((error) => {
+    log(WAIT_LINK, { level: 'error', repo, issue, board: links.board, error: messageOf(error), reason });
+  });
+};
+
 /**
  * A `wait` fire's turn: read the ticket and its line, and put, rewrite or
  * delete its item to match. A date still to come is held in the item, and
@@ -231,16 +382,26 @@ const ticketOf = (reader, issue) => reader.ticket(issue).then((t) => (t.number =
  * where it is not linked, and rewrites or comments where that issue has
  * already closed. Another repo's issue is not read.
  *
- * @param {{ reader: WaitReader & RelativeReader, state: WaitState, repo: string, issue: number, labels: import('../scripts/lib/ready-work.mjs').Labels, now: number, log: Log, prompts?: Record<string, string | undefined> }} args
+ * With `links`, the repo's wait ticket: a date still to come links the
+ * ticket as blocked by it, after the item is written. Any other line, or a
+ * closed ticket, takes the link off; where the line was deleted, before the
+ * item goes, so a removal that fails fails the turn and leaves the item for
+ * the schedule fire. A ticket linked with no line where no item stood was
+ * linked by hand: it is told once, and its link stays.
+ *
+ * @param {{ reader: WaitReader & RelativeReader, state: WaitState, repo: string, issue: number, labels: import('../scripts/lib/ready-work.mjs').Labels, now: number, log: Log, prompts?: Record<string, string | undefined>, links?: WaitLinks }} args
  * @returns {Promise<string>} What came of it, as logged.
  */
-export const holdWait = async ({ reader, state, repo, issue, labels, now, log, prompts = {} }) => {
+export const holdWait = async ({ reader, state, repo, issue, labels, now, log, prompts = {}, links }) => {
   const found = await ticketOf(reader, issue);
   const ticket = found ?? { state: 'gone or moved', labels: [], wait: undefined };
   const wait = ticket.state === 'open' ? ticket.wait : undefined;
   const read = await state.wait(repo, issue);
   const about = { repo, issue, ...(read === null ? {} : { read: read.until }) };
   if (wait !== undefined && 'after' in wait) {
+    // A relative line names its own blocker, which the sidebar shows: the
+    // wait ticket's link comes off, before any item goes.
+    if (links !== undefined && found !== null) await links.hide(issue);
     const dropped = read === null ? null : await state.dropWait(repo, issue, read.until);
     const settled = holds(ticket.labels, labels) ? await repairRelative({ reader, repo, issue, after: wait.after, link: true, prompts, now, log }) : 'not settled: the ticket is not held from anyone';
     const outcome = `relative: ${settled}`;
@@ -252,16 +413,32 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
   // midnight, or a wait moved earlier into the past, loses nothing.
   const passedOverItem = wait !== undefined && 'until' in wait && read !== null;
   if (wait !== undefined && 'until' in wait && (isWaiting({ wait }, now) || passedOverItem)) {
+    /** @type {string} */
+    let outcome;
     if (read?.until === wait.until) {
+      outcome = 'held';
       log(WAIT, { ...about, until: wait.until, outcome: 'held: the item already holds this date' });
-      return 'held';
+    } else {
+      const written = await state.recordWait(repo, issue, read?.until ?? null, wait.until);
+      outcome = written ? 'held' : 'not held: the item changed since it was read';
+      log(WAIT, { ...about, until: wait.until, outcome });
     }
-    const written = await state.recordWait(repo, issue, read?.until ?? null, wait.until);
-    const outcome = written ? 'held' : 'not held: the item changed since it was read';
-    log(WAIT, { ...about, until: wait.until, outcome });
+    // The item stands at a passed date, so a removal that fails here is
+    // tried again by the schedule fire.
+    if (isWaiting({ wait }, now)) await softly(links, 'show', repo, issue, log, 'the ticket is held by its line all the same; its sidebar does not show the wait');
+    else await softly(links, 'hide', repo, issue, log, 'its item stands, so the schedule fire takes the link off once the wait has ended');
     return outcome;
   }
   if (wait !== undefined && 'unreadable' in wait && holds(ticket.labels, labels)) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
+  if (links !== undefined && found !== null) {
+    if (wait === undefined && read === null) {
+      // No line and no item: governor never linked it, so a link is a
+      // person's. It is told once, and left alone.
+      if (ticket.state === 'open' && await links.linked(issue)) await links.unlined(issue);
+    } else {
+      await links.hide(issue);
+    }
+  }
   if (read === null) {
     log(WAIT, { ...about, outcome: 'nothing to hold', state: ticket.state });
     return 'nothing to hold';
@@ -301,10 +478,20 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  * the next fire, and is logged and returned in `unread`. An items read that
  * fails leaves the whole repo for the next fire the same way.
  *
- * @param {{ reader: WaitReader, state: WaitState, repo: string, labels: import('../scripts/lib/ready-work.mjs').Labels, spec: boolean, now: number, log: Log }} args
+ * With `links`, the repo's wait ticket: every ended item's ticket that is
+ * still there loses its link first, so the turn runs this before its sweep
+ * reads the backlog, and a removal that fails keeps the item for the next
+ * fire. A link just removed is not counted as an open blocker, though the
+ * ticket's dependency summary may still count it. Then each open ticket in
+ * this repo the wait ticket blocks with no item: with no line, it was linked
+ * by hand, and is told once and keeps its link; with a line that has passed
+ * or cannot be read, its link comes off, as a turn that failed to take it
+ * off left it.
+ *
+ * @param {{ reader: WaitReader, state: WaitState, repo: string, labels: import('../scripts/lib/ready-work.mjs').Labels, spec: boolean, now: number, log: Log, links?: WaitLinks, blocking?: LinkReader['blocking'] }} args
  * @returns {Promise<{ specs: WaitSpec[], unread: Array<{ repo: string, error: string }> }>}
  */
-export const endedWaits = async ({ reader, state, repo, labels, spec, now, log }) => {
+export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, links, blocking }) => {
   /** @type {WaitSpec[]} */
   const specs = [];
   /** @type {Array<{ repo: string, error: string }>} */
@@ -314,7 +501,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log }
   try {
     items = await state.waits(repo);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = messageOf(error);
     log(WAIT_UNHANDLED, { level: 'error', repo, error: message, reason: 'its wait items could not be read, so no ended wait is acted on this turn' });
     return { specs, unread: [{ repo, error: `wait items: ${message}` }] };
   }
@@ -333,6 +520,8 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log }
         continue;
       }
       const wait = ticket.state === 'open' ? ticket.wait : undefined;
+      const moved = wait !== undefined && 'until' in wait && isWaiting({ wait }, now);
+      const removed = links !== undefined && !moved ? await links.hide(issue) === 'removed' : false;
       if (wait === undefined) {
         await drop(item, { outcome: ticket.state === 'open' ? 'its line is gone' : `its ticket is ${ticket.state}` });
         continue;
@@ -351,8 +540,11 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log }
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: written ? 'moved later: not released' : 'moved later, and the item changed since it was read' });
         continue;
       }
-      const blockers = ticket.openBlockers === undefined ? await reader.blockers(issue) : undefined;
-      const row = isBlocked(ticket, blockers) ? 'blocked' : labelRow(ticket.labels, labels);
+      // A link just removed may still be in the dependency summary, which
+      // counts it only while the wait ticket is open.
+      const counted = removed && ticket.openBlockers !== undefined && await links?.open() ? { ...ticket, openBlockers: Math.max(0, ticket.openBlockers - 1) } : ticket;
+      const blockers = counted.openBlockers === undefined ? await reader.blockers(issue) : undefined;
+      const row = isBlocked(counted, blockers) ? 'blocked' : labelRow(ticket.labels, labels);
       if (row !== 'not-ready') {
         await drop(item, { until: wait.until, outcome: `ended on a ticket ${row}: nothing to say` });
         continue;
@@ -368,9 +560,29 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log }
       }
       await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: 'dispatched inside the window' } : {}) });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = messageOf(error);
       log(WAIT_UNHANDLED, { level: 'error', repo, issue, read: item.until, error: message, reason: 'its item stays, so the next fire tries again' });
       unread.push({ repo, error: `wait #${issue}: ${message}` });
+    }
+  }
+  if (links !== undefined && blocking !== undefined) {
+    const waiting = new Set(items.map((i) => i.issue));
+    try {
+      const rows = (await blocking(links.board)).filter((r) => r.state === 'open' && (r.repo ?? repo).toLowerCase() === repo.toLowerCase() && !waiting.has(r.number));
+      for (const { number } of rows) {
+        const ticket = await ticketOf(reader, number);
+        if (ticket === null || ticket.state !== 'open') continue;
+        // No line: a person's link, told once and left alone. A date that
+        // has passed, a line that cannot be read, or a relative line:
+        // governor's link, which a turn could not take off, so it comes off
+        // now, before the sweep.
+        if (ticket.wait === undefined) await links.unlined(number);
+        else if (!('until' in ticket.wait) || !isWaiting({ wait: ticket.wait }, now)) await links.hide(number);
+      }
+    } catch (error) {
+      const message = messageOf(error);
+      log(WAIT_UNHANDLED, { level: 'error', repo, board: links.board, error: message, reason: 'the tickets the wait ticket blocks could not be read or told, so the next fire tries again' });
+      unread.push({ repo, error: `wait ticket #${links.board}: ${message}` });
     }
   }
   return { specs, unread };
