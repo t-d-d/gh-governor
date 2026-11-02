@@ -44,11 +44,12 @@
   ],
   "workflows": { "ci": ".github/workflows/ci.yml" },
   "review": {
-    "checklist": "Review the pull request from its description and the tickets it closes. Answer each test in order, and stop at the first that fails.\n\n1. Every ticket it closes is open and ready, and the PR is the only open one closing it.\n2. It says what the change does, and that is what the tickets it closes asked for.\n3. It says what the change costs, and the cost is nothing a person should decide: a new paid service, a wider permission or a dropped safety check fails.\n4. Where it departs from a ticket it closes, it does less, never more.\n5. It answers every acceptance criterion of every ticket it closes, each with a test or a check.\n6. It leaves no loose end: anything it found and did not do is an issue it names.\n7. It changes no path on the human-only list.\n\nAnswer pass, or fail with the number of the first test that failed and one sentence saying what the PR would need to meet it.",
+    "checklist": "Review the pull request from its description and the tickets it closes. Answer each test in order.\n\n1. Every ticket it closes is open and ready, and the PR is the only open one closing it.\n2. It says what the change does, and that is what the tickets it closes asked for.\n3. It says what the change costs, and the cost is nothing a person should decide: a new paid service, a wider permission or a dropped safety check fails.\n4. Where it departs from a ticket it closes, it does less, never more.\n5. It answers every acceptance criterion of every ticket it closes, each with a test or a check.\n6. It leaves no loose end: anything it found and did not do is an issue it names.\n7. It changes no path on the human-only list.\n\nAnswer pass, or fail with the number of the first test that failed and one sentence saying what the PR would need to meet it.",
     "humanOnly": [
-      { "glob": "/CLAUDE.md", "reason": "the instructions every session follows" },
+      { "glob": "CLAUDE.md", "reason": "the instructions every session follows, at the root or in any folder" },
       { "glob": ".claude/**", "reason": "the skills, hooks and settings every session runs" },
       { "glob": ".github/workflows/**", "reason": "the workflows: CI, which this review reads as a required check, and every deploy" },
+      { "glob": ".github/actions/**", "reason": "the actions the workflows call, CI's steps among them" },
       { "glob": ".github/dispatch.json", "reason": "this file: what governor may do here, and the lists this review checks against" },
       { "glob": "infra/**", "reason": "infrastructure: accounts, roles, permissions and what they cost" }
     ],

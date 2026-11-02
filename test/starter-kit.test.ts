@@ -3,9 +3,8 @@
  * a config file that names its JSON Schema, lists every switch, and turns on
  * pickup, the heartbeat and three periodics; a dark-factory file a repo copies
  * in its place, with every switch but hooks on and the review's merge on; the
- * workflow that calls the
- * heartbeat checker, and the workflow that calls the config check on pull
- * requests. Its prompts are plain text that
+ * workflow that calls the heartbeat checker; and the workflow that calls the
+ * config check on pull requests. Its prompts are plain text that
  * works without any skill, and each acts on the window governor writes under
  * it (dispatch/periodics.mjs).
  */
@@ -127,6 +126,8 @@ describe('the starter kit\'s dark-factory config file', () => {
     const starter = readConfig(read(CONFIG_FILE));
     assert.ok(starter.ok);
     assert.equal(got.config.environment, 'my-env');
+    assert.deepEqual(got.config.labels, starter.config.labels);
+    assert.deepEqual(got.config.pickup, starter.config.pickup);
     assert.deepEqual(got.config.heartbeat, starter.config.heartbeat);
     assert.deepEqual(got.config.periodics, starter.config.periodics);
   });
@@ -136,19 +137,20 @@ describe('the starter kit\'s dark-factory config file', () => {
     assert.match(String(got.config.workflows.ci), /^\.github\/workflows\/[^/]+\.ya?ml$/);
   });
 
-  test('reviews with a plain-text checklist and merges a pass', () => {
+  test('reviews with a plain-text checklist that checks every test, and merges a pass', () => {
     assert.ok(got.ok);
     const review = got.config.review;
     assert.ok(review !== undefined);
     assert.equal(review.merge, true);
     assert.equal(typeof review.checklist, 'string', 'a checklist file is the repo\'s own');
     assert.doesNotMatch(String(review.checklist), /skill/i, 'the starter kit ships no skills');
+    assert.doesNotMatch(String(review.checklist), /stop at the first/i, 'the review prompt asks the model to check every later test too');
   });
 
   test('leaves CLAUDE.md, the skills, the workflows, this file and the infrastructure to a person, each with its reason', () => {
     assert.ok(got.ok);
     const humanOnly = got.config.review?.humanOnly ?? [];
-    for (const path of ['CLAUDE.md', '.claude/settings.json', '.github/workflows/ci.yml', '.github/dispatch.json', 'infra/main.tf']) {
+    for (const path of ['CLAUDE.md', 'src/CLAUDE.md', '.claude/settings.json', '.github/workflows/ci.yml', '.github/actions/test/action.yml', '.github/dispatch.json', 'infra/main.tf']) {
       assert.ok(humanOnly.some((e) => globMatches(e.glob, path)), `${path} waits for a person`);
     }
     for (const entry of humanOnly) assert.ok(entry.reason.length > 0, entry.glob);
