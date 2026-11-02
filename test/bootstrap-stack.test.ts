@@ -49,7 +49,7 @@ describe('infra/bootstrap.cfn.yml', () => {
 
   // A role that creates the stack's roles and passes them to Lambda can make
   // itself an administrator, so a narrower policy would not hold.
-  test('the deploy role is an administrator, under the fixed name the README gives', () => {
+  test('the deploy role is an administrator, under the fixed name docs/self-hosting.md gives', () => {
     const role = bootstrap.Resources.DeployRole?.Properties;
     assert.equal(role?.RoleName, 'governor-github-deploy');
     assert.deepEqual(role?.ManagedPolicyArns, ['arn:aws:iam::aws:policy/AdministratorAccess']);

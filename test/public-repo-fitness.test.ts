@@ -43,7 +43,7 @@ describe('fitness: the alert email never passes through GitHub, and the drop box
     assert.equal(apply?.env?.DROP_BOX_URL, '${{ secrets.DROP_BOX_URL }}');
   });
 
-  test('reads its other values from the four repository variables the README lists', () => {
+  test('reads its other values from the four repository variables docs/self-hosting.md lists', () => {
     const variables = [...new Set([...codeOnly.matchAll(/\bvars\.([A-Za-z_]+)/g)].map((m) => m[1]))].sort();
     assert.deepEqual(variables, ['APP_ID', 'APP_SLUG', 'AWS_REGION', 'GOVERNOR_OWNERS']);
   });
