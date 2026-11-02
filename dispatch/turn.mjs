@@ -442,7 +442,9 @@ const overBudget = new WeakMap();
  * A launch that outlives its budget is a thrown turn. The task's deadline
  * (dispatch/cli.mjs) exits the process from a timer, which unwinds nothing:
  * a login the CLI refreshed before the launcher hung would never reach the
- * secret. A throw runs the `finally` below first.
+ * secret. A throw runs the `finally` below first. A launch registered in
+ * `overBudget` pages before the throw; the lookup is by the very promise
+ * passed here, so a caller must not wrap the launch's promise first.
  *
  * @template T
  * @param {Promise<T>} launched
@@ -677,7 +679,9 @@ const turnOf = async (event, deps, records) => {
    * Every prompt ends in `SIGN_POSTS`, which no repo's prompts replace: the
    * receiver skips a session's own posts only where the session signed them.
    * A launch its budget refuses pages once, at the refusal, since the
-   * launcher runs on; a session it prints later is still recorded.
+   * launcher runs on. A session it prints later is recorded only if the
+   * task is still running then: the turn has ended, so nothing waits for
+   * that record, and the page is what the operator can rely on.
    *
    * @type {Deps['launch']}
    */

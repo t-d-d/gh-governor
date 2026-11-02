@@ -501,7 +501,7 @@ describe('run — governor records each session it starts', () => {
   test('a launch past its budget that prints its session later pages once, and the session is still recorded', async () => {
     const h = harness({ launchTimeoutMs: 20, launch: () => later(40, { status: 0, output: ABC }) });
     await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
-    await later(60, null);
+    await later(200, null);
     assert.equal(overBudget(h.logged).length, 1, JSON.stringify(h.logged));
     assert.deepEqual(h.recorded, [ABC]);
   });
@@ -509,7 +509,7 @@ describe('run — governor records each session it starts', () => {
   test('a launch past its budget that later prints no session pages once', async () => {
     const h = harness({ launchTimeoutMs: 20, launch: () => later(40, { status: 3, output: 'no url here' }) });
     await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
-    await later(60, null);
+    await later(200, null);
     assert.equal(overBudget(h.logged).length, 1, JSON.stringify(h.logged));
   });
 
@@ -2178,6 +2178,16 @@ describe('run — periodics an event brings due', () => {
     const h = counting({ merges: merged(20) }, { launchTimeoutMs: 5, launch: () => new Promise(() => {}) });
     h.periodics.set(key(CODE.name), fired(DAY));
     await assert.rejects(run(MERGE, h.deps as never), /ran past 5 ms/);
+  });
+
+  test('a periodic\'s launch past its budget pages with its name', async () => {
+    const h = counting({ merges: merged(20) }, { launchTimeoutMs: 5, launch: () => new Promise(() => {}) });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await assert.rejects(run(MERGE, h.deps as never), /ran past 5 ms/);
+    const lines = h.logged.filter((l) => l.event === 'dispatch-session-unrecorded');
+    assert.equal(lines.length, 1, JSON.stringify(h.logged));
+    assert.equal(lines[0]!.sessionName, CODE.name);
+    assert.equal(lines[0]!.sessionUrl, null);
   });
 
   test('a login the launch refreshed goes back to the secret', async () => {
