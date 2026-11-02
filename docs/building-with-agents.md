@@ -4,7 +4,7 @@ Governor is built the way it builds any repo it serves. The owner shapes and app
 
 ## The numbers
 
-Governor came out of building [Podstow](https://podstow.com), a production service, with Claude Code agents, and Podstow's repo is private. Governor's code moved here on 28 October 2026, in one commit of about 14,700 lines of source and 1,360 tests. In the five days to 12:00 UTC on 2 November 2026:
+Governor came out of building [Podstow](https://podstow.com), a production service, with Claude Code agents. Podstow's repo is private. Governor's code moved here on 28 October 2026, in one commit of about 14,700 lines of source and 1,360 tests. In the five days to 12:00 UTC on 2 November 2026:
 
 | | |
 |---|---|
@@ -56,7 +56,7 @@ A test that holds a rule is a fitness function. Its describe name starts `fitnes
 
 `npm run gate` runs a public-repo scan, ESLint with no warnings allowed, the TypeScript check, and every test. CI runs the same command on every push and pull request, and nothing deploys except a green merge to main. The gate is offline and holds no secrets: tests touch memory, temporary folders, and node, python3 and git, and never the network or AWS. So a fork's pull request can run it safely.
 
-The repo is public and agents write most of it, so the scan ([scripts/public-repo-scan.mjs](../scripts/public-repo-scan.mjs)) refuses an AWS account id, a claude.ai session or environment id, or a GitHub App installation id in any tracked file, with no file exempt. A session cannot leak one by accident.
+The repo is public and agents write most of it, so the scan ([scripts/public-repo-scan.mjs](../scripts/public-repo-scan.mjs)) refuses an AWS account id, a claude.ai session or environment id, a GitHub App installation id, an issue reference of four or more digits, and Podstow's private repo in any tracked file, with no file exempt, so a session cannot leak one by accident. Only a doc may name Podstow, and link its site.
 
 ## Running a repo this way
 
