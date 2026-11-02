@@ -143,3 +143,15 @@ export const repoServed = async (reads) => {
   if ('unread' in judged) throw new Error(`could not read ${judged.what}: ${judged.unread}`);
   return 'served' in judged ? judged.served : null;
 };
+
+/**
+ * The repo a fire names, for a planner of a fire that acts on one repo.
+ * The bare schedule fire names none, and nothing falls back to a default
+ * repo, so a fire without one throws.
+ *
+ * @param {{ kind: string, repo?: string | undefined }} fire
+ */
+export const fireRepoOf = (fire) => {
+  if (fire.repo === undefined) throw new Error(`the bare ${fire.kind} fire names no repo`);
+  return fire.repo;
+};

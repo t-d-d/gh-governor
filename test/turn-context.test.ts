@@ -94,3 +94,35 @@ describe('turnFor builds one TurnContext for the fire kinds that start sessions'
     }
   });
 });
+
+/** The statements of the branch in `turnFor`'s chain whose condition is `kind`'s. */
+const branchOf = (text: string, kind: string) => {
+  for (let at: ts.Statement | undefined = branchesOf(turnForOf(parseJs(PATH, text))); at !== undefined && ts.isIfStatement(at); at = at.elseStatement) {
+    if (at.expression.getText() !== `invocation.kind === '${kind}'`) continue;
+    assert.ok(ts.isBlock(at.thenStatement));
+    return at.thenStatement.statements.map((s) => s.getText());
+  }
+  assert.fail(`turnFor's chain has no ${kind} branch`);
+};
+
+/** `TURN` with `statement` put at the top of `kind`'s branch. */
+const intoBranch = (kind: string, statement: string) => {
+  const at = TURN.indexOf('{', TURN.indexOf(`} else if (invocation.kind === '${kind}')`, TURN.indexOf('const turnFor = '))) + 1;
+  return TURN.slice(0, at) + `\n    ${statement}\n` + TURN.slice(at);
+};
+
+describe('turnFor\'s hook and dispatch branches are one planner call each', () => {
+  const PLANNERS = { hook: 'planHook', dispatch: 'planDispatch' };
+
+  test('each branch hands the fire and ctx to its planner, and does nothing else', () => {
+    for (const [kind, planner] of Object.entries(PLANNERS)) {
+      assert.deepEqual(branchOf(TURN, kind), [`planned = await ${planner}(invocation, ctx);`], kind);
+    }
+  });
+
+  test('a branch that plans anything itself fails the check', () => {
+    for (const kind of Object.keys(PLANNERS)) {
+      assert.equal(branchOf(intoBranch(kind, 'plan.push(entry);'), kind).length, 2, kind);
+    }
+  });
+});
