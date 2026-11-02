@@ -3,6 +3,24 @@ import tsParser from "@typescript-eslint/parser";
 import globals from "globals";
 import requireCliEnv from "./eslint-rules/require-cli-env.mjs";
 
+// Only scripts/lib/ready-work.mjs combines the readiness checks, through
+// `ticketStatus` (docs/constraints/dispatcher-repos.md). A caller elsewhere
+// asks it, `mayPickUp` or `mayStartSpec`, so no path puts the checks
+// together in its own order.
+const READINESS_CHECKS = ["isBlocked", "isWaiting", "waitHolds", "heldUnreadied", "labelRow"];
+const refuseChecks = (allowed) => [
+  "error",
+  {
+    patterns: [
+      {
+        group: ["**/ready-work.mjs"],
+        importNames: READINESS_CHECKS.filter((name) => name !== allowed),
+        message: "Ask ticketStatus, mayPickUp or mayStartSpec in scripts/lib/ready-work.mjs instead of combining the readiness checks here.",
+      },
+    ],
+  },
+];
+
 export default [
   // The copied parser is kept unchanged (dispatch/webhook/vendor/README.md),
   // and names rules this config does not load.
@@ -32,5 +50,22 @@ export default [
     files: ["dispatch/**/*.mjs"],
     plugins: { governor: { rules: { "require-cli-env": requireCliEnv } } },
     rules: { "governor/require-cli-env": "error" },
+  },
+  {
+    files: ["dispatch/**/*.mjs", "scripts/**/*.mjs"],
+    ignores: ["scripts/lib/ready-work.mjs"],
+    rules: { "no-restricted-imports": refuseChecks() },
+  },
+  {
+    // The PR review's test 1 asks only whether a ticket is claimed or
+    // excluded, which its labels answer.
+    files: ["dispatch/checklist.mjs"],
+    rules: { "no-restricted-imports": refuseChecks("labelRow") },
+  },
+  {
+    // Wait end asks whether a person moved the line's date later, whatever
+    // the labels say, so a claimed ticket's item is rewritten, not dropped.
+    files: ["dispatch/waits.mjs"],
+    rules: { "no-restricted-imports": refuseChecks("isWaiting") },
   },
 ];
