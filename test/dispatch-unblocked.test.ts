@@ -101,7 +101,8 @@ describe('ticketRow', () => {
   });
 
   // A ticket its own `Blocked until:` line holds reads as still blocked,
-  // so a blocker's close starts nothing for it.
+  // so a blocker's close starts nothing for it. The hold applies only where
+  // the labels read ready or not ready.
   test('a ticket its line holds, with a date still to come or one unreadable: blocked', () => {
     const now = Date.parse('2026-11-01T12:00:00Z');
     for (const wait of [{ until: '2026-11-05' }, { unreadable: 'next week' }]) {
@@ -109,6 +110,20 @@ describe('ticketRow', () => {
         assert.equal(ticketRow({ ticket: { ...ticket(on), wait }, blockers: closedBlocker, fire: done, labels, now }), 'blocked', JSON.stringify([wait, on]));
       }
     }
+  });
+
+  test('a claimed or excluded ticket with a line still to come or one unreadable: read by its labels', () => {
+    const now = Date.parse('2026-11-01T12:00:00Z');
+    for (const wait of [{ until: '2026-11-05' }, { unreadable: 'next week' }]) {
+      for (const [on, want] of [[['claimed'], 'claimed'], [['mode: afk', 'claimed'], 'claimed'], [['mode: human'], 'excluded'], [['mode: afk', 'type: prd'], 'excluded']] as const) {
+        assert.equal(ticketRow({ ticket: { ...ticket([...on]), wait }, blockers: closedBlocker, fire: done, labels, now }), want, JSON.stringify([wait, on]));
+      }
+    }
+  });
+
+  test('a claimed ticket with a line still to come and another open blocker: blocked', () => {
+    const now = Date.parse('2026-11-01T12:00:00Z');
+    assert.equal(ticketRow({ ticket: { ...ticket(['claimed']), wait: { until: '2026-11-05' } }, blockers: stillBlocked, fire: done, labels, now }), 'blocked');
   });
 
   test('a ticket whose date has come: judged as if it had no line', () => {

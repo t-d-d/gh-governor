@@ -212,6 +212,21 @@ export const isWaiting = ({ wait }, now) => {
 };
 
 /**
+ * Whether a ticket's own `Blocked until:` line can hold it, by its labels:
+ * only where they read ready or not ready. A claimed ticket is someone's
+ * work, whose session is already running and still hears its blocker
+ * close, and an excluded one is never picked up, so the line holds neither
+ * and an unreadable one gets no comment on them.
+ *
+ * @param {readonly string[] | undefined} on The ticket's label names.
+ * @param {Labels} labels
+ */
+export const waitHolds = (on, labels) => {
+  const row = labelRow(on, labels);
+  return row === 'ready' || row === 'not-ready';
+};
+
+/**
  * @param {IssueRow} issue
  * @param {Map<number, BlockerRow[]>} blockers
  * @param {Labels} labels

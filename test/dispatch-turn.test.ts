@@ -1255,7 +1255,7 @@ describe('run — an unblocked fire', () => {
   const OLD_MARKER = dispatchMarker({ at: new Date(NOW - 3 * 24 * 60 * 60 * 1000).toISOString(), sessionUrl: 'https://claude.ai/code/session_01WORK' });
   const blocker = { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' };
   const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' }, ...over });
-  const ticketTurn = ({ unlabelFails = [] as string[], labels = READY, state = 'open', blockers = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, features = {} as Record<string, boolean>, openBlockers = undefined as number | undefined } = {}) => {
+  const ticketTurn = ({ unlabelFails = [] as string[], labels = READY, state = 'open', blockers = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, features = {} as Record<string, boolean>, openBlockers = undefined as number | undefined, wait = undefined as Record<string, string> | undefined } = {}) => {
     const asked: string[] = [];
     const file = JSON.parse(FACTORY_FILE);
     file.features = { ...file.features, ...features };
@@ -1266,7 +1266,7 @@ describe('run — an unblocked fire', () => {
         ticket: async (n: number) => {
           asked.push(`${repo} ticket ${n}`);
           // A claim re-reads the ticket; once claimed, it reads claimed.
-          return { number: n, title: `Issue ${n}`, body: '', state, labels, pull: false, ...(openBlockers === undefined ? {} : { openBlockers }) };
+          return { number: n, title: `Issue ${n}`, body: '', state, labels, pull: false, ...(openBlockers === undefined ? {} : { openBlockers }), ...(wait === undefined ? {} : { wait }) };
         },
         blockers: async (n: number) => {
           asked.push(`${repo} blockers ${n}`);
@@ -1451,6 +1451,28 @@ describe('run — an unblocked fire', () => {
     assert.match(h.messages[0]!.text, /acme\/tools#41 \(The parser\) closed as completed, by PR acme\/tools#52/);
     assert.match(h.messages[0]!.text, /against what merged/);
     assert.deepEqual([h.launches, h.comments, labelCalls(h.calls)], [[], [], []]);
+  });
+
+  // The `Blocked until:` hold applies only where the labels read ready or
+  // not ready: a claimed ticket's session is already running, and still
+  // hears its blocker close.
+  test('claimed, with a `Blocked until:` line still to come or one unreadable: its session still hears the close, and no comment', async () => {
+    for (const wait of [{ until: '2999-01-01' }, { unreadable: 'next week' }]) {
+      const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }], wait });
+      const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+      assert.equal(result.row, 'claimed', JSON.stringify(wait));
+      assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK'], JSON.stringify(wait));
+      assert.deepEqual([h.launches, h.comments, labelCalls(h.calls)], [[], [], []], JSON.stringify(wait));
+    }
+  });
+
+  test('excluded, with a `Blocked until:` line still to come or one unreadable: reads excluded, and no comment', async () => {
+    for (const wait of [{ until: '2999-01-01' }, { unreadable: 'next week' }]) {
+      const h = ticketTurn({ labels: [...READY, 'type: prd'], wait });
+      const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+      assert.equal(result.row, 'excluded', JSON.stringify(wait));
+      assert.deepEqual([h.launches, h.messages, h.comments, labelCalls(h.calls)], [[], [], [], []], JSON.stringify(wait));
+    }
   });
 
   test('claimed, with no marker naming a session: nobody to tell, and it says so', async () => {

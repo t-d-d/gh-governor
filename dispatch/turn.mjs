@@ -105,7 +105,7 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
-import { isBlocked, isWaiting, labelRow, unreadableOf } from '../scripts/lib/ready-work.mjs';
+import { isBlocked, isWaiting, labelRow, unreadableOf, waitHolds } from '../scripts/lib/ready-work.mjs';
 import { WAIT_PROMPT, WAIT_RELATIVE, endedWaits, holdWait, relativeAtClose, repairRelative, reportUnreadable, waitLinks, waitSpecPrompt } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { RoutinesApiError, launchRoutine, observed, routineName } from './routines.mjs';
@@ -1855,9 +1855,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     }
     row = ticketRow({ ticket, blockers, fire: invocation, labels: config.labels, now: deps.now() });
     const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row, reads, ...(ticket.wait === undefined ? {} : { wait: ticket.wait }) };
-    // An unreadable `Blocked until:` line holds the ticket, which reads as
-    // blocked, and is said once on it whatever the repo's switches say.
-    const unread = ticket.state === 'open' ? unreadableOf(ticket) : undefined;
+    // An unreadable `Blocked until:` line holds a ticket ready or not ready
+    // by its labels, which reads as blocked, and is said once on it whatever
+    // the repo's switches say. A claimed or excluded ticket is not held.
+    const unread = ticket.state === 'open' && waitHolds(ticket.labels, config.labels) ? unreadableOf(ticket) : undefined;
     if (unread !== undefined) await reportUnreadable({ reader, repo: fireRepo(), issue, value: unread, log: deps.log });
     // A not-planned close takes a ready, unclaimed ticket's ready labels off
     // under pickup, the switch that could start it before anyone decides.
