@@ -10,7 +10,7 @@ Coding agents can write a pull request. The work around one is still manual: pic
 
 The name comes from the governor on a steam engine, which holds the engine's speed with nobody at the throttle ([more below](#why-governor)).
 
-Built by [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/), and distilled from running [Podstow](https://podstow.com), a paid production service whose code agents write and whose pull requests mostly merge with no person. [More on who built it](#who-built-it-and-where-it-came-from).
+I'm [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/). I built governor out of running [Podstow](https://podstow.com), a paid production service whose code is written by agents and whose pull requests mostly merge with no person. [More about me, and where governor came from](#who-built-it-and-where-it-came-from).
 
 ## It builds itself
 
@@ -177,13 +177,15 @@ Each deployment is one person's factory: it serves the GitHub accounts on its ow
 
 ## Who built it, and where it came from
 
-Governor is [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/)'s personal software factory, distilled from the practices and automations built while making Podstow, a production service that agents build.
+Governor is my personal software factory, distilled from the practices and automations I built while making Podstow, a production service that agents build.
 
-**The service.** Thomas founded and runs Podstow, a paid article-to-podcast service, live on the web, iOS, macOS and Android, and inside Claude, ChatGPT and Gemini. Coding agents write all of its code, TypeScript on AWS serverless, and automated checks decide what merges. Thomas's approval sits on the specification, before the code exists. Every agent session is archived and evaluated afterwards. Governor serves Podstow's repo with its PR review on and `merge` on, so most pull requests merge with no person, and the repo's review rules name the paths that still wait for one. That repo stays private.
+**Podstow.** I founded and run Podstow, a paid article-to-podcast service, live on the web, iOS, macOS and Android, and inside Claude, ChatGPT and Gemini. Coding agents write all of its code, TypeScript on AWS serverless, and automated checks decide what merges. My approval sits on the specification, before the code exists. Every agent session is archived and evaluated afterwards. Governor serves Podstow's repo with its PR review on and `merge` on, so most pull requests merge with no person, and the repo's review rules name the paths that still wait for one. That repo stays private.
 
-**Before that.** For eight years Thomas was Engineering Manager and Platform Lead for Standard Chartered Bank's delivery platform, in Singapore and London: CI/CD and release engineering for more than 800 applications, run by a team of up to 16 engineers across Singapore, the UK and India. Manual release gates became automated checks, designed with the security and risk teams, and teams' lead time to production fell from months to weeks, and in places to days. Governor applies the same idea to agents: specification first, quality built into the pipeline as automated checks, and a person's approval only where no check can replace it.
+**Before that.** For eight years I was Engineering Manager and Platform Lead for Standard Chartered Bank's delivery platform, in Singapore and London: CI/CD and release engineering for more than 800 applications, run by a team of up to 16 engineers across Singapore, the UK and India. Manual release gates became automated checks, designed with the security and risk teams, and teams' lead time to production fell from months to weeks, and in places to days. Governor applies the same idea to agents: specification first, quality built into the pipeline as automated checks, and a person's approval only where no check can replace it.
 
-Thomas designed governor and the rules its agents work under, shapes and approves every PRD and its technical design, and merges every pull request in this repo. Claude Code sessions write the code. [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/) · [GitHub](https://github.com/t-d-d)
+I designed governor and the rules its agents work under, I shape and approve every PRD and its technical design, and I merge every pull request in this repo. Claude Code sessions write the code.
+
+Thomas Dickinson · [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/) · [GitHub](https://github.com/t-d-d)
 
 ## Documentation
 
