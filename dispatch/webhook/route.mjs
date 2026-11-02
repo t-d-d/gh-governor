@@ -91,6 +91,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob, waitLine } from './fire.mjs';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
+import { errorText } from './error-text.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 import { droppedBy } from './switches.mjs';
 
@@ -596,7 +597,7 @@ const queueFire = async (message, dedupId, deps) => {
     deps.log('webhook-queued', { ...context, kind: fire.kind, messageId });
     return messageId;
   } catch (error) {
-    deps.log('webhook-failed', { ...context, kind: fire.kind, error: String(/** @type {any} */ (error)?.stack ?? error) });
+    deps.log('webhook-failed', { ...context, kind: fire.kind, error: errorText(error) });
     throw error;
   }
 };

@@ -24,6 +24,7 @@ import { isCliEntry } from '../scripts/lib/cli-entry.mjs';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { work, sqsLane } from './lane.mjs';
 import { CLAIM_STRANDED, SESSION_UNRECORDED, clearTurnState, realDeps, run, ticketOf, unrecordedLine } from './turn.mjs';
+import { errorText } from './webhook/error-text.mjs';
 import { FIRE_VARIABLE } from './webhook/fire.mjs';
 
 /**
@@ -114,13 +115,6 @@ export const exitCodeFor = (result) => {
  *   lane: () => Omit<import('./lane.mjs').Deps, 'turn' | 'log'>,
  * }} Args
  */
-
-/**
- * A thrown value as the log carries it: its stack where it has one.
- *
- * @param {unknown} error
- */
-const errorText = (error) => String(/** @type {any} */ (error)?.stack ?? error);
 
 /**
  * One turn under its own deadline. The result line carries `tag`: in the

@@ -47,7 +47,7 @@ COPY dispatch/lane.mjs dispatch/turn.mjs dispatch/deliveries.mjs dispatch/unbloc
 # The fire the receiver builds and the task parses (fire.mjs), the switch each
 # fire needs (switches.mjs), and the bodies the turn reads the way the
 # receiver does.
-COPY dispatch/webhook/fire.mjs dispatch/webhook/mention.mjs dispatch/webhook/subscribe.mjs dispatch/webhook/review-comment.mjs dispatch/webhook/hook-table.mjs dispatch/webhook/switches.mjs ./dispatch/webhook/
+COPY dispatch/webhook/error-text.mjs dispatch/webhook/fire.mjs dispatch/webhook/mention.mjs dispatch/webhook/subscribe.mjs dispatch/webhook/review-comment.mjs dispatch/webhook/hook-table.mjs dispatch/webhook/switches.mjs ./dispatch/webhook/
 
 USER dispatch
 ENV HOME=/home/dispatch
