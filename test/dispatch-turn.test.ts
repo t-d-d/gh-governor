@@ -949,9 +949,10 @@ describe('run — the dispatcher claims what it launches', () => {
   });
 
   // The plan is read once, and each launch takes minutes: a ticket a person
-  // or another turn claimed, unreadied, closed or gave an excluded label in
-  // between is not the dispatcher's to claim, and its session would proceed
-  // on the prompt's claim line over someone else's work.
+  // or another turn claimed, unreadied, closed, gave an excluded label or
+  // linked a blocker to in between is not the dispatcher's to claim, and its
+  // session would proceed on the prompt's claim line over someone else's
+  // work, or on work that waits on another.
   test('a ticket no longer ready when its turn comes is neither claimed nor launched', async () => {
     for (const taken of [
       { state: 'open', labels: [CLAIMED] },
@@ -959,14 +960,20 @@ describe('run — the dispatcher claims what it launches', () => {
       { state: 'open', labels: [] },
       { state: 'closed', labels: [READY] },
       { state: 'open', labels: [READY, 'mode: afk', 'type: prd'] },
+      { state: 'open', labels: [READY, 'mode: afk'], openBlockers: 1 },
+      { state: 'open', labels: [READY, 'mode: afk'], rows: [{ number: 43, state: 'open', title: 'y' }] },
     ]) {
       const base = harness();
+      const { rows = [], ...read } = taken as typeof taken & { rows?: Array<{ number: number, state: string, title: string }> };
+      let reads7 = 0;
       const { deps, calls, launches, logged } = harness({
         reader: () => ({
           ...base.deps.reader(''),
+          // The link lands after the plan's read of the rows.
+          blockers: async (n: number) => (n === 7 && reads7++ > 0 ? rows : []),
           addLabels: async (n: number, labels: string[]) => { calls.push(`label #${n} +${labels.join(', ')}`); },
           removeLabel: async (n: number, label: string) => { calls.push(`label #${n} -${label}`); },
-          ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', pull: false, ...(n === 7 ? taken : { state: 'open', labels: [READY, 'mode: afk'] }) }),
+          ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', pull: false, ...(n === 7 ? read : { state: 'open', labels: [READY, 'mode: afk'] }) }),
         }),
       });
       const result = turn(await run({ source: 'aws.events' }, deps as never));
@@ -975,6 +982,32 @@ describe('run — the dispatcher claims what it launches', () => {
       assert.deepEqual(result.dispatched.map((d) => d.issue), [9]);
       assert.deepEqual(stranded(logged), []);
       assert.ok(logged.some((l) => l.event === 'dispatch-claim' && l.issue === 7 && l.outcome === 'skipped' && String(l.reason).startsWith('no longer ready to claim')), JSON.stringify(taken));
+      if ('openBlockers' in taken || 'rows' in taken) assert.ok(logged.some((l) => l.event === 'dispatch-claim' && l.issue === 7 && /, 1 open blocker\(s\)/.test(String(l.reason))), JSON.stringify(logged));
+    }
+  });
+
+  // The second read judges blockers as the selection does: a closed row or
+  // a summary of none is no blocker, so the ticket is claimed.
+  test('a ticket whose blockers are all closed when its turn comes is claimed and launched', async () => {
+    for (const still of [
+      { state: 'open', labels: [READY, 'mode: afk'], rows: [{ number: 43, state: 'closed', title: 'y' }] },
+      { state: 'open', labels: [READY, 'mode: afk'], openBlockers: 0, rows: [{ number: 43, state: 'open', title: 'y' }] },
+    ]) {
+      const base = harness();
+      const { rows, ...read } = still;
+      let reads7 = 0;
+      const { deps, calls } = harness({
+        reader: () => ({
+          ...base.deps.reader(''),
+          blockers: async (n: number) => (n === 7 && reads7++ > 0 ? rows : []),
+          addLabels: async (n: number, labels: string[]) => { calls.push(`label #${n} +${labels.join(', ')}`); },
+          removeLabel: async (n: number, label: string) => { calls.push(`label #${n} -${label}`); },
+          ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', pull: false, ...(n === 7 ? read : { state: 'open', labels: [READY, 'mode: afk'] }) }),
+        }),
+      });
+      const result = turn(await run({ source: 'aws.events' }, deps as never));
+      assert.deepEqual(result.dispatched.map((d) => d.issue).sort(), [7, 9], JSON.stringify(still));
+      assert.ok(labelCalls(calls).includes(`label #7 +${CLAIMED}`), JSON.stringify(labelCalls(calls)));
     }
   });
 
