@@ -1,7 +1,7 @@
 /**
  * The fire kinds that start sessions (schedule, hook, unblocked and dispatch)
  * move out of `turnFor` into planners of their own, each called as
- * `(invocation, ctx)` (#293). Before they move, `turnFor` builds that
+ * `(invocation, ctx)`. Before they move, `turnFor` builds that
  * `ctx`, one `TurnContext`, and the four branches read the turn's values
  * from it alone: the readers, the configs, the served repos, the prompts,
  * the delivery, the state, the launcher's `start`, the clock, the log and
@@ -49,6 +49,8 @@ const isReference = (id: ts.Identifier) => {
   if (ts.isPropertyAssignment(parent) && parent.name === id) return false;
   // A name the branch binds for itself is its own, not the closure's.
   if ((ts.isBindingElement(parent) || ts.isVariableDeclaration(parent) || ts.isParameter(parent)) && parent.name === id) return false;
+  // The key of `{ prompts: own } = ctx` names a property of ctx, not the closure.
+  if (ts.isBindingElement(parent) && parent.propertyName === id) return false;
   return true;
 };
 
@@ -87,7 +89,7 @@ describe('turnFor builds one TurnContext for the fire kinds that start sessions'
   });
 
   test('a read through ctx passes the check', () => {
-    for (const statement of ['ctx.log(\'x\', {});', 'void ctx.readerFor(\'acme/factory\');', 'const { log, prompts } = ctx;']) {
+    for (const statement of ['ctx.log(\'x\', {});', 'void ctx.readerFor(\'acme/factory\');', 'const { log, prompts } = ctx;', 'const { prompts: own } = ctx;']) {
       assert.deepEqual(pastContext(intoSchedule(statement)), [], statement);
     }
   });

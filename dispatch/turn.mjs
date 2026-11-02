@@ -1698,11 +1698,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     if (ctx.bare) {
       /** @type {Array<import('./periodics.mjs').Due & { repo: string }>} */
       const due = [];
-      // One reader for every served repo, so an expired login is refreshed once a turn.
-      const open = ctx.open;
+      // One open check for every served repo, so an expired login is refreshed once a turn.
       for (const { repo, config } of ctx.served) {
         if (!turnsOn(config, 'periodics')) continue;
-        const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(await ctx.readerFor(repo)), open });
+        const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(await ctx.readerFor(repo)), open: ctx.open });
         due.push(...read.due.map((d) => ({ ...d, repo })));
         periodicsUnread.push(...read.unread);
         if (read.beats.length > 0) ctx.beats.push({ repo, beat: { periodics: read.beats } });
@@ -2053,7 +2052,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         continue;
       }
       const firedAt = new Date(deps.now()).toISOString();
-      const launched = await start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo, ...connectorsOf(entry) });
+      const launched = await ctx.start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo, ...connectorsOf(entry) });
       if (routineFault(deps, entry.repo, entry.sessionName, launched)) continue;
       const { outcome, sessionUrl, status } = launched;
       deps.log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.sessionName, ...(entry.periodic === undefined ? {} : { periodic: entry.periodic.name }), outcome, status, sessionUrl });
@@ -2064,7 +2063,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         const unrecorded = await recordFire(deps, entry.repo, entry.periodic, entry.periodic.asOf ?? firedAt, sessionUrl);
         // The turn fails, so the alarm says a periodic may start twice.
         if (unrecorded !== null) periodicsUnread.push(unrecorded);
-        beats.push({ repo: entry.repo, beat: { periodics: [{ name: entry.periodic.name, at: entry.periodic.asOf ?? firedAt, by: entry.periodic.by, session: sessionUrl, state: 'open' }] } });
+        ctx.beats.push({ repo: entry.repo, beat: { periodics: [{ name: entry.periodic.name, at: entry.periodic.asOf ?? firedAt, by: entry.periodic.by, session: sessionUrl, state: 'open' }] } });
       }
       // An ended wait's item goes once its spec session started or may have:
       // a failed launch leaves it, so the next fire tries again.
@@ -2154,7 +2153,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         // The `{ issue }` shape: pickup's line, for a repo whose file turns
         // pickup on, written with the turn's other lines by `run`.
         if (marker === undefined) {
-          if (swept.has(repo)) beats.push({ repo, beat: { pickup: { at: new Date(deps.now()).toISOString(), started: startedOf(own) } } });
+          if (swept.has(repo)) ctx.beats.push({ repo, beat: { pickup: { at: new Date(deps.now()).toISOString(), started: startedOf(own) } } });
           continue;
         }
         try {
