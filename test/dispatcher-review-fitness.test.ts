@@ -5,8 +5,9 @@
  * - the dispatcher image carries no repo's checklist or lists: no `.claude/`
  *   path;
  * - the review's modules, and every module they load by relative import,
- *   import no builtin but the few they need, and the one process a review
- *   turn starts is the CLI's model run, with no tools;
+ *   import no builtin but the few they need, call no global that runs code
+ *   (`eval`, `Function`, WebAssembly's compilers, `process.dlopen`), and the
+ *   one process a review turn starts is the CLI's model run, with no tools;
  * - the factory's file holds its checklist and lists, and its checklist
  *   names the file as the list, the shape the review tests read.
  *
@@ -66,6 +67,40 @@ const codeRunners = (root: string, ...entries: string[]) =>
 
 /** Every builtin, in its `node:` form, the entries' modules import. */
 const builtinsImported = (root: string, ...entries: string[]) => new Set(builtinImports(root, ...entries).map(({ name }) => name));
+
+/**
+ * The globals that run code with no import: `eval` and `Function` evaluate a string, `WebAssembly` compiles and runs a program,
+ * and `process.dlopen` loads a native library.
+ */
+const EVALUATORS = new Set(['eval', 'Function', 'WebAssembly.instantiate', 'WebAssembly.compile', 'process.dlopen']);
+
+/**
+ * The dotted name a call or `new` reaches, or null when it is not a plain name: parentheses and `(0, f)` unwrapped, a string
+ * index read as a property, and a leading `globalThis.` dropped.
+ */
+const calleeName = (node: ts.Expression): string | null => {
+  if (ts.isParenthesizedExpression(node)) return calleeName(node.expression);
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.CommaToken) return calleeName(node.right);
+  if (ts.isIdentifier(node)) return node.text;
+  const property = ts.isPropertyAccessExpression(node) ? node.name.text
+    : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression.text
+      : null;
+  if (property === null) return null;
+  const object = calleeName((node as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression);
+  if (object === null) return null;
+  return object === 'globalThis' ? property : `${object}.${property}`;
+};
+
+/** Each `path:line calls name` where a module the entries load calls or constructs one of the evaluating globals. */
+const codeEvaluators = (root: string, ...entries: string[]) => [...importClosure(root, ...entries)].flatMap((path) => {
+  const file = parseJs(path, readFileSync(join(root, path), 'utf8'));
+  return nodes(file).flatMap((n) => {
+    if (!ts.isCallExpression(n) && !ts.isNewExpression(n)) return [];
+    const name = calleeName(n.expression);
+    if (name === null || !EVALUATORS.has(name)) return [];
+    return [`${path}:${file.getLineAndCharacterOfPosition(n.getStart()).line + 1} calls ${name}`];
+  });
+});
 
 /** The modules a review reads and judges with. */
 const REVIEW_MODULES = ['dispatch/review.mjs', 'dispatch/checklist.mjs', 'dispatch/repo-config.mjs', 'dispatch/pr-body.mjs', 'dispatch/webhook/review-comment.mjs'];
@@ -141,6 +176,38 @@ describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)',
 
   test('the review\'s modules, and every module they load, import nothing that runs code', () => {
     assert.deepEqual(codeRunners(ROOT, ...REVIEW_MODULES), []);
+  });
+
+  test('the check finds eval, Function, WebAssembly.instantiate and compile, and process.dlopen, called or constructed', () => {
+    const root = mkdtempSync(join(tmpdir(), 'governor-review-globals-'));
+    try {
+      const files = {
+        'entry.mjs': "import './lib/inner.mjs';\nexport const a = eval('1');\nexport const b = new Function('return 1');\nexport const c = Function('return 2');\nexport const d = (0, eval)('3');\n",
+        'lib/inner.mjs': "export const e = (bytes) => WebAssembly.instantiate(bytes);\nexport const f = (bytes) => globalThis.WebAssembly.compile(bytes);\nexport const g = (m) => process.dlopen(m, 'x.node');\nexport const h = () => globalThis.eval?.('4');\nexport const i = (bytes) => WebAssembly['compile'](bytes);\n",
+        'lib/clean.mjs': "export const evaluate = (x) => x;\nexport const j = { eval: 1, Function: 2 };\nexport const k = (o) => o.eval('5');\nexport const l = WebAssembly.validate;\n",
+      };
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), text);
+      }
+      assert.deepEqual(codeEvaluators(root, 'entry.mjs', 'lib/clean.mjs').sort(), [
+        'entry.mjs:2 calls eval',
+        'entry.mjs:3 calls Function',
+        'entry.mjs:4 calls Function',
+        'entry.mjs:5 calls eval',
+        'lib/inner.mjs:1 calls WebAssembly.instantiate',
+        'lib/inner.mjs:2 calls WebAssembly.compile',
+        'lib/inner.mjs:3 calls process.dlopen',
+        'lib/inner.mjs:4 calls eval',
+        'lib/inner.mjs:5 calls WebAssembly.compile',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('the review\'s modules, and every module they load, call no eval, Function, WebAssembly compiler or process.dlopen', () => {
+    assert.deepEqual(codeEvaluators(ROOT, ...REVIEW_MODULES), []);
   });
 
   test('the review turn\'s one process is the CLI\'s model run, with no tools', () => {
