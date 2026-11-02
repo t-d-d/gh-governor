@@ -18,15 +18,13 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
+import { nodes, parseJs } from './helpers/ast.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
 import { globMatches, quoted } from '../dispatch/checklist.mjs';
 
 const read = (path: string) => readFileSync(path, 'utf8');
-const source = (path: string) => ts.createSourceFile(path, read(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-
-/** Every node under `node`, depth first. */
-const nodes = (node: ts.Node): ts.Node[] => [node, ...node.getChildren().flatMap(nodes)];
+const source = (path: string) => parseJs(path, read(path));
 
 /** The module specifiers a file imports, statically or by `import()`. */
 const imports = (path: string) => nodes(source(path)).flatMap((n) => {

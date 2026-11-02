@@ -20,6 +20,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
+import { nodes, parseJs } from './helpers/ast.ts';
 
 const FILES = ['dispatch/turn.mjs', 'dispatch/cli.mjs'];
 
@@ -32,16 +33,11 @@ const WIRED = new Set(['cli', 'routine', 'recordSession']);
 /** The calls that start a session or record one. */
 const CALLS = new Set(['recordSession', 'routineLaunch', 'launcherPath']);
 
-const parse = (path: string, text: string) => ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-
-/** Every node under `node`, depth first. */
-const nodes = (node: ts.Node): ts.Node[] => [node, ...node.getChildren().flatMap(nodes)];
-
 /** Each file's text, read once. */
 const TEXT = Object.fromEntries(FILES.map((path) => [path, readFileSync(path, 'utf8')]));
 const TURN = TEXT['dispatch/turn.mjs']!;
 const CLI = TEXT['dispatch/cli.mjs']!;
-const TURN_FILE = parse('dispatch/turn.mjs', TURN);
+const TURN_FILE = parseJs('dispatch/turn.mjs', TURN);
 
 /** Whether `node` is a call of `launcher(...)`. */
 const isLauncherCall = (node: ts.Node): node is ts.CallExpression => ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'launcher';
@@ -70,7 +66,7 @@ const bypasses = (node: ts.Node) => {
  * and the number of `launcher()` calls found.
  */
 const outside = (path: string, text: string) => {
-  const file = parse(path, text);
+  const file = parseJs(path, text);
   const found: string[] = [];
   let launchers = 0;
   const walk = (node: ts.Node) => {
@@ -88,7 +84,7 @@ const outside = (path: string, text: string) => {
 
 /** `text` with `statement` added at the top of the block body of the first arrow function `pick` finds. */
 const into = (path: string, text: string, pick: (n: ts.Node) => ts.Expression | undefined, statement: string) => {
-  const fn = nodes(parse(path, text)).map(pick).find((e) => e !== undefined);
+  const fn = nodes(parseJs(path, text)).map(pick).find((e) => e !== undefined);
   assert.ok(fn && ts.isArrowFunction(fn) && ts.isBlock(fn.body), `${path} has the function with a body`);
   const at = fn.body.getStart() + 1;
   return text.slice(0, at) + `\n  ${statement}\n` + text.slice(at);
