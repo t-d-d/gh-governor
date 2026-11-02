@@ -13,7 +13,7 @@
  * that was not eligible puts an agent on work that is claimed, blocked, or
  * needs a human; skipping an eligible one costs nothing, because the next
  * fire re-selects whatever is still open. The dispatcher claims each ticket
- * it launches (`workflow: under development`, dispatch/turn.mjs), and
+ * it launches (`workflow: under development`, dispatch/launch-plan.mjs), and
  * the drop of that label here is what keeps a claimed ticket from being
  * selected again.
  *
@@ -84,7 +84,7 @@ export const MAX_RELATIVE_DAYS = 36500;
  * `not-ready`. Only `ready` may be picked up.
  *
  * The selection (`selectReadyWork`), the claim's second read
- * (dispatch/turn.mjs), the unblocked row (`ticketRow`, dispatch/unblocked.mjs)
+ * (dispatch/launch-plan.mjs), the unblocked row (`ticketRow`, dispatch/unblocked.mjs)
  * and wait end (dispatch/waits.mjs) read it through `ticketStatus`, so a rule
  * added here holds in all four. Copies of it drifted once: the selection learned the excluded
  * labels and the claim did not, so a ticket labelled to keep out between

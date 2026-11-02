@@ -15,9 +15,10 @@ import { OUTPUT_TAIL } from './deliveries.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 
 /**
- * @typedef {(event: string, context?: Record<string, unknown>) => void} Log
  * @typedef {import('./launcher.mjs').LaunchResult} LaunchResult
  * @typedef {import('./turn.mjs').TurnContext} TurnContext
+ * @typedef {TurnContext['log']} Log
+ * @typedef {Exclude<import('./turn.mjs').Plan, { answer: unknown }>} LaunchablePlan
  * @typedef {import('./turn.mjs').PlannedLaunch} PlannedLaunch
  * @typedef {import('./turn.mjs').Dispatched} Dispatched
  */
@@ -115,7 +116,7 @@ export const routineFault = (deps, repo, periodic, launched) => {
  * Whatever the loop throws, each claim no marker covers is logged stranded
  * and `claims` is cleared.
  *
- * @param {{ launches: PlannedLaunch[], done?: (ran: { dispatched: Array<Dispatched & { planned: PlannedLaunch }>, left: PlannedLaunch[] }) => Promise<void> }} plan
+ * @param {Pick<LaunchablePlan, 'launches' | 'done'>} plan
  * @param {Pick<TurnContext, 'readerFor' | 'configOf' | 'start' | 'claims' | 'now' | 'log'>} ctx
  * @param {number} started When the turn started, before its planner ran.
  * @returns {Promise<Array<Dispatched & { planned: PlannedLaunch }>>} The launches that ran, a failed claim's included.
