@@ -663,8 +663,11 @@ describe('run — governor records each session it starts', () => {
       return readLogin();
     };
     let settled = false;
-    void run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, { ...h.deps, threw: (error: unknown) => { thrown.push(error); } } as never).finally(() => { settled = true; });
-    for (let i = 0; i < 50 && thrown.length === 0; i += 1) await new Promise((r) => { setTimeout(r, 5); });
+    let told = () => {};
+    const handed = new Promise<void>((r) => { told = r; });
+    void run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, { ...h.deps, threw: (error: unknown) => { thrown.push(error); told(); } } as never).finally(() => { settled = true; });
+    await handed;
+    await new Promise((r) => { setImmediate(r); });
     assert.equal(thrown.length, 1, 'the error is handed over while the record still hangs');
     assert.match(String((thrown[0] as Error).message), /could not be read/);
     assert.equal(settled, false, 'the turn still waits for its record');
