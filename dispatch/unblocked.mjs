@@ -41,7 +41,7 @@
  * claim label itself before it builds. The marker keeps the sweep off the
  * ticket inside the dispatch window, and the claim keeps it off after.
  *
- * Pure: dispatch/turn.mjs reads and writes.
+ * Pure: dispatch/unblocked-fire.mjs reads and writes.
  */
 
 import { createHash } from 'node:crypto';
@@ -69,8 +69,9 @@ export const NOT_PLANNED = 'not_planned';
  * The switch each row that acts is governed by, in the ticket's repo:
  * `pickup` covers ready tickets wherever they come from, `unblocked` what
  * happens only when a blocker closes. The one overlap is a ready ticket's
- * not-planned close: its labels come off under `pickup` (turn.mjs reads
- * {@link readyToTakeOff} before this table), its comment under `unblocked`.
+ * not-planned close: its labels come off under `pickup`
+ * (unblocked-fire.mjs reads {@link readyToTakeOff} before this table), its
+ * comment under `unblocked`.
  *
  * @type {Readonly<Partial<Record<Row, 'pickup' | 'unblocked'>>>}
  */

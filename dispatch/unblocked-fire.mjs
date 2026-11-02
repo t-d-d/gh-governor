@@ -70,9 +70,6 @@ const readUnblocked = async (reader, issue, sleep, statusOf) => {
  * @returns {Promise<import('./turn.mjs').Plan>}
  */
 export const planUnblocked = async (invocation, ctx) => {
-  // A ticket whose blocker closed, under its own repo's config: the first
-  // row of the table that fits (dispatch/unblocked.mjs). Its repo's
-  // switch for that row decides whether the turn acts.
   const repo = fireRepoOf(invocation);
   const { issue, blocker } = invocation;
   const config = ctx.configOf(repo);
@@ -128,7 +125,7 @@ export const planUnblocked = async (invocation, ctx) => {
   const takeOff = row === 'not-planned' && turnsOn(config, 'pickup') ? readyToTakeOff(ticket.labels, config.labels) : [];
   // A retry of this close reads the ticket after its labels came off: the
   // App's removals since the close say what the earlier run took off.
-  const closedAt = invocation.blocker.closedAt;
+  const { closedAt } = blocker;
   const earlier = row === 'not-planned' && takeOff.length === 0 && turnsOn(config, 'pickup') && closedAt !== undefined && mayBeUnreadied(ticket.labels, config.labels)
     ? unreadiedSince(ticket.labels, await reader.labelRemovals(issue), config.labels, closedAt)
     : undefined;
