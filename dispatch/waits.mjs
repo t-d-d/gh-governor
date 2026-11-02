@@ -18,7 +18,9 @@
  * ({@link endedWaits}). A ticket whose date has passed and that is not
  * ready gets one comment, under a marker naming the date
  * ({@link waitEndedMarker}), and, with `unblocked` on, a spec session on the
- * repo's `waitEndedSpec` prompt. Every session governor starts in such a
+ * repo's `waitEndedSpec` prompt, unless the thread shows a dispatch inside
+ * the window, or governor's not-planned close still holds the ticket
+ * ({@link heldUnreadied}). Every session governor starts in such a
  * repo is told how to make a ticket wait ({@link WAIT_PROMPT}).
  *
  * A lost `opened`, `reopened` or `edited` delivery leaves its ticket out of the items,
@@ -40,7 +42,7 @@
  */
 
 import { recentlyDispatched, waitLine } from './webhook/fire.mjs';
-import { sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
+import { UNREADIED_HELD, heldUnreadied, sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
 import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
 import { RELATIVE_WAIT, isBlocked, isWaiting, labelRow, waitHolds, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
@@ -178,7 +180,7 @@ export const waitSpecPrompt = ({ issue, title, until, labels, prompts }) => spec
  * @typedef {{
  *   ticket: (n: number) => Promise<{ number: number, id?: number, title: string, state: string, labels: string[], pull?: boolean, openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
  *   blockers: (n: number) => Promise<Array<{ state: string, id?: number }>>,
- *   allComments: (n: number) => Promise<Array<{ body: string }>>,
+ *   allComments: (n: number) => Promise<Array<{ body: string, created_at?: string, ours: boolean }>>,
  *   comment: (n: number, body: string) => Promise<void>,
  * }} WaitReader
  *
@@ -459,9 +461,11 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  * - a date that has passed, on a ticket not ready: one comment, unless its
  *   thread carries the marker for that date, and, with `spec`, the ticket
  *   back as a {@link WaitSpec} unless a dispatch inside the window is on its
- *   thread. Its item stays until the turn has started the session, so a
- *   launch that fails, or one the turn has no room for, is tried at the next
- *   fire, and the marker keeps it to one comment. Otherwise the item goes.
+ *   thread, or governor's not-planned close still holds it
+ *   ({@link heldUnreadied}). Its item stays until the turn has started the
+ *   session, so a launch that fails, or one the turn has no room for, is
+ *   tried at the next fire, and the marker keeps it to one comment.
+ *   Otherwise the item goes.
  *
  * A ticket that cannot be read, or whose comment fails, keeps its item for
  * the next fire, and is logged and returned in `unread`. An items read that
@@ -542,12 +546,15 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       const marker = waitEndedMarker(wait.until);
       const told = thread.some((c) => String(c.body ?? '').includes(marker));
       if (!told) await reader.comment(issue, waitEndedComment(wait.until));
-      if (spec && !recentlyDispatched(thread, now)) {
+      // A ticket governor unreadied on a not-planned close waits for a
+      // person's answer first, as a later blocker's close does.
+      const held = heldUnreadied(thread);
+      if (spec && !held && !recentlyDispatched(thread, now)) {
         specs.push({ issue, title: ticket.title, until: wait.until, read: item.until });
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: told ? 'ended: already told, starting a spec session' : 'ended: commented, starting a spec session' });
         continue;
       }
-      await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: 'dispatched inside the window' } : {}) });
+      await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: held ? `held: ${UNREADIED_HELD}` : 'dispatched inside the window' } : {}) });
     } catch (error) {
       const message = messageOf(error);
       log(WAIT_UNHANDLED, { level: 'error', repo, issue, read: item.until, error: message, reason: 'its item stays, so the next fire tries again' });

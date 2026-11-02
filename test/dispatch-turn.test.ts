@@ -34,6 +34,7 @@ import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
 import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitNotPlannedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
 import { waitOf } from '../scripts/lib/ready-work.mjs';
+import { UNREADIED_MARKER } from '../dispatch/unblocked.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
 import { ROUTINE_ANSWER, RoutinesApiError } from '../dispatch/routines.mjs';
 
@@ -2153,6 +2154,19 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       await run({ source: 'aws.events' }, stale.deps as never);
       assert.deepEqual([stale.comments, specOf(stale)], [[], []], 'an item left by a delete that failed');
       assert.deepEqual([...stale.waitItems], []);
+    });
+
+    test('a ticket governor unreadied on a not-planned close, with no answer since, gets the comment and no spec session, and its item goes', async () => {
+      const held = { id: 1, body: `Its work will not land as planned.\n\n${UNREADIED_MARKER}`, created_at: '2026-09-20T10:00:00Z', ours: true };
+      const h = waitsTurn({ thread: [held] });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(specOf(h), []);
+      assert.equal(endedComments(h).length, 1, 'the wait-ended comment still says the date has passed');
+      assert.deepEqual([...h.waitItems], []);
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-wait' && l.issue === 7 && /not-planned close/.test(String(l.spec))), JSON.stringify(h.logged.filter((l) => l.event === 'dispatch-wait')));
+      const answered = waitsTurn({ thread: [held, { id: 2, body: 'Still stands.', created_at: '2026-09-21T10:00:00Z', ours: false }] });
+      await run({ source: 'aws.events' }, answered.deps as never);
+      assert.equal(specOf(answered).length, 1, 'a person\'s answer lifts the hold');
     });
 
     test('spec sessions count against DispatchCap: those past it keep their items for the next fire', async () => {

@@ -119,7 +119,7 @@ import { STALE_RUNS_PAUSES_MS, baselineIn, freshRuns } from './runs.mjs';
 import { coverageOf } from './coverage.mjs';
 import { planBranchRun } from './branch-run.mjs';
 import { checkConflicts } from './conflicts.mjs';
-import { ROW_SWITCH, closingFires, heldUnreadied, mayBeUnreadied, notPlannedComment, readyPrompt, readyToTakeOff, specPrompt, ticketRow, unblockedMessage, unreadiedSince } from './unblocked.mjs';
+import { ROW_SWITCH, UNREADIED_HELD, closingFires, heldUnreadied, mayBeUnreadied, notPlannedComment, readyPrompt, readyToTakeOff, specPrompt, ticketRow, unblockedMessage, unreadiedSince } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
@@ -1991,7 +1991,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       // read fails the turn, never taken for no marker.
       const thread = await reader.allComments(issue);
       if (heldUnreadied(thread)) {
-        deps.log('dispatch-unblocked', { ...about, outcome: 'not started: its ready labels came off on a not-planned close, and nobody has answered governor\'s comment since' });
+        deps.log('dispatch-unblocked', { ...about, outcome: `not started: ${UNREADIED_HELD}` });
       } else if (recentlyDispatched(thread, deps.now())) {
         deps.log('dispatch-unblocked', { ...about, outcome: 'not started: dispatched inside the window' });
       } else {

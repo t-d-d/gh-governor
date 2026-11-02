@@ -19,6 +19,7 @@ import { dynamoState } from '../dispatch/turn.mjs';
 import { githubReader } from '../scripts/lib/github-app.mjs';
 import { PROMPTS } from '../dispatch/prompts.mjs';
 import { WAIT_ENDED_MARKER, WAIT_PROMPT, endedWaits, holdWait, waitEndedComment, waitEndedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
+import { UNREADIED_MARKER } from '../dispatch/unblocked.mjs';
 
 const REPO = 'acme/factory';
 const OWNERS = ['acme'];
@@ -229,15 +230,15 @@ describe('a waiting ticket that is gone or moved', () => {
       },
     };
   };
-  /** A reader whose ticket read is `ticket`, and the comments it was asked to post. */
-  const readerWith = (ticket: () => Promise<unknown>) => {
+  /** A reader whose ticket read is `ticket` and whose thread is `thread`, and the comments it was asked to post. */
+  const readerWith = (ticket: () => Promise<unknown>, thread: Array<{ body: string, created_at?: string, ours: boolean }> = []) => {
     const comments: Array<[number, string]> = [];
     return {
       comments,
       reader: {
         ticket: ticket as never,
         blockers: async () => [],
-        allComments: async () => [],
+        allComments: async () => thread,
         comment: async (n: number, body: string) => { comments.push([n, body]); },
       },
     };
@@ -261,6 +262,20 @@ describe('a waiting ticket that is gone or moved', () => {
     assert.deepEqual(ended, { specs: [], unread: [] });
     assert.deepEqual(dropped, [[REPO, 7, '2026-11-05']]);
     assert.deepEqual(comments, []);
+  });
+
+  test('an ended wait on a ticket governor unreadied, with no answer since, starts no spec session, and its item goes', async () => {
+    const notReady = async () => ({ number: 7, title: 'Held', state: 'open', labels: [], wait: { until: '2026-11-05' } });
+    const unreadied = { body: `Its work will not land as planned.\n\n${UNREADIED_MARKER}`, created_at: '2026-10-20T10:00:00Z', ours: true };
+    const { state, dropped } = stateWith();
+    const { reader, comments } = readerWith(notReady, [unreadied]);
+    const ended = await endedWaits({ reader, state, repo: REPO, labels: LABELS, spec: true, now: NOW, log: () => {} });
+    assert.deepEqual(ended, { specs: [], unread: [] });
+    assert.deepEqual(dropped, [[REPO, 7, '2026-11-05']]);
+    assert.equal(comments.length, 1, 'the wait-ended comment is still posted');
+    const answered = readerWith(notReady, [unreadied, { body: 'Still stands.', created_at: '2026-10-21T10:00:00Z', ours: false }]);
+    const lifted = await endedWaits({ reader: answered.reader, state: stateWith().state, repo: REPO, labels: LABELS, spec: true, now: NOW, log: () => {} });
+    assert.equal(lifted.specs.length, 1, 'a person\'s answer lifts the hold');
   });
 
   test('a wait fire for a ticket that is gone drops its item, and does not throw', async () => {
