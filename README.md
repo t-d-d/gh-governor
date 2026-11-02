@@ -6,7 +6,7 @@
 [![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 [![Built by Claude Code sessions](https://img.shields.io/badge/built%20by-Claude%20Code%20sessions-d97757)](docs/building-with-agents.md)
 
-Coding agents can write a pull request. The work around one is still manual: picking the next ticket, starting the agent, passing on review comments, telling it CI went red or the deploy shipped. Governor does that work for one developer and their repos, as a team lead does for a team. It watches each of your repos that installs its GitHub App, starts a Claude Code cloud session on your own subscription for each ready ticket, and relays everything that happens on that ticket's pull request back to the session that wrote it. Each repo keeps its policy in one file: which tickets an agent may take, what the review checks, and which paths need a person.
+Coding agents can write a pull request. The work around one is still manual: picking the next ticket, starting the agent, passing on review comments, telling it CI went red or the deploy shipped. Governor does that work for one developer and their repos, as a team lead does for a team. It watches each of your repos that installs its GitHub App, starts a Claude Code cloud session on your own subscription for each ready ticket, and relays everything that happens on that ticket's pull request back to the session that wrote it. Each repo keeps its policy in one file: which tickets an agent may take, what the review checks, and which paths need a person. So a new repo starts with a whole factory policy on day one, copied from the starter kit or from a repo that already runs the way you want.
 
 The name comes from the governor on a steam engine, which holds the engine's speed with nobody at the throttle ([more below](#why-governor)).
 
@@ -72,7 +72,7 @@ Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action wr
 
 - **It finds the work.** It takes tickets from the backlog unasked, and holds one while its blockers are open or its date has not come.
 - **One session per ticket, for the ticket's whole life.** The agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships.
-- **Policy in one place.** Each repo keeps its rules in one file, `.github/dispatch.json`: the features it runs, the labels that mark a ticket ready, the review's checklist, the paths that need a person, and the recurring sessions. A change to policy is a pull request, which the config check can validate before it merges.
+- **Policy in one place.** Each repo keeps its rules in one file, `.github/dispatch.json`: the features it runs, the labels that mark a ticket ready, the review's checklist, the paths that need a person, and the recurring sessions. A change to policy is a pull request, which the config check can validate before it merges. A new repo copies a policy into that file, and governor serves it from the next fire, with no deploy.
 - **Your own accounts.** It runs on your Claude subscription and your AWS account.
 
 ## What it does
@@ -161,7 +161,7 @@ Most of what keeps the agents on track here is plain files that work in any repo
 Each deployment is one person's factory: it serves the GitHub accounts on its owner list, on one Claude subscription. To try it, you deploy your own. You need an AWS account you can administer, the AWS CLI, Node 22.18 or later, the Claude Code CLI, and a Claude Pro or Max subscription.
 
 1. **Deploy governor.** Create a GitHub App, apply two CloudFormation stacks, and save a claude.ai login. [Running your own governor](docs/self-hosting.md) has every step.
-2. **Opt a repo in.** Install the App, and copy the [starter kit](examples/starter/) into the repo's `.github/`. The smallest working config is:
+2. **Opt a repo in.** Install the App, and copy the [starter kit](examples/starter/) into the repo's `.github/`. It turns on pickup, summons, PR and subscription messages, a heartbeat and three recurring reviews. The smallest working config is:
 
    ```json
    {
@@ -170,6 +170,8 @@ Each deployment is one person's factory: it serves the GitHub accounts on its ow
      "features": { "pickup": true, "summons": true, "prMessages": true, "subscribeMessages": true }
    }
    ```
+
+   For a darker factory, copy the `dispatch.json` of a repo that already runs the way you want. [The test fixture's file](test/fixtures/factory/.github/dispatch.json) has every feature on, the automatic merge included.
 
 3. **Label a ticket `mode: afk`.** Governor starts a session on it, and comments the session's link on the ticket.
 
