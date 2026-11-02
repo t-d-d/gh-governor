@@ -349,6 +349,43 @@ describe('quotes as GitHub renders them', () => {
     assert.equal(quoted(`- \`\`\`\n\n  > ${FILER}`, `  > ${FILER}`), false, 'a blank line inside the fence keeps it open');
   });
 
+  test('a tab after a list marker counts toward its width, so a quote after it is quoted', () => {
+    assert.equal(quoted(`-\t> ${FILER}`, `-\t> ${FILER}`), true);
+    assert.equal(quoted(`1.\t> ${FILER}`, `1.\t> ${FILER}`), true);
+    assert.equal(sessionNamedIn(`Seen this?\n\n-\t> Fixed.\n\n\t> ${FILER}`), null, 'the tab-indented line is in the item, quoted');
+    assert.equal(mentions('-\t> @claude said so.'), false);
+  });
+
+  test('list items nest, and a line is read in the deepest item it is indented into', () => {
+    assert.equal(quoted(`- a\n  - b\n\n  c\n\n     > ${FILER}`, `     > ${FILER}`), true, 'three in from the outer item, once the inner one closed');
+    assert.equal(quoted(`- a\n  - b\n\n  c\n\n      > ${FILER}`, `      > ${FILER}`), false, 'four in from the outer item is code');
+    assert.equal(quoted(`- a\n  - b\n\n      > ${FILER}`, `      > ${FILER}`), true, 'two in from the inner item');
+    assert.equal(quoted(`- a\n    - b\n  c\n\n      > ${FILER}`, `      > ${FILER}`), true, 'a lazy line keeps the inner item open');
+    assert.equal(mentions('- a\n  - b\n\n  c\n\n     > @claude'), false);
+  });
+
+  test('an HTML block\'s lines are raw text, not quotes, until the block ends', () => {
+    assert.equal(quoted(`<details>\n> ${FILER}\n</details>`, `> ${FILER}`), false);
+    assert.equal(mentions('<details>\n> @claude look at this\n</details>'), true);
+    assert.equal(quoted(`<!--\n> a\n-->\n> ${FILER}`, '> a'), false, 'a comment over several lines');
+    assert.equal(quoted(`<!--\n> a\n-->\n> ${FILER}`, `> ${FILER}`), true, 'after the comment ends, a quote is a quote');
+    assert.equal(quoted(`<details>\n\n> ${FILER}`, `> ${FILER}`), true, 'a blank line ends a block tag\'s block');
+    assert.equal(quoted(`<script>\n\n> a\n</script>\n> ${FILER}`, '> a'), false, 'a blank line does not end a script');
+    assert.equal(quoted(`Text\n<details>\n> ${FILER}`, `> ${FILER}`), false, 'a block tag interrupts a paragraph');
+    assert.equal(quoted(`<span>\n> ${FILER}`, `> ${FILER}`), false, 'a lone inline tag starts a block');
+    assert.equal(quoted(`Text\n<span>\n> ${FILER}`, `> ${FILER}`), true, 'but cannot interrupt a paragraph');
+    assert.equal(quoted(`- <details>\n  > ${FILER}`, `  > ${FILER}`), false, 'in a list item');
+    assert.equal(quoted(`- <details>\n> ${FILER}`, `> ${FILER}`), true, 'a line left of the item ends it, and its block');
+    assert.equal(quoted('> <span>\nfoo', 'foo'), false, 'a quoted HTML block takes no lazy line');
+    assert.equal(quoted('> <details>\n> text\nfoo', 'foo'), false, 'nor after a later line of the block');
+    assert.equal(quoted('> <!--\n> a\n> -->\n> b\nfoo', 'foo'), true, 'once the quoted block ends, a quoted paragraph takes one');
+    assert.equal(quoted('> a\n> <span>\nfoo', 'foo'), true, 'a lone inline tag in a quoted paragraph does not end it');
+    assert.equal(quoted(`<?>\n> ${FILER}`, `> ${FILER}`), true, 'a processing instruction can end on the line it opens');
+    assert.equal(quoted('a\n-     x\n<span>\n  > y', '  > y'), false, 'a new item opens no paragraph, so a lone tag after its code starts a block');
+    assert.equal(quoted('> <div>\n- > x\nfoo', 'foo'), true, 'a quote in a new item is a new quote, outside the block above');
+    assert.equal(quoted('> ```\n- > x\nfoo', 'foo'), true, 'and outside the fence above');
+  });
+
   test('a quote in a fenced block inside a quote stays quoted, and the quote ends with the fence\'s quote', () => {
     assert.equal(quoted('> ```\n> > x\n> ```', '> > x'), true);
     assert.equal(sessionNamedIn(`> \`\`\`\n> ${FILER}\n> \`\`\``), null);
