@@ -17,7 +17,7 @@ import { GENERIC_SWITCHES, configSchema } from '../dispatch/repo-config.mjs';
 import { waitOf } from '../scripts/lib/ready-work.mjs';
 import { dynamoState } from '../dispatch/turn.mjs';
 import { PROMPTS } from '../dispatch/prompts.mjs';
-import { WAIT_ENDED_MARKER, WAIT_PROMPT, waitEndedComment, waitEndedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
+import { WAIT_ENDED_MARKER, WAIT_PROMPT, endedWaits, holdWait, waitEndedComment, waitEndedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
 
 const REPO = 'acme/factory';
 const OWNERS = ['acme'];
@@ -60,6 +60,11 @@ describe('the receiver: an issue opened or edited with a `Blocked until:` line',
     assert.equal(waits(edited('Blocked until: 2026-11-09', 'Blocked until: 2026-11-05')).length, 1, 'the date moved');
     assert.equal(waits(edited('Body, longer.', 'Body.')).length, 0, 'neither body holds the line');
     assert.equal(waits(edited('Blocked until: 2026-11-05', undefined)).length, 0, 'only the title changed');
+  });
+
+  test('an issue reopened with the line queues one: its item went when it closed', () => {
+    assert.equal(waits(issuesEvent('reopened', 'Blocked until: 2026-11-05')).length, 1);
+    assert.equal(waits(issuesEvent('reopened', 'Body.')).length, 0);
   });
 
   test('another repo\'s delivery, a close or a label queues none', () => {
@@ -203,5 +208,64 @@ describe('realDeps: a ticket\'s wait item', () => {
     assert.equal(await state.dropWait(REPO, 7, '2026-11-05'), false);
     const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
     await assert.rejects(failing.dropWait(REPO, 7, '2026-11-05'), /AccessDeniedException/);
+  });
+});
+
+describe('a waiting ticket that is gone or moved', () => {
+  const LABELS = { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [], exclude: [] };
+  const NOW = Date.parse('2026-11-06T01:00:00Z');
+  const gone = (status: number) => Object.assign(new Error(`GitHub answered ${status}`), { status });
+  /** A state holding issue 7's item, and the deletes asked of it. */
+  const stateWith = () => {
+    const dropped: Array<[string, number, string]> = [];
+    return {
+      dropped,
+      state: {
+        waits: async () => [{ issue: 7, until: '2026-11-05' }],
+        wait: async () => ({ until: '2026-11-05' }),
+        recordWait: async () => true,
+        dropWait: async (repo: string, issue: number, read: string) => { dropped.push([repo, issue, read]); return true; },
+      },
+    };
+  };
+  /** A reader whose ticket read is `ticket`, and the comments it was asked to post. */
+  const readerWith = (ticket: () => Promise<unknown>) => {
+    const comments: Array<[number, string]> = [];
+    return {
+      comments,
+      reader: {
+        ticket: ticket as never,
+        blockers: async () => [],
+        allComments: async () => [],
+        comment: async (n: number, body: string) => { comments.push([n, body]); },
+      },
+    };
+  };
+
+  for (const status of [404, 410]) {
+    test(`the schedule fire drops the item of a ticket that answers ${status}, and fails nothing`, async () => {
+      const { state, dropped } = stateWith();
+      const { reader, comments } = readerWith(async () => { throw gone(status); });
+      const ended = await endedWaits({ reader, state, repo: REPO, labels: LABELS, spec: true, now: NOW, log: () => {} });
+      assert.deepEqual(ended, { specs: [], unread: [] });
+      assert.deepEqual(dropped, [[REPO, 7, '2026-11-05']]);
+      assert.deepEqual(comments, []);
+    });
+  }
+
+  test('the schedule fire drops the item of a ticket moved to another repo, and says nothing on the issue it moved to', async () => {
+    const { state, dropped } = stateWith();
+    const { reader, comments } = readerWith(async () => ({ number: 41, title: 'Moved', state: 'open', labels: [], wait: { until: '2026-11-05' } }));
+    const ended = await endedWaits({ reader, state, repo: REPO, labels: LABELS, spec: true, now: NOW, log: () => {} });
+    assert.deepEqual(ended, { specs: [], unread: [] });
+    assert.deepEqual(dropped, [[REPO, 7, '2026-11-05']]);
+    assert.deepEqual(comments, []);
+  });
+
+  test('a wait fire for a ticket that is gone drops its item, and does not throw', async () => {
+    const { state, dropped } = stateWith();
+    const { reader } = readerWith(async () => { throw gone(410); });
+    assert.equal(await holdWait({ reader, state, repo: REPO, issue: 7, labels: LABELS, now: NOW, log: () => {} }), 'dropped');
+    assert.deepEqual(dropped, [[REPO, 7, '2026-11-05']]);
   });
 });

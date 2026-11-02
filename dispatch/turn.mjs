@@ -497,6 +497,15 @@ export const run = async (event, deps) => {
 };
 
 /**
+ * A served repo's config, its name matched in any case, or undefined for a
+ * repo the turn does not serve.
+ *
+ * @param {import('./repos.mjs').Served[]} served
+ * @param {string} repo
+ */
+const configIn = (served, repo) => served.find((s) => s.repo.toLowerCase() === repo.toLowerCase())?.config;
+
+/**
  * {@link run}'s turn, which pushes each launch's record onto `records`.
  *
  * @param {unknown} event
@@ -691,7 +700,7 @@ const turnOf = async (event, deps, records) => {
    * @type {Deps['launch']}
    */
   const launch = (asked) => {
-    const own = served.find((s) => s.repo.toLowerCase() === asked.repo.toLowerCase())?.config;
+    const own = configIn(served, asked.repo);
     const waits = own !== undefined && turnsOn(own, 'waits') ? `\n\n${WAIT_PROMPT}` : '';
     const begin = { ...asked, prompt: `${asked.prompt}\n\n${SIGN_POSTS}${waits}` };
     let paged = false;
@@ -1193,9 +1202,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    * @param {string} repo
    */
   const configOf = (repo) => {
-    const found = served.find((s) => s.repo.toLowerCase() === repo.toLowerCase());
+    const found = configIn(served, repo);
     if (found === undefined) throw new Error(`${repo} is not a repo this turn serves`);
-    return found.config;
+    return found;
   };
 
   /**
@@ -1561,19 +1570,19 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     return { kind: 'review', reviews, loginStored };
   }
 
+  if (invocation.kind === 'wait') {
+    // A ticket opened or edited with a `Blocked until:` line: its wait item
+    // put, rewritten or deleted to match (dispatch/waits.mjs).
+    const outcome = await holdWait({ reader: await getReader(), state: deps.state, repo: fireRepo(), issue: invocation.issue, labels: configOf(fireRepo()).labels, now: deps.now(), log: deps.log });
+    return { kind: invocation.kind, issue: invocation.issue, outcome };
+  }
+
   // A close: one `unblocked` fire for each open ticket the issue blocked,
   // in whichever repo, for that repo's own turn (dispatch/unblocked.mjs).
   // It starts nothing, so DispatchCap does not hold it, and calls GitHub
   // only under the closed issue's repo. No failed turn is tried again
   // (dispatch/lane.mjs), so a fire the lane refuses is logged at
   // error by its ticket, the rest still go, and the turn exits 1.
-  if (invocation.kind === 'wait') {
-    // A ticket opened or edited with a `Blocked until:` line: its wait item
-    // put, rewritten or deleted to match (dispatch/waits.mjs).
-    const outcome = await holdWait({ reader: await getReader(), state: deps.state, repo: fireRepo(), issue: invocation.issue, now: deps.now(), log: deps.log });
-    return { kind: invocation.kind, issue: invocation.issue, outcome };
-  }
-
   if (invocation.kind === 'schedule' && invocation.freed !== undefined) {
     const freed = invocation.freed;
     const reader = await getReader();
@@ -1735,13 +1744,17 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       // Each repo turning waits on: the waits whose date has passed
       // (dispatch/waits.mjs). A ticket not ready gets its comment here, and,
       // with unblocked on, a spec session after the tickets, unclaimed, as a
-      // blocker's close starts one. A cap of 0 starts none, and leaves its item.
+      // blocker's close starts one. At most DispatchCap of them start a fire,
+      // apart from pickup's; one past it keeps its item for the next fire.
+      let room = deps.cap;
       for (const { repo, config } of served) {
         if (!turnsOn(config, 'waits')) continue;
         const ended = await endedWaits({ reader: await readerFor(repo), state: deps.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), now: deps.now(), log: deps.log });
         waitsUnread.push(...ended.unread);
-        if (deps.cap === 0) continue;
-        for (const { issue, title, until, read } of ended.specs) {
+        const taken = ended.specs.slice(0, Math.max(0, room));
+        room -= taken.length;
+        if (taken.length < ended.specs.length) deps.log('dispatch-wait', { repo, outcome: 'spec sessions past DispatchCap left for the next fire', left: ended.specs.slice(taken.length).map((w) => w.issue) });
+        for (const { issue, title, until, read } of taken) {
           plan.push({ issue, repo, prompt: waitSpecPrompt({ issue, title, until, labels: config.labels, prompts: config.prompts }), sessionName: ticketSessionName(issue, title), model: DEFAULT_MODEL, unclaimed: true, wait: { read } });
         }
       }
@@ -1973,13 +1986,17 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const leftOver = new Set();
   /** How many ticket sessions a repo's own entries started. @param {Dispatched[]} own */
   const startedOf = (own) => own.filter((d) => d.issue !== null && d.outcome !== 'failed').length;
+  /** The tickets whose entry is an ended wait's spec session, `repo#issue`: none of pickup's. */
+  const waitSpecs = new Set(plan.filter((e) => e.wait !== undefined && e.issue !== null).map((e) => `${e.repo}#${e.issue}`));
+  /** A repo's own launches by pickup: its dispatches, an ended wait's spec sessions left out. @param {string} repo */
+  const pickupOwn = (repo) => dispatched.filter((d) => d.repo === repo && !waitSpecs.has(`${d.repo}#${d.issue}`));
   let heartbeat = false;
   let loginStored = false;
   try {
     for (const [i, entry] of plan.entries()) {
       if (deps.now() - started > SCHEDULE_LAUNCH_WINDOW_MS) {
         deps.log('dispatch-launch', { undispatched: plan.slice(i).map((e) => ({ repo: e.repo, issue: e.issue })), reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, another launch might outrun the deadline; each is left unmarked for the next fire` });
-        for (const e of plan.slice(i)) if (e.issue !== null) leftOver.add(e.repo);
+        for (const e of plan.slice(i)) if (e.issue !== null && e.wait === undefined) leftOver.add(e.repo);
         // A hook fire is not tried again: one left unstarted fails the turn,
         // so the alarm it carried is not lost quietly.
         for (const e of plan.slice(i)) {
@@ -1991,7 +2008,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       }
       const ticket = entry.issue === null ? null : { repo: entry.repo, issue: entry.issue };
       if (skipped.has(entry.repo)) {
-        if (ticket !== null) leftOver.add(entry.repo);
+        if (ticket !== null && entry.wait === undefined) leftOver.add(entry.repo);
         continue;
       }
       // A spec session's ticket is not claimed: the session claims it before it builds.
@@ -2035,7 +2052,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       if ((ticket !== null || entry.periodic !== undefined) && outcome === 'failed') {
         if (ticket !== null) {
           if (entry.unclaimed !== true) await release(ticket);
-          leftOver.add(ticket.repo);
+          if (entry.wait === undefined) leftOver.add(ticket.repo);
         }
         // A launch that started nothing is the repo's environment or the
         // login: the repo's next ticket or periodic would fail the same way.
@@ -2058,7 +2075,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // next interval, and nor is one with a ready ticket the cap cut: the cap
     // limits load, and does not set how often a repo is swept.
     for (const [repo, at] of swept) {
-      const own = dispatched.filter((d) => d.repo === repo);
+      const own = pickupOwn(repo);
       if (unread.some((u) => u.repo === repo) || (own.length > 0 && own.every((d) => d.outcome === 'failed'))) {
         swept.delete(repo);
         continue;
@@ -2097,7 +2114,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const unwritten = [];
       for (const { repo, config } of served) {
         if (!turnsOn(config, 'heartbeat') || config.heartbeat === undefined || unread.some((u) => u.repo === repo)) continue;
-        const own = dispatched.filter((d) => d.repo === repo);
+        const own = pickupOwn(repo);
         if (own.length > 0 && own.every((d) => d.outcome === 'failed')) continue;
         const { issue, marker } = config.heartbeat;
         // The `{ issue }` shape: pickup's line, for a repo whose file turns

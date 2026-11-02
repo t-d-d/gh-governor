@@ -175,13 +175,23 @@ export const readyPrompt = (pickup, fire, prompts) => `${pickup}\n\n${unblockedF
  *
  * @param {{ fire: UnblockedFire & { repo?: string }, title: string, labels: { ready: readonly string[], claim: string }, prompts: Record<string, string | undefined> }} args
  */
-export const specPrompt = ({ fire, title, labels, prompts }) => {
+export const specPrompt = ({ fire, title, labels, prompts }) => specSession({ issue: fire.issue, title, labels, prompts, kind: 'unblockedSpec', facts: unblockedFacts(fire) });
+
+/**
+ * A spec session's opening prompt, for a ticket not ready to pick up: the
+ * line naming it, the facts of what freed it, the repo's instruction of
+ * `kind`, and the unattended line. A blocker's close and an ended wait
+ * (dispatch/waits.mjs) both start one.
+ *
+ * @param {{ issue: number, title: string, facts: string, kind: 'unblockedSpec' | 'waitEndedSpec', labels: { ready: readonly string[], claim: string }, prompts: Record<string, string | undefined> }} args
+ */
+export const specSession = ({ issue, title, facts, kind, labels, prompts }) => {
   const lead = oneLine(title);
   return [
-    lead ? `Spec #${fire.issue} '${lead}'` : `Spec #${fire.issue}`,
+    lead ? `Spec #${issue} '${lead}'` : `Spec #${issue}`,
     '',
-    unblockedFacts(fire),
-    instruction(prompts, 'unblockedSpec', { issue: fire.issue, ready: labels.ready.map((l) => `\`${l}\``).join(' and '), claim: labels.claim }),
+    facts,
+    instruction(prompts, kind, { issue, ready: labels.ready.map((l) => `\`${l}\``).join(' and '), claim: labels.claim }),
     UNATTENDED,
   ].join('\n');
 };

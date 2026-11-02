@@ -1804,16 +1804,18 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       assert.deepEqual(same.waitWrites, []);
     });
 
-    test('no line, a date that has passed, or a closed ticket deletes the item', async () => {
-      for (const ticket of [ticketWith({}), ticketWith({ wait: { until: PAST } }), ticketWith({ wait: { until: LATER }, state: 'closed' })]) {
+    test('no line or a closed ticket deletes the item, and a date that has passed puts none', async () => {
+      for (const ticket of [ticketWith({}), ticketWith({ wait: { until: LATER }, state: 'closed' })]) {
         const h = waitsTurn({ ticket, item: LATER });
         await run(fire, h.deps as never);
         assert.deepEqual([...h.waitItems], [], JSON.stringify(ticket));
         assert.deepEqual([h.launches, h.comments], [[], []], JSON.stringify(ticket));
       }
-      const none = waitsTurn({ ticket: ticketWith({}), item: null });
-      await run(fire, none.deps as never);
-      assert.deepEqual(none.waitWrites, []);
+      for (const ticket of [ticketWith({}), ticketWith({ wait: { until: PAST } })]) {
+        const none = waitsTurn({ ticket, item: null });
+        await run(fire, none.deps as never);
+        assert.deepEqual(none.waitWrites, [], JSON.stringify(ticket));
+      }
     });
 
     test('an unreadable line comments as the hold does, and deletes the item', async () => {
@@ -1821,6 +1823,24 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       await run(fire, h.deps as never);
       assert.deepEqual([...h.waitItems], []);
       assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNREADABLE_MARKER)).length, 1, JSON.stringify(h.comments));
+    });
+
+    test('a date that has passed keeps an item the schedule fire has not acted on yet, and moves one holding a later date to it', async () => {
+      const same = waitsTurn({ ticket: ticketWith({ wait: { until: PAST } }), item: PAST });
+      await run(fire, same.deps as never);
+      assert.deepEqual([...same.waitItems], [[`${REPO}#7`, PAST]], 'an edit just after midnight loses no comment');
+      const earlier = waitsTurn({ ticket: ticketWith({ wait: { until: PAST } }), item: LATER });
+      await run(fire, earlier.deps as never);
+      assert.deepEqual([...earlier.waitItems], [[`${REPO}#7`, PAST]], 'a wait moved earlier, into the past, ends at the next fire');
+    });
+
+    test('an unreadable line on a claimed or excluded ticket gets no comment: the ticket is not held from anyone', async () => {
+      for (const labels of [['workflow: under development'], ['type: prd']]) {
+        const h = waitsTurn({ ticket: ticketWith({ wait: { unreadable: 'soon' }, labels }), item: LATER });
+        await run(fire, h.deps as never);
+        assert.deepEqual(h.comments, [], JSON.stringify(labels));
+        assert.deepEqual([...h.waitItems], [], JSON.stringify(labels));
+      }
     });
 
     test('an item another turn changed since the read is left as it stands', async () => {
@@ -1863,6 +1883,33 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       await run({ source: 'aws.events' }, stale.deps as never);
       assert.deepEqual([stale.comments, specOf(stale)], [[], []], 'an item left by a delete that failed');
       assert.deepEqual([...stale.waitItems], []);
+    });
+
+    test('spec sessions count against DispatchCap: those past it keep their items for the next fire', async () => {
+      const base = harness();
+      const h = harness({
+        cap: 1,
+        reader: () => ({
+          ...base.deps.reader(''),
+          readyIssues: async () => [],
+          ticket: async (n: number) => ({ ...ticketWith({ wait: { until: PAST } }), number: n, title: `Issue ${n}` }),
+          allComments: async () => [],
+          comment: async (n: number, body: string) => { h.comments.push({ issue: n, body }); },
+        }),
+      });
+      h.waitItems.set(`${REPO}#7`, PAST);
+      h.waitItems.set(`${REPO}#8`, PAST);
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(h.launches.filter((l) => l.sessionName.startsWith('#')).map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
+      assert.deepEqual([...h.waitItems], [[`${REPO}#8`, PAST]]);
+      assert.deepEqual(h.comments.filter((c) => c.body.includes(waitEndedMarker(PAST))).map((c) => c.issue), [7, 8]);
+    });
+
+    test('a spec session is not counted as a ticket pickup started', async () => {
+      const h = waitsTurn();
+      await run({ source: 'aws.events' }, h.deps as never);
+      const swept = h.logged.find((l) => l.event === 'dispatch-pickup' && l.repo === REPO && l.outcome === 'swept');
+      assert.equal(swept?.started, 0, JSON.stringify(h.logged.filter((l) => l.event === 'dispatch-pickup')));
     });
 
     test('with unblocked off, the ticket gets the comment and no session', async () => {

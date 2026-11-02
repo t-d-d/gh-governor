@@ -9,7 +9,8 @@
  * before it writes another. That comment is an error report, not a feature.
  *
  * With a repo's `waits` switch on, governor also acts when a wait ends. The
- * receiver queues a `wait` fire for an issue opened or edited with the line,
+ * receiver queues a `wait` fire for an issue opened, reopened or edited with
+ * the line,
  * and its turn keeps one item per waiting ticket in the state table,
  * `wait#<repo>` / `<issue>`, holding the date ({@link holdWait}). The item
  * only tells governor when to look: the ticket's line stays the record
@@ -20,14 +21,13 @@
  * repo's `waitEndedSpec` prompt. Every session governor starts in such a
  * repo is told how to make a ticket wait ({@link WAIT_PROMPT}).
  *
- * A lost `opened` or `edited` delivery leaves its ticket out of the items,
+ * A lost `opened`, `reopened` or `edited` delivery leaves its ticket out of the items,
  * so it gets no comment or spec session when its wait ends. A ready ticket
  * loses nothing: pickup's sweep reads its line itself.
  */
 
-import { UNATTENDED, recentlyDispatched } from './webhook/fire.mjs';
-import { oneLine } from './webhook/mention.mjs';
-import { instruction } from './prompts.mjs';
+import { recentlyDispatched } from './webhook/fire.mjs';
+import { specSession } from './unblocked.mjs';
 import { isBlocked, isWaiting, labelRow } from '../scripts/lib/ready-work.mjs';
 
 /** The log event for a `Blocked until:` line governor cannot read. */
@@ -128,16 +128,10 @@ export const WAIT_PROMPT = 'To make a ticket wait until a date, start its body w
  *
  * @param {{ issue: number, title: string, until: string, labels: { ready: readonly string[], claim: string }, prompts: Record<string, string | undefined> }} args
  */
-export const waitSpecPrompt = ({ issue, title, until, labels, prompts }) => {
-  const lead = oneLine(title);
-  return [
-    lead ? `Spec #${issue} '${lead}'` : `Spec #${issue}`,
-    '',
-    `#${issue}'s wait has ended: its \`Blocked until:\` line named ${until}, which has passed.`,
-    instruction(prompts, 'waitEndedSpec', { issue, ready: labels.ready.map((l) => `\`${l}\``).join(' and '), claim: labels.claim }),
-    UNATTENDED,
-  ].join('\n');
-};
+export const waitSpecPrompt = ({ issue, title, until, labels, prompts }) => specSession({
+  issue, title, labels, prompts, kind: 'waitEndedSpec',
+  facts: `#${issue}'s wait has ended: its \`Blocked until:\` line named ${until}, which has passed.`,
+});
 
 /**
  * @typedef {{
@@ -162,25 +156,61 @@ export const waitSpecPrompt = ({ issue, title, until, labels, prompts }) => {
  * @typedef {(event: string, context?: Record<string, unknown>) => void} Log
  */
 
+/**
+ * Whether an unreadable line holds a ticket from anyone, so its comment is
+ * true: a ticket ready or not ready by its labels. A claimed ticket is
+ * someone's work, and an excluded one is never picked up, so neither is
+ * told it is held, as the claim's second read tells only a ready one.
+ *
+ * @param {readonly string[]} on
+ * @param {import('../scripts/lib/ready-work.mjs').Labels} labels
+ */
+const holds = (on, labels) => ['ready', 'not-ready'].includes(labelRow(on, labels));
+
 /** When a wait on `until` ends: 00:00 UTC on that date. @param {string} until */
 const endOf = (until) => Date.parse(`${until}T00:00:00Z`);
 
 /**
- * A `wait` fire's turn: read the ticket and its line, and put, rewrite or
- * delete its item to match. A date still to come is held in the item; no
- * line, a date that has passed or a closed ticket deletes it; an unreadable
- * line is reported as the hold reports it, and deletes it. Each write goes
- * only over the item the turn read.
+ * A ticket's read, or null where it is no ticket here any more: gone (404,
+ * or 410 for a deleted one), or moved, whose read follows GitHub's redirect
+ * to another repository's issue under another number. Its item then goes,
+ * as the selection's read of one issue starts nothing for it
+ * (scripts/lib/dispatch-router.mjs). Any other failure throws.
  *
- * @param {{ reader: WaitReader, state: WaitState, repo: string, issue: number, now: number, log: Log }} args
+ * @param {WaitReader} reader
+ * @param {number} issue
+ */
+const ticketOf = (reader, issue) => reader.ticket(issue).then((t) => (t.number === issue ? t : null), (error) => {
+  const status = /** @type {{ status?: number }} */ (error)?.status;
+  if (status === 404 || status === 410) return null;
+  throw error;
+});
+
+/**
+ * A `wait` fire's turn: read the ticket and its line, and put, rewrite or
+ * delete its item to match. A date still to come is held in the item, and
+ * so is a date that has passed where an item stands, which the schedule
+ * fire then acts on. No line, a date that has passed with no item, or a
+ * closed ticket deletes it, or puts none. An unreadable line deletes it,
+ * and is reported as the hold reports it on a ticket ready or not ready by
+ * its labels. A ticket gone or
+ * moved to another repo deletes it too. Each write goes only over the item
+ * the turn read.
+ *
+ * @param {{ reader: WaitReader, state: WaitState, repo: string, issue: number, labels: import('../scripts/lib/ready-work.mjs').Labels, now: number, log: Log }} args
  * @returns {Promise<string>} What came of it, as logged.
  */
-export const holdWait = async ({ reader, state, repo, issue, now, log }) => {
-  const ticket = await reader.ticket(issue);
+export const holdWait = async ({ reader, state, repo, issue, labels, now, log }) => {
+  const found = await ticketOf(reader, issue);
+  const ticket = found ?? { state: 'gone or moved', labels: [], wait: undefined };
   const wait = ticket.state === 'open' ? ticket.wait : undefined;
   const read = await state.wait(repo, issue);
   const about = { repo, issue, ...(read === null ? {} : { read: read.until }) };
-  if (wait !== undefined && 'until' in wait && isWaiting({ wait }, now)) {
+  // A date that has passed, over an item: the item is kept at that date, so
+  // the schedule fire still says the wait ended. An edit just after
+  // midnight, or a wait moved earlier into the past, loses nothing.
+  const passedOverItem = wait !== undefined && 'until' in wait && read !== null;
+  if (wait !== undefined && 'until' in wait && (isWaiting({ wait }, now) || passedOverItem)) {
     if (read?.until === wait.until) {
       log(WAIT, { ...about, until: wait.until, outcome: 'held: the item already holds this date' });
       return 'held';
@@ -190,7 +220,7 @@ export const holdWait = async ({ reader, state, repo, issue, now, log }) => {
     log(WAIT, { ...about, until: wait.until, outcome });
     return outcome;
   }
-  if (wait !== undefined && 'unreadable' in wait) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
+  if (wait !== undefined && 'unreadable' in wait && holds(ticket.labels, labels)) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
   if (read === null) {
     log(WAIT, { ...about, outcome: 'nothing to hold', state: ticket.state });
     return 'nothing to hold';
@@ -212,8 +242,9 @@ export const holdWait = async ({ reader, state, repo, issue, now, log }) => {
  * The bare schedule fire's look at one repo's wait items. For each whose
  * date has passed, it reads the ticket again:
  *
- * - closed, or its line gone: the item goes;
- * - an unreadable line: reported as the hold reports it, and the item goes;
+ * - closed, gone, moved to another repo, or its line gone: the item goes;
+ * - an unreadable line: the item goes, and the line is reported as the hold
+ *   reports it on a ticket ready or not ready by its labels;
  * - a date still to come: the item is rewritten to it, and nothing is released;
  * - a date that has passed, on a ticket ready, claimed, excluded or still
  *   blocked: the item goes, since pickup or the blocker's close takes the
@@ -255,14 +286,18 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log }
     if (now < endOf(item.until)) continue;
     const { issue } = item;
     try {
-      const ticket = await reader.ticket(issue);
+      const ticket = await ticketOf(reader, issue);
+      if (ticket === null) {
+        await drop(item, { outcome: 'its ticket is gone or moved' });
+        continue;
+      }
       const wait = ticket.state === 'open' ? ticket.wait : undefined;
       if (wait === undefined) {
         await drop(item, { outcome: ticket.state === 'open' ? 'its line is gone' : `its ticket is ${ticket.state}` });
         continue;
       }
       if ('unreadable' in wait) {
-        await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
+        if (holds(ticket.labels, labels)) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
         await drop(item, { outcome: 'its line cannot be read' });
         continue;
       }

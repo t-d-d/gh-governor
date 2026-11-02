@@ -47,7 +47,7 @@
  * also counted for the repo's periodics: the fire the event queues carries
  * it as `counted`, and an issue opened that queues none queues a
  * `periodics` fire of its own ({@link counting}).
- * An issue opened, or edited, whose new or old body opens with a `Blocked
+ * An issue opened, reopened or edited, whose new or old body opens with a `Blocked
  * until:` line queues a `wait` fire naming it, whose turn keeps the
  * ticket's wait item to match its line (dispatch/waits.mjs).
  * An issue closed queues a `schedule` fire naming it as `freed`. Its turn
@@ -409,10 +409,11 @@ const counting = (decision, counted, carrier) => {
 };
 
 /**
- * An issue opened whose body holds a `Blocked until:` line, or edited where
- * its new or old body does (`changes.body.from`): a `wait` fire naming it,
+ * An issue opened or reopened whose body holds a `Blocked until:` line, or
+ * edited where its new or old body does (`changes.body.from`): a `wait` fire naming it,
  * so its turn puts, rewrites or deletes the ticket's wait item
- * (dispatch/waits.mjs). An edit that leaves the body alone queues none.
+ * (dispatch/waits.mjs). A close deletes the item, so a reopen puts it back.
+ * An edit that leaves the body alone queues none.
  * Judged from the payload alone; the fire needs `waits`, so {@link handle}
  * drops it where the repo's item says that switch is off.
  *
@@ -422,7 +423,7 @@ const counting = (decision, counted, carrier) => {
 const waitFire = (payload) => {
   const number = payload?.issue?.number;
   if (!Number.isInteger(number) || number <= 0) return nothing('');
-  const bodies = payload?.action === 'opened'
+  const bodies = payload?.action === 'opened' || payload?.action === 'reopened'
     ? [payload?.issue?.body]
     : payload?.action === 'edited' && payload?.changes?.body !== undefined ? [payload?.issue?.body, payload.changes.body.from] : [];
   if (!bodies.some((body) => waitLine(typeof body === 'string' ? body : null) !== null)) return nothing('');
@@ -514,7 +515,8 @@ const routeFor = ({ event, payload, appId }) => {
     }
     // The selection's fire, where there is one, beside each subscriber's.
     if (selection !== null) return both(selection, issueEventFires(payload));
-    if (action === 'labeled' || action === 'unlabeled' || action === 'reopened') return issueEventFires(payload);
+    if (action === 'reopened') return both(issueEventFires(payload), waitFire(payload));
+    if (action === 'labeled' || action === 'unlabeled') return issueEventFires(payload);
     const mentioned = mentionFires({ event, payload, appId }) ?? nothing(`issues ${action}: nothing to select from`);
     // An issue opened is counted on its summons, or on a fire of its own.
     const counted = action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened', 'dispatch') : mentioned;
