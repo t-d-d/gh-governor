@@ -71,15 +71,18 @@ function fixtureRepo() {
 
 // A second throwaway repo whose main holds, in turn: a checker with a number
 // and a boolean input, a workflow that is not reusable, a file that is not
-// valid YAML, and a checker that declares an input as a bare word, not a
-// mapping.
+// valid YAML, and checkers that declare an input as a bare word, as nothing,
+// or as a date, or their inputs as a list, none of them a mapping.
 function oddCheckersRepo() {
   const { dir, commit, cleanup } = throwawayRepo('starter-pin-odd-');
   const typed = commit(checkerAt({ 'tolerance-hours': { type: 'number', default: 3 }, strict: { type: 'boolean', default: false } }));
   const notCallable = commit(yaml.dump({ name: 'heartbeat check', on: { push: null }, jobs: { check: { 'runs-on': 'ubuntu-24.04', steps: [{ run: 'true' }] } } }));
   const broken = commit('name: [unclosed\non: {workflow_call: \n');
   const bare = commit(checkerAt({ 'tolerance-hours': { type: 'number', default: 3 }, labels: 'string' }));
-  return { dir, typed, notCallable, broken, bare, cleanup };
+  const empty = commit(checkerAt({ 'tolerance-hours': { type: 'number', default: 3 }, labels: null }));
+  const dated = commit(checkerAt({ 'tolerance-hours': { type: 'number', default: 3 }, labels: new Date('2026-01-01T00:00:00Z') }));
+  const listed = commit(yaml.dump({ name: 'heartbeat check', on: { workflow_call: { inputs: ['tolerance-hours', 'labels'] } }, jobs: { check: { 'runs-on': 'ubuntu-24.04', steps: [{ run: 'true' }] } } }));
+  return { dir, typed, notCallable, broken, bare, empty, dated, listed, cleanup };
 }
 
 const STARTER_WITH = { 'tolerance-hours': 3, labels: 'heartbeat' };
@@ -178,6 +181,23 @@ describe('pinnedInputProblems', () => {
     const want = [`the checker at ${short} declares input labels as a string, not a mapping`];
     assert.deepEqual(pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.bare, path: CHECKER, passed: STARTER_WITH }), want);
     assert.deepEqual(pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.bare, path: CHECKER, passed: { 'tolerance-hours': 3 } }), want);
+  });
+
+  test('reports an input at the pin declared with no mapping at all, not as an input it does not take', () => {
+    const short = repo.extra.empty.slice(0, 12);
+    const want = [`the checker at ${short} declares input labels as null, not a mapping`];
+    assert.deepEqual(pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.empty, path: CHECKER, passed: STARTER_WITH }), want);
+    assert.deepEqual(pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.empty, path: CHECKER, passed: { 'tolerance-hours': 3 } }), want);
+  });
+
+  test('reports an input at the pin declared as a date, which YAML reads as an object but is not a mapping', () => {
+    const got = pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.dated, path: CHECKER, passed: STARTER_WITH });
+    assert.deepEqual(got, [`the checker at ${repo.extra.dated.slice(0, 12)} declares input labels as a date, not a mapping`]);
+  });
+
+  test('reports inputs at the pin declared as a list once, not as one odd input per entry', () => {
+    const got = pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.listed, path: CHECKER, passed: STARTER_WITH });
+    assert.deepEqual(got, [`the checker at ${repo.extra.listed.slice(0, 12)} declares its inputs as a list, not a mapping`]);
   });
 
   test('reports a main ref the clone does not hold', () => {

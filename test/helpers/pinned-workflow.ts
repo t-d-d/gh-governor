@@ -45,41 +45,47 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
     return [...problems, `${path} at ${short} is not valid YAML: ${(error as Error).message.split('\n')[0]}`];
   }
   const on = (doc as { on?: unknown } | null | undefined)?.on;
-  const onMap = typeof on === 'object' && on !== null && !Array.isArray(on);
   const callable = on === 'workflow_call'
     || (Array.isArray(on) && on.includes('workflow_call'))
-    || (onMap && Object.hasOwn(on, 'workflow_call'));
+    || (isMapping(on) && Object.hasOwn(on, 'workflow_call'));
   if (!callable) return [...problems, `${path} at ${short} is not a reusable workflow: it has no on: workflow_call`];
-  type Input = { type?: string, required?: boolean } | null;
-  const call = onMap
-    ? (on as { workflow_call?: { inputs?: Record<string, Input> | null } | null }).workflow_call
-    : undefined;
-  const inputs = call?.inputs ?? {};
-  // GitHub rejects a workflow that declares an input as anything but a
-  // mapping, such as `labels: string`, so a caller fails whatever it passes.
-  const bare = new Set<string>();
-  for (const [key, input] of Object.entries(inputs)) {
-    if (input === null || isMapping(input)) continue;
-    bare.add(key);
-    problems.push(`the checker at ${short} declares input ${key} as ${Array.isArray(input) ? 'a list' : `a ${typeof input}`}, not a mapping`);
+  const call = isMapping(on) ? on.workflow_call : undefined;
+  const declared = isMapping(call) ? call.inputs ?? {} : {};
+  // GitHub rejects a workflow whose inputs, or any one input, are declared
+  // as anything but a mapping, such as `labels: string`, so a caller fails
+  // whatever it passes.
+  if (!isMapping(declared)) return [...problems, `the checker at ${short} declares its inputs as ${kind(declared)}, not a mapping`];
+  const inputs: Record<string, { type?: unknown, required?: unknown }> = {};
+  for (const [key, input] of Object.entries(declared)) {
+    if (isMapping(input)) inputs[key] = input;
+    else problems.push(`the checker at ${short} declares input ${key} as ${kind(input)}, not a mapping`);
   }
   for (const [key, value] of Object.entries(passed)) {
+    if (Object.hasOwn(declared, key) && !Object.hasOwn(inputs, key)) continue;
     const input = Object.hasOwn(inputs, key) ? inputs[key] : undefined;
-    if (bare.has(key)) continue;
-    if (input === undefined || input === null) {
+    if (input === undefined) {
       problems.push(`the checker at ${short} takes no input ${key}`);
     } else if (input.type !== undefined && typeof value !== input.type && !isExpression(value)) {
-      problems.push(`the checker at ${short} takes ${key} as a ${input.type}, not ${value === null ? 'null' : `a ${typeof value}`}`);
+      problems.push(`the checker at ${short} takes ${key} as a ${String(input.type)}, not ${value === null ? 'null' : `a ${typeof value}`}`);
     }
   }
   for (const [key, input] of Object.entries(inputs)) {
-    if (input?.required === true && !Object.hasOwn(passed, key)) problems.push(`the checker at ${short} requires input ${key}`);
+    if (input.required === true && !Object.hasOwn(passed, key)) problems.push(`the checker at ${short} requires input ${key}`);
   }
   return problems;
 }
 
-function isMapping(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+// YAML reads a mapping as a plain object, and a timestamp as a Date, which
+// is an object too but not a mapping.
+function isMapping(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function kind(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'a list';
+  if (value instanceof Date) return 'a date';
+  return `a ${typeof value}`;
 }
 
 // YAML reads a `${{ ... }}` expression as a string, and GitHub evaluates it
