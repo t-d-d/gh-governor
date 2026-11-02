@@ -62,13 +62,33 @@ function fixtureRepo() {
   return { dir, onMain, renamed, required, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
+// A second throwaway repo whose main holds, in turn: a checker with a number
+// and a boolean input, a workflow that is not reusable, and a file that is
+// not valid YAML.
+function oddCheckersRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'starter-pin-odd-'));
+  const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: dir, encoding: 'utf8' }).trim();
+  const commit = (text: string) => {
+    mkdirSync(join(dir, '.github/workflows'), { recursive: true });
+    writeFileSync(join(dir, CHECKER), text);
+    git('add', '.');
+    git('commit', '-qm', 'checker');
+    return git('rev-parse', 'HEAD');
+  };
+  git('init', '-q', '-b', 'main');
+  const typed = commit(checkerAt({ 'tolerance-hours': { type: 'number', default: 3 }, strict: { type: 'boolean', default: false } }));
+  const notCallable = commit(yaml.dump({ name: 'heartbeat check', on: { push: null }, jobs: { check: { 'runs-on': 'ubuntu-24.04', steps: [{ run: 'true' }] } } }));
+  const broken = commit('name: [unclosed\non: {workflow_call: \n');
+  return { dir, typed, notCallable, broken, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
 const STARTER_WITH = { 'tolerance-hours': 3, labels: 'heartbeat' };
 
 describe('pinnedInputProblems', () => {
   // Every test only reads the repo, so one serves them all.
-  let repo: ReturnType<typeof fixtureRepo>;
-  before(() => { repo = fixtureRepo(); });
-  after(() => repo.cleanup());
+  let repo: ReturnType<typeof fixtureRepo> & { extra: ReturnType<typeof oddCheckersRepo> };
+  before(() => { repo = { ...fixtureRepo(), extra: oddCheckersRepo() }; });
+  after(() => { repo.cleanup(); repo.extra.cleanup(); });
 
   test('finds nothing when the pin is on main and takes every input passed', () => {
     assert.deepEqual(pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: repo.onMain, path: CHECKER, passed: STARTER_WITH }), []);
@@ -99,6 +119,46 @@ describe('pinnedInputProblems', () => {
     const got = pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: 'f'.repeat(40), path: CHECKER, passed: STARTER_WITH });
     assert.equal(got.length, 1, JSON.stringify(got));
     assert.match(got[0] ?? '', /not in this clone.*git fetch/);
+  });
+
+  test('tells a full clone missing the pin to run git fetch origin, which git accepts there, not --unshallow', () => {
+    const got = pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: 'f'.repeat(40), path: CHECKER, passed: STARTER_WITH });
+    assert.equal(got.length, 1, JSON.stringify(got));
+    assert.match(got[0] ?? '', /run git fetch origin\b/);
+    assert.doesNotMatch(got[0] ?? '', /--unshallow/);
+  });
+
+  test('tells a shallow clone missing the pin to run git fetch --unshallow origin', () => {
+    const shallow = mkdtempSync(join(tmpdir(), 'starter-pin-shallow-'));
+    try {
+      execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repo.dir}`, shallow]);
+      const got = pinnedInputProblems({ cwd: shallow, main: 'origin/main', sha: repo.onMain, path: CHECKER, passed: STARTER_WITH });
+      assert.equal(got.length, 1, JSON.stringify(got));
+      assert.match(got[0] ?? '', /git fetch --unshallow origin/);
+    } finally {
+      rmSync(shallow, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts an expression passed to a number or boolean input, as GitHub does', () => {
+    const got = pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.typed, path: CHECKER, passed: { 'tolerance-hours': '${{ vars.HOURS }}', strict: '${{ inputs.strict }}' } });
+    assert.deepEqual(got, []);
+  });
+
+  test('reports a null value as null, not as an object', () => {
+    const got = pinnedInputProblems({ cwd: repo.dir, main: 'main', sha: repo.onMain, path: CHECKER, passed: { labels: null } });
+    assert.deepEqual(got, [`the checker at ${repo.onMain.slice(0, 12)} takes labels as a string, not null`]);
+  });
+
+  test('reports a file at the pin that is not a reusable workflow, even when no inputs are passed', () => {
+    const got = pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.notCallable, path: CHECKER, passed: {} });
+    assert.deepEqual(got, [`${CHECKER} at ${repo.extra.notCallable.slice(0, 12)} is not a reusable workflow: it has no on: workflow_call`]);
+  });
+
+  test('reports a file at the pin that is not valid YAML as a sentence, without throwing', () => {
+    const got = pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.broken, path: CHECKER, passed: STARTER_WITH });
+    assert.equal(got.length, 1, JSON.stringify(got));
+    assert.match(got[0] ?? '', new RegExp(`^${CHECKER} at ${repo.extra.broken.slice(0, 12)} is not valid YAML`));
   });
 
   test('reports a main ref the clone does not hold', () => {
