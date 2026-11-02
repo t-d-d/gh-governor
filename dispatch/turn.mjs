@@ -127,7 +127,7 @@ import { sessionId } from './webhook/subscribe.mjs';
 import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
-import { HEARTBEAT_MARKER, HEARTBEAT_REFUSED, HEARTBEAT_UNWRITTEN, readHeartbeat, stampHeartbeat } from './heartbeat.mjs';
+import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, writeHeartbeatIssue } from './heartbeat.mjs';
 import { launcher, routineLaunch } from './launcher.mjs';
 import { REPO_SKIPPED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan, routineFault } from './launch-plan.mjs';
 
@@ -735,21 +735,20 @@ const writeBeats = async (deps, tokenFor, served, beats) => {
       signedOff: own.flatMap((b) => b.signedOff ?? []),
     };
     const { issue } = heartbeat;
-    try {
-      const github = deps.reader(await tokenFor(repo), await deps.appId(), repo);
-      const { body } = await github.issue(issue);
-      if (!body.includes(HEARTBEAT_MARKER)) {
-        deps.log(HEARTBEAT_REFUSED, { level: 'error', repo, issue, marker: HEARTBEAT_MARKER, reason: `the issue's body has no ${HEARTBEAT_MARKER} marker, so the heartbeat is not written: fix the issue number in the repo's .github/dispatch.json, or add the marker to the issue` });
-        continue;
-      }
-      const next = stampHeartbeat(body, beat);
-      if (JSON.stringify(readHeartbeat(next)) === JSON.stringify(readHeartbeat(body))) continue;
-      await github.updateIssue(issue, { body: next });
-    } catch (error) {
-      deps.log(HEARTBEAT_UNWRITTEN, { level: 'error', repo, issue, error: messageOf(error) });
-      unwritten.push(`${repo}#${issue}: ${messageOf(error)}`);
-      continue;
-    }
+    const outcome = await writeHeartbeatIssue({
+      reader: async () => deps.reader(await tokenFor(repo), await deps.appId(), repo),
+      repo,
+      issue,
+      marker: HEARTBEAT_MARKER,
+      refusal: `the issue's body has no ${HEARTBEAT_MARKER} marker, so the heartbeat is not written: fix the issue number in the repo's .github/dispatch.json, or add the marker to the issue`,
+      stamp: (body) => {
+        const next = stampHeartbeat(body, beat);
+        return JSON.stringify(readHeartbeat(next)) === JSON.stringify(readHeartbeat(body)) ? undefined : next;
+      },
+      log: deps.log,
+    });
+    if (typeof outcome === 'object') unwritten.push(outcome.unwritten);
+    if (outcome !== 'written') continue;
     deps.log('dispatch-heartbeat', { repo, issue, ...(beat.pickup === undefined ? {} : { pickup: beat.pickup }), periodics: beat.periodics?.map((p) => p.name), signedOff: beat.signedOff });
     written.push(repo);
   }

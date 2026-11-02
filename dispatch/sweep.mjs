@@ -19,7 +19,7 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
 import { WAIT_RELATIVE, endedWaits, repairRelative, reportUnreadable, waitLinks, waitSpecPrompt } from './waits.mjs';
 import { connectorsOf, duePeriodics, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
-import { HEARTBEAT_REFUSED, HEARTBEAT_UNWRITTEN, stampLastRun } from './heartbeat.mjs';
+import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
 
 /**
@@ -329,19 +329,17 @@ export const planSweep = async (invocation, ctx) => {
             if (swept.has(repo)) ctx.beats.push({ repo, beat: { pickup: { at: new Date(ctx.now()).toISOString(), started: startedOf(own) } } });
             continue;
           }
-          try {
-            const github = await ctx.readerFor(repo);
-            const { body } = await github.issue(issue);
-            if (!body.includes(marker)) {
-              ctx.log(HEARTBEAT_REFUSED, { level: 'error', repo, issue, marker, reason: 'the issue\'s body has no marker, so the heartbeat is not written: fix the issue number or marker in the repo\'s .github/dispatch.json, or add the marker to the issue' });
-              continue;
-            }
-            await github.updateIssue(issue, { body: stampLastRun(body, marker, ctx.now()) });
-          } catch (error) {
-            ctx.log(HEARTBEAT_UNWRITTEN, { level: 'error', repo, issue, error: messageOf(error) });
-            unwritten.push(`${repo}#${issue}: ${messageOf(error)}`);
-            continue;
-          }
+          const outcome = await writeHeartbeatIssue({
+            reader: () => ctx.readerFor(repo),
+            repo,
+            issue,
+            marker,
+            refusal: 'the issue\'s body has no marker, so the heartbeat is not written: fix the issue number or marker in the repo\'s .github/dispatch.json, or add the marker to the issue',
+            stamp: (body) => stampLastRun(body, marker, ctx.now()),
+            log: ctx.log,
+          });
+          if (typeof outcome === 'object') unwritten.push(outcome.unwritten);
+          if (outcome !== 'written') continue;
           ctx.log('dispatch-heartbeat', { repo, issue });
           result.heartbeat = true;
         }

@@ -15,6 +15,7 @@
  * takes.
  */
 
+import { messageOf } from '../scripts/lib/error-message.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 
 const LAST_RUN = /^last-run:\s*(\S+)\s*$/m;
@@ -66,6 +67,52 @@ export const HEARTBEAT_REFUSED = 'dispatch-heartbeat-refused';
  * and the turn fails once every other repo's heartbeat has gone.
  */
 export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
+
+/**
+ * @typedef {{
+ *   issue: (n: number) => Promise<{ body: string }>,
+ *   updateIssue: (n: number, fields: { body: string }) => Promise<unknown>,
+ * }} IssueWriter
+ *   The part of a repo's reader a heartbeat write uses.
+ */
+
+/**
+ * Read a heartbeat issue, check its body carries `marker`, and write what
+ * `stamp` makes of it. A body without the marker is refused under
+ * {@link HEARTBEAT_REFUSED} with `refusal` as the reason and never written,
+ * so a wrong issue number never overwrites a ticket. A stamp that returns
+ * undefined changes nothing and writes nothing. A reader, read or write that
+ * fails is logged under {@link HEARTBEAT_UNWRITTEN} and comes back as the
+ * line the caller fails its turn with, once every other repo has gone.
+ *
+ * @param {{
+ *   reader: () => Promise<IssueWriter>,
+ *   repo: string,
+ *   issue: number,
+ *   marker: string,
+ *   refusal: string,
+ *   stamp: (body: string) => string | undefined,
+ *   log: (event: string, fields: Record<string, unknown>) => void,
+ * }} args
+ * @returns {Promise<'written' | 'refused' | 'unchanged' | { unwritten: string }>}
+ */
+export const writeHeartbeatIssue = async ({ reader, repo, issue, marker, refusal, stamp, log }) => {
+  try {
+    const github = await reader();
+    const { body } = await github.issue(issue);
+    if (!body.includes(marker)) {
+      log(HEARTBEAT_REFUSED, { level: 'error', repo, issue, marker, reason: refusal });
+      return 'refused';
+    }
+    const next = stamp(body);
+    if (next === undefined) return 'unchanged';
+    await github.updateIssue(issue, { body: next });
+    return 'written';
+  } catch (error) {
+    log(HEARTBEAT_UNWRITTEN, { level: 'error', repo, issue, error: messageOf(error) });
+    return { unwritten: `${repo}#${issue}: ${messageOf(error)}` };
+  }
+};
 
 /** Where governor's block starts: the body must carry it before any write. */
 export const HEARTBEAT_MARKER = '<!-- governor:heartbeat -->';
