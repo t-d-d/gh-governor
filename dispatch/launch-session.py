@@ -43,9 +43,10 @@ reason streamed to stdout for whichever log the caller keeps. (While the
 workaround in the next section is in place, a failed preflight starts from
 GitHub instead of refusing; the refusal returns with the workaround's
 removal.) It is also the
-revision every worker should start from: origin's trunk, not whatever branch
-the runner's checkout is on. The @claude workflow's prompt names the PR
-branch to check out itself.
+revision every new worker should start from: origin's trunk, not whatever
+branch the runner's checkout is on. The @claude workflow's prompt names the
+PR branch to check out itself. A session that takes over a PR starts on that
+PR's branch instead; see § Why a takeover starts on the PR's branch.
 
 `claude --help` does not advertise the flag (it is registered hidden), so it
 cannot be probed for, and `--help` and `--version` both exit 0 whatever
@@ -287,8 +288,8 @@ if pid == 0:
     # workflow that sets no name keeps the behaviour it has.
     if session_name:
         cmd += ["--name", session_name]
-    # Pinned to origin's trunk, ahead of the cloud flag so the prompt stays
-    # that flag's value. Naming a revision is what makes a failed GitHub
+    # Pinned to origin's trunk, or to a takeover's PR branch, ahead of the
+    # cloud flag so the prompt stays that flag's value. Naming a revision is what makes a failed GitHub
     # preflight a refusal rather than a bundle. Only the `--cloud` generation
     # has the flag or the bundle path; see the module docstring.
     if flag == "--cloud":

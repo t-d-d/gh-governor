@@ -558,7 +558,7 @@ export const deliveries = (deps) => {
           if (takeover && started.sessionUrl !== null) relinked = await relink(issue, started.sessionUrl);
         }
       }
-      deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, ...fallback, relinked, ...(reason === null ? {} : { reason }) });
+      deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, branch: branch ?? null, ...fallback, relinked, ...(reason === null ? {} : { reason }) });
     }
     // A refusal with none: a subscriber gone. Its line goes; the turn is not
     // a failure, since nothing was owed to a session that is not there.

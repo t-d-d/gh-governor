@@ -196,8 +196,6 @@ describe('a message invocation with a fallback', () => {
     assert.deepEqual(parseFire({ kind: 'message', session: 'session_01ABC', text: 'hi', fallback }), { kind: 'message', session: 'session_01ABC', text: 'hi', fallback });
     assert.deepEqual(parseFire({ kind: 'message', session: 'session_01ABC', text: 'hi', fallback: { prompt: 'p' } }), { kind: 'message', session: 'session_01ABC', text: 'hi', fallback: { prompt: 'p' } });
     assert.throws(() => parseFire({ kind: 'message', session: 'session_01ABC', text: 'hi', fallback: { sessionName: 'x' } }), /fallback/);
-    assert.deepEqual(parseFire({ kind: 'message', session: 'session_01ABC', text: 'hi', fallback: { prompt: 'p', branch: 'claude/x' } }), { kind: 'message', session: 'session_01ABC', text: 'hi', fallback: { prompt: 'p', branch: 'claude/x' } });
-    assert.throws(() => parseFire({ kind: 'message', session: 'session_01ABC', text: 'hi', fallback: { prompt: 'p', branch: '' } }), /fallback/);
     assert.throws(() => parseFire({ kind: 'message', session: 'session_01ABC', text: 'hi', fallback: 'p' }), /fallback/);
   });
 

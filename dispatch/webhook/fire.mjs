@@ -328,6 +328,7 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  * @typedef {{ prompt: string, sessionName?: string, issue?: number, branch?: string }} Fallback
  *   `issue`: the PR the remark is on, where the turn leaves the dispatch marker and reads it back.
  *   `branch`: the PR's head branch, which the fresh session starts on and pushes to, so it opens no second branch or PR.
+ *   Set in process only (dispatch/conflicts.mjs): no lane message carries one, so {@link parseFallback} reads none.
  *
  * @typedef {{ fire: Fire, reason: string, delivery?: string, github?: string, attempt?: number, retryOf?: string }} FireMessage
  *   One lane message: the fire, and why and for which delivery it was queued.
@@ -882,13 +883,9 @@ const parseFallback = (raw) => {
   if (f.issue !== undefined && !isPositiveInt(f.issue)) {
     throw new Error(`a message invocation's fallback names an issue that is not a positive integer: ${JSON.stringify(f.issue)}`);
   }
-  if (f.branch !== undefined && (typeof f.branch !== 'string' || f.branch.trim() === '')) {
-    throw new Error(`a message invocation's fallback names a branch that is not a non-empty string: ${JSON.stringify(f.branch)}`);
-  }
   return {
     prompt: f.prompt,
     ...(typeof f.sessionName === 'string' ? { sessionName: f.sessionName } : {}),
     ...(f.issue === undefined ? {} : { issue: Number(f.issue) }),
-    ...(typeof f.branch === 'string' ? { branch: f.branch } : {}),
   };
 };

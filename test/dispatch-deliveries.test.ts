@@ -30,7 +30,7 @@ const PR_BODY = '## Outcome\n\nThe grant.\n\n🤖 Generated with [Claude Code](h
 const FRESH = 'https://claude.ai/code/session_01ABC';
 
 type Message = { session: string; text: string };
-type Launch = { prompt: string; sessionName: string; model: string };
+type Launch = { prompt: string; sessionName: string; model: string; branch?: string };
 type Answer = { status: number | null; output: string };
 type Started = { outcome: 'dispatched' | 'unconfirmed' | 'failed'; sessionUrl: string | null };
 type Find = (branch: string, options?: { bridgeOnly?: boolean }) => Promise<string | null>;
@@ -258,6 +258,18 @@ describe('deliver — with a fallback', () => {
     assert.equal(told.refused, true);
     assert.deepEqual(told.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.outcome === 'dispatched'), JSON.stringify(f.logged));
+  });
+
+  // A launch on a PR's branch the CLI refuses reads as any failed launch, so
+  // the line names the branch the operator looks for.
+  test('a fallback that names a branch launches on it, and its line names it', async () => {
+    const f = fakes({ send: archived });
+    await f.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: { ...fallback, branch: 'claude/branch-724' }, takeover: true });
+    assert.equal(f.launches[0]!.branch, 'claude/branch-724');
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.branch === 'claude/branch-724'), JSON.stringify(f.logged));
+    const plain = fakes({ send: archived });
+    await plain.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback, takeover: true });
+    assert.ok(plain.logged.some((l) => l.event === 'dispatch-message-fallback' && l.branch === null), JSON.stringify(plain.logged));
   });
 
   test('a fallback naming no session is launched as `dispatch`', async () => {
