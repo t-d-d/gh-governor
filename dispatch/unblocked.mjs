@@ -35,7 +35,7 @@
  * comment still says they came off and how to ready the ticket again.
  * That comment carries {@link UNREADIED_MARKER}, so a later close of another
  * blocker, finding the ticket not ready, starts no spec session until a
- * person has answered it ({@link heldUnreadied}).
+ * person has answered it (`heldUnreadied`, scripts/lib/ready-work.mjs).
  *
  * The last row is pickup's reverse: the prompt tells the session to add the
  * claim label itself before it builds. The marker keeps the sweep off the
@@ -48,7 +48,7 @@ import { createHash } from 'node:crypto';
 import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
-import { UNREADIED_MARKER, heldUnreadied, isBlocked, isWaiting, labelRow, waitHolds, waitsOnClose } from '../scripts/lib/ready-work.mjs';
+import { UNREADIED_MARKER, ticketStatus, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 
 /**
  * @typedef {import('./webhook/fire.mjs').UnblockedFire} UnblockedFire
@@ -59,7 +59,7 @@ import { UNREADIED_MARKER, heldUnreadied, isBlocked, isWaiting, labelRow, waitHo
  * @typedef {{ fire: UnblockedFire & { repo: string }, dedupId: string }} Queued
  * @typedef {{ repo: string, issue: number, reason: string }} Skipped
  * @typedef {import('../scripts/lib/ready-work.mjs').Labels} Labels
- * @typedef {'closed' | 'blocked' | 'not-planned' | ReturnType<typeof labelRow>} Row
+ * @typedef {'closed' | 'blocked' | 'not-planned' | import('../scripts/lib/ready-work.mjs').LabelState} Row
  */
 
 /** The close reason GitHub gives an issue closed as not planned. */
@@ -132,10 +132,11 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
  * carrying its dependency summary is judged by it (`isBlocked`), since the
  * rows leave out a blocker the App cannot see; `blockers` is read only for
  * a ticket without one. A ticket its own `Blocked until:` line holds at
- * `now` (`isWaiting`) reads as still blocked, so the close starts nothing
- * for it. The line holds only where the labels read ready or not ready
- * (`waitHolds`): a claimed ticket's session still hears the close, and an
- * excluded ticket still reads excluded.
+ * `now` reads as still blocked, so the close starts nothing for it. The
+ * line holds only where the labels read ready or not ready: a claimed
+ * ticket's session still hears the close, and an excluded ticket still
+ * reads excluded. Its status (`ticketStatus`) says all of this, and
+ * {@link rowOf} reads the row from it.
  *
  * @param {{
  *   ticket: { state: string, labels: readonly string[], openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait },
@@ -146,12 +147,36 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
  * }} args `now`: epoch ms, the clock where unset.
  * @returns {Row}
  */
-export const ticketRow = ({ ticket, blockers, fire, labels, now = Date.now() }) => {
-  if (ticket.state !== 'open') return 'closed';
+export const ticketRow = ({ ticket, blockers, fire, labels, now = Date.now() }) => rowOf(ticketStatus(ticket, { labels, now, blockers }), fire);
+
+/**
+ * The row a ticket's status takes on its blocker's close: `closed`, then
+ * `not-planned`, then `blocked` where anything holds it (an open blocker,
+ * its line, or a line governor cannot read), else what its labels say.
+ *
+ * @param {import('../scripts/lib/ready-work.mjs').TicketStatus} status
+ * @param {Pick<UnblockedFire, 'blocker'>} fire
+ * @returns {Row}
+ */
+export const rowOf = (status, fire) => {
+  if (!status.open) return 'closed';
   if (fire.blocker.reason === NOT_PLANNED) return 'not-planned';
-  if (isBlocked(ticket, blockers)) return 'blocked';
-  if (waitHolds(ticket.labels, labels) && isWaiting(ticket, now)) return 'blocked';
-  return labelRow(ticket.labels, labels);
+  if (status.holds.length > 0) return 'blocked';
+  return status.labels;
+};
+
+/**
+ * What a set of label names says on its own (`ticketStatus`'s `labels`), for
+ * a ticket's labels with some put back. A row with no line and no blocker is
+ * open and held by nothing, so its status reads its labels alone.
+ *
+ * @param {readonly string[]} on
+ * @param {Pick<Labels, 'ready' | 'claim' | 'exclude'>} labels
+ * @returns {import('../scripts/lib/ready-work.mjs').LabelState}
+ */
+const labelsSay = (on, labels) => {
+  const status = ticketStatus({ labels: on }, { labels, now: 0 });
+  return status.open ? status.labels : 'not-ready';
 };
 
 /**
@@ -219,7 +244,7 @@ export const unblockedMessage = (fire, prompts) => `${unblockedFacts(fire)}\n\n$
 
 /**
  * The ready labels a not-planned close takes off a ticket: every one of the
- * repo's, where pickup reads the ticket as ready ({@link labelRow}), and
+ * repo's, where pickup reads the ticket as ready by its labels, and
  * none otherwise. A claimed ticket's session is told instead, and keeps its
  * labels; an excluded one is never picked up, so it keeps them too.
  *
@@ -227,7 +252,7 @@ export const unblockedMessage = (fire, prompts) => `${unblockedFacts(fire)}\n\n$
  * @param {Pick<Labels, 'ready' | 'claim' | 'exclude'>} labels The repo's.
  * @returns {string[]}
  */
-export const readyToTakeOff = (on, labels) => (labelRow(on, labels) === 'ready' ? [...labels.ready] : []);
+export const readyToTakeOff = (on, labels) => (labelsSay(on, labels) === 'ready' ? [...labels.ready] : []);
 
 /**
  * The ready labels an earlier run of this close took off a ticket, read back
@@ -251,7 +276,7 @@ export const unreadiedSince = (on, removals, labels, since) => {
   const latest = new Map(removals.map((r) => [r.label, r]));
   const ours = new Set([...latest.values()].filter((r) => r.ours && Date.parse(r.at) >= from).map((r) => r.label));
   const removed = labels.ready.filter((l) => ours.has(l) && !on.includes(l));
-  if (removed.length === 0 || labelRow([...on, ...removed], labels) !== 'ready') return undefined;
+  if (removed.length === 0 || labelsSay([...on, ...removed], labels) !== 'ready') return undefined;
   return { removed, failed: labels.ready.filter((l) => on.includes(l)) };
 };
 
@@ -262,7 +287,7 @@ export const unreadiedSince = (on, removals, labels, since) => {
  * @param {readonly string[]} on
  * @param {Pick<Labels, 'ready' | 'claim' | 'exclude'>} labels
  */
-export const mayBeUnreadied = (on, labels) => labels.ready.some((l) => !on.includes(l)) && labelRow([...on, ...labels.ready], labels) === 'ready';
+export const mayBeUnreadied = (on, labels) => labels.ready.some((l) => !on.includes(l)) && labelsSay([...on, ...labels.ready], labels) === 'ready';
 
 /** @param {readonly string[]} names */
 const listed = (names) => {
@@ -310,10 +335,5 @@ export const notPlannedComment = (fire, prompts, { blocked = false, unreadied } 
   return `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}${still}${ready}${marker}`;
 };
 
-// heldUnreadied and UNREADIED_MARKER live in scripts/lib/ready-work.mjs,
-// beside mayStartSpec, which reads them. They are re-exported here so no
-// caller changes yet.
-export { UNREADIED_MARKER, heldUnreadied };
-
-/** Why a ticket {@link heldUnreadied} holds starts no spec session, as both a close and an ended wait log it. */
+/** Why a ticket governor's not-planned close still holds (`specHold`, scripts/lib/ready-work.mjs) starts no spec session, as both a close and an ended wait log it. */
 export const UNREADIED_HELD = 'its ready labels came off on a not-planned close, and nobody has answered governor\'s comment since';

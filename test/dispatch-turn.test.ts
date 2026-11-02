@@ -34,7 +34,7 @@ import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
 import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitNotPlannedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
 import { waitOf } from '../scripts/lib/ready-work.mjs';
-import { UNREADIED_MARKER } from '../dispatch/unblocked.mjs';
+import { UNREADIED_MARKER } from '../scripts/lib/ready-work.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
 import { ROUTINE_ANSWER, RoutinesApiError } from '../dispatch/routines.mjs';
 
@@ -7727,6 +7727,14 @@ describe('run: a relative wait on a declared blocker', () => {
     await run({ source: 'aws.events' }, h.deps as never);
     assert.deepEqual(h.issueEdits.filter((e) => e.issue === 7).map((e) => e.body), [`Blocked until: ${UNTIL} (3 days after #41 closed)\n\nThe rest.`]);
     assert.ok(!h.launches.some((l) => l.sessionName === sessionName(7, 'Issue 7')));
+  });
+
+  test('the sweep leaves a ticket its dependency summary says is blocked, though its rows show no blocker', async () => {
+    // A blocker in a repo the App cannot see is in the summary and not in the rows.
+    const row = { ...issue(7), openBlockers: 1, wait: { after: { days: 3, issue: 41 } } };
+    const h = relativeTurn({ rows: [row] });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual([h.issueEdits.filter((e) => e.issue === 7), h.comments.filter((c) => c.issue === 7)], [[], []]);
   });
 
   test('the sweep comments once on a line it cannot repair', async () => {

@@ -6,7 +6,8 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { ROW_SWITCH, closingFires, readyPrompt, specPrompt, ticketRow, unblockedFacts, unblockedMessage, notPlannedComment, readyToTakeOff, unreadiedSince, mayBeUnreadied, UNREADIED_MARKER, heldUnreadied } from '../dispatch/unblocked.mjs';
+import { ROW_SWITCH, closingFires, readyPrompt, specPrompt, ticketRow, unblockedFacts, unblockedMessage, notPlannedComment, readyToTakeOff, unreadiedSince, mayBeUnreadied } from '../dispatch/unblocked.mjs';
+import { UNREADIED_MARKER, heldUnreadied } from '../scripts/lib/ready-work.mjs';
 import { parseFire, fireWeight, FIRE_BUDGET } from '../dispatch/webhook/fire.mjs';
 
 const FACTORY = 'acme/factory';

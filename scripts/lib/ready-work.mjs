@@ -83,10 +83,10 @@ export const MAX_RELATIVE_DAYS = 36500;
  * it carries the claim, else `ready` when it carries every ready label, else
  * `not-ready`. Only `ready` may be picked up.
  *
- * The selection (`selectReadyWork`) and the claim's second read
- * (dispatch/turn.mjs) read it through `ticketStatus`, and the unblocked row
- * (`ticketRow`, dispatch/unblocked.mjs) calls it, so a rule added here holds
- * in all three. Copies of it drifted once: the selection learned the excluded
+ * The selection (`selectReadyWork`), the claim's second read
+ * (dispatch/turn.mjs), the unblocked row (`ticketRow`, dispatch/unblocked.mjs)
+ * and wait end (dispatch/waits.mjs) read it through `ticketStatus`, so a rule
+ * added here holds in all four. Copies of it drifted once: the selection learned the excluded
  * labels and the claim did not, so a ticket labelled to keep out between
  * the plan and its launch was claimed anyway.
  *
@@ -200,9 +200,10 @@ export const waitsOnClose = (wait, repo, closed) =>
  * governor has not rewritten into its date yet, or a line governor could
  * not read. A row with no line is not held.
  *
- * Like `labelRow` and `isBlocked`, the selection and the claim's second
- * read ask this through `ticketStatus`, and the unblocked row calls it
- * only where `waitHolds` says the labels let the line hold. It holds in every served
+ * Like `labelRow` and `isBlocked`, every readiness path asks this through
+ * `ticketStatus`, which reads it only where `waitHolds` says the labels let
+ * the line hold. Wait end (dispatch/waits.mjs) also calls it on a line
+ * alone, to ask whether a person moved the date later. It holds in every served
  * repo, whatever its config file says.
  *
  * @param {{ wait?: Wait }} issue
@@ -255,7 +256,7 @@ export const waitHolds = (on, labels) => {
  * first.
  *
  * @param {StatusRow} ticket
- * @param {{ labels: Labels, now: number, blockers?: readonly BlockerRow[] | undefined }} rules
+ * @param {{ labels: Labels, now: number, blockers?: ReadonlyArray<{ number?: number, state?: string }> | undefined }} rules
  *   `blockers`: the ticket's `blocked_by` rows, read only where it carries
  *   no dependency summary (`isBlocked`).
  * @returns {TicketStatus}
@@ -308,15 +309,32 @@ export const heldUnreadied = (thread) => {
 };
 
 /**
+ * What keeps a spec session off a not-ready ticket, for its log: governor's
+ * not-planned close still holds it (`unreadied`, {@link heldUnreadied}), or
+ * a dispatch inside the window is on its thread (`window`,
+ * `recentlyDispatched`). Undefined where nothing does.
+ *
+ * @param {ReadonlyArray<{ body: string, ours?: boolean }>} thread The ticket's whole thread, oldest first.
+ * @param {number} now Epoch ms.
+ * @returns {'unreadied' | 'window' | undefined}
+ */
+export const specHold = (thread, now) => {
+  if (heldUnreadied(thread)) return 'unreadied';
+  if (recentlyDispatched([...thread], now)) return 'window';
+  return undefined;
+};
+
+/**
  * A spec session may start on a not-ready ticket: its thread has no
  * unanswered unreadied comment ({@link heldUnreadied}) and no dispatch
- * inside the window (`recentlyDispatched`). The unblocked row and wait end
- * are to ask this; neither does yet.
+ * inside the window (`recentlyDispatched`). The unblocked row
+ * (dispatch/turn.mjs) and wait end (`endedWaits`, dispatch/waits.mjs) ask
+ * this, and {@link specHold} says why it is no.
  *
  * @param {ReadonlyArray<{ body: string, ours?: boolean }>} thread The ticket's whole thread, oldest first.
  * @param {number} now Epoch ms.
  */
-export const mayStartSpec = (thread, now) => !heldUnreadied(thread) && !recentlyDispatched([...thread], now);
+export const mayStartSpec = (thread, now) => specHold(thread, now) === undefined;
 
 /**
  * Whether the selection takes a ticket: pickup may start it

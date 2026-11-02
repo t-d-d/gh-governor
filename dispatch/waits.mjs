@@ -20,7 +20,7 @@
  * ({@link waitEndedMarker}), and, with `unblocked` on, a spec session on the
  * repo's `waitEndedSpec` prompt, unless the thread shows a dispatch inside
  * the window, or governor's not-planned close still holds the ticket
- * ({@link heldUnreadied}). Every session governor starts in such a
+ * (`mayStartSpec`, scripts/lib/ready-work.mjs). Every session governor starts in such a
  * repo is told how to make a ticket wait ({@link WAIT_PROMPT}).
  *
  * A lost `opened`, `reopened` or `edited` delivery leaves its ticket out of the items,
@@ -41,11 +41,11 @@
  * {@link waitRelativeMarker}, that it cannot.
  */
 
-import { recentlyDispatched, waitLine } from './webhook/fire.mjs';
-import { UNREADIED_HELD, heldUnreadied, sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
+import { waitLine } from './webhook/fire.mjs';
+import { UNREADIED_HELD, sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
 import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
-import { RELATIVE_WAIT, isBlocked, isWaiting, labelRow, waitHolds, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
+import { RELATIVE_WAIT, isWaiting, mayStartSpec, specHold, ticketStatus, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** The log event for a `Blocked until:` line governor cannot read. */
@@ -357,6 +357,21 @@ const softly = async (links, act, repo, issue, log, reason) => {
 };
 
 /**
+ * Whether a ticket's status holds it by `hold` (`ticketStatus`): its line, or
+ * a line governor cannot read, holds only a ticket ready or not ready by its
+ * labels.
+ *
+ * @param {import('../scripts/lib/ready-work.mjs').StatusRow} ticket
+ * @param {import('../scripts/lib/ready-work.mjs').Labels} labels
+ * @param {number} now
+ * @param {import('../scripts/lib/ready-work.mjs').Hold} hold
+ */
+const holdsBy = (ticket, labels, now, hold) => {
+  const status = ticketStatus(ticket, { labels, now });
+  return status.open && status.holds.includes(hold);
+};
+
+/**
  * A `wait` fire's turn: read the ticket and its line, and put, rewrite or
  * delete its item to match. A date still to come is held in the item, and
  * so is a date that has passed where an item stands, which the schedule
@@ -394,7 +409,7 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
     // wait ticket's link comes off, before any item goes.
     if (links !== undefined && found !== null) await links.hide(issue);
     const dropped = read === null ? null : await state.dropWait(repo, issue, read.until);
-    const settled = waitHolds(ticket.labels, labels) ? await repairRelative({ reader, repo, issue, after: wait.after, link: true, prompts, now, log }) : 'not settled: the ticket is not held from anyone';
+    const settled = holdsBy({ state: ticket.state, labels: ticket.labels, wait }, labels, now, 'line') ? await repairRelative({ reader, repo, issue, after: wait.after, link: true, prompts, now, log }) : 'not settled: the ticket is not held from anyone';
     const outcome = `relative: ${settled}`;
     log(WAIT, { ...about, after: wait.after, outcome, ...(dropped === null ? {} : { item: dropped ? 'dropped' : 'not dropped: it changed since it was read' }) });
     return outcome;
@@ -420,7 +435,7 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
     else await softly(links, 'hide', repo, issue, log, 'its item stands, so the schedule fire takes the link off once the wait has ended');
     return outcome;
   }
-  if (wait !== undefined && 'unreadable' in wait && waitHolds(ticket.labels, labels)) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
+  if (wait !== undefined && 'unreadable' in wait && holdsBy({ state: ticket.state, labels: ticket.labels, wait }, labels, now, 'unreadable')) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
   if (links !== undefined && found !== null) {
     if (wait === undefined && read === null) {
       // No line and no item: governor never linked it, so a link is a
@@ -462,7 +477,7 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  *   thread carries the marker for that date, and, with `spec`, the ticket
  *   back as a {@link WaitSpec} unless a dispatch inside the window is on its
  *   thread, or governor's not-planned close still holds it
- *   ({@link heldUnreadied}). Its item stays until the turn has started the
+ *   (`mayStartSpec`, scripts/lib/ready-work.mjs). Its item stays until the turn has started the
  *   session, so a launch that fails, or one the turn has no room for, is
  *   tried at the next fire, and the marker keeps it to one comment.
  *   Otherwise the item goes.
@@ -520,7 +535,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
         continue;
       }
       if ('unreadable' in wait) {
-        if (waitHolds(ticket.labels, labels)) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
+        if (holdsBy(ticket, labels, now, 'unreadable')) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
         await drop(item, { outcome: 'its line cannot be read' });
         continue;
       }
@@ -537,7 +552,8 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       // counts it only while the wait ticket is open.
       const counted = removed && ticket.openBlockers !== undefined && await links?.open() ? { ...ticket, openBlockers: Math.max(0, ticket.openBlockers - 1) } : ticket;
       const blockers = counted.openBlockers === undefined ? await reader.blockers(issue) : undefined;
-      const row = isBlocked(counted, blockers) ? 'blocked' : labelRow(ticket.labels, labels);
+      const status = ticketStatus(counted, { labels, now, blockers });
+      const row = !status.open || status.holds.length > 0 ? 'blocked' : status.labels;
       if (row !== 'not-ready') {
         await drop(item, { until: wait.until, outcome: `ended on a ticket ${row}: nothing to say` });
         continue;
@@ -548,13 +564,12 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       if (!told) await reader.comment(issue, waitEndedComment(wait.until));
       // A ticket governor unreadied on a not-planned close waits for a
       // person's answer first, as a later blocker's close does.
-      const held = heldUnreadied(thread);
-      if (spec && !held && !recentlyDispatched(thread, now)) {
+      if (spec && mayStartSpec(thread, now)) {
         specs.push({ issue, title: ticket.title, until: wait.until, read: item.until });
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: told ? 'ended: already told, starting a spec session' : 'ended: commented, starting a spec session' });
         continue;
       }
-      await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: held ? `held: ${UNREADIED_HELD}` : 'dispatched inside the window' } : {}) });
+      await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: specHold(thread, now) === 'unreadied' ? `held: ${UNREADIED_HELD}` : 'dispatched inside the window' } : {}) });
     } catch (error) {
       const message = messageOf(error);
       log(WAIT_UNHANDLED, { level: 'error', repo, issue, read: item.until, error: message, reason: 'its item stays, so the next fire tries again' });
@@ -748,7 +763,7 @@ const settle = async ({ reader, repo, issue, closed, facts, prompts, log, holds 
  * the close time the fire carries, or from `now` for a fire without one, so
  * the wait is never shorter. Null where the line is not this close's, or
  * the ticket's read names another number: it moved to another repo.
- * `holds`: whether the line holds the ticket by its labels (`waitHolds`),
+ * `holds`: whether the line holds the ticket by its status (`ticketStatus`),
  * true where unset.
  *
  * @param {{
@@ -775,7 +790,11 @@ export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now
  * or one the bare schedule fire's sweep finds on a ready ticket. Only an
  * issue in the ticket's repo is read.
  *
- * - The sweep leaves a ticket an open blocker holds to that blocker's close.
+ * - The sweep leaves a ticket an open blocker holds to that blocker's close:
+ *   one its dependency summary (`openBlockers`) counts, which needs no read,
+ *   or one in its `blocked_by` rows, read where the summary counts none.
+ *   The rows are read even then because a summary can be a moment slow to
+ *   count a link just made, and the comments below are said only once.
  * - A same-repo issue that has closed: settled as at its close
  *   ({@link settle}).
  * - A same-repo issue still open: the `wait` turn links it where it is not
@@ -785,15 +804,16 @@ export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now
  * - An issue that is gone or moved, a pull request, or the ticket itself,
  *   none of which can be its blocker: one comment.
  *
- * @param {{ reader: RelativeReader, repo: string, issue: number, after: import('../scripts/lib/ready-work.mjs').After, link: boolean, prompts: Record<string, string | undefined>, now?: number, log: Log }} args
+ * @param {{ reader: RelativeReader, repo: string, issue: number, after: import('../scripts/lib/ready-work.mjs').After, openBlockers?: number, link: boolean, prompts: Record<string, string | undefined>, now?: number, log: Log }} args
  * @returns {Promise<string>} What came of it.
  */
-export const repairRelative = async ({ reader, repo, issue, after, link, prompts, now = Date.now(), log }) => {
+export const repairRelative = async ({ reader, repo, issue, after, openBlockers, link, prompts, now = Date.now(), log }) => {
   const named = { repo: after.repo ?? repo, number: after.issue };
   const ref = refOf(repo, named);
   /** @type {Array<{ number: number, state: string, repo?: string }> | null} */
   let rows = null;
   if (!link) {
+    if (openBlockers !== undefined && openBlockers > 0) return 'held by an open blocker';
     rows = await reader.blockers(issue);
     if (rows.some((r) => r.state === 'open')) return 'held by an open blocker';
   }

@@ -22,8 +22,8 @@ import assert from 'node:assert/strict';
 import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
 import { run } from '../dispatch/turn.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
-import { waitOf } from '../scripts/lib/ready-work.mjs';
-import { ticketRow, UNREADIED_MARKER } from '../dispatch/unblocked.mjs';
+import { UNREADIED_MARKER, waitOf } from '../scripts/lib/ready-work.mjs';
+import { ticketRow } from '../dispatch/unblocked.mjs';
 import { endedWaits, WAIT_UNREADABLE_MARKER } from '../dispatch/waits.mjs';
 import { dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { storedLogin } from '../scripts/lib/claude-login.mjs';
@@ -268,21 +268,17 @@ const pickupSaysUnreadable = (s: State) => s.open && s.labels === 'ready' && s.l
 const specSaysUnreadable = (s: State) => s.open && (s.labels === 'ready' || s.labels === 'not-ready') && s.line === 'unreadable';
 
 /**
- * Difference, inside the selection: its relative report reads blockers and
- * its unreadable report does not. A ready ticket with an open blocker and a
- * relative line is not reported, while one with an unreadable line is.
- *
- * Difference, inside the selection: its relative report reads a blocker
- * only from the dependency summary, never from the `blocked_by` rows. A
- * ready ticket with no summary, an open blocker in its rows and a relative
- * line is reported, though the selection does not pick it.
+ * The selection reports every ready ticket held by a relative line, blocked
+ * or not, as its unreadable report does. The sweep's repair
+ * (`repairRelative`) judges the blocker: by the dependency summary the
+ * report passes it, or, with none, by the `blocked_by` rows it reads.
  *
  * Difference: only the selection reports a relative line it may need to
  * settle. The unblocked fire settles one only when the line waits on the
  * issue that closed, which these states' line does not, and wait end drops
  * the item of a ticket whose line became relative.
  */
-const selectionSaysRelative = (s: State) => s.open && s.labels === 'ready' && (!s.blocker || !s.summary) && s.line === 'relative';
+const selectionSaysRelative = (s: State) => s.open && s.labels === 'ready' && s.line === 'relative';
 
 /**
  * `ticketRow`: closed, then an open blocker, then a line that holds where
