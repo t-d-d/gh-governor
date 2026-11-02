@@ -6,7 +6,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { ROW_SWITCH, closingFires, readyPrompt, specPrompt, ticketRow, unblockedFacts, unblockedMessage, notPlannedComment, readyToTakeOff, unreadiedSince, mayBeUnreadied } from '../dispatch/unblocked.mjs';
+import { ROW_SWITCH, closingFires, readyPrompt, specPrompt, ticketRow, unblockedFacts, unblockedMessage, notPlannedComment, readyToTakeOff, unreadiedSince, mayBeUnreadied, UNREADIED_MARKER, heldUnreadied } from '../dispatch/unblocked.mjs';
 import { parseFire, fireWeight, FIRE_BUDGET } from '../dispatch/webhook/fire.mjs';
 
 const FACTORY = 'acme/factory';
@@ -203,6 +203,14 @@ describe('the texts', () => {
     assert.match(text, /Put `ready` back once you decide #7 still stands/);
   });
 
+  test('a comment saying a ready label came off carries the unreadied marker; one saying none did, or naming no labels, carries none', () => {
+    assert.equal(UNREADIED_MARKER, '<!-- governor:unreadied -->');
+    assert.ok(notPlannedComment(dropped, {}, { unreadied: { removed: ['ready', 'mode: afk'], failed: [] } }).includes(UNREADIED_MARKER));
+    assert.ok(notPlannedComment(dropped, {}, { unreadied: { removed: ['ready'], failed: ['mode: afk'] } }).includes(UNREADIED_MARKER));
+    assert.ok(!notPlannedComment(dropped, {}, { unreadied: { removed: [], failed: ['ready'] } }).includes('governor:'));
+    assert.ok(!notPlannedComment(dropped, {}).includes('governor:'));
+  });
+
   test('no ready label would come off: each is named, so nobody reads the ticket as held', () => {
     const text = notPlannedComment(dropped, {}, { unreadied: { removed: [], failed: ['ready', 'mode: afk'] } });
     assert.match(text, /could not take `ready` and `mode: afk` off #7, so it can still be picked up/);
@@ -269,5 +277,30 @@ describe('unreadiedSince', () => {
     assert.equal(mayBeUnreadied(['ready', 'mode: afk'], labels), false);
     assert.equal(mayBeUnreadied(['type: prd'], labels), false);
     assert.equal(mayBeUnreadied(['claimed'], labels), false);
+  });
+});
+
+describe('heldUnreadied', () => {
+  const held = `Governor took its ready label off #7.\n\n${UNREADIED_MARKER}`;
+  const ours = (body: string) => ({ body, ours: true });
+  const theirs = (body: string) => ({ body, ours: false });
+
+  test('governor\'s unreadied comment with nothing after it but governor\'s own holds the ticket', () => {
+    assert.equal(heldUnreadied([theirs('Filed.'), ours(held)]), true);
+    assert.equal(heldUnreadied([ours(held), ours('<!-- governor:dispatched x -->')]), true);
+  });
+
+  test('a person\'s comment after it is an answer', () => {
+    assert.equal(heldUnreadied([ours(held), theirs('Still stands, rewrite the spec.')]), false);
+  });
+
+  test('only the newest unreadied comment counts: an answer to an earlier one does not free a later hold', () => {
+    assert.equal(heldUnreadied([ours(held), theirs('Still stands.'), ours(held)]), true);
+  });
+
+  test('no marker, or the marker in a comment governor did not post, holds nothing', () => {
+    assert.equal(heldUnreadied([]), false);
+    assert.equal(heldUnreadied([ours('Its work will not land as planned.')]), false);
+    assert.equal(heldUnreadied([theirs(held)]), false);
   });
 });

@@ -149,7 +149,9 @@ describe('main', () => {
       },
     });
     await main(args as never);
-    assert.deepEqual(seen, [{ kind: 'probe' }, { real: true, claims: new Set(), unrecorded: new Set() }], 'the real dependencies, with the claims and pending records the deadline reads');
+    const [, given] = seen as [unknown, { threw: unknown }];
+    assert.equal(typeof given.threw, 'function', 'the turn hands a thrown error to the deadline');
+    assert.deepEqual(seen, [{ kind: 'probe' }, { real: true, claims: new Set(), unrecorded: new Set(), threw: given.threw }], 'the real dependencies, with the claims, pending records and thrown error the deadline reads');
     assert.deepEqual(logged, [{ event: 'dispatch-result', kind: 'probe', ok: true, detail: 'pty-ok' }]);
     assert.deepEqual(exits, [0]);
   });
@@ -313,6 +315,27 @@ describe('main', () => {
     assert.equal(logged[0]?.sessionName, 'Issue 7');
     assert.match(String(logged[0]?.error), /deadline/);
     assert.match(String(logged[0]?.reason), /human-only path/);
+    assert.deepEqual(exits, [1]);
+  });
+
+  // A turn that threw waits for its records before it rejects, so a record
+  // write that hangs holds it to the deadline. The deadline's line names
+  // what was thrown, with its stack, or the cause is lost.
+  test('the deadline logs the error a turn threw while a record write held it', async () => {
+    const { args, logged, exits, timers } = harness({
+      run: async (_event: unknown, deps: { threw: (error: unknown) => void }) => {
+        deps.threw(new Error('the heartbeat write threw'));
+        return new Promise(() => {});
+      },
+    });
+    void main(args as never);
+    await new Promise((settle) => setImmediate(settle));
+    timers[0]!.fn();
+    const failed = logged.at(-1);
+    assert.equal(failed?.event, 'dispatch-failed');
+    assert.equal(failed?.reason, 'deadline');
+    assert.match(String(failed?.error), /the heartbeat write threw/);
+    assert.match(String(failed?.error), /at /, 'the stack, not only the message');
     assert.deepEqual(exits, [1]);
   });
 });
