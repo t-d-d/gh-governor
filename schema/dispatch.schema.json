@@ -134,6 +134,10 @@
           "description": "When a ticket's `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and a session to rewrite its spec if `unblocked` is on. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.",
           "type": "boolean"
         },
+        "signOff": {
+          "description": "Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message with nothing else open asks the session to sign off.",
+          "type": "boolean"
+        },
         "mergeHandoff": {
           "deprecated": true,
           "description": "Retired: read as unblocked.",

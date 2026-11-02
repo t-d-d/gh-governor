@@ -215,6 +215,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *
  * @typedef {{
  *   prompts: Record<string, string | undefined>,
+ *   signOff: boolean,
  *   reader: () => Promise<DeliveryReader>,
  *   repo: string,
  *   send: (message: { session: string, text: string }, until: number) => Promise<LaunchResult>,
@@ -225,7 +226,9 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   sleep: (ms: number) => Promise<void>,
  *   launchTimeoutMs?: number | undefined,
  * }} DeliveryDeps
- *   `prompts`: the turn's repo's config file's prompts. `reader`:
+ *   `prompts`: the turn's repo's config file's prompts. `signOff`: whether
+ *   its file turns sign-off on; off, a close asks no session to sign off,
+ *   since the sweep would not archive it. `reader`:
  *   the turn's GitHub reader, built on first use. `repo`: the one it reads,
  *   named in each standing. `send`: the CLI's
  *   `-p --cloud <session>`, under what is left before `until`. `launch`: a
@@ -325,7 +328,7 @@ export const deliveries = (deps) => {
           return [...named, ...held.filter((p) => !named.some((n) => n.number === p.number))];
         }));
       }
-      return standingLine((await found).filter((o) => !exclude.includes(o.number)), { repo: deps.repo, closing, prompts: deps.prompts });
+      return standingLine((await found).filter((o) => !exclude.includes(o.number)), { repo: deps.repo, closing: closing && deps.signOff, prompts: deps.prompts });
     } catch (error) {
       const message = messageOf(error);
       standings.delete(id);
@@ -336,7 +339,7 @@ export const deliveries = (deps) => {
         searchRefused ??= `an earlier search this turn was refused: ${message.replace(/^.*? failed: /, '')}`;
       }
       deps.log('dispatch-standing', { session, error: message });
-      return standingLine(null, { repo: deps.repo, closing, prompts: deps.prompts, error: message });
+      return standingLine(null, { repo: deps.repo, closing: closing && deps.signOff, prompts: deps.prompts, error: message });
     }
   };
 

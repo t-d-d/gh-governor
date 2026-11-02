@@ -842,7 +842,8 @@ const turnOf = async (event, deps, records) => {
     now: deps.now,
     log: deps.log,
     woken,
-    repos: served.map((s) => s.repo),
+    // Only a repo whose file turns sign-off on has its sessions archived.
+    repos: served.filter((s) => turnsOn(s.config, 'signOff')).map((s) => s.repo),
     list: (token) => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
     lookup: sweepLookup(deps),
     events,
@@ -1324,6 +1325,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   let made = null;
   const delivery = () => (made ??= turnDeliveries({
     prompts,
+    signOff: repo !== undefined && turnsOn(configOf(repo), 'signOff'),
     reader: getReader,
     repo: fireRepo(),
     send: (message, until) => budgeted(() => deps.message(message), message.session, until),

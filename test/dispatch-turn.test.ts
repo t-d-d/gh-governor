@@ -4554,6 +4554,22 @@ describe('run — sessions that signed off', () => {
     assert.ok(h.eventsRead.every((r) => r.token === 'sk-ant-oat01-a'));
   });
 
+  // Sign-off is a switch like every other feature: a repo whose file leaves
+  // it off has none of its sessions archived, whatever their last reply says.
+  test('a repo whose file leaves sign-off off has no session archived, and none read', async () => {
+    const file = JSON.parse(FACTORY_FILE);
+    const off = JSON.stringify({ ...file, features: { ...file.features, signOff: false } });
+    for (const event of [MESSAGE, { kind: 'schedule' }]) {
+      const h = harness({ configFile: async (repo: string) => (repo === REPO ? off : null) });
+      h.rows.push(sessionRow('cse_01DONE'));
+      h.pages.set('cse_01DONE', cloudSignedOff);
+      const result = await run(event, h.deps as never);
+      assert.deepEqual(h.archives, [], JSON.stringify(event));
+      assert.deepEqual(h.eventsRead, [], 'a repo with sign-off off has no candidate');
+      assert.deepEqual(sweepOf(result).archived, []);
+    }
+  });
+
   test('archives with the login as the turn leaves it: a refresh during the turn is the token used', async () => {
     const h = harness();
     h.deps.message = async () => {
@@ -5832,7 +5848,7 @@ describe('run — the tickets a green run shipped', () => {
  */
 describe('run — every served repo', () => {
   const ASKME = 't-d-d/askme-mcp';
-  const ASKME_FILE = JSON.stringify({ environment: 'env_01ASK', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { pickup: true } });
+  const ASKME_FILE = JSON.stringify({ environment: 'env_01ASK', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { pickup: true, signOff: true } });
   const FACTORY_ENV = JSON.parse(FACTORY_FILE).environment;
 
   /** A harness serving the factory and askme-mcp, each repo with its own reader over its own tickets. */
@@ -6155,7 +6171,7 @@ describe('run — every served repo', () => {
   });
 
   test('pickup off: the repo gets no dispatch, and its signed-off sessions are still archived', async () => {
-    const h = twoRepos({ askmeFile: JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: false } }) });
+    const h = twoRepos({ askmeFile: JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: false, signOff: true } }) });
     h.rows.push(sessionRow('cse_01ASK', { repo: ASKME }));
     h.pages.set('cse_01ASK', cloudSignedOff);
     await run({ source: 'aws.events' }, h.deps as never);
@@ -6241,7 +6257,7 @@ describe('run — every served repo', () => {
   // and a repo's `signOff` prompt replaces it.
   test('a close asks a session to sign off, in its repo\'s signOff prompt or the default', async () => {
     for (const prompts of [{}, { signOff: 'End your reply with `Signing off.` once the docs are tidy.' }]) {
-      const h = twoRepos({ askmeFile: JSON.stringify({ ...JSON.parse(askmeWith({ prMessages: true })), prompts }) });
+      const h = twoRepos({ askmeFile: JSON.stringify({ ...JSON.parse(askmeWith({ prMessages: true, signOff: true })), prompts }) });
       await run({ ...owners, text: 'Your pull request was closed.', closing: true }, h.deps as never);
       const text = (h.messages[0] as { text: string }).text;
       assert.ok(text.endsWith(standingLine([], { repo: ASKME, closing: true, prompts })), text);

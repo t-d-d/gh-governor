@@ -101,7 +101,7 @@ The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`, `hoo
 |---|---|---|---|
 | Issue labelled | A ready label, added by a person | That issue is picked up, if the selection would take it | `pickup` |
 | Issue closed | It blocked open tickets, in any listed owner's repo | One `unblocked` fire per ticket, which its own repo's turn acts on ([A blocker's close](#a-blockers-close)) | `pickup`, `unblocked`, in the ticket's repo |
-| Hourly schedule | Always; pickup once the repo's sweep interval has passed | Every served repo: pickup, heartbeat, sign-off sweep | `pickup`, `heartbeat` |
+| Hourly schedule | Always; pickup once the repo's sweep interval has passed | Every served repo: pickup, heartbeat, sign-off sweep | `pickup`, `heartbeat`, `signOff` |
 | Hourly schedule | A periodic's day limit has passed since its last fire, or one of its counts is reached, and its last run's session is not open | One session on the periodic's prompt, or none and a "nothing to do" record when its counts counted nothing | `periodics` |
 | PR merged into the default branch, issue opened, issue closed | A periodic counts that kind, and its count since its last fire is reached, and its last run's session is not open | One session on the periodic's prompt, after the carrying turn's own work | `periodics` |
 | Comment, issue or review with `@claude` | By an owner, member or collaborator; no session owns the PR | One session, pointed at the remark | `summons` |
@@ -162,7 +162,9 @@ A PR's owner is implicitly subscribed to everything but `labels`; an issue's fil
 
 A session cannot archive itself unattended: the archive tool reaches a session only on a turn the operator typed. So a finished session signs off in words, by making `Signing off.` the last line of its reply, and every turn but a probe sweeps (`sweepSignoffs`, `scripts/lib/session-signoff.mjs`, [constraints/session-signoff.md](constraints/session-signoff.md)).
 
-The candidates are the login's sessions that are idle, not archived, and name a served repo. The sweep reads them most recently updated first, for up to a minute, and leaves the rest for the next turn. For each, it reads the session's newest events and takes the reply: the newest `result` text, or the nearest assistant text before it. A reply whose last line starts `Signing off` signs the session off. The sweep reads the session again, so a prompt that landed meanwhile keeps it open, and archives it. Each candidate logs one `dispatch-signoff` line with the decision, never the reply's text.
+The sweep and the ask to sign off are the `signOff` switch's, off unless the repo's file turns it on. With it off, governor archives none of the repo's sessions, and its messages never ask a session to sign off.
+
+The candidates are the login's sessions that are idle, not archived, and name a served repo whose file turns `signOff` on. The sweep reads them most recently updated first, for up to a minute, and leaves the rest for the next turn. For each, it reads the session's newest events and takes the reply: the newest `result` text, or the nearest assistant text before it. A reply whose last line starts `Signing off` signs the session off. The sweep reads the session again, so a prompt that landed meanwhile keeps it open, and archives it. Each candidate logs one `dispatch-signoff` line with the decision, never the reply's text.
 
 A session's sign-off is usually its reply to a message the same turn sent. So a turn that messaged sessions, with nothing else queued, re-reads those sessions every 15 seconds for up to three minutes, until each has replied or a fire is waiting (`dispatch-signoff-wait`).
 
