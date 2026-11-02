@@ -9,11 +9,15 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { routinesApi } from '../dispatch/turn.mjs';
-import { NEVER_DUE, ROUTINE_ANSWER, ROUTINE_SESSION_TRIES, RoutinesApiError, answerShape, connectionsFor, launchRoutine, observed, routineName } from '../dispatch/routines.mjs';
+import { NEVER_DUE, ROUTINE_ANSWER, ROUTINE_SESSION_TRIES, RoutinesApiError, answerShape, connectionsFor, connectorUuid, launchRoutine, observed, routineName } from '../dispatch/routines.mjs';
 
 const REPO = 'acme/factory';
-const FEED = { uuid: 'mcpsrv_01FEED', name: 'feed_prod', url: 'https://feed.example/mcp' };
-const GMAIL = { uuid: 'mcpsrv_01GMAIL', name: 'claude.ai Gmail', url: 'https://gmail.example/mcp' };
+// Rows in the shape the live connector list answers: a tagged `id`, the
+// connector's `display_name`, its `url`, and fields governor does not read.
+const FEED = { id: 'mcpsrv_012rppKaSVsmTo6NqRDXQXNF', display_name: 'feed_prod', url: 'https://feed.example/mcp', type: 'mcp', additional_install: false, tools: [] };
+const GMAIL = { id: 'mcprs_015Q', display_name: 'claude.ai Gmail', url: 'https://gmail.example/mcp', type: 'mcp', additional_install: false, tools: [] };
+const FEED_UUID = '0f0e0d0c-0b0a-0908-0706-050403020100';
+const GMAIL_UUID = '00000000-0000-0000-0000-0000000000ff';
 
 /** A fake routines API that records every call. */
 const fakeApi = (over: Record<string, unknown> = {}, earlier: unknown[] = []) => {
@@ -54,10 +58,19 @@ describe('a periodic\'s connectors', () => {
   test('each name becomes the connector\'s id, name and URL from the account\'s list, the app\'s prefix dropped and the name sanitised as the CLI does', () => {
     assert.deepEqual(connectionsFor(['feed_prod', 'Gmail'], { data: [FEED, GMAIL] }), {
       connections: [
-        { connector_uuid: FEED.uuid, name: 'feed_prod', url: FEED.url },
-        { connector_uuid: GMAIL.uuid, name: 'Gmail', url: GMAIL.url },
+        { connector_uuid: FEED_UUID, name: 'feed_prod', url: FEED.url },
+        { connector_uuid: GMAIL_UUID, name: 'Gmail', url: GMAIL.url },
       ],
     });
+  });
+
+  test('a connector\'s uuid comes from its tagged id: `mcpsrv_` and two characters dropped, the rest a base58 number written as 32 hex digits', () => {
+    assert.equal(connectorUuid('mcpsrv_012rppKaSVsmTo6NqRDXQXNF'), FEED_UUID);
+    assert.equal(connectorUuid('mcpsrv_015Q'), GMAIL_UUID);
+    assert.equal(connectorUuid('mcprs_015Q'), GMAIL_UUID, 'an id that starts mcprs reads as mcpsrv');
+    for (const id of ['', 'mcpsrv_01', 'mcpsrv_0', 'srv_015Q', 'mcpsrv-015Q', 'mcpsrv_010OIl', `mcpsrv_01${'z'.repeat(23)}`]) {
+      assert.equal(connectorUuid(id), null, id);
+    }
   });
 
   test('a name the account has not connected is missing, and so is one only an additional install carries', () => {
@@ -69,6 +82,20 @@ describe('a periodic\'s connectors', () => {
     for (const answer of [null, {}, { data: 'x' }, { data: [{ name: 'feed_prod' }] }]) {
       assert.throws(() => connectionsFor(['feed_prod'], answer), /connector list/, JSON.stringify(answer));
     }
+  });
+
+  test('a row without its id, display_name or url, or whose id gives no uuid, refuses the fire and says what the row lacks', () => {
+    const { id: _id, ...noId } = FEED;
+    const { display_name: _name, ...noName } = FEED;
+    const { url: _url, ...noUrl } = FEED;
+    assert.throws(() => connectionsFor(['feed_prod'], { data: [noId] }), /connector list.*lacks its id\b/);
+    assert.throws(() => connectionsFor(['feed_prod'], { data: [noName] }), /connector list.*lacks its display_name\b/);
+    assert.throws(() => connectionsFor(['feed_prod'], { data: [noUrl] }), /connector list.*lacks its url\b/);
+    assert.throws(() => connectionsFor(['feed_prod'], { data: [{ ...FEED, id: 'srv_01ABC' }] }), /connector list.*srv_01ABC.*no uuid/);
+  });
+
+  test('a row in the older shape, with uuid and name, is refused rather than read', () => {
+    assert.throws(() => connectionsFor(['feed_prod'], { data: [{ uuid: FEED_UUID, name: 'feed_prod', url: FEED.url }] }), /lacks its id, display_name/);
   });
 });
 
@@ -86,7 +113,7 @@ describe('a periodic\'s routine run', () => {
     assert.equal(body.cron_expression, NEVER_DUE);
     assert.equal(body.run_once_at, undefined);
     assert.equal(body.enabled, true);
-    assert.deepEqual(body.mcp_connections, [{ connector_uuid: FEED.uuid, name: 'feed_prod', url: FEED.url }]);
+    assert.deepEqual(body.mcp_connections, [{ connector_uuid: FEED_UUID, name: 'feed_prod', url: FEED.url }]);
     assert.equal(body.job_config.ccr.environment_id, 'env_01FACTORY');
     assert.deepEqual(body.job_config.ccr.session_context.sources, [{ git_repository: { url: 'https://github.com/acme/factory' } }]);
     assert.equal(body.job_config.ccr.session_context.model, 'claude-opus-5-5');

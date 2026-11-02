@@ -217,11 +217,46 @@ export const routineName = (repo, periodic) => `governor ${repo.toLowerCase()}: 
  */
 const routineConnectorName = (name) => name.replace(/^claude[.\s-]ai[.\s-]/i, '').replace(/[^A-Za-z0-9_-]+/g, '_');
 
+/** The base58 alphabet a connector's tagged id writes its number in. */
+const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+/**
+ * The uuid a routine takes as a connector's `connector_uuid`, derived from
+ * the tagged `id` the connector list gives, as the CLI derives it. An id
+ * that starts `mcprs` reads as `mcpsrv` and the rest. Past `mcpsrv_` and
+ * two more characters, the id is a base58 number, written as 32 hex digits,
+ * zero-padded on the left, split 8-4-4-4-12. Null when the id gives none:
+ * another prefix, nothing after it, a character outside the alphabet, or a
+ * number too large for a uuid.
+ *
+ * @param {string} id
+ * @returns {string | null}
+ */
+export const connectorUuid = (id) => {
+  const tagged = id.startsWith('mcprs') ? `mcpsrv${id.slice('mcprs'.length)}` : id;
+  if (!tagged.startsWith('mcpsrv_')) return null;
+  const digits = tagged.slice('mcpsrv_'.length + 2);
+  if (digits === '') return null;
+  let n = 0n;
+  for (const c of digits) {
+    const d = BASE58.indexOf(c);
+    if (d < 0) return null;
+    n = n * 58n + BigInt(d);
+  }
+  const hex = n.toString(16);
+  if (hex.length > 32) return null;
+  const h = hex.padStart(32, '0');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
+
 /**
  * The connections a periodic's named connectors are, from the account's
- * connector list. A name matches a connector's own name or the name a
- * routine shows it under. An additional install is another account's
- * login to a connector, and never matches.
+ * connector list. A row names its connector by `display_name` and carries a
+ * tagged `id`, from which its uuid is derived (`connectorUuid`). A name
+ * matches a connector's own name or the name a routine shows it under. An
+ * additional install is another account's login to a connector, and never
+ * matches. A row governor cannot read refuses the whole list, saying what
+ * the row lacks.
  *
  * @param {string[]} names
  * @param {unknown} listed
@@ -233,9 +268,12 @@ export const connectionsFor = (names, listed) => {
   /** @type {Connection[]} */
   const known = [];
   for (const row of rows) {
-    if (typeof row?.uuid !== 'string' || typeof row?.name !== 'string' || typeof row?.url !== 'string') throw new Error(`the connector list holds a row without its uuid, name and url: ${Object.keys(row ?? {}).join(', ')}`);
+    const lacks = ['id', 'display_name', 'url'].filter((key) => typeof row?.[key] !== 'string');
+    if (lacks.length > 0) throw new Error(`the connector list holds a row that lacks its ${lacks.join(', ')}: it has ${Object.keys(row ?? {}).join(', ') || 'nothing'}`);
     if (row.additional_install === true) continue;
-    known.push({ connector_uuid: row.uuid, name: row.name, url: row.url });
+    const uuid = connectorUuid(row.id);
+    if (uuid === null) throw new Error(`the connector list holds a row whose id ${JSON.stringify(row.id)} gives no uuid`);
+    known.push({ connector_uuid: uuid, name: row.display_name, url: row.url });
   }
   /** @type {Connection[]} */
   const connections = [];
