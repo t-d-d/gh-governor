@@ -10,7 +10,8 @@ Governor started in a private repo. Its code moved here on 28 October 2026, in o
 |---|---|
 | Tickets governor picked up in this repo and started a session on | 94 |
 | Pull requests merged after the move, written by Claude Code sessions | 98 |
-| Median time from pickup to merge, the owner's review included | 29 minutes, over the 90 tickets a merged pull request closed |
+| Median time from pickup to merge, the owner's review included | 29 minutes, over the 90 tickets a merged pull request closed, and half of them between 16 and 94 minutes |
+| Sessions' pull requests closed unmerged, and reverted | 2, a probe that closes its own pull request by design and a duplicate of another; none reverted |
 | Commits authored by Claude, merges aside, the move included | 207 of 211 |
 | Source, stack and scripts | about 14,700 lines at the move, about 22,000 after |
 | Tests | 1,360 at the move, 2,261 at the end of that window |
@@ -38,7 +39,7 @@ Work a session finds in passing becomes a new issue, not a fix in the branch it 
 | [CLAUDE.md](../CLAUDE.md) | The rules every session reads first: scope, tests first, the gate, branches, what only the owner can do, and how to sign off. |
 | [.claude/skills/fetch-ticket](../.claude/skills/fetch-ticket/SKILL.md) | Gathers a ticket's full context and stops on an open blocker or a conflict. |
 | [.claude/skills/constraints](../.claude/skills/constraints/SKILL.md) | Builds the index of `docs/constraints/` from each file's `Relevance:` line, and has the session read every file that matches its change before it edits code. |
-| [.claude/rules/constraints.md](../.claude/rules/constraints.md) | A rule scoped to the code paths. Working on a file under `dispatch/`, `scripts/`, `test/`, `infra/` or `.github/`, or on the package and lint config, reminds the session to run the constraints skill. |
+| [.claude/rules/constraints.md](../.claude/rules/constraints.md) | A rule scoped to the code paths. Working on a file under `dispatch/`, `scripts/`, `test/`, `infra/`, `eslint-rules/`, `.claude/hooks/` or `.github/`, or on `package.json`, `tsconfig.json` or the lint config, reminds the session to run the constraints skill. |
 | [.claude/skills/pre-push](../.claude/skills/pre-push/SKILL.md) | Catch up, gate, review, push, in that order, with a rule for how each review finding ends. |
 | [.claude/skills/pr-description](../.claude/skills/pr-description/SKILL.md) | A pull request body the owner can judge without opening the diff, including a table that maps each acceptance criterion to the test that answers it. |
 | [.claude/skills/unslop](../.claude/skills/unslop/SKILL.md) | Writing rules for anything a person reads: pull requests, issues, docs, and the messages governor sends. |

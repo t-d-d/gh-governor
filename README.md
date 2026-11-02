@@ -15,8 +15,8 @@ The name comes from the governor on a steam engine, which holds the engine's spe
 Governor started in a private repo. On 28 October 2026 its code moved here: about 14,700 lines of source and 1,360 tests. In the five days to 12:00 UTC on 2 November 2026, working its own backlog, it:
 
 - picked up **94 tickets** and started a Claude Code session on each;
-- merged **98 pull requests** written by Claude Code sessions, a median of **29 minutes** from pickup to merge, and half of them between 16 and 94 minutes, the owner's review included;
-- closed only **2** of those sessions' pull requests unmerged, and reverted **none**;
+- merged **98 pull requests** written by Claude Code sessions. Over the 90 tickets they closed, pickup to merge took a median of **29 minutes**, and half of the tickets took between 16 and 94 minutes, the owner's review included;
+- closed **2** of those sessions' pull requests unmerged, a probe that closes its own pull request by design and a duplicate of another pull request, and reverted **none**;
 - grew by about **7,300 lines of source and 900 tests**, to more than 2,200 tests, every one of them offline.
 
 The owner writes the specs and tickets, and reviews and merges every pull request, often in batches, so these times include waiting for review. Sessions write the code, the tests and the pull request descriptions.
@@ -32,13 +32,13 @@ The `Blocked until:` feature ([PRD #185](https://github.com/t-d-d/gh-governor/is
 | [#188](https://github.com/t-d-d/gh-governor/issues/188) Show a ticket's wait in its sidebar | 2 Nov 09:08 | [#235](https://github.com/t-d-d/gh-governor/pull/235), 11 files | 2 Nov 10:55 |
 | [#189](https://github.com/t-d-d/gh-governor/issues/189) Wait a number of days after a blocker closes | 2 Nov 09:08 | [#236](https://github.com/t-d-d/gh-governor/pull/236), 14 files | 2 Nov 10:45 |
 
-#213 opened 14 minutes after pickup, then waited about eight hours for the owner's review.
+#213 opened 14 minutes after pickup, then waited almost nine hours, overnight, for the owner's review.
 
 [How this repo is built](docs/building-with-agents.md) shows the loop each ticket goes through, and the files that keep the agents on track.
 
 ## How it works
 
-In this repo, the label `mode: afk` (away from keyboard) marks a ticket an agent may take on its own.
+In this repo, the label `mode: afk`, for away from keyboard, marks a ticket an agent may take on its own.
 
 ```mermaid
 sequenceDiagram
@@ -55,16 +55,16 @@ sequenceDiagram
     S->>GH: Push the fixes
     alt The repo lets the review merge
         G->>GH: Review against the repo's checklist, and merge on a pass
-    else A person merges, as in this repo
+    else A person merges
         P->>GH: Review and merge
     end
     Note over G,GH: A change to a human-only path always waits for a person
-    G->>S: Your change is live
+    G->>S: Your change is live, if the repo turns on deploy messages
     S->>G: "Signing off."
     G->>S: Archive the session
 ```
 
-Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action can take an issue, write the change, and answer review comments on its pull request. Governor orchestrates the loop around that, across every repo it serves. It takes work from the backlog unasked, and holds a ticket while its blockers are open or its date has not come. It keeps one session per ticket for the ticket's whole life, so the agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships. Each repo sets how far it runs and which paths always need a person. It runs on your own Claude subscription and AWS account.
+Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action can take an issue, write the change, and answer review comments on its pull request. Governor does not drive those tools. It starts its own Claude Code cloud sessions and runs the loop around the change, across every repo it serves. It takes work from the backlog unasked, and holds a ticket while its blockers are open or its date has not come. It keeps one session per ticket for the ticket's whole life, so the agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships. Each repo sets how far it runs and which paths always need a person. It runs on your own Claude subscription and AWS account.
 
 ## What it does
 
@@ -115,7 +115,7 @@ Some of the problems it solves, for engineers building something similar:
 - **A Fargate task, not a Lambda.** `claude --cloud` will not run without a terminal, and Lambda has no pseudo-terminal. The task starts when a fire is queued and exits after a minute idle, so the AWS bill is a fraction of a cent a fire.
 - **One login, one lane.** Every turn refreshes a single stored claude.ai login, and each refresh rotates the token, so two turns at once would leave one holding a dead login. Every fire goes through one FIFO queue to one task, one turn at a time.
 - **Code decides before the model does.** The PR review checks the tickets a pull request closes, its human-only paths and its required checks in code, before any model call. The model has no tools, answers in a fixed JSON shape, and judges only what code cannot.
-- **Relayed text is marked as data, against prompt injection.** Every message governor relays into a session opens with a line naming where its text came from, so the session weighs each quoted remark by who wrote it. Only people with a say in the repo can summon a session. A hook's prompt lives in the repo, where a pull request reviews it, and the caller's text is quoted as data.
+- **Relayed text names who wrote it, a check on prompt injection.** Every message governor relays into a session opens with a line saying it came from GitHub, not from the operator, so the session weighs each quoted remark by who wrote it. The line does not tell the session to ignore the text, since a remark from the pull request's owner is work to do. Only people with a say in the repo can summon a session. A hook's prompt lives in the repo, where a pull request reviews it, and the caller's text is quoted as data.
 - **Hook keys governor never stores.** Each hook's key is derived from one secret, the repo, the hook and a version, so revoking a key is a one-line pull request. A per-hour cap stops a leaked key flooding the shared queue, and a test checks that a signed request expires before the queue forgets it.
 - **A heartbeat that runs somewhere else.** Governor cannot report that it has stopped, so a served repo can run a checker on GitHub Actions that opens an issue when a sweep or a recurring session is overdue.
 
