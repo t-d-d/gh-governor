@@ -671,17 +671,21 @@ const refOf = (repo, closed) => (sameRepo(repo, closed.repo) ? `#${closed.number
 
 /**
  * The comment a ticket gets when the issue its line waits on closed other
- * than as completed: the close's facts, the not-planned ask, and how to free
- * the ticket, which the line still holds.
+ * than as completed: the close's facts, the not-planned ask, and what to do
+ * with the line. Where the line holds the ticket (`holds`), how to free it;
+ * a claimed or excluded ticket is not held, so it is told only that the
+ * line waits on a close that will not settle it.
  *
- * @param {{ facts: string, issue: number, ref: string, prompts: Record<string, string | undefined> }} args
+ * @param {{ facts: string, issue: number, ref: string, prompts: Record<string, string | undefined>, holds?: boolean }} args
  */
-export const waitNotPlannedComment = ({ facts, issue, ref, prompts }) => [
+export const waitNotPlannedComment = ({ facts, issue, ref, prompts, holds = true }) => [
   facts,
   '',
   instruction(prompts, 'unblockedNotPlanned'),
   '',
-  `#${issue} stays held by its \`Blocked until:\` line, which waits on ${ref} closing. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line, to free it.`,
+  holds
+    ? `#${issue} stays held by its \`Blocked until:\` line, which waits on ${ref} closing. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line, to free it.`
+    : `#${issue}'s \`Blocked until:\` line waits on ${ref} closing, and this close does not give it a date. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line.`,
   '',
   waitNotPlannedMarker(ref),
 ].join('\n');
@@ -703,16 +707,17 @@ export const waitRelativeComment = (ref) => [
  * GitHub gave no reason for, rewrites the line into its date, from the body
  * read just before the write, so a person's edit elsewhere stays. A body
  * whose line no longer waits on `closed` is left alone. Any other close
- * leaves the line and comments once.
+ * leaves the line and comments once, saying it holds the ticket where it
+ * does (`holds`, true where unset).
  *
- * @param {{ reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>, repo: string, issue: number, closed: { repo: string, number: number, reason?: string | null, closedAt: string }, facts: string, prompts: Record<string, string | undefined>, log: Log }} args
+ * @param {{ reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>, repo: string, issue: number, closed: { repo: string, number: number, reason?: string | null, closedAt: string }, facts: string, prompts: Record<string, string | undefined>, log: Log, holds?: boolean }} args
  * @returns {Promise<{ outcome: string, wait?: { until: string } }>}
  */
-const settle = async ({ reader, repo, issue, closed, facts, prompts, log }) => {
+const settle = async ({ reader, repo, issue, closed, facts, prompts, log, holds = true }) => {
   const ref = refOf(repo, closed);
   const about = { repo, issue, closed: ref, reason: closed.reason ?? null };
   if (closed.reason !== undefined && closed.reason !== null && closed.reason !== 'completed') {
-    const outcome = await sayOnce(reader, issue, waitNotPlannedMarker(ref), waitNotPlannedComment({ facts, issue, ref, prompts }));
+    const outcome = await sayOnce(reader, issue, waitNotPlannedMarker(ref), waitNotPlannedComment({ facts, issue, ref, prompts, holds }));
     log(WAIT_RELATIVE, { ...about, outcome: outcome === 'commented' ? 'held: commented on a close that was not completed' : 'held: already told of a close that was not completed' });
     return { outcome };
   }
@@ -736,6 +741,8 @@ const settle = async ({ reader, repo, issue, closed, facts, prompts, log }) => {
  * the close time the fire carries, or from `now` for a fire without one, so
  * the wait is never shorter. Null where the line is not this close's, or
  * the ticket's read names another number: it moved to another repo.
+ * `holds`: whether the line holds the ticket by its labels (`waitHolds`),
+ * true where unset.
  *
  * @param {{
  *   reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>,
@@ -745,14 +752,15 @@ const settle = async ({ reader, repo, issue, closed, facts, prompts, log }) => {
  *   prompts: Record<string, string | undefined>,
  *   now: number,
  *   log: Log,
+ *   holds?: boolean,
  * }} args
  * @returns {Promise<{ outcome: string, wait?: { until: string } } | null>}
  */
-export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now, log }) => {
+export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now, log, holds = true }) => {
   if (ticket.state !== 'open' || (ticket.number !== undefined && ticket.number !== fire.issue) || !waitsOnClose(ticket.wait, repo, fire.blocker)) return null;
   const { blocker } = fire;
   const closed = { repo: blocker.repo, number: blocker.number, reason: blocker.reason ?? null, closedAt: blocker.closedAt ?? new Date(now).toISOString() };
-  return settle({ reader, repo, issue: fire.issue, closed, facts: unblockedFacts({ ...fire, repo }, { quote: true }), prompts, log });
+  return settle({ reader, repo, issue: fire.issue, closed, facts: unblockedFacts({ ...fire, repo }, { quote: true }), prompts, log, holds });
 };
 
 /**
