@@ -83,10 +83,10 @@ export const MAX_RELATIVE_DAYS = 36500;
  * it carries the claim, else `ready` when it carries every ready label, else
  * `not-ready`. Only `ready` may be picked up.
  *
- * The selection (`selectReadyWork`), the claim's second read
- * (dispatch/turn.mjs) and the unblocked row (`ticketRow`,
- * dispatch/unblocked.mjs) all call this, so a rule added here holds in all
- * three. Copies of it drifted once: the selection learned the excluded
+ * The selection (`selectReadyWork`) and the claim's second read
+ * (dispatch/turn.mjs) read it through `ticketStatus`, and the unblocked row
+ * (`ticketRow`, dispatch/unblocked.mjs) calls it, so a rule added here holds
+ * in all three. Copies of it drifted once: the selection learned the excluded
  * labels and the claim did not, so a ticket labelled to keep out between
  * the plan and its launch was claimed anyway.
  *
@@ -200,9 +200,9 @@ export const waitsOnClose = (wait, repo, closed) =>
  * governor has not rewritten into its date yet, or a line governor could
  * not read. A row with no line is not held.
  *
- * Like `labelRow` and `isBlocked`, the selection, the claim's second read
- * and the unblocked row all call this, the unblocked row only where
- * `waitHolds` says the labels let the line hold. It holds in every served
+ * Like `labelRow` and `isBlocked`, the selection and the claim's second
+ * read ask this through `ticketStatus`, and the unblocked row calls it
+ * only where `waitHolds` says the labels let the line hold. It holds in every served
  * repo, whatever its config file says.
  *
  * @param {{ wait?: Wait }} issue
@@ -274,7 +274,9 @@ export const ticketStatus = (ticket, { labels, now, blockers }) => {
 
 /**
  * Pickup may start the ticket: open, ready, and nothing holds it. The
- * selection and the claim's second read are to ask this; neither does yet.
+ * selection (`selectReadyWork`, and `planSchedule` in
+ * scripts/lib/dispatch-router.mjs) and the claim's second read
+ * (dispatch/turn.mjs) ask this.
  *
  * @param {TicketStatus} status
  */
@@ -317,21 +319,19 @@ export const heldUnreadied = (thread) => {
 export const mayStartSpec = (thread, now) => !heldUnreadied(thread) && !recentlyDispatched([...thread], now);
 
 /**
+ * Whether the selection takes a ticket: pickup may start it
+ * (`mayPickUp`), by its status read with its `blocked_by` rows where the
+ * map has them. `state` is defensive: the caller queries open issues, but a
+ * stale page or a hand-assembled list should not be able to put a closed
+ * ticket in front of an agent, and a closed one has no status to start.
+ *
  * @param {IssueRow} issue
  * @param {Map<number, BlockerRow[]>} blockers
  * @param {Labels} labels
  * @param {number} now
  */
-const isEligible = (issue, blockers, labels, now) => {
-  // `state` is defensive: the caller queries open issues, but a stale page or
-  // a hand-assembled list should not be able to put a closed ticket in front
-  // of an agent.
-  if ((issue.state ?? 'open') !== 'open') return false;
-  if (labelRow(issue.labels, labels) !== 'ready') return false;
-  if (isBlocked(issue, blockers.get(issue.number))) return false;
-  if (isWaiting(issue, now)) return false;
-  return true;
-};
+const isEligible = (issue, blockers, labels, now) =>
+  mayPickUp(ticketStatus(issue, { labels, now, blockers: blockers.get(issue.number) }));
 
 /**
  * Sort key: oldest first, then number.

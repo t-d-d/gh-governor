@@ -20,7 +20,7 @@
 
 import { DISPATCH_WINDOW_MS, recentlyDispatched } from '../../dispatch/webhook/fire.mjs';
 import { promptFor, sessionName } from './dispatch-prompt.mjs';
-import { byAge, isBlocked, labelRow, selectReadyWork, unreadableOf } from './ready-work.mjs';
+import { byAge, mayPickUp, selectReadyWork, ticketStatus, unreadableOf } from './ready-work.mjs';
 
 /**
  * @typedef {{ issue?: number, repo: string, prompt: string, sessionName: string }} Dispatch
@@ -146,13 +146,17 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     if (rows === null) continue;
     // A ticket held by an unreadable `Blocked until:` line, one the
     // selection would otherwise consider, is reported for its comment.
+    // Both reports read the status with no `blocked_by` rows, so only a
+    // dependency summary counts as a blocker here.
     for (const row of rows) {
+      const status = ticketStatus(row, { labels, now });
+      if (!status.open || status.labels !== 'ready') continue;
       const value = unreadableOf(row);
-      if (value !== undefined && (row.state ?? 'open') === 'open' && labelRow(row.labels, labels) === 'ready') {
+      if (value !== undefined && status.holds.includes('unreadable')) {
         unreadable?.push({ repo: source.repo, issue: row.number, value });
       }
       const { wait } = row;
-      if (wait !== undefined && 'after' in wait && (row.state ?? 'open') === 'open' && labelRow(row.labels, labels) === 'ready' && !isBlocked(row, undefined)) {
+      if (wait !== undefined && 'after' in wait && !status.holds.includes('blocker')) {
         relative?.push({ repo: source.repo, issue: row.number, after: wait.after });
       }
     }
@@ -172,14 +176,14 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
    * @param {typeof guarded} read
    */
   const starts = async (candidate, read) => {
-    const { reader, repo } = candidate.source;
+    const { reader, repo, labels } = candidate.source;
     // A row carrying its dependency summary was judged by it in the first
     // pass, so only a row without one asks for its `blocked_by` rows.
     if (candidate.openBlockers === undefined) {
       const blocking = await read(repo, () => reader.blockers(candidate.number));
       const record = records.get(`${repo}#${candidate.number}`);
       if (record !== undefined && blocking !== null) record.openBlockers = blocking.filter((b) => b.state === 'open').length;
-      if (blocking === null || isBlocked(candidate, blocking)) return false;
+      if (blocking === null || !mayPickUp(ticketStatus(candidate, { labels, now, blockers: blocking }))) return false;
     }
     const comments = await read(repo, () => reader.comments(candidate.number, { since }));
     return comments !== null && !recentlyDispatched(comments, now, windowMs);
