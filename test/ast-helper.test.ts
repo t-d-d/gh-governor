@@ -13,10 +13,17 @@ const chain = (depth: number): ts.Node => {
   return node;
 };
 
+/** One stand-in node with `width` stand-in children and no grandchildren. */
+const fan = (width: number): ts.Node => {
+  const children = Array.from({ length: width }, () => ({ getChildren: () => [] }) as unknown as ts.Node);
+  return { getChildren: () => children } as unknown as ts.Node;
+};
+
 describe('nodes', () => {
   it('lists every node depth first, parents before children', () => {
-    const kinds = nodes(parseJs('m.js', 'f(1);')).map((n) => ts.SyntaxKind[n.kind]);
-    assert.deepEqual(kinds, ['SourceFile', 'SyntaxList', 'ExpressionStatement', 'CallExpression', 'Identifier', 'OpenParenToken', 'SyntaxList', 'FirstLiteralToken', 'CloseParenToken', 'SemicolonToken', 'EndOfFileToken']);
+    const kinds = nodes(parseJs('m.js', 'f(1);')).map((n) => n.kind);
+    const K = ts.SyntaxKind;
+    assert.deepEqual(kinds, [K.SourceFile, K.SyntaxList, K.ExpressionStatement, K.CallExpression, K.Identifier, K.OpenParenToken, K.SyntaxList, K.NumericLiteral, K.CloseParenToken, K.SemicolonToken, K.EndOfFileToken]);
   });
 
   it('walks a tree once, so a chain 100000 deep lists each node once', () => {
@@ -25,5 +32,12 @@ describe('nodes', () => {
     assert.equal(listed.length, 100_000);
     assert.equal(listed[0], top);
     assert.equal(new Set(listed).size, 100_000);
+  });
+
+  it('lists a node with 500000 children in order, without overflowing the call stack', () => {
+    const top = fan(500_000);
+    const listed = nodes(top);
+    assert.equal(listed.length, 500_001);
+    assert.deepEqual(listed.slice(1), top.getChildren());
   });
 });
