@@ -336,6 +336,17 @@ describe('infra/governor.cfn.yml — the schedule', () => {
 });
 
 describe('infra/governor.cfn.yml — the alarms', () => {
+  // CloudFormation refuses an alarm description past 1024 characters, and
+  // the deploy fails with it.
+  test('every alarm description fits CloudWatch\'s 1024 characters', () => {
+    const alarms = Object.entries(template.Resources).filter(([, r]) => r?.Type === 'AWS::CloudWatch::Alarm');
+    assert.ok(alarms.length > 0);
+    for (const [name, alarm] of alarms) {
+      const description = alarm?.Properties?.AlarmDescription ?? '';
+      assert.ok(description.length <= 1024, `${name}: ${description.length} characters`);
+    }
+  });
+
   test('a turn that failed is a tripwire, read off the line the task logs, never off a level', () => {
     const filter = template.Resources.DispatchFailuresFilter;
     assert.equal(filter?.Type, 'AWS::Logs::MetricFilter');

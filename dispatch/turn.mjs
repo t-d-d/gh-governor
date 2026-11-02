@@ -693,7 +693,7 @@ const turnOf = async (event, deps, records) => {
       };
       const reason = launched.routine === undefined
         ? 'the launch may have started a session, but it printed no session URL, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label'
-        : 'the routine was fired, but none of its run sessions could be named as this fire\'s, so the session could not be named or recorded: look in the routine\'s run sessions for one started at this line\'s time. Its PRs may clear a human-only path on a ticket\'s mode label';
+        : 'the routine was fired, but none of its run sessions could be named as this fire\'s, so the session could not be named or recorded: look in the routine\'s run sessions for one started shortly before this line\'s time. Its PRs may clear a human-only path on a ticket\'s mode label';
       deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, status: launched.status, ...routine, reason });
     }
     return launched;

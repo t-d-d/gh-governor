@@ -1684,6 +1684,8 @@ describe('run — periodics', () => {
     assert.equal(line.routineName, `governor ${REPO}: ${REVIEW.name}`);
     assert.match(String(line.tail), /Routine trig_01 fired, and none of its run sessions is new/);
     assert.match(String(line.reason), /routine/);
+    // The line comes after the run-session reads, so the session started before it.
+    assert.match(String(line.reason), /shortly before this line's time/);
   });
 
   test('a routine fire that throws and shows no new run session is recorded as an unconfirmed launch, never refused', async () => {
