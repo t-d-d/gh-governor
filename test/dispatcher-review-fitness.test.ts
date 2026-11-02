@@ -4,7 +4,7 @@
  *
  * - the dispatcher image carries no repo's checklist or lists: no `.claude/`
  *   path;
- * - the review's modules start no process, and the one process a review
+ * - the review's modules, and every module they load, start no process, and the one process a review
  *   turn starts is the CLI's model run, with no tools;
  * - the factory's file holds its checklist and lists, and its checklist
  *   names the file as the list, the shape the review tests read.
@@ -16,28 +16,33 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import ts from 'typescript';
 import { nodes, parseJs } from './helpers/ast.ts';
 import { factoryFile } from './helpers/factory.ts';
+import { importClosure, moduleSpecifiers } from './helpers/imports.ts';
 import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
 import { globMatches, quoted } from '../dispatch/checklist.mjs';
 
 const read = (path: string) => readFileSync(path, 'utf8');
 const source = (path: string) => parseJs(path, read(path));
 
-/** The module specifiers a file imports, statically or by `import()`. */
-const imports = (path: string) => nodes(source(path)).flatMap((n) => {
-  if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier)) return [n.moduleSpecifier.text];
-  if (ts.isCallExpression(n) && n.expression.kind === ts.SyntaxKind.ImportKeyword && n.arguments[0] && ts.isStringLiteral(n.arguments[0])) return [n.arguments[0].text];
-  return [];
-});
-
-/** The modules a review reads and judges with. */
-const REVIEW_MODULES = ['dispatch/review.mjs', 'dispatch/checklist.mjs', 'dispatch/repo-config.mjs', 'dispatch/pr-body.mjs', 'dispatch/webhook/review-comment.mjs'];
+const ROOT = join(import.meta.dirname, '..');
 
 /** What would run code: a process, a VM, an evaluated string. */
 const RUNS_CODE = /^(node:)?(child_process|vm|worker_threads)$/;
+
+/**
+ * Each `path imports spec` that runs code, in every module the entries load
+ * by relative import, re-exports and `import()` included.
+ */
+const codeRunners = (root: string, ...entries: string[]) => [...importClosure(root, ...entries)].flatMap((path) =>
+  moduleSpecifiers(readFileSync(join(root, path), 'utf8')).filter((spec) => RUNS_CODE.test(spec)).map((spec) => `${path} imports ${spec}`));
+
+/** The modules a review reads and judges with. */
+const REVIEW_MODULES = ['dispatch/review.mjs', 'dispatch/checklist.mjs', 'dispatch/repo-config.mjs', 'dispatch/pr-body.mjs', 'dispatch/webhook/review-comment.mjs'];
 
 describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)', () => {
   test('the task image copies no .claude/ path: each review reads the repo\'s own', () => {
@@ -49,10 +54,26 @@ describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)',
     assert.ok(!read('.dockerignore').split('\n').some((l) => l.trim().startsWith('!.claude')), 'the build context lets nothing out of .claude');
   });
 
-  test('the review\'s modules import nothing that runs code', () => {
-    for (const path of REVIEW_MODULES) {
-      for (const spec of imports(path)) assert.doesNotMatch(spec, RUNS_CODE, `${path} imports ${spec}`);
+  test('the check follows a re-export and a module the entry loads', () => {
+    const root = mkdtempSync(join(tmpdir(), 'governor-review-imports-'));
+    try {
+      const files = {
+        'entry.mjs': "export { spawn } from 'node:child_process';\nimport { x } from './lib/inner.mjs';\nexport const y = x;\n",
+        'lib/inner.mjs': "import vm from 'node:vm';\nexport * from './deeper.mjs';\nexport const x = vm;\n",
+        'lib/deeper.mjs': "export * from 'worker_threads';\n",
+      };
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), text);
+      }
+      assert.deepEqual(codeRunners(root, 'entry.mjs').sort(), ['entry.mjs imports node:child_process', 'lib/deeper.mjs imports worker_threads', 'lib/inner.mjs imports node:vm']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test('the review\'s modules, and every module they load, import nothing that runs code', () => {
+    assert.deepEqual(codeRunners(ROOT, ...REVIEW_MODULES), []);
   });
 
   test('the review turn\'s one process is the CLI\'s model run, with no tools', () => {
