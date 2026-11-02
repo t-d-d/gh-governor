@@ -11,6 +11,28 @@ import noReadinessChecks from "./eslint-rules/no-readiness-checks.mjs";
 const READINESS_CHECKS = ["isBlocked", "isWaiting", "waitHolds", "heldUnreadied", "labelRow"];
 // One rule reads static imports, export-from and `import()` alike, so the
 // import forms cannot drift apart.
+// The kinds that start sessions plan in their own modules and hand `turnFor`
+// a plan for `launchPlan`. turn.mjs may not take a planner's own helpers, so
+// a new feature that starts sessions goes in its planner, not in `turnFor`.
+// `hookFor`, `duePeriodics` and `periodicPrompt` stay allowed: an event fire
+// and `run` use them.
+const PLANNER_HELPERS = [
+  { module: "dispatch-router", importNames: ["planSchedule"] },
+  { module: "waits", importNames: ["endedWaits", "waitSpecPrompt"] },
+  { module: "unblocked", importNames: ["ticketRow", "rowOf", "readyPrompt", "specPrompt"] },
+  { module: "hooks", importNames: ["hookPrompt"] },
+  { module: "ready-work", importNames: ["ticketStatus", "mayPickUp", "mayStartSpec", "specHold"] },
+];
+const refusePlannerHelpers = [
+  "error",
+  {
+    patterns: PLANNER_HELPERS.map(({ module, importNames }) => ({
+      regex: `(^|/)${module}\\.mjs$`,
+      importNames,
+      message: "turn.mjs hands a plan to launchPlan. Plan in the kind's planner module instead.",
+    })),
+  },
+];
 const refuseChecks = (allowed) => [
   "error",
   { checks: READINESS_CHECKS, ...(allowed === undefined ? {} : { allowed }) },
@@ -65,5 +87,11 @@ export default [
     // the labels say, so a claimed ticket's item is rewritten, not dropped.
     files: ["dispatch/waits.mjs"],
     rules: { "governor/no-readiness-checks": refuseChecks("isWaiting") },
+  },
+  {
+    // A separate rule from the readiness refusal above, so neither replaces
+    // the other's options.
+    files: ["dispatch/turn.mjs"],
+    rules: { "no-restricted-imports": refusePlannerHelpers },
   },
 ];
