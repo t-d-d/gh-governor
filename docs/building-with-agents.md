@@ -11,7 +11,8 @@ Governor came out of building [Podstow](https://podstow.com), a production servi
 | Tickets governor picked up in this repo and started a session on | 94 |
 | Pull requests merged after the move, written by Claude Code sessions | 98 |
 | Median time from pickup to merge, the owner's review included | 29 minutes, over the 90 tickets a merged pull request closed, and half of them between 16 and 94 minutes |
-| Sessions' pull requests closed unmerged, and reverted | 2, a probe that closes its own pull request by design and a duplicate of another; none reverted |
+| Sessions' pull requests closed unmerged | 2, a probe that closes its own pull request by design and a duplicate of another |
+| Deploys of main | The gate never failed on main. Two deploys failed: the first, run by hand while the stack was set up, and one on 30 October that the post-deploy probe caught. The 47 since then all passed. The repo rolls forward and never reverts. |
 | Commits authored by Claude, merges aside, the move included | 207 of 211 |
 | Source, stack and scripts | about 14,700 lines at the move, about 22,000 after |
 | Tests | 1,360 at the move, 2,261 at the end of that window |
