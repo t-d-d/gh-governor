@@ -7744,3 +7744,230 @@ describe('run: a relative wait on a declared blocker', () => {
     assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_RELATIVE_MARKER)).length, 1, JSON.stringify(h.comments));
   });
 });
+
+/**
+ * Each fire kind that starts sessions, with a launch that starts, one that
+ * fails, and one the launch window or DispatchCap cuts, each row asserting
+ * every record the turn writes: the claim, a periodic's record, a wait
+ * item, a hook's record, the sweep record, the heartbeat (pickup's line and
+ * each periodic's), the launcher's record of the session, each comment, any
+ * other body the turn rewrites, and the exit code. A record a
+ * row does not expect is one the turn must not write. The kinds' own suites
+ * above hold the details; this holds the whole set of records per outcome,
+ * so a planner moved out of turnFor keeps writing each of them.
+ */
+describe('run: each launching kind\'s outcomes, with every record each writes', () => {
+  const HOUR = 60 * 60 * 1000;
+  const DAY = 24 * HOUR;
+  const AT = new Date(NOW).toISOString();
+  const LATE_MS = NOW + SCHEDULE_LAUNCH_WINDOW_MS + 1;
+  const LATE = new Date(LATE_MS).toISOString();
+  const NEW = 'https://claude.ai/code/session_01ABC';
+  const OLD = 'https://claude.ai/code/session_01OLD';
+  const PAST = '2026-09-25';
+  const RETRO = 'Weekly retro';
+  const REVIEW = 'Ticket review';
+  const HOOK = (JSON.parse(FACTORY_FILE).hooks as Array<{ name: string; keyVersion: number }>)[0]!;
+  const BODY = `${HEARTBEAT_MARKER}\n\nKeep this issue open.\n`;
+  /** The factory in the heartbeat's `{ issue }` shape, so pickup's line and each periodic's are read back; every periodic starts through the launcher. */
+  const FILE = (() => {
+    const file = JSON.parse(FACTORY_FILE);
+    file.heartbeat = { issue: BEAT.issue };
+    for (const p of file.periodics) delete p.connectors;
+    return JSON.stringify(file);
+  })();
+  const PERIODICS = (JSON.parse(FILE).periodics as Array<{ name: string }>).map((p) => p.name);
+  const ENDED = waitEndedMarker(PAST);
+  const blocker = { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' };
+  const FIRES = {
+    bare: { source: 'aws.events' },
+    label: { kind: 'schedule', issue: 7 },
+    unblocked: { kind: 'unblocked', repo: REPO, issue: 7, blocker, pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' } },
+    hook: { kind: 'hook', hook: HOOK.name, keyVersion: HOOK.keyVersion, text: 'ALARM: api 5xx', at: '2026-09-25T11:58:00.000Z', repo: REPO },
+    dispatch: { kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' },
+    red: { kind: 'dispatch', prompt: 'look into it', sessionName: 'Scheduled Emulator red', scheduled: { workflowId: 77, runId: 500, branch: 'main' } },
+  } as const;
+
+  type Records = {
+    labels: string[];
+    markers: number[];
+    /** The tickets told their wait has ended. */
+    notes: number[];
+    /** The issues and pull requests whose body the turn rewrote, apart from the heartbeat's. */
+    bodies: number[];
+    periodics: Array<[string, string | null]>;
+    waits: Array<[number, string | null]>;
+    hooks: Array<[string, string]>;
+    sweeps: string[];
+    heartbeat: ReturnType<typeof readHeartbeat> | null;
+    sessions: string[];
+    exit: number;
+  };
+  /** Nothing written: the records a row that starts nothing expects, apart from what it names. */
+  const NONE: Records = { labels: [], markers: [], notes: [], bodies: [], periodics: [], waits: [], hooks: [], sweeps: [], heartbeat: null, sessions: [], exit: 0 };
+  const claimed = (n: number) => [`label #${n} +${CLAIMED}`, `label #${n} -${READY}`];
+  const released = (n: number) => [`label #${n} +${READY}`, `label #${n} -${CLAIMED}`];
+  const pickup = (started: number, at = AT) => ({ pickup: { at, started }, periodics: [] });
+  const retroLine = (at = AT) => ({ name: RETRO, at, by: { days: 7 }, session: NEW, state: 'open' as const });
+
+  type Row = {
+    kind: 'schedule' | 'unblocked' | 'hook' | 'dispatch';
+    title: string;
+    fire: keyof typeof FIRES;
+    /** The launch's answer: a session, or nothing started. */
+    launch: 'starts' | 'fails';
+    /** `launch`: each launch moves the clock past the window; `read`: the fire's own read does, before its launch. */
+    late?: 'launch' | 'read';
+    cap?: number;
+    /** The tickets the sweep finds ready. */
+    ready?: number[];
+    /** Tickets not ready whose wait has passed, each with its item. */
+    waits?: number[];
+    /** Periodics due, by how many days ago each last fired. */
+    due?: Record<string, number>;
+    /** The unblocked fire's ticket's labels. */
+    labels?: string[];
+    expect: Partial<Records>;
+  };
+
+  const rows: Row[] = [
+    // The bare schedule fire: pickup's tickets.
+    { kind: 'schedule', title: 'a ticket that starts', fire: 'bare', launch: 'starts', ready: [7], expect: { labels: claimed(7), markers: [7], sweeps: [AT], heartbeat: pickup(1), sessions: [NEW] } },
+    { kind: 'schedule', title: 'a ticket that fails', fire: 'bare', launch: 'fails', ready: [7], expect: { labels: [...claimed(7), ...released(7)], exit: 1 } },
+    { kind: 'schedule', title: 'a ticket the window cuts', fire: 'bare', launch: 'starts', late: 'launch', ready: [7, 9], expect: { labels: claimed(7), markers: [7], heartbeat: pickup(1, LATE), sessions: [NEW] } },
+    { kind: 'schedule', title: 'a ticket the cap cuts', fire: 'bare', launch: 'starts', cap: 1, ready: [7, 9], expect: { labels: claimed(7), markers: [7], heartbeat: pickup(1), sessions: [NEW] } },
+    { kind: 'schedule', title: 'a cap of 0', fire: 'bare', launch: 'starts', cap: 0, ready: [7], expect: { heartbeat: pickup(0) } },
+    // The bare schedule fire: periodics.
+    { kind: 'schedule', title: 'a periodic that starts', fire: 'bare', launch: 'starts', due: { [RETRO]: 8 }, expect: { periodics: [[RETRO, NEW]], sweeps: [AT], heartbeat: { pickup: { at: AT, started: 0 }, periodics: [retroLine()] }, sessions: [NEW] } },
+    { kind: 'schedule', title: 'a periodic that fails', fire: 'bare', launch: 'fails', due: { [RETRO]: 8 }, expect: { exit: 1 } },
+    { kind: 'schedule', title: 'a periodic the window cuts', fire: 'bare', launch: 'starts', late: 'launch', due: { [RETRO]: 8, [REVIEW]: 5 }, expect: { periodics: [[REVIEW, NEW]], sweeps: [AT], heartbeat: { pickup: { at: LATE, started: 0 }, periodics: [{ name: REVIEW, at: AT, by: { days: 3 }, session: NEW, state: 'open' as const }] }, sessions: [NEW] } },
+    { kind: 'schedule', title: 'a periodic under a cap of 0', fire: 'bare', launch: 'starts', cap: 0, due: { [RETRO]: 8 }, expect: { sweeps: [AT], heartbeat: pickup(0) } },
+    // The bare schedule fire: an ended wait's spec session.
+    { kind: 'schedule', title: 'an ended wait\'s spec session that starts', fire: 'bare', launch: 'starts', waits: [7], expect: { markers: [7], notes: [7], waits: [[7, null]], sweeps: [AT], heartbeat: pickup(0), sessions: [NEW] } },
+    { kind: 'schedule', title: 'an ended wait\'s spec session that fails', fire: 'bare', launch: 'fails', waits: [7], expect: { notes: [7], sweeps: [AT], heartbeat: pickup(0), exit: 1 } },
+    { kind: 'schedule', title: 'an ended wait\'s spec session the window cuts', fire: 'bare', launch: 'starts', late: 'launch', waits: [7], due: { [RETRO]: 8 }, expect: { notes: [7], periodics: [[RETRO, NEW]], sweeps: [AT], heartbeat: { pickup: { at: LATE, started: 0 }, periodics: [retroLine()] }, sessions: [NEW] } },
+    { kind: 'schedule', title: 'an ended wait\'s spec session the cap cuts', fire: 'bare', launch: 'starts', cap: 1, waits: [7, 8], expect: { markers: [7], notes: [7, 8], waits: [[7, null]], sweeps: [AT], heartbeat: pickup(0), sessions: [NEW] } },
+    // A fire for one ticket: a ready label.
+    { kind: 'schedule', title: 'a label fire that starts', fire: 'label', launch: 'starts', expect: { labels: claimed(7), markers: [7], sessions: [NEW] } },
+    { kind: 'schedule', title: 'a label fire that fails', fire: 'label', launch: 'fails', expect: { labels: [...claimed(7), ...released(7)], exit: 1 } },
+    { kind: 'schedule', title: 'a label fire the window cuts', fire: 'label', launch: 'starts', late: 'read', expect: {} },
+    { kind: 'schedule', title: 'a label fire under a cap of 0', fire: 'label', launch: 'starts', cap: 0, expect: {} },
+    // A blocker's close: the ready row picks up, the not-ready row starts a spec session.
+    { kind: 'unblocked', title: 'a ready ticket that starts', fire: 'unblocked', launch: 'starts', expect: { labels: claimed(7), markers: [7], sessions: [NEW] } },
+    { kind: 'unblocked', title: 'a ready ticket that fails', fire: 'unblocked', launch: 'fails', expect: { labels: [...claimed(7), ...released(7)], exit: 1 } },
+    { kind: 'unblocked', title: 'a ready ticket the window cuts', fire: 'unblocked', launch: 'starts', late: 'read', expect: {} },
+    { kind: 'unblocked', title: 'a ready ticket under a cap of 0', fire: 'unblocked', launch: 'starts', cap: 0, expect: {} },
+    { kind: 'unblocked', title: 'a spec session that starts', fire: 'unblocked', launch: 'starts', labels: ['enhancement'], expect: { markers: [7], sessions: [NEW] } },
+    { kind: 'unblocked', title: 'a spec session that fails', fire: 'unblocked', launch: 'fails', labels: ['enhancement'], expect: { exit: 1 } },
+    { kind: 'unblocked', title: 'a spec session the window cuts', fire: 'unblocked', launch: 'starts', late: 'read', labels: ['enhancement'], expect: {} },
+    { kind: 'unblocked', title: 'a spec session under a cap of 0', fire: 'unblocked', launch: 'starts', cap: 0, labels: ['enhancement'], expect: {} },
+    // A hook: DispatchCap does not hold it, so only the window cuts it.
+    { kind: 'hook', title: 'a hook that starts', fire: 'hook', launch: 'starts', expect: { hooks: [[HOOK.name, NEW]], sessions: [NEW] } },
+    { kind: 'hook', title: 'a hook that fails', fire: 'hook', launch: 'fails', expect: { exit: 1 } },
+    { kind: 'hook', title: 'a hook the window cuts', fire: 'hook', launch: 'starts', late: 'read', expect: { exit: 1 } },
+    { kind: 'hook', title: 'a hook under a cap of 0', fire: 'hook', launch: 'starts', cap: 0, expect: { hooks: [[HOOK.name, NEW]], sessions: [NEW] } },
+    // A dispatch: by hand or a summons, or a red scheduled run. DispatchCap does not hold it either.
+    // One by hand reads nothing between the window's start and its launch, so only a red run's read of its runs can outlast the window.
+    { kind: 'dispatch', title: 'a dispatch that starts', fire: 'dispatch', launch: 'starts', expect: { sessions: [NEW] } },
+    { kind: 'dispatch', title: 'a dispatch that fails', fire: 'dispatch', launch: 'fails', expect: { exit: 1 } },
+    { kind: 'dispatch', title: 'a red scheduled run\'s dispatch that starts', fire: 'red', launch: 'starts', expect: { sessions: [NEW] } },
+    { kind: 'dispatch', title: 'a red scheduled run\'s dispatch that fails', fire: 'red', launch: 'fails', expect: { exit: 1 } },
+    { kind: 'dispatch', title: 'a red scheduled run\'s dispatch the window cuts', fire: 'red', launch: 'starts', late: 'read', expect: {} },
+    { kind: 'dispatch', title: 'a dispatch under a cap of 0', fire: 'dispatch', launch: 'starts', cap: 0, expect: { sessions: [NEW] } },
+  ];
+
+  for (const row of rows) {
+    test(`${row.kind}: ${row.title}`, async () => {
+      let clock = NOW;
+      const late = () => { clock = LATE_MS; };
+      const beat = { body: BODY, writes: 0 };
+      const waits = row.waits ?? [];
+      const ticketLabels = row.labels ?? [READY, 'mode: afk'];
+      const h = harness({
+        configFile: async (repo: string) => (repo === REPO ? FILE : null),
+        now: () => clock,
+        ...(row.cap === undefined ? {} : { cap: row.cap }),
+        launch: async (launch: Launch) => {
+          h.launches.push(launch);
+          if (row.late === 'launch') late();
+          return row.launch === 'starts' ? { status: 0, output: CONFIRMED } : { status: 1, output: 'environment not found' };
+        },
+        state: {
+          hookSession: async (repo: string, name: string) => {
+            if (row.late === 'read') late();
+            return h.hooks.get(`${repo}#${name}`) ?? null;
+          },
+        },
+      });
+      // The harness's own reader, so every write it does not replace lands in this harness's records.
+      const reader = h.deps.reader;
+      h.deps.reader = ((token: string) => ({
+        ...reader(token),
+        readyIssues: async () => (row.ready ?? []).map(issue),
+        ticket: async (n: number) => {
+          if (row.late === 'read') late();
+          if (n === WAIT_TICKET) return WAIT_BOARD;
+          if (waits.includes(n)) return { number: n, id: 9000 + n, title: `Issue ${n}`, body: '', state: 'open', labels: ['enhancement'], pull: false, openBlockers: 0, wait: { until: PAST } };
+          return { number: n, id: 9000 + n, title: `Issue ${n}`, body: '', state: 'open', labels: ticketLabels, pull: false, openBlockers: 0 };
+        },
+        workflowRuns: async () => {
+          if (row.late === 'read') late();
+          return [
+            { id: 500, status: 'completed', conclusion: 'failure', event: 'schedule', head_branch: 'main', head_sha: 'sha500', html_url: `https://github.com/${REPO}/actions/runs/500`, created_at: AT },
+            { id: 499, status: 'completed', conclusion: 'success', event: 'schedule', head_branch: 'main', head_sha: 'sha499', html_url: `https://github.com/${REPO}/actions/runs/499`, created_at: AT },
+          ];
+        },
+        issue: async (n: number) => (n === BEAT.issue ? { number: n, body: beat.body, pull: false } : { number: n, body: PR_BODY, pull: true }),
+        // The heartbeat's body is read back below; any other issue's write is a record, kept with the PR edits.
+        updateIssue: async (n: number, { body }: { body: string }) => {
+          if (n !== BEAT.issue) {
+            h.issueEdits.push({ issue: n, body });
+            return;
+          }
+          beat.body = body;
+          beat.writes += 1;
+        },
+      })) as unknown as typeof reader;
+      // Every periodic inside its day limit, so none is due and none takes a baseline, but those the row names.
+      for (const name of PERIODICS) {
+        h.periodics.set(`${REPO}#${name}`, { at: new Date(NOW - (row.due?.[name] ?? 0) * DAY - HOUR).toISOString(), session: OLD, baseline: false });
+      }
+      // A copy, so a record the turn changed in place still reads as changed.
+      const before = new Map([...h.periodics].map(([key, record]) => [key, structuredClone(record)]));
+      for (const n of waits) h.waitItems.set(`${REPO}#${n}`, PAST);
+      const result = await run(FIRES[row.fire], h.deps as never);
+      const seen = JSON.stringify(h.logged);
+      // Every comment is a dispatch marker or a wait's ended note, each recorded below.
+      assert.deepEqual(h.comments.filter((c) => !c.body.includes('governor:dispatched') && !c.body.includes(ENDED)), [], seen);
+      const records: Records = {
+        labels: labelCalls(h.calls),
+        markers: h.comments.filter((c) => c.body.includes('governor:dispatched')).map((c) => c.issue),
+        notes: h.comments.filter((c) => c.body.includes(ENDED)).map((c) => c.issue),
+        bodies: [...h.edits.map((e) => e.pr), ...h.issueEdits.map((e) => e.issue)],
+        periodics: h.periodicWrites.map((w) => [w.name, w.record.session]),
+        waits: h.waitWrites.map((w) => [w.issue, w.until]),
+        hooks: h.hookWrites.map((w) => [w.name, w.record.session]),
+        sweeps: h.sweepWrites.map((w) => w.at),
+        heartbeat: beat.writes === 0 ? null : readHeartbeat(beat.body),
+        sessions: h.recorded,
+        exit: exitCodeFor(result as never),
+      };
+      assert.deepEqual(records, { ...NONE, ...row.expect }, seen);
+      // A periodic the turn did not start keeps the record it had, so it stays due.
+      for (const [key, record] of before) {
+        if (!(row.expect.periodics ?? []).some(([name]) => key === `${REPO}#${name}`)) assert.deepEqual(h.periodics.get(key), record, key);
+      }
+      // A wait item the turn did not drop stays for the next fire.
+      for (const n of waits) {
+        if (!(row.expect.waits ?? []).some(([issue]) => issue === n)) assert.equal(h.waitItems.get(`${REPO}#${n}`), PAST, `wait #${n}`);
+      }
+      // The window, not some earlier refusal, is what cut the row's launch.
+      if (row.late !== undefined) assert.ok(h.logged.some((l) => /out of time/.test(String(l.reason))), seen);
+      // A window or cap that cut a launch started nothing for it.
+      if (row.late !== undefined || row.cap !== undefined) {
+        const started = row.expect.sessions?.length ?? 0;
+        assert.equal(h.launches.length, started, h.launches.map((l) => l.sessionName).join(', '));
+      }
+    });
+  }
+});
