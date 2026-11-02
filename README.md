@@ -22,6 +22,8 @@ Each served repo turns on the features it wants, one switch each:
 - **The PR review.** A model reviews each PR against the repo's checklist. Paths on the repo's human-only list always wait for a person. A PR closes tickets in its own repo only; work spanning repos marks the other repo's ticket as blocked by an issue here. A pass merges the PR, or, with `merge` off, approves it for the owner to merge.
 - **Sign-off.** A session whose last reply ends `Signing off.` is archived by the next turn. No session writes anything for this.
 
+One behaviour needs no switch. A ticket whose body opens with `Blocked until: 2026-11-05` is not started before that date, in every served repo. The wait ends at 00:00 UTC on the date, and a ready ticket is picked up at the first sweep on or after it. Text after the date can give the reason: `Blocked until: 2026-11-05 for a few days of log lines`. Only the body's first non-empty line counts, in any case. A line whose date governor cannot read, such as `2026-13-01` or `next week`, holds the ticket too, and governor comments once on the ticket to say so. To end a wait early, delete the line; to move it, change the date.
+
 How dark the factory runs is the repo's choice: with pickup and the review on and `merge` true, a ticket can go from label to merged commit with no person, except where its PR touches a human-only path.
 
 [docs/how-it-works.md](docs/how-it-works.md) describes each feature in full. [docs/constraints/](docs/constraints/README.md) holds the rules the code keeps. Diagrams that need motion or controls are HTML pages in `docs/pages/`, published at <https://t-d-d.github.io/gh-governor/>; [docs/how-it-works.md](docs/how-it-works.md#pages) says how they publish and how to preview one from a branch.
