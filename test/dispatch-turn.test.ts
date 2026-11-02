@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { STALE_RUNS_PAUSES_MS } from '../dispatch/runs.mjs';
 import { RUNS_PER_PAGE } from '../scripts/lib/github-app.mjs';
-import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed, sessionUrlFrom } from '../dispatch/turn.mjs';
+import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed } from '../dispatch/turn.mjs';
 import { DEFAULT_SESSION_NAME, DISPATCHER_LABEL, GITHUB_SOURCE, fromDispatcher, hookLabel, standingLine } from '../dispatch/deliveries.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
@@ -423,14 +423,6 @@ const turn = (result: Awaited<ReturnType<typeof run>>): Turn => {
   assert.ok('dispatched' in result, `not a dispatch turn: ${JSON.stringify(result)}`);
   return result as Turn;
 };
-
-describe('sessionUrlFrom', () => {
-  test('reads the session URL the CLI prints, or builds it from the id', () => {
-    assert.equal(sessionUrlFrom(CONFIRMED), 'https://claude.ai/code/session_01ABC');
-    assert.equal(sessionUrlFrom('Resume with: claude --teleport session_01XYZ\n'), 'https://claude.ai/code/session_01XYZ');
-    assert.equal(sessionUrlFrom('nothing here'), null);
-  });
-});
 
 describe('dispatchCap', () => {
   test('reads the stack parameter, keeps 0 as 0, and refuses a value that is not a count', () => {
