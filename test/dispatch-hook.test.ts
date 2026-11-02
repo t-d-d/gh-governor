@@ -10,6 +10,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_DEDUP_WINDOW_MS, HOOK_TEXT_LIMIT, spellDuration, hookKey, hookPath, hookSignature, readSignature } from '../dispatch/webhook/hook.mjs';
 import { handle } from '../dispatch/webhook/route.mjs';
@@ -163,6 +164,31 @@ describe('handle — a hook fire', () => {
       assert.equal(response.body, HOOK_CLOCK_REASON, `t ${t - T}`);
     }
     assert.equal(HOOK_CLOCK_REASON, 'the signature\'s time is more than 30 seconds ahead of the receiver\'s clock or more than 4 minutes 10 seconds behind it');
+  });
+
+  // The docs state the clock limits by hand, so a changed constant would
+  // leave them telling callers the old limit. Every duration followed by
+  // "ahead" or "behind" in them must be the constant's own spelling, and so
+  // must the time a request stays valid, which is the two limits added up.
+  test('the docs state the clock limits the constants hold', () => {
+    const duration = String.raw`\d+(?:\.\d+)?\s+(?:minutes?|seconds?)(?:\s+\d+(?:\.\d+)?\s+(?:minutes?|seconds?))*`;
+    const spelled = (text: string | undefined): string | undefined => text?.replace(/\s+/g, ' ');
+    const limits = { ahead: spellDuration(HOOK_CLOCK_AHEAD_MS), behind: spellDuration(HOOK_CLOCK_BEHIND_MS) };
+    const validity = spellDuration(HOOK_CLOCK_AHEAD_MS + HOOK_CLOCK_BEHIND_MS);
+    const stated = new RegExp(`(${duration})\\s+(ahead|behind)\\b`, 'g');
+    const valid = new RegExp(`(?:valid for|add up to)\\s+(${duration})`, 'g');
+    for (const [file, places] of [['README.md', 2], ['docs/how-it-works.md', 2]] as const) {
+      const text = readFileSync(resolve(REPO_ROOT, file), 'utf8');
+      const found = { ahead: 0, behind: 0 };
+      for (const [, length, side] of text.matchAll(stated)) {
+        const which = side as keyof typeof limits;
+        assert.equal(spelled(length), limits[which], `${file} states a limit ${which} that is not ${limits[which]}`);
+        found[which] += 1;
+      }
+      assert.deepEqual(found, { ahead: places, behind: places }, `${file} states each clock limit ${places} times`);
+      const sums = [...text.matchAll(valid)].map(([, length]) => spelled(length));
+      assert.deepEqual(sums, [validity], `${file} states once that a request is valid for ${validity}`);
+    }
   });
 
   test('a duration is spelled in minutes and seconds', () => {
