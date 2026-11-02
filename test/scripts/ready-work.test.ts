@@ -28,7 +28,9 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { isWaiting, labelRow, selectReadyWork, waitOf } from '../../scripts/lib/ready-work.mjs';
+import { UNREADIED_MARKER, heldUnreadied, isWaiting, labelRow, mayPickUp, mayStartSpec, selectReadyWork, ticketStatus, waitOf } from '../../scripts/lib/ready-work.mjs';
+import * as unblocked from '../../dispatch/unblocked.mjs';
+import { dispatchMarker } from '../../dispatch/webhook/fire.mjs';
 
 /** The factory's labels: two ready labels, the claim, and the default exclude. */
 const FACTORY_LABELS = { ready: ['workflow: ready for development', 'mode: afk'], claim: 'workflow: under development', exclude: ['type: prd'] };
@@ -314,5 +316,125 @@ describe('selectReadyWork: a ticket\'s own wait', () => {
 
   test('an unreadable line is not selected', () => {
     assert.deepEqual(selectReadyWork([issue(1, { wait: { unreadable: 'next week' } })], { labels: FACTORY_LABELS, cap: 5, now: 0 }), []);
+  });
+});
+
+describe('ticketStatus: what keeps a ticket from starting', () => {
+  const now = Date.parse('2026-11-04T12:00:00Z');
+  const rules = { labels: FACTORY_LABELS, now };
+  const READY_ON = [READY, 'mode: afk'];
+  const NOT_READY_ON = ['mode: afk'];
+  const CLAIMED_ON = [READY, 'mode: afk', 'workflow: under development'];
+  const EXCLUDED_ON = [READY, 'mode: afk', 'type: prd'];
+
+  test('a closed ticket reads closed, whatever else it carries', () => {
+    assert.deepEqual(ticketStatus({ state: 'closed', labels: READY_ON }, rules), { open: false });
+    assert.deepEqual(ticketStatus({ state: 'closed', labels: READY_ON, openBlockers: 1, wait: { unreadable: 'soon' } }, rules), { open: false });
+  });
+
+  test('a ticket with no state read is open, as the selection reads it', () => {
+    assert.deepEqual(ticketStatus({ labels: READY_ON }, rules), { open: true, labels: 'ready', holds: [] });
+  });
+
+  test('the labels read as labelRow reads them', () => {
+    for (const on of [READY_ON, NOT_READY_ON, CLAIMED_ON, EXCLUDED_ON, []]) {
+      const status = ticketStatus({ state: 'open', labels: on }, rules);
+      assert.deepEqual(status, { open: true, labels: labelRow(on, FACTORY_LABELS), holds: [] });
+    }
+  });
+
+  test('an open blocker holds, by the dependency summary where the row has one, else by the blocker rows', () => {
+    assert.deepEqual(ticketStatus({ state: 'open', labels: READY_ON, openBlockers: 1 }, rules), { open: true, labels: 'ready', holds: ['blocker'] });
+    assert.deepEqual(ticketStatus({ state: 'open', labels: READY_ON, openBlockers: 0 }, { ...rules, blockers: [{ number: 9, state: 'open' }] }), { open: true, labels: 'ready', holds: [] });
+    assert.deepEqual(ticketStatus({ state: 'open', labels: READY_ON }, { ...rules, blockers: [{ number: 9, state: 'open' }] }), { open: true, labels: 'ready', holds: ['blocker'] });
+    assert.deepEqual(ticketStatus({ state: 'open', labels: READY_ON }, { ...rules, blockers: [{ number: 9, state: 'closed' }] }), { open: true, labels: 'ready', holds: [] });
+  });
+
+  test('a blocker holds whatever the labels read', () => {
+    for (const on of [CLAIMED_ON, EXCLUDED_ON, NOT_READY_ON]) {
+      assert.deepEqual(ticketStatus({ state: 'open', labels: on, openBlockers: 2 }, rules), { open: true, labels: labelRow(on, FACTORY_LABELS), holds: ['blocker'] });
+    }
+  });
+
+  test('a date still to come and a relative line hold as a line; a date passed holds nothing', () => {
+    assert.deepEqual(ticketStatus({ state: 'open', labels: READY_ON, wait: { until: '2026-11-05' } }, rules), { open: true, labels: 'ready', holds: ['line'] });
+    assert.deepEqual(ticketStatus({ state: 'open', labels: NOT_READY_ON, wait: { after: { days: 3, issue: 7 } } }, rules), { open: true, labels: 'not-ready', holds: ['line'] });
+    assert.deepEqual(ticketStatus({ state: 'open', labels: READY_ON, wait: { until: '2026-11-04' } }, rules), { open: true, labels: 'ready', holds: [] });
+  });
+
+  test('a line governor cannot read holds as unreadable, not as a line', () => {
+    assert.deepEqual(ticketStatus({ state: 'open', labels: READY_ON, wait: { unreadable: 'next week' } }, rules), { open: true, labels: 'ready', holds: ['unreadable'] });
+    assert.deepEqual(ticketStatus({ state: 'open', labels: NOT_READY_ON, wait: { unreadable: 'next week' } }, rules), { open: true, labels: 'not-ready', holds: ['unreadable'] });
+  });
+
+  test('a line or unreadable hold only where the labels read ready or not ready, as waitHolds says', () => {
+    for (const on of [CLAIMED_ON, EXCLUDED_ON]) {
+      for (const wait of [{ until: '2026-11-05' }, { after: { days: 3, issue: 7 } }, { unreadable: 'next week' }]) {
+        assert.deepEqual(ticketStatus({ state: 'open', labels: on, wait }, rules), { open: true, labels: labelRow(on, FACTORY_LABELS), holds: [] });
+      }
+    }
+  });
+
+  test('a blocker and a line both hold, the blocker first', () => {
+    assert.deepEqual(ticketStatus({ state: 'open', labels: READY_ON, openBlockers: 1, wait: { until: '2026-11-05' } }, rules), { open: true, labels: 'ready', holds: ['blocker', 'line'] });
+    assert.deepEqual(ticketStatus({ state: 'open', labels: CLAIMED_ON, openBlockers: 1, wait: { unreadable: 'x' } }, rules), { open: true, labels: 'claimed', holds: ['blocker'] });
+  });
+});
+
+describe('mayPickUp', () => {
+  test('only an open, ready ticket nothing holds', () => {
+    assert.equal(mayPickUp({ open: true, labels: 'ready', holds: [] }), true);
+    assert.equal(mayPickUp({ open: false }), false);
+    for (const labels of ['excluded', 'claimed', 'not-ready'] as const) assert.equal(mayPickUp({ open: true, labels, holds: [] }), false);
+    for (const hold of ['blocker', 'line', 'unreadable'] as const) assert.equal(mayPickUp({ open: true, labels: 'ready', holds: [hold] }), false);
+  });
+
+  test('agrees with the selection on the same rows', () => {
+    const now = Date.parse('2026-11-04T12:00:00Z');
+    const rows = [
+      issue(1),
+      issue(2, { state: 'closed' }),
+      issue(3, { labels: ['mode: afk'] }),
+      issue(4, { labels: [READY, 'mode: afk', 'workflow: under development'] }),
+      issue(5, { labels: [READY, 'mode: afk', 'type: prd'] }),
+      issue(6, { openBlockers: 1 }),
+      issue(7, { wait: { until: '2026-11-05' } }),
+      issue(8, { wait: { until: '2026-11-04' } }),
+      issue(9, { wait: { unreadable: 'soon' } }),
+      issue(10),
+    ];
+    const blockers = new Map([[10, [{ number: 1, state: 'open' }]]]);
+    const selected = numbers(selectReadyWork(rows, { labels: FACTORY_LABELS, cap: 99, now, blockers }));
+    const picked = rows.filter((row) => mayPickUp(ticketStatus(row, { labels: FACTORY_LABELS, now, blockers: blockers.get(row.number) }))).map((row) => row.number);
+    assert.deepEqual(picked, selected);
+    assert.deepEqual(picked, [1, 8]);
+  });
+});
+
+describe('mayStartSpec', () => {
+  const now = Date.parse('2026-11-04T12:00:00Z');
+  const held = { body: `Governor took its ready label off #7.\n\n${UNREADIED_MARKER}`, ours: true };
+  const dispatched = (at: number) => ({ body: dispatchMarker({ at: new Date(at).toISOString(), sessionUrl: null }), ours: true });
+
+  test('a thread with neither an unanswered unreadied comment nor a recent dispatch may start one', () => {
+    assert.equal(mayStartSpec([], now), true);
+    assert.equal(mayStartSpec([{ body: 'Filed.', ours: false }], now), true);
+  });
+
+  test('an unanswered unreadied comment stops it, and a person\'s answer frees it', () => {
+    assert.equal(mayStartSpec([held], now), false);
+    assert.equal(mayStartSpec([held, { body: 'Still stands.', ours: false }], now), true);
+  });
+
+  test('a dispatch inside the window stops it, and one past the window does not', () => {
+    assert.equal(mayStartSpec([dispatched(now - 60 * 60 * 1000)], now), false);
+    assert.equal(mayStartSpec([dispatched(now - 3 * 60 * 60 * 1000)], now), true);
+  });
+});
+
+describe('heldUnreadied and UNREADIED_MARKER live here, and unblocked.mjs re-exports them', () => {
+  test('the same values from both files', () => {
+    assert.equal(unblocked.heldUnreadied, heldUnreadied);
+    assert.equal(unblocked.UNREADIED_MARKER, UNREADIED_MARKER);
   });
 });

@@ -20,7 +20,7 @@
  * Unit-tested in `test/scripts/ready-work.test.ts`.
  */
 
-import { waitLine } from '../../dispatch/webhook/fire.mjs';
+import { recentlyDispatched, waitLine } from '../../dispatch/webhook/fire.mjs';
 
 /**
  * @typedef {object} IssueRow
@@ -75,6 +75,8 @@ export const MAX_RELATIVE_DAYS = 36500;
  * @typedef {{ ready: readonly string[], claim: string, exclude: readonly string[] }} Labels
  */
 
+/** @typedef {'excluded' | 'claimed' | 'ready' | 'not-ready'} LabelState */
+
 /**
  * What a ticket's labels say about picking it up, under its repo's label
  * rules: `excluded` when it carries any excluded label, else `claimed` when
@@ -95,7 +97,7 @@ export const MAX_RELATIVE_DAYS = 36500;
  * @param {readonly string[] | undefined} on The ticket's label names. None
  *   read is the same answer as none.
  * @param {Labels} labels
- * @returns {'excluded' | 'claimed' | 'ready' | 'not-ready'}
+ * @returns {LabelState}
  */
 export const labelRow = (on, labels) => {
   const names = on ?? [];
@@ -226,6 +228,93 @@ export const waitHolds = (on, labels) => {
   const row = labelRow(on, labels);
   return row === 'ready' || row === 'not-ready';
 };
+
+/**
+ * What keeps an open ticket from starting: an open blocker (`isBlocked`),
+ * its own `Blocked until:` line (`isWaiting`), or a line governor could not
+ * read (`unreadableOf`). A line or an unreadable line holds only where the
+ * labels read ready or not ready, as `waitHolds` says.
+ *
+ * @typedef {'blocker' | 'line' | 'unreadable'} Hold
+ */
+
+/**
+ * @typedef {{ open: false } | { open: true, labels: LabelState, holds: readonly Hold[] }} TicketStatus
+ */
+
+/**
+ * The ticket fields its status reads. A row with no state read is open, as
+ * the selection reads it.
+ *
+ * @typedef {{ state?: string, labels?: readonly string[], openBlockers?: number, wait?: Wait }} TicketRow
+ */
+
+/**
+ * Everything that decides whether a ticket may start, read once: whether it
+ * is open, what its labels say (`labelRow`), and what holds it, the blocker
+ * first.
+ *
+ * @param {TicketRow} ticket
+ * @param {{ labels: Labels, now: number, blockers?: readonly BlockerRow[] | undefined }} rules
+ *   `blockers`: the ticket's `blocked_by` rows, read only where it carries
+ *   no dependency summary (`isBlocked`).
+ * @returns {TicketStatus}
+ */
+export const ticketStatus = (ticket, { labels, now, blockers }) => {
+  if ((ticket.state ?? 'open') !== 'open') return { open: false };
+  /** @type {Hold[]} */
+  const holds = [];
+  if (isBlocked(ticket, blockers)) holds.push('blocker');
+  if (waitHolds(ticket.labels, labels)) {
+    if (unreadableOf(ticket) !== undefined) holds.push('unreadable');
+    else if (isWaiting(ticket, now)) holds.push('line');
+  }
+  return { open: true, labels: labelRow(ticket.labels, labels), holds };
+};
+
+/**
+ * Pickup may start the ticket: open, ready, and nothing holds it. The
+ * selection and the claim's second read ask this.
+ *
+ * @param {TicketStatus} status
+ */
+export const mayPickUp = (status) => status.open && status.labels === 'ready' && status.holds.length === 0;
+
+/**
+ * The marker on a not-planned comment that says governor took a ready label
+ * off, on a first run or a retry (dispatch/unblocked.mjs). It records the
+ * hold: a later close of another blocker, or an ended wait, reads the
+ * thread for it ({@link heldUnreadied}).
+ */
+export const UNREADIED_MARKER = '<!-- governor:unreadied -->';
+
+/**
+ * Whether a not-ready ticket is still held by governor's not-planned close:
+ * governor's newest comment carrying {@link UNREADIED_MARKER} has no comment
+ * after it from anyone but governor. A later close then starts no spec
+ * session, since nobody has said yet whether the ticket still stands. A
+ * person's comment after it is an answer; a person who puts the ready labels
+ * back makes the ticket ready, which pickup takes on. A marker in a comment
+ * governor did not post is text.
+ *
+ * @param {ReadonlyArray<{ body?: string | null, ours?: boolean }>} thread The ticket's whole thread, oldest first.
+ */
+export const heldUnreadied = (thread) => {
+  let at = thread.length - 1;
+  while (at >= 0 && !(thread[at]?.ours === true && String(thread[at]?.body ?? '').includes(UNREADIED_MARKER))) at -= 1;
+  return at !== -1 && thread.slice(at + 1).every((c) => c.ours === true);
+};
+
+/**
+ * A spec session may start on a not-ready ticket: its thread has no
+ * unanswered unreadied comment ({@link heldUnreadied}) and no dispatch
+ * inside the window (`recentlyDispatched`). The unblocked row and wait end
+ * ask this.
+ *
+ * @param {ReadonlyArray<{ body: string, ours?: boolean }>} thread The ticket's whole thread, oldest first.
+ * @param {number} now Epoch ms.
+ */
+export const mayStartSpec = (thread, now) => !heldUnreadied(thread) && !recentlyDispatched([...thread], now);
 
 /**
  * @param {IssueRow} issue
