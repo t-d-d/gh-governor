@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG_PATH, GENERIC_SWITCHES, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
-import { DAY_MS, HOUR_MS, LISTED_MAX, SWEEP_GRACE_MS, duePeriodics, periodicPrompt, windowOf } from '../dispatch/periodics.mjs';
+import { DAY_MS, HOUR_MS, LISTED_MAX, SWEEP_GRACE_MS, duePeriodics, logNotStarted, periodicPrompt, windowOf } from '../dispatch/periodics.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 const BASE = { environment: 'env_01ASK', labels: { ready: ['mode: afk'], claim: 'claimed' } };
@@ -518,5 +518,17 @@ describe('windowOf', () => {
     const { calls, reader: r } = reader();
     await windowOf(r, 'main')('merges', 'T1');
     assert.deepEqual(calls, ['merged main T1']);
+  });
+});
+
+describe('the line for due periodics a fire leaves unstarted', () => {
+  const due = (name: string, at: number) => ({ periodic: { name, prompt: 'p', days: 7 }, read: null, due: at, by: { days: 7 } });
+
+  test('one dispatch-periodic line for the repo, its periodics oldest due first, with the reason given', () => {
+    const logged: Array<Record<string, unknown>> = [];
+    const list = [due('Late', 30), due('Early', 10), due('Middle', 20)];
+    logNotStarted((event: string, fields?: Record<string, unknown>) => { logged.push({ event, ...fields }); }, 'acme/factory', list as never, 'some reason');
+    assert.deepEqual(logged, [{ event: 'dispatch-periodic', repo: 'acme/factory', periodics: ['Early', 'Middle', 'Late'], outcome: 'not started', reason: 'some reason' }]);
+    assert.deepEqual(list.map((d) => d.periodic.name), ['Late', 'Early', 'Middle'], 'the caller\'s list keeps its order');
   });
 });

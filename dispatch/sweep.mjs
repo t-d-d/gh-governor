@@ -17,7 +17,8 @@ import { DEFAULT_MODEL, sessionName as ticketSessionName } from '../scripts/lib/
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { WAIT_RELATIVE, endedWaits, repairRelative, reportUnreadable, waitLinks, waitSpecPrompt } from './waits.mjs';
-import { connectorsOf, duePeriodics, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
+import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
+import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -147,7 +148,7 @@ export const planSweep = async (invocation, ctx) => {
     }
   }));
   if (only !== undefined && planned.length === 0) {
-    const why = ctx.cap === 0 ? { outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
+    const why = ctx.cap === 0 ? { outcome: 'not started', reason: CAP_ZERO_REASON } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
     for (const { repo, issue, ...read } of seen) {
       ctx.log('dispatch-pickup', { level: 'info', repo, issue, ...why, reads: [read] });
     }
@@ -186,6 +187,10 @@ export const planSweep = async (invocation, ctx) => {
       if (!turnsOn(config, 'periodics')) continue;
       const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(await ctx.readerFor(repo)), open: ctx.open });
       due.push(...read.due.map((d) => ({ ...d, repo })));
+      // A cap of 0 starts no periodic. The repo's due periodics get the
+      // line an event logs under the cap, and their records stay, so each
+      // stays due.
+      if (ctx.cap === 0 && read.due.length > 0) logNotStarted(ctx.log, repo, read.due, CAP_ZERO_REASON);
       periodicsUnread.push(...read.unread);
       if (read.beats.length > 0) ctx.beats.push({ repo, beat: { periodics: read.beats } });
     }
@@ -210,18 +215,6 @@ export const planSweep = async (invocation, ctx) => {
           ctx.beats.push({ repo, beat: { periodics: [{ name: periodic.name, at, by, session: sessionUrl, state: 'open' }] } });
         },
       })));
-    } else {
-      // A cap of 0 starts no periodic. Each repo's due periodics get the
-      // line an event logs under the cap, listed oldest due first, and
-      // their records stay, so each stays due.
-      /** @type {Map<string, string[]>} */
-      const left = new Map();
-      for (const { repo, periodic } of due.sort((a, b) => a.due - b.due)) {
-        const names = left.get(repo) ?? [];
-        names.push(periodic.name);
-        left.set(repo, names);
-      }
-      for (const [repo, periodics] of left) ctx.log('dispatch-periodic', { repo, periodics, outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' });
     }
     // The waits read before the sweep, above. A ticket not ready got its
     // comment there, and, with unblocked on, gets a spec session here,

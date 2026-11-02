@@ -31,6 +31,13 @@ import { dispatchMarker } from './webhook/fire.mjs';
 export const CLAIM_STRANDED = 'dispatch-claim-stranded';
 
 /**
+ * Why a fire under a `DispatchCap` of 0 starts nothing: the reason every
+ * fire's `not started` line gives, for a ticket, a blocker's close or a
+ * due periodic.
+ */
+export const CAP_ZERO_REASON = 'DispatchCap is 0: no fire starts anything';
+
+/**
  * The event a repo whose launch started nothing logs: the fire skips the
  * rest of its tickets. Its own alarm pages on it (infra/governor.cfn.yml).
  */

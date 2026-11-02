@@ -36,6 +36,7 @@ import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKE
 import { waitOf } from '../scripts/lib/ready-work.mjs';
 import { UNREADIED_MARKER } from '../scripts/lib/ready-work.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
+import { CAP_ZERO_REASON } from '../dispatch/launch-plan.mjs';
 import { ROUTINE_ANSWER, RoutinesApiError } from '../dispatch/routines.mjs';
 
 const REPO = 'acme/factory';
@@ -1029,7 +1030,7 @@ describe('run — the dispatcher claims what it launches', () => {
     assert.deepEqual(launches, []);
     const line = logged.find((l) => l.event === 'dispatch-pickup' && l.issue === 9);
     assert.ok(line, JSON.stringify(logged));
-    assert.equal(line.reason, 'DispatchCap is 0: no fire starts anything');
+    assert.equal(line.reason, CAP_ZERO_REASON);
   });
 
   test('a launch that started nothing puts the labels back', async () => {
@@ -2886,7 +2887,7 @@ describe('run — periodics', () => {
     await run({ source: 'aws.events' }, h.deps as never);
     const lines = h.logged.filter((l) => l.event === 'dispatch-periodic' && l.outcome === 'not started');
     assert.deepEqual(lines.map((l) => ({ repo: l.repo, periodics: l.periodics, reason: l.reason })), [
-      { repo: REPO, periodics: [REVIEW.name, RETRO.name], reason: 'DispatchCap is 0: no fire starts anything' },
+      { repo: REPO, periodics: [REVIEW.name, RETRO.name], reason: CAP_ZERO_REASON },
     ]);
   });
 
@@ -3367,6 +3368,21 @@ describe('run — periodics an event brings due', () => {
     await run({ kind: 'dispatch', prompt: '@claude look', counted: 'issuesOpened' }, h.deps as never);
     assert.deepEqual(h.launches.map((l) => l.sessionName), [DEFAULT_SESSION_NAME]);
     assert.deepEqual(h.periodics.get(key(triage.name)), fired(DAY));
+  });
+
+  test('a cap of 0 logs an event\'s due periodics as the bare fire does, oldest due first, with the cap as the reason', async () => {
+    const recent = { name: 'Merge review', prompt: 'Review the merges.', days: 7, counts: { merges: 5 } };
+    const late = { name: 'Late review', prompt: 'Review the late merges.', days: 7, counts: { merges: 5 } };
+    const configFile = async (repo: string) => (repo === REPO ? fileWith({}, { periodics: [recent, late] }) : null);
+    const h = counting({ merges: merged(20) }, { cap: 0, configFile });
+    h.periodics.set(key(recent.name), fired(DAY));
+    h.periodics.set(key(late.name), fired(8 * DAY));
+    await run(MERGE, h.deps as never);
+    assert.deepEqual(h.launches, []);
+    const lines = h.logged.filter((l) => l.event === 'dispatch-periodic' && l.outcome === 'not started');
+    assert.deepEqual(lines.map((l) => ({ repo: l.repo, periodics: l.periodics, reason: l.reason })), [
+      { repo: REPO, periodics: [late.name, recent.name], reason: CAP_ZERO_REASON },
+    ]);
   });
 
   test('a cap of 0 starts nothing on an event either', async () => {
