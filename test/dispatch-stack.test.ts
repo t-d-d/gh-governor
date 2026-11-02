@@ -28,7 +28,8 @@ import { appliesStack, runsCommand, runsScript, usesAction, withId } from './hel
 import { importClosure, relativeImports } from './helpers/imports.ts';
 import { OUTPUT_KEYS, START_BUDGET_MS } from '../scripts/run-turn.mjs';
 import { DEADLINE_MS } from '../dispatch/cli.mjs';
-import { SESSION_LATE, SESSION_UNRECORDED, STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
+import { STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
+import { SESSION_LATE, SESSION_UNRECORDED } from '../dispatch/launcher.mjs';
 import { MAX_START_ATTEMPTS } from '../dispatch/webhook/starter.mjs';
 import { HOOK_EVENTS } from '../dispatch/webhook/route.mjs';
 import { HOOK_KEY_STALE } from '../dispatch/webhook/hook-table.mjs';
