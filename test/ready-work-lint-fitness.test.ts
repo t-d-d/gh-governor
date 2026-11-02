@@ -18,8 +18,8 @@ const CHECKS = ['isBlocked', 'isWaiting', 'waitHolds', 'heldUnreadied', 'labelRo
 
 /** The restricted-import messages eslint gives `code` linted as the file at `path`. */
 const refusals = async (path: string, code: string) => {
-  const [result] = await eslint.lintText(code, { filePath: `${root}${path}` });
-  return result.messages.filter((m) => m.ruleId === 'no-restricted-imports').map((m) => m.message);
+  const results = await eslint.lintText(code, { filePath: `${root}${path}` });
+  return results.flatMap((r) => r.messages).filter((m) => m.ruleId === 'no-restricted-imports').map((m) => m.message);
 };
 
 describe('fitness: lint refuses a new caller of the readiness checks (dispatcher-repos.md)', () => {
@@ -27,7 +27,7 @@ describe('fitness: lint refuses a new caller of the readiness checks (dispatcher
     test(`a file in dispatch/ may not import ${name}`, async () => {
       const found = await refusals('dispatch/new-path.mjs', `import { ${name} } from '../scripts/lib/ready-work.mjs';\nexport const x = ${name};\n`);
       assert.equal(found.length, 1, `${name} imported in dispatch/ passed lint`);
-      assert.match(found[0], /ticketStatus/);
+      assert.match(found[0] ?? '', /ticketStatus/);
     });
 
     test(`a file in scripts/ may not import ${name}`, async () => {
