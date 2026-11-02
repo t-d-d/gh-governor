@@ -48,7 +48,7 @@ import { createHash } from 'node:crypto';
 import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
-import { isBlocked, isWaiting, labelRow, waitHolds, waitsOnClose } from '../scripts/lib/ready-work.mjs';
+import { UNREADIED_MARKER, heldUnreadied, isBlocked, isWaiting, labelRow, waitHolds, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 
 /**
  * @typedef {import('./webhook/fire.mjs').UnblockedFire} UnblockedFire
@@ -310,29 +310,10 @@ export const notPlannedComment = (fire, prompts, { blocked = false, unreadied } 
   return `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}${still}${ready}${marker}`;
 };
 
-/**
- * The marker on a not-planned comment that says governor took a ready label
- * off, on a first run or a retry. It records the hold: a later close of
- * another blocker reads the thread for it ({@link heldUnreadied}).
- */
-export const UNREADIED_MARKER = '<!-- governor:unreadied -->';
-
-/**
- * Whether a not-ready ticket is still held by governor's not-planned close:
- * governor's newest comment carrying {@link UNREADIED_MARKER} has no comment
- * after it from anyone but governor. A later close then starts no spec
- * session, since nobody has said yet whether the ticket still stands. A
- * person's comment after it is an answer; a person who puts the ready labels
- * back makes the ticket ready, which pickup takes on. A marker in a comment
- * governor did not post is text.
- *
- * @param {ReadonlyArray<{ body?: string | null, ours?: boolean }>} thread The ticket's whole thread, oldest first.
- */
-export const heldUnreadied = (thread) => {
-  let at = thread.length - 1;
-  while (at >= 0 && !(thread[at]?.ours === true && String(thread[at]?.body ?? '').includes(UNREADIED_MARKER))) at -= 1;
-  return at !== -1 && thread.slice(at + 1).every((c) => c.ours === true);
-};
+// heldUnreadied and UNREADIED_MARKER live in scripts/lib/ready-work.mjs,
+// beside mayStartSpec, which reads them. They are re-exported here so no
+// caller changes yet.
+export { UNREADIED_MARKER, heldUnreadied };
 
 /** Why a ticket {@link heldUnreadied} holds starts no spec session, as both a close and an ended wait log it. */
 export const UNREADIED_HELD = 'its ready labels came off on a not-planned close, and nobody has answered governor\'s comment since';
