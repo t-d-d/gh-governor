@@ -35,7 +35,7 @@ describe('errorText', () => {
     for (const path of ['dispatch/cli.mjs', 'dispatch/webhook/starter.mjs', 'dispatch/webhook/route.mjs']) {
       const source = readFileSync(join(ROOT, path), 'utf8');
       assert.match(source, /import \{[^}]*\berrorText\b[^}]*\} from '\.\/(webhook\/)?error-text\.mjs';/, `${path} imports errorText`);
-      assert.doesNotMatch(source, /\?\.stack \?\? /, `${path} keeps its own copy`);
+      assert.doesNotMatch(source, /\.stack\s*(\?\?|\|\|)/, `${path} keeps its own copy`);
     }
   });
 
