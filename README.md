@@ -6,19 +6,11 @@
 [![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 [![Built by Claude Code sessions](https://img.shields.io/badge/built%20by-Claude%20Code%20sessions-d97757)](docs/building-with-agents.md)
 
-Coding agents can write a pull request. The work around one is still manual: picking the next ticket, starting the agent, passing on review comments, telling it CI went red or the deploy shipped. Governor does that work for one developer and their repos, as a team lead does for a team. It watches each of your repos that installs its GitHub App, starts a Claude Code cloud session on your own subscription for each ready ticket, and relays everything that happens on that ticket's pull request back to the session that wrote it.
+Coding agents can write a pull request. The work around one is still manual: picking the next ticket, starting the agent, passing on review comments, telling it CI went red or the deploy shipped. Governor does that work for one developer and their repos, as a team lead does for a team. It watches each of your repos that installs its GitHub App, starts a Claude Code cloud session on your own subscription for each ready ticket, and relays everything that happens on that ticket's pull request back to the session that wrote it. Each repo keeps its policy in one file: which tickets an agent may take, what the review checks, and which paths always need a person.
 
 The name comes from the governor on a steam engine, which holds the engine's speed with nobody at the throttle ([more below](#why-governor)).
 
-## Who built it, and where it came from
-
-Governor is [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/)'s personal software factory, distilled from the practices and automations built while making [Podstow](https://podstow.com), a production service that agents build.
-
-**The service.** Thomas founded and runs Podstow, a paid article-to-podcast service, live on the web, iOS, macOS and Android, and inside Claude, ChatGPT and Gemini. Coding agents write all of its code, TypeScript on AWS serverless, and automated checks decide what merges. Thomas's approval sits on the specification, before the code exists. Every agent session is archived and evaluated afterwards. Governor serves Podstow's repo with its PR review on and `merge` on, so most pull requests merge with no person, and the repo's review rules name the paths that still wait for one. That repo stays private.
-
-**Before that.** For eight years Thomas was Engineering Manager and Platform Lead for Standard Chartered Bank's delivery platform, in Singapore and London: CI/CD and release engineering for more than 800 applications, run by a team of up to 16 engineers across Singapore, the UK and India. Manual release gates became automated checks, designed with the security and risk teams, and teams' lead time to production fell from months to weeks, and in places to days. Governor applies the same idea to agents: specification first, quality built into the pipeline as automated checks, and a person's approval only where no check can replace it.
-
-Thomas designed governor and the rules its agents work under, shapes and approves every PRD and its technical design, and merges every pull request in this repo. Claude Code sessions write the code. [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/) · [GitHub](https://github.com/t-d-d)
+Built by [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/), and distilled from running [Podstow](https://podstow.com), a paid production service whose code agents write and whose pull requests mostly merge with no person. [More on who built it](#who-built-it-and-where-it-came-from).
 
 ## It builds itself
 
@@ -80,7 +72,7 @@ Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action wr
 
 - **It finds the work.** It takes tickets from the backlog unasked, and holds one while its blockers are open or its date has not come.
 - **One session per ticket, for the ticket's whole life.** The agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships.
-- **Rules per repo.** Each repo sets how far the factory runs and which paths need a person.
+- **Policy in one place.** Each repo keeps its rules in one file, `.github/dispatch.json`: the features it runs, the labels that mark a ticket ready, the review's checklist, the paths that need a person, and the recurring sessions. A change to policy is a pull request, which the config check can validate before it merges.
 - **Your own accounts.** It runs on your Claude subscription and your AWS account.
 
 ## What it does
@@ -180,6 +172,16 @@ Each deployment is one person's factory: it serves the GitHub accounts on its ow
    ```
 
 3. **Label a ticket `mode: afk`.** Governor starts a session on it, and comments the session's link on the ticket.
+
+## Who built it, and where it came from
+
+Governor is [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/)'s personal software factory, distilled from the practices and automations built while making Podstow, a production service that agents build.
+
+**The service.** Thomas founded and runs Podstow, a paid article-to-podcast service, live on the web, iOS, macOS and Android, and inside Claude, ChatGPT and Gemini. Coding agents write all of its code, TypeScript on AWS serverless, and automated checks decide what merges. Thomas's approval sits on the specification, before the code exists. Every agent session is archived and evaluated afterwards. Governor serves Podstow's repo with its PR review on and `merge` on, so most pull requests merge with no person, and the repo's review rules name the paths that still wait for one. That repo stays private.
+
+**Before that.** For eight years Thomas was Engineering Manager and Platform Lead for Standard Chartered Bank's delivery platform, in Singapore and London: CI/CD and release engineering for more than 800 applications, run by a team of up to 16 engineers across Singapore, the UK and India. Manual release gates became automated checks, designed with the security and risk teams, and teams' lead time to production fell from months to weeks, and in places to days. Governor applies the same idea to agents: specification first, quality built into the pipeline as automated checks, and a person's approval only where no check can replace it.
+
+Thomas designed governor and the rules its agents work under, shapes and approves every PRD and its technical design, and merges every pull request in this repo. Claude Code sessions write the code. [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/) · [GitHub](https://github.com/t-d-d)
 
 ## Documentation
 
