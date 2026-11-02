@@ -201,9 +201,10 @@ describe('writing a heartbeat issue: one helper reads it, checks its marker and 
 
   test('a stamp that changes nothing writes nothing', async () => {
     const github = fakeReader(`${MARKER}\n`);
-    const { log } = logs();
+    const { lines, log } = logs();
     assert.equal(await writeHeartbeatIssue({ reader: async () => github, repo: 'acme/factory', issue: 7, marker: MARKER, refusal: 'no marker', stamp: () => undefined, log }), 'unchanged');
     assert.deepEqual(github.writes, []);
+    assert.deepEqual(lines, []);
   });
 
   for (const fail of ['reader', 'read', 'write'] as const) {
@@ -223,7 +224,7 @@ describe('writing a heartbeat issue: one helper reads it, checks its marker and 
     for (const file of ['dispatch/turn.mjs', 'dispatch/sweep.mjs']) {
       const text = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
       assert.match(text, /writeHeartbeatIssue\(/, `${file} calls the helper`);
-      assert.doesNotMatch(text, /HEARTBEAT_REFUSED|HEARTBEAT_UNWRITTEN/, `${file} logs no heartbeat refusal or failed write of its own`);
+      assert.doesNotMatch(text, /HEARTBEAT_REFUSED|HEARTBEAT_UNWRITTEN|dispatch-heartbeat-refused|dispatch-heartbeat-unwritten/, `${file} logs no heartbeat refusal or failed write of its own`);
     }
   });
 });
