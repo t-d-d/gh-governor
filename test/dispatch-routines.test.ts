@@ -143,6 +143,7 @@ describe('a periodic\'s routine run', () => {
     const { api } = fakeApi({ sessions: async () => { reads += 1; return { data: [] }; } });
     const result = await launch(api);
     assert.equal(result.status, 3, result.output);
+    assert.equal(result.routine, 'trig_01NEW', 'the turn names the routine the run session is found through');
     assert.equal(reads, ROUTINE_SESSION_TRIES, 'a new routine has no earlier runs to read first');
   });
 
