@@ -174,10 +174,11 @@ describe('launchPlan starts every launch a plan holds', () => {
 });
 
 describe('the reason a cap of 0 gives', () => {
-  test('is written once, in dispatch/launch-plan.mjs, and every fire that logs it imports it', () => {
-    const files = (readdirSync('dispatch', { recursive: true }) as string[]).filter((f) => f.endsWith('.mjs'));
-    const holding = files.filter((f) => readFileSync(join('dispatch', f), 'utf8').includes(CAP_ZERO_REASON));
-    assert.deepEqual(holding, ['launch-plan.mjs']);
+  test('is written once, in dispatch/launch-plan.mjs, and no other code spells it out', () => {
+    const root = join(import.meta.dirname, '..');
+    const files = ['dispatch', 'scripts'].flatMap((dir) => (readdirSync(join(root, dir), { recursive: true }) as string[]).filter((f) => f.endsWith('.mjs')).map((f) => join(dir, f)));
+    const holding = files.filter((f) => readFileSync(join(root, f), 'utf8').includes(CAP_ZERO_REASON));
+    assert.deepEqual(holding, [join('dispatch', 'launch-plan.mjs')]);
     assert.match(CAP_ZERO_REASON, /^DispatchCap is 0/);
   });
 });

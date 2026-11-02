@@ -187,6 +187,10 @@ export const planSweep = async (invocation, ctx) => {
       if (!turnsOn(config, 'periodics')) continue;
       const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(await ctx.readerFor(repo)), open: ctx.open });
       due.push(...read.due.map((d) => ({ ...d, repo })));
+      // A cap of 0 starts no periodic. The repo's due periodics get the
+      // line an event logs under the cap, and their records stay, so each
+      // stays due.
+      if (ctx.cap === 0 && read.due.length > 0) logNotStarted(ctx.log, repo, read.due, CAP_ZERO_REASON);
       periodicsUnread.push(...read.unread);
       if (read.beats.length > 0) ctx.beats.push({ repo, beat: { periodics: read.beats } });
     }
@@ -211,14 +215,6 @@ export const planSweep = async (invocation, ctx) => {
           ctx.beats.push({ repo, beat: { periodics: [{ name: periodic.name, at, by, session: sessionUrl, state: 'open' }] } });
         },
       })));
-    } else {
-      // A cap of 0 starts no periodic. Each repo's due periodics get the
-      // line an event logs under the cap, and their records stay, so each
-      // stays due.
-      for (const { repo } of ctx.served) {
-        const left = due.filter((d) => d.repo === repo);
-        if (left.length > 0) logNotStarted(ctx.log, repo, left, CAP_ZERO_REASON);
-      }
     }
     // The waits read before the sweep, above. A ticket not ready got its
     // comment there, and, with unblocked on, gets a spec session here,
