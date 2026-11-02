@@ -26,6 +26,8 @@ One behaviour needs no switch. A ticket whose body opens with `Blocked until: 20
 
 With the `waits` switch on, governor also acts when a wait ends. A ticket that is not ready gets one comment at the first schedule fire after its date, and, with `unblocked` on too, a session to rewrite its spec, as a blocker's close starts one. Every session governor starts in the repo is told how to make a ticket wait. Governor learns of the line when the issue is opened, reopened or its body edited, so a ticket whose delivery was lost gets no comment or session; a ready one is still picked up.
 
+A file with `waits` on may also name a wait ticket, `"waits": { "issue": <number> }`. Governor then links each waiting ticket as blocked by it, so the ticket's sidebar shows it is held, and removes the link when the wait ends or the line is deleted, before the sweep reads the backlog. The link is only for display: the line holds the ticket. A ticket linked to the wait ticket with no line, such as one linked by hand, gets one comment saying so, and keeps its link, which still holds it as an open blocker. GitHub lets one issue block at most 50; a ticket past that gets one comment saying the wait ticket is full, and its line still holds it. A closed wait ticket gets no new links.
+
 How dark the factory runs is the repo's choice: with pickup and the review on and `merge` true, a ticket can go from label to merged commit with no person, except where its PR touches a human-only path.
 
 [docs/how-it-works.md](docs/how-it-works.md) describes each feature in full. [docs/constraints/](docs/constraints/README.md) holds the rules the code keeps. Diagrams that need motion or controls are HTML pages in `docs/pages/`, published at <https://t-d-d.github.io/gh-governor/>; [docs/how-it-works.md](docs/how-it-works.md#pages) says how they publish and how to preview one from a branch.
@@ -90,6 +92,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](dispatch/repo-config.
 | `workflows` | no | What the repo's workflows are to governor: `ci`, `triage` and `tags`. |
 | `review` | when `prReview` is on | The PR review's settings: its checklist, and the lists it checks a PR against. Needed when `prReview` is on. |
 | `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the hourly sweep updates. Needed when `heartbeat` is on. |
+| `waits` | no | `{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing. |
 | `pickup` | no | `{ "sweepHours": <number> }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default one, which sweeps at every fire. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on. |

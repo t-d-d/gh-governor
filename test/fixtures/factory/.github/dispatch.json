@@ -32,6 +32,9 @@
     "issue": 412,
     "marker": "<!-- factory:routine-heartbeat:auto-develop -->"
   },
+  "waits": {
+    "issue": 413
+  },
   "pickup": {
     "sweepHours": 2
   },

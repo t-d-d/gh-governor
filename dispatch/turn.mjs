@@ -106,7 +106,7 @@ import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '..
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { isBlocked, isWaiting, labelRow, unreadableOf } from '../scripts/lib/ready-work.mjs';
-import { WAIT_PROMPT, endedWaits, holdWait, reportUnreadable, waitSpecPrompt } from './waits.mjs';
+import { WAIT_PROMPT, endedWaits, holdWait, reportUnreadable, waitLinks, waitSpecPrompt } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { RoutinesApiError, launchRoutine, observed, routineName } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
@@ -251,6 +251,8 @@ export const sessionUrlFrom = (output) => {
  *   commit: (sha: string) => Promise<{ sha: string, message: string, parents?: string[] }>,
  *   addLabels: (n: number, labels: string[]) => Promise<void>,
  *   removeLabel: (n: number, label: string) => Promise<void>,
+ *   addBlocker: (n: number, blockerId: number) => Promise<void>,
+ *   removeBlocker: (n: number, blockerId: number) => Promise<void>,
  *   ensureLabel: (name: string) => Promise<void>,
  *   defaultBranch: () => Promise<string>,
  *   mergedSince: (base: string, since: string) => Promise<import('./periodics.mjs').Counted[]>,
@@ -1573,7 +1575,11 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   if (invocation.kind === 'wait') {
     // A ticket opened or edited with a `Blocked until:` line: its wait item
     // put, rewritten or deleted to match (dispatch/waits.mjs).
-    const outcome = await holdWait({ reader: await getReader(), state: deps.state, repo: fireRepo(), issue: invocation.issue, labels: configOf(fireRepo()).labels, now: deps.now(), log: deps.log });
+    // With the file's `waits.issue`, the ticket's link to the wait ticket
+    // follows its line too, for its sidebar.
+    const reader = await getReader();
+    const links = waitLinks({ reader, repo: fireRepo(), board: configOf(fireRepo()).waits?.issue, log: deps.log });
+    const outcome = await holdWait({ reader, state: deps.state, repo: fireRepo(), issue: invocation.issue, labels: configOf(fireRepo()).labels, now: deps.now(), log: deps.log, ...(links === undefined ? {} : { links }) });
     return { kind: invocation.kind, issue: invocation.issue, outcome };
   }
 
@@ -1643,7 +1649,24 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   let held = 0;
   /** An unblocked fire's row of the table (dispatch/unblocked.mjs). @type {import('./unblocked.mjs').Row | undefined} */
   let row;
+  /** The bare fire's ended waits, by repo, read before its sweep. @type {Array<{ repo: string, config: import('./repo-config.mjs').RepoConfig, ended: Awaited<ReturnType<typeof endedWaits>> }>} */
+  const endedByRepo = [];
   if (invocation.kind === 'schedule') {
+    // Each repo turning waits on: the waits whose date has passed
+    // (dispatch/waits.mjs), read before the sweep, since a ticket linked to
+    // the repo's wait ticket loses the link here, and pickup holds a ticket
+    // while its dependency summary counts an open blocker. The comments go
+    // now; the spec sessions join the plan after the tickets, below.
+    if (bare) {
+      for (const { repo, config } of served) {
+        if (!turnsOn(config, 'waits')) continue;
+        const reader = await readerFor(repo);
+        const links = waitLinks({ reader, repo, board: config.waits?.issue, log: deps.log });
+        const ended = await endedWaits({ reader, state: deps.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), now: deps.now(), log: deps.log, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
+        waitsUnread.push(...ended.unread);
+        endedByRepo.push({ repo, config, ended });
+      }
+    }
     // Every served repo's ready tickets in one queue; a repo
     // whose file turns pickup off is still swept, and its backlog unread.
     /** @type {import('../scripts/lib/dispatch-router.mjs').Source[]} */
@@ -1741,16 +1764,13 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           periodic: { name: periodic.name, read, by, ...(asOf === undefined ? {} : { asOf }) },
         })));
       }
-      // Each repo turning waits on: the waits whose date has passed
-      // (dispatch/waits.mjs). A ticket not ready gets its comment here, and,
-      // with unblocked on, a spec session after the tickets, unclaimed, as a
+      // The waits read before the sweep, above. A ticket not ready got its
+      // comment there, and, with unblocked on, gets a spec session here,
+      // after the tickets, unclaimed, as a
       // blocker's close starts one. At most DispatchCap of them start a fire,
       // apart from pickup's; one past it keeps its item for the next fire.
       let room = deps.cap;
-      for (const { repo, config } of served) {
-        if (!turnsOn(config, 'waits')) continue;
-        const ended = await endedWaits({ reader: await readerFor(repo), state: deps.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), now: deps.now(), log: deps.log });
-        waitsUnread.push(...ended.unread);
+      for (const { repo, config, ended } of endedByRepo) {
         const taken = ended.specs.slice(0, Math.max(0, room));
         room -= taken.length;
         if (taken.length < ended.specs.length) deps.log('dispatch-wait', { repo, outcome: 'spec sessions past DispatchCap left for the next fire', left: ended.specs.slice(taken.length).map((w) => w.issue) });

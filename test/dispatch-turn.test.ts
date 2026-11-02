@@ -32,7 +32,7 @@ import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, readLastRun } from '../
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
-import { WAIT_PROMPT, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
+import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
 import { ROUTINE_ANSWER, RoutinesApiError } from '../dispatch/routines.mjs';
 
@@ -49,6 +49,9 @@ const WAITS_OFF_FILE = (() => {
 /** A launch's prompt as the launcher gets it: governor's line on signing posts, then, with the factory's `waits` on, its line on waiting, end every one. */
 const signed = (prompt: string) => `${prompt}\n\n${SIGN_POSTS}\n\n${WAIT_PROMPT}`;
 const FACTORY_CONFIG_LABELS = JSON.parse(FACTORY_FILE).labels;
+/** The factory's wait ticket (`waits.issue`), which each waiting ticket is linked as blocked by, and its read. */
+const WAIT_TICKET = JSON.parse(FACTORY_FILE).waits.issue as number;
+const WAIT_BOARD = { number: WAIT_TICKET, id: 9000 + WAIT_TICKET, title: 'Waits', body: '', state: 'open', labels: [], pull: false };
 /** The dispatcher's own App, which posts the turn's comments. */
 const APP_ID = 5075844;
 const NOW = Date.parse('2026-09-25T12:00:00Z');
@@ -199,7 +202,13 @@ const harness = (over: Record<string, unknown> = {}) => {
       ensureLabel: async (name: string) => {
         calls.push(`ensure ${name}`);
       },
-      ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: ['workflow: ready for development', 'mode: afk'], pull: false }),
+      ticket: async (n: number) => ({ number: n, id: 9000 + n, title: `Issue ${n}`, body: '', state: 'open', labels: ['workflow: ready for development', 'mode: afk'], pull: false }),
+      addBlocker: async (n: number, id: number) => {
+        calls.push(`block #${n} by ${id}`);
+      },
+      removeBlocker: async (n: number, id: number) => {
+        calls.push(`unblock #${n} from ${id}`);
+      },
       pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: true }),
       updatePull: async (n: number, { body }: { body: string }) => {
         edits.push({ pr: n, body });
@@ -1763,7 +1772,7 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       reader: () => ({
         ...base.deps.reader(''),
         readyIssues: async () => [],
-        ticket: async () => ticket,
+        ticket: async (n: number) => (n === WAIT_TICKET ? WAIT_BOARD : ticket),
         allComments: async () => thread,
         comment: async (n: number, body: string) => { h.comments.push({ issue: n, body }); },
         addLabels: async (n: number, labels: string[]) => { h.calls.push(`label #${n} +${labels.join(', ')}`); },
@@ -2001,6 +2010,156 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
     await run({ kind: 'dispatch', prompt: 'hello' }, off.deps as never);
     assert.ok(off.launches[0]!.prompt.endsWith(`\n\n${SIGN_POSTS}`));
     assert.ok(!off.launches[0]!.prompt.includes(WAIT_PROMPT));
+  });
+});
+
+/**
+ * The wait ticket (dispatch/waits.mjs): with `waits` on and the file's
+ * `waits.issue` set, a waiting ticket is linked as blocked by it, so its
+ * sidebar shows the wait, and the link comes off when the wait ends, before
+ * the bare fire's sweep reads the backlog. The link is only for display:
+ * the line holds the ticket.
+ */
+describe('run: a waiting ticket linked to the wait ticket', () => {
+  const PAST = '2026-09-25';
+  const LATER = '2026-09-28';
+  const NOT_READY = ['enhancement'];
+  const READY = ['workflow: ready for development', 'mode: afk'];
+  const BOARD_ID = 9000 + WAIT_TICKET;
+  type Thread = Array<{ id: number; body: string; created_at: string; ours: boolean }>;
+  const ticketWith = ({ wait, labels = NOT_READY, state = 'open', openBlockers = 0 }: { wait?: Record<string, string>; labels?: string[]; state?: string; openBlockers?: number }) => ({ number: 7, id: 9007, title: 'Issue 7', body: '', state, labels, pull: false, openBlockers, ...(wait === undefined ? {} : { wait }) });
+  const NO_SECTION = (() => {
+    const file = JSON.parse(FACTORY_FILE);
+    delete file.waits;
+    return JSON.stringify(file);
+  })();
+  const capRefusal = () => Object.assign(new Error('POST /repos/acme/factory/issues/7/dependencies/blocked_by failed: 422 Unprocessable Entity: {"message":"Validation Failed","errors":[{"message":"Issue can block at most 50 issues"}]}'), { status: 422 });
+
+  /**
+   * A harness whose ticket #7 is `ticket` and the wait ticket `board`; #7 is
+   * linked to it when `linked`, and the wait ticket blocks `blocking`. Every
+   * link call, and each read of the backlog, lands in `h.calls` in order.
+   */
+  const linksTurn = ({ ticket = ticketWith({ wait: { until: LATER } }) as Record<string, unknown>, linked = false, item = null as string | null, thread = [] as Thread, file = FACTORY_FILE, board = { ...WAIT_BOARD } as Record<string, unknown>, blocking = [] as Array<Record<string, unknown>>, addBlocker = undefined as undefined | ((n: number, id: number) => Promise<void>) } = {}) => {
+    const base = harness();
+    let link = linked;
+    const h = harness({
+      configFile: async (repo: string) => (repo === REPO ? file : null),
+      reader: () => ({
+        ...base.deps.reader(''),
+        readyIssues: async () => { h.calls.push('read the backlog'); return []; },
+        ticket: async (n: number) => (n === WAIT_TICKET ? board : ticket),
+        blockers: async (n: number) => (n === 7 && link ? [{ number: WAIT_TICKET, id: BOARD_ID, state: String(board.state), title: 'Waits' }] : []),
+        blocking: async (n: number) => { h.calls.push(`blocking #${n}`); return n === WAIT_TICKET ? blocking : []; },
+        addBlocker: addBlocker ?? (async (n: number, id: number) => { h.calls.push(`block #${n} by ${id}`); link = true; }),
+        removeBlocker: async (n: number, id: number) => { h.calls.push(`unblock #${n} from ${id}`); link = false; },
+        allComments: async () => thread,
+        comment: async (n: number, body: string) => { h.comments.push({ issue: n, body }); },
+        addLabels: async (n: number, labels: string[]) => { h.calls.push(`label #${n} +${labels.join(', ')}`); },
+        removeLabel: async (n: number, label: string) => { h.calls.push(`label #${n} -${label}`); },
+      }),
+    });
+    if (item !== null) h.waitItems.set(`${REPO}#7`, item);
+    return h;
+  };
+  const linkCalls = (h: ReturnType<typeof harness>) => h.calls.filter((c) => /^(un)?block #/.test(c));
+  const fire = { kind: 'wait', issue: 7 };
+
+  test('the wait fire links a ticket waiting on a date still to come, once', async () => {
+    const h = linksTurn();
+    await run(fire, h.deps as never);
+    assert.deepEqual(linkCalls(h), [`block #7 by ${BOARD_ID}`]);
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
+    const again = linksTurn({ linked: true, item: LATER });
+    await run(fire, again.deps as never);
+    assert.deepEqual(linkCalls(again), []);
+  });
+
+  test('without waits.issue, governor adds no link and reads no wait ticket', async () => {
+    const h = linksTurn({ file: NO_SECTION, board: { get state(): string { throw new Error('the wait ticket was read'); } } });
+    await run(fire, h.deps as never);
+    assert.deepEqual(linkCalls(h), []);
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
+    const bare = linksTurn({ file: NO_SECTION, ticket: ticketWith({ wait: { until: PAST } }), linked: true, item: PAST });
+    await run({ source: 'aws.events' }, bare.deps as never);
+    assert.deepEqual(linkCalls(bare), []);
+    assert.ok(!bare.calls.includes(`blocking #${WAIT_TICKET}`));
+  });
+
+  test('deleting a ticket\'s line removes its link, then its item', async () => {
+    const h = linksTurn({ ticket: ticketWith({}), linked: true, item: LATER });
+    await run(fire, h.deps as never);
+    assert.deepEqual(linkCalls(h), [`unblock #7 from ${BOARD_ID}`]);
+    assert.deepEqual([...h.waitItems], []);
+    assert.deepEqual(h.comments, []);
+  });
+
+  test('a date that has passed takes the link off, and keeps the item for the schedule fire', async () => {
+    const h = linksTurn({ ticket: ticketWith({ wait: { until: PAST } }), linked: true, item: PAST });
+    await run(fire, h.deps as never);
+    assert.deepEqual(linkCalls(h), [`unblock #7 from ${BOARD_ID}`]);
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, PAST]]);
+  });
+
+  test('a ticket linked with no line, and no item, gets one comment and keeps its link', async () => {
+    const h = linksTurn({ ticket: ticketWith({}), linked: true });
+    await run(fire, h.deps as never);
+    assert.deepEqual(linkCalls(h), []);
+    const told = h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNLINED_MARKER));
+    assert.equal(told.length, 1, JSON.stringify(h.comments));
+    const thread = told.map((c, i) => ({ id: i + 1, body: c.body, created_at: new Date(NOW).toISOString(), ours: true }));
+    const again = linksTurn({ ticket: ticketWith({}), linked: true, thread });
+    await run(fire, again.deps as never);
+    assert.deepEqual([again.comments, linkCalls(again)], [[], []]);
+  });
+
+  test('the bare fire finds a ticket linked by hand with no line from the wait ticket\'s blocking list, and comments once', async () => {
+    const h = linksTurn({ ticket: ticketWith({}), linked: true, blocking: [{ number: 7, state: 'open', title: 'Issue 7', repo: REPO }, { number: 7, state: 'open', title: 'Elsewhere', repo: 'acme/other' }] });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(linkCalls(h), []);
+    assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNLINED_MARKER)).length, 1, JSON.stringify(h.comments));
+  });
+
+  test('the bare fire removes the link of a wait that ended before it reads the backlog, and a ticket not ready still gets its comment and spec session', async () => {
+    // The ticket's dependency summary still counts the link it just lost.
+    const h = linksTurn({ ticket: ticketWith({ wait: { until: PAST }, openBlockers: 1 }), linked: true, item: PAST });
+    await run({ source: 'aws.events' }, h.deps as never);
+    const unlink = h.calls.indexOf(`unblock #7 from ${BOARD_ID}`);
+    assert.ok(unlink >= 0, h.calls.join('; '));
+    assert.ok(unlink < h.calls.indexOf('read the backlog'), h.calls.join('; '));
+    assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(waitEndedMarker(PAST))).length, 1, JSON.stringify(h.comments));
+    assert.equal(h.launches.filter((l) => l.sessionName === sessionName(7, 'Issue 7')).length, 1);
+    assert.deepEqual([...h.waitItems], []);
+  });
+
+  test('the bare fire removes the link of a ready ticket whose wait ended, before the sweep', async () => {
+    const h = linksTurn({ ticket: ticketWith({ wait: { until: PAST }, labels: READY, openBlockers: 1 }), linked: true, item: PAST });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.ok(h.calls.indexOf(`unblock #7 from ${BOARD_ID}`) >= 0 && h.calls.indexOf(`unblock #7 from ${BOARD_ID}`) < h.calls.indexOf('read the backlog'), h.calls.join('; '));
+    assert.deepEqual([...h.waitItems], []);
+  });
+
+  test('a link refused on GitHub\'s cap is skipped with one comment, and the ticket stays held by its line', async () => {
+    const refused = { addBlocker: async () => { throw capRefusal(); } };
+    const h = linksTurn(refused);
+    const result = await run(fire, h.deps as never) as Record<string, unknown>;
+    assert.equal(result.kind, 'wait');
+    const told = h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_FULL_MARKER));
+    assert.equal(told.length, 1, JSON.stringify(h.comments));
+    assert.match(told[0]!.body, new RegExp(`#${WAIT_TICKET}`));
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
+    const thread = told.map((c, i) => ({ id: i + 1, body: c.body, created_at: new Date(NOW).toISOString(), ours: true }));
+    const again = linksTurn({ ...refused, thread });
+    await run(fire, again.deps as never);
+    assert.deepEqual(again.comments, []);
+  });
+
+  test('a closed wait ticket gets no links, and the turn logs at warn', async () => {
+    const h = linksTurn({ board: { ...WAIT_BOARD, state: 'closed' } });
+    await run(fire, h.deps as never);
+    assert.deepEqual(linkCalls(h), []);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-wait-link' && l.level === 'warn' && l.issue === 7), JSON.stringify(h.logged));
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
   });
 });
 
@@ -6200,7 +6359,8 @@ describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval 
           backlogReads += 1;
           return base.deps.reader(token).readyIssues();
         },
-        blocking: async () => [{ number: 9, state: 'open', title: 'Issue 9' }],
+        // The wait ticket blocks nothing here: no ticket is linked to it.
+        blocking: async (n: number) => (n === WAIT_TICKET ? [] : [{ number: 9, state: 'open', title: 'Issue 9' }]),
         issue: async (n: number) => (n === BEAT.issue ? { number: n, body: issue.body, pull: false } : { number: n, body: 'someone\'s ticket', pull: false }),
         updateIssue: async (n: number, { body }: { body: string }) => {
           assert.equal(n, BEAT.issue, 'only the heartbeat issue is written');

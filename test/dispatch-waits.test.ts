@@ -16,6 +16,7 @@ import { droppedBy, switchOf } from '../dispatch/webhook/switches.mjs';
 import { GENERIC_SWITCHES, configSchema } from '../dispatch/repo-config.mjs';
 import { waitOf } from '../scripts/lib/ready-work.mjs';
 import { dynamoState } from '../dispatch/turn.mjs';
+import { githubReader } from '../scripts/lib/github-app.mjs';
 import { PROMPTS } from '../dispatch/prompts.mjs';
 import { WAIT_ENDED_MARKER, WAIT_PROMPT, endedWaits, holdWait, waitEndedComment, waitEndedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
 
@@ -267,5 +268,55 @@ describe('a waiting ticket that is gone or moved', () => {
     const { reader } = readerWith(async () => { throw gone(410); });
     assert.equal(await holdWait({ reader, state, repo: REPO, issue: 7, labels: LABELS, now: NOW, log: () => {} }), 'dropped');
     assert.deepEqual(dropped, [[REPO, 7, '2026-11-05']]);
+  });
+});
+
+describe('the reader: a ticket\'s link to the wait ticket', () => {
+  /** A fetch answering `status` to every call, and the calls it saw. */
+  const fakeFetch = (status: number, body: unknown = {}) => {
+    const seen: Array<{ method: string; path: string; body: unknown }> = [];
+    const fetch = async (url: string, init?: RequestInit) => {
+      seen.push({ method: init?.method ?? 'GET', path: new URL(url).pathname, body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      return status === 204 ? new Response(null, { status }) : new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+    };
+    return { seen, fetch: fetch as unknown as typeof globalThis.fetch };
+  };
+  const sleep = async () => {};
+
+  test('a link names its blocker by id, under the ticket\'s blocked_by list', async () => {
+    const { seen, fetch } = fakeFetch(201);
+    await githubReader({ token: 't', repo: REPO, fetch, sleep }).addBlocker(7, 9413);
+    assert.deepEqual(seen, [{ method: 'POST', path: `/repos/${REPO}/issues/7/dependencies/blocked_by`, body: { issue_id: 9413 } }]);
+  });
+
+  test('a removal names its blocker by id, and a link already gone is no failure', async () => {
+    const { seen, fetch } = fakeFetch(204);
+    await githubReader({ token: 't', repo: REPO, fetch, sleep }).removeBlocker(7, 9413);
+    assert.deepEqual(seen.map((s) => `${s.method} ${s.path}`), [`DELETE /repos/${REPO}/issues/7/dependencies/blocked_by/9413`]);
+    await githubReader({ token: 't', repo: REPO, fetch: fakeFetch(404, { message: 'Not Found' }).fetch, sleep }).removeBlocker(7, 9413);
+    await assert.rejects(githubReader({ token: 't', repo: REPO, fetch: fakeFetch(422, { message: 'Validation Failed' }).fetch, sleep }).removeBlocker(7, 9413), /422/);
+  });
+
+  test('a blocker row and a ticket carry their ids', async () => {
+    const rows = await githubReader({ token: 't', repo: REPO, fetch: fakeFetch(200, [{ id: 9413, number: 413, state: 'open', title: 'Waits' }]).fetch, sleep }).blockers(7);
+    assert.deepEqual(rows, [{ number: 413, state: 'open', title: 'Waits', id: 9413 }]);
+    const ticket = await githubReader({ token: 't', repo: REPO, fetch: fakeFetch(200, { id: 9413, number: 413, state: 'open', title: 'Waits', body: '', labels: [] }).fetch, sleep }).ticket(413);
+    assert.equal(ticket.id, 9413);
+  });
+});
+
+describe('the config file\'s wait ticket', () => {
+  const file = (waits: unknown) => ({ environment: 'env_01FACTORY', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { waits: true }, workflows: {}, waits });
+
+  test('`waits: { issue }` names the wait ticket, and anything else there is a fault', () => {
+    assert.equal(configSchema.safeParse(file({ issue: 413 })).success, true);
+    for (const bad of [{}, { issue: 0 }, { issue: 'one' }, { issue: 413, issues: [414] }]) {
+      assert.equal(configSchema.safeParse(file(bad)).success, false, JSON.stringify(bad));
+    }
+  });
+
+  test('the section is optional', () => {
+    const { waits: _, ...without } = file(undefined);
+    assert.equal(configSchema.safeParse(without).success, true);
   });
 });

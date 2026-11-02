@@ -859,6 +859,22 @@
       ],
       "additionalProperties": false
     },
+    "waits": {
+      "description": "`{ \"issue\": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing.",
+      "type": "object",
+      "properties": {
+        "issue": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "description": "The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50."
+        }
+      },
+      "required": [
+        "issue"
+      ],
+      "additionalProperties": false
+    },
     "pickup": {
       "description": "`{ \"sweepHours\": <number> }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default one, which sweeps at every fire.",
       "type": "object",
