@@ -10,6 +10,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_DEDUP_WINDOW_MS, HOOK_TEXT_LIMIT, spellDuration, hookKey, hookPath, hookSignature, readSignature } from '../dispatch/webhook/hook.mjs';
 import { handle } from '../dispatch/webhook/route.mjs';
@@ -163,6 +164,24 @@ describe('handle — a hook fire', () => {
       assert.equal(response.body, HOOK_CLOCK_REASON, `t ${t - T}`);
     }
     assert.equal(HOOK_CLOCK_REASON, 'the signature\'s time is more than 30 seconds ahead of the receiver\'s clock or more than 4 minutes 10 seconds behind it');
+  });
+
+  // The docs state the clock limits by hand, so a changed constant would
+  // leave them telling callers the old limit. Every duration followed by
+  // "ahead" or "behind" in them must be the constant's own spelling.
+  test('the docs state the clock limits the constants hold', () => {
+    const limits = { ahead: spellDuration(HOOK_CLOCK_AHEAD_MS), behind: spellDuration(HOOK_CLOCK_BEHIND_MS) };
+    const stated = /((?:\d+(?:\.\d+)? (?:minutes?|seconds?) )+)(ahead|behind)\b/g;
+    for (const [file, places] of [['README.md', 2], ['docs/how-it-works.md', 2]] as const) {
+      const text = readFileSync(resolve(REPO_ROOT, file), 'utf8');
+      const found = { ahead: 0, behind: 0 };
+      for (const [, duration, side] of text.matchAll(stated)) {
+        const which = side as keyof typeof limits;
+        assert.equal(duration?.trim(), limits[which], `${file} states a limit ${which} that is not ${limits[which]}`);
+        found[which] += 1;
+      }
+      assert.deepEqual(found, { ahead: places, behind: places }, `${file} states each clock limit in its hook row and its 401 row`);
+    }
   });
 
   test('a duration is spelled in minutes and seconds', () => {
