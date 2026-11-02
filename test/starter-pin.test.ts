@@ -150,6 +150,19 @@ describe('pinnedInputProblems', () => {
     }
   });
 
+  test('tells a shallow clone that holds the pin but not its ancestry to unshallow, not that the pin is off main', () => {
+    const shallow = mkdtempSync(join(tmpdir(), 'starter-pin-shallow-'));
+    try {
+      execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repo.dir}`, shallow]);
+      // Protocol v2 lets a fetch name a commit no ref points at.
+      execFileSync('git', ['-c', 'protocol.version=2', 'fetch', '-q', '--depth', '1', 'origin', repo.onMain], { cwd: shallow });
+      const got = pinnedInputProblems({ cwd: shallow, main: 'origin/main', sha: repo.onMain, path: CHECKER, passed: STARTER_WITH });
+      assert.deepEqual(got, [`this clone is shallow, so it cannot tell whether the pinned commit ${repo.onMain.slice(0, 12)} is on main: run git fetch --unshallow origin, or check out with fetch-depth: 0`]);
+    } finally {
+      rmSync(shallow, { recursive: true, force: true });
+    }
+  });
+
   test('accepts an expression passed to a number or boolean input, as GitHub does', () => {
     const got = pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.typed, path: CHECKER, passed: { 'tolerance-hours': '${{ vars.HOURS }}', strict: '${{ inputs.strict }}' } });
     assert.deepEqual(got, []);
