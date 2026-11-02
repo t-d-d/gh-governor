@@ -138,8 +138,41 @@ describe('fitness: lint refuses a dynamic import of the readiness checks (dispat
     assert.deepEqual(await refusals('dispatch/new-path.mjs', `import('../scripts/lib/ready-work.mjs');\n`), []);
   });
 
+  test('a then() callback that reads arguments, whose names lint cannot read, is refused', async () => {
+    assert.equal((await refusals('dispatch/new-path.mjs', `export const x = import('../scripts/lib/ready-work.mjs').then(function ({ ticketStatus }) { return [ticketStatus, arguments[0].isBlocked]; });\n`)).length, 1);
+    assert.equal((await refusals('dispatch/new-path.mjs', `export const x = import('../scripts/lib/ready-work.mjs').then(function () { return (() => arguments[0].waitHolds)(); });\n`)).length, 1);
+    assert.deepEqual(await refusals('dispatch/new-path.mjs', `export const x = import('../scripts/lib/ready-work.mjs').then(function ({ ticketStatus }) { return ticketStatus; });\n`), []);
+    assert.deepEqual(await refusals('dispatch/new-path.mjs', `export const x = import('../scripts/lib/ready-work.mjs').then(function ({ ticketStatus }) { return [ticketStatus, ticketStatus.arguments, function () { return arguments; }]; });\n`), []);
+  });
+
   test('ready-work.mjs itself and tests stay outside', async () => {
     assert.deepEqual(await refusals('scripts/lib/ready-work.mjs', `const { isBlocked } = await import('./ready-work.mjs');\nexport const x = isBlocked;\n`), []);
     assert.deepEqual(await refusals('test/new-path.test.ts', `const { isBlocked } = await import('../scripts/lib/ready-work.mjs');\nexport const x = isBlocked;\n`), []);
+  });
+});
+
+describe('fitness: lint refuses a require of ready-work.mjs (dispatcher-repos.md)', () => {
+  test('a require of ready-work.mjs is refused, whatever it takes', async () => {
+    const found = await refusals('dispatch/new-path.mjs', `import { createRequire } from 'node:module';\nexport const x = createRequire(import.meta.url)('../scripts/lib/ready-work.mjs').isBlocked;\n`);
+    assert.equal(found.length, 1, 'a createRequire call passed lint');
+    assert.match(found[0] ?? '', /ticketStatus/);
+    assert.equal((await refusals('dispatch/new-path.js', `export const x = require('../scripts/lib/ready-work.mjs').ticketStatus;\n`)).length, 1);
+    assert.equal((await refusals('scripts/lib/new-path.mjs', `import { createRequire } from 'node:module';\nconst load = createRequire(import.meta.url);\nexport const x = load(\`./ready-work.mjs?v=1\`);\n`)).length, 1);
+  });
+
+  test('a kept caller may not require ready-work.mjs either', async () => {
+    assert.equal((await refusals('dispatch/waits.mjs', `export const x = require('../scripts/lib/ready-work.mjs').isWaiting;\n`)).length, 1);
+  });
+
+  test('a require of another module stays allowed', async () => {
+    assert.deepEqual(await refusals('dispatch/new-path.js', `export const x = require('./other.mjs').isBlocked;\n`), []);
+  });
+});
+
+describe('fitness: a query or fragment does not hide the module from a static import (dispatcher-repos.md)', () => {
+  test('a static import or export-from with a suffix is refused', async () => {
+    assert.equal((await refusals('dispatch/new-path.mjs', `import { isBlocked } from '../scripts/lib/ready-work.mjs?v=1';\nexport const x = isBlocked;\n`)).length, 1);
+    assert.equal((await refusals('dispatch/new-path.mjs', `import { isBlocked } from '../scripts/lib/ready-work.mjs#x';\nexport const x = isBlocked;\n`)).length, 1);
+    assert.equal((await refusals('dispatch/new-path.mjs', `export { labelRow } from '../scripts/lib/ready-work.mjs?v=1';\n`)).length, 1);
   });
 });
