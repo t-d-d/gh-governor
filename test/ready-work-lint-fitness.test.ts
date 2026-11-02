@@ -22,6 +22,12 @@ const refusals = async (path: string, code: string) => {
   return results.flatMap((r) => r.messages).filter((m) => m.ruleId === 'no-restricted-imports').map((m) => m.message);
 };
 
+/** The dynamic-import messages eslint gives `code` linted as the file at `path`. */
+const dynamicRefusals = async (path: string, code: string) => {
+  const results = await eslint.lintText(code, { filePath: `${root}${path}` });
+  return results.flatMap((r) => r.messages).filter((m) => m.ruleId === 'governor/no-dynamic-readiness-checks').map((m) => m.message);
+};
+
 describe('fitness: lint refuses a new caller of the readiness checks (dispatcher-repos.md)', () => {
   for (const name of CHECKS) {
     test(`a file in dispatch/ may not import ${name}`, async () => {
@@ -56,5 +62,64 @@ describe('fitness: lint refuses a new caller of the readiness checks (dispatcher
 
   test('tests may import the checks, since they test them directly', async () => {
     assert.deepEqual(await refusals('test/new-path.test.ts', `import { isBlocked } from '../scripts/lib/ready-work.mjs';\nexport const x = isBlocked;\n`), []);
+  });
+});
+
+describe('fitness: lint refuses a dynamic import of the readiness checks (dispatcher-repos.md)', () => {
+  for (const name of CHECKS) {
+    test(`a file in dispatch/ may not destructure ${name} from import()`, async () => {
+      const found = await dynamicRefusals('dispatch/new-path.mjs', `const { ${name} } = await import('../scripts/lib/ready-work.mjs');\nexport const x = ${name};\n`);
+      assert.equal(found.length, 1, `${name} imported dynamically in dispatch/ passed lint`);
+      assert.match(found[0] ?? '', /ticketStatus/);
+    });
+  }
+
+  test('a file in scripts/ may not destructure a check from import() either', async () => {
+    assert.equal((await dynamicRefusals('scripts/lib/new-path.js', `const { isBlocked: b } = await import('./ready-work.mjs');\nexport const x = b;\n`)).length, 1);
+  });
+
+  test('a check read off the awaited module is refused', async () => {
+    assert.equal((await dynamicRefusals('dispatch/new-path.mjs', `export const x = (await import('../scripts/lib/ready-work.mjs')).waitHolds;\n`)).length, 1);
+    assert.equal((await dynamicRefusals('dispatch/new-path.mjs', `export const x = (await import('../scripts/lib/ready-work.mjs'))['labelRow'];\n`)).length, 1);
+  });
+
+  test('a check taken in a then() callback is refused', async () => {
+    assert.equal((await dynamicRefusals('dispatch/new-path.mjs', `export const x = import('../scripts/lib/ready-work.mjs').then(({ heldUnreadied }) => heldUnreadied);\n`)).length, 1);
+  });
+
+  test('a module kept whole, whose names lint cannot read, is refused', async () => {
+    assert.equal((await dynamicRefusals('dispatch/new-path.mjs', `const m = await import('../scripts/lib/ready-work.mjs');\nexport const x = m;\n`)).length, 1);
+    assert.equal((await dynamicRefusals('dispatch/new-path.mjs', `const { ticketStatus, ...rest } = await import('../scripts/lib/ready-work.mjs');\nexport const x = [ticketStatus, rest];\n`)).length, 1);
+  });
+
+  test('ticketStatus and the other exports stay importable with import()', async () => {
+    assert.deepEqual(await dynamicRefusals('dispatch/new-path.mjs', `const { ticketStatus, mayPickUp, mayStartSpec } = await import('../scripts/lib/ready-work.mjs');\nexport const x = [ticketStatus, mayPickUp, mayStartSpec];\n`), []);
+    assert.deepEqual(await dynamicRefusals('dispatch/new-path.mjs', `export const x = (await import('../scripts/lib/ready-work.mjs')).ticketStatus;\n`), []);
+  });
+
+  test('another module stays importable with import()', async () => {
+    assert.deepEqual(await dynamicRefusals('dispatch/new-path.mjs', `const m = await import('./other.mjs');\nexport const x = m.isBlocked;\n`), []);
+  });
+
+  test('checklist.mjs keeps labelRow, and waits.mjs keeps isWaiting, but no other check', async () => {
+    assert.deepEqual(await dynamicRefusals('dispatch/checklist.mjs', `const { labelRow } = await import('../scripts/lib/ready-work.mjs');\nexport const x = labelRow;\n`), []);
+    assert.deepEqual(await dynamicRefusals('dispatch/waits.mjs', `const { isWaiting } = await import('../scripts/lib/ready-work.mjs');\nexport const x = isWaiting;\n`), []);
+    assert.equal((await dynamicRefusals('dispatch/checklist.mjs', `const { isBlocked } = await import('../scripts/lib/ready-work.mjs');\nexport const x = isBlocked;\n`)).length, 1);
+    assert.equal((await dynamicRefusals('dispatch/waits.mjs', `const { labelRow } = await import('../scripts/lib/ready-work.mjs');\nexport const x = labelRow;\n`)).length, 1);
+  });
+
+  test('a query or fragment on the path does not hide the module', async () => {
+    assert.equal((await dynamicRefusals('dispatch/new-path.mjs', `const { isBlocked } = await import('../scripts/lib/ready-work.mjs?v=1');\nexport const x = isBlocked;\n`)).length, 1);
+    assert.equal((await dynamicRefusals('dispatch/new-path.mjs', `const { isBlocked } = await import('../scripts/lib/ready-work.mjs#x');\nexport const x = isBlocked;\n`)).length, 1);
+  });
+
+  test('an import() kept only for its side effects takes no check', async () => {
+    assert.deepEqual(await dynamicRefusals('dispatch/new-path.mjs', `await import('../scripts/lib/ready-work.mjs');\n`), []);
+    assert.deepEqual(await dynamicRefusals('dispatch/new-path.mjs', `import('../scripts/lib/ready-work.mjs');\n`), []);
+  });
+
+  test('ready-work.mjs itself and tests stay outside', async () => {
+    assert.deepEqual(await dynamicRefusals('scripts/lib/ready-work.mjs', `const { isBlocked } = await import('./ready-work.mjs');\nexport const x = isBlocked;\n`), []);
+    assert.deepEqual(await dynamicRefusals('test/new-path.test.ts', `const { isBlocked } = await import('../scripts/lib/ready-work.mjs');\nexport const x = isBlocked;\n`), []);
   });
 });
