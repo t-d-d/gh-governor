@@ -23,6 +23,7 @@
  * | carries an `exclude` label | nothing | |
  * | is claimed | messages the session its dispatch marker names | `unblocked` |
  * | is ready | picks it up as pickup does, the close's facts in the prompt | `pickup` |
+ * | is not ready, and its body names a session | messages that session, its owner, to rewrite its own spec, and starts the spec session only if it refuses as archived; held as the next row is | `unblocked` |
  * | is not ready | starts a spec session with a marker and no claim, unless governor unreadied it on a not-planned close and nobody has answered since | `unblocked` |
  *
  * A not-planned close takes a ready, unclaimed ticket's ready labels off
@@ -40,6 +41,16 @@
  * The last row is pickup's reverse: the prompt tells the session to add the
  * claim label itself before it builds. The marker keeps the sweep off the
  * ticket inside the dispatch window, and the claim keeps it off after.
+ *
+ * A ticket's owner is the session whose link ends its body (`sessionNamedIn`,
+ * dispatch/webhook/subscribe.mjs), and Claude Code ends any body a session
+ * writes with its own link. So the spec work goes to the owner first: a
+ * fresh session that rewrote the body would take the ticket from it, and
+ * the owner would hear nothing more of it. The owner's message has the spec
+ * session as its fallback (`deliver`, dispatch/deliveries.mjs), which
+ * counts against DispatchCap as the launch it replaces does. A ready
+ * ticket's pickup session is asked to say what the merge changed in a
+ * comment and its PR description, and to leave an owned body to its owner.
  *
  * Pure: dispatch/unblocked-fire.mjs reads and writes.
  */
@@ -230,10 +241,52 @@ export const specSession = ({ issue, title, facts, kind, labels, prompts }) => {
     lead ? `Spec #${issue} '${lead}'` : `Spec #${issue}`,
     '',
     facts,
-    instruction(prompts, kind, { issue, ready: labels.ready.map((l) => `\`${l}\``).join(' and '), claim: labels.claim }),
+    instruction(prompts, kind, specFills(issue, labels)),
     UNATTENDED,
   ].join('\n');
 };
+
+/**
+ * The facts a spec ask names: the ticket, its repo's ready labels and its claim label.
+ *
+ * @param {number} issue
+ * @param {{ ready: readonly string[], claim: string }} labels
+ */
+const specFills = (issue, labels) => ({ issue, ready: labels.ready.map((l) => `\`${l}\``).join(' and '), claim: labels.claim });
+
+/**
+ * The message a not-ready ticket's owner, the session its body names, gets
+ * in place of a spec session: the facts of what freed the ticket and the
+ * repo's instruction of `kind`, asking it to rewrite the spec in its own
+ * body. Its link stays the body's, so it keeps the ticket. A blocker's
+ * close ({@link ownerSpecMessage}) and an ended wait (dispatch/waits.mjs)
+ * both send one.
+ *
+ * @param {{ issue: number, facts: string, kind: 'unblockedOwnerSpec' | 'waitEndedOwnerSpec', labels: { ready: readonly string[], claim: string }, prompts: Record<string, string | undefined> }} args
+ */
+export const ownerMessage = ({ issue, facts, kind, labels, prompts }) => `${facts}\n\n${instruction(prompts, kind, specFills(issue, labels))}`;
+
+/**
+ * What came of a not-ready ticket's owner's message, for the log: a
+ * blocker's close (dispatch/unblocked-fire.mjs) and an ended wait
+ * (dispatch/sweep.mjs) both log one.
+ *
+ * @param {{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }} told
+ * @param {string} unstarted Why no spec session started in place of an archived owner, where none was tried.
+ */
+export const ownerOutcome = (told, unstarted) => (told.ok ? 'its owner was asked to rewrite its spec'
+  : told.fallback !== null ? `its owner is archived; the spec session: ${told.fallback.outcome}`
+    : told.refused ? `its owner is archived, and ${unstarted}`
+      : 'its owner was not messaged');
+
+/**
+ * A not-ready ticket's owner's message on its blocker's close.
+ *
+ * @param {UnblockedFire & { repo?: string }} fire
+ * @param {Record<string, string | undefined>} prompts
+ * @param {{ ready: readonly string[], claim: string }} labels
+ */
+export const ownerSpecMessage = (fire, prompts, labels) => ownerMessage({ issue: fire.issue, facts: unblockedFacts(fire), kind: 'unblockedOwnerSpec', labels, prompts });
 
 /**
  * A claimed ticket's session's message: its blocker closed, by which PR.
