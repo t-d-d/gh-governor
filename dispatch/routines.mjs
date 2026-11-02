@@ -70,6 +70,12 @@ export class RoutinesApiError extends Error {
 export const refusedFire = (error) => error instanceof RoutinesApiError
   && (error.status === null || (error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429));
 
+/**
+ * The most pages of the routines list a launch reads. A list that still has
+ * more past them refuses, so a cursor that never ends cannot hold a turn.
+ */
+export const ROUTINE_PAGES = 10;
+
 /** How many times the routine's run sessions are read after a fire, and how long apart. */
 export const ROUTINE_SESSION_TRIES = 6;
 export const ROUTINE_SESSION_PAUSE_MS = 5_000;
@@ -83,14 +89,15 @@ const ANY_SESSION_ID = /\b(?:cse|session)_[A-Za-z0-9]+/g;
 /**
  * @typedef {{
  *   connectors: () => Promise<unknown>,
- *   triggers: () => Promise<unknown>,
+ *   triggers: (cursor?: string) => Promise<unknown>,
  *   create: (body: object) => Promise<unknown>,
  *   update: (id: string, body: object) => Promise<unknown>,
  *   run: (id: string) => Promise<unknown>,
  *   sessions: (id: string) => Promise<unknown>,
  * }} RoutinesApi
  *   The account's connector list (`GET /v1/mcp_servers`), its routines
- *   (`GET /v1/code/triggers`), a routine created or updated, one fired, and
+ *   (`GET /v1/code/triggers`, the page after `cursor` when one is given,
+ *   as `next_cursor` names it), a routine created or updated, one fired, and
  *   one's run sessions, each answer parsed. Any refusal throws, as a
  *   {@link RoutinesApiError} where its cause is known.
  * @typedef {{ connector_uuid: string, name: string, url: string }} Connection
@@ -189,7 +196,7 @@ export const observed = (api, log, { repo, periodic }) => {
   };
   return {
     connectors: () => watch('connectors', undefined, () => api.connectors()),
-    triggers: () => watch('triggers', undefined, () => api.triggers()),
+    triggers: (cursor) => watch('triggers', undefined, () => api.triggers(cursor)),
     create: (body) => watch('create', undefined, () => api.create(body)),
     update: (id, body) => watch('update', id, () => api.update(id, body)),
     run: (id) => watch('run', id, () => api.run(id)),
@@ -294,6 +301,32 @@ const rowsOf = (answer, what) => {
   return { rows, more: /** @type {any} */ (answer)?.has_more === true };
 };
 
+/**
+ * The routine named `name` in the routines list, reading one page after
+ * another while the list has more and the routine is not yet found. The
+ * first page is the one already read. A list that has more past
+ * {@link ROUTINE_PAGES} pages, or names no cursor for its next page, throws:
+ * the routine may stand on a page not read, and creating it then would put a
+ * second routine beside it.
+ *
+ * @param {RoutinesApi} api
+ * @param {unknown} first
+ * @param {string} name
+ * @returns {Promise<any>}
+ */
+const findRoutine = async (api, first, name) => {
+  let answer = first;
+  for (let page = 1; ; page += 1) {
+    const { rows, more } = rowsOf(answer, 'the routines list');
+    const found = rows.find((r) => r?.name === name);
+    if (found !== undefined || !more) return found;
+    if (page >= ROUTINE_PAGES) throw new Error(`the routines list runs past ${ROUTINE_PAGES} pages without ${name}: none is created, so no second routine stands beside it`);
+    const cursor = /** @type {any} */ (answer)?.next_cursor;
+    if (typeof cursor !== 'string' || cursor === '') throw new Error(`the routines list has more past page ${page} but names no cursor for it, and ${name} is not on the pages read: none is created, so no second routine stands beside it`);
+    answer = await api.triggers(cursor);
+  }
+};
+
 /** A session link for an id of either form, or null. @param {unknown} id */
 const linkOf = (id) => {
   const bare = typeof id === 'string' ? SESSION_ID.exec(id)?.[1] : undefined;
@@ -352,9 +385,7 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
       },
       mcp_connections: found.connections,
     };
-    const { rows, more } = rowsOf(listedRoutines, 'the routines list');
-    const existing = rows.find((r) => r?.name === name);
-    if (existing === undefined && more) return { status: 1, output: `the routines list runs past one page without ${name}: none is created, so no second routine stands beside it` };
+    const existing = await findRoutine(api, listedRoutines, name);
     if (existing === undefined) {
       const created = /** @type {any} */ (await api.create(body));
       if (typeof created?.id !== 'string' || created.id === '') return { status: 1, output: `the routine ${name} was created with no id` };

@@ -1762,7 +1762,7 @@ export const routinesApi = (token, organization) => {
   };
   return {
     connectors: () => call('GET', '/v1/mcp_servers?limit=1000', CONNECTORS_BETA),
-    triggers: () => call('GET', '/v1/code/triggers', ROUTINES_BETA),
+    triggers: (cursor) => call('GET', cursor === undefined ? '/v1/code/triggers' : `/v1/code/triggers?cursor=${encodeURIComponent(cursor)}`, ROUTINES_BETA),
     create: (body) => call('POST', '/v1/code/triggers', ROUTINES_BETA, body),
     update: async (id, body) => call('POST', trigger(id), ROUTINES_BETA, body),
     run: async (id) => call('POST', `${trigger(id)}/run`, ROUTINES_BETA, {}),
