@@ -108,7 +108,18 @@ describe('fitness: lint refuses a dynamic import of the readiness checks (dispat
     assert.equal((await dynamicRefusals('dispatch/waits.mjs', `const { labelRow } = await import('../scripts/lib/ready-work.mjs');\nexport const x = labelRow;\n`)).length, 1);
   });
 
+  test('a query or fragment on the path does not hide the module', async () => {
+    assert.equal((await dynamicRefusals('dispatch/new-path.mjs', `const { isBlocked } = await import('../scripts/lib/ready-work.mjs?v=1');\nexport const x = isBlocked;\n`)).length, 1);
+    assert.equal((await dynamicRefusals('dispatch/new-path.mjs', `const { isBlocked } = await import('../scripts/lib/ready-work.mjs#x');\nexport const x = isBlocked;\n`)).length, 1);
+  });
+
+  test('an import() kept only for its side effects takes no check', async () => {
+    assert.deepEqual(await dynamicRefusals('dispatch/new-path.mjs', `await import('../scripts/lib/ready-work.mjs');\n`), []);
+    assert.deepEqual(await dynamicRefusals('dispatch/new-path.mjs', `import('../scripts/lib/ready-work.mjs');\n`), []);
+  });
+
   test('ready-work.mjs itself and tests stay outside', async () => {
+    assert.deepEqual(await dynamicRefusals('scripts/lib/ready-work.mjs', `const { isBlocked } = await import('./ready-work.mjs');\nexport const x = isBlocked;\n`), []);
     assert.deepEqual(await dynamicRefusals('test/new-path.test.ts', `const { isBlocked } = await import('../scripts/lib/ready-work.mjs');\nexport const x = isBlocked;\n`), []);
   });
 });

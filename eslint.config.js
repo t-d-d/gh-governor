@@ -25,7 +25,7 @@ const refuseChecks = (allowed) => [
 // import of ready-work.mjs answers to its own rule, with the same checks.
 const refuseDynamicChecks = (allowed) => [
   "error",
-  allowed === undefined ? { checks: READINESS_CHECKS } : { checks: READINESS_CHECKS, allowed },
+  { checks: READINESS_CHECKS, ...(allowed === undefined ? {} : { allowed }) },
 ];
 
 export default [

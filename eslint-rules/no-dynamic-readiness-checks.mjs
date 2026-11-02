@@ -20,7 +20,8 @@
 /** @typedef {import('estree').Node} Node */
 /** @typedef {import('estree').Pattern} Pattern */
 
-const TARGET = /(^|\/)ready-work\.mjs$/;
+// A query or fragment on the specifier still loads the same module.
+const TARGET = /(^|\/)ready-work\.mjs([?#].*)?$/s;
 
 /** @param {Node} source */
 const sourceText = (source) => {
@@ -71,7 +72,12 @@ const namesReadOff = (node) => {
 const namesTaken = (node) => {
   /** @type {(Node & { parent?: Node }) | undefined} */
   const parent = node.parent;
-  if (parent?.type === 'AwaitExpression') return namesReadOff(parent);
+  // An import() kept only for its side effects takes no name.
+  if (parent?.type === 'ExpressionStatement') return [];
+  if (parent?.type === 'AwaitExpression') {
+    if (parent.parent?.type === 'ExpressionStatement') return [];
+    return namesReadOff(parent);
+  }
   if (
     parent?.type === 'MemberExpression'
     && parent.object === node
