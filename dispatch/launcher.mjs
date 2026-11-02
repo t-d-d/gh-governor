@@ -148,7 +148,7 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  * @typedef {Omit<Launch, 'repo' | 'environment'> & Partial<Pick<Launch, 'repo' | 'environment'>>} Asked
  *   A launch as its caller asks for it: in the fire's repo and that repo's
  *   environment unless it names its own.
- * @typedef {{ outcome: 'dispatched' | 'unconfirmed' | 'failed', sessionUrl: string | null, status: number | null, output: string, missing?: string[], refused?: true }} Started
+ * @typedef {{ outcome: import('./deliveries.mjs').LaunchOutcome, sessionUrl: string | null, status: number | null, output: string, missing?: string[], refused?: true }} Started
  *   What came of a launch, and the URL where the launcher printed one and
  *   did not fail.
  * @typedef {{ start: (launch: Asked, until?: number) => Promise<Started> }} Launcher
@@ -169,9 +169,10 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  * In a repo whose file turns `waits` on, the line on making a ticket wait
  * follows it (`WAIT_PROMPT`, dispatch/waits.mjs).
  * A launch runs under the turn's budget (`budgeted`), cut to `until`.
- * One its budget refuses pages once, at the refusal, since the
- * launcher runs on: the budget calls the page back. A session it prints later is logged at info with its
- * name and URL, so the operator can tie it to that page, and recorded.
+ * One its budget refuses pages once, at the refusal, since the launcher
+ * runs on: the budget calls the page back. A session it prints later is
+ * logged at info with its name and URL, so the operator can tie it to that
+ * page, and recorded.
  * The turn waits for that record while it is still waiting for others.
  * Once it has ended, nothing waits for it, so it pages again, naming the
  * session, before the write is tried.
@@ -187,7 +188,8 @@ export const launcher = (deps) => {
    *
    * @param {Launch} begin
    * @param {() => boolean} paged Whether its budget already paged on it.
-   * @returns {Promise<LaunchResult>}
+   * @returns {Promise<LaunchResult & { sessionUrl: string | null }>} `sessionUrl`:
+   *   the one its output names, whatever its outcome.
    */
   const launchAndRecord = async (begin, paged) => {
     const launched = begin.connectors !== undefined && begin.connectors.length > 0 ? await deps.routine(begin, begin.connectors) : await deps.cli(begin);
@@ -225,7 +227,7 @@ export const launcher = (deps) => {
         : 'the routine was fired, but none of its run sessions could be named as this fire\'s, so the session could not be named or recorded: look in the routine\'s run sessions for one started shortly before this line\'s time. Its PRs may clear a human-only path on a ticket\'s mode label';
       deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, status: launched.status, ...routine, reason });
     }
-    return launched;
+    return { ...launched, sessionUrl };
   };
   /** @type {Launcher['start']} */
   const start = async (asked, until) => {
@@ -238,9 +240,9 @@ export const launcher = (deps) => {
       paged = true;
       deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, reason: 'the launch ran past its budget and may have started a session, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label' });
     };
-    const { status, output, missing, refused } = await deps.budgeted(() => launchAndRecord(begin, () => paged), begin.sessionName, until, onOver);
+    const { status, output, missing, refused, sessionUrl } = await deps.budgeted(() => launchAndRecord(begin, () => paged), begin.sessionName, until, onOver);
     const outcome = launchOutcome(status) ?? 'failed';
-    return { outcome, sessionUrl: outcome === 'failed' ? null : sessionUrlFrom(output), status, output, ...(missing === undefined ? {} : { missing }), ...(refused === undefined ? {} : { refused }) };
+    return { outcome, sessionUrl: outcome === 'failed' ? null : sessionUrl, status, output, ...(missing === undefined ? {} : { missing }), ...(refused === undefined ? {} : { refused }) };
   };
   return { start };
 };

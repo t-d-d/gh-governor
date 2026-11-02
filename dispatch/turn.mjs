@@ -492,6 +492,19 @@ export const run = async (event, deps) => {
 const configIn = (served, repo) => served.find((s) => s.repo.toLowerCase() === repo.toLowerCase())?.config;
 
 /**
+ * A served repo's config, as {@link configIn} finds it, for a repo the turn
+ * must serve: one it does not is a throw.
+ *
+ * @param {import('./repos.mjs').Served[]} served
+ * @param {string} repo
+ */
+const servedConfig = (served, repo) => {
+  const found = configIn(served, repo);
+  if (found === undefined) throw new Error(`${repo} is not a repo this turn serves`);
+  return found;
+};
+
+/**
  * {@link run}'s turn, which pushes each launch's record onto `records`.
  *
  * @param {unknown} event
@@ -651,11 +664,7 @@ const turnOf = async (event, deps, records) => {
     },
     budgeted,
     fireRepo: repo,
-    environment: (launchRepo) => {
-      const own = configIn(served, launchRepo);
-      if (own === undefined) throw new Error(`${launchRepo} is not a repo this turn serves`);
-      return own.environment;
-    },
+    environment: (launchRepo) => servedConfig(served, launchRepo).environment,
     records,
     pending: deps.unrecorded,
     log: deps.log,
@@ -669,6 +678,8 @@ const turnOf = async (event, deps, records) => {
       ...deps,
       secret,
       githubToken: tokenFor,
+      // The launcher in place of the CLI, so nothing below starts a session past it.
+      launch: launches.start,
       message: async (message) => {
         const session = sessionId(message.session);
         if (!woken.has(session)) woken.set(session, deps.now());
@@ -697,7 +708,7 @@ const turnOf = async (event, deps, records) => {
     started,
     carried: 'dispatched' in turned && Array.isArray(turned.dispatched) ? turned.dispatched.filter((d) => d.repo.toLowerCase() === repo.toLowerCase()) : [],
     start: launches.start,
-    deps: { ...deps, secret, githubToken: tokenFor },
+    deps: { ...deps, secret, githubToken: tokenFor, launch: launches.start },
   });
   const eventBeats = checked?.beats ?? [];
   const periodics = checked === null ? null : { dispatched: checked.dispatched, unread: checked.unread };
@@ -1122,11 +1133,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    *
    * @param {string} repo
    */
-  const configOf = (repo) => {
-    const found = configIn(served, repo);
-    if (found === undefined) throw new Error(`${repo} is not a repo this turn serves`);
-    return found;
-  };
+  const configOf = (repo) => servedConfig(served, repo);
 
   /** One reader a repo a turn. @type {Map<string, Reader>} */
   const readers = new Map();
