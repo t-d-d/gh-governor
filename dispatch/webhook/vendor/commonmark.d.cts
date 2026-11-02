@@ -20,6 +20,8 @@ interface Walker {
 declare class Parser {
   constructor(options?: object);
   parse(input: string): Node;
+  /** Parses the text of each paragraph and heading once the blocks are read; replaced on an instance to skip it. */
+  processInlines(block: Node): void;
 }
 
 declare const commonmark: { Parser: typeof Parser };

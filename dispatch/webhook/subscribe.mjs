@@ -97,30 +97,53 @@ const lineSpans = (text) => {
  * @returns {Array<[number, number]>}
  */
 const quotedSpans = (text) => {
-  const quoted = new Set();
-  const walker = new commonmark.Parser().parse(text).walker();
+  const lines = lineSpans(text);
+  // Each block's range raises the count from its first line and lowers it
+  // after its last, so a line deep in many nested quotes costs one step,
+  // not one per quote around it.
+  const opened = new Int32Array(lines.length + 1);
+  const parser = new commonmark.Parser();
+  // Only the blocks' lines are read: the text inside a paragraph or a heading is not.
+  parser.processInlines = () => {};
+  const walker = parser.parse(text).walker();
   let depth = 0;
   for (let step = walker.next(); step; step = walker.next()) {
     const { node, entering } = step;
     if (node.type === 'block_quote') depth += entering ? 1 : -1;
     if (!entering || depth === 0 || !node.sourcepos) continue;
-    for (let line = node.sourcepos[0][0]; line <= node.sourcepos[1][0]; line++) quoted.add(line - 1);
+    const [[first], [last]] = node.sourcepos;
+    opened[first - 1] = (opened[first - 1] ?? 0) + 1;
+    opened[last] = (opened[last] ?? 0) - 1;
   }
-  return lineSpans(text).filter(([start, end], i) => quoted.has(i) && text.slice(start, end).trim() !== '');
+  let open = 0;
+  return lines.filter(([start, end], i) => {
+    open += opened[i] ?? 0;
+    return open > 0 && text.slice(start, end).trim() !== '';
+  });
 };
 
-/**
- * The last body read and its quoted spans. Each reader of a delivery asks
- * for the same body, so it is parsed once, not once per reader.
- *
- * @type {{ text: string, spans: Array<[number, number]> } | null}
- */
-let lastRead = null;
+/** How many bodies {@link spansOf} keeps: a remark and the PR or issue it is on, and a few to spare. */
+const KEPT_READS = 4;
 
-/** {@link quotedSpans}, for the last body read without a second parse. @param {string} text */
+/**
+ * The bodies read last and their quoted spans, the latest last. The
+ * receiver reads a remark and the body of the PR it is on in turn, many
+ * times each, so each is parsed once, not once per reader.
+ *
+ * @type {Map<string, Array<[number, number]>>}
+ */
+const lastReads = new Map();
+
+/** {@link quotedSpans}, for a body read lately without a second parse. @param {string} text */
 const spansOf = (text) => {
-  if (lastRead?.text !== text) lastRead = { text, spans: quotedSpans(text) };
-  return lastRead.spans;
+  let spans = lastReads.get(text);
+  if (spans === undefined) {
+    spans = quotedSpans(text);
+    if (lastReads.size >= KEPT_READS) lastReads.delete(lastReads.keys().next().value ?? '');
+  }
+  lastReads.delete(text);
+  lastReads.set(text, spans);
+  return spans;
 };
 
 /**

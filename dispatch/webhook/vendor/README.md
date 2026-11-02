@@ -32,6 +32,11 @@ footnotes.
 2. Put the new sha256 and version above, and the versions of entities and
    mdurl its `package.json` depends on. Replace each `LICENSE.*` from its
    package's tarball at that version.
-3. Run the comparison with cmark-gfm from the spike again
-   (`spike/quote-parser/compare.mjs` on the branch
-   `claude/quote-scanner-markdown-parser-z11iqy`), then the gate.
+3. Run the comparison with cmark-gfm from the spike again, then the gate.
+   The spike's script is `spike/quote-parser/compare.mjs` on the branch
+   `claude/quote-scanner-markdown-parser-z11iqy`. Its findings comment on
+   #249 says how it builds its bodies and reads them, so it can be written
+   again if the branch is gone.
+4. `subscribe.mjs` turns off inline parsing by replacing `processInlines`
+   on its parser. Check the new version still has that method; a test
+   fails if inline parsing runs.
