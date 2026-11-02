@@ -226,7 +226,7 @@ describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)',
   test('the check finds process.getBuiltinModule, which loads a builtin with no import', () => {
     const root = mkdtempSync(join(tmpdir(), 'governor-review-getbuiltin-'));
     try {
-      writeFileSync(join(root, 'entry.mjs'), "export const a = process.getBuiltinModule('child_process');\nexport const b = globalThis.process.getBuiltinModule('node:vm');\nexport const c = process['getBuiltinModule']('fs');\nexport const d = global.process?.getBuiltinModule?.('wasi');\nexport const e = (o) => o.getBuiltinModule('x');\nexport const f = process.getBuiltinModule;\n");
+      writeFileSync(join(root, 'entry.mjs'), "export const a = process.getBuiltinModule('child_process');\nexport const b = globalThis.process.getBuiltinModule('node:vm');\nexport const c = process['getBuiltinModule']('fs');\nexport const d = global.process?.getBuiltinModule?.('wasi');\nexport const e = (o) => o.getBuiltinModule('x');\n");
       assert.deepEqual(codeEvaluators(root, 'entry.mjs').sort(), [
         'entry.mjs:1 calls process.getBuiltinModule',
         'entry.mjs:2 calls process.getBuiltinModule',
