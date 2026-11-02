@@ -12,7 +12,7 @@ import { loadTemplate } from './helpers/cfn.ts';
 import { appliesStack, REPO_ROOT, usesAction } from './helpers/repo-model.ts';
 import { loadWorkflow, type WorkflowStep } from './helpers/workflow.ts';
 
-describe('fitness: no file names the old home, holds an id, or cites an issue of four or more digits (public-repo.md)', () => {
+describe('fitness: no file names the old home\'s repo, only a doc names the service, and none holds an id or cites an issue of four or more digits (public-repo.md)', () => {
   test('the scan reads every tracked file, with none exempted', () => {
     const files = trackedFiles();
     assert.ok(files.includes('scripts/public-repo-scan.mjs'));

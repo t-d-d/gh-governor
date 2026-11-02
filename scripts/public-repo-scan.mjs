@@ -4,9 +4,9 @@
  * tracked file, and every tracked file's path, and refuses:
  *
  *   - name:          the name of the private repo governor was extracted
- *                    from, in any case, outside a doc. The service shares
- *                    the repo's name, and a doc (the README, or Markdown
- *                    under docs/) may name the service and link its site;
+ *                    from, in any case. The service shares the repo's
+ *                    name, and a doc (the README, or Markdown under docs/)
+ *                    may name the service, bare, and link its site;
  *   - repo:          the private repo itself, in every file: its
  *                    `owner/name` path, which its GitHub URL holds too,
  *                    in any case;
@@ -36,15 +36,25 @@ const OLD_HOME = new RegExp(['pod', 'stow'].join(''), 'i');
 /** A doc may name the service: the README, or Markdown under docs/. */
 const isDoc = (/** @type {string} */ path) => path === 'README.md' || /^docs\/.+\.md$/.test(path);
 
-/** @type {Array<{ kind: string, pattern: RegExp, allow?: (match: string) => boolean, inDocs?: false }>} */
+/**
+ * In a doc, the name is refused unless it stands bare: joined to a word, a
+ * variable, a marker or an issue (`-`, `_`, `:` or `#`) it names the old
+ * code or the repo, not the service. Its site, the name and `.com`, passes.
+ */
+const NOT_BARE = new RegExp(`(?<=[A-Za-z0-9_-])${OLD_HOME.source}|${OLD_HOME.source}(?=[A-Za-z0-9_:#-])`, 'gi');
+
+/** @type {Array<{ kind: string, pattern: RegExp, allow?: (match: string) => boolean, inDoc?: RegExp }>} */
 const RULES = [
-  { kind: 'name', pattern: new RegExp(OLD_HOME.source, 'gi'), inDocs: false },
+  { kind: 'name', pattern: new RegExp(OLD_HOME.source, 'gi'), inDoc: NOT_BARE },
   { kind: 'repo', pattern: new RegExp(`[A-Za-z0-9_.-]+/${OLD_HOME.source}(?![A-Za-z0-9_-])`, 'gi') },
   { kind: 'account', pattern: /(?<![0-9])[0-9]{12}(?![0-9])/g, allow: (match) => match === '123456789012' },
   { kind: 'claude-id', pattern: /\b(?:env|session|cse)_[A-Za-z0-9]{20,}/g },
   { kind: 'installation', pattern: /installations?\b[^\n]{0,40}?(?<![0-9])[0-9]{7,}(?![0-9])/gi },
   { kind: 'issue-number', pattern: /#[0-9]{4,}(?![0-9A-Za-z])|\/(?:issues|pull)\/[0-9]{4,}(?![0-9])/g },
 ];
+
+/** The rules for a doc: each rule's `inDoc` pattern in place of its own. */
+const DOC_RULES = RULES.map((rule) => (rule.inDoc ? { ...rule, pattern: rule.inDoc } : rule));
 
 /** @typedef {{ path: string, line: number, kind: string, text: string }} Finding */
 
@@ -59,7 +69,7 @@ export const scanText = (path, text) => {
   /** @type {Finding[]} */
   const findings = [];
   if (OLD_HOME.test(path)) findings.push({ path, line: 0, kind: 'name', text: path });
-  const rules = isDoc(path) ? RULES.filter((rule) => rule.inDocs !== false) : RULES;
+  const rules = isDoc(path) ? DOC_RULES : RULES;
   text.split('\n').forEach((content, index) => {
     for (const { kind, pattern, allow } of rules) {
       for (const match of content.matchAll(pattern)) {

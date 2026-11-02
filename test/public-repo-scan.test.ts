@@ -35,6 +35,14 @@ describe('scanText', () => {
     assert.deepEqual(kinds(`made while building ${OLD_HOME}`, 'docs/pages/x.html'), ['name']);
   });
 
+  test('refuses the old home\'s name in a doc when it is not bare: a variable, a marker, an issue or a longer name', () => {
+    assert.deepEqual(kinds(`${OLD_HOME.toUpperCase()}_LABELS`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`<!-- ${OLD_HOME}:subscribe -->`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}#12`, 'docs/how-it-works.md'), ['name']);
+    assert.deepEqual(kinds(`see acme/${OLD_HOME}-infra`, 'docs/how-it-works.md'), ['name']);
+    assert.deepEqual(kinds(`the old-${OLD_HOME} setup`, 'README.md'), ['name']);
+  });
+
   test('refuses the private repo\'s owner/name path and its GitHub URL, in any case, in every file', () => {
     for (const path of ['README.md', 'docs/how-it-works.md', 'scripts/x.mjs']) {
       assert.deepEqual(kinds(`see owner/${OLD_HOME}`, path).filter((k) => k !== 'name'), ['repo'], path);

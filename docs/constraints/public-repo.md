@@ -53,8 +53,9 @@ a reader at a ticket they cannot open, or at the wrong one here.
 ## Examples
 
 - The scan: `npm run scan`, the first step of `npm run gate`, and
-  `fitness: no file names the old home, holds an id, or cites an issue of
-  four or more digits (public-repo.md)` in test/public-repo-fitness.test.ts.
+  `fitness: no file names the old home's repo, only a doc names the
+  service, and none holds an id or cites an issue of four or more digits
+  (public-repo.md)` in test/public-repo-fitness.test.ts.
 - The deploy's values: `fitness: the alert email never passes through
   GitHub, and the drop box is a repository secret (public-repo.md)`, in the
   same file.
