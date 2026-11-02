@@ -54,8 +54,8 @@ describe('the selection and the claim decide through ticketStatus', () => {
 describe('the unblocked row and wait end decide through ticketStatus and mayStartSpec', () => {
   const paths = [
     { name: 'ticketRow', path: 'dispatch/unblocked.mjs', start: 'export const ticketRow =', asks: /\bticketStatus\(/ },
-    { name: "turnFor's unblocked branch", path: 'dispatch/turn.mjs', start: "  } else if (invocation.kind === 'unblocked') {", asks: /\bmayStartSpec\(/ },
-    { name: 'readUnblocked', path: 'dispatch/turn.mjs', start: 'const readUnblocked = async', asks: /\bstatusOf\(/ },
+    { name: 'planUnblocked', path: 'dispatch/unblocked-fire.mjs', start: 'export const planUnblocked = async', asks: /\bmayStartSpec\(/ },
+    { name: 'readUnblocked', path: 'dispatch/unblocked-fire.mjs', start: 'const readUnblocked = async', asks: /\bstatusOf\(/ },
     { name: 'endedWaits', path: 'dispatch/waits.mjs', start: 'export const endedWaits = async', asks: /\bmayStartSpec\(/ },
   ];
   for (const { name, path, start, asks } of paths) {

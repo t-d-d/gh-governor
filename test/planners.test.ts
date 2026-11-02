@@ -8,12 +8,15 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
+import { DEFAULT_MODEL, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { readConfig } from '../dispatch/repo-config.mjs';
 import { hookPrompt, planHook } from '../dispatch/hooks.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { planDispatch } from '../dispatch/dispatch-fire.mjs';
 import { DEFAULT_SESSION_NAME, hookSource } from '../dispatch/deliveries.mjs';
+import { planUnblocked } from '../dispatch/unblocked-fire.mjs';
+import { specPrompt } from '../dispatch/unblocked.mjs';
+import { dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 const REPO = 'acme/factory';
@@ -235,5 +238,100 @@ describe('planDispatch: a dispatch fire\'s plan', () => {
 
   test('a fire that names no repo is refused', async () => {
     await assert.rejects(planDispatch({ kind: 'dispatch', prompt: 'x' } as never, context().ctx), /names no repo/);
+  });
+});
+
+describe('planUnblocked: an unblocked fire\'s plan', () => {
+  const READY = CONFIG.labels.ready;
+  const CLAIM = CONFIG.labels.claim;
+  const SESSION = 'https://claude.ai/code/session_01WORK';
+  const blocker = { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' };
+  const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' }, ...over }) as never;
+  /** A context whose reader holds ticket 7, with `labels`, `rows` as its blockers and `comments` as its thread. */
+  const ticketContext = ({ labels = [...READY] as string[], rows = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, over = {} as Record<string, unknown> } = {}) => {
+    const posted: Array<{ issue: number, body: string }> = [];
+    const ticket = { number: 7, title: 'Issue 7', body: '', state: 'open', labels, pull: false };
+    const reader = {
+      ticket: async () => ticket,
+      blockers: async () => rows,
+      readyIssues: async () => [ticket],
+      comments: async () => comments,
+      allComments: async () => comments.map((c) => ({ ...c, ours: true })),
+      comment: async (issue: number, body: string) => { posted.push({ issue, body }); },
+      removeLabel: async () => {},
+      labelRemovals: async () => [],
+    };
+    return { ...context({ readerFor: async () => reader, ...over }), posted };
+  };
+
+  test('a ready ticket plans one launch that claims it and holds its repo, on the ready prompt, and its result carries the row', async () => {
+    const { ctx, sent } = ticketContext();
+    const plan = await planUnblocked(fire(), ctx) as any;
+    assert.ok(!('answer' in plan));
+    assert.equal(plan.launches.length, 1);
+    const [only] = plan.launches;
+    assert.deepEqual({ repo: only.repo, issue: only.issue, claim: only.claim, holdsRepo: only.holdsRepo, model: only.asked.model }, { repo: REPO, issue: 7, claim: true, holdsRepo: true, model: DEFAULT_MODEL });
+    assert.match(only.asked.prompt, /acme\/tools#41/);
+    assert.equal(only.started, undefined, 'the ready launch moves no record of its own');
+    assert.deepEqual(plan.result, { row: 'ready' });
+    assert.deepEqual(plan.unread, []);
+    assert.deepEqual(sent, []);
+  });
+
+  test('a ticket not ready plans a spec session that claims nothing but holds its repo', async () => {
+    const { ctx } = ticketContext({ labels: ['type: bug'] });
+    const plan = await planUnblocked(fire(), ctx) as any;
+    assert.equal(plan.launches.length, 1);
+    const [only] = plan.launches;
+    assert.deepEqual({ issue: only.issue, claim: only.claim, holdsRepo: only.holdsRepo }, { issue: 7, claim: false, holdsRepo: true });
+    assert.deepEqual(only.asked, {
+      prompt: specPrompt({ fire: fire(), title: 'Issue 7', labels: CONFIG.labels, prompts: FILE.prompts }),
+      sessionName: sessionName(7, 'Issue 7'),
+      model: DEFAULT_MODEL,
+    });
+    assert.deepEqual(plan.result, { row: 'not-ready' });
+  });
+
+  test('with DispatchCap 0, a ready ticket plans nothing, and the result still carries the row', async () => {
+    const { ctx, logged } = ticketContext({ over: { cap: 0 } });
+    const plan = await planUnblocked(fire(), ctx) as any;
+    assert.deepEqual(plan, { launches: [], unread: [], result: { row: 'ready' } });
+    assert.ok(logged.some((l) => l.event === 'dispatch-unblocked' && l.outcome === 'not started'));
+  });
+
+  test('a claimed ticket\'s session gets the message, the login is stored, and the answer starts nothing', async () => {
+    const marker = dispatchMarker({ at: new Date(NOW - 3 * 24 * 60 * 60 * 1000).toISOString(), sessionUrl: SESSION });
+    const { ctx, sent, stored } = ticketContext({ labels: [CLAIM, 'mode: afk'], comments: [{ body: marker }] });
+    const plan = await planUnblocked(fire(), ctx) as any;
+    assert.deepEqual(Object.keys(plan), ['answer']);
+    const { messaged, ...rest } = plan.answer;
+    assert.deepEqual(rest, { kind: 'unblocked', row: 'claimed', commented: false, dispatched: [], loginStored: true });
+    assert.equal(messaged.ok, true);
+    assert.deepEqual(sent.map((s) => s.session), [SESSION]);
+    assert.equal(stored.length, 1);
+  });
+
+  test('a ticket still blocked by another open issue answers with its row, and starts nothing', async () => {
+    const { ctx } = ticketContext({ rows: [{ number: 41, state: 'closed', title: 'x' }, { number: 43, state: 'open', title: 'y' }] });
+    const plan = await planUnblocked(fire(), ctx) as any;
+    assert.deepEqual(plan, { answer: { kind: 'unblocked', row: 'blocked', dispatched: [] } });
+  });
+
+  test('a not-planned close comments on the ticket and answers', async () => {
+    const { ctx, posted } = ticketContext({ labels: ['type: bug'] });
+    const plan = await planUnblocked(fire({ blocker: { ...blocker, reason: 'not_planned' } }), ctx) as any;
+    assert.deepEqual(plan, { answer: { kind: 'unblocked', row: 'not-planned', commented: true, dispatched: [] } });
+    assert.equal(posted.length, 1);
+  });
+
+  test('a repo turning neither pickup nor unblocked on refuses the fire in its answer', async () => {
+    const off = { ...CONFIG, features: { ...CONFIG.features, pickup: false, unblocked: false } };
+    const { ctx } = ticketContext({ over: { configOf: () => off } });
+    const plan = await planUnblocked(fire(), ctx) as any;
+    assert.deepEqual(plan, { answer: { kind: 'unblocked', refusal: `${REPO}'s .github/dispatch.json turns neither pickup nor unblocked on`, dispatched: [] } });
+  });
+
+  test('a fire that names no repo is refused', async () => {
+    await assert.rejects(planUnblocked(fire({ repo: undefined }), ticketContext().ctx), /names no repo/);
   });
 });
