@@ -74,7 +74,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   prMessages: 'Messages into the session a PR names, or the local session holding its branch.',
   subscribeMessages: 'Messages to sessions subscribed by a `governor:subscribe` line, and to an issue\'s filer. A filer hears a `deployed:` label on its issue only through a subscribe line for `deploys`.',
   redScheduledRun: 'A fresh session on a scheduled run on the default branch that went red.',
-  unblocked: 'What a blocker\'s close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket\'s session, and a session to rewrite a not-ready ticket\'s spec from what merged. A file that still sets the older `mergeHandoff` reads as this.',
+  unblocked: 'What a blocker\'s close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket\'s session, and the spec work on a not-ready ticket. The session whose link ends the ticket\'s body owns it and is asked to rewrite its own spec; a fresh session rewrites it only where the body names no session or that session is archived, so nobody takes a ticket from its owner. A file that still sets the older `mergeHandoff` reads as this.',
   ciMessages: 'A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`.',
   deployMessages: 'A shipping job, or a red deploy, tells the sessions of the merges it shipped.',
   branchRunMessages: 'A run dispatched on a branch tells the session that wrote its commit.',
@@ -84,7 +84,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   heartbeat: 'Governor records each fire on the issue the `heartbeat` section names: a line for pickup and one per periodic. In the older shape with a `marker`, the hourly sweep stamps the issue\'s `last-run:` line instead.',
   periodics: 'A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached.',
   hooks: 'A session on a hook\'s prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook\'s last session is open goes into that session as a message.',
-  waits: 'When a ticket\'s `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and a session to rewrite its spec if `unblocked` is on. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.',
+  waits: 'When a ticket\'s `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker\'s close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.',
   signOff: 'Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off.',
 });
 

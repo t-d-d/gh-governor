@@ -943,7 +943,7 @@ const runOpen = (deps) => {
  *   served: import('./repos.mjs').Served[],
  *   bare: boolean,
  *   prompts: import('./repo-config.mjs').RepoConfig['prompts'] | {},
- *   delivery: () => ReturnType<typeof turnDeliveries>,
+ *   delivery: (repo?: string) => ReturnType<typeof turnDeliveries>,
  *   storeLogin: () => Promise<boolean>,
  *   state: DispatchState,
  *   start: import('./launcher.mjs').Launcher['start'],
@@ -957,7 +957,8 @@ const runOpen = (deps) => {
  * }} TurnContext
  *   `readerFor`: a repo's reader, one a turn. `configOf`: a served repo's
  *   config. `prompts`: the fire's repo's, none for the bare schedule fire.
- *   `delivery`: whom a message reaches, and the send. `storeLogin`: the
+ *   `delivery`: whom a message reaches, and the send, in the fire's repo
+ *   or the served repo named. `storeLogin`: the
  *   login the CLI refreshed, put back. `start`: the launcher's. `open`:
  *   whether a periodic's or a hook's last session is still open, under a
  *   token refreshed once a turn. `claims`: the tickets the turn claimed that
@@ -1084,19 +1085,51 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const prompts = repo === undefined ? {} : configOf(repo).prompts;
   /** @type {ReturnType<typeof turnDeliveries> | null} */
   let made = null;
-  const delivery = () => (made ??= turnDeliveries({
-    prompts,
-    signOff: repo !== undefined && turnsOn(configOf(repo), 'signOff'),
-    reader: getReader,
-    repo: fireRepo(),
-    send: (message, until) => budgeted(() => deps.message(message), message.session, until),
-    launch: start,
-    sessions: sessionsFinder,
-    now: deps.now,
-    log: deps.log,
-    sleep: deps.sleep,
-    launchTimeoutMs: deps.launchTimeoutMs,
-  }));
+  /** Each other served repo's deliveries, made on first use. @type {Map<string, ReturnType<typeof turnDeliveries>>} */
+  const others = new Map();
+  /**
+   * The fire's repo's deliveries, or, given `served`, a served repo's: the
+   * bare schedule fire names no repo, and messages a ticket's owner in
+   * the ticket's repo, under that repo's reader and prompts, and starts
+   * a fallback there.
+   *
+   * @param {string} [served]
+   */
+  const delivery = (served) => {
+    if (served === undefined) {
+      return (made ??= turnDeliveries({
+        prompts,
+        signOff: repo !== undefined && turnsOn(configOf(repo), 'signOff'),
+        reader: getReader,
+        repo: fireRepo(),
+        send: (message, until) => budgeted(() => deps.message(message), message.session, until),
+        launch: start,
+        sessions: sessionsFinder,
+        now: deps.now,
+        log: deps.log,
+        sleep: deps.sleep,
+        launchTimeoutMs: deps.launchTimeoutMs,
+      }));
+    }
+    let other = others.get(served);
+    if (other === undefined) {
+      const config = configOf(served);
+      others.set(served, other = turnDeliveries({
+        prompts: config.prompts,
+        signOff: turnsOn(config, 'signOff'),
+        reader: () => readerFor(served),
+        repo: served,
+        send: (message, until) => budgeted(() => deps.message(message), message.session, until),
+        launch: (launch, until) => start({ ...launch, repo: served }, until),
+        sessions: sessionsFinder,
+        now: deps.now,
+        log: deps.log,
+        sleep: deps.sleep,
+        launchTimeoutMs: deps.launchTimeoutMs,
+      }));
+    }
+    return other;
+  };
 
   if (invocation.kind === 'message') {
     const { on, event, commit, closing, text, fallback } = invocation;

@@ -47,8 +47,11 @@ export const PROMPTS = Object.freeze({
   },
   // A blocker's close, in the blocked ticket's own repo (dispatch/unblocked.mjs).
   // A ready ticket's pickup prompt, after the facts of the close.
+  // A ticket's body ends with its owner's link, and Claude Code ends any
+  // body a session writes with its own, so the pickup session comments and
+  // leaves an owned body to its owner.
   unblockedReady: {
-    text: "Before you build, check the spec against what merged, and fix the ticket's body where the merge changed what it builds on.",
+    text: "Before you build, check the spec against what merged. Where the merge changed what the ticket builds on, say so in a comment on the ticket and in your PR description. Leave the body to the session whose link ends it: that session owns the ticket and updates its spec. Fix the body yourself only where it ends with no session link.",
     fills: [],
     replaces: "a ready ticket's ask, below its pickup prompt and the facts of its blocker's close",
   },
@@ -61,6 +64,15 @@ export const PROMPTS = Object.freeze({
     fills: ['issue', 'ready', 'claim'],
     replaces: "a not-ready ticket's spec session's ask, below the facts of its blocker's close",
   },
+  // The same ticket, where its body names its owner: the owner's message, asking it to rewrite its own spec.
+  unblockedOwnerSpec: {
+    text: [
+      "This is your ticket, #{issue}: its body ends with this session's link. Rewrite its spec in its body from what merged. If it needs a decision only a person can make, write that into its body as a question and stop.",
+      'Otherwise label it {ready} and stop, or build it: add `{claim}` to it first, then take it through to a reviewable PR, `Closes #{issue}`.',
+    ].join('\n'),
+    fills: ['issue', 'ready', 'claim'],
+    replaces: "the ask to a not-ready ticket's owner, the session its body names, below the facts of its blocker's close",
+  },
   // A ticket not ready to pick up whose `Blocked until:` date passed (dispatch/waits.mjs).
   waitEndedSpec: {
     text: [
@@ -69,6 +81,15 @@ export const PROMPTS = Object.freeze({
     ].join('\n'),
     fills: ['issue', 'ready', 'claim'],
     replaces: "a not-ready ticket's spec session's ask, below the facts of its ended wait",
+  },
+  // The same ticket, where its body names its owner.
+  waitEndedOwnerSpec: {
+    text: [
+      "This is your ticket, #{issue}: its body ends with this session's link. Rewrite its spec in its body from what is now known. If it needs a decision only a person can make, write that into its body as a question and stop.",
+      'Otherwise label it {ready} and stop, or build it: add `{claim}` to it first, then take it through to a reviewable PR, `Closes #{issue}`.',
+    ].join('\n'),
+    fills: ['issue', 'ready', 'claim'],
+    replaces: "the ask to a not-ready ticket's owner, the session its body names, below the facts of its ended wait",
   },
   // A claimed ticket's session, told its blocker closed.
   unblockedClaimed: {

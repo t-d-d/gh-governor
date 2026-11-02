@@ -50,7 +50,8 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  *   login's session limit refused is not);
  * - a conflicts check: every PR was checked;
  * - an unblocked fire for a claimed ticket: its session took the message,
- *   or is gone;
+ *   or is gone; for a not-ready ticket's owner, the same, unless the spec
+ *   session that replaced a gone owner started nothing;
  * - a fire: not every launch failed, and every served repo's config file
  *   was read. A fire with nothing to start is a success, as the heartbeat
  *   rule says;
@@ -63,7 +64,7 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * written (`heartbeatUnwritten`), and no repo's part of the turn failed
  * (`unread`), refusal or not.
  *
- * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean } | null }} result
+ * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, fallback?: { outcome: string } | null } | null }} result
  * @returns {0 | 1}
  */
 export const exitCodeFor = (result) => {
@@ -94,8 +95,10 @@ export const exitCodeFor = (result) => {
   }
   // A hook fire sent into its open session: the send is the turn.
   if (result.kind === 'hook' && result.messaged != null) return result.messaged.ok ? 0 : 1;
-  // An unblocked fire's message to a claimed ticket's session: a gone session is told enough.
-  if (result.kind === 'unblocked' && result.messaged != null) return result.messaged.ok || result.messaged.refused === true ? 0 : 1;
+  // An unblocked fire's message to a claimed ticket's session, or to a
+  // not-ready ticket's owner: a gone session is told enough, unless the spec
+  // session in its place started nothing.
+  if (result.kind === 'unblocked' && result.messaged != null) return result.messaged.ok || (result.messaged.refused === true && result.messaged.fallback?.outcome !== 'failed') ? 0 : 1;
   if (result.kind === 'message') {
     return result.ok || result.skipped != null || result.dropped != null
       || (result.fallback != null && result.fallback.outcome !== 'failed') ? 0 : 1;
