@@ -62,8 +62,7 @@ spends the one claude.ai login.
   `<!-- governor:wait-not-planned #<issue> -->`. A line governor cannot
   settle gets one comment under `<!-- governor:wait-relative #<issue> -->`,
   naming the issue the line waits on, so a line moved to another issue is
-  told again. This is
-  the one rewrite governor makes in a ticket's body.
+  told again. This is the one rewrite governor makes in a ticket's body.
 - Every feature governor adds is a switch, off unless the file turns it on,
   and a turn refuses a fire kind its repo's file does not turn on. The one
   exception is a ticket's own `Blocked until:` line, which is always

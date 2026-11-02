@@ -15,7 +15,7 @@ import { isWaiting, waitOf } from '../scripts/lib/ready-work.mjs';
 import { closingFires } from '../dispatch/unblocked.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import {
-  WAIT_RELATIVE_MARKER, WAIT_UNREADABLE_MARKER, datedBody, endedWaits, holdWait, relativeAtClose, relativeUntil, repairRelative, waitNotPlannedMarker, waitRelativeMarker,
+  WAIT_UNREADABLE_MARKER, datedBody, endedWaits, holdWait, relativeAtClose, relativeUntil, repairRelative, waitNotPlannedMarker, waitRelativeMarker,
 } from '../dispatch/waits.mjs';
 
 const REPO = 'acme/factory';
@@ -222,15 +222,15 @@ describe('the wait turn, under `waits`', () => {
   });
 
   test('a pull request, or the ticket itself, is never linked: one comment saying to link an issue or write a date', async () => {
-    for (const [body, issues] of [
-      ['Blocked until: 3 days after #143 closes', { 143: { pull: true } }],
-      ['Blocked until: 3 days after #143 closes', { 143: { pull: true, state: 'closed', closedAt: CLOSED_AT } }],
-      ['Blocked until: 3 days after #7 closes', { 7: {} }],
+    for (const [body, issues, ref] of [
+      ['Blocked until: 3 days after #143 closes', { 143: { pull: true } }, '#143'],
+      ['Blocked until: 3 days after #143 closes', { 143: { pull: true, state: 'closed', closedAt: CLOSED_AT } }, '#143'],
+      ['Blocked until: 3 days after #7 closes', { 7: {} }, '#7'],
     ] as const) {
       const f = fakeReader({ body, issues: issues as never });
       assert.equal(await holdWait({ reader: f.reader as never, state: state(new Map()), repo: REPO, issue: 7, labels: LABELS, now: NOW, log: logs().log }), 'relative: commented', JSON.stringify(issues));
       assert.deepEqual([f.links, f.edits], [[], []], JSON.stringify(issues));
-      assert.ok(f.comments[0]?.body.includes(WAIT_RELATIVE_MARKER), JSON.stringify(f.comments));
+      assert.ok(f.comments[0]?.body.includes(waitRelativeMarker(ref)), JSON.stringify(f.comments));
     }
   });
 
@@ -275,16 +275,16 @@ describe('the sweep\'s repair', () => {
   });
 
   test('an open issue not linked, a missing issue, or another repo\'s: one comment saying to link it or write a date', async () => {
-    const cases: Array<[ReturnType<typeof fakeReader>, { days: number; issue: number; repo?: string }]> = [
-      [fakeReader({ issues: { 143: {} } }), after],
-      [fakeReader({ issues: { 143: 'gone' } }), after],
-      [fakeReader(), { days: 3, issue: 41, repo: 'acme/tools' }],
+    const cases: Array<[ReturnType<typeof fakeReader>, { days: number; issue: number; repo?: string }, string]> = [
+      [fakeReader({ issues: { 143: {} } }), after, '#143'],
+      [fakeReader({ issues: { 143: 'gone' } }), after, '#143'],
+      [fakeReader(), { days: 3, issue: 41, repo: 'acme/tools' }, 'acme/tools#41'],
     ];
-    for (const [f, wait] of cases) {
+    for (const [f, wait, ref] of cases) {
       assert.equal(await repair(f, wait), 'commented', JSON.stringify(wait));
       assert.equal(f.comments.length, 1);
       const said = f.comments[0]!.body;
-      assert.ok(said.includes(WAIT_RELATIVE_MARKER), said);
+      assert.ok(said.includes(waitRelativeMarker(ref)), said);
       assert.match(said, /blocker/);
       assert.match(said, /YYYY-MM-DD/);
       assert.deepEqual([f.edits, f.links], [[], []]);
@@ -304,7 +304,6 @@ describe('the sweep\'s repair', () => {
     assert.equal(await repair(moved, { days: 3, issue: 150 }), 'commented');
     assert.equal(moved.comments.length, 1);
     assert.ok(moved.comments[0]!.body.includes(waitRelativeMarker('#150')), moved.comments[0]!.body);
-    assert.ok(moved.comments[0]!.body.includes('#150'));
     const again = fakeReader({ issues: { 150: {} }, thread: [{ body: f.comments[0]!.body }, { body: moved.comments[0]!.body }] });
     assert.equal(await repair(again, { days: 3, issue: 150 }), 'already told');
     assert.deepEqual(again.comments, []);
