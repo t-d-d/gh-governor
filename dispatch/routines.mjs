@@ -196,7 +196,7 @@ export const observed = (api, log, { repo, periodic }) => {
   };
   return {
     connectors: () => watch('connectors', undefined, () => api.connectors()),
-    triggers: (cursor) => watch('triggers', undefined, () => (cursor === undefined ? api.triggers() : api.triggers(cursor))),
+    triggers: (cursor) => watch('triggers', undefined, () => api.triggers(cursor)),
     create: (body) => watch('create', undefined, () => api.create(body)),
     update: (id, body) => watch('update', id, () => api.update(id, body)),
     run: (id) => watch('run', id, () => api.run(id)),

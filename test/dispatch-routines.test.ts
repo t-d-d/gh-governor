@@ -365,6 +365,17 @@ describe('what the routines API answered, logged by shape', () => {
     assert.ok(!JSON.stringify(logged.map((l) => l.answer)).includes('Weekly retro'), 'the routine\'s name in the list is not logged');
   });
 
+  test('a launch through the logged API asks each later page of the routines list by the cursor the page before named', async () => {
+    const asked: Array<string | undefined> = [];
+    const OURS = { id: 'trig_01OLD', name: routineName(REPO, 'Weekly retro') };
+    const triggers = async (cursor?: string) => { asked.push(cursor); return cursor === undefined ? { data: [], has_more: true, next_cursor: 'page_1' } : { data: [OURS], has_more: false }; };
+    const api = observed(fakeApi({ triggers }).api, () => {}, { repo: REPO, periodic: 'Weekly retro' });
+    const result = await launch(api);
+    assert.equal(result.status, 0, result.output);
+    assert.equal(result.routine, 'trig_01OLD');
+    assert.deepEqual(asked, [undefined, 'page_1']);
+  });
+
   test('a call that throws logs that it failed, with the status its error carries, and still throws', async () => {
     const logged: Array<Record<string, unknown>> = [];
     const api = observed({ ...fakeApi().api, run: async () => { throw new RoutinesApiError('POST /v1/code/triggers/trig_01OLD/run: 409 {"error":"busy"}', 409); } }, (event, context) => logged.push({ event, ...context }), { repo: REPO, periodic: 'Weekly retro' });
