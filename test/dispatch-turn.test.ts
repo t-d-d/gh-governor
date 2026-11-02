@@ -7801,7 +7801,7 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
   const claimed = (n: number) => [`label #${n} +${CLAIMED}`, `label #${n} -${READY}`];
   const released = (n: number) => [`label #${n} +${READY}`, `label #${n} -${CLAIMED}`];
   const pickup = (started: number, at = AT) => ({ pickup: { at, started }, periodics: [] });
-  const retroLine = (at = AT) => ({ name: RETRO, at, by: { days: 7 }, session: NEW, state: 'open' });
+  const retroLine = (at = AT) => ({ name: RETRO, at, by: { days: 7 }, session: NEW, state: 'open' as const });
 
   type Row = {
     kind: 'schedule' | 'unblocked' | 'hook' | 'dispatch';
@@ -7833,7 +7833,7 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
     // The bare schedule fire: periodics.
     { kind: 'schedule', title: 'a periodic that starts', fire: 'bare', launch: 'starts', due: { [RETRO]: 8 }, expect: { periodics: [[RETRO, NEW]], sweeps: [AT], heartbeat: { pickup: { at: AT, started: 0 }, periodics: [retroLine()] }, sessions: [NEW] } },
     { kind: 'schedule', title: 'a periodic that fails', fire: 'bare', launch: 'fails', due: { [RETRO]: 8 }, expect: { exit: 1 } },
-    { kind: 'schedule', title: 'a periodic the window cuts', fire: 'bare', launch: 'starts', late: 'launch', due: { [RETRO]: 8, [REVIEW]: 5 }, expect: { periodics: [[REVIEW, NEW]], sweeps: [AT], heartbeat: { pickup: { at: LATE, started: 0 }, periodics: [{ name: REVIEW, at: AT, by: { days: 3 }, session: NEW, state: 'open' }] }, sessions: [NEW] } },
+    { kind: 'schedule', title: 'a periodic the window cuts', fire: 'bare', launch: 'starts', late: 'launch', due: { [RETRO]: 8, [REVIEW]: 5 }, expect: { periodics: [[REVIEW, NEW]], sweeps: [AT], heartbeat: { pickup: { at: LATE, started: 0 }, periodics: [{ name: REVIEW, at: AT, by: { days: 3 }, session: NEW, state: 'open' as const }] }, sessions: [NEW] } },
     { kind: 'schedule', title: 'a periodic under a cap of 0', fire: 'bare', launch: 'starts', cap: 0, due: { [RETRO]: 8 }, expect: { sweeps: [AT], heartbeat: pickup(0) } },
     // The bare schedule fire: an ended wait's spec session.
     { kind: 'schedule', title: 'an ended wait\'s spec session that starts', fire: 'bare', launch: 'starts', waits: [7], expect: { markers: [7], waits: [[7, null]], sweeps: [AT], heartbeat: pickup(0), sessions: [NEW] } },
