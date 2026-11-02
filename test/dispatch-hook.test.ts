@@ -168,19 +168,26 @@ describe('handle — a hook fire', () => {
 
   // The docs state the clock limits by hand, so a changed constant would
   // leave them telling callers the old limit. Every duration followed by
-  // "ahead" or "behind" in them must be the constant's own spelling.
+  // "ahead" or "behind" in them must be the constant's own spelling, and so
+  // must the time a request stays valid, which is the two limits added up.
   test('the docs state the clock limits the constants hold', () => {
+    const duration = String.raw`\d+(?:\.\d+)?\s+(?:minutes?|seconds?)(?:\s+\d+(?:\.\d+)?\s+(?:minutes?|seconds?))*`;
+    const spelled = (text: string | undefined): string | undefined => text?.replace(/\s+/g, ' ');
     const limits = { ahead: spellDuration(HOOK_CLOCK_AHEAD_MS), behind: spellDuration(HOOK_CLOCK_BEHIND_MS) };
-    const stated = /((?:\d+(?:\.\d+)? (?:minutes?|seconds?) )+)(ahead|behind)\b/g;
+    const validity = spellDuration(HOOK_CLOCK_AHEAD_MS + HOOK_CLOCK_BEHIND_MS);
+    const stated = new RegExp(`(${duration})\\s+(ahead|behind)\\b`, 'g');
+    const valid = new RegExp(`(?:valid for|add up to)\\s+(${duration})`, 'g');
     for (const [file, places] of [['README.md', 2], ['docs/how-it-works.md', 2]] as const) {
       const text = readFileSync(resolve(REPO_ROOT, file), 'utf8');
       const found = { ahead: 0, behind: 0 };
-      for (const [, duration, side] of text.matchAll(stated)) {
+      for (const [, length, side] of text.matchAll(stated)) {
         const which = side as keyof typeof limits;
-        assert.equal(duration?.trim(), limits[which], `${file} states a limit ${which} that is not ${limits[which]}`);
+        assert.equal(spelled(length), limits[which], `${file} states a limit ${which} that is not ${limits[which]}`);
         found[which] += 1;
       }
-      assert.deepEqual(found, { ahead: places, behind: places }, `${file} states each clock limit in its hook row and its 401 row`);
+      assert.deepEqual(found, { ahead: places, behind: places }, `${file} states each clock limit ${places} times`);
+      const sums = [...text.matchAll(valid)].map(([, length]) => spelled(length));
+      assert.deepEqual(sums, [validity], `${file} states once that a request is valid for ${validity}`);
     }
   });
 
