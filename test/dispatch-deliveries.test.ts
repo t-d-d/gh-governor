@@ -272,7 +272,7 @@ describe('deliver — with a fallback', () => {
 
   // A fork's head is not this repo's branch: the reader gives '' for it.
   test('a takeover of a PR from a fork, or a fallback on no PR, names no branch', async () => {
-    const fork = fakes({ send: archived });
+    const fork = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: true }) } });
     await fork.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: onPr, takeover: true });
     assert.equal(fork.launches[0]!.branch, undefined);
     assert.ok(fork.logged.some((l) => l.event === 'dispatch-message-fallback' && l.branch === null), JSON.stringify(fork.logged));

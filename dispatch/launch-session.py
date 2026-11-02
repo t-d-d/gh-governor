@@ -60,9 +60,9 @@ nothing and kill every dispatch.
 ## Why a takeover starts on the PR's branch
 
 A session started from `main` is given a fresh branch of its own and a rule
-to push only to it. A session that takes over a PR (a conflicted PR whose
-owner session archived) then merges on that fresh branch and opens a second
-PR beside the first, which stays conflicted. So a launch that names a branch
+to push only to it. A session that takes over a PR whose owner session
+archived (told of a remark on it, or of a conflict) then works on that fresh
+branch and opens a second PR beside the first, which is left as it was. So a launch that names a branch
 in CLAUDE_ON_BRANCH passes `--on-branch <branch>` in place of `--ref main`:
 the session checks that branch out and pushes to it. The CLI refuses the two
 together. Like `--ref` it names a revision, so a failed GitHub preflight is

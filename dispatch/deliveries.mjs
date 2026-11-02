@@ -8,8 +8,9 @@
  * ({@link standingLine}); resends a failure that is not a refusal once; and
  * on a refusal (the CLI answers the session archived) forwards to the
  * session a dispatch marker inside the window names, or launches the
- * fallback, leaving the marker and, for a takeover, relinking the PR body
- * to it, unless the takeover's PR has closed since; with no fallback it
+ * fallback, leaving the marker and, for a takeover, starting it on the
+ * PR's head branch and relinking the PR body to it, unless the takeover's
+ * PR has closed since; with no fallback it
  * drops the refusing subscriber, or disowns an issue's filer. A session's
  * own push, or a branch owner's own post, is skipped. The owner of a PR whose body names no session is the live local
  * session on its head branch.
@@ -250,8 +251,8 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  * }} DeliverOptions
  *   `source`: where the text comes from, which names the line it opens
  *   with; a fallback's prompt opens with the same line. `fallback`: what a
- *   refusal starts. A `takeover`'s fallback owns the PR, so the body is
- *   relinked to it; a red CI's fix session did not write the merged PR it
+ *   refusal starts. A `takeover`'s fallback owns the PR, so it starts on
+ *   the PR's head branch and the body is relinked to it; a red CI's fix session did not write the merged PR it
  *   is told of, so that body keeps its author. `on`: the PRs or
  *   issue the message is about, left out of the standing. `closing`: a close
  *   or a change deployed. `dropFrom`: those of `on` the session subscribes
@@ -553,10 +554,12 @@ export const deliveries = (deps) => {
       // a branch of its own.
       if (fallback === null && takeover && issue !== undefined) {
         const pr = await (await deps.reader()).pull(issue);
-        if (!pr.open) {
+        if (pr.open) {
+          branch = pr.head;
+        } else {
           fallback = { outcome: 'skipped', sessionUrl: null };
           reason = `PR #${issue} has closed`;
-        } else branch = pr.head;
+        }
       }
       if (fallback === null) {
         const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL, ...(branch === '' ? {} : { branch }) }, until);
