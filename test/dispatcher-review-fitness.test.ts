@@ -5,8 +5,8 @@
  * - the dispatcher image carries no repo's checklist or lists: no `.claude/`
  *   path;
  * - the review's modules, and every module they load by relative import,
- *   import no builtin but the few they need, so they start no process, and the one process a review turn starts is the
- *   CLI's model run, with no tools;
+ *   import no builtin but the few they need, and the one process a review
+ *   turn starts is the CLI's model run, with no tools;
  * - the factory's file holds its checklist and lists, and its checklist
  *   names the file as the list, the shape the review tests read.
  *
@@ -51,18 +51,21 @@ const builtin = (spec: string): string | null => {
 };
 
 /**
- * Each `path imports spec` that loads a builtin off the allowed list, in every module the entries load by relative import,
- * re-exports and `import()` included.
+ * Each builtin import in every module the entries load by relative import, re-exports and `import()` included: the module's
+ * path, the specifier as written, and its `node:` form.
  */
-const codeRunners = (root: string, ...entries: string[]) => [...importClosure(root, ...entries)].flatMap((path) =>
-  moduleSpecifiers(readFileSync(join(root, path), 'utf8')).filter((spec) => {
+const builtinImports = (root: string, ...entries: string[]) => [...importClosure(root, ...entries)].flatMap((path) =>
+  moduleSpecifiers(readFileSync(join(root, path), 'utf8')).flatMap((spec) => {
     const name = builtin(spec);
-    return name !== null && !ALLOWED_BUILTINS.has(name);
-  }).map((spec) => `${path} imports ${spec}`));
+    return name === null ? [] : [{ path, spec, name }];
+  }));
+
+/** Each `path imports spec` that loads a builtin off the allowed list. */
+const codeRunners = (root: string, ...entries: string[]) =>
+  builtinImports(root, ...entries).filter(({ name }) => !ALLOWED_BUILTINS.has(name)).map(({ path, spec }) => `${path} imports ${spec}`);
 
 /** Every builtin, in its `node:` form, the entries' modules import. */
-const builtinsImported = (root: string, ...entries: string[]) => new Set([...importClosure(root, ...entries)].flatMap((path) =>
-  moduleSpecifiers(readFileSync(join(root, path), 'utf8')).map(builtin).filter((name): name is string => name !== null)));
+const builtinsImported = (root: string, ...entries: string[]) => new Set(builtinImports(root, ...entries).map(({ name }) => name));
 
 /** The modules a review reads and judges with. */
 const REVIEW_MODULES = ['dispatch/review.mjs', 'dispatch/checklist.mjs', 'dispatch/repo-config.mjs', 'dispatch/pr-body.mjs', 'dispatch/webhook/review-comment.mjs'];
