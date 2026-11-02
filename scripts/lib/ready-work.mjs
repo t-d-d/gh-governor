@@ -246,7 +246,7 @@ export const waitHolds = (on, labels) => {
  * The ticket fields its status reads. A row with no state read is open, as
  * the selection reads it.
  *
- * @typedef {{ state?: string, labels?: readonly string[], openBlockers?: number, wait?: Wait }} TicketRow
+ * @typedef {{ state?: string, labels?: readonly string[], openBlockers?: number, wait?: Wait }} StatusRow
  */
 
 /**
@@ -254,7 +254,7 @@ export const waitHolds = (on, labels) => {
  * is open, what its labels say (`labelRow`), and what holds it, the blocker
  * first.
  *
- * @param {TicketRow} ticket
+ * @param {StatusRow} ticket
  * @param {{ labels: Labels, now: number, blockers?: readonly BlockerRow[] | undefined }} rules
  *   `blockers`: the ticket's `blocked_by` rows, read only where it carries
  *   no dependency summary (`isBlocked`).
@@ -274,7 +274,7 @@ export const ticketStatus = (ticket, { labels, now, blockers }) => {
 
 /**
  * Pickup may start the ticket: open, ready, and nothing holds it. The
- * selection and the claim's second read ask this.
+ * selection and the claim's second read are to ask this; neither does yet.
  *
  * @param {TicketStatus} status
  */
@@ -309,7 +309,7 @@ export const heldUnreadied = (thread) => {
  * A spec session may start on a not-ready ticket: its thread has no
  * unanswered unreadied comment ({@link heldUnreadied}) and no dispatch
  * inside the window (`recentlyDispatched`). The unblocked row and wait end
- * ask this.
+ * are to ask this; neither does yet.
  *
  * @param {ReadonlyArray<{ body: string, ours?: boolean }>} thread The ticket's whole thread, oldest first.
  * @param {number} now Epoch ms.
