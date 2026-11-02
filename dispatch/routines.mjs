@@ -14,8 +14,8 @@
  * `POST /v1/code/triggers/{id}/run`. Governor still decides when the
  * periodic is due: the routine is created and updated disabled, on a valid
  * schedule that fires rarely ({@link ROUTINE_SCHEDULE}), so its own
- * schedule never starts a run, and every update sets it back. A disabled
- * routine still runs when it is fired by hand.
+ * schedule never starts a run, and every update sets it back. The fire
+ * through `/run` is taken to start a run of a disabled routine all the same.
  *
  * After the fire, the run's session is the one the fire answers with, or
  * the routine's first run session not listed before the fire
