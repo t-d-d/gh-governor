@@ -77,7 +77,7 @@ Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action wr
 
 ## What it does
 
-A repo turns each feature on with a switch in its `.github/dispatch.json`. Two behaviours are always on: sign-off, and the `Blocked until:` hold.
+A repo turns each feature on with a switch in its `.github/dispatch.json`, except sign-off, which is always on.
 
 | Feature | What happens |
 |---|---|
