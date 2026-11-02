@@ -94,7 +94,7 @@ const ANY_SESSION_ID = /\b(?:cse|session)_[A-Za-z0-9]+/g;
  *   one's run sessions, each answer parsed. Any refusal throws, as a
  *   {@link RoutinesApiError} where its cause is known.
  * @typedef {{ connector_uuid: string, name: string, url: string }} Connection
- * @typedef {{ status: number, output: string, missing?: string[] }} RoutineResult
+ * @typedef {{ status: number, output: string, missing?: string[], routine?: string }} RoutineResult
  */
 
 /**
@@ -341,7 +341,7 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
   let threw = null;
   try {
     const fired = firedSession(await api.run(id));
-    if (fired !== null) return { status: 0, output: `Routine ${id} fired: ${fired}` };
+    if (fired !== null) return { status: 0, output: `Routine ${id} fired: ${fired}`, routine: id };
   } catch (error) {
     // The turn takes the session an answer names as this fire's, and a
     // refusal's body may name another run's, so none is kept.
@@ -354,11 +354,11 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
       const fresh = rowsOf(await api.sessions(id), 'the routine\'s run sessions').rows
         .map((row) => linkOf(row?.id))
         .find((link) => link !== null && !before.has(link));
-      if (fresh !== undefined && fresh !== null) return { status: 0, output: `Routine ${id} fired: ${fresh}` };
+      if (fresh !== undefined && fresh !== null) return { status: 0, output: `Routine ${id} fired: ${fresh}`, routine: id };
     } catch {
       // Read again: the run may have started all the same.
     }
   }
   const fire = threw === null ? 'fired' : `fired and the fire threw (${threw})`;
-  return { status: 3, output: `Routine ${id} ${fire}, and none of its run sessions is new after ${ROUTINE_SESSION_TRIES} reads` };
+  return { status: 3, output: `Routine ${id} ${fire}, and none of its run sessions is new after ${ROUTINE_SESSION_TRIES} reads`, routine: id };
 };

@@ -1665,6 +1665,27 @@ describe('run — periodics', () => {
     assert.equal(result.dispatched[0]?.outcome, 'unconfirmed');
   });
 
+  // A routine's run session is found through its routine, not by the
+  // periodic's name, so the page names the routine and carries the tail.
+  test('a routine launch that comes back unconfirmed with no session pages with its routine named', async () => {
+    const h = harness();
+    const base = h.deps.routines;
+    h.deps.routines = (token: string, organization: string | null) => ({ ...base(token, organization), sessions: async () => ({ data: [] }) });
+    h.periodics.set(key(RETRO.name), fired(1));
+    h.periodics.set(key(REVIEW.name), fired(3));
+    await run({ source: 'aws.events' }, h.deps as never);
+    const lines = h.logged.filter((l) => l.event === 'dispatch-session-unrecorded' && l.sessionName === REVIEW.name);
+    assert.equal(lines.length, 1, JSON.stringify(h.logged));
+    const line = lines[0]!;
+    assert.equal(line.level, 'error');
+    assert.equal(line.sessionUrl, null);
+    assert.equal(line.status, 3);
+    assert.equal(line.routine, 'trig_01');
+    assert.equal(line.routineName, `governor ${REPO}: ${REVIEW.name}`);
+    assert.match(String(line.tail), /Routine trig_01 fired, and none of its run sessions is new/);
+    assert.match(String(line.reason), /routine/);
+  });
+
   test('a routine fire that throws and shows no new run session is recorded as an unconfirmed launch, never refused', async () => {
     const h = harness();
     const base = h.deps.routines;
