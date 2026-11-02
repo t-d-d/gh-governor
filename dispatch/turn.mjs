@@ -431,6 +431,14 @@ const refreshedLogin = async (deps, credentials, account) => {
 };
 
 /**
+ * What a launch does when its budget refuses it, keyed by the launch's
+ * promise: the launcher runs on, and may start a session nobody can name.
+ *
+ * @type {WeakMap<Promise<unknown>, () => void>}
+ */
+const overBudget = new WeakMap();
+
+/**
  * A launch that outlives its budget is a thrown turn. The task's deadline
  * (dispatch/cli.mjs) exits the process from a timer, which unwinds nothing:
  * a login the CLI refreshed before the launcher hung would never reach the
@@ -444,7 +452,10 @@ const refreshedLogin = async (deps, credentials, account) => {
  */
 const withinBudget = (launched, ms, sessionName) =>
   new Promise((resolveLaunch, rejectLaunch) => {
-    const timer = setTimeout(() => rejectLaunch(new Error(`the launcher for ${sessionName} ran past ${ms} ms`)), ms);
+    const timer = setTimeout(() => {
+      overBudget.get(launched)?.();
+      rejectLaunch(new Error(`the launcher for ${sessionName} ran past ${ms} ms`));
+    }, ms);
     launched.then(
       (value) => { clearTimeout(timer); resolveLaunch(value); },
       (error) => { clearTimeout(timer); rejectLaunch(error); },
@@ -665,11 +676,29 @@ const turnOf = async (event, deps, records) => {
    * into one tried again; the turn waits for every record before it ends.
    * Every prompt ends in `SIGN_POSTS`, which no repo's prompts replace: the
    * receiver skips a session's own posts only where the session signed them.
+   * A launch its budget refuses pages once, at the refusal, since the
+   * launcher runs on; a session it prints later is still recorded.
    *
    * @type {Deps['launch']}
    */
-  const launch = async (asked) => {
+  const launch = (asked) => {
     const begin = { ...asked, prompt: `${asked.prompt}\n\n${SIGN_POSTS}` };
+    let paged = false;
+    const launching = launchAndRecord(begin, () => paged);
+    overBudget.set(launching, () => {
+      paged = true;
+      deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, reason: 'the launch ran past its budget and may have started a session, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label' });
+    });
+    return launching;
+  };
+  /**
+   * The launch itself, and its record or page once it ends.
+   *
+   * @param {Launch} begin
+   * @param {() => boolean} paged Whether its budget already paged on it.
+   * @returns {Promise<LaunchResult>}
+   */
+  const launchAndRecord = async (begin, paged) => {
     const launched = begin.connectors !== undefined && begin.connectors.length > 0 ? await routineLaunch(begin, begin.connectors) : await deps.launch(begin);
     const sessionUrl = sessionUrlFrom(launched.output);
     if (sessionUrl !== null) {
@@ -679,7 +708,7 @@ const turnOf = async (event, deps, records) => {
       records.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
         deps.log(SESSION_UNRECORDED, unrecordedLine(pending, messageOf(error)));
       }).finally(() => { unrecorded.delete(pending); }));
-    } else if (launchOutcome(launched.status) !== null) {
+    } else if (!paged() && launchOutcome(launched.status) !== null) {
       // The launch may have started a session but named none, so nothing
       // can record it: the operator finds it by its name and the line's time.
       deps.log(SESSION_UNRECORDED, { level: 'error', repo: begin.repo, sessionName: begin.sessionName, sessionUrl: null, status: launched.status, reason: 'the launch may have started a session, but it printed no session URL, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label' });

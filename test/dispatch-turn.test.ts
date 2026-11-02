@@ -481,6 +481,54 @@ describe('run — governor records each session it starts', () => {
     });
   }
 
+  // A launch refused as over budget may still start a session: the launcher
+  // runs on. It pages once, at the refusal, whatever the launcher prints later.
+  const overBudget = (lines: Array<Record<string, unknown>>) => lines.filter((l) => l.event === 'dispatch-session-unrecorded');
+  const later = <T>(ms: number, value: T) => new Promise<T>((r) => { setTimeout(() => r(value), ms); });
+
+  test('a launch past its budget pages with its name, and no session', async () => {
+    const h = harness({ launchTimeoutMs: 20, launch: () => new Promise<never>(() => {}) });
+    await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
+    const lines = overBudget(h.logged);
+    assert.equal(lines.length, 1, JSON.stringify(h.logged));
+    assert.equal(lines[0]!.level, 'error');
+    assert.equal(lines[0]!.sessionUrl, null);
+    assert.equal(lines[0]!.sessionName, 'TEST');
+    assert.equal(lines[0]!.repo, REPO);
+    assert.match(String(lines[0]!.reason), /ran past its budget/);
+  });
+
+  test('a launch past its budget that prints its session later pages once, and the session is still recorded', async () => {
+    const h = harness({ launchTimeoutMs: 20, launch: () => later(40, { status: 0, output: ABC }) });
+    await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
+    await later(60, null);
+    assert.equal(overBudget(h.logged).length, 1, JSON.stringify(h.logged));
+    assert.deepEqual(h.recorded, [ABC]);
+  });
+
+  test('a launch past its budget that later prints no session pages once', async () => {
+    const h = harness({ launchTimeoutMs: 20, launch: () => later(40, { status: 3, output: 'no url here' }) });
+    await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
+    await later(60, null);
+    assert.equal(overBudget(h.logged).length, 1, JSON.stringify(h.logged));
+  });
+
+  test('a ticket\'s launch past its budget pages with its name', async () => {
+    const h = harness({ launchTimeoutMs: 20, launch: () => new Promise<never>(() => {}) });
+    await assert.rejects(run({ kind: 'schedule', issue: 9 }, h.deps as never), /20 ms/);
+    const lines = overBudget(h.logged);
+    assert.equal(lines.length, 1, JSON.stringify(h.logged));
+    assert.equal(lines[0]!.sessionUrl, null);
+    assert.equal(typeof lines[0]!.sessionName, 'string');
+  });
+
+  test('a launch inside its budget that printed its session pages nothing', async () => {
+    const h = harness({ launchTimeoutMs: 100, launch: () => later(10, { status: 0, output: ABC }) });
+    await run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never);
+    assert.deepEqual(h.recorded, [ABC]);
+    assert.deepEqual(overBudget(h.logged), []);
+  });
+
   test('a failed launch started nothing, so it pages nothing', async () => {
     const h = harness({ launch: async () => ({ status: 1, output: 'refused' }) });
     await run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never);
