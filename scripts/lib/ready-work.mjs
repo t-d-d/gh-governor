@@ -328,7 +328,7 @@ export const specHold = (thread, now) => {
  * A spec session may start on a not-ready ticket: its thread has no
  * unanswered unreadied comment ({@link heldUnreadied}) and no dispatch
  * inside the window (`recentlyDispatched`). The unblocked row
- * (dispatch/turn.mjs) and wait end (`endedWaits`, dispatch/waits.mjs) ask
+ * (`planUnblocked`, dispatch/unblocked-fire.mjs) and wait end (`endedWaits`, dispatch/waits.mjs) ask
  * this, and {@link specHold} says why it is no.
  *
  * @param {ReadonlyArray<{ body: string, ours?: boolean }>} thread The ticket's whole thread, oldest first.

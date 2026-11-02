@@ -111,8 +111,8 @@ const intoBranch = (kind: string, statement: string) => {
   return TURN.slice(0, at) + `\n    ${statement}\n` + TURN.slice(at);
 };
 
-describe('turnFor\'s hook and dispatch branches are one planner call each', () => {
-  const PLANNERS = { hook: 'planHook', dispatch: 'planDispatch' };
+describe('turnFor\'s hook, unblocked and dispatch branches are one planner call each', () => {
+  const PLANNERS = { hook: 'planHook', unblocked: 'planUnblocked', dispatch: 'planDispatch' };
   /** Whether `kind`'s branch in `text` is its planner's call alone. */
   const oneCall = (text: string, kind: string, planner: string) => {
     const statements = branchOf(text, kind);
