@@ -47,5 +47,4 @@ describe('the gate runs once per commit', () => {
   test("a fork's pull request is still gated", () => {
     assert.equal(gateRuns({ event_name: 'pull_request', head_repo: 'someone/factory' }), true);
   });
-
 });
