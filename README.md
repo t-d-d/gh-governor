@@ -77,7 +77,7 @@ Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action wr
 
 ## What it does
 
-A repo turns each feature on with a switch in its `.github/dispatch.json`, except sign-off, which is always on.
+A repo turns each feature on with a switch in its `.github/dispatch.json`.
 
 | Feature | What happens |
 |---|---|
@@ -89,7 +89,7 @@ A repo turns each feature on with a switch in its `.github/dispatch.json`, excep
 | Periodics | Recurring sessions, such as a code review every 10 merges or a weekly ticket review. |
 | Hooks | A system outside GitHub, such as a cloud alarm, starts a session with a signed request. |
 | Waits | A ticket that opens with `Blocked until: 2026-11-20` is not started before that date. |
-| Sign-off | A session whose last reply ends `Signing off.` is archived. |
+| Sign-off | A session whose last reply ends `Signing off.` is archived, and a message about a close or a deploy, with nothing else open, asks the session to sign off. |
 
 ### How dark the factory runs
 
@@ -161,7 +161,7 @@ Most of what keeps the agents on track here is plain files that work in any repo
 Each deployment is one person's factory: it serves the GitHub accounts on its owner list, on one Claude subscription. To try it, you deploy your own. You need an AWS account you can administer, the AWS CLI, Node 22.18 or later, the Claude Code CLI, and a Claude Pro or Max subscription.
 
 1. **Deploy governor.** Create a GitHub App, apply two CloudFormation stacks, and save a claude.ai login. [Running your own governor](docs/self-hosting.md) has every step.
-2. **Opt a repo in.** Install the App, and copy the [starter kit](examples/starter/) into the repo's `.github/`. It turns on pickup, summons, PR and subscription messages, a heartbeat and three recurring reviews. The smallest working config is:
+2. **Opt a repo in.** Install the App, and copy the [starter kit](examples/starter/) into the repo's `.github/`. It turns on pickup, summons, PR and subscription messages, sign-off, a heartbeat and three recurring reviews. The smallest working config is:
 
    ```json
    {

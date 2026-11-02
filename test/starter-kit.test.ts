@@ -38,10 +38,10 @@ describe('the starter kit\'s config file', () => {
     assert.equal(heartbeat.marker, undefined, 'the older shape keeps only a last-run line, not a line per fire');
   });
 
-  test('lists every switch, the six it turns on true and the rest false', () => {
+  test('lists every switch, the seven it turns on true and the rest false', () => {
     const { features } = JSON.parse(text) as { features: Record<string, unknown> };
     assert.deepEqual(Object.keys(features).sort(), [...GENERIC_SWITCHES].sort(), 'a new switch is added to the starter file');
-    const on = ['pickup', 'summons', 'prMessages', 'subscribeMessages', 'heartbeat', 'periodics'];
+    const on = ['pickup', 'summons', 'prMessages', 'subscribeMessages', 'heartbeat', 'periodics', 'signOff'];
     for (const name of GENERIC_SWITCHES) assert.equal(features[name], on.includes(name), name);
   });
 

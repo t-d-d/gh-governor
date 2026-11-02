@@ -1060,7 +1060,17 @@ describe('the task\'s modules in the image', () => {
     assert.ok(closure.has('dispatch/turn.mjs') && closure.has('scripts/lib/github-app.mjs'), [...closure].join(', '));
     const copied = copiedPaths();
     assert.deepEqual(copied.filter((c) => c.endsWith('/')), [], 'a directory COPY carries modules beyond the closure');
-    assert.deepEqual(copied.filter((c) => c.endsWith('.mjs')).sort(), [...closure].sort());
+    assert.deepEqual(copied.filter((c) => /\.[cm]js$/.test(c)).sort(), [...closure].sort());
+  });
+
+  // A module copied to another folder than its own fails the import that
+  // names it by its repo path.
+  test('copies each module to its own path', () => {
+    for (const [, sources, target] of dockerfile.matchAll(/^COPY\s+(.+?)\s+(\S+)\s*$/gm)) {
+      for (const source of sources!.split(/\s+/).filter((path) => /\.([cm]js|py)$/.test(path))) {
+        assert.ok([`./${source.slice(0, source.lastIndexOf('/') + 1)}`, `./${source}`].includes(target!), `${source} is copied to ${target}`);
+      }
+    }
   });
 
   // The fire module is the one the task shares with the receiver;
