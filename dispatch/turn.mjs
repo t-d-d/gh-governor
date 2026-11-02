@@ -191,7 +191,6 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  * @typedef {import('./launcher.mjs').Launch} Launch
  * @typedef {import('./launcher.mjs').LaunchResult} LaunchResult
  * @typedef {import('./launcher.mjs').PendingRecord} PendingRecord
- * @typedef {import('./launcher.mjs').Records} Records
  * @typedef {import('../scripts/lib/dispatch-router.mjs').Reader & import('./workflow.mjs').WorkflowReader & {
  *   comment: (n: number, body: string) => Promise<void>,
  *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }>>,
@@ -453,7 +452,8 @@ const budgetedBy = (deps) => async (begin, name, until, onOver) => {
  * in reply to it is archived by it.
  *
  * Each launch's session record is written in the background, and the turn
- * waits for every one before it ends, whether it returns or throws:
+ * waits for every one through its launcher's `settle` before it ends,
+ * whether it returns or throws:
  * dispatch/cli.mjs takes a throw as the turn's end, and the task may exit
  * straight after (a by-hand turn's at once, the lane's once the lane stays
  * empty), which would cut off a record still being written, and one cut off
@@ -465,20 +465,17 @@ const budgetedBy = (deps) => async (begin, name, until, onOver) => {
  * @param {Deps} deps
  */
 export const run = async (event, deps) => {
-  /** Each launch's record. None rejects: a failed one logs itself. @type {Records} */
-  const records = { writes: [], ended: false };
+  /** The turn's launcher, once {@link turnOf} builds it: a probe builds none. @type {import('./launcher.mjs').Launcher | null} */
+  let launches = null;
   try {
-    return await turnOf(event, deps, records);
+    return await turnOf(event, deps, (built) => { launches = built; });
   } catch (error) {
     // Handed over before the wait below: a record write that hangs holds
     // the rejection until the deadline, which then names the error.
     deps.threw?.(error);
     throw error;
   } finally {
-    // None rejects, so one at a time ends when they all have, and the
-    // length read each pass takes in a record added during the wait.
-    for (let i = 0; i < records.writes.length; i += 1) await records.writes[i];
-    records.ended = true;
+    await /** @type {import('./launcher.mjs').Launcher | null} */ (launches)?.settle();
   }
 };
 
@@ -505,13 +502,14 @@ const servedConfig = (served, repo) => {
 };
 
 /**
- * {@link run}'s turn, which pushes each launch's record onto `records`.
+ * {@link run}'s turn, which hands {@link run} the launcher it builds, so
+ * the turn's end waits for its records.
  *
  * @param {unknown} event
  * @param {Deps} deps
- * @param {Records} records
+ * @param {(built: import('./launcher.mjs').Launcher) => void} own
  */
-const turnOf = async (event, deps, records) => {
+const turnOf = async (event, deps, own) => {
   const invocation = parseFire(event);
   if (invocation.kind === 'probe') return { kind: 'probe', ...(await deps.probe()) };
   const started = deps.now();
@@ -665,10 +663,10 @@ const turnOf = async (event, deps, records) => {
     budgeted,
     fireRepo: repo,
     environment: (launchRepo) => servedConfig(served, launchRepo).environment,
-    records,
     pending: deps.unrecorded,
     log: deps.log,
   });
+  own(launches);
   /** What the turn changes in each repo's governor heartbeat block, written below. @type {RepoBeat[]} */
   const turnBeats = [];
   /** @type {Awaited<ReturnType<typeof turnFor>>} */

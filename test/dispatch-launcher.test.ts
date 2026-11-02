@@ -22,10 +22,9 @@ const harness = (opts: { output?: string, status?: number | null, routine?: stri
   const launched: Asked[] = [];
   const routined: Array<{ asked: Asked, connectors: string[] }> = [];
   const recorded: string[] = [];
-  const records = { writes: [] as Promise<void>[], ended: false };
   const pending = new Set<{ repo: string, sessionName: string, sessionUrl: string }>();
   const result = (): Result => ({ status: opts.status === undefined ? 0 : opts.status, output: opts.output ?? `created ${URL_A}\n`, ...(opts.routine === undefined ? {} : { routine: opts.routine }) });
-  const { start } = launcher({
+  const { start, settle } = launcher({
     cli: async (asked: Asked) => { launched.push(asked); return opts.cli === undefined ? result() : opts.cli(); },
     routine: async (asked: Asked, connectors: string[]) => { routined.push({ asked, connectors }); return result(); },
     recordSession: async (url: string) => { recorded.push(url); if (opts.record !== undefined) await opts.record(url); },
@@ -33,16 +32,13 @@ const harness = (opts: { output?: string, status?: number | null, routine?: stri
     budgeted: opts.budgeted ?? (async (begin) => begin()),
     ...(opts.fireRepo === undefined ? {} : { fireRepo: opts.fireRepo }),
     environment: (repo: string) => `env of ${repo}`,
-    records,
     pending,
     log: (event: string, fields: Record<string, unknown> = {}) => { lines.push({ event, fields }); },
   });
-  return { start, lines, launched, routined, recorded, records, pending };
+  return { start, settle, lines, launched, routined, recorded, pending };
 };
 
 const ASK: Asked = { prompt: 'Do the thing.', sessionName: 'Weekly retro', model: 'm', repo: 'acme/factory', environment: 'env' };
-
-const settle = async (records: { writes: Promise<void>[] }) => { for (let i = 0; i < records.writes.length; i += 1) await records.writes[i]; };
 
 describe('launcher: start', () => {
   test('a CLI launch gets the repo\'s suffix on its prompt, and its printed session is recorded off the launch', async () => {
@@ -50,9 +46,8 @@ describe('launcher: start', () => {
     const result = await h.start(ASK);
     assert.equal(result.status, 0);
     assert.deepEqual(h.launched.map((l) => l.prompt), ['Do the thing.\n\nSIGNED acme/factory']);
-    assert.equal(h.records.writes.length, 1, 'the record is left for the turn to wait on');
     assert.equal(h.pending.size, 1, 'the deadline can see the record while it is written');
-    await settle(h.records);
+    await h.settle();
     assert.deepEqual(h.recorded, [URL_A]);
     assert.equal(h.pending.size, 0);
     assert.deepEqual(h.lines, []);
@@ -63,7 +58,7 @@ describe('launcher: start', () => {
     await h.start({ ...ASK, connectors: ['Slack'] });
     assert.equal(h.launched.length, 0);
     assert.deepEqual(h.routined.map((r) => r.connectors), [['Slack']]);
-    await settle(h.records);
+    await h.settle();
     assert.deepEqual(h.recorded, [URL_A]);
   });
 
@@ -71,7 +66,7 @@ describe('launcher: start', () => {
     const h = harness({ record: async () => { throw new Error('table down'); } });
     const result = await h.start(ASK);
     assert.equal(result.status, 0);
-    await settle(h.records);
+    await h.settle();
     assert.deepEqual(h.lines.map((l) => l.event), [SESSION_UNRECORDED]);
     assert.equal(h.lines[0]!.fields.sessionUrl, URL_A);
     assert.equal(h.lines[0]!.fields.error, 'table down');
@@ -117,7 +112,7 @@ describe('launcher: start', () => {
     assert.deepEqual(h.lines.map((l) => [l.event, l.fields.sessionUrl]), [[SESSION_UNRECORDED, null]]);
     print({ status: 0, output: URL_A });
     await printed;
-    await settle(h.records);
+    await h.settle();
     assert.deepEqual(h.lines.map((l) => l.event), [SESSION_UNRECORDED, SESSION_LATE]);
     assert.match(String(h.lines[1]!.fields.reason), /the turn waits for its record/);
     assert.deepEqual(h.recorded, [URL_A]);
@@ -170,12 +165,72 @@ describe('launcher: start', () => {
 
   test('a session printed after the turn ended pages again, naming it, and its record is still tried', async () => {
     const h = harness();
-    h.records.ended = true;
+    await h.settle();
     await h.start(ASK);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(h.records.writes.length, 0, 'nothing waits for it');
+    assert.equal(h.pending.size, 0, 'nothing waits for it');
     assert.deepEqual(h.lines.map((l) => [l.event, l.fields.sessionUrl]), [[SESSION_UNRECORDED, URL_A]]);
     assert.deepEqual(h.recorded, [URL_A]);
+  });
+});
+
+describe('launcher: settle', () => {
+  test('settle waits for a record still being written, then the launcher is ended', async () => {
+    let land: () => void = () => {};
+    const h = harness({ record: () => new Promise<void>((resolve) => { land = resolve; }) });
+    await h.start(ASK);
+    let settled = false;
+    const waiting = h.settle().then(() => { settled = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, 'the record has not landed');
+    assert.equal(h.pending.size, 1);
+    land();
+    await waiting;
+    assert.equal(h.pending.size, 0);
+    assert.deepEqual(h.lines, []);
+  });
+
+  test('settle waits for a record a late launcher adds while it waits', async () => {
+    let print: (r: Result) => void = () => {};
+    let printed: Promise<unknown> = Promise.resolve();
+    let landFirst: () => void = () => {};
+    const writes: string[] = [];
+    let calls = 0;
+    const refusing: Budgeted = async (begin, name, _until, onOver) => {
+      printed = begin();
+      onOver?.();
+      throw new Error(`the launcher for ${name} ran past 5 ms`);
+    };
+    // The first launch prints at once, and its record hangs until released.
+    // The second runs past its budget and prints while settle waits.
+    let budget: Budgeted = async (begin) => begin();
+    const h = harness({
+      cli: () => (calls++ === 0 ? Promise.resolve({ status: 0, output: URL_A }) : new Promise<Result>((resolve) => { print = resolve; })),
+      record: (url) => { writes.push(url); return url === URL_A ? new Promise<void>((resolve) => { landFirst = resolve; }) : Promise.resolve(); },
+      budgeted: (begin, name, until, onOver) => budget(begin, name, until, onOver),
+    });
+    await h.start(ASK);
+    budget = refusing;
+    await assert.rejects(h.start({ ...ASK, sessionName: 'Late' }), /ran past/);
+    let settled = false;
+    const waiting = h.settle().then(() => { settled = true; });
+    const URL_B = 'https://claude.ai/code/session_01LATELAUNCH';
+    print({ status: 0, output: URL_B });
+    await printed;
+    landFirst();
+    await waiting;
+    assert.equal(settled, true);
+    assert.deepEqual(writes, [URL_A, URL_B], 'the late record was waited for, not cut off');
+    assert.equal(h.lines.filter((l) => l.event === SESSION_LATE).length, 1);
+    assert.match(String(h.lines.find((l) => l.event === SESSION_LATE)!.fields.reason), /the turn waits for its record/);
+    assert.equal(h.lines.filter((l) => l.event === SESSION_UNRECORDED && l.fields.sessionUrl !== null).length, 0, 'no page for a record that was waited for');
+  });
+
+  test('a record that fails does not stop settle', async () => {
+    const h = harness({ record: async () => { throw new Error('write refused'); } });
+    await h.start(ASK);
+    await h.settle();
+    assert.deepEqual(h.lines.map((l) => [l.event, l.fields.error]), [[SESSION_UNRECORDED, 'write refused']]);
   });
 });
 
