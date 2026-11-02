@@ -1873,8 +1873,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // not-planned row's (dispatch/waits.mjs). Only a ticket ready or not
     // ready by its labels is then held; a claimed or excluded one takes its
     // own row, so a claimed ticket's session still hears the close.
-    const settleRelative = (/** @type {{ state: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }} */ read) =>
-      relativeAtClose({ reader, repo: fireRepo(), ticket: read, fire: invocation, prompts, now: deps.now(), log: deps.log });
+    const settleRelative = (/** @type {{ state: string, labels: readonly string[], wait?: import('../scripts/lib/ready-work.mjs').Wait }} */ read) =>
+      relativeAtClose({ reader, repo: fireRepo(), ticket: read, fire: invocation, prompts, now: deps.now(), log: deps.log, holds: waitHolds(read.labels, config.labels) });
     if (!turnsOn(config, 'pickup') && !turnsOn(config, 'unblocked')) {
       const settled = await settleRelative(await reader.ticket(issue));
       const why = `${fireRepo()}'s ${CONFIG_PATH} turns neither pickup nor unblocked on`;
@@ -1924,8 +1924,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       return { kind: invocation.kind, row, refusal: why, dispatched: [] };
     }
     if (row === 'not-planned' || row === 'claimed') {
+      // The line's comment, where this turn posted it, is the row's comment.
       /** @type {boolean} */
-      let commented = false;
+      let commented = lineSaid && settled.outcome === 'commented';
       /** @type {{ removed: string[], failed: string[] } | undefined} */
       let unreadied = earlier;
       if (takeOff.length > 0) {
@@ -1953,7 +1954,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         commented = true;
       }
       if (!ticket.labels.includes(config.labels.claim)) {
-        deps.log('dispatch-unblocked', { ...about, outcome: 'commented', ...(unreadied === undefined ? {} : { unreadied }) });
+        deps.log('dispatch-unblocked', { ...about, outcome: lineSaid ? `the line's comment stands for the row's: ${settled?.outcome}` : 'commented', ...(unreadied === undefined ? {} : { unreadied }) });
         return { kind: invocation.kind, row, commented, dispatched: [] };
       }
       // The claimed ticket's session: the newest dispatch marker names it,

@@ -7325,7 +7325,7 @@ describe('run: a relative wait on a declared blocker', () => {
         issue: async (n: number) => ({ number: n, body: state.body, pull: false }),
         updateIssue: async (n: number, { body: next }: { body: string }) => { h.issueEdits.push({ issue: n, body: next }); state.body = next; },
         issueClose: async (n: number) => ({ id: 9000 + n, number: n, title: `Issue ${n}`, state: 'open', reason: null, closedAt: null, ...issues[n] }),
-        allComments: async () => [],
+        allComments: async () => thread,
         comments: async () => thread,
         comment: async (n: number, text: string) => { h.comments.push({ issue: n, body: text }); },
         addLabels: async (n: number, on: string[]) => { h.calls.push(`label #${n} +${on.join(', ')}`); },
@@ -7369,10 +7369,21 @@ describe('run: a relative wait on a declared blocker', () => {
       assert.equal(result.row, row, reason);
       assert.equal(h.comments.length, 1, `${reason}: ${JSON.stringify(h.comments)}`);
       assert.ok(h.comments[0]!.body.includes(waitNotPlannedMarker('#41')), reason);
+      assert.equal(result.commented, true, reason);
+      assert.doesNotMatch(h.comments[0]!.body, /stays held/, reason);
       assert.deepEqual(h.messages.map((m) => m.session), [SESSION], reason);
       assert.match(h.messages[0]!.text, new RegExp(`closed as ${reason.replace(/_/g, ' ')}`), reason);
       assert.deepEqual([h.launches, h.calls.filter((c) => c.startsWith('label '))], [[], []], reason);
     }
+  });
+
+  test('claimed, and a retried not-planned close: no second comment, and its session hears the close', async () => {
+    const h = relativeTurn({ labels: [CLAIM], thread: [{ body: MARKER }, { body: `Earlier.\n${waitNotPlannedMarker('#41')}` }] });
+    const result = await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'not-planned');
+    assert.equal(result.commented, false);
+    assert.deepEqual(h.comments, []);
+    assert.deepEqual(h.messages.map((m) => m.session), [SESSION]);
   });
 
   test('excluded, and a close that is not completed: the line\'s one comment, and the ticket takes its own row', async () => {
@@ -7382,6 +7393,7 @@ describe('run: a relative wait on a declared blocker', () => {
       assert.equal(result.row, row, reason);
       assert.equal(h.comments.length, 1, `${reason}: ${JSON.stringify(h.comments)}`);
       assert.ok(h.comments[0]!.body.includes(waitNotPlannedMarker('#41')), reason);
+      assert.equal(result.commented, row === 'not-planned' ? true : undefined, reason);
       assert.deepEqual([h.launches, h.messages, h.calls.filter((c) => c.startsWith('label '))], [[], [], []], reason);
     }
   });
