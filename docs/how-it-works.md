@@ -195,7 +195,7 @@ GitHub's runs list can lag. A list missing the run is read again after 10, 30, 6
 
 GitHub has no event for a PR that a merge leaves conflicted. So a PR merged into the default branch queues a `conflicts` fire (`dispatch/conflicts.mjs`), whose turn reads each open, non-draft PR's `mergeable`. A `null` starts GitHub's computation, so those are read again three seconds later, up to five reads. A PR still `null` is never taken for a conflict.
 
-Each conflicted PR's owner session is told the PR, the merge that moved the base and the base's new commit, and asked to merge the base in, resolve, check and push. An archived owner gets a fresh session told to take the PR over. Nothing is posted on the PR. Each PR is told of each merge once, recorded in the state table. A PR with no owner session is told nothing.
+Each conflicted PR's owner session is told the PR, the merge that moved the base and the base's new commit, and asked to merge the base in, resolve, check and push. An archived owner gets a fresh session told to take the PR over. That session starts on the PR's head branch and pushes there, so it opens no second PR. A PR from a fork has no head branch in the repo, so its session starts from the default branch. Nothing is posted on the PR. Each PR is told of each merge once, recorded in the state table. A PR with no owner session is told nothing.
 
 ## The PR review
 
