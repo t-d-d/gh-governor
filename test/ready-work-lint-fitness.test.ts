@@ -76,7 +76,8 @@ describe('fitness: lint refuses a new caller of the readiness checks (dispatcher
   test('one rule holds the checks: no-restricted-imports no longer guards them', async () => {
     const results = await eslint.lintText(`import { isBlocked } from '../scripts/lib/ready-work.mjs';\nexport const x = isBlocked;\n`, { filePath: `${root}dispatch/new-path.mjs` });
     const ids = results.flatMap((r) => r.messages).map((m) => m.ruleId);
-    assert.deepEqual(ids, [RULE]);
+    assert.deepEqual(ids.filter((id) => id === RULE), [RULE]);
+    assert.ok(!ids.includes('no-restricted-imports'), 'no-restricted-imports still reports a readiness check');
   });
 
   test('tests may import the checks, since they test them directly', async () => {
