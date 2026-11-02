@@ -24,11 +24,25 @@
  * A lost `opened`, `reopened` or `edited` delivery leaves its ticket out of the items,
  * so it gets no comment or spec session when its wait ends. A ready ticket
  * loses nothing: pickup's sweep reads its line itself.
+ *
+ * A line may wait a number of days after an issue closes instead:
+ * `Blocked until: 3 days after #143 closes`. The issue must be a declared
+ * blocker of the ticket, so the dependency hold keeps the ticket out while
+ * it is open, and its close reaches the ticket's own turn, from another repo
+ * too. The line holds the ticket until governor rewrites it, once, into its
+ * date ({@link relativeAtClose}), whatever the repo's switches say. A close
+ * that is not completed leaves the line, and the ticket held, with one
+ * comment under {@link waitNotPlannedMarker}. With `waits` on, the `wait`
+ * turn links a same-repo issue the line names where it is not linked, and
+ * the bare schedule fire's sweep repairs a ready ticket whose line no open
+ * blocker holds ({@link repairRelative}), or says once, under
+ * {@link WAIT_RELATIVE_MARKER}, that it cannot.
  */
 
-import { recentlyDispatched } from './webhook/fire.mjs';
-import { specSession } from './unblocked.mjs';
-import { isBlocked, isWaiting, labelRow } from '../scripts/lib/ready-work.mjs';
+import { recentlyDispatched, waitLine } from './webhook/fire.mjs';
+import { specSession, unblockedFacts } from './unblocked.mjs';
+import { instruction } from './prompts.mjs';
+import { RELATIVE_WAIT, isBlocked, isWaiting, labelRow, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 
 /** The log event for a `Blocked until:` line governor cannot read. */
 export const WAIT_UNREADABLE = 'dispatch-wait-unreadable';
@@ -197,15 +211,28 @@ const ticketOf = (reader, issue) => reader.ticket(issue).then((t) => (t.number =
  * moved to another repo deletes it too. Each write goes only over the item
  * the turn read.
  *
- * @param {{ reader: WaitReader, state: WaitState, repo: string, issue: number, labels: import('../scripts/lib/ready-work.mjs').Labels, now: number, log: Log }} args
+ * A relative line keeps no item, and drops one that stands: it has no date
+ * yet. On a ticket ready or not ready by its labels, the turn then settles
+ * it ({@link repairRelative}): it links a same-repo issue the line names
+ * where it is not linked, and rewrites or comments where that issue has
+ * already closed. Another repo's issue is not read.
+ *
+ * @param {{ reader: WaitReader & RelativeReader, state: WaitState, repo: string, issue: number, labels: import('../scripts/lib/ready-work.mjs').Labels, now: number, log: Log, prompts?: Record<string, string | undefined> }} args
  * @returns {Promise<string>} What came of it, as logged.
  */
-export const holdWait = async ({ reader, state, repo, issue, labels, now, log }) => {
+export const holdWait = async ({ reader, state, repo, issue, labels, now, log, prompts = {} }) => {
   const found = await ticketOf(reader, issue);
   const ticket = found ?? { state: 'gone or moved', labels: [], wait: undefined };
   const wait = ticket.state === 'open' ? ticket.wait : undefined;
   const read = await state.wait(repo, issue);
   const about = { repo, issue, ...(read === null ? {} : { read: read.until }) };
+  if (wait !== undefined && 'after' in wait) {
+    const dropped = read === null ? null : await state.dropWait(repo, issue, read.until);
+    const settled = holds(ticket.labels, labels) ? await repairRelative({ reader, repo, issue, after: wait.after, link: true, prompts, now, log }) : 'not settled: the ticket is not held from anyone';
+    const outcome = `relative: ${settled}`;
+    log(WAIT, { ...about, after: wait.after, outcome, ...(dropped === null ? {} : { item: dropped ? 'dropped' : 'not dropped: it changed since it was read' }) });
+    return outcome;
+  }
   // A date that has passed, over an item: the item is kept at that date, so
   // the schedule fire still says the wait ended. An edit just after
   // midnight, or a wait moved earlier into the past, loses nothing.
@@ -301,6 +328,10 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log }
         await drop(item, { outcome: 'its line cannot be read' });
         continue;
       }
+      if ('after' in wait) {
+        await drop(item, { outcome: 'its line now waits on an issue\'s close' });
+        continue;
+      }
       if (isWaiting({ wait }, now)) {
         const written = await state.recordWait(repo, issue, item.until, wait.until);
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: written ? 'moved later: not released' : 'moved later, and the item changed since it was read' });
@@ -329,4 +360,249 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log }
     }
   }
   return { specs, unread };
+};
+
+
+// ── A relative wait: `Blocked until: <N> days after #<issue> closes` ─────
+
+/** The log event for what governor did with a relative line. */
+export const WAIT_RELATIVE = 'dispatch-wait-relative';
+
+/** How governor's comment on a relative wait's close that was not completed starts. */
+export const WAIT_NOT_PLANNED_MARKER = '<!-- governor:wait-not-planned ';
+
+/**
+ * The marker on governor's one comment about `ref`'s close that was not
+ * completed. It names the issue, so a line moved to wait on another issue
+ * is told again.
+ *
+ * @param {string} ref `#<issue>`, or `<owner>/<repo>#<issue>` for another repo's.
+ */
+export const waitNotPlannedMarker = (ref) => `${WAIT_NOT_PLANNED_MARKER}${ref} -->`;
+
+/** The marker on governor's one comment about a relative line it cannot settle. */
+export const WAIT_RELATIVE_MARKER = '<!-- governor:wait-relative -->';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A relative wait's date: the first day whose 00:00 UTC is at least `days`
+ * days after `closedAt`, so the wait is never shorter than it says.
+ *
+ * @param {string} closedAt ISO time.
+ * @param {number} days
+ * @returns {string} `YYYY-MM-DD`.
+ */
+export const relativeUntil = (closedAt, days) => {
+  const at = Date.parse(closedAt) + days * DAY_MS;
+  return new Date(Math.ceil(at / DAY_MS) * DAY_MS).toISOString().slice(0, 10);
+};
+
+/**
+ * `body` with its relative line rewritten into `until`: `Blocked until:
+ * <date> (<N> days after #143 closed)`, then any reason the line gave. The
+ * rest of the body, and the line's indent and line ending, are left as they
+ * were. Null where the body's first non-empty line is not a relative line.
+ *
+ * @param {string} body
+ * @param {string} until `YYYY-MM-DD`.
+ * @returns {string | null}
+ */
+export const datedBody = (body, until) => {
+  const lines = body.split('\n');
+  const at = lines.findIndex((line) => line.trim() !== '');
+  if (at < 0) return null;
+  const line = /** @type {string} */ (lines[at]);
+  const end = line.endsWith('\r') ? '\r' : '';
+  const core = line.slice(0, line.length - end.length);
+  const value = waitLine(core);
+  const match = value === null ? null : RELATIVE_WAIT.exec(value);
+  if (value === null || match === null) return null;
+  const days = Number(match[1]);
+  const ref = `${match[2] ?? ''}#${match[3]}`;
+  const indent = /^\s*/.exec(core)?.[0] ?? '';
+  lines[at] = `${indent}Blocked until: ${until} (${days} ${days === 1 ? 'day' : 'days'} after ${ref} closed)${value.slice(match[0].length)}${end}`;
+  return lines.join('\n');
+};
+
+/**
+ * @typedef {{
+ *   issue: (n: number) => Promise<{ body: string }>,
+ *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
+ *   allComments: (n: number) => Promise<Array<{ body: string }>>,
+ *   comment: (n: number, body: string) => Promise<void>,
+ *   blockers: (n: number) => Promise<Array<{ number: number, state: string, repo?: string }>>,
+ *   issueClose: (n: number) => Promise<{ id: number, number: number, title: string, state: string, reason: string | null, closedAt: string | null }>,
+ *   addBlocker: (n: number, id: number) => Promise<void>,
+ * }} RelativeReader
+ *   What a relative wait reads and writes, all in the ticket's own repo.
+ */
+
+/** @param {string} a @param {string} b */
+const sameRepo = (a, b) => a.toLowerCase() === b.toLowerCase();
+
+/**
+ * How a ticket of `repo` names `closed`: `#<issue>` in its own repo, or
+ * `<owner>/<repo>#<issue>`.
+ *
+ * @param {string} repo
+ * @param {{ repo: string, number: number }} closed
+ */
+const refOf = (repo, closed) => (sameRepo(repo, closed.repo) ? `#${closed.number}` : `${closed.repo}#${closed.number}`);
+
+/**
+ * The comment a ticket gets when the issue its line waits on closed other
+ * than as completed: the close's facts, the not-planned ask, and how to free
+ * the ticket, which the line still holds.
+ *
+ * @param {{ facts: string, issue: number, ref: string, prompts: Record<string, string | undefined> }} args
+ */
+export const waitNotPlannedComment = ({ facts, issue, ref, prompts }) => [
+  facts,
+  '',
+  instruction(prompts, 'unblockedNotPlanned'),
+  '',
+  `#${issue} stays held by its \`Blocked until:\` line, which waits on ${ref} closing. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line, to free it.`,
+  '',
+  waitNotPlannedMarker(ref),
+].join('\n');
+
+/**
+ * The comment a ticket gets when governor cannot settle its relative line.
+ *
+ * @param {string} ref
+ */
+export const waitRelativeComment = (ref) => [
+  `Governor cannot work out the date on this ticket's \`Blocked until:\` line, which waits on ${ref} closing, so it is holding the ticket. Governor only sees a close of an issue linked as a blocker of this ticket, and ${ref} is not one it can read as closed.`,
+  `Link ${ref} as a blocker of this ticket, or write the date as \`Blocked until: YYYY-MM-DD\`.`,
+  '',
+  WAIT_RELATIVE_MARKER,
+].join('\n');
+
+/**
+ * Say something once on a ticket: nothing where its thread carries `marker`.
+ *
+ * @param {Pick<RelativeReader, 'allComments' | 'comment'>} reader
+ * @param {number} issue
+ * @param {string} marker
+ * @param {string} text
+ * @returns {Promise<'commented' | 'already told'>}
+ */
+const sayOnce = async (reader, issue, marker, text) => {
+  const thread = await reader.allComments(issue);
+  if (thread.some((c) => String(c.body ?? '').includes(marker))) return 'already told';
+  await reader.comment(issue, text);
+  return 'commented';
+};
+
+/**
+ * Settle a relative line on `closed`'s close. A completed close, or one
+ * GitHub gave no reason for, rewrites the line into its date, from the body
+ * read just before the write, so a person's edit elsewhere stays. A body
+ * whose line no longer waits on `closed` is left alone. Any other close
+ * leaves the line and comments once.
+ *
+ * @param {{ reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>, repo: string, issue: number, closed: { repo: string, number: number, reason?: string | null, closedAt: string }, facts: string, prompts: Record<string, string | undefined>, log: Log }} args
+ * @returns {Promise<{ outcome: string, wait?: { until: string } }>}
+ */
+const settle = async ({ reader, repo, issue, closed, facts, prompts, log }) => {
+  const ref = refOf(repo, closed);
+  const about = { repo, issue, closed: ref, reason: closed.reason ?? null };
+  if (closed.reason !== undefined && closed.reason !== null && closed.reason !== 'completed') {
+    const outcome = await sayOnce(reader, issue, waitNotPlannedMarker(ref), waitNotPlannedComment({ facts, issue, ref, prompts }));
+    log(WAIT_RELATIVE, { ...about, outcome: outcome === 'commented' ? 'held: commented on a close that was not completed' : 'held: already told of a close that was not completed' });
+    return { outcome };
+  }
+  const { body } = await reader.issue(issue);
+  const { wait } = waitOf(body);
+  if (wait === undefined || !('after' in wait) || !waitsOnClose(wait, repo, closed)) {
+    log(WAIT_RELATIVE, { ...about, outcome: 'not rewritten: the line changed since it was read' });
+    return { outcome: 'line changed' };
+  }
+  const until = relativeUntil(closed.closedAt, wait.after.days);
+  const next = datedBody(body, until);
+  if (next === null) return { outcome: 'line changed' };
+  await reader.updateIssue(issue, { body: next });
+  log(WAIT_RELATIVE, { ...about, closedAt: closed.closedAt, until, outcome: 'rewritten' });
+  return { outcome: 'rewritten', wait: { until } };
+};
+
+/**
+ * An `unblocked` turn's first step: where the ticket is open and its line
+ * waits on the fire's blocker, settle it ({@link settle}), counting from
+ * the close time the fire carries, or from `now` for a fire without one, so
+ * the wait is never shorter. Null where the line is not this close's.
+ *
+ * @param {{
+ *   reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>,
+ *   repo: string,
+ *   ticket: { state: string, wait?: import('../scripts/lib/ready-work.mjs').Wait },
+ *   fire: import('./webhook/fire.mjs').UnblockedFire & { repo?: string },
+ *   prompts: Record<string, string | undefined>,
+ *   now: number,
+ *   log: Log,
+ * }} args
+ * @returns {Promise<{ outcome: string, wait?: { until: string } } | null>}
+ */
+export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now, log }) => {
+  if (ticket.state !== 'open' || !waitsOnClose(ticket.wait, repo, fire.blocker)) return null;
+  const { blocker } = fire;
+  const closed = { repo: blocker.repo, number: blocker.number, reason: blocker.reason ?? null, closedAt: blocker.closedAt ?? new Date(now).toISOString() };
+  return settle({ reader, repo, issue: fire.issue, closed, facts: unblockedFacts({ ...fire, repo }, { quote: true }), prompts, log });
+};
+
+/**
+ * Settle a relative line no close has: one the `wait` turn reads (`link`),
+ * or one the bare schedule fire's sweep finds on a ready ticket. Only an
+ * issue in the ticket's repo is read.
+ *
+ * - The sweep leaves a ticket an open blocker holds to that blocker's close.
+ * - A same-repo issue that has closed: settled as at its close
+ *   ({@link settle}).
+ * - A same-repo issue still open: the `wait` turn links it where it is not
+ *   linked. The sweep, which finds no open blocker, comments once.
+ * - Another repo's issue: the `wait` turn leaves it, since a person must
+ *   declare it. The sweep comments once.
+ * - An issue that is gone or moved: one comment.
+ *
+ * @param {{ reader: RelativeReader, repo: string, issue: number, after: import('../scripts/lib/ready-work.mjs').After, link: boolean, prompts: Record<string, string | undefined>, now?: number, log: Log }} args
+ * @returns {Promise<string>} What came of it.
+ */
+export const repairRelative = async ({ reader, repo, issue, after, link, prompts, now = Date.now(), log }) => {
+  const named = { repo: after.repo ?? repo, number: after.issue };
+  const ref = refOf(repo, named);
+  /** @type {Array<{ number: number, state: string, repo?: string }> | null} */
+  let rows = null;
+  if (!link) {
+    rows = await reader.blockers(issue);
+    if (rows.some((r) => r.state === 'open')) return 'held by an open blocker';
+  }
+  const cannot = async (/** @type {string} */ why) => {
+    const outcome = await sayOnce(reader, issue, WAIT_RELATIVE_MARKER, waitRelativeComment(ref));
+    log(WAIT_RELATIVE, { level: 'warn', repo, issue, after, reason: why, outcome: outcome === 'commented' ? 'held: commented that it cannot be settled' : 'held: already told it cannot be settled' });
+    return outcome;
+  };
+  if (!sameRepo(named.repo, repo)) {
+    if (link) return 'another repo\'s issue: a person declares it';
+    return cannot(`${ref} is in another repo, and no open blocker holds the ticket`);
+  }
+  const read = await reader.issueClose(after.issue).then((r) => (r.number === after.issue ? r : null), (error) => {
+    const status = /** @type {{ status?: number }} */ (error)?.status;
+    if (status === 404 || status === 410) return null;
+    throw error;
+  });
+  if (read === null) return cannot(`${ref} is gone or moved`);
+  if (read.state !== 'open') {
+    const reason = read.reason ?? 'completed';
+    const facts = `${ref} (\`${read.title.replace(/`/g, "'")}\`) closed as ${reason.replace(/_/g, ' ')}. It blocked #${issue}.`;
+    const closed = { ...named, reason: read.reason, closedAt: read.closedAt ?? new Date(now).toISOString() };
+    return (await settle({ reader, repo, issue, closed, facts, prompts, log })).outcome;
+  }
+  rows ??= await reader.blockers(issue);
+  const linked = rows.some((r) => r.number === after.issue && sameRepo(r.repo ?? repo, repo));
+  if (!link) return linked ? 'held by its blocker' : cannot(`${ref} is open and not linked as a blocker`);
+  if (linked) return 'linked already';
+  await reader.addBlocker(issue, read.id);
+  log(WAIT_RELATIVE, { repo, issue, after, outcome: `linked ${ref} as a blocker` });
+  return 'linked';
 };

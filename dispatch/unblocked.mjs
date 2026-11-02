@@ -42,13 +42,14 @@ import { createHash } from 'node:crypto';
 import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
-import { isBlocked, isWaiting, labelRow } from '../scripts/lib/ready-work.mjs';
+import { isBlocked, isWaiting, labelRow, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 
 /**
  * @typedef {import('./webhook/fire.mjs').UnblockedFire} UnblockedFire
  * @typedef {import('./webhook/fire.mjs').Blocker} Blocker
  * @typedef {import('./webhook/fire.mjs').ClosingPull} ClosingPull
- * @typedef {{ repo: string, number: number, state: string }} BlockedRow A ticket the closed issue blocked, in its repo.
+ * @typedef {{ repo: string, number: number, state: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }} BlockedRow
+ *   A ticket the closed issue blocked, in its repo, and what its `Blocked until:` line says.
  * @typedef {{ fire: UnblockedFire & { repo: string }, dedupId: string }} Queued
  * @typedef {{ repo: string, issue: number, reason: string }} Skipped
  * @typedef {import('../scripts/lib/ready-work.mjs').Labels} Labels
@@ -87,9 +88,12 @@ const dedupIdOf = (closed, ticket) =>
  * owner is on the list, with no cap, since each starts at most one
  * session and queues nothing. Any repo can link its issue as blocked by one
  * of ours, so the list can hold strangers' tickets: those are skipped, as
- * is a ticket of the closing repo where its switches are off (`ownOff`).
- * The closing turn cannot read another repo's switches, so another repo's
- * ticket is queued anyway, and its turn ends there.
+ * is a ticket of the closing repo where its switches are off (`ownOff`),
+ * unless its line waits a number of days after this close: governor
+ * rewrites that line into its date whatever the switches say
+ * (dispatch/waits.mjs). The closing turn cannot read another repo's
+ * switches, so another repo's ticket is queued anyway, and its turn ends
+ * there.
  *
  * @param {{ closed: Blocker, pr: ClosingPull | null, rows: readonly BlockedRow[], owners: readonly string[], ownOff?: boolean }} args
  * @returns {{ queue: Queued[], skipped: Skipped[] }}
@@ -99,11 +103,11 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
   const queue = [];
   /** @type {Skipped[]} */
   const skipped = [];
-  for (const { repo, number: issue, state } of rows) {
+  for (const { repo, number: issue, state, wait } of rows) {
     const owner = repo.split('/')[0] ?? '';
     const reason = state !== 'open' ? `#${issue} is ${state}`
       : !ownerListed(owners, owner) ? `${owner} is not on the owner list`
-        : ownOff && sameRepo(repo, closed.repo) ? `${repo}'s file turns neither pickup nor unblocked on`
+        : ownOff && sameRepo(repo, closed.repo) && !waitsOnClose(wait, repo, closed) ? `${repo}'s file turns neither pickup nor unblocked on`
           : null;
     if (reason !== null) {
       skipped.push({ repo, issue, reason });

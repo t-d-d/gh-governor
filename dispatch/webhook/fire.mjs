@@ -303,9 +303,11 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  * @typedef {{ kind: 'hook', hook: string, keyVersion: number, text: string, at: string }} HookFire
  *   A hook an outside system fired: its name, the key version its request
  *   was signed with, the caller's text, and when the receiver took it.
- * @typedef {{ repo: string, number: number, title: string, reason?: string }} Blocker
- *   An issue that closed: its repo, number and title, and GitHub's
- *   `state_reason` for the close where it gave one.
+ * @typedef {{ repo: string, number: number, title: string, reason?: string, closedAt?: string }} Blocker
+ *   An issue that closed: its repo, number and title, GitHub's
+ *   `state_reason` for the close where it gave one, and when it closed
+ *   (`closed_at`), which a relative wait counts from (dispatch/waits.mjs).
+ *   A fire queued before the close time was carried names none.
  * @typedef {{ number: number, title: string, url: string }} ClosingPull The PR whose merge closed a blocker, in the blocker's repo.
  * @typedef {{ kind: 'wait', issue: number }} WaitFire
  *   An issue opened or edited whose new or old body holds a `Blocked until:` line.
@@ -411,13 +413,13 @@ export const build = Object.freeze({
    * Each title on one line and at most {@link TITLE_LIMIT} characters, so
    * any title fits the lane.
    *
-   * @param {{ issue: number, blocker: Omit<Blocker, 'reason'> & { reason?: string | null | undefined }, pr?: ClosingPull | null | undefined }} args
+   * @param {{ issue: number, blocker: Omit<Blocker, 'reason' | 'closedAt'> & { reason?: string | null | undefined, closedAt?: string | null | undefined }, pr?: ClosingPull | null | undefined }} args
    * @returns {UnblockedFire}
    */
   unblocked: ({ issue, blocker, pr }) => ({
     kind: 'unblocked',
     issue,
-    blocker: { repo: blocker.repo, number: blocker.number, title: shortTitle(blocker.title), ...present({ reason: blocker.reason ?? undefined }) },
+    blocker: { repo: blocker.repo, number: blocker.number, title: shortTitle(blocker.title), ...present({ reason: blocker.reason ?? undefined, closedAt: blocker.closedAt ?? undefined }) },
     ...(pr === undefined || pr === null ? {} : { pr: { number: pr.number, title: shortTitle(pr.title), url: pr.url } }),
   }),
 });
@@ -852,13 +854,14 @@ const parseUnblocked = (e) => {
   const b = /** @type {Record<string, unknown> | null} */ (e?.blocker ?? null);
   if (b === null || typeof b !== 'object' || typeof b.repo !== 'string' || !REPO_NAME.test(b.repo) || !isPositiveInt(b.number) || !isTitle(b.title)) refuse('blocker must name its repo, number and title');
   if (b?.reason !== undefined && !(typeof b.reason === 'string' && /^[a-z_]{1,40}$/.test(b.reason))) refuse('blocker reason must be a close reason');
+  if (b?.closedAt !== undefined && !(typeof b.closedAt === 'string' && b.closedAt.length <= 40 && Number.isFinite(Date.parse(b.closedAt)))) refuse('blocker closedAt must be when it closed');
   const p = /** @type {Record<string, unknown> | null | undefined} */ (e?.pr);
   if (p !== undefined && (p === null || typeof p !== 'object' || !isPositiveInt(p.number) || !isTitle(p.title) || typeof p.url !== 'string' || !/^https:\/\/github\.com\/\S+$/.test(p.url))) refuse('pr must name its number, title and github.com url');
   const blocker = /** @type {Record<string, unknown>} */ (b);
   return {
     kind: 'unblocked',
     issue: Number(e?.issue),
-    blocker: { repo: String(blocker.repo), number: Number(blocker.number), title: String(blocker.title), ...(blocker.reason === undefined ? {} : { reason: String(blocker.reason) }) },
+    blocker: { repo: String(blocker.repo), number: Number(blocker.number), title: String(blocker.title), ...(blocker.reason === undefined ? {} : { reason: String(blocker.reason) }), ...(blocker.closedAt === undefined ? {} : { closedAt: String(blocker.closedAt) }) },
     ...(p === undefined ? {} : { pr: { number: Number(p?.number), title: String(p?.title), url: String(p?.url) } }),
   };
 };
