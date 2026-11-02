@@ -986,6 +986,31 @@ describe('run — the dispatcher claims what it launches', () => {
     }
   });
 
+  // The second read judges blockers as the selection does: a closed row or
+  // a summary of none is no blocker, so the ticket is claimed.
+  test('a ticket whose blockers are all closed when its turn comes is claimed and launched', async () => {
+    for (const still of [
+      { state: 'open', labels: [READY, 'mode: afk'], rows: [{ number: 43, state: 'closed', title: 'y' }] },
+      { state: 'open', labels: [READY, 'mode: afk'], openBlockers: 0, rows: [{ number: 43, state: 'open', title: 'y' }] },
+    ]) {
+      const base = harness();
+      const { rows, ...read } = still;
+      let reads7 = 0;
+      const { deps, calls } = harness({
+        reader: () => ({
+          ...base.deps.reader(''),
+          blockers: async (n: number) => (n === 7 && reads7++ > 0 ? rows : []),
+          addLabels: async (n: number, labels: string[]) => { calls.push(`label #${n} +${labels.join(', ')}`); },
+          removeLabel: async (n: number, label: string) => { calls.push(`label #${n} -${label}`); },
+          ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', pull: false, ...(n === 7 ? read : { state: 'open', labels: [READY, 'mode: afk'] }) }),
+        }),
+      });
+      const result = turn(await run({ source: 'aws.events' }, deps as never));
+      assert.deepEqual(result.dispatched.map((d) => d.issue).sort(), [7, 9], JSON.stringify(still));
+      assert.ok(labelCalls(calls).includes(`label #7 +${CLAIMED}`), JSON.stringify(labelCalls(calls)));
+    }
+  });
+
   test('a dispatch naming no issue claims nothing', async () => {
     const { deps, calls } = harness();
     await run({ kind: 'dispatch', prompt: 'hello' }, deps as never);

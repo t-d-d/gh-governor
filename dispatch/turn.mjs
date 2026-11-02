@@ -2057,7 +2057,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    * one of the repo's excluded labels, given an open blocker (`isBlocked`)
    * or held by a `Blocked until:` line since is skipped, untouched, since its
    * session would proceed on the prompt's claim line over someone else's
-   * work, or on work that waits on another. A claim that fails is released, and starts nothing.
+   * work, or on work that waits on another. A claim that fails is
+   * released, and starts nothing.
    *
    * @param {{ repo: string, issue: number }} ticket
    * @returns {Promise<'claimed' | 'taken' | 'failed'>}
@@ -2080,12 +2081,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}${open}${line}` });
         // Said only on a ticket still ready by its labels: one claimed or
         // unreadied since is someone else's.
-        const unread = state === 'open' && labelRow(on, labels) === 'ready' ? unreadableOf(read) : undefined;
+        const unread = ready ? unreadableOf(read) : undefined;
         if (unread !== undefined) await reportUnreadable({ reader: github, repo, issue, value: unread, log: deps.log });
         return 'taken';
       }
     } catch (error) {
-      deps.log('dispatch-claim', { repo, issue, outcome: 'not claimed', error: `the ticket could not be read: ${messageOf(error)}` });
+      deps.log('dispatch-claim', { repo, issue, outcome: 'not claimed', error: `the ticket or its blockers could not be read: ${messageOf(error)}` });
       return 'failed';
     }
     claims.add(keyOf(ticket));
