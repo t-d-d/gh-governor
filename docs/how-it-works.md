@@ -79,9 +79,11 @@ Each `unblocked` fire runs in the ticket's repo's own turn, under that repo's co
 | Carries an `exclude` label | Nothing. | |
 | Is claimed | Messages the session the newest dispatch marker names: its blocker closed, and by which PR. | `unblocked` |
 | Is ready | Picks it up as pickup does: claim, marker, launch. The prompt adds the close's facts and asks the session to check the spec against what merged first. | `pickup` |
-| Is not ready | Starts a session with a dispatch marker and no claim, to rewrite the spec from what merged. A decision only a person can make goes into the body as a question. The session either marks the ticket ready and stops, or adds the claim label itself before it builds. | `unblocked` |
+| Is not ready | Starts a session with a dispatch marker and no claim, to rewrite the spec from what merged. A decision only a person can make goes into the body as a question. The session either marks the ticket ready and stops, or adds the claim label itself before it builds. A ticket whose ready labels governor took off on a not-planned close starts nothing until a person answers (below). | `unblocked` |
 
 The label removal sits under `pickup` because pickup is what could start the ticket, so a repo with `pickup` on is held whatever `unblocked` says. The sentence about the labels is fixed text, not part of the `unblockedNotPlanned` prompt, so a repo that replaces the prompt still says it.
+
+A comment that says a ready label came off carries a `<!-- governor:unreadied -->` marker, on a retried fire too. When another blocker later closes and the ticket reads as not ready, the turn reads the ticket's thread first. If governor's newest comment with that marker has no comment after it from anyone but governor, it starts no spec session and logs `dispatch-unblocked` saying so. A person's comment after it is an answer, and the next close starts the session as before. Putting the ready labels back makes the ticket ready, and pickup takes it on. A thread that cannot be read fails the turn, so the fire is retried.
 
 The closing turn cannot read another repo's switches, so it queues the fire anyway, and the ticket's turn ends when its switch is off. For its own repo, it skips the fire when the file turns neither `pickup` nor `unblocked` on, unless the ticket's line waits a number of days after this close. With `unblocked` on and `pickup` off, a spec session can still claim a ticket and build it; one that only marks it ready waits for nothing to start it.
 

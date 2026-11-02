@@ -22,7 +22,7 @@
  * | carries an `exclude` label | nothing | |
  * | is claimed | messages the session its dispatch marker names | `unblocked` |
  * | is ready | picks it up as pickup does, the close's facts in the prompt | `pickup` |
- * | is not ready | starts a spec session with a marker and no claim | `unblocked` |
+ * | is not ready | starts a spec session with a marker and no claim, unless governor unreadied it on a not-planned close and nobody has answered since | `unblocked` |
  *
  * A not-planned close takes a ready, unclaimed ticket's ready labels off
  * ({@link readyToTakeOff}), whether or not another blocker is still open,
@@ -32,6 +32,9 @@
  * one comment. A retry of the close, after the labels came off, reads the
  * App's label removals since the close ({@link unreadiedSince}), so its one
  * comment still says they came off and how to ready the ticket again.
+ * That comment carries {@link UNREADIED_MARKER}, so a later close of another
+ * blocker, finding the ticket not ready, starts no spec session until a
+ * person has answered it ({@link heldUnreadied}).
  *
  * The last row is pickup's reverse: the prompt tells the session to add the
  * claim label itself before it builds. The marker keeps the sweep off the
@@ -299,5 +302,30 @@ const readySentence = (issue, { removed, failed }) => {
 export const notPlannedComment = (fire, prompts, { blocked = false, unreadied } = {}) => {
   const still = blocked ? `\n\n#${fire.issue} is still blocked by another open issue, so this close does not free it.` : '';
   const ready = unreadied === undefined ? '' : `\n\n${readySentence(fire.issue, unreadied)}`;
-  return `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}${still}${ready}`;
+  const marker = unreadied !== undefined && unreadied.removed.length > 0 ? `\n\n${UNREADIED_MARKER}` : '';
+  return `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}${still}${ready}${marker}`;
+};
+
+/**
+ * The marker on a not-planned comment that says governor took a ready label
+ * off, on a first run or a retry. It records the hold: a later close of
+ * another blocker reads the thread for it ({@link heldUnreadied}).
+ */
+export const UNREADIED_MARKER = '<!-- governor:unreadied -->';
+
+/**
+ * Whether a not-ready ticket is still held by governor's not-planned close:
+ * governor's newest comment carrying {@link UNREADIED_MARKER} has no comment
+ * after it from anyone but governor. A later close then starts no spec
+ * session, since nobody has said yet whether the ticket still stands. A
+ * person's comment after it is an answer; a person who puts the ready labels
+ * back makes the ticket ready, which pickup takes on. A marker in a comment
+ * governor did not post is text.
+ *
+ * @param {ReadonlyArray<{ body?: string | null, ours?: boolean }>} thread The ticket's whole thread, oldest first.
+ */
+export const heldUnreadied = (thread) => {
+  let at = thread.length - 1;
+  while (at >= 0 && !(thread[at]?.ours === true && String(thread[at]?.body ?? '').includes(UNREADIED_MARKER))) at -= 1;
+  return at !== -1 && thread.slice(at + 1).every((c) => c.ours === true);
 };

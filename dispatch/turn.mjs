@@ -119,12 +119,12 @@ import { STALE_RUNS_PAUSES_MS, baselineIn, freshRuns } from './runs.mjs';
 import { coverageOf } from './coverage.mjs';
 import { planBranchRun } from './branch-run.mjs';
 import { checkConflicts } from './conflicts.mjs';
-import { ROW_SWITCH, closingFires, mayBeUnreadied, notPlannedComment, readyPrompt, readyToTakeOff, specPrompt, ticketRow, unblockedMessage, unreadiedSince } from './unblocked.mjs';
+import { ROW_SWITCH, closingFires, heldUnreadied, mayBeUnreadied, notPlannedComment, readyPrompt, readyToTakeOff, specPrompt, ticketRow, unblockedMessage, unreadiedSince } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, hookSource, refusedAsArchived } from './deliveries.mjs';
-import { DISPATCH_WINDOW_MS, HOOK_PER_HOUR, LANE, LANE_COUNTS, RED, laneCount, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, recentlyDispatched, SIGN_POSTS } from './webhook/fire.mjs';
+import { HOOK_PER_HOUR, LANE, LANE_COUNTS, RED, laneCount, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, recentlyDispatched, SIGN_POSTS } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -1950,9 +1950,13 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     } else {
       // The spec session is not claimed: its marker keeps the sweep off the
       // ticket inside the window, and the claim it adds before it builds
-      // keeps it off after.
-      const since = new Date(deps.now() - DISPATCH_WINDOW_MS).toISOString();
-      if (recentlyDispatched(await reader.comments(issue, { since }), deps.now())) {
+      // keeps it off after. A ticket governor unreadied on a not-planned
+      // close waits for a person's answer first. A thread that cannot be
+      // read fails the turn, never taken for no marker.
+      const thread = await reader.allComments(issue);
+      if (heldUnreadied(thread)) {
+        deps.log('dispatch-unblocked', { ...about, outcome: 'not started: its ready labels came off on a not-planned close, and nobody has answered governor\'s comment since' });
+      } else if (recentlyDispatched(thread, deps.now())) {
         deps.log('dispatch-unblocked', { ...about, outcome: 'not started: dispatched inside the window' });
       } else {
         plan.push({ issue, repo: fireRepo(), prompt: specPrompt({ fire: invocation, title: ticket.title, labels: config.labels, prompts }), sessionName: ticketSessionName(issue, ticket.title), model: DEFAULT_MODEL, unclaimed: true });
