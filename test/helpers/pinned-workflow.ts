@@ -55,8 +55,17 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
     ? (on as { workflow_call?: { inputs?: Record<string, Input> | null } | null }).workflow_call
     : undefined;
   const inputs = call?.inputs ?? {};
+  // GitHub rejects a workflow that declares an input as anything but a
+  // mapping, such as `labels: string`, so a caller fails whatever it passes.
+  const bare = new Set<string>();
+  for (const [key, input] of Object.entries(inputs)) {
+    if (input === null || isMapping(input)) continue;
+    bare.add(key);
+    problems.push(`the checker at ${short} declares input ${key} as ${Array.isArray(input) ? 'a list' : `a ${typeof input}`}, not a mapping`);
+  }
   for (const [key, value] of Object.entries(passed)) {
     const input = Object.hasOwn(inputs, key) ? inputs[key] : undefined;
+    if (bare.has(key)) continue;
     if (input === undefined || input === null) {
       problems.push(`the checker at ${short} takes no input ${key}`);
     } else if (input.type !== undefined && typeof value !== input.type && !isExpression(value)) {
@@ -67,6 +76,10 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
     if (input?.required === true && !Object.hasOwn(passed, key)) problems.push(`the checker at ${short} requires input ${key}`);
   }
   return problems;
+}
+
+function isMapping(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // YAML reads a `${{ ... }}` expression as a string, and GitHub evaluates it

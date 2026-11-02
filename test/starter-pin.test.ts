@@ -70,14 +70,16 @@ function fixtureRepo() {
 }
 
 // A second throwaway repo whose main holds, in turn: a checker with a number
-// and a boolean input, a workflow that is not reusable, and a file that is
-// not valid YAML.
+// and a boolean input, a workflow that is not reusable, a file that is not
+// valid YAML, and a checker that declares an input as a bare word, not a
+// mapping.
 function oddCheckersRepo() {
   const { dir, commit, cleanup } = throwawayRepo('starter-pin-odd-');
   const typed = commit(checkerAt({ 'tolerance-hours': { type: 'number', default: 3 }, strict: { type: 'boolean', default: false } }));
   const notCallable = commit(yaml.dump({ name: 'heartbeat check', on: { push: null }, jobs: { check: { 'runs-on': 'ubuntu-24.04', steps: [{ run: 'true' }] } } }));
   const broken = commit('name: [unclosed\non: {workflow_call: \n');
-  return { dir, typed, notCallable, broken, cleanup };
+  const bare = commit(checkerAt({ 'tolerance-hours': { type: 'number', default: 3 }, labels: 'string' }));
+  return { dir, typed, notCallable, broken, bare, cleanup };
 }
 
 const STARTER_WITH = { 'tolerance-hours': 3, labels: 'heartbeat' };
@@ -169,6 +171,13 @@ describe('pinnedInputProblems', () => {
     const got = pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.broken, path: CHECKER, passed: STARTER_WITH });
     assert.equal(got.length, 1, JSON.stringify(got));
     assert.match(got[0] ?? '', new RegExp(`^${CHECKER} at ${repo.extra.broken.slice(0, 12)} is not valid YAML`));
+  });
+
+  test('reports an input at the pin declared as something other than a mapping, which GitHub rejects, whether passed or not', () => {
+    const short = repo.extra.bare.slice(0, 12);
+    const want = [`the checker at ${short} declares input labels as a string, not a mapping`];
+    assert.deepEqual(pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.bare, path: CHECKER, passed: STARTER_WITH }), want);
+    assert.deepEqual(pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.bare, path: CHECKER, passed: { 'tolerance-hours': 3 } }), want);
   });
 
   test('reports a main ref the clone does not hold', () => {
