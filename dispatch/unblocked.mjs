@@ -333,3 +333,6 @@ export const heldUnreadied = (thread) => {
   while (at >= 0 && !(thread[at]?.ours === true && String(thread[at]?.body ?? '').includes(UNREADIED_MARKER))) at -= 1;
   return at !== -1 && thread.slice(at + 1).every((c) => c.ours === true);
 };
+
+/** Why a ticket {@link heldUnreadied} holds starts no spec session, as both a close and an ended wait log it. */
+export const UNREADIED_HELD = 'its ready labels came off on a not-planned close, and nobody has answered governor\'s comment since';
