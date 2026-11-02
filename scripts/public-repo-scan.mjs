@@ -14,7 +14,9 @@
  *                    beside the word installation);
  *   - issue-number:  an issue or pull request reference of four or more
  *                    digits (`#` or `/issues/` or `/pull/` and the number), which
- *                    would point at another repo's numbers.
+ *                    would point at another repo's numbers. A `#` and
+ *                    digits followed by a letter, such as a hex colour,
+ *                    is not a reference.
  *
  * No file is exempt, this one included, so the old name is built from parts
  * below. `npm run scan` prints each finding and exits 1 on any.
@@ -32,7 +34,7 @@ const RULES = [
   { kind: 'account', pattern: /(?<![0-9])[0-9]{12}(?![0-9])/g, allow: (match) => match === '123456789012' },
   { kind: 'claude-id', pattern: /\b(?:env|session|cse)_[A-Za-z0-9]{20,}/g },
   { kind: 'installation', pattern: /installations?\b[^\n]{0,40}?(?<![0-9])[0-9]{7,}(?![0-9])/gi },
-  { kind: 'issue-number', pattern: /#[0-9]{4,}(?![0-9])|\/(?:issues|pull)\/[0-9]{4,}(?![0-9])/g },
+  { kind: 'issue-number', pattern: /#[0-9]{4,}(?![0-9A-Za-z_])|\/(?:issues|pull)\/[0-9]{4,}(?![0-9])/g },
 ];
 
 /** @typedef {{ path: string, line: number, kind: string, text: string }} Finding */
