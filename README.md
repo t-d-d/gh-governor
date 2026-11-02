@@ -4,6 +4,8 @@ A software factory for your GitHub repos, in which each repo sets how dark its f
 
 Governor starts Claude Code cloud sessions for the repos that install its GitHub App and commit a `.github/dispatch.json`. It picks up tickets labelled ready, relays each PR's comments, reviews and CI to the session that wrote it, reviews PRs against the repo's own checklist, and archives a session once it signs off.
 
+Governor was distilled from the practices and automations built while making [Podstow](https://podstow.com), a production service.
+
 - [What governor does](#what-governor-does)
 - [How a repo opts in](#how-a-repo-opts-in)
 - [How governor runs](#how-governor-runs)
