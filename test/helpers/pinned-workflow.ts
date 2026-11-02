@@ -22,7 +22,12 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
   };
   const short = sha.slice(0, 12);
   if (git('cat-file', '-e', `${sha}^{commit}`).status !== 0) {
-    return [`the pinned commit ${short} is not in this clone: run git fetch --unshallow origin, or check out with fetch-depth: 0`];
+    // git refuses --unshallow in a full clone, where a stale origin/main
+    // is the only way to lack the pin.
+    if (git('rev-parse', '--is-shallow-repository').stdout.trim() === 'true') {
+      return [`the pinned commit ${short} is not in this clone: run git fetch --unshallow origin, or check out with fetch-depth: 0`];
+    }
+    return [`the pinned commit ${short} is not in this clone: run git fetch origin`];
   }
   if (git('rev-parse', '--verify', '--quiet', `${main}^{commit}`).status !== 0) {
     return [`there is no ${main} in this clone: run git fetch origin main`];
@@ -33,18 +38,41 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
   }
   const shown = git('show', `${sha}:${path}`);
   if (shown.status !== 0) return [...problems, `the pinned commit ${short} has no ${path}`];
-  const doc = yaml.load(shown.stdout) as { on?: { workflow_call?: { inputs?: Record<string, { type?: string, required?: boolean } | null> | null } | null } | null } | null | undefined;
-  const inputs = doc?.on?.workflow_call?.inputs ?? {};
+  let doc: unknown;
+  try {
+    doc = yaml.load(shown.stdout);
+  } catch (error) {
+    return [...problems, `${path} at ${short} is not valid YAML: ${(error as Error).message.split('\n')[0]}`];
+  }
+  const on = (doc as { on?: unknown } | null | undefined)?.on;
+  const onMap = typeof on === 'object' && on !== null && !Array.isArray(on);
+  const callable = on === 'workflow_call'
+    || (Array.isArray(on) && on.includes('workflow_call'))
+    || (onMap && Object.hasOwn(on, 'workflow_call'));
+  if (!callable) return [...problems, `${path} at ${short} is not a reusable workflow: it has no on: workflow_call`];
+  type Input = { type?: string, required?: boolean } | null;
+  const call = onMap
+    ? (on as { workflow_call?: { inputs?: Record<string, Input> | null } | null }).workflow_call
+    : undefined;
+  const inputs = call?.inputs ?? {};
   for (const [key, value] of Object.entries(passed)) {
     const input = Object.hasOwn(inputs, key) ? inputs[key] : undefined;
     if (input === undefined || input === null) {
       problems.push(`the checker at ${short} takes no input ${key}`);
-    } else if (input.type !== undefined && typeof value !== input.type) {
-      problems.push(`the checker at ${short} takes ${key} as a ${input.type}, not a ${typeof value}`);
+    } else if (input.type !== undefined && typeof value !== input.type && !isExpression(value)) {
+      problems.push(`the checker at ${short} takes ${key} as a ${input.type}, not ${value === null ? 'null' : `a ${typeof value}`}`);
     }
   }
   for (const [key, input] of Object.entries(inputs)) {
     if (input?.required === true && !Object.hasOwn(passed, key)) problems.push(`the checker at ${short} requires input ${key}`);
   }
   return problems;
+}
+
+// YAML reads a `${{ ... }}` expression as a string, and GitHub evaluates it
+// before it checks the input's type, so it can stand for any type. Only a
+// value that is one whole expression counts: text around or between
+// expressions makes GitHub join them into a string.
+function isExpression(value: unknown): boolean {
+  return typeof value === 'string' && /^\s*\$\{\{(?:(?!\}\})[\s\S])*\}\}\s*$/.test(value);
 }
