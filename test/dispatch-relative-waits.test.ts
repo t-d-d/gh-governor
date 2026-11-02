@@ -15,7 +15,7 @@ import { isWaiting, waitOf } from '../scripts/lib/ready-work.mjs';
 import { closingFires } from '../dispatch/unblocked.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import {
-  WAIT_RELATIVE_MARKER, WAIT_UNREADABLE_MARKER, datedBody, endedWaits, holdWait, relativeAtClose, relativeUntil, repairRelative, waitNotPlannedMarker,
+  WAIT_RELATIVE_MARKER, WAIT_UNREADABLE_MARKER, datedBody, endedWaits, holdWait, relativeAtClose, relativeUntil, repairRelative, waitNotPlannedMarker, waitRelativeMarker,
 } from '../dispatch/waits.mjs';
 
 const REPO = 'acme/factory';
@@ -289,9 +289,25 @@ describe('the sweep\'s repair', () => {
       assert.match(said, /YYYY-MM-DD/);
       assert.deepEqual([f.edits, f.links], [[], []]);
     }
-    const told = fakeReader({ issues: { 143: {} }, thread: [{ body: WAIT_RELATIVE_MARKER }] });
+    const told = fakeReader({ issues: { 143: {} }, thread: [{ body: waitRelativeMarker('#143') }] });
     assert.equal(await repair(told), 'already told');
     assert.deepEqual(told.comments, []);
+  });
+
+  test('the comment\'s marker names the issue, so a line moved to another issue that cannot be settled is told again', async () => {
+    assert.equal(waitRelativeMarker('#143'), '<!-- governor:wait-relative #143 -->');
+    assert.equal(waitRelativeMarker('acme/tools#41'), '<!-- governor:wait-relative acme/tools#41 -->');
+    const f = fakeReader({ issues: { 143: {}, 150: {} } });
+    assert.equal(await repair(f), 'commented');
+    assert.ok(f.comments[0]!.body.includes(waitRelativeMarker('#143')), f.comments[0]!.body);
+    const moved = fakeReader({ issues: { 150: {} }, thread: [{ body: f.comments[0]!.body }] });
+    assert.equal(await repair(moved, { days: 3, issue: 150 }), 'commented');
+    assert.equal(moved.comments.length, 1);
+    assert.ok(moved.comments[0]!.body.includes(waitRelativeMarker('#150')), moved.comments[0]!.body);
+    assert.ok(moved.comments[0]!.body.includes('#150'));
+    const again = fakeReader({ issues: { 150: {} }, thread: [{ body: f.comments[0]!.body }, { body: moved.comments[0]!.body }] });
+    assert.equal(await repair(again, { days: 3, issue: 150 }), 'already told');
+    assert.deepEqual(again.comments, []);
   });
 
   test('a ticket an open blocker still holds is left to that blocker\'s close', async () => {
