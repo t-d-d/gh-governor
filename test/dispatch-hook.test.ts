@@ -10,7 +10,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_DEDUP_WINDOW_MS, HOOK_TEXT_LIMIT, hookKey, hookPath, hookSignature, readSignature } from '../dispatch/webhook/hook.mjs';
+import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_DEDUP_WINDOW_MS, HOOK_TEXT_LIMIT, spellDuration, hookKey, hookPath, hookSignature, readSignature } from '../dispatch/webhook/hook.mjs';
 import { handle } from '../dispatch/webhook/route.mjs';
 import { hookTable, type Counted } from '../dispatch/webhook/hook-table.mjs';
 import { HOOK_KEY_STALE } from '../dispatch/hooks.mjs';
@@ -150,6 +150,24 @@ describe('handle — a hook fire', () => {
       assert.equal(response.statusCode, status, `t ${t - T}`);
       assert.equal(queued.length, status === 202 ? 1 : 0);
     }
+  });
+
+  test('a stale or early signature\'s 401 states the limits the clock check uses', async () => {
+    for (const t of [T + 31, T - 266]) {
+      const { deps } = harness();
+      const response = await handle(fire(TEXT, { t }), deps);
+      assert.equal(response.statusCode, 401, `t ${t - T}`);
+      assert.equal(response.body, HOOK_CLOCK_REASON, `t ${t - T}`);
+    }
+    assert.equal(HOOK_CLOCK_REASON, 'the signature\'s time is more than 30 seconds ahead of the receiver\'s clock or more than 4 minutes 25 seconds behind it');
+  });
+
+  test('a duration is spelled in minutes and seconds', () => {
+    assert.equal(spellDuration(30 * 1000), '30 seconds');
+    assert.equal(spellDuration(265 * 1000), '4 minutes 25 seconds');
+    assert.equal(spellDuration(60 * 1000), '1 minute');
+    assert.equal(spellDuration(61 * 1000), '1 minute 1 second');
+    assert.equal(spellDuration(1500), '1.5 seconds');
   });
 
   // A valid request can be replayed for as long as it stays valid, which is

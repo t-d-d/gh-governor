@@ -47,6 +47,25 @@ export const HOOK_DEDUP_WINDOW_MS = 5 * 60 * 1000;
 export const HOOK_CLOCK_AHEAD_MS = 30 * 1000;
 export const HOOK_CLOCK_BEHIND_MS = 4 * 60 * 1000 + 25 * 1000;
 
+/**
+ * A duration in words, in whole minutes and the seconds left over:
+ * `4 minutes 25 seconds`, `30 seconds`, `1 minute`.
+ *
+ * @param {number} ms
+ * @returns {string}
+ */
+export const spellDuration = (ms) => {
+  const minutes = Math.floor(ms / 60000);
+  const seconds = (ms - minutes * 60000) / 1000;
+  const parts = [];
+  if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`);
+  if (seconds > 0 || minutes === 0) parts.push(`${seconds} ${seconds === 1 ? 'second' : 'seconds'}`);
+  return parts.join(' ');
+};
+
+/** Why a signature outside the clock window gets 401, built from the limits so it cannot fall behind them. */
+export const HOOK_CLOCK_REASON = `the signature's time is more than ${spellDuration(HOOK_CLOCK_AHEAD_MS)} ahead of the receiver's clock or more than ${spellDuration(HOOK_CLOCK_BEHIND_MS)} behind it`;
+
 const PREFIX = '/hooks/';
 const OWNER = /^[A-Za-z0-9-]+$/;
 const NAME = /^[A-Za-z0-9._-]+$/;

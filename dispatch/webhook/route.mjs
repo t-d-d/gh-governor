@@ -87,7 +87,7 @@
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob } from './fire.mjs';
-import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
+import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 import { droppedBy } from './switches.mjs';
 
@@ -681,13 +681,13 @@ const switchedOn = async (decision, delivery, deps) => {
 /**
  * One hook request. 401 for one whose signature is missing, malformed, does
  * not match the key for its path's repo, hook and version, or whose time is
- * more than 30 seconds ahead of the receiver's clock or more than 4 minutes
- * 25 seconds behind it; 200 for one whose owner is not
- * on the list; 401 for a hook the hook table's item does not list, or a key
- * version older than the item's; 503 for an item that could not be read; 400
- * for a body that holds no text; 413 for text too long; 429 for a fire past
- * the hook's hourly cap; 503 for a count that could not be taken; 202 for one
- * that queued its fire. A repo with no item yet is queued, under the default
+ * further ahead of the receiver's clock than {@link HOOK_CLOCK_AHEAD_MS} or
+ * further behind it than {@link HOOK_CLOCK_BEHIND_MS}; 200 for one whose
+ * owner is not on the list; 401 for a hook the hook table's item does not
+ * list, or a key version older than the item's; 503 for an item that could
+ * not be read; 400 for a body that holds no text; 413 for text too long;
+ * 429 for a fire past the hook's hourly cap; 503 for a count that could not
+ * be taken; 202 for one that queued its fire. A repo with no item yet is queued, under the default
  * cap, and the task decides. Nothing but a 202 queues anything, and no
  * line logs the signature or a key. The fire's deduplication id is the
  * signature, so a replay inside the queue's window is not a second fire.
@@ -714,9 +714,8 @@ const handleHook = async ({ repo, hook }, header, raw, deps) => {
   const now = (deps.now ?? Date.now)();
   const ahead = signature.t * 1000 - now;
   if (ahead > HOOK_CLOCK_AHEAD_MS || -ahead > HOOK_CLOCK_BEHIND_MS) {
-    const reason = 'the signature\'s time is more than 30 seconds ahead of the receiver\'s clock or more than 4 minutes 25 seconds behind it';
-    deps.log('hook-refused', { ...about, keyVersion: signature.version, t: signature.t, reason });
-    return { statusCode: 401, body: reason };
+    deps.log('hook-refused', { ...about, keyVersion: signature.version, t: signature.t, reason: HOOK_CLOCK_REASON });
+    return { statusCode: 401, body: HOOK_CLOCK_REASON };
   }
   const owner = repo.slice(0, repo.indexOf('/'));
   if (!ownerListed(deps.owners, owner)) {
