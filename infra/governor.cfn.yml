@@ -59,7 +59,7 @@ Parameters:
     Description: >
       How many issues one schedule fire may dispatch. Above two, a fire
       whose launches are slow stops short of it to end inside the task's
-      deadline (dispatch/turn.mjs SCHEDULE_LAUNCH_WINDOW_MS).
+      deadline (dispatch/launch-plan.mjs SCHEDULE_LAUNCH_WINDOW_MS).
 
   # Read from Parameter Store inside AWS on every apply, so the address never
   # passes through GitHub, whose run logs are public for this repo. The
@@ -502,7 +502,7 @@ Resources:
   # The dispatcher claims a ticket before it launches the ticket's session.
   # A claim whose turn ends with no dispatch marker naming a session
   # (an unconfirmed launch, one past its budget, a thrown turn, the deadline)
-  # logs `dispatch-claim-stranded` naming the ticket (dispatch/turn.mjs,
+  # logs `dispatch-claim-stranded` naming the ticket (dispatch/launch-plan.mjs,
   # dispatch/cli.mjs). The ticket stays under development, so no fire picks
   # it again: a person decides whether a session is on it.
   DispatchClaimStrandedFilter:
@@ -645,7 +645,8 @@ Resources:
   # A launch in a served repo that started nothing (a cloud environment the
   # file names wrongly, a login refused) skips the rest of that repo's
   # tickets for the fire, and logs `dispatch-repo-skipped` naming the repo
-  # (dispatch/turn.mjs). The other repos still go.
+  # (dispatch/launch-plan.mjs, and dispatch/turn.mjs for an event's
+  # periodics). The other repos still go.
   DispatchRepoSkippedFilter:
     Type: AWS::Logs::MetricFilter
     Properties:
@@ -675,7 +676,7 @@ Resources:
   # A periodic whose file names a claude.ai connector the account has not
   # connected starts nothing, writes no record, and logs
   # `dispatch-connector-missing` naming the repo, the periodic and the
-  # connector (dispatch/turn.mjs). Each fire it comes due tries again, so
+  # connector (dispatch/launch-plan.mjs). Each fire it comes due tries again, so
   # the alarm stays up until the connector is connected or the file changes.
   DispatchConnectorMissingFilter:
     Type: AWS::Logs::MetricFilter
@@ -706,7 +707,7 @@ Resources:
   # A periodic whose routine the routines API refused before the fire, a
   # 400 on the create or a routines list past one page among them, starts
   # nothing, writes no record, and logs `dispatch-routine-refused` naming
-  # the repo and the periodic (dispatch/turn.mjs). The repo's tickets and
+  # the repo and the periodic (dispatch/launch-plan.mjs). The repo's tickets and
   # other periodics still start: the CLI is not at fault.
   DispatchRoutineRefusedFilter:
     Type: AWS::Logs::MetricFilter

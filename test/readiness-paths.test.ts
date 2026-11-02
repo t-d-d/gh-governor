@@ -5,7 +5,7 @@
  * - The selection: `selectReadyWork` (scripts/lib/ready-work.mjs) through
  *   `planSchedule` (scripts/lib/dispatch-router.mjs), with its unreadable
  *   and relative reports.
- * - The claim's second read: `claim` in dispatch/turn.mjs, through `run`.
+ * - The claim's second read: `claim` in dispatch/launch-plan.mjs, through `run`.
  * - The unblocked row: `ticketRow` (dispatch/unblocked.mjs), and what an
  *   `unblocked` fire does with it, through `run`.
  * - Wait end: `endedWaits` (dispatch/waits.mjs), on an item whose date has

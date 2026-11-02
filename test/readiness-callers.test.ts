@@ -40,7 +40,7 @@ describe('the selection and the claim decide through ticketStatus', () => {
   const paths = [
     { name: 'isEligible', path: 'scripts/lib/ready-work.mjs', start: 'const isEligible =' },
     { name: 'planSchedule', path: 'scripts/lib/dispatch-router.mjs', start: 'export const planSchedule =' },
-    { name: 'claim', path: 'dispatch/turn.mjs', start: '  const claim = async' },
+    { name: 'claim', path: 'dispatch/launch-plan.mjs', start: '  const claim = async' },
   ];
   for (const { name, path, start } of paths) {
     test(`${name} calls no readiness check directly`, () => {
