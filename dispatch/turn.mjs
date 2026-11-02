@@ -164,6 +164,9 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
  */
 export const SESSION_UNRECORDED = 'dispatch-session-unrecorded';
 
+/** A session a launch its budget refused printed after all, which ties it to that refusal's page. */
+export const SESSION_LATE = 'dispatch-session-late';
+
 /**
  * A session record still being written: dispatch/cli.mjs logs each one
  * left as {@link SESSION_UNRECORDED} when the deadline ends the turn or the
@@ -490,14 +493,16 @@ const withinBudget = (launched, ms, sessionName) =>
  * dispatch/cli.mjs takes a throw as the turn's end, and the task may exit
  * straight after (a by-hand turn's at once, the lane's once the lane stays
  * empty), which would cut off a record still being written, and one cut off
- * never lands.
+ * never lands. A launcher its budget refused may print its session while the
+ * turn waits, so the turn waits for that record too, and is marked ended
+ * only once no record is left.
  *
  * @param {unknown} event The raw event: EventBridge's, or the by-hand script's.
  * @param {Deps} deps
  */
 export const run = async (event, deps) => {
-  /** Each launch's record. None rejects: a failed one logs itself. @type {Promise<void>[]} */
-  const records = [];
+  /** Each launch's record. None rejects: a failed one logs itself. @type {Records} */
+  const records = { writes: [], ended: false };
   try {
     return await turnOf(event, deps, records);
   } catch (error) {
@@ -506,9 +511,18 @@ export const run = async (event, deps) => {
     deps.threw?.(error);
     throw error;
   } finally {
-    await Promise.all(records);
+    // None rejects, so one at a time ends when they all have, and the
+    // length read each pass takes in a record added during the wait.
+    for (let i = 0; i < records.writes.length; i += 1) await records.writes[i];
+    records.ended = true;
   }
 };
+
+/**
+ * @typedef {{ writes: Promise<void>[], ended: boolean }} Records
+ *   `writes`: each launch's record. `ended`: whether {@link run} has
+ *   stopped waiting for them, after which nothing waits for a new one.
+ */
 
 /**
  * A served repo's config, its name matched in any case, or undefined for a
@@ -524,7 +538,7 @@ const configIn = (served, repo) => served.find((s) => s.repo.toLowerCase() === r
  *
  * @param {unknown} event
  * @param {Deps} deps
- * @param {Promise<void>[]} records
+ * @param {Records} records
  */
 const turnOf = async (event, deps, records) => {
   const invocation = parseFire(event);
@@ -708,9 +722,11 @@ const turnOf = async (event, deps, records) => {
    * In a repo whose file turns `waits` on, the line on making a ticket wait
    * follows it (`WAIT_PROMPT`, dispatch/waits.mjs).
    * A launch its budget refuses pages once, at the refusal, since the
-   * launcher runs on. A session it prints later is recorded only if the
-   * task is still running then: the turn has ended, so nothing waits for
-   * that record, and the page is what the operator can rely on.
+   * launcher runs on. A session it prints later is logged at info with its
+   * name and URL, so the operator can tie it to that page, and recorded.
+   * The turn waits for that record while it is still waiting for others.
+   * Once it has ended, nothing waits for it, so it pages again, naming the
+   * session, before the write is tried.
    *
    * @type {Deps['launch']}
    */
@@ -739,10 +755,21 @@ const turnOf = async (event, deps, records) => {
     if (sessionUrl !== null) {
       /** @type {PendingRecord} */
       const pending = { repo: begin.repo, sessionName: begin.sessionName, sessionUrl };
-      unrecorded.add(pending);
-      records.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
-        deps.log(SESSION_UNRECORDED, unrecordedLine(pending, messageOf(error)));
-      }).finally(() => { unrecorded.delete(pending); }));
+      if (paged()) {
+        const record = records.ended ? 'its turn has ended, so nothing waits for its record' : 'the turn waits for its record';
+        deps.log(SESSION_LATE, { level: 'info', ...pending, reason: `the launch ran past its budget and paged with no session URL; this is the session it started: ${record}` });
+      }
+      if (records.ended) {
+        // Nothing waits for the write, and the task may exit before it
+        // lands, so it pages now, naming the session. It is still tried.
+        deps.log(SESSION_UNRECORDED, unrecordedLine(pending, 'the launcher printed it after its turn had ended, so nothing waits for its record and it may not land'));
+        void deps.state.recordSession(sessionUrl).catch(() => {});
+      } else {
+        unrecorded.add(pending);
+        records.writes.push((async () => deps.state.recordSession(sessionUrl))().catch((error) => {
+          deps.log(SESSION_UNRECORDED, unrecordedLine(pending, messageOf(error)));
+        }).finally(() => { unrecorded.delete(pending); }));
+      }
     } else if (!paged() && launchOutcome(launched.status) !== null) {
       // The launch may have started a session but named none, so nothing
       // can record it: the operator finds it by its name and the line's time.

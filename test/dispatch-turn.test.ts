@@ -534,12 +534,69 @@ describe('run — governor records each session it starts', () => {
     assert.match(String(lines[0]!.reason), /ran past its budget/);
   });
 
-  test('a launch past its budget that prints its session later pages once, and the session is still recorded', async () => {
+  // Its turn has ended, so nothing waits for the record and the task may
+  // exit before it lands: a second page names the session. It is still tried.
+  test('a launch past its budget that prints its session after its turn ended pages again naming it, and the session is still recorded', async () => {
     const h = harness({ launchTimeoutMs: 20, launch: () => later(40, { status: 0, output: ABC }) });
     await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
     await later(200, null);
-    assert.equal(overBudget(h.logged).length, 1, JSON.stringify(h.logged));
+    const lines = overBudget(h.logged);
+    assert.deepEqual(lines.map((l) => l.sessionUrl), [null, ABC], JSON.stringify(h.logged));
+    assert.equal(lines[1]!.level, 'error');
+    assert.equal(lines[1]!.sessionName, 'TEST');
+    assert.match(String(lines[1]!.error), /after its turn had ended/);
     assert.deepEqual(h.recorded, [ABC]);
+  });
+
+  test('a session printed after its turn ended whose record fails pages once for it, not twice', async () => {
+    const h = harness({ launchTimeoutMs: 20, launch: () => later(40, { status: 0, output: ABC }), state: { recordSession: async () => { throw new Error('ProvisionedThroughputExceededException'); } } });
+    await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
+    await later(200, null);
+    assert.deepEqual(overBudget(h.logged).map((l) => l.sessionUrl), [null, ABC], JSON.stringify(h.logged));
+  });
+
+  // The refusal paged with no URL. A line naming the session the launcher
+  // printed after all lets the operator tie it to that page and close it.
+  test('a launch past its budget that prints its session later logs it at info, with its name', async () => {
+    const h = harness({ launchTimeoutMs: 20, launch: () => later(40, { status: 0, output: ABC }) });
+    await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
+    await later(200, null);
+    const lines = h.logged.filter((l) => l.event === 'dispatch-session-late');
+    assert.equal(lines.length, 1, JSON.stringify(h.logged));
+    assert.equal(lines[0]!.level, 'info');
+    assert.equal(lines[0]!.sessionUrl, ABC);
+    assert.equal(lines[0]!.sessionName, 'TEST');
+    assert.equal(lines[0]!.repo, REPO);
+    assert.match(String(lines[0]!.reason), /ran past its budget/);
+  });
+
+  test('a launch inside its budget logs no late session', async () => {
+    const h = harness({ launchTimeoutMs: 100, launch: () => later(10, { status: 0, output: ABC }) });
+    await run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never);
+    assert.deepEqual(h.logged.filter((l) => l.event === 'dispatch-session-late'), []);
+  });
+
+  // The turn throws at the refusal and waits for the records that exist.
+  // A launcher that prints while it waits adds one, which it waits for too:
+  // the task may exit once the turn ends, and a record cut off never lands.
+  test('a session a late launcher prints while the thrown turn waits for its records is recorded before the turn ends', async () => {
+    const written: string[] = [];
+    let launches = 0;
+    const h = harness({
+      launchTimeoutMs: 20,
+      launch: () => (++launches === 1 ? later(1, { status: 0, output: 'https://claude.ai/code/session_01FIRST' }) : later(60, { status: 0, output: ABC })),
+      state: { recordSession: async (session: string) => { await later(session === ABC ? 300 : 150, null); written.push(session); } },
+    });
+    await assert.rejects(run({ source: 'aws.events' }, h.deps as never), /20 ms/);
+    assert.deepEqual([...written].sort(), [ABC, 'https://claude.ai/code/session_01FIRST'].sort(), 'the turn ends only once the late session is recorded');
+  });
+
+  test('a late launcher\'s session whose turn has ended logs that nothing waits for its record', async () => {
+    const h = harness({ launchTimeoutMs: 20, launch: () => later(40, { status: 0, output: ABC }) });
+    await assert.rejects(run({ kind: 'dispatch', prompt: 'hello', sessionName: 'TEST' }, h.deps as never), /ran past 20 ms/);
+    await later(200, null);
+    const lines = h.logged.filter((l) => l.event === 'dispatch-session-late');
+    assert.match(String(lines[0]?.reason), /turn has ended/);
   });
 
   test('a launch past its budget that later prints no session pages once', async () => {
