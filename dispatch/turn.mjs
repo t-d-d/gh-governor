@@ -1082,6 +1082,40 @@ const runOpen = (deps) => {
 };
 
 /**
+ * What the fire kinds that start sessions (schedule, hook, unblocked and
+ * dispatch) read of the turn: `turnFor` builds one from its closures and
+ * arguments, and those branches read the turn through it alone, so each can
+ * move into a planner of its own handed `(invocation, ctx)`.
+ *
+ * @typedef {{
+ *   readerFor: (repo: string) => Promise<Reader>,
+ *   configOf: (repo: string) => import('./repo-config.mjs').RepoConfig,
+ *   served: import('./repos.mjs').Served[],
+ *   bare: boolean,
+ *   prompts: import('./repo-config.mjs').RepoConfig['prompts'] | {},
+ *   delivery: () => ReturnType<typeof turnDeliveries>,
+ *   storeLogin: () => Promise<boolean>,
+ *   state: DispatchState,
+ *   start: import('./launcher.mjs').Launcher['start'],
+ *   open: import('./periodics.mjs').Open,
+ *   claims: Set<string>,
+ *   beats: RepoBeat[],
+ *   now: Deps['now'],
+ *   log: Deps['log'],
+ *   sleep: Deps['sleep'],
+ *   cap: number,
+ * }} TurnContext
+ *   `readerFor`: a repo's reader, one a turn. `configOf`: a served repo's
+ *   config. `prompts`: the fire's repo's, none for the bare schedule fire.
+ *   `delivery`: whom a message reaches, and the send. `storeLogin`: the
+ *   login the CLI refreshed, put back. `start`: the launcher's. `open`:
+ *   whether a periodic's or a hook's last session is still open, under a
+ *   token refreshed once a turn. `claims`: the tickets the turn claimed that
+ *   no marker covers yet ({@link Deps}). `beats`: where the bare fire adds
+ *   its heartbeat lines, for `run` to write.
+ */
+
+/**
  * The turn itself, for the fire's repo, or every served repo for the bare
  * schedule fire.
  *
@@ -1513,6 +1547,25 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     return { kind: invocation.kind, freed, queued, passedOver: skipped, ...(unqueued.length === 0 ? {} : { unread: unqueued }) };
   }
 
+  /** @type {TurnContext} */
+  const ctx = {
+    readerFor,
+    configOf,
+    served,
+    bare,
+    prompts,
+    delivery,
+    storeLogin: () => storeIfRefreshed(deps, original, account),
+    state: deps.state,
+    start,
+    open: runOpen(deps),
+    claims: deps.claims ?? new Set(),
+    beats,
+    now: deps.now,
+    log: deps.log,
+    sleep: deps.sleep,
+    cap: deps.cap,
+  };
   const started = deps.now();
   /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, connectors?: string[], unclaimed?: true, wait?: { read: string }, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, hook?: { name: string, read: import('./hooks.mjs').HookRecord | null } }>} */
   const plan = [];
@@ -1544,12 +1597,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // the repo's wait ticket loses the link here, and pickup holds a ticket
     // while its dependency summary counts an open blocker. The comments go
     // now; the spec sessions join the plan after the tickets, below.
-    if (bare) {
-      for (const { repo, config } of served) {
+    if (ctx.bare) {
+      for (const { repo, config } of ctx.served) {
         if (!turnsOn(config, 'waits')) continue;
-        const reader = await readerFor(repo);
-        const links = waitLinks({ reader, repo, board: config.waits?.issue, log: deps.log });
-        const ended = await endedWaits({ reader, state: deps.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), now: deps.now(), log: deps.log, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
+        const reader = await ctx.readerFor(repo);
+        const links = waitLinks({ reader, repo, board: config.waits?.issue, log: ctx.log });
+        const ended = await endedWaits({ reader, state: ctx.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), now: ctx.now(), log: ctx.log, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
         waitsUnread.push(...ended.unread);
         endedByRepo.push({ repo, config, ended });
       }
@@ -1558,34 +1611,34 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // whose file turns pickup off is still swept, and its backlog unread.
     /** @type {import('../scripts/lib/dispatch-router.mjs').Source[]} */
     const sources = [];
-    for (const { repo, config } of served) {
+    for (const { repo, config } of ctx.served) {
       if (!turnsOn(config, 'pickup')) {
-        deps.log('dispatch-refused', { level: 'info', repo, kind: 'schedule', reason: `${repo}'s ${CONFIG_PATH} does not turn pickup on` });
+        ctx.log('dispatch-refused', { level: 'info', repo, kind: 'schedule', reason: `${repo}'s ${CONFIG_PATH} does not turn pickup on` });
         continue;
       }
       // The bare fire sweeps a repo once its interval has passed since its
       // last sweep; a fire for a label picks up at once.
-      if (bare) {
-        const now = deps.now();
+      if (ctx.bare) {
+        const now = ctx.now();
         const sweepHours = sweepHoursOf(config);
         /** @type {string | null} */
         let last;
         try {
-          last = await deps.state.sweep(repo);
+          last = await ctx.state.sweep(repo);
         } catch (error) {
-          deps.log('dispatch-pickup-unread', { level: 'error', repo, error: messageOf(error), reason: 'its last sweep could not be read, so it is not swept this turn' });
+          ctx.log('dispatch-pickup-unread', { level: 'error', repo, error: messageOf(error), reason: 'its last sweep could not be read, so it is not swept this turn' });
           sweepsUnread.push({ repo, error: `pickup sweep: ${messageOf(error)}` });
           held += 1;
           continue;
         }
         if (!sweepDue(last, sweepHours, now)) {
-          deps.log('dispatch-pickup', { level: 'info', repo, outcome: 'not due', last, sweepHours });
+          ctx.log('dispatch-pickup', { level: 'info', repo, outcome: 'not due', last, sweepHours });
           held += 1;
           continue;
         }
         swept.set(repo, new Date(now).toISOString());
       }
-      sources.push({ repo, reader: await readerFor(repo), labels: config.labels, prompts: config.prompts });
+      sources.push({ repo, reader: await ctx.readerFor(repo), labels: config.labels, prompts: config.prompts });
     }
     // A fire naming its issue plans it alone, through the selection's own
     // checks, from a read of that issue rather than the ready list.
@@ -1600,17 +1653,17 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // naming its repo throws on its own.
     const planned = await planSchedule({
       sources,
-      cap: deps.cap,
-      now: deps.now(),
+      cap: ctx.cap,
+      now: ctx.now(),
       unreadable,
       ...(only === undefined ? {} : { only, seen }),
-      ...(bare ? { unread, cut, relative } : {}),
+      ...(ctx.bare ? { unread, cut, relative } : {}),
     });
     // A `Blocked until:` line governor cannot read holds its ticket, and is
     // said once on the ticket whatever the repo's switches say. Each report
     // catches its own failure, so they run side by side and keep the launch
     // window for the launches.
-    await Promise.all(unreadable.map(async ({ repo, issue, value }) => reportUnreadable({ reader: await readerFor(repo), repo, issue, value, log: deps.log })));
+    await Promise.all(unreadable.map(async ({ repo, issue, value }) => reportUnreadable({ reader: await ctx.readerFor(repo), repo, issue, value, log: ctx.log })));
     // A relative line on a ready ticket, in a repo pickup sweeps: the sweep
     // leaves it to an open blocker's close, or settles it, whatever the
     // repo's other switches say, or says once that it cannot. A failure is
@@ -1618,18 +1671,18 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     await Promise.all(relative.map(async (report) => {
       const { repo, issue, after } = report;
       try {
-        await repairRelative({ ...report, reader: await readerFor(repo), link: false, prompts: configOf(repo).prompts, now: deps.now(), log: deps.log });
+        await repairRelative({ ...report, reader: await ctx.readerFor(repo), link: false, prompts: ctx.configOf(repo).prompts, now: ctx.now(), log: ctx.log });
       } catch (error) {
-        deps.log(WAIT_RELATIVE, { level: 'error', repo, issue, after, error: messageOf(error), reason: 'the ticket stays held, and the next sweep tries again' });
+        ctx.log(WAIT_RELATIVE, { level: 'error', repo, issue, after, error: messageOf(error), reason: 'the ticket stays held, and the next sweep tries again' });
       }
     }));
     if (only !== undefined && planned.length === 0) {
-      const why = deps.cap === 0 ? { outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
+      const why = ctx.cap === 0 ? { outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
       for (const { repo, issue, ...read } of seen) {
-        deps.log('dispatch-pickup', { level: 'info', repo, issue, ...why, reads: [read] });
+        ctx.log('dispatch-pickup', { level: 'info', repo, issue, ...why, reads: [read] });
       }
     }
-    for (const { repo, error } of unread) deps.log('dispatch-backlog-unread', { level: 'error', repo, error });
+    for (const { repo, error } of unread) ctx.log('dispatch-backlog-unread', { level: 'error', repo, error });
     // Only when no repo was left out of the sweep: one due repo failing
     // while the others were not due is that repo's fault, not the turn's.
     if (sources.length > 0 && held === 0 && new Set(unread.map((u) => u.repo)).size === sources.length) {
@@ -1642,19 +1695,18 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // first. They do not count against the cap, but a cap of 0 starts
     // nothing; they share the launch window, and one left unlaunched has
     // no new record, so it stays due for the next fire.
-    if (bare) {
+    if (ctx.bare) {
       /** @type {Array<import('./periodics.mjs').Due & { repo: string }>} */
       const due = [];
-      // One reader for every served repo, so an expired login is refreshed once a turn.
-      const open = runOpen(deps);
-      for (const { repo, config } of served) {
+      // One open check for every served repo, so an expired login is refreshed once a turn.
+      for (const { repo, config } of ctx.served) {
         if (!turnsOn(config, 'periodics')) continue;
-        const read = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(await readerFor(repo)), open });
+        const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(await ctx.readerFor(repo)), open: ctx.open });
         due.push(...read.due.map((d) => ({ ...d, repo })));
         periodicsUnread.push(...read.unread);
-        if (read.beats.length > 0) beats.push({ repo, beat: { periodics: read.beats } });
+        if (read.beats.length > 0) ctx.beats.push({ repo, beat: { periodics: read.beats } });
       }
-      if (deps.cap > 0) {
+      if (ctx.cap > 0) {
         plan.unshift(...due.sort((a, b) => a.due - b.due).map(({ repo, periodic, read, by, windows, asOf }) => ({
           issue: null,
           repo,
@@ -1670,11 +1722,11 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       // after the tickets, unclaimed, as a
       // blocker's close starts one. At most DispatchCap of them start a fire,
       // apart from pickup's; one past it keeps its item for the next fire.
-      let room = deps.cap;
+      let room = ctx.cap;
       for (const { repo, config, ended } of endedByRepo) {
         const taken = ended.specs.slice(0, Math.max(0, room));
         room -= taken.length;
-        if (taken.length < ended.specs.length) deps.log('dispatch-wait', { repo, outcome: 'spec sessions past DispatchCap left for the next fire', left: ended.specs.slice(taken.length).map((w) => w.issue) });
+        if (taken.length < ended.specs.length) ctx.log('dispatch-wait', { repo, outcome: 'spec sessions past DispatchCap left for the next fire', left: ended.specs.slice(taken.length).map((w) => w.issue) });
         for (const { issue, title, until, read } of taken) {
           plan.push({ issue, repo, prompt: waitSpecPrompt({ issue, title, until, labels: config.labels, prompts: config.prompts }), sessionName: ticketSessionName(issue, title), model: DEFAULT_MODEL, unclaimed: true, wait: { read } });
         }
@@ -1682,14 +1734,14 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     }
   } else if (invocation.kind === 'hook') {
     // `run` refused a hook the file does not list at this key version.
-    const found = hookFor(configOf(fireRepo()), invocation);
+    const found = hookFor(ctx.configOf(fireRepo()), invocation);
     if ('refusal' in found) throw new Error(found.refusal);
     const { name } = found.hook;
     // The hook's last session, while it is open, takes the fire as a
     // message. A read that fails, of the record or of the session, throws:
     // the fire is refused, never taken for no record or a closed session.
-    const read = await deps.state.hookSession(fireRepo(), name);
-    const open = read !== null && await runOpen(deps)(read.session).catch((error) => {
+    const read = await ctx.state.hookSession(fireRepo(), name);
+    const open = read !== null && await ctx.open(read.session).catch((error) => {
       throw new Error(`hook ${name}: its last session ${read.session} could not be read: ${messageOf(error)}`);
     });
     if (read !== null && open) {
@@ -1697,11 +1749,11 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       let told;
       let loginStored = false;
       try {
-        told = await delivery().deliver({ session: read.session }, hookMessage(invocation), { source: hookSource(name) });
+        told = await ctx.delivery().deliver({ session: read.session }, hookMessage(invocation), { source: hookSource(name) });
       } finally {
-        loginStored = await storeIfRefreshed(deps, original, account);
+        loginStored = await ctx.storeLogin();
       }
-      deps.log('dispatch-hook', { repo: fireRepo(), hook: name, session: read.session, outcome: told.ok ? 'messaged' : told.refused ? 'archived since it was read' : 'not messaged' });
+      ctx.log('dispatch-hook', { repo: fireRepo(), hook: name, session: read.session, outcome: told.ok ? 'messaged' : told.refused ? 'archived since it was read' : 'not messaged' });
       // Archived between the read and the send: a new session starts below.
       // Any other failure says nothing of the session, which may be live, so
       // nothing starts beside it and the turn fails.
@@ -1713,11 +1765,11 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // row of the table that fits (dispatch/unblocked.mjs). Its repo's
     // switch for that row decides whether the turn acts.
     const { issue, blocker } = invocation;
-    const config = configOf(fireRepo());
-    const reader = await getReader();
+    const config = ctx.configOf(fireRepo());
+    const reader = await ctx.readerFor(fireRepo());
     // The ticket's status under the repo's rules, read at the clock's time.
     /** @param {Parameters<typeof ticketStatus>[0]} read @param {Parameters<typeof ticketStatus>[1]['blockers']} [blockers] */
-    const statusOf = (read, blockers) => ticketStatus(read, { labels: config.labels, now: deps.now(), blockers });
+    const statusOf = (read, blockers) => ticketStatus(read, { labels: config.labels, now: ctx.now(), blockers });
     /** Whether the ticket's own line holds it, by its labels. @param {Parameters<typeof ticketStatus>[0]} read */
     const lineHolds = (read) => {
       const status = statusOf(read);
@@ -1730,14 +1782,14 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // ready by its labels is then held; a claimed or excluded one takes its
     // own row, so a claimed ticket's session still hears the close.
     const settleRelative = (/** @type {{ state: string, labels: readonly string[], wait?: import('../scripts/lib/ready-work.mjs').Wait }} */ read) =>
-      relativeAtClose({ reader, repo: fireRepo(), ticket: read, fire: invocation, prompts, now: deps.now(), log: deps.log, holds: lineHolds(read) });
+      relativeAtClose({ reader, repo: fireRepo(), ticket: read, fire: invocation, prompts: ctx.prompts, now: ctx.now(), log: ctx.log, holds: lineHolds(read) });
     if (!turnsOn(config, 'pickup') && !turnsOn(config, 'unblocked')) {
       const settled = await settleRelative(await reader.ticket(issue));
       const why = `${fireRepo()}'s ${CONFIG_PATH} turns neither pickup nor unblocked on`;
-      deps.log('dispatch-refused', { level: 'info', repo: fireRepo(), kind: invocation.kind, issue, reason: why, ...(settled === null ? {} : { relative: settled.outcome }) });
+      ctx.log('dispatch-refused', { level: 'info', repo: fireRepo(), kind: invocation.kind, issue, reason: why, ...(settled === null ? {} : { relative: settled.outcome }) });
       return { kind: invocation.kind, refusal: why, dispatched: [] };
     }
-    const read = await readUnblocked(reader, issue, deps.sleep, statusOf);
+    const read = await readUnblocked(reader, issue, ctx.sleep, statusOf);
     const { blockers, reads } = read;
     let { ticket } = read;
     const settled = await settleRelative(ticket);
@@ -1751,7 +1803,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const lineSaid = settled !== null && settled.wait === undefined && !changed;
     const status = statusOf(ticket, blockers);
     if (lineSaid && status.open && status.holds.includes('line')) {
-      deps.log('dispatch-unblocked', { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row: 'blocked', reads, outcome: `held by its relative line: ${settled.outcome}` });
+      ctx.log('dispatch-unblocked', { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row: 'blocked', reads, outcome: `held by its relative line: ${settled.outcome}` });
       return { kind: invocation.kind, row: 'blocked', dispatched: [] };
     }
     row = rowOf(status, invocation);
@@ -1760,7 +1812,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // by its labels, which reads as blocked, and is said once on it whatever
     // the repo's switches say. A claimed or excluded ticket is not held.
     const unread = status.open && status.holds.includes('unreadable') ? unreadableOf(ticket) : undefined;
-    if (unread !== undefined) await reportUnreadable({ reader, repo: fireRepo(), issue, value: unread, log: deps.log });
+    if (unread !== undefined) await reportUnreadable({ reader, repo: fireRepo(), issue, value: unread, log: ctx.log });
     // A not-planned close takes a ready, unclaimed ticket's ready labels off
     // under pickup, the switch that could start it before anyone decides.
     const takeOff = row === 'not-planned' && turnsOn(config, 'pickup') ? readyToTakeOff(ticket.labels, config.labels) : [];
@@ -1772,12 +1824,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       : undefined;
     const governs = takeOff.length > 0 || earlier !== undefined ? 'pickup' : ROW_SWITCH[row];
     if (governs === undefined) {
-      deps.log('dispatch-unblocked', { ...about, outcome: 'nothing to do' });
+      ctx.log('dispatch-unblocked', { ...about, outcome: 'nothing to do' });
       return { kind: invocation.kind, row, dispatched: [] };
     }
     if (!turnsOn(config, governs)) {
       const why = `${fireRepo()}'s ${CONFIG_PATH} does not turn ${governs} on`;
-      deps.log('dispatch-refused', { level: 'info', ...about, kind: invocation.kind, reason: why });
+      ctx.log('dispatch-refused', { level: 'info', ...about, kind: invocation.kind, reason: why });
       return { kind: invocation.kind, row, refusal: why, dispatched: [] };
     }
     if (row === 'not-planned' || row === 'claimed') {
@@ -1802,44 +1854,44 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         // Pickup needs every ready label, so one that came off holds the ticket.
         const held = unreadied.removed.length > 0;
         for (const { label, error } of stayed) {
-          deps.log('dispatch-unblocked-unlabelled', { level: 'error', ...about, label, error, reason: held ? 'a ready label stayed on a ticket whose blocker closed as not planned; another came off, so pickup does not start it' : 'a ready label stayed on a ticket whose blocker closed as not planned, and none came off, so pickup can still start it' });
+          ctx.log('dispatch-unblocked-unlabelled', { level: 'error', ...about, label, error, reason: held ? 'a ready label stayed on a ticket whose blocker closed as not planned; another came off, so pickup does not start it' : 'a ready label stayed on a ticket whose blocker closed as not planned, and none came off, so pickup can still start it' });
         }
       }
-      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts, { blocked: status.open && status.holds.includes('blocker'), ...(unreadied === undefined ? {} : { unreadied }) }) : null;
+      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, ctx.prompts, { blocked: status.open && status.holds.includes('blocker'), ...(unreadied === undefined ? {} : { unreadied }) }) : null;
       if (notPlanned !== null && !lineSaid) {
         await reader.comment(issue, notPlanned);
         commented = true;
       }
       if (!ticket.labels.includes(config.labels.claim)) {
-        deps.log('dispatch-unblocked', { ...about, outcome: lineSaid ? `the line's comment stands for the row's: ${settled?.outcome}` : 'commented', ...(unreadied === undefined ? {} : { unreadied }) });
+        ctx.log('dispatch-unblocked', { ...about, outcome: lineSaid ? `the line's comment stands for the row's: ${settled?.outcome}` : 'commented', ...(unreadied === undefined ? {} : { unreadied }) });
         return { kind: invocation.kind, row, commented, dispatched: [] };
       }
       // The claimed ticket's session: the newest dispatch marker names it,
       // whatever its age, since the session builds for as long as it takes.
-      const session = lastDispatch(await reader.comments(issue), deps.now(), Infinity)?.sessionUrl ?? null;
+      const session = lastDispatch(await reader.comments(issue), ctx.now(), Infinity)?.sessionUrl ?? null;
       if (session === null) {
-        deps.log('dispatch-unblocked', { ...about, outcome: 'nobody told: no dispatch marker on the ticket names its session' });
+        ctx.log('dispatch-unblocked', { ...about, outcome: 'nobody told: no dispatch marker on the ticket names its session' });
         return { kind: invocation.kind, row, commented, messaged: null, dispatched: [] };
       }
-      const text = notPlanned ?? unblockedMessage(invocation, prompts);
+      const text = notPlanned ?? unblockedMessage(invocation, ctx.prompts);
       /** @type {import('./deliveries.mjs').Delivery} */
       let told;
       let loginStored = false;
       try {
-        told = await delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue] });
+        told = await ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue] });
       } finally {
-        loginStored = await storeIfRefreshed(deps, original, account);
+        loginStored = await ctx.storeLogin();
       }
-      deps.log('dispatch-unblocked', { ...about, session, outcome: told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged' });
+      ctx.log('dispatch-unblocked', { ...about, session, outcome: told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged' });
       return { kind: invocation.kind, row, commented, messaged: told, dispatched: [], loginStored };
     }
-    if (deps.cap === 0) {
-      deps.log('dispatch-unblocked', { ...about, outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' });
+    if (ctx.cap === 0) {
+      ctx.log('dispatch-unblocked', { ...about, outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' });
     } else if (row === 'ready') {
       // As pickup does: the selection's own checks, the window included.
-      const planned = await planSchedule({ sources: [{ repo: fireRepo(), reader, labels: config.labels, prompts }], cap: 1, now: deps.now(), only: [issue] });
-      for (const d of planned) plan.push({ issue, repo: d.repo, prompt: readyPrompt(d.prompt, invocation, prompts), sessionName: d.sessionName, model: DEFAULT_MODEL });
-      deps.log('dispatch-unblocked', { ...about, outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, blocked, or no longer ready' : 'picking up' });
+      const planned = await planSchedule({ sources: [{ repo: fireRepo(), reader, labels: config.labels, prompts: ctx.prompts }], cap: 1, now: ctx.now(), only: [issue] });
+      for (const d of planned) plan.push({ issue, repo: d.repo, prompt: readyPrompt(d.prompt, invocation, ctx.prompts), sessionName: d.sessionName, model: DEFAULT_MODEL });
+      ctx.log('dispatch-unblocked', { ...about, outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, blocked, or no longer ready' : 'picking up' });
     } else {
       // The spec session is not claimed: its marker keeps the sweep off the
       // ticket inside the window, and the claim it adds before it builds
@@ -1847,22 +1899,22 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       // close waits for a person's answer first. A thread that cannot be
       // read fails the turn, never taken for no marker.
       const thread = await reader.allComments(issue);
-      const at = deps.now();
+      const at = ctx.now();
       if (!mayStartSpec(thread, at)) {
         const why = specHold(thread, at) === 'unreadied' ? UNREADIED_HELD : 'dispatched inside the window';
-        deps.log('dispatch-unblocked', { ...about, outcome: `not started: ${why}` });
+        ctx.log('dispatch-unblocked', { ...about, outcome: `not started: ${why}` });
       } else {
-        plan.push({ issue, repo: fireRepo(), prompt: specPrompt({ fire: invocation, title: ticket.title, labels: config.labels, prompts }), sessionName: ticketSessionName(issue, ticket.title), model: DEFAULT_MODEL, unclaimed: true });
-        deps.log('dispatch-unblocked', { ...about, outcome: 'starting a spec session' });
+        plan.push({ issue, repo: fireRepo(), prompt: specPrompt({ fire: invocation, title: ticket.title, labels: config.labels, prompts: ctx.prompts }), sessionName: ticketSessionName(issue, ticket.title), model: DEFAULT_MODEL, unclaimed: true });
+        ctx.log('dispatch-unblocked', { ...about, outcome: 'starting a spec session' });
       }
     }
-  } else if (!(invocation.kind === 'dispatch' && invocation.scheduled !== undefined && await redBefore(invocation.scheduled, getReader, deps))) {
+  } else if (!(invocation.kind === 'dispatch' && invocation.scheduled !== undefined && await redBefore(invocation.scheduled, () => ctx.readerFor(fireRepo()), ctx))) {
     // Not a scheduled red after a red: that one plans nothing, since the red before started the session that is on it.
     plan.push({
       issue: null,
       repo: fireRepo(),
       // A red scheduled run's fire carries its facts; the instruction is the repo's.
-      prompt: invocation.kind === 'dispatch' && invocation.scheduled !== undefined ? redRunPrompt(invocation.prompt, prompts) : invocation.prompt,
+      prompt: invocation.kind === 'dispatch' && invocation.scheduled !== undefined ? redRunPrompt(invocation.prompt, ctx.prompts) : invocation.prompt,
       sessionName: invocation.sessionName ?? DEFAULT_SESSION_NAME,
       model: invocation.model ?? DEFAULT_MODEL,
     });
@@ -1873,7 +1925,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   // ticket stays in `claims` until a marker naming its session covers it, or
   // its labels are back as they were. Each repo claims with its own labels
   // (dispatch/repo-config.mjs), the claim label made where the repo lacks it.
-  const claims = deps.claims ?? new Set();
+  const { claims } = ctx;
   /** @param {{ repo: string, issue: number }} ticket */
   const keyOf = ({ repo, issue }) => `${repo}#${issue}`;
   /** The repos whose claim label is known to exist this turn. @type {Set<string>} */
@@ -2000,7 +2052,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         continue;
       }
       const firedAt = new Date(deps.now()).toISOString();
-      const launched = await start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo, ...connectorsOf(entry) });
+      const launched = await ctx.start({ prompt: entry.prompt, sessionName: entry.sessionName, model: entry.model, repo: entry.repo, ...connectorsOf(entry) });
       if (routineFault(deps, entry.repo, entry.sessionName, launched)) continue;
       const { outcome, sessionUrl, status } = launched;
       deps.log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.sessionName, ...(entry.periodic === undefined ? {} : { periodic: entry.periodic.name }), outcome, status, sessionUrl });
@@ -2011,7 +2063,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         const unrecorded = await recordFire(deps, entry.repo, entry.periodic, entry.periodic.asOf ?? firedAt, sessionUrl);
         // The turn fails, so the alarm says a periodic may start twice.
         if (unrecorded !== null) periodicsUnread.push(unrecorded);
-        beats.push({ repo: entry.repo, beat: { periodics: [{ name: entry.periodic.name, at: entry.periodic.asOf ?? firedAt, by: entry.periodic.by, session: sessionUrl, state: 'open' }] } });
+        ctx.beats.push({ repo: entry.repo, beat: { periodics: [{ name: entry.periodic.name, at: entry.periodic.asOf ?? firedAt, by: entry.periodic.by, session: sessionUrl, state: 'open' }] } });
       }
       // An ended wait's item goes once its spec session started or may have:
       // a failed launch leaves it, so the next fire tries again.
@@ -2101,7 +2153,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         // The `{ issue }` shape: pickup's line, for a repo whose file turns
         // pickup on, written with the turn's other lines by `run`.
         if (marker === undefined) {
-          if (swept.has(repo)) beats.push({ repo, beat: { pickup: { at: new Date(deps.now()).toISOString(), started: startedOf(own) } } });
+          if (swept.has(repo)) ctx.beats.push({ repo, beat: { pickup: { at: new Date(deps.now()).toISOString(), started: startedOf(own) } } });
           continue;
         }
         try {
