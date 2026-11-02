@@ -191,6 +191,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  * @typedef {import('./launcher.mjs').Launch} Launch
  * @typedef {import('./launcher.mjs').LaunchResult} LaunchResult
  * @typedef {import('./launcher.mjs').PendingRecord} PendingRecord
+ * @typedef {import('./launcher.mjs').Records} Records
  * @typedef {import('../scripts/lib/dispatch-router.mjs').Reader & import('./workflow.mjs').WorkflowReader & {
  *   comment: (n: number, body: string) => Promise<void>,
  *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }>>,
@@ -445,7 +446,7 @@ const withinBudget = (launched, ms, sessionName) =>
  * @param {Deps} deps
  */
 export const run = async (event, deps) => {
-  /** Each launch's record. None rejects: a failed one logs itself. @type {import('./launcher.mjs').Records} */
+  /** Each launch's record. None rejects: a failed one logs itself. @type {Records} */
   const records = { writes: [], ended: false };
   try {
     return await turnOf(event, deps, records);
@@ -476,7 +477,7 @@ const configIn = (served, repo) => served.find((s) => s.repo.toLowerCase() === r
  *
  * @param {unknown} event
  * @param {Deps} deps
- * @param {import('./launcher.mjs').Records} records
+ * @param {Records} records
  */
 const turnOf = async (event, deps, records) => {
   const invocation = parseFire(event);
@@ -623,8 +624,8 @@ const turnOf = async (event, deps, records) => {
     cli: deps.launch,
     routine: routineLaunch({ secret, token: loginToken({ ...deps, secret }, 'start a periodic as a routine run'), routines: deps.routines, log: deps.log, sleep: deps.sleep, uuid: deps.uuid }),
     recordSession: (sessionUrl) => deps.state.recordSession(sessionUrl),
-    suffix: (asked) => {
-      const own = configIn(served, asked);
+    suffix: (launchRepo) => {
+      const own = configIn(served, launchRepo);
       return own !== undefined && turnsOn(own, 'waits') ? `${SIGN_POSTS}\n\n${WAIT_PROMPT}` : SIGN_POSTS;
     },
     records,

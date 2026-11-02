@@ -134,7 +134,7 @@ const oneTurn = async (eventOf, tag, { run: turn, deps, log, exit, schedule, can
   const claims = new Set();
   // The session records the turn is still writing. One the deadline or a
   // throw cuts off may never land, so it is logged as unrecorded here.
-  /** @type {Set<import('./turn.mjs').PendingRecord>} */
+  /** @type {Set<import('./launcher.mjs').PendingRecord>} */
   const unrecorded = new Set();
   // The error the turn threw, told before it waits for its records. A
   // record write that hangs holds the throw past the deadline, which logs it.

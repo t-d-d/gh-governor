@@ -7,7 +7,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { SESSION_LATE, SESSION_UNRECORDED, launcher, overBudget, routineLaunch } from '../dispatch/launcher.mjs';
+import { SESSION_LATE, SESSION_UNRECORDED, launcher, overBudget, routineLaunch, sessionUrlFrom } from '../dispatch/launcher.mjs';
 
 const URL_A = 'https://claude.ai/code/session_01LAUNCHER';
 
@@ -133,5 +133,38 @@ describe('launcher: routineLaunch', () => {
       uuid: () => 'u',
     });
     assert.deepEqual(await launch(ASK, ['Slack']), { status: 1, output: 'no login' });
+  });
+
+  /** A routine launch over a fake routines API that answers `connectors` and refuses everything else. */
+  const over = (connectors: () => Promise<unknown>) => routineLaunch({
+    secret: { get: async () => '{}' },
+    token: async () => 'token',
+    routines: () => {
+      const refuse = async () => { throw new Error('refused'); };
+      return { connectors, triggers: async () => ({ data: [] }), create: refuse, update: refuse, run: refuse, sessions: refuse };
+    },
+    log: () => {},
+    sleep: async () => {},
+    uuid: () => 'u',
+  });
+
+  test('a routine the routines API refused started nothing, and is marked a refusal, not the CLI\'s fault', async () => {
+    const result = await over(async () => { throw new Error('refused'); })(ASK, ['Slack']);
+    assert.equal(result.status, 1);
+    assert.equal(result.refused, true);
+  });
+
+  test('a connector the account has not connected is not a refusal', async () => {
+    const result = await over(async () => ({ data: [] }))(ASK, ['Slack']);
+    assert.deepEqual(result.missing, ['Slack']);
+    assert.equal(result.refused, undefined);
+  });
+});
+
+describe('launcher: sessionUrlFrom', () => {
+  test('reads the session URL the CLI prints, or builds it from the id', () => {
+    assert.equal(sessionUrlFrom('Created cloud session: https://claude.ai/code/session_01ABC\nResume with: claude --teleport session_01ABC\n'), 'https://claude.ai/code/session_01ABC');
+    assert.equal(sessionUrlFrom('Resume with: claude --teleport session_01XYZ\n'), 'https://claude.ai/code/session_01XYZ');
+    assert.equal(sessionUrlFrom('nothing here'), null);
   });
 });
