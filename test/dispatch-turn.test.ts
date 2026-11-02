@@ -1394,6 +1394,90 @@ describe('run — an unblocked fire', () => {
     assert.match(h.comments[0]!.body, /could not take `workflow: ready for development` and `mode: afk` off #7, so it can still be picked up/);
   });
 
+  // The labels come off, then the comment fails and the fire is retried. The
+  // retry reads the ticket without its ready labels, and the App's removals
+  // on the ticket since the close say what came off.
+  const CLOSED_AT = new Date(NOW - 60_000).toISOString();
+  const droppedAt = { blocker: { ...blocker, reason: 'not_planned', closedAt: CLOSED_AT } };
+  const retried = ({ features = {} as Record<string, boolean>, removals = [] as Array<{ label: string; at: string; ours: boolean }>, failing = 1, unlabelFails = [] as string[] } = {}) => {
+    const h = ticketTurn({ features });
+    let on = [...READY];
+    let fails = failing;
+    const base = h.deps.reader as (...a: unknown[]) => Record<string, unknown>;
+    h.deps.reader = ((...a: unknown[]) => ({
+      ...base(...a),
+      ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: [...on], pull: false }),
+      removeLabel: async (n: number, label: string) => {
+        if (unlabelFails.includes(label)) throw new Error('HTTP 502');
+        on = on.filter((l) => l !== label);
+        removals.push({ label, at: new Date(NOW).toISOString(), ours: true });
+        h.calls.push(`label #${n} -${label}`);
+      },
+      labelRemovals: async (n: number) => {
+        h.calls.push(`removals #${n}`);
+        return removals;
+      },
+      comment: async (n: number, body: string) => {
+        if (fails > 0) {
+          fails -= 1;
+          throw new Error('HTTP 502');
+        }
+        h.comments.push({ issue: n, body });
+      },
+    })) as never;
+    return h;
+  };
+
+  test('not planned, ready, and the comment fails once after the labels came off: the retry\'s one comment says they came off', async () => {
+    const h = retried();
+    await assert.rejects(run(fire(droppedAt), h.deps as never), /HTTP 502/);
+    assert.deepEqual(labelCalls(h.calls), TAKEN_OFF);
+    const result = await run(fire(droppedAt), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'not-planned');
+    assert.equal(result.refusal, undefined);
+    assert.deepEqual(h.comments.map((c) => c.issue), [7]);
+    assert.match(h.comments[0]!.body, /closed as not planned[\s\S]*took its ready labels, `workflow: ready for development` and `mode: afk`, off #7/);
+    assert.match(h.comments[0]!.body, /Put them back once you decide #7 still stands/);
+    assert.deepEqual(labelCalls(h.calls), TAKEN_OFF);
+  });
+
+  test('the same retry with pickup on and unblocked off: not refused, and its comment says the labels came off', async () => {
+    const h = retried({ features: { pickup: true, unblocked: false } });
+    await assert.rejects(run(fire(droppedAt), h.deps as never), /HTTP 502/);
+    const result = await run(fire(droppedAt), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.refusal, undefined);
+    assert.equal(h.comments.length, 1);
+    assert.match(h.comments[0]!.body, /took its ready labels, `workflow: ready for development` and `mode: afk`, off #7/);
+  });
+
+  test('the same retry after one label would not come off: the comment names both', async () => {
+    const h = retried({ unlabelFails: ['mode: afk'] });
+    await assert.rejects(run(fire(droppedAt), h.deps as never), /HTTP 502/);
+    await run(fire(droppedAt), h.deps as never);
+    assert.equal(h.comments.length, 1);
+    assert.match(h.comments[0]!.body, /took `workflow: ready for development` off #7, so it is not picked up, but could not take `mode: afk` off/);
+  });
+
+  test('ready labels a person took off, or the App took off before the close, are not this close\'s', async () => {
+    for (const removals of [
+      [{ label: READY[0]!, at: new Date(NOW).toISOString(), ours: false }, { label: READY[1]!, at: new Date(NOW).toISOString(), ours: false }],
+      [{ label: READY[0]!, at: new Date(NOW - 120_000).toISOString(), ours: true }, { label: READY[1]!, at: new Date(NOW - 120_000).toISOString(), ours: true }],
+    ]) {
+      const h = retried({ removals: [...removals], failing: 0 });
+      h.deps.reader = ((base) => (...a: unknown[]) => ({ ...base(...a), ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: ['enhancement'], pull: false }) }))(h.deps.reader as (...a: unknown[]) => Record<string, unknown>) as never;
+      const result = await run(fire(droppedAt), h.deps as never) as Record<string, unknown>;
+      assert.equal(result.row, 'not-planned');
+      assert.equal(h.comments.length, 1);
+      assert.doesNotMatch(h.comments[0]!.body, /ready label/);
+    }
+  });
+
+  test('a ticket that carries every ready label reads no label history', async () => {
+    const h = retried({ failing: 0 });
+    await run(fire(droppedAt), h.deps as never);
+    assert.ok(!h.calls.some((c) => c.startsWith('removals ')), h.calls.join('; '));
+  });
+
   test('not planned, ready, and still blocked by another open issue: the labels come off all the same', async () => {
     const h = ticketTurn({ blockers: [{ number: 41, state: 'closed', title: 'x' }, { number: 43, state: 'open', title: 'y' }] });
     await run(fire(dropped), h.deps as never);

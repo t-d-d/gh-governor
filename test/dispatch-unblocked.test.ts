@@ -6,7 +6,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { ROW_SWITCH, closingFires, readyPrompt, specPrompt, ticketRow, unblockedFacts, unblockedMessage, notPlannedComment, readyToTakeOff } from '../dispatch/unblocked.mjs';
+import { ROW_SWITCH, closingFires, readyPrompt, specPrompt, ticketRow, unblockedFacts, unblockedMessage, notPlannedComment, readyToTakeOff, unreadiedSince, mayBeUnreadied } from '../dispatch/unblocked.mjs';
 import { parseFire, fireWeight, FIRE_BUDGET } from '../dispatch/webhook/fire.mjs';
 
 const FACTORY = 'acme/factory';
@@ -237,5 +237,37 @@ describe('readyToTakeOff', () => {
   });
   test('an excluded ticket is never picked up: its labels stay', () => {
     assert.deepEqual(readyToTakeOff(['ready', 'mode: afk', 'type: prd'], labels), []);
+  });
+});
+
+describe('unreadiedSince', () => {
+  const labels = { ready: ['ready', 'mode: afk'], claim: 'claimed', exclude: ['type: prd'] };
+  const since = '2026-11-02T10:00:00Z';
+  const ours = (label: string, at = '2026-11-02T10:00:05Z') => ({ label, at, ours: true });
+  test('ready labels the App took off since the close, and still off: those came off', () => {
+    assert.deepEqual(unreadiedSince(['bug'], [ours('ready'), ours('mode: afk')], labels, since), { removed: ['ready', 'mode: afk'], failed: [] });
+  });
+  test('one the App took off and one still on: the one on would not come off', () => {
+    assert.deepEqual(unreadiedSince(['mode: afk'], [ours('ready')], labels, since), { removed: ['ready'], failed: ['mode: afk'] });
+  });
+  test('a removal at the close\'s own second counts; one before it does not', () => {
+    assert.deepEqual(unreadiedSince([], [ours('ready', since), ours('mode: afk', since)], labels, since)?.removed, ['ready', 'mode: afk']);
+    assert.equal(unreadiedSince([], [ours('ready', '2026-11-02T09:59:59Z')], labels, since), undefined);
+  });
+  test('a person\'s removal, a label put back, or a ticket claimed since: none', () => {
+    assert.equal(unreadiedSince([], [{ label: 'ready', at: '2026-11-02T10:00:05Z', ours: false }], labels, since), undefined);
+    assert.equal(unreadiedSince(['ready', 'mode: afk'], [ours('ready')], labels, since), undefined);
+    assert.equal(unreadiedSince(['claimed'], [ours('ready'), ours('mode: afk')], labels, since), undefined);
+  });
+  test('a label the App took off, a person put back and then took off again: the person\'s, not this close\'s', () => {
+    const person = { label: 'ready', at: '2026-11-02T10:05:00Z', ours: false };
+    assert.equal(unreadiedSince(['mode: afk'], [ours('ready'), person], labels, since), undefined);
+    assert.deepEqual(unreadiedSince([], [person, ours('ready', '2026-11-02T10:06:00Z'), ours('mode: afk')], labels, since), { removed: ['ready', 'mode: afk'], failed: [] });
+  });
+  test('mayBeUnreadied: some ready label off, and ready with them back', () => {
+    assert.equal(mayBeUnreadied(['bug'], labels), true);
+    assert.equal(mayBeUnreadied(['ready', 'mode: afk'], labels), false);
+    assert.equal(mayBeUnreadied(['type: prd'], labels), false);
+    assert.equal(mayBeUnreadied(['claimed'], labels), false);
   });
 });

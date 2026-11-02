@@ -36,7 +36,7 @@
  * turn links a same-repo issue the line names where it is not linked, and
  * the bare schedule fire's sweep repairs a ready ticket whose line no open
  * blocker holds ({@link repairRelative}), or says once, under
- * {@link WAIT_RELATIVE_MARKER}, that it cannot.
+ * {@link waitRelativeMarker}, that it cannot.
  */
 
 import { recentlyDispatched, waitLine } from './webhook/fire.mjs';
@@ -595,8 +595,17 @@ export const WAIT_NOT_PLANNED_MARKER = '<!-- governor:wait-not-planned ';
  */
 export const waitNotPlannedMarker = (ref) => `${WAIT_NOT_PLANNED_MARKER}${ref} -->`;
 
-/** The marker on governor's one comment about a relative line it cannot settle. */
-export const WAIT_RELATIVE_MARKER = '<!-- governor:wait-relative -->';
+/** How governor's comment on a relative line it cannot settle starts. */
+export const WAIT_RELATIVE_MARKER = '<!-- governor:wait-relative ';
+
+/**
+ * The marker on governor's one comment about a relative line on `ref` it
+ * cannot settle. It names the issue, so a line moved to wait on another
+ * issue that cannot be settled either is told again.
+ *
+ * @param {string} ref `#<issue>`, or `<owner>/<repo>#<issue>` for another repo's.
+ */
+export const waitRelativeMarker = (ref) => `${WAIT_RELATIVE_MARKER}${ref} -->`;
 
 /**
  * A relative wait's date: the first day whose 00:00 UTC is at least `days`
@@ -686,7 +695,7 @@ export const waitRelativeComment = (ref) => [
   `Governor cannot work out the date on this ticket's \`Blocked until:\` line, which waits on ${ref} closing, so it is holding the ticket. Governor only sees a close of an issue linked as a blocker of this ticket, and ${ref} is not one it can read as closed.`,
   `Link ${ref} as a blocker of this ticket, or write the date as \`Blocked until: YYYY-MM-DD\`.`,
   '',
-  WAIT_RELATIVE_MARKER,
+  waitRelativeMarker(ref),
 ].join('\n');
 
 /**
@@ -774,7 +783,7 @@ export const repairRelative = async ({ reader, repo, issue, after, link, prompts
     if (rows.some((r) => r.state === 'open')) return 'held by an open blocker';
   }
   const cannot = async (/** @type {string} */ why) => {
-    const outcome = await sayOnce(reader, issue, WAIT_RELATIVE_MARKER, waitRelativeComment(ref));
+    const outcome = await sayOnce(reader, issue, waitRelativeMarker(ref), waitRelativeComment(ref));
     log(WAIT_RELATIVE, { level: 'warn', repo, issue, after, reason: why, outcome: outcome === 'commented' ? 'held: commented that it cannot be settled' : 'held: already told it cannot be settled' });
     return outcome;
   };
