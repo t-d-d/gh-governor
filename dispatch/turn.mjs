@@ -106,7 +106,7 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
-import { isBlocked, mayPickUp, ticketStatus, unreadableOf, waitHolds } from '../scripts/lib/ready-work.mjs';
+import { mayPickUp, mayStartSpec, specHold, ticketStatus, unreadableOf } from '../scripts/lib/ready-work.mjs';
 import { WAIT_PROMPT, WAIT_RELATIVE, endedWaits, holdWait, relativeAtClose, repairRelative, reportUnreadable, waitLinks, waitSpecPrompt } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { RoutinesApiError } from './routines.mjs';
@@ -120,12 +120,12 @@ import { STALE_RUNS_PAUSES_MS, baselineIn, freshRuns } from './runs.mjs';
 import { coverageOf } from './coverage.mjs';
 import { planBranchRun } from './branch-run.mjs';
 import { checkConflicts } from './conflicts.mjs';
-import { ROW_SWITCH, UNREADIED_HELD, closingFires, heldUnreadied, mayBeUnreadied, notPlannedComment, readyPrompt, readyToTakeOff, specPrompt, ticketRow, unblockedMessage, unreadiedSince } from './unblocked.mjs';
+import { ROW_SWITCH, UNREADIED_HELD, closingFires, mayBeUnreadied, notPlannedComment, readyPrompt, readyToTakeOff, rowOf, specPrompt, unblockedMessage, unreadiedSince } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, hookSource, refusedAsArchived } from './deliveries.mjs';
-import { HOOK_PER_HOUR, LANE, LANE_COUNTS, RED, laneCount, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, recentlyDispatched, SIGN_POSTS } from './webhook/fire.mjs';
+import { HOOK_PER_HOUR, LANE, LANE_COUNTS, RED, laneCount, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -1716,6 +1716,14 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const { issue, blocker } = invocation;
     const config = configOf(fireRepo());
     const reader = await getReader();
+    // The ticket's status under the repo's rules, read at the clock's time.
+    /** @param {Parameters<typeof ticketStatus>[0]} read @param {Parameters<typeof ticketStatus>[1]['blockers']} [blockers] */
+    const statusOf = (read, blockers) => ticketStatus(read, { labels: config.labels, now: deps.now(), blockers });
+    /** Whether the ticket's own line holds it, by its labels. @param {Parameters<typeof ticketStatus>[0]} read */
+    const lineHolds = (read) => {
+      const status = statusOf(read);
+      return status.open && status.holds.includes('line');
+    };
     // A relative `Blocked until:` line on this close is settled first,
     // whatever the switches say: rewritten into its date, or, on a close
     // that was not completed, left with one comment that replaces the
@@ -1723,14 +1731,14 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // ready by its labels is then held; a claimed or excluded one takes its
     // own row, so a claimed ticket's session still hears the close.
     const settleRelative = (/** @type {{ state: string, labels: readonly string[], wait?: import('../scripts/lib/ready-work.mjs').Wait }} */ read) =>
-      relativeAtClose({ reader, repo: fireRepo(), ticket: read, fire: invocation, prompts, now: deps.now(), log: deps.log, holds: waitHolds(read.labels, config.labels) });
+      relativeAtClose({ reader, repo: fireRepo(), ticket: read, fire: invocation, prompts, now: deps.now(), log: deps.log, holds: lineHolds(read) });
     if (!turnsOn(config, 'pickup') && !turnsOn(config, 'unblocked')) {
       const settled = await settleRelative(await reader.ticket(issue));
       const why = `${fireRepo()}'s ${CONFIG_PATH} turns neither pickup nor unblocked on`;
       deps.log('dispatch-refused', { level: 'info', repo: fireRepo(), kind: invocation.kind, issue, reason: why, ...(settled === null ? {} : { relative: settled.outcome }) });
       return { kind: invocation.kind, refusal: why, dispatched: [] };
     }
-    const read = await readUnblocked(reader, issue, deps.sleep);
+    const read = await readUnblocked(reader, issue, deps.sleep, statusOf);
     const { blockers, reads } = read;
     let { ticket } = read;
     const settled = await settleRelative(ticket);
@@ -1742,16 +1750,17 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // The line's comment on a close that was not completed stands in for
     // the not-planned row's, which a claimed ticket's session still hears.
     const lineSaid = settled !== null && settled.wait === undefined && !changed;
-    if (lineSaid && waitHolds(ticket.labels, config.labels)) {
+    const status = statusOf(ticket, blockers);
+    if (lineSaid && status.open && status.holds.includes('line')) {
       deps.log('dispatch-unblocked', { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row: 'blocked', reads, outcome: `held by its relative line: ${settled.outcome}` });
       return { kind: invocation.kind, row: 'blocked', dispatched: [] };
     }
-    row = ticketRow({ ticket, blockers, fire: invocation, labels: config.labels, now: deps.now() });
+    row = rowOf(status, invocation);
     const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row, reads, ...(ticket.wait === undefined ? {} : { wait: ticket.wait }), ...(lineSaid ? { relative: settled.outcome } : {}) };
     // An unreadable `Blocked until:` line holds a ticket ready or not ready
     // by its labels, which reads as blocked, and is said once on it whatever
     // the repo's switches say. A claimed or excluded ticket is not held.
-    const unread = ticket.state === 'open' && waitHolds(ticket.labels, config.labels) ? unreadableOf(ticket) : undefined;
+    const unread = status.open && status.holds.includes('unreadable') ? unreadableOf(ticket) : undefined;
     if (unread !== undefined) await reportUnreadable({ reader, repo: fireRepo(), issue, value: unread, log: deps.log });
     // A not-planned close takes a ready, unclaimed ticket's ready labels off
     // under pickup, the switch that could start it before anyone decides.
@@ -1797,7 +1806,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           deps.log('dispatch-unblocked-unlabelled', { level: 'error', ...about, label, error, reason: held ? 'a ready label stayed on a ticket whose blocker closed as not planned; another came off, so pickup does not start it' : 'a ready label stayed on a ticket whose blocker closed as not planned, and none came off, so pickup can still start it' });
         }
       }
-      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts, { blocked: isBlocked(ticket, blockers), ...(unreadied === undefined ? {} : { unreadied }) }) : null;
+      const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, prompts, { blocked: status.open && status.holds.includes('blocker'), ...(unreadied === undefined ? {} : { unreadied }) }) : null;
       if (notPlanned !== null && !lineSaid) {
         await reader.comment(issue, notPlanned);
         commented = true;
@@ -1839,10 +1848,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       // close waits for a person's answer first. A thread that cannot be
       // read fails the turn, never taken for no marker.
       const thread = await reader.allComments(issue);
-      if (heldUnreadied(thread)) {
-        deps.log('dispatch-unblocked', { ...about, outcome: `not started: ${UNREADIED_HELD}` });
-      } else if (recentlyDispatched(thread, deps.now())) {
-        deps.log('dispatch-unblocked', { ...about, outcome: 'not started: dispatched inside the window' });
+      const at = deps.now();
+      if (!mayStartSpec(thread, at)) {
+        const why = specHold(thread, at) === 'unreadied' ? UNREADIED_HELD : 'dispatched inside the window';
+        deps.log('dispatch-unblocked', { ...about, outcome: `not started: ${why}` });
       } else {
         plan.push({ issue, repo: fireRepo(), prompt: specPrompt({ fire: invocation, title: ticket.title, labels: config.labels, prompts }), sessionName: ticketSessionName(issue, ticket.title), model: DEFAULT_MODEL, unclaimed: true });
         deps.log('dispatch-unblocked', { ...about, outcome: 'starting a spec session' });
@@ -2145,15 +2154,18 @@ const UNBLOCKED_WAIT_MS = 3000;
  * @param {Pick<Reader, 'ticket' | 'blockers'>} reader
  * @param {number} issue
  * @param {(ms: number) => Promise<void>} sleep
+ * @param {(ticket: Awaited<ReturnType<Reader['ticket']>>, blockers: Awaited<ReturnType<Reader['blockers']>> | undefined) => import('../scripts/lib/ready-work.mjs').TicketStatus} statusOf
+ *   The ticket's status under its repo's rules (`ticketStatus`).
  */
-const readUnblocked = async (reader, issue, sleep) => {
+const readUnblocked = async (reader, issue, sleep, statusOf) => {
   /** @type {Array<{ labels: string[], openBlockers: number }>} */
   const reads = [];
   for (let read = 1; ; read += 1) {
     const ticket = await reader.ticket(issue);
     const blockers = ticket.openBlockers === undefined ? await reader.blockers(issue) : undefined;
     reads.push({ labels: ticket.labels, openBlockers: ticket.openBlockers ?? (blockers ?? []).filter((b) => b.state === 'open').length });
-    if (ticket.state !== 'open' || !isBlocked(ticket, blockers) || read >= UNBLOCKED_READS) return { ticket, blockers, reads };
+    const status = statusOf(ticket, blockers);
+    if (!status.open || !status.holds.includes('blocker') || read >= UNBLOCKED_READS) return { ticket, blockers, reads };
     await sleep(UNBLOCKED_WAIT_MS);
   }
 };

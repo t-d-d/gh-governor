@@ -19,7 +19,7 @@ import { dynamoState } from '../dispatch/turn.mjs';
 import { githubReader } from '../scripts/lib/github-app.mjs';
 import { PROMPTS } from '../dispatch/prompts.mjs';
 import { WAIT_ENDED_MARKER, WAIT_PROMPT, endedWaits, holdWait, waitEndedComment, waitEndedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
-import { UNREADIED_MARKER } from '../dispatch/unblocked.mjs';
+import { UNREADIED_MARKER } from '../scripts/lib/ready-work.mjs';
 
 const REPO = 'acme/factory';
 const OWNERS = ['acme'];

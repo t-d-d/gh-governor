@@ -10,7 +10,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 const root = new URL('../', import.meta.url);
 
@@ -44,6 +44,51 @@ describe('the selection and the claim decide through ticketStatus', () => {
       const body = bodyOf(path, start);
       assert.match(body, /\bticketStatus\(/, `${name} asks ticketStatus`);
       assert.doesNotMatch(body, CHECKS);
+    });
+  }
+});
+
+describe('the unblocked row and wait end decide through ticketStatus and mayStartSpec', () => {
+  const paths = [
+    { name: 'ticketRow', path: 'dispatch/unblocked.mjs', start: 'export const ticketRow =', asks: /\bticketStatus\(/ },
+    { name: "turnFor's unblocked branch", path: 'dispatch/turn.mjs', start: "  } else if (invocation.kind === 'unblocked') {", asks: /\bmayStartSpec\(/ },
+    { name: 'readUnblocked', path: 'dispatch/turn.mjs', start: 'const readUnblocked = async', asks: /\bstatusOf\(/ },
+    { name: 'endedWaits', path: 'dispatch/waits.mjs', start: 'export const endedWaits = async', asks: /\bmayStartSpec\(/ },
+  ];
+  for (const { name, path, start, asks } of paths) {
+    test(`${name} calls no readiness check directly, but wait end's date reads`, () => {
+      const body = bodyOf(path, start);
+      assert.match(body, asks);
+      // Wait end asks whether a person moved the line's date later, whatever
+      // the labels say: a read of the line alone, `isWaiting({ wait }, now)`.
+      const left = body.replace(/\bisWaiting\(\{ wait(: [\w.]+)? \}, now\)/g, '');
+      assert.doesNotMatch(left, /\b(labelRow|isBlocked|isWaiting|waitHolds|heldUnreadied)\s*\(/);
+    });
+  }
+});
+
+describe('outside ready-work.mjs, the readiness checks are called only where #291 leaves them', () => {
+  const files = (dir: string): string[] =>
+    readdirSync(new URL(dir, root), { withFileTypes: true }).flatMap((e) => {
+      const path = `${dir}/${e.name}`;
+      if (e.isDirectory()) return files(path);
+      return e.name.endsWith('.mjs') ? [path] : [];
+    });
+  const all = [...files('dispatch'), ...files('scripts')].filter((p) => p !== 'scripts/lib/ready-work.mjs');
+  // checklist.mjs asks only whether a ticket is claimed or excluded, which
+  // its labels answer. waits.mjs reads a line's date alone, whatever the
+  // labels say.
+  const allowed: Record<string, RegExp> = {
+    'dispatch/checklist.mjs': /\blabelRow\(/g,
+    'dispatch/waits.mjs': /\bisWaiting\(\{ wait(: [\w.]+)? \}, now\)/g,
+  };
+  for (const path of all) {
+    test(`${path} calls none of the checks`, () => {
+      const code = readFileSync(new URL(path, root), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+      const left = code.replace(allowed[path] ?? /$^/g, '');
+      assert.doesNotMatch(left, /\b(labelRow|isBlocked|isWaiting|waitHolds|heldUnreadied)\s*\(/);
     });
   }
 });
