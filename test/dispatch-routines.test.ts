@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { routinesApi } from '../dispatch/turn.mjs';
-import { NEVER_DUE, ROUTINE_ANSWER, ROUTINE_SESSION_TRIES, RoutinesApiError, answerShape, connectionsFor, connectorUuid, launchRoutine, observed, routineName } from '../dispatch/routines.mjs';
+import { NEVER_DUE, ROUTINE_ANSWER, ROUTINE_PAGES, ROUTINE_SESSION_TRIES, RoutinesApiError, answerShape, connectionsFor, connectorUuid, launchRoutine, observed, routineName } from '../dispatch/routines.mjs';
 
 const REPO = 'acme/factory';
 // Rows in the shape the live connector list answers: a tagged `id`, the
@@ -278,6 +278,62 @@ describe('a periodic\'s routine run', () => {
   });
 });
 
+describe('a routines list of more than one page', () => {
+  /** A routines list whose pages are given in order, each after the one before's cursor. */
+  const paged = (pages: unknown[][]) => {
+    const asked: Array<string | undefined> = [];
+    const triggers = async (cursor?: string) => {
+      asked.push(cursor);
+      const at = cursor === undefined ? 0 : Number(cursor.replace('page_', ''));
+      const last = at === pages.length - 1;
+      return { data: pages[at], has_more: !last, ...(last ? {} : { next_cursor: `page_${at + 1}` }) };
+    };
+    return { triggers, asked };
+  };
+  const OTHER = { id: 'trig_01OTHER', name: 'someone else' };
+  const OURS = { id: 'trig_01OLD', name: routineName(REPO, 'Weekly retro') };
+
+  test('a routine on the second page is updated and fired, not created again', async () => {
+    const { triggers, asked } = paged([[OTHER], [OURS]]);
+    const { api, calls } = fakeApi({ triggers });
+    const result = await launch(api);
+    assert.equal(result.status, 0, result.output);
+    assert.equal(result.routine, 'trig_01OLD');
+    assert.deepEqual(asked, [undefined, 'page_1']);
+    assert.ok(!calls.some((c) => c.call === 'create'));
+    assert.deepEqual(calls.filter((c) => c.call === 'update' || c.call === 'run').map((c) => [c.call, c.id]), [['update', 'trig_01OLD'], ['run', 'trig_01OLD']]);
+  });
+
+  test('a routine on no page of a two-page list is created', async () => {
+    const { triggers, asked } = paged([[OTHER], [{ id: 'trig_01ELSE', name: 'another' }]]);
+    const { api, calls } = fakeApi({ triggers });
+    const result = await launch(api);
+    assert.equal(result.status, 0, result.output);
+    assert.equal(result.routine, 'trig_01NEW');
+    assert.deepEqual(asked, [undefined, 'page_1']);
+    assert.equal(calls.filter((c) => c.call === 'create').length, 1);
+  });
+
+  test(`a list that never ends refuses after ${ROUTINE_PAGES} pages, and creates nothing`, async () => {
+    const asked: Array<string | undefined> = [];
+    const triggers = async (cursor?: string) => { asked.push(cursor); return { data: [OTHER], has_more: true, next_cursor: `page_${asked.length}` }; };
+    const { api, calls } = fakeApi({ triggers });
+    const result = await launch(api);
+    assert.equal(result.status, 1);
+    assert.match(result.output, /pages/);
+    assert.equal(asked.length, ROUTINE_PAGES);
+    assert.ok(!calls.some((c) => c.call === 'create'));
+  });
+
+  test('a page that says there is more but gives no cursor refuses, and creates nothing', async () => {
+    const { api, calls } = fakeApi({ triggers: async () => ({ data: [OTHER], has_more: true }) });
+    const result = await launch(api);
+    assert.equal(result.status, 1);
+    assert.match(result.output, /cursor/);
+    assert.ok(!calls.some((c) => c.call === 'create'));
+  });
+});
+
 describe('what the routines API answered, logged by shape', () => {
   test('each call logs its keys and their types, any routine or session id, and for a list its count, has_more and first row\'s keys', async () => {
     const logged: Array<Record<string, unknown>> = [];
@@ -343,6 +399,20 @@ describe('the routines API\'s errors', () => {
     assert.ok(error instanceof RoutinesApiError, String(error));
     assert.equal(error.status, 403);
     assert.match(error.message, /POST \/v1\/code\/triggers\/trig_01OLD\/run: 403/);
+  });
+
+  test('the routines list asks for the page after a cursor, and the first page with no query', async () => {
+    const real = globalThis.fetch;
+    const urls: string[] = [];
+    globalThis.fetch = (async (url: string) => { urls.push(String(url)); return new Response('{"data":[]}', { status: 200 }); }) as typeof fetch;
+    try {
+      const api = routinesApi('token', null);
+      await api.triggers();
+      await api.triggers('abc/+=');
+    } finally {
+      globalThis.fetch = real;
+    }
+    assert.deepEqual(urls, ['https://api.anthropic.com/v1/code/triggers', 'https://api.anthropic.com/v1/code/triggers?cursor=abc%2F%2B%3D']);
   });
 
   test('a routine id the path cannot carry throws before any request is sent, with no status', async () => {
