@@ -96,7 +96,7 @@ Some of the problems it solves, for engineers building something similar:
 - **Code decides before the model does.** The PR review checks the tickets a pull request closes, its human-only paths and its required checks in code, before any model call. The model judges only what code cannot.
 - **Relayed text is marked as data.** Every message governor relays into a session opens with a line naming where its text came from, so the session weighs each quoted remark by who wrote it. A hook's prompt lives in the repo, where a pull request reviews it, and the caller's text is quoted as data.
 - **Hook keys governor never stores.** Each hook's key is derived from one secret, the repo, the hook and a version, so revoking a key is a one-line pull request. A per-hour cap stops a leaked key flooding the shared queue, and a test checks that a signed request expires before the queue forgets it.
-- **A heartbeat that runs somewhere else.** Governor cannot report that it has stopped, so each served repo runs a checker on GitHub Actions that opens an issue when a sweep or a recurring session is overdue.
+- **A heartbeat that runs somewhere else.** Governor cannot report that it has stopped, so a served repo can run a checker on GitHub Actions that opens an issue when a sweep or a recurring session is overdue.
 
 Two CloudFormation stacks hold all of it, and GitHub Actions deploys them after the gate passes on `main`. [How governor works](docs/how-it-works.md) covers each part in depth, and [the fire lane](https://t-d-d.github.io/gh-governor/fire-lane.html) animates a fire's path from the receiver to the task.
 
