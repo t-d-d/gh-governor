@@ -113,16 +113,19 @@ const intoBranch = (kind: string, statement: string) => {
 
 describe('turnFor\'s hook and dispatch branches are one planner call each', () => {
   const PLANNERS = { hook: 'planHook', dispatch: 'planDispatch' };
+  /** Whether `kind`'s branch in `text` is its planner's call alone. */
+  const oneCall = (text: string, kind: string, planner: string) => {
+    const statements = branchOf(text, kind);
+    return statements.length === 1 && statements[0] === `planned = await ${planner}(invocation, ctx);`;
+  };
 
   test('each branch hands the fire and ctx to its planner, and does nothing else', () => {
-    for (const [kind, planner] of Object.entries(PLANNERS)) {
-      assert.deepEqual(branchOf(TURN, kind), [`planned = await ${planner}(invocation, ctx);`], kind);
-    }
+    for (const [kind, planner] of Object.entries(PLANNERS)) assert.ok(oneCall(TURN, kind, planner), kind);
   });
 
   test('a branch that plans anything itself fails the check', () => {
-    for (const kind of Object.keys(PLANNERS)) {
-      assert.equal(branchOf(intoBranch(kind, 'plan.push(entry);'), kind).length, 2, kind);
+    for (const [kind, planner] of Object.entries(PLANNERS)) {
+      assert.equal(oneCall(intoBranch(kind, 'plan.push(entry);'), kind, planner), false, kind);
     }
   });
 });

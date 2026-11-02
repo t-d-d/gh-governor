@@ -13,7 +13,7 @@ import { readConfig } from '../dispatch/repo-config.mjs';
 import { hookPrompt, planHook } from '../dispatch/hooks.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { planDispatch } from '../dispatch/dispatch-fire.mjs';
-import { DEFAULT_SESSION_NAME } from '../dispatch/deliveries.mjs';
+import { DEFAULT_SESSION_NAME, hookSource } from '../dispatch/deliveries.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 const REPO = 'acme/factory';
@@ -34,7 +34,7 @@ const context = (over: Record<string, unknown> = {}) => {
   const logged: Logged[] = [];
   const records = new Map<string, HookRecord>();
   const writes: Array<{ repo: string, name: string, read: HookRecord | null, record: HookRecord }> = [];
-  const sent: Array<{ session: string, text: string }> = [];
+  const sent: Array<{ session: string, text: string, source: unknown }> = [];
   const stored: number[] = [];
   const readers: string[] = [];
   const ctx = {
@@ -50,8 +50,8 @@ const context = (over: Record<string, unknown> = {}) => {
     bare: false,
     prompts: FILE.prompts,
     delivery: () => ({
-      deliver: async ({ session }: { session: string }, text: string) => {
-        sent.push({ session, text });
+      deliver: async ({ session }: { session: string }, text: string, { source }: { source: unknown }) => {
+        sent.push({ session, text, source });
         return { ok: true, answered: true, refused: false, sessionUrl: session, error: null, fallback: null, dropped: null, skipped: null };
       },
     }),
@@ -150,6 +150,7 @@ describe('planHook: a hook fire\'s plan', () => {
     assert.equal(plan.answer.messaged.ok, true);
     assert.equal(plan.answer.loginStored, true);
     assert.deepEqual(sent.map((s) => s.session), [OPEN.session]);
+    assert.deepEqual(sent[0]!.source, hookSource(HOOK.name), 'the hook\'s relay line, not GitHub\'s');
     assert.equal(stored.length, 1);
     assert.ok(logged.some((l) => l.event === 'dispatch-hook' && l.outcome === 'messaged'));
   });

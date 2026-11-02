@@ -114,7 +114,7 @@ import { hookFor, planHook } from './hooks.mjs';
 import { planDispatch } from './dispatch-fire.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
-import { repoServed, servedRepos } from './repos.mjs';
+import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
 import { CONFIG_PATH, GENERIC_SWITCHES, switchOf, turnsOn } from './repo-config.mjs';
 import { planWorkflow } from './workflow.mjs';
 import { coverageOf } from './coverage.mjs';
@@ -1141,10 +1141,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    * The fire's repo. The bare schedule fire names none, and reads
    * only the served repos it found; nothing falls back to a default repo.
    */
-  const fireRepo = () => {
-    if (repo === undefined) throw new Error(`the bare ${invocation.kind} fire names no repo`);
-    return repo;
-  };
+  const fireRepo = () => fireRepoOf({ kind: invocation.kind, repo });
   deps.workspace.prepare(repo);
   const { credentials: original, account } = readStoredLogin(await deps.secret.get());
   const parsed = parseLogin(original);
@@ -1895,7 +1892,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const kindPlan = planned;
   // A claimed launch is a ticket's, and a failed one that holds its repo
   // skips the repo's later launches, as the loop judges each entry below.
-  for (const p of kindPlan?.launches ?? []) plan.push({ issue: p.issue, repo: p.repo, ...p.asked, ...(p.claim ? {} : { unclaimed: true }), holdsRepo: p.holdsRepo, planned: p });
+  for (const p of kindPlan?.launches ?? []) plan.push({ ...p.asked, issue: p.issue, repo: p.repo, ...(p.claim ? {} : { unclaimed: true }), holdsRepo: p.holdsRepo, planned: p });
 
   // The dispatcher claims a ticket before its launch: a session that
   // never claims, or dies first, would leave it ready for the next fire. A
