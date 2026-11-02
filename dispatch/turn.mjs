@@ -465,17 +465,17 @@ const budgetedBy = (deps) => async (begin, name, until, onOver) => {
  * @param {Deps} deps
  */
 export const run = async (event, deps) => {
-  /** The turn's launcher, once {@link turnOf} builds it: a probe builds none. @type {import('./launcher.mjs').Launcher | null} */
-  let launches = null;
+  /** The turn's launcher, once {@link turnOf} builds it: a probe builds none. @type {{ launcher: import('./launcher.mjs').Launcher | null }} */
+  const built = { launcher: null };
   try {
-    return await turnOf(event, deps, (built) => { launches = built; });
+    return await turnOf(event, deps, built);
   } catch (error) {
     // Handed over before the wait below: a record write that hangs holds
     // the rejection until the deadline, which then names the error.
     deps.threw?.(error);
     throw error;
   } finally {
-    await /** @type {import('./launcher.mjs').Launcher | null} */ (launches)?.settle();
+    await built.launcher?.settle();
   }
 };
 
@@ -507,9 +507,9 @@ const servedConfig = (served, repo) => {
  *
  * @param {unknown} event
  * @param {Deps} deps
- * @param {(built: import('./launcher.mjs').Launcher) => void} own
+ * @param {{ launcher: import('./launcher.mjs').Launcher | null }} built
  */
-const turnOf = async (event, deps, own) => {
+const turnOf = async (event, deps, built) => {
   const invocation = parseFire(event);
   if (invocation.kind === 'probe') return { kind: 'probe', ...(await deps.probe()) };
   const started = deps.now();
@@ -666,7 +666,7 @@ const turnOf = async (event, deps, own) => {
     pending: deps.unrecorded,
     log: deps.log,
   });
-  own(launches);
+  built.launcher = launches;
   /** What the turn changes in each repo's governor heartbeat block, written below. @type {RepoBeat[]} */
   const turnBeats = [];
   /** @type {Awaited<ReturnType<typeof turnFor>>} */

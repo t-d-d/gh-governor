@@ -167,8 +167,9 @@ describe('launcher: start', () => {
     const h = harness();
     await h.settle();
     await h.start(ASK);
-    await new Promise((resolve) => setImmediate(resolve));
+    // Read before the write lands: a record left to wait on would still be pending here.
     assert.equal(h.pending.size, 0, 'nothing waits for it');
+    await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(h.lines.map((l) => [l.event, l.fields.sessionUrl]), [[SESSION_UNRECORDED, URL_A]]);
     assert.deepEqual(h.recorded, [URL_A]);
   });
@@ -194,6 +195,7 @@ describe('launcher: settle', () => {
     let print: (r: Result) => void = () => {};
     let printed: Promise<unknown> = Promise.resolve();
     let landFirst: () => void = () => {};
+    let landLate: () => void = () => {};
     const writes: string[] = [];
     let calls = 0;
     const refusing: Budgeted = async (begin, name, _until, onOver) => {
@@ -202,11 +204,12 @@ describe('launcher: settle', () => {
       throw new Error(`the launcher for ${name} ran past 5 ms`);
     };
     // The first launch prints at once, and its record hangs until released.
-    // The second runs past its budget and prints while settle waits.
+    // The second runs past its budget and prints while settle waits, and its
+    // record hangs past the first's, so settle ends only when it lands.
     let budget: Budgeted = async (begin) => begin();
     const h = harness({
       cli: () => (calls++ === 0 ? Promise.resolve({ status: 0, output: URL_A }) : new Promise<Result>((resolve) => { print = resolve; })),
-      record: (url) => { writes.push(url); return url === URL_A ? new Promise<void>((resolve) => { landFirst = resolve; }) : Promise.resolve(); },
+      record: (url) => { writes.push(url); return new Promise<void>((resolve) => { if (url === URL_A) landFirst = resolve; else landLate = resolve; }); },
       budgeted: (begin, name, until, onOver) => budget(begin, name, until, onOver),
     });
     await h.start(ASK);
@@ -218,8 +221,12 @@ describe('launcher: settle', () => {
     print({ status: 0, output: URL_B });
     await printed;
     landFirst();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, 'the late record has not landed');
+    assert.equal(h.pending.size, 1);
+    landLate();
     await waiting;
-    assert.equal(settled, true);
+    assert.equal(h.pending.size, 0);
     assert.deepEqual(writes, [URL_A, URL_B], 'the late record was waited for, not cut off');
     assert.equal(h.lines.filter((l) => l.event === SESSION_LATE).length, 1);
     assert.match(String(h.lines.find((l) => l.event === SESSION_LATE)!.fields.reason), /the turn waits for its record/);
