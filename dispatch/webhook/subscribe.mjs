@@ -65,11 +65,11 @@ const LINE = /\n?<!--[ \t]*governor:subscribe[ \t]+(\S+)(?:[ \t]+events=(\S*))?[
  */
 const withoutLines = (text) => text.replace(LINE, (line) => line.replace(/[^\n]/g, ' '));
 
-/** `line` with its leading tabs expanded to the next multiple of four columns. @param {string} line */
+/** `line` with every tab expanded to the next multiple of four columns. @param {string} line */
 const expandTabs = (line) => {
   let out = '';
-  for (const char of /^[ \t]*/.exec(line)?.[0] ?? '') out += char === '\t' ? ' '.repeat(4 - (out.length % 4)) : ' ';
-  return out + line.replace(/^[ \t]*/, '');
+  for (const char of line) out += char === '\t' ? ' '.repeat(4 - (out.length % 4)) : char;
+  return out;
 };
 
 /** The columns of indent `line` starts with, tabs expanded. @param {string} line */
@@ -81,9 +81,55 @@ const FENCE = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/;
 /** A list item's marker, at most three spaces in, and the spaces after it, with something after them. */
 const LIST_ITEM = /^( {0,3})([-*+]|(\d{1,9})[.)])( +|$)(?=(.*))/;
 
-/** A line that ends a paragraph above it: a heading, a rule, or an HTML block that may interrupt one. */
-const INTERRUPTS =
-  /^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$|<(?:!--|\?|![A-Za-z]|!\[CDATA\[|\/?(?:script|pre|style|textarea|address|article|aside|blockquote|body|center|details|dialog|dir|div|dl|dt|dd|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|html|li|main|nav|ol|p|section|summary|table|tbody|td|tfoot|th|thead|tr|ul)(?:[\s/>]|$)))/i;
+/** A heading or a rule, which ends a paragraph above it. */
+const HEADING_OR_RULE = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$)/;
+
+/** The tags that open an HTML block running to the next blank line. */
+const BLOCK_TAGS =
+  'address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul';
+
+/** An attribute of an open tag. */
+const ATTRIBUTE = String.raw`\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>\x60]+|'[^']*'|"[^"]*"))?`;
+
+/** What ends a blank-line HTML block: the next blank line. */
+const TO_BLANK = 'blank';
+
+/**
+ * How an HTML block opens, at most three spaces in, and what ends it: a
+ * line matching its pattern, or the next blank line. The last, a whole
+ * line of one open or closing tag, cannot interrupt a paragraph.
+ *
+ * @type {Array<{ start: RegExp, end: RegExp | typeof TO_BLANK }>}
+ */
+const HTML_BLOCKS = [
+  { start: /^ {0,3}<(?:script|pre|style|textarea)(?:[\s>]|$)/i, end: /<\/(?:script|pre|style|textarea)>/i },
+  { start: /^ {0,3}<!--/, end: /-->/ },
+  { start: /^ {0,3}<\?/, end: /\?>/ },
+  { start: /^ {0,3}<![A-Za-z]/, end: />/ },
+  { start: /^ {0,3}<!\[CDATA\[/, end: /\]\]>/ },
+  { start: new RegExp(`^ {0,3}</?(?:${BLOCK_TAGS})(?:\\s|/?>|$)`, 'i'), end: TO_BLANK },
+  {
+    start: new RegExp(`^ {0,3}(?:<(?!(?:script|pre|style|textarea)\\b)[A-Za-z][A-Za-z0-9-]*(?:${ATTRIBUTE})*\\s*/?>|</[A-Za-z][A-Za-z0-9-]*\\s*>)\\s*$`, 'i'),
+    end: TO_BLANK,
+  },
+];
+
+/**
+ * What ends the HTML block `line` opens, or undefined where it opens none.
+ *
+ * @param {string} line tabs expanded
+ * @param {boolean} inParagraph whether a paragraph is open above it
+ */
+const htmlBlockEnd = (line, inParagraph) =>
+  HTML_BLOCKS.find(({ start }, i) => (!inParagraph || i < HTML_BLOCKS.length - 1) && start.test(line))?.end;
+
+/**
+ * Whether `line` ends a paragraph above it: a heading, a rule, or an HTML
+ * block that may interrupt one.
+ *
+ * @param {string} line tabs expanded
+ */
+const interrupts = (line) => HEADING_OR_RULE.test(line) || htmlBlockEnd(line, true) !== undefined;
 
 /**
  * Whether a fence closes the one opened with `marker`: the same character,
@@ -98,11 +144,25 @@ const closesFence = (line, marker) => {
 };
 
 /**
+ * `items` cut to the list items `indent` is indented into: those whose
+ * content starts at or left of it. The columns rise with depth.
+ *
+ * @param {number[]} items
+ * @param {number} indent
+ */
+const itemsAt = (items, indent) => {
+  while (items.length > 0 && (items.at(-1) ?? 0) > indent) items.pop();
+  return items;
+};
+
+/**
  * Whether each of `lines` renders inside a blockquote, as GitHub reads
  * markdown: a line starting `>` at most three spaces in, also inside a list
- * item, and a lazy continuation, a line under a quoted paragraph that
- * starts nothing new. A `>` in a fenced or indented code block is code.
- * A carriage return ending a line is read as no character.
+ * item at any depth, and a lazy continuation, a line under a quoted
+ * paragraph that starts nothing new. A `>` in a fenced or indented code
+ * block, or in an HTML block, is not a quote. A tab moves to the next
+ * multiple of four columns, after a list marker too. A carriage return
+ * ending a line is read as no character.
  *
  * @param {string[]} lines
  * @returns {boolean[]}
@@ -110,52 +170,64 @@ const closesFence = (line, marker) => {
 const quotedLines = (lines) => {
   /** The marker of the open fence outside any quote, or null. @type {string | null} */
   let fence = null;
-  /** The column the open fence's list item starts its content at, 0 outside a list. */
-  let fenceBase = 0;
+  /** What ends the open HTML block outside any quote, or null. @type {RegExp | typeof TO_BLANK | null} */
+  let html = null;
+  /** The column the open fence's or HTML block's list item starts its content at, 0 outside a list. */
+  let blockBase = 0;
   /** The marker of the open fence inside the quote, or null. @type {string | null} */
   let quoteFence = null;
   /** Whether a paragraph is open, and whether it is inside a quote. */
   let paragraph = false;
   let quoteParagraph = false;
-  /** The column a list item's content starts at, or null outside a list. @type {number | null} */
-  let item = null;
-  let blankAbove = true;
+  /** The column each open list item starts its content at, outermost first. @type {number[]} */
+  const items = [];
   return lines.map((raw) => {
     const line = expandTabs(raw.replace(/\r$/, ''));
-    if (fence !== null) {
+    const blank = /^ *$/.test(line);
+    if (fence !== null || html !== null) {
       const indent = indentOf(line);
-      if (indent >= fenceBase || /^[ \t]*$/.test(line)) {
-        if (closesFence(line.slice(Math.min(indent, fenceBase)), fence)) fence = null;
-        return false;
+      if (indent >= blockBase || blank) {
+        if (fence !== null && closesFence(line.slice(Math.min(indent, blockBase)), fence)) fence = null;
+        if (html === TO_BLANK && blank) html = null;
+        else if (html instanceof RegExp && html.test(line)) html = null;
+        if (!blank || html !== null || fence !== null) return false;
+      } else {
+        // A line left of the item's content ends the item, and the block in it.
+        fence = html = null;
+        itemsAt(items, indent);
       }
-      // A line left of the item's content ends the item, and the fence in it.
-      fence = null;
-      item = null;
     }
-    if (/^[ \t\r]*$/.test(line)) {
+    if (blank) {
       paragraph = quoteParagraph = false;
       quoteFence = null;
-      blankAbove = true;
       return false;
     }
-    const wasBlankAbove = blankAbove;
-    blankAbove = false;
     const indent = indentOf(line);
-    if (item !== null && indent < item && wasBlankAbove) item = null;
-    let rest = item !== null && indent >= item ? line.slice(item) : line;
-    let base = item !== null && indent >= item ? item : 0;
-    const marker = LIST_ITEM.exec(rest);
-    const startsItem =
-      marker !== null &&
-      (marker[5]?.trim() ?? '') !== '' &&
-      (!(paragraph || quoteParagraph) || marker[3] === undefined || marker[3] === '1') &&
-      !INTERRUPTS.test(rest);
-    if (quoteParagraph && !startsItem && !/^ {0,3}>/.test(rest) && !FENCE.test(rest) && !INTERRUPTS.test(rest)) return true;
-    if (startsItem && marker) {
+    const within = items.filter((column) => column <= indent);
+    let base = within.at(-1) ?? 0;
+    let rest = line.slice(base);
+    // The widths of the list markers the line opens with, one per item, as in `- - x`.
+    /** @type {number[]} */
+    const widths = [];
+    for (let probe = rest, marker = LIST_ITEM.exec(probe); marker !== null; marker = LIST_ITEM.exec(probe)) {
+      const opens =
+        (marker[5]?.trim() ?? '') !== '' &&
+        (widths.length > 0 || !(paragraph || quoteParagraph) || marker[3] === undefined || marker[3] === '1') &&
+        !interrupts(probe);
+      if (!opens) break;
       const spaces = marker[4]?.length ?? 1;
       const width = (marker[1]?.length ?? 0) + (marker[2]?.length ?? 0) + (spaces > 4 ? 1 : spaces);
-      item = base + width;
-      base = item;
+      widths.push(width);
+      probe = probe.slice(width);
+    }
+    const startsItem = widths.length > 0;
+    const startsBlock = startsItem || /^ {0,3}>/.test(rest) || FENCE.test(rest) || interrupts(rest);
+    if (quoteParagraph && !startsBlock) return true;
+    // A paragraph's lazy line keeps every item open; anything else closes those it is left of.
+    if (!(paragraph && !startsBlock)) itemsAt(items, indent);
+    for (const width of widths) {
+      base += width;
+      items.push(base);
       rest = rest.slice(width);
     }
     quoteParagraph = false;
@@ -166,14 +238,22 @@ const quotedLines = (lines) => {
     const opener = FENCE.exec(rest);
     if (opener?.[1]) {
       fence = opener[1];
-      fenceBase = base;
+      blockBase = base;
+      paragraph = false;
+      quoteFence = null;
+      return false;
+    }
+    const htmlEnd = htmlBlockEnd(rest, paragraph && !startsItem);
+    if (htmlEnd !== undefined) {
+      html = htmlEnd instanceof RegExp && htmlEnd.test(rest.replace(/^ *<[!?]?/, '')) ? null : htmlEnd;
+      blockBase = base;
       paragraph = false;
       quoteFence = null;
       return false;
     }
     if (!/^ {0,3}>/.test(rest)) {
       quoteFence = null;
-      paragraph = !INTERRUPTS.test(rest);
+      paragraph = !HEADING_OR_RULE.test(rest);
       return false;
     }
     let inner = rest;
@@ -183,7 +263,7 @@ const quotedLines = (lines) => {
     } else {
       const quoted = FENCE.exec(inner)?.[1];
       if (quoted) quoteFence = quoted;
-      else quoteParagraph = !/^[ \t\r]*$/.test(inner) && !INTERRUPTS.test(inner) && indentOf(inner) < 4;
+      else quoteParagraph = !/^ *$/.test(inner) && !HEADING_OR_RULE.test(inner) && htmlBlockEnd(inner, false) === undefined && indentOf(inner) < 4;
     }
     paragraph = false;
     return true;
