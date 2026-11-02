@@ -1,9 +1,10 @@
 /**
  * The starter kit a new repo copies into its own `.github/` (examples/starter/):
  * a config file that names its JSON Schema, lists every switch, and turns on
- * pickup, the heartbeat and three periodics, the workflow that calls the
- * heartbeat checker, and the workflow that calls the config check on pull
- * requests. Its prompts are plain text that
+ * pickup, the heartbeat and three periodics; a dark-factory file a repo copies
+ * in its place, with every switch but hooks on and the review's merge on; the
+ * workflow that calls the heartbeat checker; and the workflow that calls the
+ * config check on pull requests. Its prompts are plain text that
  * works without any skill, and each acts on the window governor writes under
  * it (dispatch/periodics.mjs).
  */
@@ -14,11 +15,25 @@ import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
 import { CONFIG_PATH, GENERIC_SWITCHES, namesEnvironment, readConfig } from '../dispatch/repo-config.mjs';
 import { readConfig as checkerReadConfig } from '../checker/heartbeat-check.mjs';
+import { globMatches } from '../dispatch/checklist.mjs';
 
 const STARTER = 'examples/starter/';
 const CONFIG_FILE = `${STARTER}${CONFIG_PATH}`;
+const DARK_FILE = `${STARTER}.github/dispatch.dark-factory.json`;
 const WORKFLOW_FILE = `${STARTER}.github/workflows/heartbeat.yml`;
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+
+/** The commit the starter kit's config check is pinned to. */
+const checkPin = () => {
+  const check = yaml.load(read(`${STARTER}.github/workflows/config-check.yml`)) as { jobs: Record<string, { uses?: string }> };
+  return Object.values(check.jobs).map((j) => /^t-d-d\/gh-governor\/\.github\/workflows\/config-check\.yml@([0-9a-f]{40})$/.exec(String(j.uses))?.[1]);
+};
+
+/** The commit a config file's `$schema` names, or null when it names no schema of this repo's. */
+const schemaCommit = (text: string) => {
+  const { $schema } = JSON.parse(text) as { $schema?: unknown };
+  return /^https:\/\/raw\.githubusercontent\.com\/t-d-d\/gh-governor\/([0-9a-f]{40})\/schema\/dispatch\.schema\.json$/.exec(String($schema))?.[1] ?? null;
+};
 
 describe('the starter kit\'s config file', () => {
   const text = read(CONFIG_FILE);
@@ -46,12 +61,9 @@ describe('the starter kit\'s config file', () => {
   });
 
   test('names its JSON Schema at the commit the config check is pinned to', () => {
-    const { $schema } = JSON.parse(text) as { $schema?: unknown };
-    const m = /^https:\/\/raw\.githubusercontent\.com\/t-d-d\/gh-governor\/([0-9a-f]{40})\/schema\/dispatch\.schema\.json$/.exec(String($schema));
-    assert.ok(m !== null, String($schema));
-    const check = yaml.load(read(`${STARTER}.github/workflows/config-check.yml`)) as { jobs: Record<string, { uses?: string }> };
-    const pin = Object.values(check.jobs).map((j) => /^t-d-d\/gh-governor\/\.github\/workflows\/config-check\.yml@([0-9a-f]{40})$/.exec(String(j.uses))?.[1]);
-    assert.deepEqual(pin, [m[1]], 'bump $schema and the config check together');
+    const commit = schemaCommit(text);
+    assert.ok(commit !== null, text);
+    assert.deepEqual(checkPin(), [commit], 'bump $schema and the config check together');
   });
 
   test('names its environment by a placeholder name, never an id', () => {
@@ -79,6 +91,74 @@ describe('the starter kit\'s config file', () => {
       assert.match(p, /governor lists below|governor gives below/, `${name}: acts on the window governor writes under it`);
       assert.match(p, /`Signing off\.`/, `${name}: a run that never signs off holds the next fire`);
     }
+  });
+
+  test('reads in the heartbeat checker, which watches pickup and every periodic', () => {
+    const checked = checkerReadConfig(text);
+    assert.ok(checked.ok, JSON.stringify(checked));
+    assert.notEqual(checked.config.pickupHours, null);
+    assert.equal(checked.config.periodics.length, 3);
+  });
+});
+
+describe('the starter kit\'s dark-factory config file', () => {
+  const text = read(DARK_FILE);
+  const got = readConfig(text);
+
+  test('is valid against configSchema', () => {
+    assert.ok(got.ok, JSON.stringify(got));
+  });
+
+  test('lists every switch, with every one but hooks on', () => {
+    const { features } = JSON.parse(text) as { features: Record<string, unknown> };
+    assert.deepEqual(Object.keys(features).sort(), [...GENERIC_SWITCHES].sort(), 'a new switch is added to the dark-factory file');
+    for (const name of GENERIC_SWITCHES) assert.equal(features[name], name !== 'hooks', name);
+  });
+
+  test('names its JSON Schema at the commit the config check is pinned to', () => {
+    const commit = schemaCommit(text);
+    assert.ok(commit !== null, text);
+    assert.deepEqual(checkPin(), [commit], 'bump $schema in both files and the config check together');
+  });
+
+  test('keeps the starter file\'s placeholders and periodics', () => {
+    assert.ok(got.ok);
+    const starter = readConfig(read(CONFIG_FILE));
+    assert.ok(starter.ok);
+    assert.equal(got.config.environment, 'my-env');
+    assert.deepEqual(got.config.labels, starter.config.labels);
+    assert.deepEqual(got.config.pickup, starter.config.pickup);
+    assert.deepEqual(got.config.heartbeat, starter.config.heartbeat);
+    assert.deepEqual(got.config.periodics, starter.config.periodics);
+  });
+
+  test('names the CI workflow ciMessages needs', () => {
+    assert.ok(got.ok);
+    assert.match(String(got.config.workflows.ci), /^\.github\/workflows\/[^/]+\.ya?ml$/);
+  });
+
+  test('reviews with a plain-text checklist that checks every test, and merges a pass', () => {
+    assert.ok(got.ok);
+    const review = got.config.review;
+    assert.ok(review !== undefined);
+    assert.equal(review.merge, true);
+    assert.equal(typeof review.checklist, 'string', 'a checklist file is the repo\'s own');
+    assert.doesNotMatch(String(review.checklist), /skill/i, 'the starter kit ships no skills');
+    assert.doesNotMatch(String(review.checklist), /stop at the first/i, 'the review prompt asks the model to check every later test too');
+  });
+
+  test('leaves CLAUDE.md, the skills, the workflows, this file and the infrastructure to a person, each with its reason', () => {
+    assert.ok(got.ok);
+    const humanOnly = got.config.review?.humanOnly ?? [];
+    for (const path of ['CLAUDE.md', 'src/CLAUDE.md', '.claude/settings.json', '.github/workflows/ci.yml', '.github/actions/test/action.yml', '.github/dispatch.json', 'infra/main.tf']) {
+      assert.ok(humanOnly.some((e) => globMatches(e.glob, path)), `${path} waits for a person`);
+    }
+    for (const entry of humanOnly) assert.ok(entry.reason.length > 0, entry.glob);
+  });
+
+  test('keeps hooks off and lists none', () => {
+    assert.ok(got.ok);
+    assert.deepEqual(got.config.hooks, []);
   });
 
   test('reads in the heartbeat checker, which watches pickup and every periodic', () => {
@@ -173,4 +253,22 @@ test('docs/serving-a-repo.md\'s starter kit section says the file names its sche
   const section = readme.slice(at, readme.indexOf('\n### ', at + 1));
   assert.match(section, /`\$schema`/);
   assert.match(section, /every switch/);
+});
+
+test('docs/serving-a-repo.md\'s starter kit section says the kit has two policies and when to pick each', () => {
+  const doc = read('docs/serving-a-repo.md');
+  const at = doc.indexOf('### The starter kit');
+  const section = doc.slice(at, doc.indexOf('\n### ', at + 1));
+  assert.match(section, /two policies/);
+  assert.match(section, /`\.github\/dispatch\.dark-factory\.json`/);
+  assert.match(section, /`merge`/);
+  assert.match(section, /hook/i, 'says how to add a hook');
+});
+
+test('the README\'s "Run your own" step points at the dark-factory file, not the test fixture', () => {
+  const readme = read('README.md');
+  const at = readme.indexOf('## Run your own');
+  const section = readme.slice(at, readme.indexOf('\n## ', at + 1));
+  assert.match(section, /\(examples\/starter\/\.github\/dispatch\.dark-factory\.json\)/);
+  assert.doesNotMatch(section, /test\/fixtures/);
 });
