@@ -27,7 +27,7 @@ This repo's [dispatch.json](../.github/dispatch.json) turns on `pickup`, `summon
 3. **Pickup.** Governor claims the ticket, starts a Claude Code cloud session on it, and comments the session's link on the ticket.
 4. **Context.** The session reads [CLAUDE.md](../CLAUDE.md), then runs the `fetch-ticket` skill: the ticket, its blockers, its PRD, the issues those cite, and the constraint files that bind the work. A ticket with an open blocker, or one that conflicts with a constraint, stops there with a comment.
 5. **Tests first.** The session writes the failing test, watches it fail for the reason it expects, and then writes the code.
-6. **Pre-push.** The `pre-push` skill merges main in, runs the gate on the merged tree, and reviews the diff at high effort. Each finding is fixed, dismissed only after the session has traced it through the code, or filed as a new issue. Then the session pushes and raises the pull request, written to the `pr-description` skill.
+6. **Pre-push.** The `pre-push` skill merges main in, runs the gate on the merged tree, and has a clean-room sub-agent, with a fresh context and no part in writing the code, review the diff at high effort. Each finding is fixed, dismissed only after the session has traced it through the code, or filed as a new issue. Then the session pushes and raises the pull request, written to the `pr-description` skill.
 7. **Review.** Governor relays everything on the pull request to the session that wrote it: the owner's comments and reviews, pushes, and the conflicts that other merges leave. The session answers them on the same branch.
 8. **Merge and sign-off.** The owner merges. The session ends its last reply with `Signing off.`, and governor archives it at its next turn.
 
