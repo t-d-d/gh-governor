@@ -57,8 +57,9 @@ spends the one claude.ai login.
   (dispatch/waits.mjs). In the `unblocked` row the line holds only a
   ticket whose labels read ready or not ready (`waitHolds`), which reads as
   blocked: a claimed ticket's session still hears its blocker close, and an
-  excluded ticket still reads excluded. The line may instead wait `<N> days after #<issue> closes`, on
-  an issue that must be a declared blocker of the ticket. It holds the
+  excluded ticket still reads excluded. The line may instead wait
+  `<N> days after #<issue> closes`, on an issue that must be a declared
+  blocker of the ticket. It holds the
   ticket until governor rewrites it, once, into its date at the issue's
   completed close; any other close leaves the line and comments once under
   `<!-- governor:wait-not-planned #<issue> -->`. A line governor cannot

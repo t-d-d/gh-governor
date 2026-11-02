@@ -19,7 +19,7 @@
  * | lost its blocker to a "not planned" close | comments, and messages its session if claimed, saying so if another open issue still blocks it | `unblocked` |
  * | the same, and carries every ready label and no claim | also takes its ready labels off, and the comment says so | `pickup` |
  * | still blocked by another open issue | nothing: that blocker's close sends its own fire | |
- * | ready or not ready by its labels, and held by its own `Blocked until:` line | nothing | |
+ * | ready or not ready by its labels, and held by its own `Blocked until:` line | nothing, but one comment on a line governor cannot read, whatever the switches say | |
  * | carries an `exclude` label | nothing | |
  * | is claimed | messages the session its dispatch marker names | `unblocked` |
  * | is ready | picks it up as pickup does, the close's facts in the prompt | `pickup` |
