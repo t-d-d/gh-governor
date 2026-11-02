@@ -1,0 +1,55 @@
+diff --git a/dispatch/webhook/subscribe.mjs b/dispatch/webhook/subscribe.mjs
+index 718597f..91de8b8 100644
+--- a/dispatch/webhook/subscribe.mjs
++++ b/dispatch/webhook/subscribe.mjs
+@@ -36,6 +36,7 @@ import { SESSION_LINK as LINK, SUBSCRIPTION_EVENTS } from './fire.mjs';
+ 
+ /** @typedef {import('./fire.mjs').SubscriptionEvent} SubscriptionEvent */
+ 
++import commonmark from './vendor/commonmark.cjs';
+ const KNOWN = new Set(/** @type {readonly string[]} */ (SUBSCRIPTION_EVENTS));
+ 
+ /**
+@@ -168,6 +169,20 @@ const itemsAt = (items, indent) => {
+  * @param {string[]} lines
+  * @returns {boolean[]}
+  */
++/** @param {string} text @param {number} count */
++const parsedQuotes = (text, count) => {
++  const quoted = Array(count).fill(false);
++  const walker = new commonmark.Parser().parse(text).walker();
++  let depth = 0;
++  for (let step = walker.next(); step; step = walker.next()) {
++    const { node, entering } = step;
++    if (node.type === 'block_quote') depth += entering ? 1 : -1;
++    if (entering && depth > 0 && node.sourcepos) for (let n = node.sourcepos[0][0]; n <= node.sourcepos[1][0]; n++) quoted[n - 1] = true;
++  }
++  return quoted;
++};
++
++// eslint-disable-next-line no-unused-vars
+ const quotedLines = (lines) => {
+   /** The marker of the open fence outside any quote, or null. @type {string | null} */
+   let fence = null;
+@@ -292,7 +307,7 @@ const quotedLines = (lines) => {
+  */
+ const fillQuotes = (text, fill) => {
+   const lines = text.split('\n');
+-  const quoted = quotedLines(lines);
++  const quoted = parsedQuotes(text, lines.length);
+   return lines.map((line, i) => (quoted[i] ? fill.repeat(line.length) : line)).join('\n');
+ };
+ 
+diff --git a/tsconfig.json b/tsconfig.json
+index 6f8773e..8de39a9 100644
+--- a/tsconfig.json
++++ b/tsconfig.json
+@@ -30,6 +30,7 @@
+   ],
+   "exclude": [
+     "node_modules",
+-    "dispatch/node_modules"
++    "dispatch/node_modules",
++    "dispatch/webhook/vendor/*.cjs"
+   ]
+ }
