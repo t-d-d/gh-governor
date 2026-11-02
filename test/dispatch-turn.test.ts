@@ -108,7 +108,7 @@ const issue = (number: number) => ({
   labels: ['workflow: ready for development', 'mode: afk', 'type: bug'],
 });
 
-type Launch = { prompt: string; sessionName: string; model: string; repo?: string; environment?: string };
+type Launch = { prompt: string; sessionName: string; model: string; repo?: string; environment?: string; branch?: string };
 
 /** Every dependency, recording what it saw; each can be overridden. */
 const harness = (over: Record<string, unknown> = {}) => {
@@ -4207,7 +4207,7 @@ describe('run — a merge to main leaves PRs conflicted', () => {
   const MAIN = 'f0e1d2c3b4a5f0e1d2c3b4a5f0e1d2c3b4a5f0e1';
   const OWNER = 'session_01WROTEIT';
   const BODY = `The change.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/${OWNER}`;
-  const open = (number: number, over: Record<string, unknown> = {}) => ({ number, draft: false, base: 'main', ...over });
+  const open = (number: number, over: Record<string, unknown> = {}) => ({ number, draft: false, base: 'main', head: `claude/branch-${number}`, ...over });
   const headOf = (number: number) => `${number}`.padEnd(40, '0');
   const row = (number: number, mergeable: boolean | null, over: Record<string, unknown> = {}) => ({
     number, title: `PR ${number}`, body: BODY, state: 'open', draft: false, base: 'main', headSha: headOf(number), mergeable, html_url: `https://github.com/${REPO}/pull/${number}`, association: 'OWNER', ...over,
@@ -4289,10 +4289,21 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     assert.match(launches[0]!.prompt, /resolve the conflicts/);
     assert.match(launches[0]!.prompt, /yours now/);
     assert.match(launches[0]!.sessionName, /#804/);
+    assert.equal(launches[0]!.branch, 'claude/branch-804', 'the session starts on the PR\'s head branch and pushes there, so it opens no new branch or PR');
     assert.ok(r0.comments.some((c) => c.issue === 804 && c.body.includes('governor:dispatched')), 'the fallback leaves the dispatch marker, as for a remark');
     assert.equal(r0.comments.length, 1, 'the dispatch marker alone');
     assert.deepEqual(r.checks.map((c) => c.outcome), ['fallback']);
     assert.equal(exitCodeFor(r as never), 0);
+  });
+
+  // A fork's head branch is not this repo's, so there is none to push to:
+  // the reader gives '' for it, and the session starts as any other does.
+  test('a fallback for a PR from a fork names no branch', async () => {
+    const r0 = conflictReader({ pulls: [open(804, { head: '' })], reads: { 804: [false] } });
+    const { deps, messages, launches } = harness({ reader: r0.reader, sleep, message: async (m: { session: string; text: string }) => { messages.push(m); return archived(m); } });
+    await run(fire, deps as never);
+    assert.equal(launches.length, 1);
+    assert.equal(launches[0]!.branch, undefined);
   });
 
   test('the same merge read twice tells a PR once: the conditional record of the PR and the merge stands; another merge tells it again', async () => {

@@ -43,9 +43,10 @@ reason streamed to stdout for whichever log the caller keeps. (While the
 workaround in the next section is in place, a failed preflight starts from
 GitHub instead of refusing; the refusal returns with the workaround's
 removal.) It is also the
-revision every worker should start from: origin's trunk, not whatever branch
-the runner's checkout is on. The @claude workflow's prompt names the PR
-branch to check out itself.
+revision every new worker should start from: origin's trunk, not whatever
+branch the runner's checkout is on. The @claude workflow's prompt names the
+PR branch to check out itself. A session that takes over a PR starts on that
+PR's branch instead; see § Why a takeover starts on the PR's branch.
 
 `claude --help` does not advertise the flag (it is registered hidden), so it
 cannot be probed for, and `--help` and `--version` both exit 0 whatever
@@ -55,6 +56,18 @@ older than the flag fails every dispatch, loudly, before anything starts, and
 the fix is to update the CLI. The `--remote` generation predates the flag and
 the bundle path alike, so it gets no `--ref` at all: there the flag would buy
 nothing and kill every dispatch.
+
+## Why a takeover starts on the PR's branch
+
+A session started from `main` is given a fresh branch of its own and a rule
+to push only to it. A session that takes over a PR (a conflicted PR whose
+owner session archived) then merges on that fresh branch and opens a second
+PR beside the first, which stays conflicted. So a launch that names a branch
+in CLAUDE_ON_BRANCH passes `--on-branch <branch>` in place of `--ref main`:
+the session checks that branch out and pushes to it. The CLI refuses the two
+together. Like `--ref` it names a revision, so a failed GitHub preflight is
+still a refusal rather than a bundle. It is hidden as `--ref` is, and the
+`--remote` generation gets neither.
 
 ## Why the session runs in the auto permission mode
 
@@ -206,6 +219,9 @@ if len(sys.argv) != 2:
 prompt = open(sys.argv[1]).read()
 model = os.environ.get("CLAUDE_MODEL", "")
 session_name = os.environ.get("CLAUDE_SESSION_NAME", "")
+# The branch a session takes over, when it is given one; see the module
+# docstring § Why a takeover starts on the PR's branch.
+on_branch = os.environ.get("CLAUDE_ON_BRANCH", "")
 # How long the child may stay SILENT before the dispatch is unconfirmed.
 confirm_timeout = float(os.environ.get("DISPATCH_CONFIRM_TIMEOUT") or 30.0)
 # The budget for the whole dispatch, silent or not. A real one confirms in
@@ -272,8 +288,8 @@ if pid == 0:
     # workflow that sets no name keeps the behaviour it has.
     if session_name:
         cmd += ["--name", session_name]
-    # Pinned to origin's trunk, ahead of the cloud flag so the prompt stays
-    # that flag's value. Naming a revision is what makes a failed GitHub
+    # Pinned to origin's trunk, or to a takeover's PR branch, ahead of the
+    # cloud flag so the prompt stays that flag's value. Naming a revision is what makes a failed GitHub
     # preflight a refusal rather than a bundle. Only the `--cloud` generation
     # has the flag or the bundle path; see the module docstring.
     if flag == "--cloud":
@@ -282,7 +298,12 @@ if pid == 0:
         # only: the `--remote` one predates the `auto` choice and would refuse
         # the argv, as it does `--ref`.
         cmd += ["--permission-mode", "auto"]
-        cmd += ["--ref", CLOUD_REF]
+        # A takeover starts on the PR's own branch instead, and pushes there.
+        # The CLI refuses the two flags together.
+        if on_branch:
+            cmd += ["--on-branch", on_branch]
+        else:
+            cmd += ["--ref", CLOUD_REF]
         # Temporary; see the module docstring § Why feature-flag evaluation is
         # off for the child. Same generation as `--ref`: only this one has the
         # bundle path the variable steers.
