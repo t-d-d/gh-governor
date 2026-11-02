@@ -149,8 +149,8 @@ describe('the starter kit\'s config check', () => {
   });
 });
 
-test('the README describes the config check beside the heartbeat checker', () => {
-  const readme = read('README.md');
+test('docs/serving-a-repo.md describes the config check beside the heartbeat checker', () => {
+  const readme = read('docs/serving-a-repo.md');
   const at = readme.indexOf('### The config check');
   assert.ok(at > readme.indexOf('### The heartbeat checker'), 'a section of its own after the heartbeat checker\'s');
   const section = readme.slice(at, readme.indexOf('\n## ', at));
@@ -160,15 +160,15 @@ test('the README describes the config check beside the heartbeat checker', () =>
   assert.match(optIn, /config-check\.yml/);
 });
 
-test('the README\'s "How a repo opts in" points at the starter kit and the heartbeat issue\'s marker', () => {
-  const readme = read('README.md');
+test('docs/serving-a-repo.md\'s "How a repo opts in" points at the starter kit and the heartbeat issue\'s marker', () => {
+  const readme = read('docs/serving-a-repo.md');
   const section = readme.slice(readme.indexOf('## How a repo opts in'), readme.indexOf('### The schema'));
-  assert.match(section, /\(examples\/starter\/?\)/);
+  assert.match(section, /\(\.\.\/examples\/starter\/?\)/);
   assert.match(section, /<!-- governor:heartbeat -->/);
 });
 
-test('the README\'s starter kit section says the file names its schema and lists every switch', () => {
-  const readme = read('README.md');
+test('docs/serving-a-repo.md\'s starter kit section says the file names its schema and lists every switch', () => {
+  const readme = read('docs/serving-a-repo.md');
   const at = readme.indexOf('### The starter kit');
   const section = readme.slice(at, readme.indexOf('\n### ', at + 1));
   assert.match(section, /`\$schema`/);

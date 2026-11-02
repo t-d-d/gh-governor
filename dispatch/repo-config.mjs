@@ -63,7 +63,8 @@ export const RETIRED_SWITCHES = Object.freeze({ mergeHandoff: 'unblocked' });
 
 /**
  * What each switch turns on, as the config file's JSON Schema describes it
- * and the README's switch table says it (test/config-schema.test.ts).
+ * and the switch table in docs/serving-a-repo.md says it
+ * (test/config-schema.test.ts).
  *
  * @type {Readonly<Record<string, string>>}
  */
@@ -319,7 +320,7 @@ const hookSchema = z.strictObject({
 /**
  * The file's schema. It is the same in every repo: no switch is any one
  * repo's. Each key's description is what the exported JSON Schema shows on
- * hover, and the README's key table says the same
+ * hover, and the key table in docs/serving-a-repo.md says the same
  * (test/config-schema.test.ts). `$schema` names that JSON Schema for an
  * editor, and {@link readConfig} drops it unread; any other unknown key, and
  * `$schema` below the top, is a fault.

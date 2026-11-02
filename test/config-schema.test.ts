@@ -100,8 +100,8 @@ describe('a $schema key in the config file', () => {
   });
 });
 
-describe('the README on the schema', () => {
-  const readme = read('README.md');
+describe('docs/serving-a-repo.md on the schema', () => {
+  const readme = read('docs/serving-a-repo.md');
 
   test('names the schema at a pinned commit in the file\'s $schema key, with no editor settings', () => {
     assert.ok(readme.includes(`"$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/<commit>/${SCHEMA_PATH}"`));
@@ -117,11 +117,11 @@ describe('the README on the schema', () => {
   /** The exported schema's node at a dotted path, through objects' properties. */
   const nodeAt = (path: string) => path.split('.').reduce<Node | undefined>((node, key) => node?.properties?.[key], configJsonSchema() as Node);
 
-  /** The rows of the README table whose header row starts `| <first> |`: each row's key and last cell. */
+  /** The rows of the page's table whose header row starts `| <first> |`: each row's key and last cell. */
   const tableRows = (first: string) => {
     const lines = readme.split('\n');
     const start = lines.findIndex((line) => line.startsWith(`| ${first} |`));
-    assert.notEqual(start, -1, `the README has a table headed ${first}`);
+    assert.notEqual(start, -1, `the page has a table headed ${first}`);
     const rows: Array<{ key: string, cell: string }> = [];
     for (const line of lines.slice(start + 2)) {
       if (!line.startsWith('|')) break;
@@ -136,15 +136,15 @@ describe('the README on the schema', () => {
   test('the key table says what each key\'s description says, and lists every top-level key', () => {
     const rows = tableRows('Key');
     assert.ok(rows.length > 10);
-    for (const { key, cell } of rows) assert.equal(cell, nodeAt(key)?.description, `README's row for ${key}`);
+    for (const { key, cell } of rows) assert.equal(cell, nodeAt(key)?.description, `the page's row for ${key}`);
     const tops = new Set(rows.map((r) => r.key.split('.')[0]));
     const unlisted = Object.keys((configJsonSchema() as Node).properties ?? {}).filter((k) => !tops.has(k));
-    assert.deepEqual(unlisted, [], 'give each top-level key a row in the README\'s key table');
+    assert.deepEqual(unlisted, [], 'give each top-level key a row in the page\'s key table');
   });
 
   test('the switch table says what each switch\'s description says, and lists every switch', () => {
     const rows = tableRows('Switch');
-    for (const { key, cell } of rows) assert.equal(cell, nodeAt(`features.${key}`)?.description, `README's row for ${key}`);
+    for (const { key, cell } of rows) assert.equal(cell, nodeAt(`features.${key}`)?.description, `the page's row for ${key}`);
     const listed = Object.entries(nodeAt('features')?.properties ?? {}).filter(([, n]) => !(n as { deprecated?: boolean }).deprecated).map(([k]) => k);
     assert.deepEqual(rows.map((r) => r.key), listed);
   });
