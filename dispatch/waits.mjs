@@ -775,10 +775,11 @@ export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now
  * or one the bare schedule fire's sweep finds on a ready ticket. Only an
  * issue in the ticket's repo is read.
  *
- * - The sweep leaves a ticket an open blocker holds to that blocker's close.
- *   The ticket's dependency summary (`openBlockers`) decides where the
- *   sweep's read carried one, as it decides for the selection
- *   (`isBlocked`); with none, its `blocked_by` rows do.
+ * - The sweep leaves a ticket an open blocker holds to that blocker's close:
+ *   one its dependency summary (`openBlockers`) counts, which needs no read,
+ *   or one in its `blocked_by` rows, read where the summary counts none.
+ *   The rows are read even then because a summary can be a moment slow to
+ *   count a link just made, and the comments below are said only once.
  * - A same-repo issue that has closed: settled as at its close
  *   ({@link settle}).
  * - A same-repo issue still open: the `wait` turn links it where it is not
@@ -797,8 +798,9 @@ export const repairRelative = async ({ reader, repo, issue, after, openBlockers,
   /** @type {Array<{ number: number, state: string, repo?: string }> | null} */
   let rows = null;
   if (!link) {
-    if (openBlockers === undefined) rows = await reader.blockers(issue);
-    if (isBlocked(openBlockers === undefined ? {} : { openBlockers }, rows ?? undefined)) return 'held by an open blocker';
+    if (openBlockers !== undefined && openBlockers > 0) return 'held by an open blocker';
+    rows = await reader.blockers(issue);
+    if (rows.some((r) => r.state === 'open')) return 'held by an open blocker';
   }
   const cannot = async (/** @type {string} */ why) => {
     const outcome = await sayOnce(reader, issue, waitRelativeMarker(ref), waitRelativeComment(ref));

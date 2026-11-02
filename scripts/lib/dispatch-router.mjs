@@ -89,7 +89,7 @@ import { byAge, mayPickUp, selectReadyWork, ticketStatus, unreadableOf } from '.
  * line (`3 days after #143 closes`) is recorded there, with its dependency
  * summary, so the turn can settle it (`repairRelative`, dispatch/waits.mjs).
  * Like `unreadable`, the report reads no blocker: the repair judges it, by
- * the summary or, where the read carries none, by the `blocked_by` rows it
+ * the summary and, where that counts none, by the `blocked_by` rows it
  * reads, so the plan does not read them too.
  *
  * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[] }} args
