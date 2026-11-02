@@ -17,11 +17,16 @@
  * people read and edit. The bare schedule fire reads each such repo's items
  * ({@link endedWaits}). A ticket whose date has passed and that is not
  * ready gets one comment, under a marker naming the date
- * ({@link waitEndedMarker}), and, with `unblocked` on, a spec session on the
- * repo's `waitEndedSpec` prompt, unless the thread shows a dispatch inside
- * the window, or governor's not-planned close still holds the ticket
- * (`mayStartSpec`, scripts/lib/ready-work.mjs). Every session governor starts in such a
- * repo is told how to make a ticket wait ({@link WAIT_PROMPT}).
+ * ({@link waitEndedMarker}), and, with `unblocked` on, its spec work,
+ * unless the thread shows a dispatch inside the window, or governor's
+ * not-planned close still holds the ticket (`mayStartSpec`,
+ * scripts/lib/ready-work.mjs). Where its body names a session, its owner,
+ * that session is asked to rewrite its own spec on the repo's
+ * `waitEndedOwnerSpec` prompt, so it keeps the ticket, with a spec session
+ * as the fallback should it refuse as archived. Where it names none, a spec
+ * session starts on the repo's `waitEndedSpec` prompt. Every session
+ * governor starts in such a repo is told how to make a ticket wait
+ * ({@link WAIT_PROMPT}).
  *
  * A lost `opened`, `reopened` or `edited` delivery leaves its ticket out of the items,
  * so it gets no comment or spec session when its wait ends. A ready ticket
@@ -42,7 +47,8 @@
  */
 
 import { waitLine } from './webhook/fire.mjs';
-import { UNREADIED_HELD, sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
+import { UNREADIED_HELD, ownerMessage, sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
+import { sessionNamedIn } from './webhook/subscribe.mjs';
 import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
 import { RELATIVE_WAIT, isWaiting, mayStartSpec, specHold, ticketStatus, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
@@ -160,9 +166,21 @@ export const WAIT_PROMPT = 'To make a ticket wait until a date, start its body w
  * @param {{ issue: number, title: string, until: string, labels: { ready: readonly string[], claim: string }, prompts: Record<string, string | undefined> }} args
  */
 export const waitSpecPrompt = ({ issue, title, until, labels, prompts }) => specSession({
-  issue, title, labels, prompts, kind: 'waitEndedSpec',
-  facts: `#${issue}'s wait has ended: its \`Blocked until:\` line named ${until}, which has passed.`,
+  issue, title, labels, prompts, kind: 'waitEndedSpec', facts: waitFacts(issue, until),
 });
+
+/** What ended: the ticket's wait, on its date. @param {number} issue @param {string} until */
+const waitFacts = (issue, until) => `#${issue}'s wait has ended: its \`Blocked until:\` line named ${until}, which has passed.`;
+
+/**
+ * The message a not-ready ticket's owner, the session its body names, gets
+ * when the ticket's wait ends, in place of a spec session: the wait's facts
+ * and the repo's `waitEndedOwnerSpec` instruction, asking it to rewrite the
+ * spec in its own body, so it keeps the ticket.
+ *
+ * @param {{ issue: number, until: string, labels: { ready: readonly string[], claim: string }, prompts: Record<string, string | undefined> }} args
+ */
+export const waitOwnerMessage = ({ issue, until, labels, prompts }) => ownerMessage({ issue, facts: waitFacts(issue, until), kind: 'waitEndedOwnerSpec', labels, prompts });
 
 /**
  * @typedef {{
@@ -178,7 +196,7 @@ export const waitSpecPrompt = ({ issue, title, until, labels, prompts }) => spec
  *   for no item.
  *
  * @typedef {{
- *   ticket: (n: number) => Promise<{ number: number, id?: number, title: string, state: string, labels: string[], pull?: boolean, openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
+ *   ticket: (n: number) => Promise<{ number: number, id?: number, title: string, body?: string, state: string, labels: string[], pull?: boolean, openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
  *   blockers: (n: number) => Promise<Array<{ state: string, id?: number }>>,
  *   allComments: (n: number) => Promise<Array<{ body: string, created_at?: string, ours: boolean }>>,
  *   comment: (n: number, body: string) => Promise<void>,
@@ -456,10 +474,12 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
 };
 
 /**
- * @typedef {{ issue: number, title: string, until: string, read: string }} WaitSpec
- *   A ticket whose wait ended that gets a spec session: its title, the date
- *   its line names, and the date its item holds, which the turn deletes the
- *   item over once the session started.
+ * @typedef {{ issue: number, title: string, until: string, read: string, owner: string | null }} WaitSpec
+ *   A ticket whose wait ended that gets its spec work: its title, the date
+ *   its line names, the date its item holds, which the turn deletes the
+ *   item over once the work went, and the session its body names, its
+ *   owner, or null. An owner is asked to rewrite its own spec, with the
+ *   spec session as the fallback; a ticket with none gets the spec session.
  */
 
 /**
@@ -565,8 +585,10 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       // A ticket governor unreadied on a not-planned close waits for a
       // person's answer first, as a later blocker's close does.
       if (spec && mayStartSpec(thread, now)) {
-        specs.push({ issue, title: ticket.title, until: wait.until, read: item.until });
-        log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: told ? 'ended: already told, starting a spec session' : 'ended: commented, starting a spec session' });
+        const owner = sessionNamedIn(ticket.body);
+        specs.push({ issue, title: ticket.title, until: wait.until, read: item.until, owner });
+        const work = owner === null ? 'starting a spec session' : `asking its owner, ${owner}, to rewrite its spec`;
+        log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: told ? `ended: already told, ${work}` : `ended: commented, ${work}` });
         continue;
       }
       await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: specHold(thread, now) === 'unreadied' ? `held: ${UNREADIED_HELD}` : 'dispatched inside the window' } : {}) });

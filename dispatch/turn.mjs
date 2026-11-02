@@ -943,7 +943,7 @@ const runOpen = (deps) => {
  *   served: import('./repos.mjs').Served[],
  *   bare: boolean,
  *   prompts: import('./repo-config.mjs').RepoConfig['prompts'] | {},
- *   delivery: () => ReturnType<typeof turnDeliveries>,
+ *   delivery: (repo?: string) => ReturnType<typeof turnDeliveries>,
  *   storeLogin: () => Promise<boolean>,
  *   state: DispatchState,
  *   start: import('./launcher.mjs').Launcher['start'],
@@ -957,7 +957,8 @@ const runOpen = (deps) => {
  * }} TurnContext
  *   `readerFor`: a repo's reader, one a turn. `configOf`: a served repo's
  *   config. `prompts`: the fire's repo's, none for the bare schedule fire.
- *   `delivery`: whom a message reaches, and the send. `storeLogin`: the
+ *   `delivery`: whom a message reaches, and the send, in the fire's repo
+ *   or the served repo named. `storeLogin`: the
  *   login the CLI refreshed, put back. `start`: the launcher's. `open`:
  *   whether a periodic's or a hook's last session is still open, under a
  *   token refreshed once a turn. `claims`: the tickets the turn claimed that
@@ -974,6 +975,7 @@ const runOpen = (deps) => {
  *   asked: import('./launcher.mjs').Asked,
  *   periodic?: string,
  *   started?: (outcome: import('./launcher.mjs').Started, firedAt: string) => Promise<void>,
+ *   ask?: () => Promise<{ outcome: import('./deliveries.mjs').LaunchOutcome, sessionUrl: string | null } | null>,
  * }} PlannedLaunch
  *   One session a planner wants started, on `asked`, which the launcher's
  *   `start` takes with the repo. `claim`: the ticket is claimed
@@ -983,6 +985,9 @@ const runOpen = (deps) => {
  *   which its launch line and a repo skip's line carry. `started`: the
  *   record this launch moves, called after the launch line with what the
  *   launch printed and when it was fired, unless a routine fault skipped it.
+ *   `ask`: a message sent in place of the launch, whose fallback is `asked`
+ *   and leaves its own marker. It settles its own records, and answers the
+ *   fallback's launch, or null where none was tried.
  *
  * @typedef {{
  *   launches: PlannedLaunch[],
@@ -1080,23 +1085,54 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   // Whom a message reaches, and the send (dispatch/deliveries.mjs): each
   // send and launch under what is left of its delivery's budget.
   // The fire's repo's prompts (dispatch/prompts.mjs). The bare schedule fire
-  // names no repo and sends no message.
+  // names no repo, and sends only in a served repo it names (`delivery`).
   const prompts = repo === undefined ? {} : configOf(repo).prompts;
   /** @type {ReturnType<typeof turnDeliveries> | null} */
   let made = null;
-  const delivery = () => (made ??= turnDeliveries({
-    prompts,
-    signOff: repo !== undefined && turnsOn(configOf(repo), 'signOff'),
-    reader: getReader,
-    repo: fireRepo(),
+  /**
+   * One repo's deliveries: its prompts, sign-off, reader and repo, with the
+   * turn's send, launcher and sessions finder.
+   *
+   * @param {Pick<import('./deliveries.mjs').DeliveryDeps, 'prompts' | 'signOff' | 'reader' | 'repo' | 'launch'>} own
+   */
+  const deliveriesOf = (own) => turnDeliveries({
+    ...own,
     send: (message, until) => budgeted(() => deps.message(message), message.session, until),
-    launch: start,
     sessions: sessionsFinder,
     now: deps.now,
     log: deps.log,
     sleep: deps.sleep,
     launchTimeoutMs: deps.launchTimeoutMs,
-  }));
+  });
+  /** Each other served repo's deliveries, made on first use. @type {Map<string, ReturnType<typeof turnDeliveries>>} */
+  const others = new Map();
+  /**
+   * The fire's repo's deliveries, or, given `served`, a served repo's: the
+   * bare schedule fire names no repo, and messages a ticket's owner in
+   * the ticket's repo, under that repo's reader and prompts, and starts
+   * a fallback there. There it reaches a session by its link only: finding
+   * one by a PR's head branch throws, since the sessions finder is the
+   * fire's repo's.
+   *
+   * @param {string} [served]
+   */
+  const delivery = (served) => {
+    if (served === undefined) {
+      return (made ??= deliveriesOf({ prompts, signOff: repo !== undefined && turnsOn(configOf(repo), 'signOff'), reader: getReader, repo: fireRepo(), launch: start }));
+    }
+    let other = others.get(served);
+    if (other === undefined) {
+      const config = configOf(served);
+      others.set(served, other = deliveriesOf({
+        prompts: config.prompts,
+        signOff: turnsOn(config, 'signOff'),
+        reader: () => readerFor(served),
+        repo: served,
+        launch: (launch, until) => start({ ...launch, repo: served }, until),
+      }));
+    }
+    return other;
+  };
 
   if (invocation.kind === 'message') {
     const { on, event, commit, closing, text, fallback } = invocation;

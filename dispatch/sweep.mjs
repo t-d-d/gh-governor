@@ -8,7 +8,9 @@
  * sweeps each served repo turning pickup on whose interval has passed since
  * its last sweep (dispatch/pickup.mjs), and reads each repo's due periodics
  * (dispatch/periodics.mjs). The periodics launch first, oldest due first,
- * then the ready tickets, then the ended waits' spec sessions. Once every
+ * then the ready tickets, then the ended waits' spec sessions. An ended
+ * wait whose ticket names its owner asks that session in the spec
+ * session's place, with the spec session as the fallback. Once every
  * launch has run, the plan's `done` records each repo's sweep and writes
  * pickup's heartbeat line.
  */
@@ -16,12 +18,98 @@
 import { DEFAULT_MODEL, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
-import { WAIT_RELATIVE, endedWaits, repairRelative, reportUnreadable, waitLinks, waitSpecPrompt } from './waits.mjs';
+import { WAIT_RELATIVE, endedWaits, repairRelative, reportUnreadable, waitLinks, waitOwnerMessage, waitSpecPrompt } from './waits.mjs';
+import { GITHUB_SOURCE } from './deliveries.mjs';
+import { ownerOutcome } from './unblocked.mjs';
 import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
+import { dispatchMarker } from './webhook/fire.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
+
+/** A fallback outcome that started the spec session, or handed the message on. */
+const WENT = new Set(['dispatched', 'unconfirmed', 'forwarded']);
+
+/** A fallback outcome that was a launch. */
+const LAUNCHED = new Set(['dispatched', 'unconfirmed', 'failed']);
+
+/**
+ * An ended wait's spec work, as a planned launch: its spec session, or,
+ * where its ticket's body names its owner, a message asking that session to
+ * rewrite its own spec, with the spec session as the fallback where
+ * `withFallback`. The message runs in the launch loop, so the launch window
+ * and a repo skip hold it as they hold a launch (dispatch/launch-plan.mjs).
+ *
+ * The item goes once the spec session started, the owner took the message,
+ * or the message was forwarded. An owner that took it gets a dispatch marker
+ * naming it, as a spec session's launch leaves one, so the claimed row finds
+ * the session that builds and the sweep stays off the ticket. A send that
+ * failed, not refused, keeps the item and fails the turn through `unread`;
+ * a refusal with no fallback, or a fallback that started nothing, keeps
+ * the item for the next fire.
+ *
+ * @param {import('./turn.mjs').TurnContext} ctx
+ * @param {{ repo: string, config: import('./repo-config.mjs').RepoConfig, wait: import('./waits.mjs').WaitSpec, withFallback: boolean, unread: Array<{ repo: string, error: string }> }} args
+ * @returns {import('./turn.mjs').PlannedLaunch}
+ */
+const waitLaunch = (ctx, { repo, config, wait, withFallback, unread }) => {
+  const { issue, title, until, read, owner } = wait;
+  const asked = { prompt: waitSpecPrompt({ issue, title, until, labels: config.labels, prompts: config.prompts }), sessionName: ticketSessionName(issue, title), model: DEFAULT_MODEL };
+  /** Delete the item over the date the turn read. @param {Record<string, unknown>} context */
+  const drop = async (context) => {
+    const dropped = await ctx.state.dropWait(repo, issue, read);
+    ctx.log('dispatch-wait', { repo, issue, read, ...context, item: dropped ? 'dropped' : 'not dropped: it changed since it was read' });
+  };
+  if (owner === null) {
+    return {
+      repo,
+      issue,
+      claim: false,
+      holdsRepo: true,
+      asked,
+      // An ended wait's item goes once its spec session started or may
+      // have: a failed launch leaves it, so the next fire tries again.
+      started: async ({ outcome }) => {
+        if (outcome === 'failed') return;
+        try {
+          await drop({ outcome: 'spec session started' });
+        } catch (error) {
+          ctx.log('dispatch-wait-unhandled', { level: 'error', repo, issue, read, error: messageOf(error), reason: 'its spec session started and its item stays: the next fire finds the session\'s dispatch marker and deletes it' });
+          unread.push({ repo, error: `wait #${issue}: ${messageOf(error)}` });
+        }
+      },
+    };
+  }
+  return {
+    repo,
+    issue,
+    claim: false,
+    holdsRepo: true,
+    asked,
+    ask: async () => {
+      /** @type {import('./deliveries.mjs').Delivery | null} */
+      let told = null;
+      try {
+        const fallback = withFallback ? { prompt: asked.prompt, sessionName: asked.sessionName, issue } : undefined;
+        told = await ctx.delivery(repo).deliver({ session: owner }, waitOwnerMessage({ issue, until, labels: config.labels, prompts: config.prompts }), { source: GITHUB_SOURCE, on: [issue], fallback });
+        const outcome = ownerOutcome(told, 'the spec session is past DispatchCap: left for the next fire');
+        if (told.ok) await (await ctx.readerFor(repo)).comment(issue, dispatchMarker({ at: new Date(ctx.now()).toISOString(), sessionUrl: owner }));
+        if (told.ok || (told.fallback !== null && WENT.has(told.fallback.outcome))) {
+          await drop({ owner, outcome });
+        } else {
+          ctx.log('dispatch-wait', { repo, issue, read, owner, outcome, item: 'kept for the next fire' });
+          if (!told.refused) unread.push({ repo, error: `wait #${issue}: ${outcome}${told.error === null ? '' : `: ${told.error}`}` });
+        }
+      } catch (error) {
+        ctx.log('dispatch-wait-unhandled', { level: 'error', repo, issue, read, owner, error: messageOf(error), reason: 'its owner could not be asked, marked or its item deleted, so the next fire tries again' });
+        unread.push({ repo, error: `wait #${issue}: ${messageOf(error)}` });
+      }
+      const fell = told?.fallback ?? null;
+      return fell !== null && LAUNCHED.has(fell.outcome) ? { outcome: /** @type {import('./deliveries.mjs').LaunchOutcome} */ (fell.outcome), sessionUrl: fell.sessionUrl } : null;
+    },
+  };
+};
 
 /**
  * A schedule fire's plan. The bare fire's due periodics go ahead of the
@@ -221,33 +309,26 @@ export const planSweep = async (invocation, ctx) => {
     // after the tickets, unclaimed, as a
     // blocker's close starts one. At most DispatchCap of them start a fire,
     // apart from pickup's; one past it keeps its item for the next fire.
+    // A ticket whose body names its owner asks that session to rewrite
+    // its own spec, with the spec session as the fallback should it refuse
+    // as archived. That fallback counts against DispatchCap as the launch
+    // it replaces does: past the cap the owner is still asked, and a
+    // refusal leaves the item for the next fire.
     let room = ctx.cap;
     for (const { repo, config, ended } of endedByRepo) {
-      const taken = ended.specs.slice(0, Math.max(0, room));
-      room -= taken.length;
-      if (taken.length < ended.specs.length) ctx.log('dispatch-wait', { repo, outcome: 'spec sessions past DispatchCap left for the next fire', left: ended.specs.slice(taken.length).map((w) => w.issue) });
-      for (const { issue, title, until, read } of taken) {
-        waitSpecs.add(`${repo}#${issue}`);
-        launches.push({
-          repo,
-          issue,
-          claim: false,
-          holdsRepo: true,
-          asked: { prompt: waitSpecPrompt({ issue, title, until, labels: config.labels, prompts: config.prompts }), sessionName: ticketSessionName(issue, title), model: DEFAULT_MODEL },
-          // An ended wait's item goes once its spec session started or may
-          // have: a failed launch leaves it, so the next fire tries again.
-          started: async ({ outcome }) => {
-            if (outcome === 'failed') return;
-            try {
-              const dropped = await ctx.state.dropWait(repo, issue, read);
-              ctx.log('dispatch-wait', { repo, issue, read, outcome: 'spec session started', item: dropped ? 'dropped' : 'not dropped: it changed since it was read' });
-            } catch (error) {
-              ctx.log('dispatch-wait-unhandled', { level: 'error', repo, issue, read, error: messageOf(error), reason: 'its spec session started and its item stays: the next fire finds the session\'s dispatch marker and deletes it' });
-              waitsUnread.push({ repo, error: `wait #${issue}: ${messageOf(error)}` });
-            }
-          },
-        });
+      /** @type {number[]} */
+      const left = [];
+      for (const wait of ended.specs) {
+        const withFallback = room > 0;
+        if (!withFallback && wait.owner === null) {
+          left.push(wait.issue);
+          continue;
+        }
+        if (withFallback) room -= 1;
+        waitSpecs.add(`${repo}#${wait.issue}`);
+        launches.push(waitLaunch(ctx, { repo, config, wait, withFallback, unread: waitsUnread }));
       }
+      if (left.length > 0) ctx.log('dispatch-wait', { repo, outcome: 'spec sessions past DispatchCap left for the next fire', left });
     }
   }
 

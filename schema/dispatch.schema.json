@@ -91,7 +91,7 @@
           "type": "boolean"
         },
         "unblocked": {
-          "description": "What a blocker's close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket's session, and a session to rewrite a not-ready ticket's spec from what merged. A file that still sets the older `mergeHandoff` reads as this.",
+          "description": "What a blocker's close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket's session, and the spec work on a not-ready ticket. The session whose link ends the ticket's body owns it and is asked to rewrite its own spec; a fresh session rewrites it only where the body names no session or that session is archived, so nobody takes a ticket from its owner. A file that still sets the older `mergeHandoff` reads as this.",
           "type": "boolean"
         },
         "ciMessages": {
@@ -131,7 +131,7 @@
           "type": "boolean"
         },
         "waits": {
-          "description": "When a ticket's `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and a session to rewrite its spec if `unblocked` is on. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.",
+          "description": "When a ticket's `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker's close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.",
           "type": "boolean"
         },
         "signOff": {
@@ -242,6 +242,29 @@
           ],
           "description": "Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its blocker's close. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
+        "unblockedOwnerSpec": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "description": "Replaces the default wording of the ask to a not-ready ticket's owner, the session its body names, below the facts of its blocker's close. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { \"file\": \"<path>\" }."
+        },
         "waitEndedSpec": {
           "anyOf": [
             {
@@ -264,6 +287,29 @@
             }
           ],
           "description": "Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { \"file\": \"<path>\" }."
+        },
+        "waitEndedOwnerSpec": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "description": "Replaces the default wording of the ask to a not-ready ticket's owner, the session its body names, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
         "unblockedClaimed": {
           "anyOf": [
