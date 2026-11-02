@@ -4,8 +4,9 @@
  *
  * - the dispatcher image carries no repo's checklist or lists: no `.claude/`
  *   path;
- * - the review's modules, and every module they load, start no process, and the one process a review
- *   turn starts is the CLI's model run, with no tools;
+ * - the review's modules, and every module they load by relative import,
+ *   start no process, and the one process a review turn starts is the
+ *   CLI's model run, with no tools;
  * - the factory's file holds its checklist and lists, and its checklist
  *   names the file as the list, the shape the review tests read.
  *
@@ -54,19 +55,20 @@ describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)',
     assert.ok(!read('.dockerignore').split('\n').some((l) => l.trim().startsWith('!.claude')), 'the build context lets nothing out of .claude');
   });
 
-  test('the check follows a re-export and a module the entry loads', () => {
+  test('the check follows a re-export, import(), a side-effect import and a module the entry loads', () => {
     const root = mkdtempSync(join(tmpdir(), 'governor-review-imports-'));
     try {
       const files = {
         'entry.mjs': "export { spawn } from 'node:child_process';\nimport { x } from './lib/inner.mjs';\nexport const y = x;\n",
         'lib/inner.mjs': "import vm from 'node:vm';\nexport * from './deeper.mjs';\nexport const x = vm;\n",
-        'lib/deeper.mjs': "export * from 'worker_threads';\n",
+        'lib/deeper.mjs': "export * from 'worker_threads';\nimport 'child_process';\nexport const later = () => import('./latest.mjs');\n",
+        'lib/latest.mjs': "export const run = () => import('node:vm');\n",
       };
       for (const [path, text] of Object.entries(files)) {
         mkdirSync(dirname(join(root, path)), { recursive: true });
         writeFileSync(join(root, path), text);
       }
-      assert.deepEqual(codeRunners(root, 'entry.mjs').sort(), ['entry.mjs imports node:child_process', 'lib/deeper.mjs imports worker_threads', 'lib/inner.mjs imports node:vm']);
+      assert.deepEqual(codeRunners(root, 'entry.mjs').sort(), ['entry.mjs imports node:child_process', 'lib/deeper.mjs imports child_process', 'lib/deeper.mjs imports worker_threads', 'lib/inner.mjs imports node:vm', 'lib/latest.mjs imports node:vm']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
