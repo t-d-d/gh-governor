@@ -167,6 +167,17 @@ describe('at the close', () => {
     }
   });
 
+  test('on a ticket the line does not hold, the comment does not say the line holds it', async () => {
+    const f = fakeReader();
+    await relativeAtClose({ reader: f.reader, repo: REPO, ticket: ticketOf(f.state.body), fire: { ...fire, blocker: { ...blocker, reason: 'not_planned' } }, prompts: {}, now: NOW, log: logs().log, holds: false });
+    assert.equal(f.comments.length, 1);
+    const said = f.comments[0]!.body;
+    assert.ok(said.includes(waitNotPlannedMarker('#143')), said);
+    assert.match(said, /Its work will not land as planned/);
+    assert.doesNotMatch(said, /held|free/);
+    assert.match(said, /Blocked until: YYYY-MM-DD[\s\S]*delete/);
+  });
+
   test('a second not-completed close finds the marker and says nothing', async () => {
     const f = fakeReader({ thread: [{ body: `Earlier.\n${waitNotPlannedMarker('#143')}` }] });
     const done = await relativeAtClose({ reader: f.reader, repo: REPO, ticket: ticketOf(f.state.body), fire: { ...fire, blocker: { ...blocker, reason: 'not_planned' } }, prompts: {}, now: NOW, log: logs().log });

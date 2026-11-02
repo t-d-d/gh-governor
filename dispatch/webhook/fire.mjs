@@ -325,10 +325,9 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  *   `periodics` fire always carries one.
  *
  * @typedef {{ workflowId: number, runId: number, branch: string }} ScheduledRun A scheduled run on the default branch, `branch`, gone red, and its workflow.
- * @typedef {{ prompt: string, sessionName?: string, issue?: number, branch?: string }} Fallback
+ * @typedef {{ prompt: string, sessionName?: string, issue?: number }} Fallback
  *   `issue`: the PR the remark is on, where the turn leaves the dispatch marker and reads it back.
- *   `branch`: the PR's head branch, which the fresh session starts on and pushes to, so it opens no second branch or PR.
- *   Set in process only (dispatch/conflicts.mjs): no lane message carries one, so {@link parseFallback} reads none.
+ *   A takeover's fresh session starts on that PR's head branch, which the delivery reads from the PR (dispatch/deliveries.mjs).
  *
  * @typedef {{ fire: Fire, reason: string, delivery?: string, github?: string, attempt?: number, retryOf?: string }} FireMessage
  *   One lane message: the fire, and why and for which delivery it was queued.

@@ -28,7 +28,7 @@ import { appliesStack, runsCommand, runsScript, usesAction, withId } from './hel
 import { importClosure, relativeImports } from './helpers/imports.ts';
 import { OUTPUT_KEYS, START_BUDGET_MS } from '../scripts/run-turn.mjs';
 import { DEADLINE_MS } from '../dispatch/cli.mjs';
-import { SESSION_UNRECORDED, STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
+import { SESSION_LATE, SESSION_UNRECORDED, STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
 import { MAX_START_ATTEMPTS } from '../dispatch/webhook/starter.mjs';
 import { HOOK_EVENTS } from '../dispatch/webhook/route.mjs';
 import { HOOK_KEY_STALE } from '../dispatch/webhook/hook-table.mjs';
@@ -472,6 +472,7 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
     assert.ok((alarm?.Properties?.AlarmDescription ?? '').includes(SESSION_UNRECORDED), 'the page names the line to read');
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /names no session.*sessions list.*session name/, 'the page covers a launch that printed no session');
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', new RegExp(`names no session.*${SESSION_LATE}`), 'a page with no session URL points to the late-session line, which names it');
     assert.equal(alarm?.Properties?.Threshold, 1);
     assert.equal(alarm?.Properties?.TreatMissingData, 'notBreaching');
     assert.deepEqual(alarm?.Properties?.AlarmActions, template.Resources.DispatchErrorsAlarm?.Properties?.AlarmActions, 'the same action as the errors alarm');

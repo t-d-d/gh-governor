@@ -34,6 +34,7 @@ import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
 import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitNotPlannedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
 import { waitOf } from '../scripts/lib/ready-work.mjs';
+import { UNREADIED_MARKER } from '../dispatch/unblocked.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
 import { ROUTINE_ANSWER, RoutinesApiError } from '../dispatch/routines.mjs';
 
@@ -2155,6 +2156,19 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       assert.deepEqual([...stale.waitItems], []);
     });
 
+    test('a ticket governor unreadied on a not-planned close, with no answer since, gets the comment and no spec session, and its item goes', async () => {
+      const held = { id: 1, body: `Its work will not land as planned.\n\n${UNREADIED_MARKER}`, created_at: '2026-09-20T10:00:00Z', ours: true };
+      const h = waitsTurn({ thread: [held] });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(specOf(h), []);
+      assert.equal(endedComments(h).length, 1, 'the wait-ended comment still says the date has passed');
+      assert.deepEqual([...h.waitItems], []);
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-wait' && l.issue === 7 && /not-planned close/.test(String(l.spec))), JSON.stringify(h.logged.filter((l) => l.event === 'dispatch-wait')));
+      const answered = waitsTurn({ thread: [held, { id: 2, body: 'Still stands.', created_at: '2026-09-21T10:00:00Z', ours: false }] });
+      await run({ source: 'aws.events' }, answered.deps as never);
+      assert.equal(specOf(answered).length, 1, 'a person\'s answer lifts the hold');
+    });
+
     test('spec sessions count against DispatchCap: those past it keep their items for the next fire', async () => {
       const base = harness();
       const h = harness({
@@ -3375,6 +3389,20 @@ describe('run — a message with a fallback', () => {
     assert.equal(exitCodeFor(result as never), 0);
   });
 
+  // A remark's fallback takes the PR over, so its session starts on the PR's
+  // head branch and pushes there: from the default branch it would be given
+  // a new branch and open a second PR beside the first.
+  test('a refused remark on a PR launches its fallback on the PR\'s head branch', async () => {
+    const base = harness();
+    const { deps, launches } = harness({
+      message: async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }),
+      reader: () => ({ ...base.deps.reader(''), pull: async (n: number) => ({ number: n, body: PR_BODY, head: 'claude/branch-724', open: true }) }),
+    });
+    await run({ kind: 'message', session: 'https://claude.ai/code/session_01OLD', text: 'hi', fallback: { ...fallback, issue: 724 } }, deps as never);
+    assert.equal(launches.length, 1);
+    assert.equal(launches[0]!.branch, 'claude/branch-724', 'the session starts on the PR\'s head branch, so it opens no new branch or PR');
+  });
+
   test('a send failing for any reason but an archived session starts no fallback: the owner may be live', async () => {
     const { deps, launches, comments } = harness({ message: async () => ({ status: 1, output: JSON.stringify({ ok: false, session_id: 'session_01OLD', error: 'Unable to get organization UUID' }) }) });
     const result = await run({ kind: 'message', session: 'session_01OLD', text: fallback.prompt, fallback: { ...fallback, issue: 724 } }, deps as never);
@@ -4294,7 +4322,7 @@ describe('run — a merge to main leaves PRs conflicted', () => {
         count[n] = (count[n] ?? 0) + 1;
         return row(n, seq[i] ?? null, rows[n]);
       },
-      pull: async (n: number) => ({ number: n, body: String(rows[n]?.body ?? BODY), head: `claude/branch-${n}`, open: true }),
+      pull: async (n: number) => ({ number: n, body: String(rows[n]?.body ?? BODY), head: pulls.find((p) => p.number === n)?.head ?? `claude/branch-${n}`, open: true }),
       updatePull: async () => {},
       comment: async (n: number, text: string) => { comments.push({ issue: n, body: text }); },
       updateComment: async () => { throw new Error('the check edits no comment'); },
@@ -7307,7 +7335,7 @@ describe('run: a relative wait on a declared blocker', () => {
   const UNTIL = new Date(Date.parse(CLOSED_AT) + 4 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const blocker = { repo: REPO, number: 41, title: 'The parser', reason: 'completed', closedAt: CLOSED_AT };
   const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, ...over });
-  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>> } = {}) => {
+  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>>, thread = [] as Array<{ body: string }> } = {}) => {
     const asked: string[] = [];
     const file = JSON.parse(FACTORY_FILE);
     file.features = { ...file.features, ...features };
@@ -7325,7 +7353,8 @@ describe('run: a relative wait on a declared blocker', () => {
         issue: async (n: number) => ({ number: n, body: state.body, pull: false }),
         updateIssue: async (n: number, { body: next }: { body: string }) => { h.issueEdits.push({ issue: n, body: next }); state.body = next; },
         issueClose: async (n: number) => ({ id: 9000 + n, number: n, title: `Issue ${n}`, state: 'open', reason: null, closedAt: null, ...issues[n] }),
-        allComments: async () => [],
+        allComments: async () => thread,
+        comments: async () => thread,
         comment: async (n: number, text: string) => { h.comments.push({ issue: n, body: text }); },
         addLabels: async (n: number, on: string[]) => { h.calls.push(`label #${n} +${on.join(', ')}`); },
         removeLabel: async (n: number, label: string) => { h.calls.push(`label #${n} -${label}`); },
@@ -7351,6 +7380,50 @@ describe('run: a relative wait on a declared blocker', () => {
     assert.deepEqual(h.calls.filter((c) => c.startsWith('label ')), []);
     assert.deepEqual([h.launches, h.messages], [[], []]);
     assert.notEqual(result.row, 'not-planned');
+  });
+
+  // The line holds only a ticket ready or not ready by its labels. A claimed
+  // or excluded ticket takes its own row after the line's one comment, and
+  // that comment stands in for the not-planned row's.
+  const CLAIM = 'workflow: under development';
+  const SESSION = 'https://claude.ai/code/session_01WORK';
+  const MARKER = dispatchMarker({ at: new Date(NOW - 3 * 24 * 60 * 60 * 1000).toISOString(), sessionUrl: SESSION });
+
+  test('claimed, and a close that is not completed: one comment, and its session hears the close', async () => {
+    for (const [reason, row] of [['not_planned', 'not-planned'], ['duplicate', 'claimed']] as const) {
+      const h = relativeTurn({ labels: [CLAIM], thread: [{ body: MARKER }] });
+      const result = await run(fire({ blocker: { ...blocker, reason } }), h.deps as never) as Record<string, unknown>;
+      assert.deepEqual(h.issueEdits, [], reason);
+      assert.equal(result.row, row, reason);
+      assert.equal(h.comments.length, 1, `${reason}: ${JSON.stringify(h.comments)}`);
+      assert.ok(h.comments[0]!.body.includes(waitNotPlannedMarker('#41')), reason);
+      assert.equal(result.commented, true, reason);
+      assert.doesNotMatch(h.comments[0]!.body, /stays held/, reason);
+      assert.deepEqual(h.messages.map((m) => m.session), [SESSION], reason);
+      assert.match(h.messages[0]!.text, new RegExp(`closed as ${reason.replace(/_/g, ' ')}`), reason);
+      assert.deepEqual([h.launches, h.calls.filter((c) => c.startsWith('label '))], [[], []], reason);
+    }
+  });
+
+  test('claimed, and a retried not-planned close: no second comment, and its session hears the close', async () => {
+    const h = relativeTurn({ labels: [CLAIM], thread: [{ body: MARKER }, { body: `Earlier.\n${waitNotPlannedMarker('#41')}` }] });
+    const result = await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never) as Record<string, unknown>;
+    assert.equal(result.row, 'not-planned');
+    assert.equal(result.commented, false);
+    assert.deepEqual(h.comments, []);
+    assert.deepEqual(h.messages.map((m) => m.session), [SESSION]);
+  });
+
+  test('excluded, and a close that is not completed: the line\'s one comment, and the ticket takes its own row', async () => {
+    for (const [reason, row] of [['duplicate', 'excluded'], ['not_planned', 'not-planned']] as const) {
+      const h = relativeTurn({ labels: [...READY, 'type: prd'] });
+      const result = await run(fire({ blocker: { ...blocker, reason } }), h.deps as never) as Record<string, unknown>;
+      assert.equal(result.row, row, reason);
+      assert.equal(h.comments.length, 1, `${reason}: ${JSON.stringify(h.comments)}`);
+      assert.ok(h.comments[0]!.body.includes(waitNotPlannedMarker('#41')), reason);
+      assert.equal(result.commented, row === 'not-planned' ? true : undefined, reason);
+      assert.deepEqual([h.launches, h.messages, h.calls.filter((c) => c.startsWith('label '))], [[], [], []], reason);
+    }
   });
 
   test('with neither pickup nor unblocked on, the line is still rewritten, and the fire then refused', async () => {

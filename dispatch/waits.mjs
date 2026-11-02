@@ -18,7 +18,9 @@
  * ({@link endedWaits}). A ticket whose date has passed and that is not
  * ready gets one comment, under a marker naming the date
  * ({@link waitEndedMarker}), and, with `unblocked` on, a spec session on the
- * repo's `waitEndedSpec` prompt. Every session governor starts in such a
+ * repo's `waitEndedSpec` prompt, unless the thread shows a dispatch inside
+ * the window, or governor's not-planned close still holds the ticket
+ * ({@link heldUnreadied}). Every session governor starts in such a
  * repo is told how to make a ticket wait ({@link WAIT_PROMPT}).
  *
  * A lost `opened`, `reopened` or `edited` delivery leaves its ticket out of the items,
@@ -40,7 +42,7 @@
  */
 
 import { recentlyDispatched, waitLine } from './webhook/fire.mjs';
-import { sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
+import { UNREADIED_HELD, heldUnreadied, sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
 import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
 import { RELATIVE_WAIT, isBlocked, isWaiting, labelRow, waitHolds, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
@@ -178,7 +180,7 @@ export const waitSpecPrompt = ({ issue, title, until, labels, prompts }) => spec
  * @typedef {{
  *   ticket: (n: number) => Promise<{ number: number, id?: number, title: string, state: string, labels: string[], pull?: boolean, openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
  *   blockers: (n: number) => Promise<Array<{ state: string, id?: number }>>,
- *   allComments: (n: number) => Promise<Array<{ body: string }>>,
+ *   allComments: (n: number) => Promise<Array<{ body: string, created_at?: string, ours: boolean }>>,
  *   comment: (n: number, body: string) => Promise<void>,
  * }} WaitReader
  *
@@ -459,9 +461,11 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  * - a date that has passed, on a ticket not ready: one comment, unless its
  *   thread carries the marker for that date, and, with `spec`, the ticket
  *   back as a {@link WaitSpec} unless a dispatch inside the window is on its
- *   thread. Its item stays until the turn has started the session, so a
- *   launch that fails, or one the turn has no room for, is tried at the next
- *   fire, and the marker keeps it to one comment. Otherwise the item goes.
+ *   thread, or governor's not-planned close still holds it
+ *   ({@link heldUnreadied}). Its item stays until the turn has started the
+ *   session, so a launch that fails, or one the turn has no room for, is
+ *   tried at the next fire, and the marker keeps it to one comment.
+ *   Otherwise the item goes.
  *
  * A ticket that cannot be read, or whose comment fails, keeps its item for
  * the next fire, and is logged and returned in `unread`. An items read that
@@ -542,12 +546,15 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       const marker = waitEndedMarker(wait.until);
       const told = thread.some((c) => String(c.body ?? '').includes(marker));
       if (!told) await reader.comment(issue, waitEndedComment(wait.until));
-      if (spec && !recentlyDispatched(thread, now)) {
+      // A ticket governor unreadied on a not-planned close waits for a
+      // person's answer first, as a later blocker's close does.
+      const held = heldUnreadied(thread);
+      if (spec && !held && !recentlyDispatched(thread, now)) {
         specs.push({ issue, title: ticket.title, until: wait.until, read: item.until });
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: told ? 'ended: already told, starting a spec session' : 'ended: commented, starting a spec session' });
         continue;
       }
-      await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: 'dispatched inside the window' } : {}) });
+      await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: held ? `held: ${UNREADIED_HELD}` : 'dispatched inside the window' } : {}) });
     } catch (error) {
       const message = messageOf(error);
       log(WAIT_UNHANDLED, { level: 'error', repo, issue, read: item.until, error: message, reason: 'its item stays, so the next fire tries again' });
@@ -671,17 +678,21 @@ const refOf = (repo, closed) => (sameRepo(repo, closed.repo) ? `#${closed.number
 
 /**
  * The comment a ticket gets when the issue its line waits on closed other
- * than as completed: the close's facts, the not-planned ask, and how to free
- * the ticket, which the line still holds.
+ * than as completed: the close's facts, the not-planned ask, and what to do
+ * with the line. Where the line holds the ticket (`holds`), how to free it;
+ * a claimed or excluded ticket is not held, so it is told only that the
+ * line waits on a close that will not settle it.
  *
- * @param {{ facts: string, issue: number, ref: string, prompts: Record<string, string | undefined> }} args
+ * @param {{ facts: string, issue: number, ref: string, prompts: Record<string, string | undefined>, holds?: boolean }} args
  */
-export const waitNotPlannedComment = ({ facts, issue, ref, prompts }) => [
+export const waitNotPlannedComment = ({ facts, issue, ref, prompts, holds = true }) => [
   facts,
   '',
   instruction(prompts, 'unblockedNotPlanned'),
   '',
-  `#${issue} stays held by its \`Blocked until:\` line, which waits on ${ref} closing. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line, to free it.`,
+  holds
+    ? `#${issue} stays held by its \`Blocked until:\` line, which waits on ${ref} closing. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line, to free it.`
+    : `#${issue}'s \`Blocked until:\` line waits on ${ref} closing, and this close does not give it a date. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line.`,
   '',
   waitNotPlannedMarker(ref),
 ].join('\n');
@@ -703,16 +714,17 @@ export const waitRelativeComment = (ref) => [
  * GitHub gave no reason for, rewrites the line into its date, from the body
  * read just before the write, so a person's edit elsewhere stays. A body
  * whose line no longer waits on `closed` is left alone. Any other close
- * leaves the line and comments once.
+ * leaves the line and comments once, saying it holds the ticket where it
+ * does (`holds`, true where unset).
  *
- * @param {{ reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>, repo: string, issue: number, closed: { repo: string, number: number, reason?: string | null, closedAt: string }, facts: string, prompts: Record<string, string | undefined>, log: Log }} args
+ * @param {{ reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>, repo: string, issue: number, closed: { repo: string, number: number, reason?: string | null, closedAt: string }, facts: string, prompts: Record<string, string | undefined>, log: Log, holds?: boolean }} args
  * @returns {Promise<{ outcome: string, wait?: { until: string } }>}
  */
-const settle = async ({ reader, repo, issue, closed, facts, prompts, log }) => {
+const settle = async ({ reader, repo, issue, closed, facts, prompts, log, holds = true }) => {
   const ref = refOf(repo, closed);
   const about = { repo, issue, closed: ref, reason: closed.reason ?? null };
   if (closed.reason !== undefined && closed.reason !== null && closed.reason !== 'completed') {
-    const outcome = await sayOnce(reader, issue, waitNotPlannedMarker(ref), waitNotPlannedComment({ facts, issue, ref, prompts }));
+    const outcome = await sayOnce(reader, issue, waitNotPlannedMarker(ref), waitNotPlannedComment({ facts, issue, ref, prompts, holds }));
     log(WAIT_RELATIVE, { ...about, outcome: outcome === 'commented' ? 'held: commented on a close that was not completed' : 'held: already told of a close that was not completed' });
     return { outcome };
   }
@@ -736,6 +748,8 @@ const settle = async ({ reader, repo, issue, closed, facts, prompts, log }) => {
  * the close time the fire carries, or from `now` for a fire without one, so
  * the wait is never shorter. Null where the line is not this close's, or
  * the ticket's read names another number: it moved to another repo.
+ * `holds`: whether the line holds the ticket by its labels (`waitHolds`),
+ * true where unset.
  *
  * @param {{
  *   reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>,
@@ -745,14 +759,15 @@ const settle = async ({ reader, repo, issue, closed, facts, prompts, log }) => {
  *   prompts: Record<string, string | undefined>,
  *   now: number,
  *   log: Log,
+ *   holds?: boolean,
  * }} args
  * @returns {Promise<{ outcome: string, wait?: { until: string } } | null>}
  */
-export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now, log }) => {
+export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now, log, holds = true }) => {
   if (ticket.state !== 'open' || (ticket.number !== undefined && ticket.number !== fire.issue) || !waitsOnClose(ticket.wait, repo, fire.blocker)) return null;
   const { blocker } = fire;
   const closed = { repo: blocker.repo, number: blocker.number, reason: blocker.reason ?? null, closedAt: blocker.closedAt ?? new Date(now).toISOString() };
-  return settle({ reader, repo, issue: fire.issue, closed, facts: unblockedFacts({ ...fire, repo }, { quote: true }), prompts, log });
+  return settle({ reader, repo, issue: fire.issue, closed, facts: unblockedFacts({ ...fire, repo }, { quote: true }), prompts, log, holds });
 };
 
 /**
