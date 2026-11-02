@@ -32,8 +32,12 @@ const source = (path: string) => parseJs(path, read(path));
 
 const ROOT = join(import.meta.dirname, '..');
 
-/** What would run code: a process, a VM, an evaluated string, a fork, a require that loads child_process, an inspector that evaluates. A subpath such as `inspector/promises` is the same module. */
-const RUNS_CODE = /^(node:)?(child_process|vm|worker_threads|cluster|module|inspector)(\/.*)?$/;
+/**
+ * What would run code: a process, a VM, an evaluated string, a fork, a require that loads child_process, an inspector that evaluates,
+ * a REPL that evaluates, a test runner that starts processes, a WebAssembly program. A subpath such as `inspector/promises` is the
+ * same module. `test` is a builtin only as `node:test`: a bare `test` is a package name.
+ */
+const RUNS_CODE = /^((node:)?(child_process|vm|worker_threads|cluster|module|inspector|repl|wasi)|node:test)(\/.*)?$/;
 
 /**
  * Each `path imports spec` that runs code, in every module the entries load
@@ -82,6 +86,21 @@ describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)',
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test('the check refuses repl, test and wasi: each evaluates a string, starts a process or runs a program', () => {
+    const root = mkdtempSync(join(tmpdir(), 'governor-review-builtins-'));
+    try {
+      writeFileSync(join(root, 'entry.mjs'), "import repl from 'node:repl';\nimport { run } from 'node:test';\nexport { spec } from 'node:test/reporters';\nexport { WASI } from 'wasi';\nexport const later = () => import('repl');\nexport const x = [repl, run];\n");
+      assert.deepEqual(codeRunners(root, 'entry.mjs').sort(), ['entry.mjs imports node:repl', 'entry.mjs imports node:test', 'entry.mjs imports node:test/reporters', 'entry.mjs imports repl', 'entry.mjs imports wasi']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a package named test is not node:test: only the prefixed name is the builtin', () => {
+    assert.ok(!RUNS_CODE.test('test'));
+    assert.ok(!RUNS_CODE.test('test/lib'));
   });
 
   test('the review\'s modules, and every module they load, import nothing that runs code', () => {
