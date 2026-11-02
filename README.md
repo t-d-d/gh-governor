@@ -18,7 +18,7 @@ Governor is [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/
 
 **Before that.** For eight years Thomas led Standard Chartered Bank's delivery platform: CI/CD and release engineering for more than 800 applications, run by a team of up to 16 engineers across Singapore, the UK and India. Manual release gates became automated checks, designed with the security and risk teams, and teams' lead time to production fell from months to weeks, and in places to days. Governor applies the same idea to agents: specification first, quality built into the pipeline as automated checks, and a person's approval only where no check can replace it.
 
-Thomas designed governor and the rules its agents work under, writes the specs and tickets, and merges every pull request in this repo. Claude Code sessions write the code. [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/) · [GitHub](https://github.com/t-d-d)
+Thomas designed governor and the rules its agents work under, takes a large hand in every PRD and approves it, and merges every pull request in this repo. Claude Code sessions write the code. [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/) · [GitHub](https://github.com/t-d-d)
 
 ## It builds itself
 

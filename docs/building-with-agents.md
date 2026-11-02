@@ -1,6 +1,6 @@
 # How this repo is built
 
-Governor is built the way it builds any repo it serves. The owner writes the tickets. Claude Code sessions that governor starts write the code, the tests and the pull requests. The owner reviews and merges. This page describes that loop, and the files in this repo that keep it on track, for anyone who wants to run a repo the same way.
+Governor is built the way it builds any repo it serves. The owner shapes and approves each feature's spec. Claude Code sessions that governor starts write the code, the tests and the pull requests. The owner reviews and merges. This page describes that loop, and the files in this repo that keep it on track, for anyone who wants to run a repo the same way.
 
 ## The numbers
 
@@ -21,7 +21,7 @@ A person still reviews and merges every pull request here. Governor does not rev
 
 ## The loop
 
-1. **A PRD.** The owner writes a feature as an issue labelled `type: prd`: the problem, goals, non-goals, user journeys, acceptance criteria, the tickets that deliver it, and which constraint files change meaning. Non-goals bind: a session does not build one. [#185](https://github.com/t-d-d/gh-governor/issues/185), the PRD for `Blocked until:` waits, is a typical one.
+1. **A PRD.** Each feature starts as an issue labelled `type: prd`, which the owner takes a large hand in writing and approves: the problem, goals, non-goals, user journeys, acceptance criteria, the tickets that deliver it, and which constraint files change meaning. Non-goals bind: a session does not build one. [#185](https://github.com/t-d-d/gh-governor/issues/185), the PRD for `Blocked until:` waits, is a typical one.
 2. **A ticket.** Each ticket is an issue with its own acceptance criteria. Labelling it `mode: afk` hands it to governor. A ticket labelled `mode: human` is the owner's, such as a secret to set or an AWS setting to change.
 3. **Pickup.** Governor claims the ticket, starts a Claude Code cloud session on it, and comments the session's link on the ticket.
 4. **Context.** The session reads [CLAUDE.md](../CLAUDE.md), then runs the `fetch-ticket` skill: the ticket, its blockers, its PRD, the issues those cite, and the constraint files that bind the work. A ticket with an open blocker, or one that conflicts with a constraint, stops there with a comment.
