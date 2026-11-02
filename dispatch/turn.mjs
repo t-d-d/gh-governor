@@ -106,7 +106,7 @@ import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '..
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { isBlocked, isWaiting, labelRow, unreadableOf } from '../scripts/lib/ready-work.mjs';
-import { WAIT_PROMPT, endedWaits, holdWait, reportUnreadable, waitSpecPrompt } from './waits.mjs';
+import { WAIT_PROMPT, WAIT_RELATIVE, endedWaits, holdWait, relativeAtClose, repairRelative, reportUnreadable, waitSpecPrompt } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { RoutinesApiError, launchRoutine, observed, routineName } from './routines.mjs';
 import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
@@ -238,8 +238,8 @@ export const sessionUrlFrom = (output) => {
  *   found.
  * @typedef {import('../scripts/lib/dispatch-router.mjs').Reader & import('./workflow.mjs').WorkflowReader & {
  *   comment: (n: number, body: string) => Promise<void>,
- *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string }>>,
- *   closure: (n: number) => Promise<{ title: string, reason: string | null, pr: import('./webhook/fire.mjs').ClosingPull | null }>,
+ *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }>>,
+ *   closure: (n: number) => Promise<{ title: string, reason: string | null, pr: import('./webhook/fire.mjs').ClosingPull | null, closedAt?: string }>,
  *   ticket: (n: number) => Promise<import('../scripts/lib/github-app.mjs').TicketRow>,
  *   pull: (n: number) => Promise<{ number: number, body: string, head: string, open: boolean }>,
  *   updatePull: (n: number, change: { body: string }) => Promise<void>,
@@ -256,7 +256,7 @@ export const sessionUrlFrom = (output) => {
  *   mergedSince: (base: string, since: string) => Promise<import('./periodics.mjs').Counted[]>,
  *   issuesOpenedSince: (since: string) => Promise<import('./periodics.mjs').Counted[]>,
  *   issuesClosedSince: (since: string) => Promise<import('./periodics.mjs').Counted[]>,
- * } & import('./review.mjs').ReviewReader} Reader
+ * } & import('./review.mjs').ReviewReader & import('./waits.mjs').RelativeReader} Reader
  *
  * @typedef {{
  *   owners: readonly string[],
@@ -622,10 +622,11 @@ const turnOf = async (event, deps, records) => {
     served = [one];
     const name = switchOf(invocation, one.config.workflows);
     // An unblocked fire's switch is its ticket's state's (dispatch/unblocked.mjs):
-    // with both off, no row acts, and the ticket is not read.
-    const neither = invocation.kind === 'unblocked' && !turnsOn(one.config, 'pickup') && !turnsOn(one.config, 'unblocked');
-    if ((name !== null && !turnsOn(one.config, name)) || neither) {
-      refusal = name === null ? `${repo}'s ${CONFIG_PATH} turns neither pickup nor unblocked on` : `${repo}'s ${CONFIG_PATH} does not turn ${name} on`;
+    // with both off, no row acts. Its turn still reads the ticket once, for a
+    // relative `Blocked until:` line on the close, and refuses after
+    // (dispatch/waits.mjs).
+    if (name !== null && !turnsOn(one.config, name)) {
+      refusal = `${repo}'s ${CONFIG_PATH} does not turn ${name} on`;
       // A hook fired into a repo that turned hooks off is a caller someone
       // forgot: worth a look, not a page.
       deps.log('dispatch-refused', { level: invocation.kind === 'hook' ? 'warn' : 'info', repo, kind: invocation.kind, reason: refusal });
@@ -1573,7 +1574,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   if (invocation.kind === 'wait') {
     // A ticket opened or edited with a `Blocked until:` line: its wait item
     // put, rewritten or deleted to match (dispatch/waits.mjs).
-    const outcome = await holdWait({ reader: await getReader(), state: deps.state, repo: fireRepo(), issue: invocation.issue, labels: configOf(fireRepo()).labels, now: deps.now(), log: deps.log });
+    const outcome = await holdWait({ reader: await getReader(), state: deps.state, repo: fireRepo(), issue: invocation.issue, labels: configOf(fireRepo()).labels, prompts, now: deps.now(), log: deps.log });
     return { kind: invocation.kind, issue: invocation.issue, outcome };
   }
 
@@ -1591,10 +1592,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       deps.log('dispatch-unblocked', { repo: fireRepo(), closed: freed, queued: [], reason: `#${freed} blocked no open ticket in a listed owner's repo` });
       return { kind: invocation.kind, freed, queued: [], passedOver: [] };
     }
-    const { title, reason, pr } = await reader.closure(freed);
+    const { title, reason, pr, closedAt } = await reader.closure(freed);
     const config = configOf(fireRepo());
     const { queue, skipped } = closingFires({
-      closed: { repo: fireRepo(), number: freed, title, ...(reason === null ? {} : { reason }) },
+      closed: { repo: fireRepo(), number: freed, title, ...(reason === null ? {} : { reason }), ...(closedAt === undefined ? {} : { closedAt }) },
       pr,
       rows,
       owners: deps.owners,
@@ -1684,6 +1685,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const seen = [];
     /** @type {import('../scripts/lib/dispatch-router.mjs').Unreadable[]} */
     const unreadable = [];
+    /** @type {import('../scripts/lib/dispatch-router.mjs').Relative[]} */
+    const relative = [];
     // In the bare fire one repo's refusal leaves the others to go; a fire
     // naming its repo throws on its own.
     const planned = await planSchedule({
@@ -1692,13 +1695,24 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       now: deps.now(),
       unreadable,
       ...(only === undefined ? {} : { only, seen }),
-      ...(bare ? { unread, cut } : {}),
+      ...(bare ? { unread, cut, relative } : {}),
     });
     // A `Blocked until:` line governor cannot read holds its ticket, and is
     // said once on the ticket whatever the repo's switches say. Each report
     // catches its own failure, so they run side by side and keep the launch
     // window for the launches.
     await Promise.all(unreadable.map(async ({ repo, issue, value }) => reportUnreadable({ reader: await readerFor(repo), repo, issue, value, log: deps.log })));
+    // A relative line no open blocker holds, in a repo pickup sweeps: the
+    // sweep settles it, whatever the repo's other switches say, or says once
+    // that it cannot. A failure is logged and left for the next sweep: the
+    // ticket stays held.
+    await Promise.all(relative.map(async ({ repo, issue, after }) => {
+      try {
+        await repairRelative({ reader: await readerFor(repo), repo, issue, after, link: false, prompts: configOf(repo).prompts, now: deps.now(), log: deps.log });
+      } catch (error) {
+        deps.log(WAIT_RELATIVE, { level: 'error', repo, issue, after, error: messageOf(error), reason: 'the ticket stays held, and the next sweep tries again' });
+      }
+    }));
     if (only !== undefined && planned.length === 0) {
       const why = deps.cap === 0 ? { outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
       for (const { repo, issue, ...read } of seen) {
@@ -1794,7 +1808,31 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const { issue, blocker } = invocation;
     const config = configOf(fireRepo());
     const reader = await getReader();
-    const { ticket, blockers, reads } = await readUnblocked(reader, issue, deps.sleep);
+    // A relative `Blocked until:` line on this close is settled first,
+    // whatever the switches say: rewritten into its date, or, on a close
+    // that was not completed, left with one comment that replaces the
+    // not-planned row's (dispatch/waits.mjs).
+    const settleRelative = (/** @type {{ state: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }} */ read) =>
+      relativeAtClose({ reader, repo: fireRepo(), ticket: read, fire: invocation, prompts, now: deps.now(), log: deps.log });
+    if (!turnsOn(config, 'pickup') && !turnsOn(config, 'unblocked')) {
+      const settled = await settleRelative(await reader.ticket(issue));
+      const why = `${fireRepo()}'s ${CONFIG_PATH} turns neither pickup nor unblocked on`;
+      deps.log('dispatch-refused', { level: 'info', repo: fireRepo(), kind: invocation.kind, issue, reason: why, ...(settled === null ? {} : { relative: settled.outcome }) });
+      return { kind: invocation.kind, refusal: why, dispatched: [] };
+    }
+    const read = await readUnblocked(reader, issue, deps.sleep);
+    const { blockers, reads } = read;
+    let { ticket } = read;
+    const settled = await settleRelative(ticket);
+    // A line changed since the ticket's read is no longer this close's: the
+    // ticket is read again and takes its row as it now stands.
+    const changed = settled?.outcome === 'line changed';
+    if (changed) ticket = await reader.ticket(issue);
+    else if (settled?.wait !== undefined) ticket = { ...ticket, wait: settled.wait };
+    if (settled !== null && settled.wait === undefined && !changed) {
+      deps.log('dispatch-unblocked', { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row: 'blocked', reads, outcome: `held by its relative line: ${settled.outcome}` });
+      return { kind: invocation.kind, row: 'blocked', dispatched: [] };
+    }
     row = ticketRow({ ticket, blockers, fire: invocation, labels: config.labels, now: deps.now() });
     const about = { repo: fireRepo(), issue, blocker: `${blocker.repo}#${blocker.number}`, row, reads, ...(ticket.wait === undefined ? {} : { wait: ticket.wait }) };
     // An unreadable `Blocked until:` line holds the ticket, which reads as
@@ -1949,7 +1987,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const read = await github.ticket(issue);
       const { state, labels: on, wait } = read;
       if (state !== 'open' || labelRow(on, labels) !== 'ready' || isWaiting(read, deps.now())) {
-        const line = wait === undefined ? '' : `, Blocked until: ${'until' in wait ? wait.until : `${wait.unreadable} (unreadable)`}`;
+        const line = wait === undefined ? '' : `, Blocked until: ${'until' in wait ? wait.until : 'after' in wait ? `${wait.after.days} days after ${wait.after.repo ?? ''}#${wait.after.issue} closes` : `${wait.unreadable} (unreadable)`}`;
         deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}${line}` });
         // Said only on a ticket still ready by its labels: one claimed or
         // unreadied since is someone else's.

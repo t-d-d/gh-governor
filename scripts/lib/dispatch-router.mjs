@@ -41,6 +41,10 @@ import { byAge, isBlocked, labelRow, selectReadyWork, unreadableOf } from './rea
  * @typedef {{ repo: string, issue: number, value: string }} Unreadable
  *   A ticket held by a `Blocked until:` line whose value is no date.
  *
+ * @typedef {{ repo: string, issue: number, after: import('./ready-work.mjs').After }} Relative
+ *   A ticket held by a relative `Blocked until:` line that no open blocker
+ *   holds by its dependency summary.
+ *
  * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, prompts?: Record<string, string | undefined> }} Source
  *   A served repo's tickets: its reader, its config file's ready, claim and
  *   excluded labels, and its prompts.
@@ -81,10 +85,15 @@ import { byAge, isBlocked, labelRow, selectReadyWork, unreadableOf } from './rea
  * line's value, so the turn can say so on the ticket. A ticket whose date is
  * still to come is held by the selection itself (`isWaiting`).
  *
- * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[] }} args
+ * With `relative`, each open, ready-labelled ticket held by a relative
+ * line (`3 days after #143 closes`) that no open blocker holds by its
+ * dependency summary is recorded there, so the turn can settle it
+ * (`repairRelative`, dispatch/waits.mjs).
+ *
+ * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[] }} args
  * @returns {Promise<Dispatch[]>}
  */
-export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut, unreadable }) => {
+export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut, unreadable, relative }) => {
   /** @type {Set<string>} */
   const failed = new Set();
   /**
@@ -141,6 +150,10 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
       const value = unreadableOf(row);
       if (value !== undefined && (row.state ?? 'open') === 'open' && labelRow(row.labels, labels) === 'ready') {
         unreadable?.push({ repo: source.repo, issue: row.number, value });
+      }
+      const { wait } = row;
+      if (wait !== undefined && 'after' in wait && (row.state ?? 'open') === 'open' && labelRow(row.labels, labels) === 'ready' && !isBlocked(row, undefined)) {
+        relative?.push({ repo: source.repo, issue: row.number, after: wait.after });
       }
     }
     const ready = selectReadyWork(rows, { cap: Number.MAX_SAFE_INTEGER, labels, now });
