@@ -53,8 +53,9 @@ export const SESSION_LATE = 'dispatch-session-late';
 
 /**
  * @typedef {{ writes: Promise<void>[], ended: boolean }} Records
- *   `writes`: each launch's record. `ended`: whether the turn has
- *   stopped waiting for them, after which nothing waits for a new one.
+ *   The launcher's own: `writes`, each launch's record, none of which
+ *   rejects. `ended`: whether {@link Launcher}'s `settle` has stopped
+ *   waiting for them, after which nothing waits for a new one.
  */
 
 /**
@@ -129,7 +130,6 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  *   budgeted: Budgeted,
  *   fireRepo?: string | undefined,
  *   environment: (repo: string) => string,
- *   records: Records,
  *   pending?: Set<PendingRecord> | undefined,
  *   log: Log,
  * }} LauncherDeps
@@ -141,8 +141,7 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  *   sends and the PR review's model run spend too. `fireRepo`: the fire's
  *   repo, where a launch naming none starts; the bare schedule fire names
  *   none. `environment`: a served repo's cloud environment, from its config
- *   file. `records`: the turn's record writes, which it waits for
- *   before it ends. `pending`: the records still being written, shared with
+ *   file. `pending`: the records still being written, shared with
  *   dispatch/cli.mjs, which logs each one left at the deadline or a throw.
  *
  * @typedef {Omit<Launch, 'repo' | 'environment'> & Partial<Pick<Launch, 'repo' | 'environment'>>} Asked
@@ -151,8 +150,11 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  * @typedef {{ outcome: import('./deliveries.mjs').LaunchOutcome, sessionUrl: string | null, status: number | null, output: string, missing?: string[], refused?: true }} Started
  *   What came of a launch, and the URL where the launcher printed one and
  *   did not fail.
- * @typedef {{ start: (launch: Asked, until?: number) => Promise<Started> }} Launcher
+ * @typedef {{ start: (launch: Asked, until?: number) => Promise<Started>, settle: () => Promise<void> }} Launcher
  *   `until`: when the budget the launch shares with other calls runs out.
+ *   `settle`: waits for every record, one a late launcher adds while it
+ *   waits included, then marks the launcher ended. The turn calls it
+ *   before it ends, whether it returns or throws.
  */
 
 /**
@@ -173,7 +175,7 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  * runs on: the budget calls the page back. A session it prints later is
  * logged at info with its name and URL, so the operator can tie it to that
  * page, and recorded.
- * The turn waits for that record while it is still waiting for others.
+ * `settle` waits for that record while it is still waiting for others.
  * Once it has ended, nothing waits for it, so it pages again, naming the
  * session, before the write is tried.
  *
@@ -181,7 +183,8 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  * @returns {Launcher}
  */
 export const launcher = (deps) => {
-  const { records } = deps;
+  /** @type {Records} */
+  const records = { writes: [], ended: false };
   const unrecorded = deps.pending ?? new Set();
   /**
    * The launch itself, and its record or page once it ends.
@@ -244,5 +247,12 @@ export const launcher = (deps) => {
     const outcome = launchOutcome(status) ?? 'failed';
     return { outcome, sessionUrl: outcome === 'failed' ? null : sessionUrl, status, output, ...(missing === undefined ? {} : { missing }), ...(refused === undefined ? {} : { refused }) };
   };
-  return { start };
+  /** @type {Launcher['settle']} */
+  const settle = async () => {
+    // None rejects, so one at a time ends when they all have, and the
+    // length read each pass takes in a record added during the wait.
+    for (let i = 0; i < records.writes.length; i += 1) await records.writes[i];
+    records.ended = true;
+  };
+  return { start, settle };
 };
