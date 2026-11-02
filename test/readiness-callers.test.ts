@@ -15,16 +15,20 @@ import { readFileSync } from 'node:fs';
 const root = new URL('../', import.meta.url);
 
 /**
- * The text of a declaration, from its first line to the first line after it
- * that closes a block at the declaration's own indent.
+ * The text of a declaration, from its first line to the next line that
+ * starts at the declaration's own indent: the close of its block, or, for
+ * one whose body is an expression, whatever follows it.
  */
 const bodyOf = (path: string, start: string): string => {
   const text = readFileSync(new URL(path, root), 'utf8');
   const at = text.indexOf(start);
   assert.notEqual(at, -1, `${path} has no ${start}`);
   const indent = /^\s*/.exec(start)?.[0] ?? '';
-  const end = text.indexOf(`\n${indent}};\n`, at);
-  return end === -1 ? text.slice(at) : text.slice(at, end);
+  const next = new RegExp(`\\n${indent}\\S`).exec(text.slice(at));
+  const body = next === null ? text.slice(at) : text.slice(at, at + next.index);
+  // The body is one declaration's: it reaches no other at the same indent.
+  assert.doesNotMatch(body.slice(start.length), new RegExp(`\\n${indent}(export )?const `), `${path}: ${start} read past its own end`);
+  return body;
 };
 
 const CHECKS = /\b(labelRow|isBlocked|isWaiting|waitHolds)\s*\(/;

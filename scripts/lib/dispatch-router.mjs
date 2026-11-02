@@ -83,7 +83,7 @@ import { byAge, mayPickUp, selectReadyWork, ticketStatus, unreadableOf } from '.
  * With `unreadable`, each open, ready-labelled ticket that a `Blocked
  * until:` line governor cannot read holds is recorded there, with the
  * line's value, so the turn can say so on the ticket. A ticket whose date is
- * still to come is held by the selection itself (`isWaiting`).
+ * still to come is held by the selection itself (`mayPickUp`).
  *
  * With `relative`, each open, ready-labelled ticket held by a relative
  * line (`3 days after #143 closes`) that no open blocker holds by its
