@@ -30,6 +30,7 @@
   ],
   "exclude": [
     "node_modules",
-    "dispatch/node_modules"
+    "dispatch/node_modules",
+    "dispatch/webhook/vendor/*.cjs"
   ]
 }
