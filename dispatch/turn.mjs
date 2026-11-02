@@ -110,13 +110,13 @@ import { mayPickUp, mayStartSpec, specHold, ticketStatus, unreadableOf } from '.
 import { WAIT_PROMPT, WAIT_RELATIVE, endedWaits, holdWait, relativeAtClose, repairRelative, reportUnreadable, waitLinks, waitSpecPrompt } from './waits.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from './periodics.mjs';
 import { RoutinesApiError } from './routines.mjs';
-import { hookFor, hookMessage, hookPrompt } from './hooks.mjs';
+import { hookFor, planHook } from './hooks.mjs';
+import { planDispatch } from './dispatch-fire.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
-import { repoServed, servedRepos } from './repos.mjs';
+import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
 import { CONFIG_PATH, GENERIC_SWITCHES, switchOf, turnsOn } from './repo-config.mjs';
-import { planWorkflow, redRunPrompt } from './workflow.mjs';
-import { STALE_RUNS_PAUSES_MS, baselineIn, freshRuns } from './runs.mjs';
+import { planWorkflow } from './workflow.mjs';
 import { coverageOf } from './coverage.mjs';
 import { planBranchRun } from './branch-run.mjs';
 import { checkConflicts } from './conflicts.mjs';
@@ -124,8 +124,8 @@ import { ROW_SWITCH, UNREADIED_HELD, closingFires, mayBeUnreadied, notPlannedCom
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
-import { DEFAULT_SESSION_NAME, DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, hookSource, refusedAsArchived } from './deliveries.mjs';
-import { HOOK_PER_HOUR, LANE, LANE_COUNTS, RED, laneCount, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
+import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
+import { HOOK_PER_HOUR, LANE, LANE_COUNTS, laneCount, dispatchMarker, lastDispatch, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, stampLastRun } from './heartbeat.mjs';
 import { sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -832,33 +832,6 @@ const recordFire = async ({ state, log }, repo, { name, read }, at, sessionUrl) 
 };
 
 /**
- * Write a hook's record to the session its launch started, over the record
- * the turn read (dispatch/hooks.mjs). Another record standing, or a write
- * that fails, is logged at error and comes back so the turn fails: the next
- * fire may start a second session beside this one.
- *
- * @param {Deps} deps
- * @param {string} repo
- * @param {{ name: string, read: import('./hooks.mjs').HookRecord | null }} hook
- * @param {import('./hooks.mjs').HookRecord} record
- * @returns {Promise<{ repo: string, error: string } | null>}
- */
-const recordHook = async ({ state, log }, repo, { name, read }, record) => {
-  const sessionUrl = record.session;
-  try {
-    if (await state.recordHookSession(repo, name, read, record)) {
-      log('dispatch-hook', { repo, hook: name, outcome: 'recorded', sessionUrl });
-      return null;
-    }
-    log('dispatch-hook-unrecorded', { level: 'error', repo, hook: name, sessionUrl, reason: `its record moved since this turn read it (${read === null ? 'none' : read.session}): another turn started a session for it too` });
-    return { repo, error: `hook ${name}: another turn recorded a session for it first` };
-  } catch (error) {
-    log('dispatch-hook-unrecorded', { level: 'error', repo, hook: name, sessionUrl, error: messageOf(error), reason: 'its record could not be written, so the next fire may start a second session' });
-    return { repo, error: `hook ${name}: its record could not be written: ${messageOf(error)}` };
-  }
-};
-
-/**
  * The periodics an event brought due (dispatch/periodics.mjs), started
  * after the carrying turn's own work, on the login it left restored. Each
  * launch runs under the launch budget and starts only inside
@@ -1116,6 +1089,38 @@ const runOpen = (deps) => {
  */
 
 /**
+ * @typedef {{
+ *   repo: string,
+ *   issue: number | null,
+ *   claim: boolean,
+ *   holdsRepo: boolean,
+ *   asked: import('./launcher.mjs').Asked,
+ *   started?: (outcome: import('./launcher.mjs').Started, firedAt: string) => Promise<void>,
+ * }} PlannedLaunch
+ *   One session a planner wants started, on `asked`, which the launcher's
+ *   `start` takes with the repo. `claim`: the ticket is claimed
+ *   before the launch and released on a failure (a picked-up ticket, not a
+ *   spec session). `holdsRepo`: a failed launch skips the repo's later
+ *   launches (a ticket's or a periodic's). `started`: the record this launch
+ *   moves, called after the launch line with what the launch printed and
+ *   when it was fired, unless a routine fault skipped it.
+ *
+ * @typedef {{
+ *   launches: PlannedLaunch[],
+ *   unread: Array<{ repo: string, error: string }>,
+ *   done?: (ran: { dispatched: Array<Dispatched & { planned: PlannedLaunch }>, left: PlannedLaunch[] }) => Promise<void>,
+ *   result?: Record<string, unknown>,
+ * } | { answer: { kind: import('./webhook/fire.mjs').Fire['kind'], dispatched: Dispatched[], loginStored: boolean, messaged?: import('./deliveries.mjs').Delivery } }} Plan
+ *   What a planner for a fire kind that starts sessions hands the turn
+ *   (`planHook` in dispatch/hooks.mjs, `planDispatch` in
+ *   dispatch/dispatch-fire.mjs). `unread`: what failed the turn, which
+ *   `started` and `done` may add to. `done`: called after every launch, with
+ *   what the launch window or a repo skip left unstarted. `result`: the
+ *   kind's own fields in the turn's result. `answer`: the turn's whole
+ *   result where the kind starts nothing.
+ */
+
+/**
  * The turn itself, for the fire's repo, or every served repo for the bare
  * schedule fire.
  *
@@ -1136,10 +1141,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    * The fire's repo. The bare schedule fire names none, and reads
    * only the served repos it found; nothing falls back to a default repo.
    */
-  const fireRepo = () => {
-    if (repo === undefined) throw new Error(`the bare ${invocation.kind} fire names no repo`);
-    return repo;
-  };
+  const fireRepo = () => fireRepoOf({ kind: invocation.kind, repo });
   deps.workspace.prepare(repo);
   const { credentials: original, account } = readStoredLogin(await deps.secret.get());
   const parsed = parseLogin(original);
@@ -1567,8 +1569,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     cap: deps.cap,
   };
   const started = deps.now();
-  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, connectors?: string[], unclaimed?: true, wait?: { read: string }, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, hook?: { name: string, read: import('./hooks.mjs').HookRecord | null } }>} */
+  /** @type {Array<{ issue: number | null, repo: string, prompt: string, sessionName: string, model: string, connectors?: string[], unclaimed?: true, holdsRepo?: boolean, wait?: { read: string }, periodic?: { name: string, read: import('./periodics.mjs').PeriodicRecord, by: import('./heartbeat.mjs').Limit, asOf?: string }, planned?: PlannedLaunch }>} */
   const plan = [];
+  /** The plan a kind's planner returned: the hook's or the dispatch fire's. @type {Plan | undefined} */
+  let planned;
   /** The issues a targeted schedule fire limits the plan to; undefined for the sweep. @type {number[] | undefined} */
   let only;
   /** The served repos whose backlog the bare fire could not read. @type {Array<{ repo: string, error: string }>} */
@@ -1577,8 +1581,6 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const periodicsUnread = [];
   /** The ended waits the bare fire could not read or act on, and the items it could not delete after a spec session started. @type {Array<{ repo: string, error: string }>} */
   const waitsUnread = [];
-  /** The hooks whose session the turn started and could not record, or ran out of time to start. @type {Array<{ repo: string, error: string }>} */
-  const hooksUnrecorded = [];
   /** The served repos whose last sweep the bare fire could not read, or whose sweep it could not record. @type {Array<{ repo: string, error: string }>} */
   const sweepsUnread = [];
   /** The repos the bare fire sweeps, each with the time the turn read their last sweep, which it records. @type {Map<string, string>} */
@@ -1733,33 +1735,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       }
     }
   } else if (invocation.kind === 'hook') {
-    // `run` refused a hook the file does not list at this key version.
-    const found = hookFor(ctx.configOf(fireRepo()), invocation);
-    if ('refusal' in found) throw new Error(found.refusal);
-    const { name } = found.hook;
-    // The hook's last session, while it is open, takes the fire as a
-    // message. A read that fails, of the record or of the session, throws:
-    // the fire is refused, never taken for no record or a closed session.
-    const read = await ctx.state.hookSession(fireRepo(), name);
-    const open = read !== null && await ctx.open(read.session).catch((error) => {
-      throw new Error(`hook ${name}: its last session ${read.session} could not be read: ${messageOf(error)}`);
-    });
-    if (read !== null && open) {
-      /** @type {import('./deliveries.mjs').Delivery} */
-      let told;
-      let loginStored = false;
-      try {
-        told = await ctx.delivery().deliver({ session: read.session }, hookMessage(invocation), { source: hookSource(name) });
-      } finally {
-        loginStored = await ctx.storeLogin();
-      }
-      ctx.log('dispatch-hook', { repo: fireRepo(), hook: name, session: read.session, outcome: told.ok ? 'messaged' : told.refused ? 'archived since it was read' : 'not messaged' });
-      // Archived between the read and the send: a new session starts below.
-      // Any other failure says nothing of the session, which may be live, so
-      // nothing starts beside it and the turn fails.
-      if (!told.refused) return { kind: invocation.kind, dispatched: [], messaged: told, loginStored };
-    }
-    plan.push({ issue: null, repo: fireRepo(), prompt: hookPrompt(found.hook.prompt, invocation), sessionName: name, model: DEFAULT_MODEL, hook: { name, read } });
+    planned = await planHook(invocation, ctx);
   } else if (invocation.kind === 'unblocked') {
     // A ticket whose blocker closed, under its own repo's config: the first
     // row of the table that fits (dispatch/unblocked.mjs). Its repo's
@@ -1908,17 +1884,15 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         ctx.log('dispatch-unblocked', { ...about, outcome: 'starting a spec session' });
       }
     }
-  } else if (!(invocation.kind === 'dispatch' && invocation.scheduled !== undefined && await redBefore(invocation.scheduled, () => ctx.readerFor(fireRepo()), ctx))) {
-    // Not a scheduled red after a red: that one plans nothing, since the red before started the session that is on it.
-    plan.push({
-      issue: null,
-      repo: fireRepo(),
-      // A red scheduled run's fire carries its facts; the instruction is the repo's.
-      prompt: invocation.kind === 'dispatch' && invocation.scheduled !== undefined ? redRunPrompt(invocation.prompt, ctx.prompts) : invocation.prompt,
-      sessionName: invocation.sessionName ?? DEFAULT_SESSION_NAME,
-      model: invocation.model ?? DEFAULT_MODEL,
-    });
+  } else if (invocation.kind === 'dispatch') {
+    planned = await planDispatch(invocation, ctx);
   }
+  if (planned !== undefined && 'answer' in planned) return planned.answer;
+  /** The kind's plan, whose launches join the loop's. */
+  const kindPlan = planned;
+  // A claimed launch is a ticket's, and a failed one that holds its repo
+  // skips the repo's later launches, as the loop judges each entry below.
+  for (const p of kindPlan?.launches ?? []) plan.push({ ...p.asked, issue: p.issue, repo: p.repo, ...(p.claim ? {} : { unclaimed: true }), holdsRepo: p.holdsRepo, planned: p });
 
   // The dispatcher claims a ticket before its launch: a session that
   // never claims, or dies first, would leave it ready for the next fire. A
@@ -2023,6 +1997,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const waitSpecs = new Set(plan.filter((e) => e.wait !== undefined && e.issue !== null).map((e) => `${e.repo}#${e.issue}`));
   /** A repo's own launches by pickup: its dispatches, an ended wait's spec sessions left out. @param {string} repo */
   const pickupOwn = (repo) => dispatched.filter((d) => d.repo === repo && !waitSpecs.has(`${d.repo}#${d.issue}`));
+  /** The kind's planned launches that ran, and those the window or a repo skip left. @type {Array<Dispatched & { planned: PlannedLaunch }>} */
+  const ran = [];
+  /** @type {PlannedLaunch[]} */
+  const left = [];
   let heartbeat = false;
   let loginStored = false;
   try {
@@ -2030,18 +2008,13 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       if (deps.now() - started > SCHEDULE_LAUNCH_WINDOW_MS) {
         deps.log('dispatch-launch', { undispatched: plan.slice(i).map((e) => ({ repo: e.repo, issue: e.issue })), reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, another launch might outrun the deadline; each is left unmarked for the next fire` });
         for (const e of plan.slice(i)) if (e.issue !== null && e.wait === undefined) leftOver.add(e.repo);
-        // A hook fire is not tried again: one left unstarted fails the turn,
-        // so the alarm it carried is not lost quietly.
-        for (const e of plan.slice(i)) {
-          if (e.hook === undefined) continue;
-          deps.log('dispatch-hook-unstarted', { level: 'error', repo: e.repo, hook: e.hook.name, reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, its session was not started and the fire is not tried again` });
-          hooksUnrecorded.push({ repo: e.repo, error: `hook ${e.hook.name}: out of time, its session was not started` });
-        }
+        for (const e of plan.slice(i)) if (e.planned !== undefined) left.push(e.planned);
         break;
       }
       const ticket = entry.issue === null ? null : { repo: entry.repo, issue: entry.issue };
       if (skipped.has(entry.repo)) {
         if (ticket !== null && entry.wait === undefined) leftOver.add(entry.repo);
+        if (entry.planned !== undefined) left.push(entry.planned);
         continue;
       }
       // A spec session's ticket is not claimed: the session claims it before it builds.
@@ -2076,13 +2049,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           waitsUnread.push({ repo: entry.repo, error: `wait #${entry.issue}: ${messageOf(error)}` });
         }
       }
-      // A hook's record names a session only where the launch printed one,
-      // over the record the turn read.
-      if (entry.hook !== undefined && sessionUrl !== null) {
-        const unrecorded = await recordHook(deps, entry.repo, entry.hook, { session: sessionUrl, at: firedAt });
-        if (unrecorded !== null) hooksUnrecorded.push(unrecorded);
-      }
-      if ((ticket !== null || entry.periodic !== undefined) && outcome === 'failed') {
+      // The record a kind's planned launch moves, such as a hook's.
+      if (entry.planned?.started !== undefined) await entry.planned.started(launched, firedAt);
+      if ((entry.holdsRepo ?? (ticket !== null || entry.periodic !== undefined)) && outcome === 'failed') {
         if (ticket !== null) {
           if (entry.unclaimed !== true) await release(ticket);
           if (entry.wait === undefined) leftOver.add(ticket.repo);
@@ -2098,7 +2067,11 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         if (sessionUrl !== null) claims.delete(keyOf(ticket));
       }
       dispatched.push({ repo: entry.repo, issue: entry.issue, outcome, sessionUrl });
+      if (entry.planned !== undefined) ran.push({ repo: entry.repo, issue: entry.issue, outcome, sessionUrl, planned: entry.planned });
     }
+    // A kind's plan settles what its launches left: a hook left unstarted
+    // fails the turn.
+    await kindPlan?.done?.({ dispatched: ran, left });
 
     // A repo's sweep is recorded once its backlog was read and not every
     // claim or launch failed, as pickup's heartbeat line is: a sweep that
@@ -2185,8 +2158,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // the copy from before it would hold a dead refresh token.
     loginStored = await storeIfRefreshed(deps, original, account);
   }
-  const left = [...unread, ...sweepsUnread, ...periodicsUnread, ...hooksUnrecorded, ...waitsUnread];
-  return { kind: invocation.kind, ...(row === undefined ? {} : { row }), dispatched, heartbeat, loginStored, ...(left.length === 0 ? {} : { unread: left }) };
+  const failed = [...unread, ...sweepsUnread, ...periodicsUnread, ...(kindPlan?.unread ?? []), ...waitsUnread];
+  return { kind: invocation.kind, ...(row === undefined ? {} : { row }), ...kindPlan?.result, dispatched, heartbeat, loginStored, ...(failed.length === 0 ? {} : { unread: failed }) };
 };
 
 /** How often, and how far apart, an unblocked fire reads a ticket that still counts an open blocker. */
@@ -2219,44 +2192,6 @@ const readUnblocked = async (reader, issue, sleep, statusOf) => {
     if (!status.open || !status.holds.includes('blocker') || read >= UNBLOCKED_READS) return { ticket, blockers, reads };
     await sleep(UNBLOCKED_WAIT_MS);
   }
-};
-
-/**
- * Whether the scheduled run before `scheduled`, of the same workflow on
- * the default branch it ran on, went red too: its fire started a session that is on the failure,
- * and this red would start another to comment "this run too". The
- * run before is the completed scheduled one on that branch with the highest id
- * below this one's, read on past the first page while that holds none
- * ({@link baselineIn}): the list holds every event and branch. The list can
- * lag the run, so one lacking this run is read again
- * ({@link freshRuns}). A list it could not read, or that still lacks this
- * run, says no: a second session costs less than none on a red.
- *
- * @param {import('./webhook/fire.mjs').ScheduledRun} scheduled
- * @param {() => Promise<Pick<import('./workflow.mjs').WorkflowReader, 'workflowRuns'>>} getReader
- * @param {Pick<Deps, 'log' | 'sleep'>} deps
- * @returns {Promise<boolean>}
- */
-const redBefore = async ({ workflowId, runId, branch }, getReader, { log, sleep }) => {
-  const file = String(workflowId);
-  /** @type {import('../scripts/lib/github-app.mjs').RunRow | null} */
-  let before;
-  try {
-    const reader = await getReader();
-    const got = await freshRuns(reader, file, runId, sleep, branch, { event: 'schedule', status: 'completed' });
-    if (!got.fresh) {
-      log('dispatch-scheduled-unread', { workflowId, runId, error: `the runs list still lacked run ${runId} after ${STALE_RUNS_PAUSES_MS.length} re-reads`, outcome: 'launching: the run before is unknown' });
-      return false;
-    }
-    before = (await baselineIn(reader, file, branch, got.page, (rows) =>
-      rows.filter((r) => r.id < runId && r.event === 'schedule' && r.status === 'completed').sort((a, b) => b.id - a.id)[0] ?? null)).baseline;
-  } catch (error) {
-    log('dispatch-scheduled-unread', { workflowId, runId, error: messageOf(error), outcome: 'launching: the run before is unknown' });
-    return false;
-  }
-  if (before === null || !RED.has(String(before.conclusion))) return false;
-  log('dispatch-launch', { workflowId, runId, outcome: 'skipped', reason: `scheduled run ${before.id} before it ended ${before.conclusion} too: its session is on the failure` });
-  return true;
 };
 
 // ── The real I/O ────────────────────────────────────────────────────────────

@@ -38,6 +38,10 @@
  *   false where another record stands.
  */
 
+import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
+import { messageOf } from '../scripts/lib/error-message.mjs';
+import { hookSource } from './deliveries.mjs';
+import { fireRepoOf } from './repos.mjs';
 import { HOOK_KEY_STALE } from './webhook/fire.mjs';
 
 /** The event a fire signed with a stale key version logs, at error, here or at the receiver. */
@@ -93,3 +97,96 @@ export const hookPrompt = (prompt, fire) => [prompt, ...firedLines(fire, `fired 
  * @param {import('./webhook/fire.mjs').HookFire} fire
  */
 export const hookMessage = (fire) => firedLines(fire, `fired again at ${fire.at}, while this session, which an earlier fire of it started, is still open`).join('\n\n');
+
+/**
+ * Write a hook's record to the session its launch started, over the record
+ * the turn read. Another record standing, or a write that fails, is logged
+ * at error and comes back so the turn fails: the next fire may start a
+ * second session beside this one.
+ *
+ * @param {{ state: HookState, log: import('./turn.mjs').Deps['log'] }} ctx
+ * @param {string} repo
+ * @param {{ name: string, read: HookRecord | null }} hook
+ * @param {HookRecord} record
+ * @returns {Promise<{ repo: string, error: string } | null>}
+ */
+const recordHook = async ({ state, log }, repo, { name, read }, record) => {
+  const sessionUrl = record.session;
+  try {
+    if (await state.recordHookSession(repo, name, read, record)) {
+      log('dispatch-hook', { repo, hook: name, outcome: 'recorded', sessionUrl });
+      return null;
+    }
+    log('dispatch-hook-unrecorded', { level: 'error', repo, hook: name, sessionUrl, reason: `its record moved since this turn read it (${read === null ? 'none' : read.session}): another turn started a session for it too` });
+    return { repo, error: `hook ${name}: another turn recorded a session for it first` };
+  } catch (error) {
+    log('dispatch-hook-unrecorded', { level: 'error', repo, hook: name, sessionUrl, error: messageOf(error), reason: 'its record could not be written, so the next fire may start a second session' });
+    return { repo, error: `hook ${name}: its record could not be written: ${messageOf(error)}` };
+  }
+};
+
+/**
+ * A hook fire's plan. `run` refused a hook the file does not list at this
+ * key version, so one here throws. The hook's last session, while it is
+ * open, takes the fire as a message, and the plan is the turn's answer. A
+ * read that fails, of the record or of the session, throws: the fire is
+ * refused, never taken for no record or a closed session. Otherwise it
+ * plans one session, whose `started` writes the record naming it over the
+ * record read, and whose `done` fails the turn when the launch window left
+ * it unstarted: a hook fire is not tried again, so the alarm it carried is
+ * not lost quietly. A record that could not be written fails the turn too,
+ * through the plan's `unread`.
+ *
+ * @param {import('./webhook/fire.mjs').HookFire & { repo?: string }} invocation
+ * @param {import('./turn.mjs').TurnContext} ctx
+ * @returns {Promise<import('./turn.mjs').Plan>}
+ */
+export const planHook = async (invocation, ctx) => {
+  const repo = fireRepoOf(invocation);
+  const found = hookFor(ctx.configOf(repo), invocation);
+  if ('refusal' in found) throw new Error(found.refusal);
+  const { name } = found.hook;
+  const read = await ctx.state.hookSession(repo, name);
+  const open = read !== null && await ctx.open(read.session).catch((error) => {
+    throw new Error(`hook ${name}: its last session ${read.session} could not be read: ${messageOf(error)}`);
+  });
+  if (read !== null && open) {
+    /** @type {import('./deliveries.mjs').Delivery} */
+    let told;
+    let loginStored = false;
+    try {
+      told = await ctx.delivery().deliver({ session: read.session }, hookMessage(invocation), { source: hookSource(name) });
+    } finally {
+      loginStored = await ctx.storeLogin();
+    }
+    ctx.log('dispatch-hook', { repo, hook: name, session: read.session, outcome: told.ok ? 'messaged' : told.refused ? 'archived since it was read' : 'not messaged' });
+    // Archived between the read and the send: a new session starts below.
+    // Any other failure says nothing of the session, which may be live, so
+    // nothing starts beside it and the turn fails.
+    if (!told.refused) return { answer: { kind: invocation.kind, dispatched: [], messaged: told, loginStored } };
+  }
+  /** @type {Array<{ repo: string, error: string }>} */
+  const unread = [];
+  return {
+    launches: [{
+      repo,
+      issue: null,
+      claim: false,
+      holdsRepo: false,
+      asked: { prompt: hookPrompt(found.hook.prompt, invocation), sessionName: name, model: DEFAULT_MODEL },
+      // The record names a session only where the launch printed one.
+      started: async ({ sessionUrl }, firedAt) => {
+        if (sessionUrl === null) return;
+        const unrecorded = await recordHook(ctx, repo, { name, read }, { session: sessionUrl, at: firedAt });
+        if (unrecorded !== null) unread.push(unrecorded);
+      },
+    }],
+    unread,
+    done: async ({ left }) => {
+      for (const { repo: at } of left) {
+        ctx.log('dispatch-hook-unstarted', { level: 'error', repo: at, hook: name, reason: 'out of time: its session was not started and the fire is not tried again' });
+        unread.push({ repo: at, error: `hook ${name}: out of time, its session was not started` });
+      }
+    },
+  };
+};
