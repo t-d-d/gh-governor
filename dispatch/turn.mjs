@@ -225,9 +225,11 @@ export const sessionUrlFrom = (output) => {
 
 /**
  * @typedef {import('./deliveries.mjs').OpenRow} OpenRow
- * @typedef {{ prompt: string, sessionName: string, model: string, repo: string, environment: string, connectors?: string[] }} Launch
+ * @typedef {{ prompt: string, sessionName: string, model: string, repo: string, environment: string, connectors?: string[], branch?: string }} Launch
  *   `repo`, `environment`: the repo the session is for and its cloud
- *   environment, from the repo's config file. `connectors`: a periodic's
+ *   environment, from the repo's config file. `branch`: the branch the
+ *   session starts on and pushes to, a PR's head for a takeover, in place
+ *   of the default branch (dispatch/launch-session.py). `connectors`: a periodic's
  *   claude.ai connectors, which start it as a run of its routine
  *   (dispatch/routines.mjs), the periodic named by `sessionName`.
  * @typedef {{ status: number | null, output: string, missing?: string[], refused?: true, routine?: string }} LaunchResult
@@ -3049,14 +3051,14 @@ export const realDeps = () => {
         account = stored;
       },
     },
-    launch: async ({ prompt, sessionName, model, repo: launched, environment }) => {
+    launch: async ({ prompt, sessionName, model, repo: launched, environment, branch }) => {
       const dir = mkdtempSync(join(tmpdir(), 'governor-'));
       try {
         const promptFile = join(dir, 'prompt.txt');
         writeFileSync(promptFile, `${prompt}\n`);
         const result = await collect(spawn('python3', [launcherPath(), promptFile], {
           cwd: workspaceFor(launched, environment),
-          env: cliEnv({ ...env, CLAUDE_MODEL: model, CLAUDE_SESSION_NAME: sessionName }, home, account),
+          env: cliEnv({ ...env, CLAUDE_MODEL: model, CLAUDE_SESSION_NAME: sessionName, CLAUDE_ON_BRANCH: branch ?? '' }, home, account),
           stdio: ['ignore', 'pipe', 'pipe'],
         }));
         log('dispatch-launcher-output', { sessionName, status: result.status, tail: result.output.slice(-OUTPUT_TAIL) });

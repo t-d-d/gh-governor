@@ -56,11 +56,16 @@ const CONFLICT_WAIT_MS = 3000;
  * then the `conflicts` instruction, the repo's prompt or the default
  * (dispatch/prompts.mjs).
  *
- * @param {{ pr: Pick<PullRequestRow, 'number' | 'title' | 'html_url'>, base: string, head: string, merged: Pick<ConflictsFire, 'pr' | 'sha'> }} about
+ * The fallback's session starts on the PR's head branch, `branch`, and
+ * pushes there: started from the default branch it is given a new branch
+ * and a rule to push only to that one, and opens a second PR. A fork's PR
+ * has no branch here to push to, so `branch` is '' and none is named.
+ *
+ * @param {{ pr: Pick<PullRequestRow, 'number' | 'title' | 'html_url'>, base: string, head: string, branch?: string, merged: Pick<ConflictsFire, 'pr' | 'sha'> }} about
  * @param {Readonly<Record<string, string | undefined>>} [prompts] The config file's.
  * @returns {{ text: string, fallback: import('./webhook/fire.mjs').Fallback }}
  */
-export const conflictMessage = ({ pr, base, head, merged }, prompts = {}) => {
+export const conflictMessage = ({ pr, base, head, branch = '', merged }, prompts = {}) => {
   const facts = `PR #${pr.number} (${oneLine(pr.title)}, ${pr.html_url}) conflicts with ${base} since ${base} moved to ${head}, after #${merged.pr} merged (merge commit ${merged.sha}).`;
   const ask = instruction(prompts, 'conflicts', { base });
   return {
@@ -69,6 +74,7 @@ export const conflictMessage = ({ pr, base, head, merged }, prompts = {}) => {
       prompt: [facts, '', HANDOFF, ask, UNATTENDED].join('\n'),
       sessionName: oneLine(`Conflicts #${pr.number} ${pr.title}`).slice(0, 100),
       issue: pr.number,
+      ...(branch === '' ? {} : { branch }),
     },
   };
 };
@@ -165,6 +171,7 @@ export const checkConflicts = async ({ invocation: merged, reader, sleep, record
   const { base } = merged;
   const head = await reader.branchHead(base);
   const candidates = (await reader.openPulls()).filter((p) => !p.draft && p.base === base);
+  const branches = new Map(candidates.map((p) => [p.number, p.head]));
   const { settled, unsettled, failed } = await readMergeable(reader, candidates, sleep);
   /** @type {Checked[]} */
   const checks = [
@@ -182,7 +189,7 @@ export const checkConflicts = async ({ invocation: merged, reader, sleep, record
       checks.push({ pr: pr.number, outcome: 'failed', reason: null, error: `#${pr.number} conflicts, and was not told: out of time, another delivery might outrun the deadline` });
       continue;
     }
-    const { text, fallback } = conflictMessage({ pr, base, head, merged }, prompts);
+    const { text, fallback } = conflictMessage({ pr, base, head, branch: branches.get(pr.number) ?? '', merged }, prompts);
     checks.push(await tell({ pr, text, fallback, record, deliver }));
   }
   return { head, checks };

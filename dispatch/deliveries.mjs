@@ -208,7 +208,8 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   The GitHub reads and writes a delivery makes.
  *
  * @typedef {{ status: number | null, output: string }} LaunchResult
- * @typedef {{ prompt: string, sessionName: string, model: string }} Launch
+ * @typedef {{ prompt: string, sessionName: string, model: string, branch?: string }} Launch
+ *   `branch`: the branch the session starts on and pushes to, in place of the default branch.
  * @typedef {'dispatched' | 'unconfirmed' | 'failed'} LaunchOutcome
  *
  * @typedef {{
@@ -521,7 +522,7 @@ export const deliveries = (deps) => {
     // a fresh session starts on the fallback's prompt, and on a PR leaves
     // the marker and, for a takeover, is written into the body's link.
     if (refused && withFallback) {
-      const { issue, prompt } = withFallback;
+      const { issue, prompt, branch } = withFallback;
       const sessionName = withFallback.sessionName ?? DEFAULT_SESSION_NAME;
       const now = deps.now();
       const marked = issue === undefined
@@ -550,14 +551,14 @@ export const deliveries = (deps) => {
         reason = `PR #${issue} has closed`;
       }
       if (fallback === null) {
-        const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL }, until);
+        const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL, ...(branch === undefined ? {} : { branch }) }, until);
         fallback = { outcome: started.outcome, sessionUrl: started.sessionUrl };
         if (issue !== undefined && started.outcome !== 'failed') {
           await (await deps.reader()).comment(issue, dispatchMarker({ at: new Date(now).toISOString(), sessionUrl: started.sessionUrl }));
           if (takeover && started.sessionUrl !== null) relinked = await relink(issue, started.sessionUrl);
         }
       }
-      deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, ...fallback, relinked, ...(reason === null ? {} : { reason }) });
+      deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, branch: branch ?? null, ...fallback, relinked, ...(reason === null ? {} : { reason }) });
     }
     // A refusal with none: a subscriber gone. Its line goes; the turn is not
     // a failure, since nothing was owed to a session that is not there.
