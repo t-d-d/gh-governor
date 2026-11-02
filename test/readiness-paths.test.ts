@@ -2,8 +2,9 @@
  * What the four paths that decide whether a ticket may start answer for the
  * same ticket states, as main has them.
  *
- * - The selection: `selectReadyWork` through `planSchedule`, with its
- *   unreadable and relative reports (scripts/lib/dispatch-router.mjs).
+ * - The selection: `selectReadyWork` (scripts/lib/ready-work.mjs) through
+ *   `planSchedule` (scripts/lib/dispatch-router.mjs), with its unreadable
+ *   and relative reports.
  * - The claim's second read: `claim` in dispatch/turn.mjs, through `run`.
  * - The unblocked row: `ticketRow` (dispatch/unblocked.mjs), and what an
  *   `unblocked` fire does with it, through `run`.
@@ -18,7 +19,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
 import { run } from '../dispatch/turn.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { waitOf } from '../scripts/lib/ready-work.mjs';
@@ -30,9 +31,10 @@ import { factoryFile } from './helpers/factory.ts';
 
 const REPO = 'acme/factory';
 const FILE = factoryFile(CONFIG_PATH);
-const CONFIG = JSON.parse(FILE);
-/** The factory's labels, with the excluded labels its file leaves to the default. */
-const LABELS = { ...CONFIG.labels, exclude: CONFIG.labels.exclude ?? ['type: prd'] };
+const READ = readConfig(FILE);
+if (!READ.ok) throw new Error(`the factory's ${CONFIG_PATH} does not read: ${READ.fault}`);
+/** The factory's labels, as governor reads its file, defaults filled. */
+const LABELS = READ.config.labels;
 const READY: string[] = LABELS.ready;
 const NOW = Date.parse('2026-09-25T12:00:00Z');
 const ISSUE = 7;
@@ -52,13 +54,14 @@ const CONFIRMED = 'Created cloud session: https://claude.ai/code/session_01ABC\n
 
 type LabelState = 'excluded' | 'claimed' | 'ready' | 'not-ready';
 type Line = 'none' | 'ahead' | 'past' | 'relative' | 'unreadable';
-type State = { open: boolean; labels: LabelState; blocker: boolean; line: Line; unreadied: boolean };
+/** `summary`: whether the read carries its dependency summary, or leaves the blocker to its `blocked_by` rows. */
+type State = { open: boolean; labels: LabelState; blocker: boolean; summary: boolean; line: Line; unreadied: boolean };
 
 const LABEL_STATES: LabelState[] = ['excluded', 'claimed', 'ready', 'not-ready'];
 const LINES: Line[] = ['none', 'ahead', 'past', 'relative', 'unreadable'];
 
 const labelsOf: Record<LabelState, string[]> = {
-  excluded: [...READY, 'type: prd'],
+  excluded: [...READY, LABELS.exclude[0]!],
   claimed: [LABELS.claim, 'mode: afk'],
   ready: [...READY],
   'not-ready': ['mode: afk'],
@@ -73,18 +76,20 @@ const bodyOf: Record<Line, string> = {
 };
 
 const STATES: State[] = [true, false].flatMap((open) =>
-  LABEL_STATES.flatMap((labels) => [false, true].flatMap((blocker) =>
-    LINES.flatMap((line) => [false, true].map((unreadied) => ({ open, labels, blocker, line, unreadied }))))));
+  LABEL_STATES.flatMap((labels) => [false, true].flatMap((blocker) => [true, false].flatMap((summary) =>
+    LINES.flatMap((line) => [false, true].map((unreadied) => ({ open, labels, blocker, summary, line, unreadied })))))));
 
-const nameOf = (s: State) => `${s.open ? 'open' : 'closed'}, ${s.labels}, ${s.blocker ? 'an open blocker' : 'no blocker'}, line ${s.line}${s.unreadied ? ', unanswered unreadied comment' : ''}`;
+const nameOf = (s: State) => `${s.open ? 'open' : 'closed'}, ${s.labels}, ${s.blocker ? 'an open blocker' : 'no blocker'}${s.summary ? '' : ' by its rows alone'}, line ${s.line}${s.unreadied ? ', unanswered unreadied comment' : ''}`;
 
-/** The ticket as the reader returns it. Its blocker is in its dependency summary. */
+/** The ticket as the reader returns it, its blocker in its dependency summary or, without one, only in its `blocked_by` rows. */
 const ticketOf = (s: State) => {
   const body = bodyOf[s.line];
-  return { number: ISSUE, id: 9007, title: 'The ticket', body, state: s.open ? 'open' : 'closed', labels: labelsOf[s.labels], pull: false, openBlockers: s.blocker ? 1 : 0, created_at: '2026-09-01T00:00:00Z', ...waitOf(body) };
+  return { number: ISSUE, id: 9007, title: 'The ticket', body, state: s.open ? 'open' : 'closed', labels: labelsOf[s.labels], pull: false, ...(s.summary ? { openBlockers: s.blocker ? 1 : 0 } : {}), created_at: '2026-09-01T00:00:00Z', ...waitOf(body) };
 };
+/** Its `blocked_by` rows. */
+const rowsOf = (s: State) => (s.blocker ? [{ number: 42, state: 'open', title: 'Another' }] : []);
 /** A ticket ready and free, as an earlier read saw it. */
-const cleanTicket = () => ticketOf({ open: true, labels: 'ready', blocker: false, line: 'none', unreadied: false });
+const cleanTicket = () => ticketOf({ open: true, labels: 'ready', blocker: false, summary: true, line: 'none', unreadied: false });
 
 /** The thread: the dispatch marker of an earlier session, and governor's unreadied comment with no answer. */
 const threadOf = (s: State) => [
@@ -92,17 +97,18 @@ const threadOf = (s: State) => [
   ...(s.unreadied ? [{ body: `Its work will not land as planned.\n\n${UNREADIED_MARKER}`, created_at: '2026-09-10T00:00:00Z', ours: true }] : []),
 ].map((c, i) => ({ id: i + 1, ...c }));
 
-/** A reader over one ticket; `ticketAt(n)` is the ticket on the n-th read, from 1. */
+/** A reader over one ticket; `ticketAt(n)` is the ticket on the n-th read, from 1, and `reads()` counts them. */
 const readerOf = (s: State, ticketAt: (n: number) => ReturnType<typeof ticketOf>, sink: { comments: string[] }) => {
   let reads = 0;
   return {
+    reads: () => reads,
     readyIssues: async () => [],
     ticket: async (n: number) => {
       if (n !== ISSUE) throw Object.assign(new Error('no such issue'), { status: 404 });
       reads += 1;
       return ticketAt(reads);
     },
-    blockers: async () => (s.blocker ? [{ number: 42, state: 'open', title: 'Another' }] : []),
+    blockers: async () => rowsOf(s),
     blocking: async () => [],
     comments: async () => threadOf(s),
     allComments: async () => threadOf(s),
@@ -122,15 +128,19 @@ const readerOf = (s: State, ticketAt: (n: number) => ReturnType<typeof ticketOf>
   };
 };
 
-/** The turn's dependencies, with every store empty and no cloud session but the ones it launches. */
-const depsOf = (reader: unknown, launches: string[], messages: string[]) => ({
+/**
+ * The turn's dependencies, with every store empty and no cloud session but
+ * the ones it launches. Each error the turn logs lands in `errors`: a stub
+ * that throws would otherwise read as a path that does nothing.
+ */
+const depsOf = (reader: unknown, launches: string[], messages: string[], errors: string[]) => ({
   owners: ['acme'],
   installations: async () => [{ account: 'acme', repos: [REPO] }],
   configFile: async (repo: string) => (repo === REPO ? FILE : null),
   cap: 2,
   now: () => NOW,
   sleep: async () => {},
-  log: () => {},
+  log: errorsTo(errors),
   secret: { get: async () => storedLogin(LOGIN, { accountUuid: 'acc-1', organizationUuid: 'org-1' }), put: async () => {} },
   githubToken: async () => 'ghs_t',
   appId: async () => APP_ID,
@@ -155,6 +165,13 @@ const depsOf = (reader: unknown, launches: string[], messages: string[]) => ({
   },
 });
 
+/** A log that keeps each error-level line, as JSON. */
+function errorsTo(errors: string[]) {
+  return (event: string, fields: Record<string, unknown> = {}) => {
+    if (fields.level === 'error') errors.push(JSON.stringify({ event, ...fields }));
+  };
+}
+
 const unreadableSaid = (comments: string[]) => comments.some((c) => c.includes(WAIT_UNREADABLE_MARKER));
 
 // ── Each path's answer ──────────────────────────────────────────────────
@@ -174,7 +191,12 @@ const claim = async (s: State) => {
   const sink = { comments: [] as string[] };
   const reader = readerOf(s, (n) => (n === 1 ? cleanTicket() : ticketOf(s)), sink);
   const launches: string[] = [];
-  await run({ kind: 'schedule', repo: REPO, issue: ISSUE }, depsOf(reader, launches, []) as never);
+  const errors: string[] = [];
+  await run({ kind: 'schedule', repo: REPO, issue: ISSUE }, depsOf(reader, launches, [], errors) as never);
+  assert.deepEqual(errors, [], nameOf(s));
+  // The plan's read, then the claim's: with any other count, what follows
+  // would not be the claim's answer.
+  assert.equal(reader.reads(), 2, `the plan reads the ticket once and the claim once more: ${nameOf(s)}`);
   return { claims: launches.length === 1, unreadable: unreadableSaid(sink.comments) };
 };
 
@@ -182,12 +204,14 @@ type Does = 'pickup' | 'spec' | 'message' | 'nothing';
 
 /** The unblocked row, and what the `unblocked` fire of a completed close does. */
 const unblocked = async (s: State) => {
-  const row = ticketRow({ ticket: ticketOf(s), blockers: undefined, fire: { blocker: BLOCKER }, labels: LABELS, now: NOW });
+  const row = ticketRow({ ticket: ticketOf(s), blockers: s.summary ? undefined : rowsOf(s), fire: { blocker: BLOCKER }, labels: LABELS, now: NOW });
   const sink = { comments: [] as string[] };
   const reader = readerOf(s, () => ticketOf(s), sink);
   const launches: string[] = [];
   const messages: string[] = [];
-  const result = await run({ kind: 'unblocked', repo: REPO, issue: ISSUE, blocker: BLOCKER }, depsOf(reader, launches, messages) as never) as { row?: string };
+  const errors: string[] = [];
+  const result = await run({ kind: 'unblocked', repo: REPO, issue: ISSUE, blocker: BLOCKER }, depsOf(reader, launches, messages, errors) as never) as { row?: string };
+  assert.deepEqual(errors, [], nameOf(s));
   assert.equal(result.row, row, `the fire takes ticketRow's row: ${nameOf(s)}`);
   const does: Does = messages.length > 0 ? 'message'
     : launches.length === 0 ? 'nothing'
@@ -208,8 +232,10 @@ const waitEnd = async (s: State) => {
     recordWait: async (_r: string, _i: number, _read: string, until: string) => { writes.push(`moved ${until}`); return true; },
     dropWait: async () => { writes.push('dropped'); return true; },
   };
-  const ended = await endedWaits({ reader: reader as never, state: state as never, repo: REPO, labels: LABELS, spec: true, now: NOW, log: () => {} });
+  const errors: string[] = [];
+  const ended = await endedWaits({ reader: reader as never, state: state as never, repo: REPO, labels: LABELS, spec: true, now: NOW, log: errorsTo(errors) });
   assert.deepEqual(ended.unread, [], nameOf(s));
+  assert.deepEqual(errors, [], nameOf(s));
   const commented = sink.comments.some((c) => !c.includes(WAIT_UNREADABLE_MARKER));
   const does: WaitEnd = ended.specs.length > 0 ? 'spec'
     : writes.some((w) => w.startsWith('moved')) ? 'moved later'
@@ -225,7 +251,8 @@ const lineHolds = (s: State) => s.line === 'ahead' || s.line === 'relative' || s
 /**
  * Pickup's selection and the claim's second read answer the same for every
  * state: open, ready by its labels, no open blocker, and no line that
- * holds. They have agreed on an open blocker since #290.
+ * holds. They have agreed on an open blocker since the claim's second read
+ * learned to skip a ticket with one.
  */
 const mayPickUp = (s: State) => s.open && s.labels === 'ready' && !s.blocker && !lineHolds(s);
 
@@ -245,12 +272,17 @@ const specSaysUnreadable = (s: State) => s.open && (s.labels === 'ready' || s.la
  * its unreadable report does not. A ready ticket with an open blocker and a
  * relative line is not reported, while one with an unreadable line is.
  *
+ * Difference, inside the selection: its relative report reads a blocker
+ * only from the dependency summary, never from the `blocked_by` rows. A
+ * ready ticket with no summary, an open blocker in its rows and a relative
+ * line is reported, though the selection does not pick it.
+ *
  * Difference: only the selection reports a relative line it may need to
  * settle. The unblocked fire settles one only when the line waits on the
  * issue that closed, which these states' line does not, and wait end drops
  * the item of a ticket whose line became relative.
  */
-const selectionSaysRelative = (s: State) => s.open && s.labels === 'ready' && !s.blocker && s.line === 'relative';
+const selectionSaysRelative = (s: State) => s.open && s.labels === 'ready' && (!s.blocker || !s.summary) && s.line === 'relative';
 
 /**
  * `ticketRow`: closed, then an open blocker, then a line that holds where
@@ -305,8 +337,8 @@ const waitEndDoes = (s: State): WaitEnd => {
 };
 
 describe('the four readiness paths, as main has them', () => {
-  test('the states cover open and closed, every label state, a blocker or none, every line, and an unreadied comment or none', () => {
-    assert.equal(STATES.length, 2 * 4 * 2 * 5 * 2);
+  test('the states cover open and closed, every label state, a blocker or none, by summary or by rows, every line, and an unreadied comment or none', () => {
+    assert.equal(STATES.length, 2 * 4 * 2 * 2 * 5 * 2);
     // Wait end's moved date on a claimed ticket is among them.
     assert.ok(STATES.some((s) => s.open && s.labels === 'claimed' && s.line === 'ahead'));
   });
