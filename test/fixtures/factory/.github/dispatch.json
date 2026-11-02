@@ -26,7 +26,8 @@
     "heartbeat": true,
     "periodics": true,
     "hooks": true,
-    "waits": true
+    "waits": true,
+    "signOff": true
   },
   "heartbeat": {
     "issue": 412,

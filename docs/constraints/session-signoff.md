@@ -9,9 +9,9 @@ session's own last reply is current and needs nothing in the repo.
 ## Rules
 
 - The sweep's candidates are the login's idle, unarchived sessions in a
-  served repo, the repo read from the list row's `config`
-  (`sources[].url`, `outcomes[].git_info.repo`: `reposOf`), as the deployed
-  list answers it. The list and record answer no `session_context`: the
+  served repo whose file turns the `signOff` switch on (dispatcher-repos.md),
+  the repo read from the list row's `config` (`sources[].url`,
+  `outcomes[].git_info.repo`: `reposOf`), as the deployed list answers it. The list and record answer no `session_context`: the
   account tools' `session_context` reshapes these fields. A turn that names
   a repo sweeps that repo's sessions; the bare schedule fire sweeps every
   served repo's.
@@ -34,7 +34,7 @@ session's own last reply is current and needs nothing in the repo.
   `Signing off` followed by `.`, `:`, `!` or the end of the line
   (`signsOff`). A served repo's sessions are told the line by the standing
   line governor writes under each message, or by the repo's own `signOff`
-  prompt.
+  prompt. With the switch off, the standing line leaves the ask out.
 - The archive reads the session's row again after its events, and archives
   only an idle one. A session the turn messaged is decided only by a
   `result` newer than the message.
@@ -45,8 +45,9 @@ session's own last reply is current and needs nothing in the repo.
 ## Examples
 
 - `sweepSignoffs` and `awaitReplies` in scripts/lib/session-signoff.mjs,
-  wired by `run` in dispatch/turn.mjs with `repos` the served repos: the
-  fire's, or every one for the bare schedule fire (dispatch/repos.mjs).
+  wired by `run` in dispatch/turn.mjs with `repos` the served repos whose
+  file turns `signOff` on: the fire's, or every one for the bare schedule
+  fire (dispatch/repos.mjs).
 
 ## Do not
 
@@ -59,4 +60,4 @@ session's own last reply is current and needs nothing in the repo.
   writes: each repo then needs the hook and a credential, and the record
   goes stale.
 
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The sweep and the standing line's ask run only where the repo's file turns the `signOff` switch on since #278.
