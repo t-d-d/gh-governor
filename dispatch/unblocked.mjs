@@ -29,7 +29,9 @@
  * so pickup does not start it before a person decides it still stands. That
  * guard is `pickup`'s, since pickup is what could start the ticket; the
  * comment and the message stay `unblocked`'s. With both on, the ticket gets
- * one comment.
+ * one comment. A retry of the close, after the labels came off, reads the
+ * App's label removals since the close ({@link unreadiedSince}), so its one
+ * comment still says they came off and how to ready the ticket again.
  *
  * The last row is pickup's reverse: the prompt tells the session to add the
  * claim label itself before it builds. The marker keeps the sweep off the
@@ -219,6 +221,37 @@ export const unblockedMessage = (fire, prompts) => `${unblockedFacts(fire)}\n\n$
  * @returns {string[]}
  */
 export const readyToTakeOff = (on, labels) => (labelRow(on, labels) === 'ready' ? [...labels.ready] : []);
+
+/**
+ * The ready labels an earlier run of this close took off a ticket, read back
+ * on a retry: the retry reads the ticket without them, so
+ * {@link readyToTakeOff} finds nothing and the comment would not say they
+ * came off. A label counts when the App removed it at or after the close
+ * and it is still off; the ticket, with those labels back, must read as
+ * ready. Those still on are the ones that would not come off.
+ *
+ * @param {readonly string[]} on The ticket's labels.
+ * @param {ReadonlyArray<{ label: string, at: string, ours: boolean }>} removals The ticket's label removals, each marked with whether the App made it.
+ * @param {Pick<Labels, 'ready' | 'claim' | 'exclude'>} labels The repo's.
+ * @param {string} since When the blocker closed.
+ * @returns {{ removed: string[], failed: string[] } | undefined}
+ */
+export const unreadiedSince = (on, removals, labels, since) => {
+  const from = Date.parse(since);
+  const ours = new Set(removals.filter((r) => r.ours && Date.parse(r.at) >= from).map((r) => r.label));
+  const removed = labels.ready.filter((l) => ours.has(l) && !on.includes(l));
+  if (removed.length === 0 || labelRow([...on, ...removed], labels) !== 'ready') return undefined;
+  return { removed, failed: labels.ready.filter((l) => on.includes(l)) };
+};
+
+/**
+ * Whether a not-planned close could have taken a ticket's ready labels off
+ * already: some are off, and with them all back it reads as ready.
+ *
+ * @param {readonly string[]} on
+ * @param {Pick<Labels, 'ready' | 'claim' | 'exclude'>} labels
+ */
+export const mayBeUnreadied = (on, labels) => labels.ready.some((l) => !on.includes(l)) && labelRow([...on, ...labels.ready], labels) === 'ready';
 
 /** @param {readonly string[]} names */
 const listed = (names) => {

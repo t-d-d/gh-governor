@@ -802,6 +802,30 @@ describe('githubReader', () => {
     assert.equal((await blind.allComments(10)).some((r) => r.ours), false);
   });
 
+  test('labelRemovals pages through an issue\'s events for its label removals, each marked with whether the reader\'s own App made it', async () => {
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/10/events': (_init: RequestInit | undefined, url: string) => {
+        const page = Number(new URL(url).searchParams.get('page'));
+        return page === 1
+          ? Array.from({ length: 100 }, () => ({ event: 'labeled', label: { name: 'mode: afk' }, created_at: 'a', actor: { type: 'User' }, performed_via_github_app: null }))
+          : [
+            { event: 'unlabeled', label: { name: 'mode: afk' }, created_at: '2026-11-02T10:00:00Z', actor: { type: 'Bot', login: 'governor-app[bot]' }, performed_via_github_app: { id: 5075844 } },
+            { event: 'unlabeled', label: { name: 'workflow: ready for development' }, created_at: '2026-11-02T10:00:01Z', actor: { type: 'User', login: 'p' }, performed_via_github_app: null },
+            { event: 'closed', created_at: 'c', actor: { type: 'User' } },
+          ];
+      },
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', appId: 5075844, fetch });
+    assert.deepEqual(await reader.labelRemovals(10), [
+      { label: 'mode: afk', at: '2026-11-02T10:00:00Z', ours: true },
+      { label: 'workflow: ready for development', at: '2026-11-02T10:00:01Z', ours: false },
+    ]);
+    assert.equal(calls.length, 2);
+    // A reader that does not know its App owns no removal.
+    const blind = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.equal((await blind.labelRemovals(10)).some((r) => r.ours), false);
+  });
+
   test('updateComment patches a comment\'s body by its id', async () => {
     const { fetch, calls } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues/comments/55': (init: RequestInit | undefined) => {

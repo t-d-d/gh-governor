@@ -975,6 +975,19 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         id: row.id, body: row.body ?? '', created_at: row.created_at, ours: postedByApp(row, appId),
       })),
 
+    /**
+     * An issue's label removals, oldest first, from its events: the label,
+     * when, and whether `appId`'s App made it as its bot (`postedByApp`); a
+     * reader without `appId` owns none.
+     *
+     * @param {number} number
+     * @returns {Promise<Array<{ label: string, at: string, ours: boolean }>>}
+     */
+    labelRemovals: async (number) =>
+      (await allPages(call, `/repos/${repo}/issues/${number}/events`, {}))
+        .filter((row) => row?.event === 'unlabeled' && typeof row.label?.name === 'string' && typeof row.created_at === 'string')
+        .map((row) => ({ label: row.label.name, at: row.created_at, ours: postedByApp({ user: row.actor, performed_via_github_app: row.performed_via_github_app }, appId) })),
+
     /** Add labels to an issue, leaving the ones it has. @param {number} number @param {string[]} labels */
     addLabels: async (number, labels) => {
       await call('POST', `/repos/${repo}/issues/${number}/labels`, { labels });
