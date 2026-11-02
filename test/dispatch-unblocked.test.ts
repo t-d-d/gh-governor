@@ -100,6 +100,27 @@ describe('ticketRow', () => {
     assert.equal(ticketRow({ ticket: { ...ticket(['mode: afk']), openBlockers: 0 }, blockers: stillBlocked, fire: done, labels }), 'ready');
   });
 
+  // A ticket its own `Blocked until:` line holds reads as still blocked,
+  // so a blocker's close starts nothing for it.
+  test('a ticket its line holds, with a date still to come or one unreadable: blocked', () => {
+    const now = Date.parse('2026-11-01T12:00:00Z');
+    for (const wait of [{ until: '2026-11-05' }, { unreadable: 'next week' }]) {
+      for (const on of [['mode: afk'], ['enhancement']]) {
+        assert.equal(ticketRow({ ticket: { ...ticket(on), wait }, blockers: closedBlocker, fire: done, labels, now }), 'blocked', JSON.stringify([wait, on]));
+      }
+    }
+  });
+
+  test('a ticket whose date has come: judged as if it had no line', () => {
+    const now = Date.parse('2026-11-05T00:00:00Z');
+    assert.equal(ticketRow({ ticket: { ...ticket(['mode: afk']), wait: { until: '2026-11-05' } }, blockers: closedBlocker, fire: done, labels, now }), 'ready');
+  });
+
+  test('a held ticket whose blocker closed as not planned is still told', () => {
+    const now = Date.parse('2026-11-01T12:00:00Z');
+    assert.equal(ticketRow({ ticket: { ...ticket(['mode: afk']), wait: { until: '2026-11-05' } }, blockers: closedBlocker, fire: dropped, labels, now }), 'not-planned');
+  });
+
   test('pickup governs the ready row, unblocked the not-planned, claimed and not-ready rows', () => {
     assert.deepEqual(ROW_SWITCH, { 'not-planned': 'unblocked', claimed: 'unblocked', ready: 'pickup', 'not-ready': 'unblocked' });
   });

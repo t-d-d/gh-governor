@@ -42,7 +42,7 @@ import { createHash } from 'node:crypto';
 import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
-import { isBlocked, labelRow } from '../scripts/lib/ready-work.mjs';
+import { isBlocked, isWaiting, labelRow } from '../scripts/lib/ready-work.mjs';
 
 /**
  * @typedef {import('./webhook/fire.mjs').UnblockedFire} UnblockedFire
@@ -121,20 +121,23 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
  * starts on a spec that assumed the dropped work. A ticket
  * carrying its dependency summary is judged by it (`isBlocked`), since the
  * rows leave out a blocker the App cannot see; `blockers` is read only for
- * a ticket without one.
+ * a ticket without one. A ticket its own `Blocked until:` line holds at
+ * `now` (`isWaiting`) reads as still blocked, so the close starts nothing
+ * for it.
  *
  * @param {{
- *   ticket: { state: string, labels: readonly string[], openBlockers?: number },
+ *   ticket: { state: string, labels: readonly string[], openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait },
  *   blockers: ReadonlyArray<{ state: string }> | undefined,
  *   fire: Pick<UnblockedFire, 'blocker'>,
  *   labels: Labels,
- * }} args
+ *   now?: number,
+ * }} args `now`: epoch ms, the clock where unset.
  * @returns {Row}
  */
-export const ticketRow = ({ ticket, blockers, fire, labels }) => {
+export const ticketRow = ({ ticket, blockers, fire, labels, now = Date.now() }) => {
   if (ticket.state !== 'open') return 'closed';
   if (fire.blocker.reason === NOT_PLANNED) return 'not-planned';
-  if (isBlocked(ticket, blockers)) return 'blocked';
+  if (isBlocked(ticket, blockers) || isWaiting(ticket, now)) return 'blocked';
   return labelRow(ticket.labels, labels);
 };
 

@@ -687,8 +687,8 @@ const switchedOn = async (decision, delivery, deps) => {
  * list, or a key version older than the item's; 503 for an item that could
  * not be read; 400 for a body that holds no text; 413 for text too long;
  * 429 for a fire past the hook's hourly cap; 503 for a count that could not
- * be taken; 202 for one that queued its fire. A repo with no item yet is queued, under the default
- * cap, and the task decides. Nothing but a 202 queues anything, and no
+ * be taken; 202 for one that queued its fire. A repo with no item yet is
+ * queued, under the default cap, and the task decides. Nothing but a 202 queues anything, and no
  * line logs the signature or a key. The fire's deduplication id is the
  * signature, so a replay inside the queue's window is not a second fire.
  * The hour counts each signature once: a resent request takes no place and

@@ -43,7 +43,7 @@ RUN npm ci --omit=dev
 
 COPY scripts/lib/claude-login.mjs scripts/lib/cli-entry.mjs scripts/lib/dispatch-prompt.mjs scripts/lib/dispatch-router.mjs scripts/lib/error-message.mjs scripts/lib/github-app.mjs scripts/lib/ready-work.mjs scripts/lib/session-branch.mjs scripts/lib/session-signoff.mjs ./scripts/lib/
 COPY dispatch/launch-session.py ./dispatch/launch-session.py
-COPY dispatch/lane.mjs dispatch/turn.mjs dispatch/deliveries.mjs dispatch/unblocked.mjs dispatch/cli.mjs dispatch/workflow.mjs dispatch/runs.mjs dispatch/coverage.mjs dispatch/labels.mjs dispatch/branch-run.mjs dispatch/review.mjs dispatch/checklist.mjs dispatch/pr-body.mjs dispatch/conflicts.mjs dispatch/prompts.mjs dispatch/repo-config.mjs dispatch/repos.mjs dispatch/heartbeat.mjs dispatch/periodics.mjs dispatch/pickup.mjs dispatch/hooks.mjs dispatch/routines.mjs ./dispatch/
+COPY dispatch/lane.mjs dispatch/turn.mjs dispatch/deliveries.mjs dispatch/unblocked.mjs dispatch/waits.mjs dispatch/cli.mjs dispatch/workflow.mjs dispatch/runs.mjs dispatch/coverage.mjs dispatch/labels.mjs dispatch/branch-run.mjs dispatch/review.mjs dispatch/checklist.mjs dispatch/pr-body.mjs dispatch/conflicts.mjs dispatch/prompts.mjs dispatch/repo-config.mjs dispatch/repos.mjs dispatch/heartbeat.mjs dispatch/periodics.mjs dispatch/pickup.mjs dispatch/hooks.mjs dispatch/routines.mjs ./dispatch/
 # The fire the receiver builds and the task parses (fire.mjs), the switch each
 # fire needs (switches.mjs), and the bodies the turn reads the way the
 # receiver does.

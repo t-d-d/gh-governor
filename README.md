@@ -22,6 +22,8 @@ Each served repo turns on the features it wants, one switch each:
 - **The PR review.** A model reviews each PR against the repo's checklist. Paths on the repo's human-only list always wait for a person. A PR closes tickets in its own repo only; work spanning repos marks the other repo's ticket as blocked by an issue here. A pass merges the PR, or, with `merge` off, approves it for the owner to merge.
 - **Sign-off.** A session whose last reply ends `Signing off.` is archived by the next turn. No session writes anything for this.
 
+One behaviour needs no switch. A ticket whose body opens with `Blocked until: 2026-11-05` is not started before that date, in every served repo. The wait ends at 00:00 UTC on the date, and a ready ticket is picked up at the first sweep on or after it. Text after the date can give the reason: `Blocked until: 2026-11-05 for a few days of log lines`. Only the body's first non-empty line counts, in any case. A line whose date governor cannot read, such as `2026-13-01` or `next week`, holds the ticket too, and governor comments once on the ticket to say so. To end a wait early, delete the line; to move it, change the date.
+
 How dark the factory runs is the repo's choice: with pickup and the review on and `merge` true, a ticket can go from label to merged commit with no person, except where its PR touches a human-only path.
 
 [docs/how-it-works.md](docs/how-it-works.md) describes each feature in full. [docs/constraints/](docs/constraints/README.md) holds the rules the code keeps. Diagrams that need motion or controls are HTML pages in `docs/pages/`, published at <https://t-d-d.github.io/gh-governor/>; [docs/how-it-works.md](docs/how-it-works.md#pages) says how they publish and how to preview one from a branch.
@@ -237,7 +239,7 @@ Governor-Signature: v=1,t=1790000000,sha256=<hex>
 
 - `text` is plain text, at most 32 KiB. Send the alarm's summary, not its whole payload.
 - `v` is the key version, `t` the time in Unix seconds, and the hex is the HMAC-SHA256 of `<t>.<raw body>`, keyed with the key's hex digits as text. Sign the exact bytes you send.
-- `t` must be no more than 30 seconds ahead of governor's clock and no more than 4 minutes 25 seconds behind it, so sign with the current time. The same request sent twice inside five minutes is one fire, and a request stays valid for 4 minutes 55 seconds, a margin under those five minutes, so a replay never starts a second session.
+- `t` must be no more than 30 seconds ahead of governor's clock and no more than 4 minutes 10 seconds behind it, so sign with the current time. The same request sent twice inside five minutes is one fire, and a request stays valid for 4 minutes 40 seconds, a margin under those five minutes at least as long as the receiver's timeout, so a replay never starts a second session.
 
 In Node:
 
@@ -260,7 +262,7 @@ The known answer in test/dispatch-hook.test.ts checks a caller's code: under the
 | `202` | The fire was queued. |
 | `200` | The repo's owner is not on the deployment's owner list. Nothing was queued. |
 | `400` | The body is not JSON, or holds no string `text`. |
-| `401` | The header is missing or malformed, the signature does not match, or `t` is more than 30 seconds ahead of governor's clock or more than 4 minutes 25 seconds behind it. Also a hook the repo's file did not list when governor last read it, or a key version older than the one it named. |
+| `401` | The header is missing or malformed, the signature does not match, or `t` is more than 30 seconds ahead of governor's clock or more than 4 minutes 10 seconds behind it. Also a hook the repo's file did not list when governor last read it, or a key version older than the one it named. |
 | `404` | The path under `/hooks/` names no repo and hook. |
 | `413` | The text is over 32 KiB, or too long to start a task with. |
 | `429` | The hook has had its `perHour` fires this clock hour. Nothing was queued: send it next hour, or not at all. |
