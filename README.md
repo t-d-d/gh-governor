@@ -19,11 +19,11 @@ Governor is [Thomas Dickinson](https://github.com/t-d-d)'s personal software fac
 On 28 October 2026 governor's code moved into this repo: about 14,700 lines of source and 1,360 tests. Since then it has worked its own backlog. In the five days to 12:00 UTC on 2 November 2026, it:
 
 - picked up **94 tickets** and started a Claude Code session on each;
-- merged **98 pull requests** written by Claude Code sessions. Over the 90 tickets they closed, pickup to merge took a median of **29 minutes**, and half of the tickets took between 16 and 94 minutes, review included;
-- closed **2** of those sessions' pull requests unmerged, a probe that closes its own pull request by design and a duplicate of another pull request, and reverted **none**;
+- merged **98 pull requests** written by Claude Code sessions, a median of **29 minutes** from pickup to merge, review included;
+- reverted **none** of them, and closed only 2 unmerged, neither of them rejected work;
 - grew by about **7,300 lines of source and 900 tests**, to more than 2,200 tests, every one of them offline.
 
-Each session reviews its own diff before it pushes. Thomas then reviews each pull request mainly from its description, which maps every acceptance criterion to the test that answers it, and merges it, often in batches, so these times include waiting for review. This repo turns on pickup, summons, PR messages, subscriptions, conflicts and blocker messages. It does not run governor's own PR review, so every merge is a person's.
+Each session reviews its own diff before it pushes. Thomas then reviews each pull request mainly from its description, which maps every acceptance criterion to the test that answers it, and merges it, often in batches, so these times include waiting for review. This repo runs pickup, summons and PR messages, and tells a session when a merge leaves its branch conflicted or a blocker closes. It does not run governor's own PR review, so every merge is a person's. [How this repo is built](docs/building-with-agents.md) has the full numbers.
 
 ### One feature, start to finish
 
@@ -62,13 +62,20 @@ sequenceDiagram
     else A person merges
         P->>GH: Review and merge
     end
-    Note over G,GH: A change to a human-only path always waits for a person
+    Note over G,GH: A change to a path the repo marks human-only always waits for a person
     G->>S: Your change is live, if the repo turns on deploy messages
     S->>G: "Signing off."
     G->>S: Archive the session
 ```
 
-Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action can take an issue, write the change, and answer review comments on its pull request, and a Claude Code cloud session can watch its own pull request. Governor does not drive those tools. It starts its own Claude Code cloud sessions and runs the loop around the change, across every repo it serves. It takes work from the backlog unasked, and holds a ticket while its blockers are open or its date has not come. It keeps one session per ticket for the ticket's whole life, so the agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships. Each repo sets how far it runs and which paths always need a person. It runs on your own Claude subscription and AWS account.
+### Why not just use an agent that answers mentions?
+
+Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action take an issue, write the change, and answer review comments on its pull request, and a Claude Code cloud session can watch its own pull request. Governor does not drive those tools. It starts its own Claude Code cloud sessions and orchestrates the loop around the change:
+
+- **It finds the work.** It takes tickets from the backlog unasked, and holds one while its blockers are open or its date has not come.
+- **One session per ticket, for the ticket's whole life.** The agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships.
+- **Rules per repo.** Each repo sets how far the factory runs and which paths always need a person.
+- **Your own accounts.** It runs on your Claude subscription and your AWS account.
 
 ## What it does
 
@@ -126,7 +133,7 @@ Some of the problems it solves, for engineers building something similar:
 
 Two CloudFormation stacks hold all of it, and GitHub Actions deploys them after the gate passes on `main`, then runs a probe in the new task. The code is Node.js, typed with JSDoc and checked by TypeScript, with a small Python launcher for the terminal. [How governor works](docs/how-it-works.md) covers each part in depth.
 
-**[Watch a fire travel through the system, animated](https://t-d-d.github.io/gh-governor/fire-lane.html)**, from the webhook to the queue and the task.
+**[Watch a GitHub event travel through the system, animated](https://t-d-d.github.io/gh-governor/fire-lane.html)**, from the webhook to the queue and the task.
 
 ## Personal, on purpose
 
@@ -137,6 +144,7 @@ Governor is built for one developer running their own repos on their own Claude 
 - **Your login, your terms.** Every session runs on your own claude.ai login, copied from an interactive sign-in, so governor is for your own repos, not a service for other people. Check your plan's terms before you leave it running unattended. The operator mints it again about every two weeks, and an alarm warns three days ahead. The subscription's usage limits, not AWS, set the real ceiling on throughput and cost.
 - **Nobody else runs it yet.** [Running your own governor](docs/self-hosting.md) has every step, but only its author has deployed it.
 - **One lane.** One task runs one turn at a time, and the hourly sweep starts at most two ticket sessions by default. That keeps the login safe and is plenty for one person's repos. A team would need a different design.
+- **What a team version would change.** A login per developer, a lane per login, and a lease on each login in place of one task at a time.
 
 ## Use the playbook without governor
 
