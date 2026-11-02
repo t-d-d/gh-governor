@@ -16,7 +16,7 @@ Governor started in a private repo. On 28 October 2026 its code moved here: abou
 
 - picked up **94 tickets** and started a Claude Code session on each;
 - merged **98 pull requests** written by Claude Code sessions, a median of **29 minutes** from pickup to merge, the owner's review included;
-- grew by about **7,300 lines of source and 900 tests**, to 2,261 tests, every one of them offline.
+- grew by about **7,300 lines of source and 900 tests**, to more than 2,200 tests, every one of them offline.
 
 The owner writes the specs and tickets, and reviews and merges every pull request. Sessions write the code, the tests and the pull request descriptions.
 

@@ -13,7 +13,7 @@ Governor started in a private repo. Its code moved here on 28 October 2026, in o
 | Median time from pickup to merge, the owner's review included | 29 minutes, over the 90 tickets a merged pull request closed |
 | Commits authored by Claude, merges aside, the move included | 207 of 211 |
 | Source, stack and scripts | about 14,700 lines at the move, about 22,000 after |
-| Tests | 1,360 at the move, 2,261 after |
+| Tests | 1,360 at the move, 2,261 on 2 November |
 | Constraint files, and the fitness-function suites that hold them | 6 and 28 |
 
 A person still reviews and merges every pull request here. Governor does not review this repo's pull requests, because every file in it is governor's own code. The owner reads each description first: the `pr-description` skill writes it so its intent, and any drift from the ticket, can be judged before the diff.
