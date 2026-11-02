@@ -33,10 +33,11 @@
 # a pseudo-terminal and find the CLI. A red probe is a red deploy.
 #
 # A red probe after an apply rolls the stack back. Before the apply, the job
-# reads the image the stack runs, the last one whose probe passed: a deploy
-# leaves the stack on a new image only when its probe passed, and otherwise
-# rolls back to the image before it. On a red probe it applies the same
-# template again with that image, changing nothing else, and probes again.
+# reads the image the stack runs, which is the image before this deploy. It
+# is not always one whose probe passed: a red step between the apply and the
+# probe, or a rollback that failed, leaves the new image in place. On a red
+# probe that changed the image, the job applies the same template again with
+# the image before it, changing nothing else, and probes again.
 # The deploy stays red either way. A rollback that does not bring the task
 # back, because its apply or its probe failed, pages the operator through the
 # stack's alerts topic: governor is then down. The rest of a template change,
@@ -227,15 +228,17 @@ jobs:
 
       # The image a red probe rolls back to. A stack that does not exist yet
       # runs no image, so a red probe on its first apply has nothing to roll
-      # back to; any other error stops the deploy before it changes anything.
+      # back to, and nor does one whose deploy left the image as it was; any
+      # other error stops the deploy before it changes anything.
       - name: Read the image the stack runs now
         id: previous
         if: ${{ !inputs.probe_only }}
         run: |
+          # stderr apart from the value, so a warning never becomes the image.
           if ! PREVIOUS=$(aws cloudformation describe-stacks --stack-name governor \
-              --query "Stacks[0].Parameters[?ParameterKey=='ImageUri'].ParameterValue" --output text 2>&1); then
-            if [[ "$PREVIOUS" != *"does not exist"* ]]; then
-              echo "::error::could not read the image the stack runs: ${PREVIOUS}"
+              --query "Stacks[0].Parameters[?ParameterKey=='ImageUri'].ParameterValue" --output text 2>"$RUNNER_TEMP/previous.err"); then
+            if ! grep -q "does not exist" "$RUNNER_TEMP/previous.err"; then
+              echo "::error::could not read the image the stack runs: $(cat "$RUNNER_TEMP/previous.err")"
               exit 1
             fi
             PREVIOUS=""
@@ -331,7 +334,7 @@ jobs:
       # the rollback changes.
       - name: Roll the stack back to the image it ran before this deploy
         id: rollback
-        if: ${{ failure() && !inputs.probe_only && steps.probe.outcome == 'failure' && steps.previous.outputs.image_uri != '' }}
+        if: ${{ failure() && !inputs.probe_only && steps.probe.outcome == 'failure' && steps.previous.outputs.image_uri != '' && steps.previous.outputs.image_uri != steps.image.outputs.image_uri }}
         env:
           PREVIOUS_IMAGE_URI: ${{ steps.previous.outputs.image_uri }}
         run: |

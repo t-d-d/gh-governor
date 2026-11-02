@@ -1177,7 +1177,8 @@ describe('.github/workflows/deploy.yml', () => {
  * step that runs takes the outcome `outcomes` gives it, or success.
  * Returns the ids (or names) of the steps that ran, in order.
  */
-const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success' | 'failure'>, previousImage = 'governor@sha256:good' } = {}) => {
+const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success' | 'failure'>, previousImage = 'governor@sha256:good', newImage = 'governor@sha256:new' } = {}) => {
+  const outputsOf: Record<string, Record<string, string>> = { previous: { image_uri: previousImage }, image: { image_uri: newImage } };
   const state: Record<string, { outcome: string; outputs: Record<string, string> }> = {};
   const ran: string[] = [];
   let failed = false;
@@ -1200,7 +1201,7 @@ const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success
     ran.push(key);
     const outcome = outcomes[key] ?? 'success';
     if (outcome === 'failure') failed = true;
-    if (step.id) state[step.id] = { outcome, outputs: step.id === 'previous' ? { image_uri: previousImage } : {} };
+    if (step.id) state[step.id] = { outcome, outputs: outputsOf[step.id] ?? {} };
   }
   return { ran, failed };
 };
@@ -1215,6 +1216,8 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     assert.match(previous.run ?? '', /ParameterKey=='ImageUri'/);
     assert.match(previous.run ?? '', /image_uri=/);
     assert.equal(previous.if, '${{ !inputs.probe_only }}');
+    // A warning the CLI prints on stderr would otherwise become the image a rollback applies.
+    assert.doesNotMatch(previous.run ?? '', /PREVIOUS=\$\(aws [^)]*2>&1/, 'the image read takes the CLI\'s stderr into its value');
   });
 
   test('holds the order: read the current image, apply, probe, and on a red probe re-apply the previous image and probe again', () => {
@@ -1279,6 +1282,12 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
   test('a stack that ran no image before the apply has nothing to roll back to', () => {
     const { ran } = runDeploy({ outcomes: { probe: 'failure' }, previousImage: '' });
     assert.equal(ran.at(-1), 'probe');
+  });
+
+  test('a deploy that left the image as it was has no other image to roll back to', () => {
+    const { ran, failed } = runDeploy({ outcomes: { probe: 'failure' }, previousImage: 'governor@sha256:same', newImage: 'governor@sha256:same' });
+    assert.equal(ran.at(-1), 'probe');
+    assert.ok(failed);
   });
 
   test('a red step before the probe rolls nothing back', () => {
