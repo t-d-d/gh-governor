@@ -23,7 +23,8 @@
 import { isCliEntry } from '../scripts/lib/cli-entry.mjs';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { work, sqsLane } from './lane.mjs';
-import { CLAIM_STRANDED, SESSION_UNRECORDED, clearTurnState, realDeps, run, ticketOf, unrecordedLine } from './turn.mjs';
+import { CLAIM_STRANDED, clearTurnState, realDeps, run, ticketOf } from './turn.mjs';
+import { SESSION_UNRECORDED, unrecordedLine } from './launcher.mjs';
 import { errorText } from './webhook/error-text.mjs';
 import { FIRE_VARIABLE } from './webhook/fire.mjs';
 
