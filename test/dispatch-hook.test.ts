@@ -10,6 +10,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import { resolve } from 'node:path';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_DEDUP_WINDOW_MS, HOOK_TEXT_LIMIT, hookKey, hookPath, hookSignature, readSignature } from '../dispatch/webhook/hook.mjs';
 import { handle } from '../dispatch/webhook/route.mjs';
 import { hookTable, type Counted } from '../dispatch/webhook/hook-table.mjs';
@@ -18,8 +19,7 @@ import { HOOK_PER_HOUR_MAX, FIRE_BUDGET, fireWeight, parseFire } from '../dispat
 import { configSchema, readConfig, resolveFiles, switchOf } from '../dispatch/repo-config.mjs';
 import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
 import { factoryFile } from './helpers/factory.ts';
-import { resolve } from 'node:path';
-import { loadTemplate } from './helpers/cfn.ts';
+import { loadTemplate, resourcesOfType } from './helpers/cfn.ts';
 import { REPO_ROOT } from './helpers/repo-model.ts';
 
 const HOOK_SECRET = 'hook-secret-test';
@@ -165,9 +165,9 @@ describe('handle — a hook fire', () => {
   // least the receiver's timeout under the window.
   const receiverTimeoutMs = (): number => {
     const stack = loadTemplate(resolve(REPO_ROOT, 'infra/governor.cfn.yml'));
-    const functions = Object.values(stack.Resources ?? {}).filter((r) => r.Type === 'AWS::Lambda::Function' && r.Properties?.FunctionName === 'governor-webhook');
+    const functions = resourcesOfType(stack, 'AWS::Lambda::Function').filter(([, r]) => r.Properties?.FunctionName === 'governor-webhook');
     assert.equal(functions.length, 1, 'the stack holds one governor-webhook function');
-    const timeout = functions[0]?.Properties?.Timeout;
+    const timeout = functions[0]?.[1].Properties?.Timeout;
     assert.equal(typeof timeout, 'number', 'the receiver sets its Timeout in seconds');
     return (timeout as number) * 1000;
   };
