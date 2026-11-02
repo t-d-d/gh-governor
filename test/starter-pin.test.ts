@@ -150,6 +150,20 @@ describe('pinnedInputProblems', () => {
     }
   });
 
+  test('tells a shallow clone that holds the pin but not its ancestry to unshallow, not that the pin is off main', () => {
+    const shallow = mkdtempSync(join(tmpdir(), 'starter-pin-shallow-'));
+    try {
+      execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repo.dir}`, shallow]);
+      execFileSync('git', ['fetch', '-q', '--depth', '1', 'origin', repo.onMain], { cwd: shallow });
+      const got = pinnedInputProblems({ cwd: shallow, main: 'origin/main', sha: repo.onMain, path: CHECKER, passed: STARTER_WITH });
+      assert.equal(got.length, 1, JSON.stringify(got));
+      assert.doesNotMatch(got[0] ?? '', /is not on main/);
+      assert.match(got[0] ?? '', /shallow.*git fetch --unshallow origin/);
+    } finally {
+      rmSync(shallow, { recursive: true, force: true });
+    }
+  });
+
   test('accepts an expression passed to a number or boolean input, as GitHub does', () => {
     const got = pinnedInputProblems({ cwd: repo.extra.dir, main: 'main', sha: repo.extra.typed, path: CHECKER, passed: { 'tolerance-hours': '${{ vars.HOURS }}', strict: '${{ inputs.strict }}' } });
     assert.deepEqual(got, []);
