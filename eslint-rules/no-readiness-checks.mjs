@@ -13,8 +13,17 @@
  * `then()` callback. A name in `checks` other than `allowed` is refused.
  * Where the names cannot be read, such as a module kept whole in a variable
  * or a rest element, the import is refused too, since it could reach any
- * check. Such a caller destructures the names it needs instead. An
- * `import()` whose path is not a plain string is not seen.
+ * check. Such a caller destructures the names it needs instead. A `then()`
+ * callback written as a `function` that reads `arguments`, or calls `eval`,
+ * which can read it unseen, could take any check that way, so it is refused
+ * too. An `import()` whose path is not a plain string is not seen.
+ *
+ * A plain string that names ready-work.mjs anywhere but as an import's path
+ * is refused whatever it takes, even in a kept caller. That covers `require`,
+ * or a `createRequire` result under any name, which loads ESM on some Node
+ * versions, however the path reaches it: as an argument, through `call` or
+ * `apply`, a spread, or a variable. No caller needs one, since an import
+ * names what it takes. A path built from pieces at run time is not seen.
  *
  * Armed over dispatch/ and scripts/ in eslint.config.js, with each of the
  * two kept callers allowed its one check.
@@ -72,9 +81,10 @@ const namesReadOff = (node) => {
 /**
  * The names an `import()` takes, or undefined when unreadable.
  * @param {Node & { parent?: Node }} node
+ * @param {(fn: import('estree').FunctionExpression) => boolean} readsArguments whether a function reads its `arguments`
  * @returns {string[] | undefined}
  */
-const namesTaken = (node) => {
+const namesTaken = (node, readsArguments) => {
   /** @type {(Node & { parent?: Node }) | undefined} */
   const parent = node.parent;
   // An import() kept only for its side effects takes no name.
@@ -95,6 +105,7 @@ const namesTaken = (node) => {
     if (call?.type !== 'CallExpression' || call.callee !== parent) return undefined;
     const [callback] = call.arguments;
     if (callback?.type !== 'ArrowFunctionExpression' && callback?.type !== 'FunctionExpression') return undefined;
+    if (callback.type === 'FunctionExpression' && readsArguments(callback)) return undefined;
     const [param] = callback.params;
     return param === undefined ? [] : patternNames(param);
   }
@@ -145,6 +156,9 @@ const rule = {
       refused:
         '`{{name}}` taken from ready-work.mjs. Ask ticketStatus, mayPickUp or mayStartSpec '
         + 'in scripts/lib/ready-work.mjs instead of combining the readiness checks here.',
+      required:
+        'ready-work.mjs named outside an import, where it could be loaded by a call such as require. '
+        + 'Import the exports it needs, and ask ticketStatus, mayPickUp or mayStartSpec for readiness.',
       unreadable:
         'An import of ready-work.mjs whose names lint cannot read, so it could reach a readiness check. '
         + 'Name the exports it needs, and ask ticketStatus, mayPickUp or mayStartSpec for readiness.',
@@ -153,6 +167,16 @@ const rule = {
   create(context) {
     const { checks, allowed } = /** @type {{ checks: string[], allowed?: string }} */ (context.options[0] ?? { checks: [] });
     const refused = new Set(checks.filter((name) => name !== allowed));
+    // Scope analysis counts a read from an arrow inside the function, and
+    // not a property that happens to be named `arguments`. A direct `eval`
+    // can read it from a string scope analysis does not see, so a call to an
+    // unshadowed `eval` counts as a read.
+    /** @param {import('estree').FunctionExpression} fn */
+    const readsArguments = (fn) => {
+      const scope = context.sourceCode.getScope(fn);
+      return (scope.set.get('arguments')?.references.length ?? 0) > 0
+        || scope.through.some((ref) => ref.identifier.name === 'eval');
+    };
     /**
      * @param {Node} node
      * @param {string[] | undefined} names
@@ -182,7 +206,13 @@ const rule = {
         if (targets(node.source)) judge(node, staticNames(node));
       },
       ImportExpression(node) {
-        if (targets(node.source)) judge(node, namesTaken(node));
+        if (targets(node.source)) judge(node, namesTaken(node, readsArguments));
+      },
+      // An import's own path is judged above by the names it takes.
+      'Literal, TemplateLiteral'(/** @type {Node & { parent?: Node }} */ node) {
+        const { parent } = node;
+        if (parent !== undefined && 'source' in parent && parent.source === node) return;
+        if (targets(node)) context.report({ node, messageId: 'required' });
       },
     };
   },
