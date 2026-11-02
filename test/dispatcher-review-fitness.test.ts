@@ -89,10 +89,10 @@ describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)',
   });
 
   test('the check refuses repl, test and wasi: each evaluates a string, starts a process or runs a program', () => {
-    const root = mkdtempSync(join(tmpdir(), 'governor-review-builtins-'));
+    const root = mkdtempSync(join(tmpdir(), 'governor-review-repl-test-wasi-'));
     try {
-      writeFileSync(join(root, 'entry.mjs'), "import repl from 'node:repl';\nimport { run } from 'node:test';\nexport { spec } from 'node:test/reporters';\nexport { WASI } from 'wasi';\nexport const later = () => import('repl');\nexport const x = [repl, run];\n");
-      assert.deepEqual(codeRunners(root, 'entry.mjs').sort(), ['entry.mjs imports node:repl', 'entry.mjs imports node:test', 'entry.mjs imports node:test/reporters', 'entry.mjs imports repl', 'entry.mjs imports wasi']);
+      writeFileSync(join(root, 'entry.mjs'), "import repl from 'node:repl';\nimport { run } from 'node:test';\nexport { spec } from 'node:test/reporters';\nexport { WASI } from 'wasi';\nexport const later = () => import('repl');\nexport const wasm = () => import('node:wasi');\nexport const x = [repl, run];\n");
+      assert.deepEqual(codeRunners(root, 'entry.mjs').sort(), ['entry.mjs imports node:repl', 'entry.mjs imports node:test', 'entry.mjs imports node:test/reporters', 'entry.mjs imports node:wasi', 'entry.mjs imports repl', 'entry.mjs imports wasi']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
