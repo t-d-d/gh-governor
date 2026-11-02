@@ -1,10 +1,10 @@
 # How this repo is built
 
-Governor builds itself the same way it builds other repos. The owner writes the tickets. Claude Code sessions that governor starts write the code, the tests and the pull requests. The owner reviews and merges. This page describes that loop, and the files in this repo that keep it on track, for anyone who wants to run a repo the same way.
+Governor is built the way it builds any repo it serves. The owner writes the tickets. Claude Code sessions that governor starts write the code, the tests and the pull requests. The owner reviews and merges. This page describes that loop, and the files in this repo that keep it on track, for anyone who wants to run a repo the same way.
 
 ## The numbers
 
-Governor started in a private repo. Its code moved here on 28 October 2026, in one commit of about 14,700 lines of source and 1,360 tests. In the six days to 2 November 2026:
+Governor started in a private repo. Its code moved here on 28 October 2026, in one commit of about 14,700 lines of source and 1,360 tests. In the five days to 12:00 UTC on 2 November 2026:
 
 | | |
 |---|---|
@@ -13,10 +13,10 @@ Governor started in a private repo. Its code moved here on 28 October 2026, in o
 | Median time from pickup to merge, the owner's review included | 29 minutes, over the 90 tickets a merged pull request closed |
 | Commits authored by Claude, merges aside, the move included | 207 of 211 |
 | Source, stack and scripts | about 14,700 lines at the move, about 22,000 after |
-| Tests | 1,360 at the move, 2,261 on 2 November |
+| Tests | 1,360 at the move, 2,261 at the end of that window |
 | Constraint files, and the fitness-function suites that hold them | 6 and 28 |
 
-A person still reviews and merges every pull request here. Governor does not review this repo's pull requests, because every file in it is governor's own code. The owner reads each description first: the `pr-description` skill writes it so its intent, and any drift from the ticket, can be judged before the diff.
+A person still reviews and merges every pull request here. Governor does not review this repo's pull requests, since it would be marking its own work. The owner reads each description first: the `pr-description` skill writes it so its intent, and any drift from the ticket, can be judged before the diff.
 
 ## The loop
 
@@ -38,12 +38,12 @@ Work a session finds in passing becomes a new issue, not a fix in the branch it 
 | [CLAUDE.md](../CLAUDE.md) | The rules every session reads first: scope, tests first, the gate, branches, what only the owner can do, and how to sign off. |
 | [.claude/skills/fetch-ticket](../.claude/skills/fetch-ticket/SKILL.md) | Gathers a ticket's full context and stops on an open blocker or a conflict. |
 | [.claude/skills/constraints](../.claude/skills/constraints/SKILL.md) | Builds the index of `docs/constraints/` from each file's `Relevance:` line, and has the session read every file that matches its change before it edits code. |
-| [.claude/rules/constraints.md](../.claude/rules/constraints.md) | A rule scoped to the code paths. Working on a file under `dispatch/`, `test/`, `infra/` or `.github/` reminds the session to run the constraints skill. |
+| [.claude/rules/constraints.md](../.claude/rules/constraints.md) | A rule scoped to the code paths. Working on a file under `dispatch/`, `scripts/`, `test/`, `infra/` or `.github/`, or on the package and lint config, reminds the session to run the constraints skill. |
 | [.claude/skills/pre-push](../.claude/skills/pre-push/SKILL.md) | Catch up, gate, review, push, in that order, with a rule for how each review finding ends. |
 | [.claude/skills/pr-description](../.claude/skills/pr-description/SKILL.md) | A pull request body the owner can judge without opening the diff, including a table that maps each acceptance criterion to the test that answers it. |
 | [.claude/skills/unslop](../.claude/skills/unslop/SKILL.md) | Writing rules for anything a person reads: pull requests, issues, docs, and the messages governor sends. |
 | [.claude/skills/github-tooling](../.claude/skills/github-tooling/SKILL.md) | Which GitHub routes work from a cloud session, so a session does not mistake a refused route for missing access. |
-| [.claude/hooks/session-start.sh](../.claude/hooks/session-start.sh) | Installs dependencies when a cloud session starts, and only when the lockfile has changed. |
+| [.claude/hooks/session-start.sh](../.claude/hooks/session-start.sh) | Installs dependencies when a cloud session starts, unless the installed tree already matches the lockfile. |
 
 ## Constraints and fitness functions
 

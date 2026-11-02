@@ -63,7 +63,7 @@ Parameters:
 
   # Read from Parameter Store inside AWS on every apply, so the address never
   # passes through GitHub, whose run logs are public for this repo. The
-  # operator saves it once (README, Fork and deploy); the deploy passes none.
+  # operator saves it once (docs/self-hosting.md, Fork and deploy); the deploy passes none.
   AlertEmail:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /governor/alert-email
