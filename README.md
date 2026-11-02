@@ -10,9 +10,15 @@ Coding agents can write a pull request. The work around one is still manual: pic
 
 The name comes from the governor on a steam engine, which holds the engine's speed with nobody at the throttle ([more below](#why-governor)).
 
-## Where it came from
+## Who built it, and where it came from
 
-Governor is [Thomas Dickinson](https://github.com/t-d-d)'s personal software factory. It came out of building a production service with Claude Code agents. The practices, skills and automations that ran that service's backlog were distilled into governor, and that service's repo stays private. Thomas designed the factory and the rules its agents work under, writes the specs and tickets, and merges every pull request. Claude Code sessions write the code.
+Governor is [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/)'s personal software factory, distilled from running a production service that agents build.
+
+**The service.** Thomas founded and runs a paid article-to-podcast service, live on the web, iOS, macOS and Android, and inside Claude, ChatGPT and Gemini. Coding agents write all of its code, TypeScript on AWS serverless, and automated checks decide what merges. Thomas's approval sits on the specification, before the code exists. Every agent session is archived and evaluated afterwards. The practices, skills and automations that run that backlog were distilled into governor. The service's repo stays private.
+
+**Before that.** For eight years Thomas led Standard Chartered Bank's delivery platform: CI/CD and release engineering for more than 800 applications, run by a team of up to 16 engineers across Singapore, the UK and India. Manual release gates became automated checks, designed with the security and risk teams, and teams' lead time to production fell from months to weeks, and in places to days. Governor applies the same idea to agents: specification first, quality built into the pipeline as automated checks, and a person's approval only where no check can replace it.
+
+Thomas designed governor and the rules its agents work under, writes the specs and tickets, and merges every pull request in this repo. Claude Code sessions write the code. [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/) · [GitHub](https://github.com/t-d-d)
 
 ## It builds itself
 
