@@ -1,6 +1,6 @@
 # The offline gate: the same `npm run gate` a contributor runs. It holds no
-# secret and reaches no AWS account, so it runs on every push and every pull
-# request, forks' included.
+# secret and reaches no AWS account, so it is safe to run on every push and
+# on a fork's pull request.
 #
 # A branch pushed here is gated by its push run, so its pull request run
 # skips the job rather than gate the same commit twice. A fork's pull request

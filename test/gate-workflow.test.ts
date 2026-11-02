@@ -32,7 +32,7 @@ describe('the gate runs once per commit', () => {
   test('it is triggered by a push to any branch but main, a pull request, and a call', () => {
     const { on } = gate();
     assert.deepEqual(Object.keys(on).sort(), ['pull_request', 'push', 'workflow_call']);
-    assert.deepEqual(on.push.branches_ignore ?? on.push['branches-ignore'], ['main']);
+    assert.deepEqual(on.push['branches-ignore'], ['main']);
   });
 
   test('a push to a branch here runs the gate, and so does a caller on main', () => {
