@@ -106,7 +106,7 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { WAIT_PROMPT, holdWait, waitLinks } from './waits.mjs';
-import { connectorsOf, duePeriodics, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
+import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { RoutinesApiError } from './routines.mjs';
 import { hookFor, planHook } from './hooks.mjs';
 import { planDispatch } from './dispatch-fire.mjs';
@@ -129,7 +129,7 @@ import { HOOK_PER_HOUR, LANE, LANE_COUNTS, laneCount, ownerListed, ownersOf, par
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, HEARTBEAT_REFUSED, HEARTBEAT_UNWRITTEN, readHeartbeat, stampHeartbeat } from './heartbeat.mjs';
 import { launcher, routineLaunch } from './launcher.mjs';
-import { REPO_SKIPPED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan, routineFault } from './launch-plan.mjs';
+import { CAP_ZERO_REASON, REPO_SKIPPED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan, routineFault } from './launch-plan.mjs';
 
 export { CLAIM_STRANDED, CONNECTOR_MISSING, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, ticketOf } from './launch-plan.mjs';
 
@@ -834,17 +834,17 @@ const eventPeriodics = async ({ repo, config, counted, base, started, carried, s
 const startPeriodics = async ({ repo, config, counted, started, carried, start, deps, due, unread, dispatched, lines }) => {
   const beats = () => (lines.length === 0 ? [] : [{ repo, beat: { periodics: lines } }]);
   if (due.length === 0) return { dispatched, unread, beats: beats() };
-  const why = deps.cap === 0 ? 'DispatchCap is 0: no fire starts anything'
+  const why = deps.cap === 0 ? CAP_ZERO_REASON
     : carried.length > 0 && carried.every((d) => d.outcome === 'failed') ? 'the turn\'s own launch in this repo started nothing, and a periodic\'s would fail the same way: each stays due for the next event or sweep'
       : null;
   if (why !== null) {
-    deps.log('dispatch-periodic', { repo, periodics: due.map((d) => d.periodic.name), outcome: 'not started', reason: why });
+    logNotStarted(deps.log, repo, due, why);
     return { dispatched, unread, beats: beats() };
   }
   const ordered = due.sort((a, b) => a.due - b.due);
   for (const [i, { periodic, read, by, windows, asOf }] of ordered.entries()) {
     if (deps.now() - started > EVENT_PERIODIC_WINDOW_MS) {
-      deps.log('dispatch-periodic', { repo, periodics: ordered.slice(i).map((d) => d.periodic.name), outcome: 'not started', reason: `out of time: past ${EVENT_PERIODIC_WINDOW_MS} ms into the turn, a launch might outrun the deadline; each stays due for the next event or sweep` });
+      logNotStarted(deps.log, repo, ordered.slice(i), `out of time: past ${EVENT_PERIODIC_WINDOW_MS} ms into the turn, a launch might outrun the deadline; each stays due for the next event or sweep`);
       break;
     }
     const firedAt = new Date(deps.now()).toISOString();

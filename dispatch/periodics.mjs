@@ -379,6 +379,21 @@ const noWindow = async (kind) => {
 export const connectorsOf = (periodic) => (periodic.connectors === undefined ? {} : { connectors: periodic.connectors });
 
 /**
+ * Log the `dispatch-periodic` `not started` line for a repo's due periodics
+ * a fire leaves unstarted, the one that came due first listed first, as
+ * they would have launched. Their records stay, so each stays due. The
+ * event path and the bare fire both log through it.
+ *
+ * @param {(event: string, context?: Record<string, unknown>) => void} log
+ * @param {string} repo
+ * @param {Due[]} due
+ * @param {string} reason
+ */
+export const logNotStarted = (log, repo, due, reason) => {
+  log('dispatch-periodic', { repo, periodics: [...due].sort((a, b) => a.due - b.due).map((d) => d.periodic.name), outcome: 'not started', reason });
+};
+
+/**
  * Move a periodic's record to a launch that started, or may have, over the
  * record the turn read. A record that moved since the read is left and
  * logged; a write that failed is returned, since the next fire may start

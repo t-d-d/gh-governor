@@ -11,9 +11,11 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { CLAIM_STRANDED, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan } from '../dispatch/launch-plan.mjs';
+import { CAP_ZERO_REASON, CLAIM_STRANDED, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan } from '../dispatch/launch-plan.mjs';
 import { readConfig } from '../dispatch/repo-config.mjs';
 import { factoryFile } from './helpers/factory.ts';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 const REPO = 'acme/factory';
 const OTHER = 'acme/other';
@@ -168,5 +170,14 @@ describe('launchPlan starts every launch a plan holds', () => {
     await assert.rejects(launchPlan(plan([ticket(16)]), ctx, NOW), /launcher down/);
     assert.deepEqual(logged.filter((l) => l.event === CLAIM_STRANDED).map((l) => l.issue), [16]);
     assert.equal(ctx.claims.size, 0);
+  });
+});
+
+describe('the reason a cap of 0 gives', () => {
+  test('is written once, in dispatch/launch-plan.mjs, and every fire that logs it imports it', () => {
+    const files = (readdirSync('dispatch', { recursive: true }) as string[]).filter((f) => f.endsWith('.mjs'));
+    const holding = files.filter((f) => readFileSync(join('dispatch', f), 'utf8').includes(CAP_ZERO_REASON));
+    assert.deepEqual(holding, ['launch-plan.mjs']);
+    assert.match(CAP_ZERO_REASON, /^DispatchCap is 0/);
   });
 });

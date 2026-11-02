@@ -18,6 +18,7 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
 import { GITHUB_SOURCE } from './deliveries.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { fireRepoOf } from './repos.mjs';
+import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { ROW_SWITCH, UNREADIED_HELD, mayBeUnreadied, notPlannedComment, readyPrompt, readyToTakeOff, rowOf, specPrompt, unblockedMessage, unreadiedSince } from './unblocked.mjs';
 import { relativeAtClose, reportUnreadable } from './waits.mjs';
 import { lastDispatch } from './webhook/fire.mjs';
@@ -195,7 +196,7 @@ export const planUnblocked = async (invocation, ctx) => {
   /** @type {import('./turn.mjs').PlannedLaunch[]} */
   const launches = [];
   if (ctx.cap === 0) {
-    ctx.log('dispatch-unblocked', { ...about, outcome: 'not started', reason: 'DispatchCap is 0: no fire starts anything' });
+    ctx.log('dispatch-unblocked', { ...about, outcome: 'not started', reason: CAP_ZERO_REASON });
   } else if (row === 'ready') {
     // As pickup does: the selection's own checks, the window included.
     const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, prompts: ctx.prompts }], cap: 1, now: ctx.now(), only: [issue] });
