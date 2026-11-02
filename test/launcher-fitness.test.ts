@@ -14,6 +14,11 @@
  * `launcherPath`. The deps `run` hands `turnFor` and the event periodics
  * carry the launcher's `start` as their `launch`, so no module past them
  * holds the CLI launch.
+ *
+ * The planners (dispatch/sweep.mjs, dispatch/hooks.mjs,
+ * dispatch/dispatch-fire.mjs, dispatch/unblocked-fire.mjs) and the loop that
+ * starts their plans (dispatch/launch-plan.mjs) are held to the same rule
+ * with no exception: they start a session only through the context's `start`.
  */
 
 import { test, describe } from 'node:test';
@@ -22,7 +27,10 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { nodes, parseJs } from './helpers/ast.ts';
 
-const FILES = ['dispatch/turn.mjs', 'dispatch/cli.mjs'];
+/** The modules that plan or start a launch past turn.mjs and cli.mjs, which define none. */
+const PLANNERS = ['dispatch/launch-plan.mjs', 'dispatch/sweep.mjs', 'dispatch/hooks.mjs', 'dispatch/dispatch-fire.mjs', 'dispatch/unblocked-fire.mjs'];
+
+const FILES = ['dispatch/turn.mjs', 'dispatch/cli.mjs', ...PLANNERS];
 
 /** The module-level functions that define the launch and the record write. */
 const DEFINERS = new Set(['realDeps', 'dynamoState']);
@@ -37,6 +45,7 @@ const CALLS = new Set(['recordSession', 'routineLaunch', 'launcherPath']);
 const TEXT = Object.fromEntries(FILES.map((path) => [path, readFileSync(path, 'utf8')]));
 const TURN = TEXT['dispatch/turn.mjs']!;
 const CLI = TEXT['dispatch/cli.mjs']!;
+const LAUNCH_PLAN = TEXT['dispatch/launch-plan.mjs']!;
 const TURN_FILE = parseJs('dispatch/turn.mjs', TURN);
 
 /** Whether `node` is a call of `launcher(...)`. */
@@ -107,9 +116,22 @@ const launchOf = (deps: ts.Node | undefined) => {
 };
 
 describe('fitness: every launch goes through the launcher (dispatcher-review.md)', () => {
-  test('turn.mjs and cli.mjs read a launch and start or record a session only in realDeps, dynamoState and the launcher() call\'s options', () => {
+  test('turn.mjs, cli.mjs and the planners read a launch and start or record a session only in realDeps, dynamoState and the launcher() call\'s options', () => {
     const found = FILES.flatMap((path) => outside(path, TEXT[path]!).found);
     assert.deepEqual(found, []);
+  });
+
+  test('no planner builds a launcher or defines realDeps or dynamoState', () => {
+    for (const path of PLANNERS) {
+      assert.equal(outside(path, TEXT[path]!).launchers, 0, path);
+      assert.deepEqual(nodes(parseJs(path, TEXT[path]!)).filter(isDefiner).map((n) => n.name.getText()), [], path);
+    }
+  });
+
+  test('a CLI launch or a session record in launchPlan past the launcher fails it', () => {
+    for (const statement of ['void deps.launch(plan);', 'const { launch } = ctx;', 'void ctx.state.recordSession(\'https://claude.ai/code/session_x\');']) {
+      assert.equal(outside('dispatch/launch-plan.mjs', into('dispatch/launch-plan.mjs', LAUNCH_PLAN, variable('launchPlan'), statement)).found.length, 1, statement);
+    }
   });
 
   test('turn.mjs builds its launcher in one launcher() call, and defines realDeps and dynamoState', () => {

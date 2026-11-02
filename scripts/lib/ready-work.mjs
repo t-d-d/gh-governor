@@ -277,7 +277,7 @@ export const ticketStatus = (ticket, { labels, now, blockers }) => {
  * Pickup may start the ticket: open, ready, and nothing holds it. The
  * selection (`selectReadyWork`, and `planSchedule` in
  * scripts/lib/dispatch-router.mjs) and the claim's second read
- * (dispatch/turn.mjs) ask this.
+ * (dispatch/launch-plan.mjs) ask this.
  *
  * @param {TicketStatus} status
  */

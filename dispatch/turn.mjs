@@ -105,8 +105,7 @@ import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
-import { mayPickUp, ticketStatus, unreadableOf } from '../scripts/lib/ready-work.mjs';
-import { WAIT_PROMPT, holdWait, reportUnreadable, waitLinks } from './waits.mjs';
+import { WAIT_PROMPT, holdWait, waitLinks } from './waits.mjs';
 import { connectorsOf, duePeriodics, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { RoutinesApiError } from './routines.mjs';
 import { hookFor, planHook } from './hooks.mjs';
@@ -126,49 +125,15 @@ import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
-import { HOOK_PER_HOUR, LANE, LANE_COUNTS, laneCount, dispatchMarker, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
+import { HOOK_PER_HOUR, LANE, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, HEARTBEAT_REFUSED, HEARTBEAT_UNWRITTEN, readHeartbeat, stampHeartbeat } from './heartbeat.mjs';
 import { launcher, routineLaunch } from './launcher.mjs';
+import { REPO_SKIPPED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan, routineFault } from './launch-plan.mjs';
+
+export { CLAIM_STRANDED, CONNECTOR_MISSING, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, ticketOf } from './launch-plan.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-
-/**
- * The event a claimed ticket with no session-naming marker logs, here and at
- * the deadline (dispatch/cli.mjs). Its own alarm pages on it
- * (infra/governor.cfn.yml).
- */
-export const CLAIM_STRANDED = 'dispatch-claim-stranded';
-
-/**
- * The event a repo whose launch started nothing logs: the fire skips the
- * rest of its tickets. Its own alarm pages on it (infra/governor.cfn.yml).
- */
-export const REPO_SKIPPED = 'dispatch-repo-skipped';
-
-/**
- * The event a periodic logs when it names a connector the account has not
- * connected: it starts nothing (infra/governor.cfn.yml pages on it).
- */
-export const CONNECTOR_MISSING = 'dispatch-connector-missing';
-
-/**
- * The event a periodic logs when the routines API refused its routine
- * before the fire: it starts nothing, and the repo's other launches go on,
- * as `claude --cloud` would still start them (infra/governor.cfn.yml pages on it).
- */
-export const ROUTINE_REFUSED = 'dispatch-routine-refused';
-
-/**
- * A claim's key, `owner/name#number`, as the repo and issue it names.
- *
- * @param {string} key
- * @returns {{ repo: string, issue: number }}
- */
-export const ticketOf = (key) => {
-  const at = key.lastIndexOf('#');
-  return { repo: key.slice(0, at), issue: Number(key.slice(at + 1)) };
-};
 
 /** What a turn's login warnings tell the operator to run. */
 const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
@@ -901,45 +866,6 @@ const startPeriodics = async ({ repo, config, counted, started, carried, start, 
 };
 
 /**
- * A periodic whose connectors the account has not connected started
- * nothing: an alarmed error naming the repo, the periodic and each
- * connector. Its record stays, so the next fire tries again, and the
- * repo's other launches go on: the fault is this periodic's alone.
- *
- * @param {Pick<Deps, 'log'>} deps
- * @param {string} repo
- * @param {string} periodic
- * @param {string[]} missing
- */
-const connectorMissing = ({ log }, repo, periodic, missing) => {
-  log(CONNECTOR_MISSING, { level: 'error', repo, periodic, connectors: missing, reason: `its .github/dispatch.json names ${missing.length === 1 ? 'a connector' : 'connectors'} the claude.ai account has not connected, so its session was not started: connect ${missing.join(', ')} on the account, or take ${missing.length === 1 ? 'it' : 'them'} out of the file` });
-};
-
-/**
- * A routine launch that started nothing for a fault of its own periodic: a
- * connector the account lacks, or the routines API refusing the routine
- * or its fire. Either logs an alarmed error naming the repo and the periodic, and
- * says so, so the caller writes no record and goes on with the repo's
- * other launches: `claude --cloud` would still start them. A launch through
- * the CLI that failed is neither, and still skips the repo.
- *
- * @param {Pick<Deps, 'log'>} deps
- * @param {string} repo
- * @param {string} periodic
- * @param {LaunchResult} launched
- * @returns {boolean} Whether the launch was one of these.
- */
-const routineFault = (deps, repo, periodic, launched) => {
-  if (launched.missing !== undefined) {
-    connectorMissing(deps, repo, periodic, launched.missing);
-    return true;
-  }
-  if (launched.refused !== true) return false;
-  deps.log(ROUTINE_REFUSED, { level: 'error', repo, periodic, reason: `the routines API refused its routine or its fire, so its session was not started and it stays due; the repo's other launches go on: ${launched.output.slice(-OUTPUT_TAIL)}` });
-  return true;
-};
-
-/**
  * The sweep's read of a session: its row in the sessions list, read afresh
  * for each session and paged only until a page names it, else its own
  * record, unwrapped from `response_shape` (`sessionRecord`), which
@@ -1536,169 +1462,22 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     planned = await planDispatch(invocation, ctx);
   }
   if (planned !== undefined && 'answer' in planned) return planned.answer;
-  /** The kind's plan. */
-  const kindPlan = planned;
-  /** Its launches, run in turn below. A claimed launch is a ticket's, and a failed one that holds its repo skips the repo's later launches. */
-  const plan = kindPlan?.launches ?? [];
-
-  // The dispatcher claims a ticket before its launch: a session that
-  // never claims, or dies first, would leave it ready for the next fire. A
-  // ticket stays in `claims` until a marker naming its session covers it, or
-  // its labels are back as they were. Each repo claims with its own labels
-  // (dispatch/repo-config.mjs), the claim label made where the repo lacks it.
-  const { claims } = ctx;
-  /** @param {{ repo: string, issue: number }} ticket */
-  const keyOf = ({ repo, issue }) => `${repo}#${issue}`;
-  /** The repos whose claim label is known to exist this turn. @type {Set<string>} */
-  const labelled = new Set();
-
-  /**
-   * Put the ready labels the claim took off back, and take the claim off. A
-   * release that fails leaves the ticket in `claims`, so the turn's end logs
-   * it stranded.
-   *
-   * @param {{ repo: string, issue: number }} ticket
-   */
-  const release = async (ticket) => {
-    const { repo, issue } = ticket;
-    const { labels } = configOf(repo);
-    try {
-      const github = await readerFor(repo);
-      if (labels.claimRemoves.length > 0) await github.addLabels(issue, labels.claimRemoves);
-      await github.removeLabel(issue, labels.claim);
-      claims.delete(keyOf(ticket));
-      deps.log('dispatch-claim', { repo, issue, outcome: 'released' });
-    } catch (error) {
-      deps.log('dispatch-claim', { repo, issue, outcome: 'not released', error: messageOf(error) });
-    }
-  };
-
-  /**
-   * Claim one ticket: the claim label on, then the ready labels it takes
-   * off. The plan was read before earlier launches that take minutes, so
-   * the ticket is read again first: one closed, unreadied, claimed, given
-   * one of the repo's excluded labels, given an open blocker or held by a
-   * `Blocked until:` line since (`ticketStatus`, `mayPickUp`) is skipped,
-   * untouched, since its session would proceed on the prompt's claim line
-   * over someone else's work, or on work that waits on another. A claim that fails is
-   * released, and starts nothing.
-   *
-   * @param {{ repo: string, issue: number }} ticket
-   * @returns {Promise<'claimed' | 'taken' | 'failed'>}
-   */
-  const claim = async (ticket) => {
-    const { repo, issue } = ticket;
-    const { labels } = configOf(repo);
-    try {
-      const github = await readerFor(repo);
-      const read = await github.ticket(issue);
-      const { state, labels: on, wait } = read;
-      const now = deps.now();
-      const first = ticketStatus(read, { labels, now });
-      const ready = first.open && first.labels === 'ready';
-      // The rows are read only where the summary is missing and the rest
-      // still reads ready, as the selection reads them.
-      const rows = ready && read.openBlockers === undefined ? await github.blockers(issue) : undefined;
-      const status = rows === undefined ? first : ticketStatus(read, { labels, now, blockers: rows });
-      const blocked = ready && status.open && status.holds.includes('blocker');
-      if (!mayPickUp(status)) {
-        const line = wait === undefined ? '' : `, Blocked until: ${'until' in wait ? wait.until : 'after' in wait ? `${wait.after.days} days after ${wait.after.repo ?? ''}#${wait.after.issue} closes` : `${wait.unreadable} (unreadable)`}`;
-        const open = blocked ? `, ${read.openBlockers ?? (rows ?? []).filter((b) => b.state === 'open').length} open blocker(s)` : '';
-        deps.log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}${open}${line}` });
-        // Said only on a ticket still ready by its labels: one claimed or
-        // unreadied since is someone else's.
-        const unread = ready && status.open && status.holds.includes('unreadable') ? unreadableOf(read) : undefined;
-        if (unread !== undefined) await reportUnreadable({ reader: github, repo, issue, value: unread, log: deps.log });
-        return 'taken';
-      }
-    } catch (error) {
-      deps.log('dispatch-claim', { repo, issue, outcome: 'not claimed', error: `the ticket or its blockers could not be read: ${messageOf(error)}` });
-      return 'failed';
-    }
-    claims.add(keyOf(ticket));
-    try {
-      const github = await readerFor(repo);
-      if (!labelled.has(repo)) {
-        await github.ensureLabel(labels.claim);
-        labelled.add(repo);
-      }
-      await github.addLabels(issue, [labels.claim]);
-      for (const label of labels.claimRemoves) await github.removeLabel(issue, label);
-      return 'claimed';
-    } catch (error) {
-      deps.log('dispatch-claim', { repo, issue, outcome: 'not claimed', error: messageOf(error) });
-      await release(ticket);
-      return 'failed';
-    }
-  };
-
-  /** The repos whose launch started nothing: the rest of their tickets and periodics wait for the next fire. @type {Set<string>} */
-  const skipped = new Set();
-  /** The planned launches that ran, a failed claim's included, and those the window or a repo skip left. @type {Array<Dispatched & { planned: PlannedLaunch }>} */
-  const ran = [];
-  /** @type {PlannedLaunch[]} */
-  const left = [];
+  // The plan's launches: claims, the window, markers and releases.
   let loginStored = false;
+  /** @type {Awaited<ReturnType<typeof launchPlan>>} */
+  let ran;
   try {
-    for (const [i, entry] of plan.entries()) {
-      if (deps.now() - started > SCHEDULE_LAUNCH_WINDOW_MS) {
-        deps.log('dispatch-launch', { undispatched: plan.slice(i).map((e) => ({ repo: e.repo, issue: e.issue })), reason: `out of time: past ${SCHEDULE_LAUNCH_WINDOW_MS} ms, another launch might outrun the deadline; each is left unmarked for the next fire` });
-        left.push(...plan.slice(i));
-        break;
-      }
-      const ticket = entry.issue === null ? null : { repo: entry.repo, issue: entry.issue };
-      if (skipped.has(entry.repo)) {
-        left.push(entry);
-        continue;
-      }
-      // A spec session's ticket is not claimed: the session claims it before it builds.
-      const claimed = ticket === null || !entry.claim ? 'claimed' : await claim(ticket);
-      if (claimed === 'taken') continue;
-      if (claimed === 'failed') {
-        ran.push({ repo: entry.repo, issue: entry.issue, outcome: 'failed', sessionUrl: null, planned: entry });
-        continue;
-      }
-      const firedAt = new Date(deps.now()).toISOString();
-      const launched = await ctx.start({ ...entry.asked, repo: entry.repo });
-      if (routineFault(deps, entry.repo, entry.asked.sessionName, launched)) continue;
-      const { outcome, sessionUrl, status } = launched;
-      const periodic = entry.periodic === undefined ? {} : { periodic: entry.periodic };
-      deps.log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.asked.sessionName, ...periodic, outcome, status, sessionUrl });
-      // The record the launch moves: a periodic's, a wait item, a hook's.
-      if (entry.started !== undefined) await entry.started(launched, firedAt);
-      if (entry.holdsRepo && outcome === 'failed') {
-        if (ticket !== null && entry.claim) await release(ticket);
-        // A launch that started nothing is the repo's environment or the
-        // login: the repo's next ticket or periodic would fail the same way.
-        // A routine the routines API refused is not (`routineFault`).
-        skipped.add(entry.repo);
-        deps.log(REPO_SKIPPED, { level: 'error', repo: entry.repo, issue: entry.issue, ...periodic, status, reason: 'its launch started nothing: the rest of its tickets and periodics wait for the next fire' });
-      } else if (ticket !== null) {
-        const at = new Date(deps.now()).toISOString();
-        await (await readerFor(ticket.repo)).comment(ticket.issue, dispatchMarker({ at, sessionUrl }));
-        if (sessionUrl !== null) claims.delete(keyOf(ticket));
-      }
-      ran.push({ repo: entry.repo, issue: entry.issue, outcome, sessionUrl, planned: entry });
-    }
-    // The kind's plan settles what its launches left: the sweep's records
-    // and pickup's heartbeat line, or a hook left unstarted, which fails
-    // the turn.
-    await kindPlan?.done?.({ dispatched: ran, left });
+    ran = await launchPlan(planned ?? { launches: [], unread: [] }, ctx, started);
   } finally {
-    // A claim no marker names a session for: an unconfirmed launch, one past
-    // its budget, a marker refused, a release refused. Nothing puts the
-    // labels back, because the session may be running.
-    for (const key of claims) deps.log(CLAIM_STRANDED, { ...ticketOf(key), reason: 'claimed, and no dispatch marker names its session: the launch was unconfirmed, ran past its budget, or the turn threw' });
-    claims.clear();
     // Whatever the turn threw, a login the CLI refreshed goes back: the
     // rotation has already happened server-side, and a turn that restored
     // the copy from before it would hold a dead refresh token.
     loginStored = await storeIfRefreshed(deps, original, account);
   }
-  const failed = kindPlan?.unread ?? [];
+  const failed = planned?.unread ?? [];
   /** @type {Dispatched[]} */
   const dispatched = ran.map(({ repo, issue, outcome, sessionUrl }) => ({ repo, issue, outcome, sessionUrl }));
-  return { kind: invocation.kind, heartbeat: false, ...kindPlan?.result, dispatched, loginStored, ...(failed.length === 0 ? {} : { unread: failed }) };
+  return { kind: invocation.kind, heartbeat: false, ...planned?.result, dispatched, loginStored, ...(failed.length === 0 ? {} : { unread: failed }) };
 };
 
 // ── The real I/O ────────────────────────────────────────────────────────────
@@ -1710,14 +1489,6 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
  * starts no launch past SCHEDULE_LAUNCH_WINDOW_MS, whatever its cap.
  */
 export const LAUNCH_TIMEOUT_MS = 6 * 60 * 1000;
-
-/**
- * How long into a schedule turn a launch may still start: one more launch at
- * the budget above, its marker and the heartbeat still end inside the task's
- * deadline (dispatch/cli.mjs), so the refreshed login is stored. Two launches
- * at the full budget both start; a DispatchCap above two runs out of window.
- */
-export const SCHEDULE_LAUNCH_WINDOW_MS = 7 * 60 * 1000;
 
 /**
  * How long into an event's turn a periodic the event brought due may still

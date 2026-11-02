@@ -131,3 +131,31 @@ describe('turnFor\'s schedule, hook, unblocked and dispatch branches are one pla
     }
   });
 });
+
+/** The mutable variables the planning branches once shared in `turnFor`, now each planner's `Plan`. */
+const SHARED = ['plan', 'only', 'unread', 'periodicsUnread', 'waitsUnread', 'hooksUnrecorded', 'sweepsUnread', 'swept', 'cut', 'held', 'row', 'endedByRepo'];
+
+/** The names `turnFor`'s own body declares at its top level, outside the functions nested in it. */
+const declaredAtTop = (body: ts.Block) => body.statements
+  .filter(ts.isVariableStatement)
+  .flatMap((s) => s.declarationList.declarations)
+  .flatMap((d) => (ts.isIdentifier(d.name) ? [d.name.text] : nodes(d.name).filter(ts.isIdentifier).map((n) => n.text)));
+
+describe('turnFor hands every plan to launchPlan, and keeps none of its state', () => {
+  test('turnFor declares none of the shared variables', () => {
+    const declared = declaredAtTop(turnForOf(parseJs(PATH, TURN)));
+    assert.deepEqual(declared.filter((name) => SHARED.includes(name)), []);
+  });
+
+  test('a shared variable declared in turnFor again fails the check', () => {
+    const body = turnForOf(parseJs(PATH, TURN));
+    const at = body.getStart() + 1;
+    const text = TURN.slice(0, at) + '\n  let swept = 0;\n' + TURN.slice(at);
+    assert.deepEqual(declaredAtTop(turnForOf(parseJs(PATH, text))).filter((name) => SHARED.includes(name)), ['swept']);
+  });
+
+  test('turnFor calls launchPlan once', () => {
+    const calls = nodes(turnForOf(parseJs(PATH, TURN))).filter((n) => ts.isCallExpression(n) && n.expression.getText() === 'launchPlan');
+    assert.equal(calls.length, 1);
+  });
+});

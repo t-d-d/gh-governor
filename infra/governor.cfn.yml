@@ -502,7 +502,7 @@ Resources:
   # The dispatcher claims a ticket before it launches the ticket's session.
   # A claim whose turn ends with no dispatch marker naming a session
   # (an unconfirmed launch, one past its budget, a thrown turn, the deadline)
-  # logs `dispatch-claim-stranded` naming the ticket (dispatch/turn.mjs,
+  # logs `dispatch-claim-stranded` naming the ticket (dispatch/launch-plan.mjs,
   # dispatch/cli.mjs). The ticket stays under development, so no fire picks
   # it again: a person decides whether a session is on it.
   DispatchClaimStrandedFilter:
