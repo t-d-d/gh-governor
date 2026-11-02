@@ -73,7 +73,7 @@ Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action wr
 - **It finds the work.** It takes tickets from the backlog unasked, and holds one while its blockers are open or its date has not come.
 - **One session per ticket, for the ticket's whole life.** The agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships.
 - **Policy in one place.** Each repo keeps its rules in one file, `.github/dispatch.json`: the features it runs, the labels that mark a ticket ready, the review's checklist, the paths that need a person, the recurring sessions, and the prompts governor gives its sessions. A change to policy is a pull request, which the config check can validate before it merges. A new repo copies a policy into that file, and governor serves it from the next fire, with no deploy.
-- **Your own accounts.** It runs on your Claude subscription and your AWS account.
+- **Your own accounts.** It runs on your Claude subscription, your AWS account, and your GitHub accounts and organisations. A free GitHub plan is enough.
 
 ## What it does
 
