@@ -6,7 +6,11 @@
 [![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 [![Built by Claude Code sessions](https://img.shields.io/badge/built%20by-Claude%20Code%20sessions-d97757)](docs/building-with-agents.md)
 
-Coding agents can write a pull request. The work around one is still manual: picking the next ticket, starting the agent, passing on review comments, telling it CI went red or the deploy shipped. Governor does that work for one developer and their repos, as a team lead does for a team. It watches each of your repos that installs its GitHub App, starts a Claude Code cloud session on your own subscription for each ready ticket, and relays everything that happens on that ticket's pull request back to the session that wrote it. Each repo keeps its policy in one file: which tickets an agent may take, what the review checks, and which paths need a person. So a new repo starts with a whole factory policy on day one, copied from the starter kit or from a repo that already runs the way you want.
+Coding agents can write a pull request. The work around one is still manual: picking the next ticket, starting the agent, passing on review comments, telling it CI went red or the deploy shipped. Governor does that work for one developer and their repos, as a team lead does for a team.
+
+It watches each of your repos that installs its GitHub App, starts a Claude Code cloud session on your own subscription for each ready ticket, and relays everything that happens on that ticket's pull request back to the session that wrote it.
+
+Each repo keeps its policy in one file: which tickets an agent may take, what the review checks, and which paths need a person. A new repo starts with a whole factory policy on day one, copied from the starter kit or from a repo that already runs the way you want.
 
 The name comes from the governor on a steam engine, which holds the engine's speed with nobody at the throttle ([more below](#why-governor)).
 
@@ -17,9 +21,9 @@ I'm [Thomas Dickinson](https://www.linkedin.com/in/thomasdaviddickinson/). I bui
 On 28 October 2026 governor's code moved into this repo: about 14,700 lines of source and 1,360 tests. Since then governor has worked its own backlog. In the five days to 12:00 UTC on 2 November 2026:
 
 - governor picked up **94 tickets** and started a Claude Code session on each;
-- Thomas merged **98 pull requests** written by Claude Code sessions, from those tickets and from sessions started by a mention or by hand. Over the 90 tickets they closed, pickup to merge took a median of **29 minutes**, review included;
-- the build on main never broke, and the repo rolls forward rather than reverting. Two deploys failed: the first, run by hand while the stack was set up, and one on 30 October, when the probe each deploy runs against the new task caught a fault. The **47 deploys** after that all passed;
-- the code grew by about **7,300 lines of source and 900 tests**, to more than 2,200 tests, every one of them offline.
+- Thomas merged **98 pull requests** written by Claude Code sessions, most of them for those tickets. From pickup to merge took a median of **29 minutes**, review included;
+- the build on main never broke: every merge passed the gate's lint, type checks and tests. The repo fixes forward, mending a fault with the next change rather than undoing a merge, and reverted nothing. Two deploys failed: the first, run by hand while the stack was set up, and one on 30 October, when the probe each deploy runs against the new task caught a fault. The **47 deploys** after that all passed;
+- the test suite grew by about **900 tests**, to more than 2,200, every one of them offline.
 
 Before each push, a clean-room reviewer, a sub-agent with a fresh context that did not write the code, reviews the session's diff. Thomas then reviews each pull request by weighing the net complexity it adds against the value of the change. Its description makes that quick to judge: it lists what the change adds and removes, says whether the system got simpler or more complex and what the complexity buys, and maps every acceptance criterion to the test or check that answers it. Thomas often merges in batches, so these times include waiting for review. This repo leaves governor's own PR review off, so every merge is a person's. [How this repo is built](docs/building-with-agents.md) has the full numbers, and the switches this repo turns on.
 
@@ -72,7 +76,7 @@ Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action wr
 
 - **It finds the work.** It takes tickets from the backlog unasked, and holds one while its blockers are open or its date has not come.
 - **One session per ticket, for the ticket's whole life.** The agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships.
-- **Policy in one place.** Each repo keeps its rules in one file, `.github/dispatch.json`: the features it runs, the labels that mark a ticket ready, the review's checklist, the paths that need a person, the recurring sessions, and the prompts governor gives its sessions. A change to policy is a pull request, which the config check can validate before it merges. A new repo copies a policy into that file, and governor serves it from the next fire, with no deploy.
+- **Policy in one place.** Each repo keeps its rules in one file, `.github/dispatch.json`: the features it runs, the labels that mark a ticket ready, the review's checklist, the paths that need a person, the recurring sessions, and the prompts governor gives its sessions. A change to policy is a pull request, which the config check can validate before it merges. A new repo copies a policy into that file, and governor picks it up within the hour, with no deploy.
 - **Your own accounts.** It runs on your Claude subscription, your AWS account, and your GitHub accounts and organisations. A free GitHub plan is enough.
 
 ## What it does
