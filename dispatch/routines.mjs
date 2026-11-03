@@ -392,7 +392,8 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
     };
     const existing = await findRoutine(api, listedRoutines, name);
     if (existing === undefined) {
-      const created = /** @type {any} */ (await api.create(body));
+      // The create answers `{ outcome, trigger }`: the routine is `trigger`.
+      const created = /** @type {any} */ (await api.create(body))?.trigger;
       if (typeof created?.id !== 'string' || created.id === '') return { status: 1, output: `the routine ${name} was created with no id` };
       id = created.id;
     } else {
