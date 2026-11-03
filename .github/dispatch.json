@@ -1,5 +1,10 @@
 {
   "environment": "askme",
   "labels": { "ready": ["mode: afk"], "claim": "claimed", "claimRemoves": [], "exclude": ["type: prd", "mode: human"] },
-  "features": { "pickup": true, "summons": true, "prMessages": true, "subscribeMessages": true, "unblocked": true, "conflicts": true, "signOff": true }
+  "features": { "pickup": true, "summons": true, "prMessages": true, "subscribeMessages": true, "unblocked": true, "conflicts": true, "signOff": true, "prReview": true },
+  "review": {
+    "checklist": { "file": ".claude/skills/pr-review/SKILL.md" },
+    "tickets": { "forbid": [{ "labels": ["type: prd"] }] },
+    "merge": false
+  }
 }

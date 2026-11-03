@@ -143,7 +143,7 @@ Two CloudFormation stacks hold all of it, and GitHub Actions deploys them after 
 
 Governor is built for one developer running their own repos on their own Claude subscription. It is not a team or enterprise product, and does not try to be. One login, one queue and one task are enough for one person's backlog, and they keep the moving parts few. What that choice costs:
 
-- **This repo does not run the automatic merge.** Governor does not review its own pull requests, since it would be marking its own work, so a person merges every one here. Podstow's repo does run it.
+- **This repo does not run the automatic merge.** Governor reviews this repo's pull requests with merge off, so a pass approves and a person still merges every one here. Governor never passes its own code with nobody looking. Podstow's repo does run the merge.
 - **It depends on Claude Code internals.** Governor starts a session by driving `claude --cloud` in a pseudo-terminal, with flags the CLI does not document, and reads a session's last reply from the sessions API. A CLI release can break it. The probe after each deploy, and 17 CloudWatch alarms, are how that shows up.
 - **Your login, your terms.** Every session runs on your own claude.ai login, copied from an interactive sign-in, so governor is for your own repos, not a service for other people. Check your plan's terms before you leave it running unattended. The operator mints it again about every two weeks, and an alarm warns three days ahead. The subscription's usage limits, not AWS, set the real ceiling on throughput and cost.
 - **Nobody else runs it yet.** [Running your own governor](docs/self-hosting.md) has every step, but only its author has deployed it.

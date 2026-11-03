@@ -57,7 +57,9 @@ Under your account's or organisation's **Settings → Developer settings → Git
    }
    ```
 
-   and create its ready label, `mode: afk`. Leave `prReview` off: governor should not review changes to its own code.
+   and create its ready label, `mode: afk`.
+
+   You can also turn `prReview` on, as this repo does. Give it a `review` section with `"merge": false`, since `merge` is true unless set. Then a pass only posts a comment and an approving review, and you still merge every pull request, so governor never passes a change to its own code with nobody looking. A pull request cannot review itself either: the review runs the image deployed from main and reads its checklist from main. This repo's checklist is `.claude/skills/pr-review/SKILL.md`. Each review is a `claude -p` run on the stored login, so it draws on the same usage limit as the sessions.
 
 ### 3. Create an AWS account and apply the bootstrap stack
 
