@@ -16,7 +16,7 @@
  */
 
 import { DEFAULT_MODEL, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
-import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
+import { outsiderReason, planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { WAIT_RELATIVE, endedWaits, repairRelative, reportUnreadable, waitLinks, waitOwnerMessage, waitSpecPrompt } from './waits.mjs';
 import { GITHUB_SOURCE } from './deliveries.mjs';
@@ -208,6 +208,8 @@ export const planSweep = async (invocation, ctx) => {
   const unreadable = [];
   /** @type {import('../scripts/lib/dispatch-router.mjs').Relative[]} */
   const relative = [];
+  /** @type {import('../scripts/lib/dispatch-router.mjs').Outsider[]} */
+  const outsiders = [];
   // In the bare fire one repo's refusal leaves the others to go; a fire
   // naming its repo throws on its own.
   const planned = await planSchedule({
@@ -215,6 +217,7 @@ export const planSweep = async (invocation, ctx) => {
     cap: ctx.cap,
     now: ctx.now(),
     unreadable,
+    outsiders,
     ...(only === undefined ? {} : { only, seen }),
     ...(ctx.bare ? { unread, cut, relative } : {}),
   });
@@ -235,6 +238,11 @@ export const planSweep = async (invocation, ctx) => {
       ctx.log(WAIT_RELATIVE, { level: 'error', repo, issue, after, error: messageOf(error), reason: 'the ticket stays held, and the next sweep tries again' });
     }
   }));
+  // Ready labels a stranger's issue template added start nothing, and are
+  // said at info: anyone can open an issue, so it must not page anyone.
+  for (const { repo, issue, labels, author, association } of outsiders) {
+    ctx.log('dispatch-pickup', { level: 'info', repo, issue, outcome: 'skipped', reason: outsiderReason({ labels, author, association }) });
+  }
   if (only !== undefined && planned.length === 0) {
     const why = ctx.cap === 0 ? { outcome: 'not started', reason: CAP_ZERO_REASON } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
     for (const { repo, issue, ...read } of seen) {

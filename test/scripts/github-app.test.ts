@@ -115,7 +115,7 @@ describe('githubReader', () => {
       'https://api.github.com/repos/acme/factory/issues': (_init: RequestInit | undefined, url: string) => {
         const page = new URL(url).searchParams.get('page');
         return page === '2' ? [] : [
-          issueRow(10, ['workflow: ready for development', 'mode: afk']),
+          issueRow(10, ['workflow: ready for development', 'mode: afk'], { user: { login: 'stranger' }, author_association: 'CONTRIBUTOR' }),
           issueRow(11, ['workflow: ready for development'], { pull_request: { url: 'x' } }),
         ];
       },
@@ -129,6 +129,8 @@ describe('githubReader', () => {
         state: 'open',
         created_at: '2026-09-01T00:00:00Z',
         labels: ['workflow: ready for development', 'mode: afk'],
+        author: 'stranger',
+        association: 'CONTRIBUTOR',
       },
     ]);
     const first = new URL(calls[0]!.url);

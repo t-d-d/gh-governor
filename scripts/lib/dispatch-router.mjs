@@ -20,7 +20,7 @@
 
 import { DISPATCH_WINDOW_MS, recentlyDispatched } from '../../dispatch/webhook/fire.mjs';
 import { promptFor, sessionName } from './dispatch-prompt.mjs';
-import { byAge, mayPickUp, selectReadyWork, ticketStatus, unreadableOf } from './ready-work.mjs';
+import { authorHasSay, byAge, mayPickUp, selectReadyWork, ticketStatus, uncountedReady, unreadableOf } from './ready-work.mjs';
 
 /**
  * @typedef {{ issue?: number, repo: string, prompt: string, sessionName: string }} Dispatch
@@ -31,6 +31,7 @@ import { byAge, mayPickUp, selectReadyWork, ticketStatus, unreadableOf } from '.
  *   ticket: (number: number) => Promise<import('./github-app.mjs').TicketRow>,
  *   blockers: (number: number) => Promise<import('./github-app.mjs').BlockerRow[]>,
  *   comments: (number: number, options?: { since?: string }) => Promise<import('./github-app.mjs').CommentRow[]>,
+ *   labelAdds: (number: number) => Promise<Array<{ label: string, actor: string }>>,
  * }} Reader
  *
  * @typedef {{ repo: string, issue: number, labels: string[], openBlockers?: number, wait?: import('./ready-work.mjs').Wait }} Seen
@@ -45,10 +46,24 @@ import { byAge, mayPickUp, selectReadyWork, ticketStatus, unreadableOf } from '.
  *   A ready ticket held by a relative `Blocked until:` line, with its open
  *   blockers by its dependency summary where its read carries one.
  *
+ * @typedef {{ repo: string, issue: number, labels: string[], author: string, association: string }} Outsider
+ *   A ready ticket whose ready labels `labels` its outside author's issue
+ *   template added (`uncountedReady`), so the selection skips it.
+ *
  * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, prompts?: Record<string, string | undefined> }} Source
  *   A served repo's tickets: its reader, its config file's ready, claim and
  *   excluded labels, and its prompts.
  */
+
+/**
+ * Why a ticket whose ready labels its outside author's template added is
+ * skipped, for its info line: the selection's (dispatch/sweep.mjs,
+ * dispatch/unblocked-fire.mjs) and the claim's (dispatch/launch-plan.mjs).
+ *
+ * @param {{ labels: readonly string[], author: string, association: string }} outsider
+ */
+export const outsiderReason = ({ labels, author, association }) =>
+  `ready labels ${JSON.stringify(labels)} were added by its ${association} author ${JSON.stringify(author)}, or by no one the events name: someone with triage access takes them off and puts them back to pick it up, since adding a label the ticket already carries records no event`;
 
 /**
  * The schedule's plan: eligible issues oldest first, up to the cap,
@@ -92,10 +107,14 @@ import { byAge, mayPickUp, selectReadyWork, ticketStatus, unreadableOf } from '.
  * the summary and, where that counts none, by the `blocked_by` rows it
  * reads, so the plan does not read them too.
  *
- * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[] }} args
+ * With `outsiders`, each ticket the selection skips because its ready
+ * labels came from its outside author's issue template is recorded there,
+ * so the turn can log it. Such a ticket takes no place under the cap.
+ *
+ * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[], outsiders?: Outsider[] }} args
  * @returns {Promise<Dispatch[]>}
  */
-export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut, unreadable, relative }) => {
+export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut, unreadable, relative, outsiders }) => {
   /** @type {Set<string>} */
   const failed = new Set();
   /**
@@ -171,8 +190,8 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
   // newest marker would otherwise sit past the page.
   const since = new Date(now - windowMs).toISOString();
   /**
-   * Whether the selection starts a candidate: not blocked, and not
-   * dispatched inside the window. A read `read` answers with null starts
+   * Whether the selection starts a candidate: not blocked, its ready
+   * labels counted, and not dispatched inside the window. A read `read` answers with null starts
    * nothing.
    * @param {(typeof candidates)[number]} candidate
    * @param {typeof guarded} read
@@ -186,6 +205,18 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
       const record = records.get(`${repo}#${candidate.number}`);
       if (record !== undefined && blocking !== null) record.openBlockers = blocking.filter((b) => b.state === 'open').length;
       if (blocking === null || !mayPickUp(ticketStatus(candidate, { labels, now, blockers: blocking }))) return false;
+    }
+    // Ready labels an outsider's issue template added do not count, so such
+    // a ticket takes no place under the cap (`uncountedReady`). The claim's
+    // second read asks again (dispatch/launch-plan.mjs).
+    if (!authorHasSay(candidate)) {
+      const adds = await read(repo, () => reader.labelAdds(candidate.number));
+      if (adds === null) return false;
+      const uncounted = uncountedReady(candidate, adds, labels.ready);
+      if (uncounted.length > 0) {
+        outsiders?.push({ repo, issue: candidate.number, labels: uncounted, author: candidate.author ?? '', association: candidate.association ?? 'NONE' });
+        return false;
+      }
     }
     const comments = await read(repo, () => reader.comments(candidate.number, { since }));
     return comments !== null && !recentlyDispatched(comments, now, windowMs);

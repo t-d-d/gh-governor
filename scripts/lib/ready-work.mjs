@@ -35,6 +35,9 @@ import { SUMMONERS, recentlyDispatched, waitLine } from '../../dispatch/webhook/
  *   row carries one.
  * @property {Wait} [wait] What the body's `Blocked until:` line says
  *   (`waitOf`), where it has one.
+ * @property {string} [author] The login that opened it.
+ * @property {string} [association] Its `author_association`, which
+ *   `authorHasSay` reads.
  */
 
 /**

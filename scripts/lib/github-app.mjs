@@ -234,7 +234,8 @@ const labelNames = (row) =>
   (row.labels ?? []).map((/** @type {any} */ l) => (typeof l === 'string' ? l : l.name));
 
 /**
- * @typedef {{ number: number, title: string, state: string, created_at: string, labels: string[], openBlockers?: number, wait?: import('./ready-work.mjs').Wait }} IssueRow
+ * @typedef {{ number: number, title: string, state: string, created_at: string, labels: string[], openBlockers?: number, wait?: import('./ready-work.mjs').Wait, author?: string, association?: string }} IssueRow
+ *   `author`: the login that opened it; `association`: its `author_association`.
  *   `openBlockers`: the open blockers by its dependency summary, where it has one.
  *   `wait`: what its body's `Blocked until:` line says, where it has one (`waitOf`).
  * @typedef {{ number: number, state: string, title: string, id?: number }} BlockerRow
@@ -382,6 +383,17 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
   const call = githubApi({ token, fetch, sleep });
   /** Every open issue and PR, with the ids of the sessions its body names, read once for `openNaming`. @type {Promise<Array<OpenRow & { sessions: Set<string> }>> | null} */
   let openRows = null;
+  /**
+   * An issue's `event` rows that name a label, oldest first: the one read
+   * behind `labelAdds` and `labelRemovals`.
+   *
+   * @param {number} number
+   * @param {'labeled' | 'unlabeled'} event
+   * @returns {Promise<any[]>}
+   */
+  const labelEvents = async (number, event) =>
+    (await allPages(call, `/repos/${repo}/issues/${number}/events`, {}))
+      .filter((row) => row?.event === event && typeof row.label?.name === 'string');
 
   return {
     /**
@@ -411,6 +423,8 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
             state: row.state,
             created_at: row.created_at,
             labels: labelNames(row),
+            author: String(row.user?.login ?? ''),
+            association: String(row.author_association ?? 'NONE'),
             ...openBlockersOf(row),
             ...waitOf(row.body),
           });
@@ -985,8 +999,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      * @returns {Promise<Array<{ label: string, actor: string }>>}
      */
     labelAdds: async (number) =>
-      (await allPages(call, `/repos/${repo}/issues/${number}/events`, {}))
-        .filter((row) => row?.event === 'labeled' && typeof row.label?.name === 'string')
+      (await labelEvents(number, 'labeled'))
         .map((row) => ({ label: row.label.name, actor: String(row.actor?.login ?? '') })),
 
     /**
@@ -998,8 +1011,8 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      * @returns {Promise<Array<{ label: string, at: string, ours: boolean }>>}
      */
     labelRemovals: async (number) =>
-      (await allPages(call, `/repos/${repo}/issues/${number}/events`, {}))
-        .filter((row) => row?.event === 'unlabeled' && typeof row.label?.name === 'string' && typeof row.created_at === 'string')
+      (await labelEvents(number, 'unlabeled'))
+        .filter((row) => typeof row.created_at === 'string')
         .map((row) => ({ label: row.label.name, at: row.created_at, ours: postedByApp({ user: row.actor, performed_via_github_app: row.performed_via_github_app }, appId) })),
 
     /** Add labels to an issue, leaving the ones it has. @param {number} number @param {string[]} labels */

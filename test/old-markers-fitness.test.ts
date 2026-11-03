@@ -35,7 +35,7 @@ const plan = (marker: string) => planSchedule({
     repo: REPO,
     labels: LABELS,
     reader: {
-      readyIssues: async () => [{ number: 7, title: 'Seven', state: 'open', created_at: '2026-10-01T00:00:00Z', labels: ['mode: afk'] }],
+      readyIssues: async () => [{ number: 7, title: 'Seven', state: 'open', created_at: '2026-10-01T00:00:00Z', labels: ['mode: afk'], association: 'MEMBER' }],
       blockers: async () => [],
       blocking: async () => [],
       comments: async () => [{ id: 1, body: marker, created_at: AT }],

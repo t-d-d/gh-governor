@@ -76,12 +76,16 @@ spends the one claude.ai login.
   author is not an owner, member or collaborator (`SUMMONERS`,
   dispatch/webhook/fire.mjs), a ready label whose latest `labeled` event is
   the author's, or that no event names, does not count
-  (`uncountedReady`, scripts/lib/ready-work.mjs). The claim's second read
-  (dispatch/launch-plan.mjs) checks it after `ticketStatus`, so the label
-  webhook, the sweep and a blocker's close all pass through it. A ticket
-  that fails it is skipped untouched and logged at info, and is picked up
-  once someone with triage access adds the label again. A label the
-  dispatcher puts back after a failed launch counts.
+  (`uncountedReady`, scripts/lib/ready-work.mjs). The selection
+  (`planSchedule`, scripts/lib/dispatch-router.mjs) checks it before the
+  cap counts a ticket, so such a ticket holds no place under the cap, and
+  the claim's second read (dispatch/launch-plan.mjs) checks it again after
+  `ticketStatus`. The label webhook, the sweep and a blocker's ready row all
+  pass through both. The events are read only for a ticket whose author has
+  no say. A ticket that fails it is skipped untouched and logged at info,
+  and is picked up once someone with triage access takes the label off and
+  puts it back: adding a label the ticket already carries records no event.
+  A label the dispatcher puts back after a failed launch counts.
 - Every feature governor adds is a switch, off unless the file turns it on,
   and a turn refuses a fire kind its repo's file does not turn on. The one
   exception is a ticket's own `Blocked until:` line, which is always

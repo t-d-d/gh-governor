@@ -9,6 +9,7 @@
  */
 
 import { authorHasSay, mayPickUp, ticketStatus, uncountedReady, unreadableOf } from '../scripts/lib/ready-work.mjs';
+import { outsiderReason } from '../scripts/lib/dispatch-router.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { reportUnreadable } from './waits.mjs';
 import { OUTPUT_TAIL } from './deliveries.mjs';
@@ -207,7 +208,7 @@ export const launchPlan = async (plan, ctx, started) => {
       if (!authorHasSay(read)) {
         const uncounted = uncountedReady(read, await github.labelAdds(issue), labels.ready);
         if (uncounted.length > 0) {
-          log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `ready labels ${JSON.stringify(uncounted)} were added by its ${read.association ?? 'NONE'} author ${JSON.stringify(read.author ?? '')}, or by no one the events name: someone with triage access adds them again to pick it up` });
+          log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: outsiderReason({ labels: uncounted, author: read.author ?? '', association: read.association ?? 'NONE' }) });
           return 'taken';
         }
       }

@@ -13,7 +13,7 @@
  */
 
 import { DEFAULT_MODEL, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
-import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
+import { outsiderReason, planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { mayStartSpec, specHold, ticketStatus, unreadableOf } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { GITHUB_SOURCE } from './deliveries.mjs';
@@ -240,9 +240,14 @@ export const planUnblocked = async (invocation, ctx) => {
     ctx.log('dispatch-unblocked', { ...about, outcome: 'not started', reason: CAP_ZERO_REASON });
   } else if (row === 'ready') {
     // As pickup does: the selection's own checks, the window included.
-    const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, prompts: ctx.prompts }], cap: 1, now: ctx.now(), only: [issue] });
+    /** @type {import('../scripts/lib/dispatch-router.mjs').Outsider[]} */
+    const outsiders = [];
+    const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, prompts: ctx.prompts }], cap: 1, now: ctx.now(), only: [issue], outsiders });
     for (const d of planned) launches.push({ repo: d.repo, issue, claim: true, holdsRepo: true, asked: { prompt: readyPrompt(d.prompt, invocation, ctx.prompts), sessionName: d.sessionName, model: DEFAULT_MODEL } });
-    ctx.log('dispatch-unblocked', { ...about, outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, blocked, or no longer ready' : 'picking up' });
+    const outsider = outsiders[0];
+    ctx.log('dispatch-unblocked', { ...about, ...(outsider === undefined
+      ? { outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, blocked, or no longer ready' : 'picking up' }
+      : { outcome: 'skipped', reason: outsiderReason(outsider) }) });
   } else {
     // The spec session is not claimed: its marker keeps the sweep off the
     // ticket inside the window, and the claim it adds before it builds
