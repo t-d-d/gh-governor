@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { routinesApi } from '../dispatch/turn.mjs';
-import { NEVER_DUE, ROUTINE_ANSWER, ROUTINE_PAGES, ROUTINE_SESSION_TRIES, RoutinesApiError, answerShape, connectionsFor, connectorUuid, launchRoutine, observed, routineName } from '../dispatch/routines.mjs';
+import { ROUTINE_SCHEDULE, ROUTINE_ANSWER, ROUTINE_PAGES, ROUTINE_SESSION_TRIES, RoutinesApiError, answerShape, connectionsFor, connectorUuid, launchRoutine, observed, routineName } from '../dispatch/routines.mjs';
 
 const REPO = 'acme/factory';
 // Rows in the shape the live connector list answers: a tagged `id`, the
@@ -100,7 +100,7 @@ describe('a periodic\'s connectors', () => {
 });
 
 describe('a periodic\'s routine run', () => {
-  test('with no routine yet, governor creates one named after the repo and the periodic, on a schedule that never comes due, then fires it and finds its session', async () => {
+  test('with no routine yet, governor creates one named after the repo and the periodic, disabled, on a valid schedule, then fires it and finds its session', async () => {
     const { api, calls } = fakeApi();
     const result = await launch(api);
     assert.equal(result.status, 0, result.output);
@@ -110,9 +110,9 @@ describe('a periodic\'s routine run', () => {
     assert.equal(body.name, routineName(REPO, 'Weekly retro'));
     assert.match(body.name, /acme\/factory/);
     assert.match(body.name, /Weekly retro/);
-    assert.equal(body.cron_expression, NEVER_DUE);
+    assert.equal(body.cron_expression, ROUTINE_SCHEDULE);
     assert.equal(body.run_once_at, undefined);
-    assert.equal(body.enabled, true);
+    assert.equal(body.enabled, false);
     assert.deepEqual(body.mcp_connections, [{ connector_uuid: FEED_UUID, name: 'feed_prod', url: FEED.url }]);
     assert.equal(body.job_config.ccr.environment_id, 'env_01FACTORY');
     assert.deepEqual(body.job_config.ccr.session_context.sources, [{ git_repository: { url: 'https://github.com/acme/factory' } }]);
@@ -123,19 +123,27 @@ describe('a periodic\'s routine run', () => {
     } }]);
   });
 
-  test('the schedule that never comes due names a day no month has', () => {
-    const [minute, hour, day, month, weekday] = NEVER_DUE.split(' ');
-    assert.deepEqual([minute, hour, weekday], ['0', '0', '*']);
-    assert.ok(Number(month) === 2 && Number(day) >= 30, NEVER_DUE);
+  test('the routine\'s schedule is a valid cron that fires once a year: a day every year has, at a fixed minute and hour', () => {
+    const fields = ROUTINE_SCHEDULE.split(' ');
+    assert.equal(fields.length, 5, ROUTINE_SCHEDULE);
+    const [minute, hour, day, month, weekday] = fields.map((f) => (f === '*' ? f : Number(f)));
+    assert.ok(Number.isInteger(minute) && Number(minute) >= 0 && Number(minute) <= 59, ROUTINE_SCHEDULE);
+    assert.ok(Number.isInteger(hour) && Number(hour) >= 0 && Number(hour) <= 23, ROUTINE_SCHEDULE);
+    assert.ok(Number.isInteger(month) && Number(month) >= 1 && Number(month) <= 12, ROUTINE_SCHEDULE);
+    const daysIn = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][Number(month) - 1]!;
+    assert.ok(Number.isInteger(day) && Number(day) >= 1 && Number(day) <= daysIn, ROUTINE_SCHEDULE);
+    assert.equal(weekday, '*');
   });
 
-  test('a routine already named for the periodic is reused: updated with this fire\'s prompt, environment, repo and connectors, and its schedule set back to never', async () => {
+  test('a routine already named for the periodic is reused: updated with this fire\'s prompt, environment, repo and connectors, and kept disabled on its schedule', async () => {
     const { api, calls } = fakeApi({ triggers: async () => ({ data: [{ id: 'trig_01OTHER', name: 'someone else' }, { id: 'trig_01OLD', name: routineName(REPO, 'Weekly retro'), cron_expression: '0 9 * * 1' }] }) }, [{ id: 'cse_01EARLIER' }]);
     const result = await launch(api, { connectors: ['feed_prod', 'Gmail'] });
     assert.equal(result.status, 0, result.output);
     assert.deepEqual(calls.filter((c) => c.call !== 'sessions').map((c) => [c.call, c.id]), [['update', 'trig_01OLD'], ['run', 'trig_01OLD']]);
     const body = calls.find((c) => c.call === 'update')!.body;
-    assert.equal(body.cron_expression, NEVER_DUE);
+    assert.equal(body.cron_expression, ROUTINE_SCHEDULE);
+    assert.equal(body.run_once_at, undefined);
+    assert.equal(body.enabled, false);
     assert.equal(body.mcp_connections.length, 2);
     assert.ok(calls.filter((c) => c.call === 'sessions').every((c) => c.id === 'trig_01OLD'));
     assert.equal(calls.findIndex((c) => c.call === 'sessions') < calls.findIndex((c) => c.call === 'run'), true, 'its earlier runs are read before the fire, so none is taken for this one');

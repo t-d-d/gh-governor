@@ -12,8 +12,10 @@
  * fire: the prompt with governor's lines, the repo's environment and
  * source, the model and the named connectors. It then fires it with
  * `POST /v1/code/triggers/{id}/run`. Governor still decides when the
- * periodic is due: the routine's own schedule never comes due
- * ({@link NEVER_DUE}), and every update sets it back.
+ * periodic is due: the routine is created and updated disabled, on a valid
+ * schedule that fires rarely ({@link ROUTINE_SCHEDULE}), so its own
+ * schedule never starts a run, and every update sets it back. The fire
+ * through `/run` is taken to start a run of a disabled routine all the same.
  *
  * After the fire, the run's session is the one the fire answers with, or
  * the routine's first run session not listed before the fire
@@ -36,11 +38,14 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
 import { CONNECTOR_NAME } from './repo-config.mjs';
 
 /**
- * The routine's own schedule: midnight on 30 February, a day no year has.
- * The routines API takes exactly one of `cron_expression` and
- * `run_once_at`, and a `run_once_at` would come due one day.
+ * The routine's own schedule: midnight on 1 January, once a year. The
+ * routines API takes exactly one of `cron_expression` and `run_once_at`,
+ * and refuses a cron with no firing time, such as one on 30 February, or
+ * one less than an hour apart. Governor keeps the routine disabled, so this
+ * schedule never starts a run; were someone to switch the routine on by
+ * hand, it would then run once a year, not beside governor's own fires.
  */
-export const NEVER_DUE = '0 0 30 2 *';
+export const ROUTINE_SCHEDULE = '0 0 1 1 *';
 
 /**
  * A routines API call that failed with a known cause: the HTTP status of an
@@ -374,8 +379,8 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
     if ('missing' in found) return { status: 1, output: `not connected on the account: ${found.missing.join(', ')}`, missing: found.missing };
     const body = {
       name,
-      cron_expression: NEVER_DUE,
-      enabled: true,
+      cron_expression: ROUTINE_SCHEDULE,
+      enabled: false,
       job_config: {
         ccr: {
           environment_id: environment,
