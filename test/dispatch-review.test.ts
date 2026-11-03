@@ -1194,6 +1194,7 @@ describe('run — required checks still running, or run again', () => {
     await reviewTagalong(red);
     assert.equal(red.judged.length, 0);
     assert.match(red.comments[0]!.body, /^Waits for a push: the required check `gate` is red on its head \(test 8\)/);
+    // `checksAt` reads a skipped run as green, so a lone green is a lone skipped run here.
     const skipped = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'green' }] });
     assert.deepEqual((await reviewTagalong(skipped)).reviews.map((r) => r.outcome), ['approved']);
     assert.equal(skipped.judged.length, 1);

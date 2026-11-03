@@ -105,8 +105,9 @@ const MERGEABLE_WAIT_MS = 3000;
 /**
  * The required status checks red on the PR's head, and those not finished
  * there: any run of the name pending, or none started. Red wins over
- * pending, and a name whose only run was skipped reads green. A base with none required reads no
- * check: a repo with no CI needs no checks permission.
+ * pending, and a name whose only run was skipped reads green. A base with
+ * none required reads no check: a repo with no CI needs no checks
+ * permission.
  *
  * @param {ReviewReader} reader
  * @param {PullRequestRow} pull
@@ -116,10 +117,18 @@ const requiredStates = async (reader, pull) => {
   const required = await reader.requiredChecks(pull.base);
   if (required.length === 0) return { red: [], pending: [] };
   const checks = await reader.checksAt(pull.headSha);
-  const red = required.filter((name) => checks.some((c) => c.name === name && c.state === 'red'));
-  // A name is unfinished while any run of it is pending, even beside a green one: a run that skipped its job reads green while the push run of the same name is still going.
-  const pending = required.filter((name) => !red.includes(name)
-    && (checks.some((c) => c.name === name && c.state === 'pending') || !checks.some((c) => c.name === name && c.state === 'green')));
+  /** @type {string[]} */
+  const red = [];
+  /** @type {string[]} */
+  const pending = [];
+  for (const name of required) {
+    const runs = checks.filter((c) => c.name === name);
+    // Unfinished while any run of the name is pending, even beside a green
+    // one: a run that skipped its job reads green while the push run of the
+    // same name is still going.
+    if (runs.some((c) => c.state === 'red')) red.push(name);
+    else if (runs.length === 0 || runs.some((c) => c.state === 'pending')) pending.push(name);
+  }
   return { red, pending };
 };
 
