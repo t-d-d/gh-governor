@@ -304,7 +304,7 @@ const harness = (over: Record<string, unknown> = {}) => {
         routinesHeld.push({ id, name: body.name });
         return { outcome: 'created', trigger: { id, name: body.name } };
       },
-      update: async (id: string, body: unknown) => { routineCalls.push({ call: 'update', id, body, token, organization }); return { id }; },
+      update: async (id: string, body: unknown) => { routineCalls.push({ call: 'update', id, body, token, organization }); return { trigger: { id } }; },
       run: async (id: string) => { routineCalls.push({ call: 'run', id, token, organization }); routineRuns.push(id); return {}; },
       sessions: async (id: string) => ({ data: routineRuns.filter((r) => r === id).map((_r, i) => ({ id: `cse_01RUN${id.slice(-1)}${i}` })).reverse() }),
     }),

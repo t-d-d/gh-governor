@@ -103,7 +103,8 @@ const ANY_SESSION_ID = /\b(?:cse|session)_[A-Za-z0-9]+/g;
  *   The account's connector list (`GET /v1/mcp_servers`), its routines
  *   (`GET /v1/code/triggers`, the page after `cursor` when one is given,
  *   as `next_cursor` names it), a routine created or updated, one fired, and
- *   one's run sessions, each answer parsed. Any refusal throws, as a
+ *   one's run sessions, each answer parsed. A create or an update answers
+ *   with the routine under `trigger` (`{ outcome, trigger }` for a create). Any refusal throws, as a
  *   {@link RoutinesApiError} where its cause is known.
  * @typedef {{ connector_uuid: string, name: string, url: string }} Connection
  * @typedef {{ status: number, output: string, missing?: string[], routine?: string }} RoutineResult
