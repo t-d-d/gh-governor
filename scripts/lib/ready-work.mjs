@@ -20,7 +20,7 @@
  * Unit-tested in `test/scripts/ready-work.test.ts`.
  */
 
-import { recentlyDispatched, waitLine } from '../../dispatch/webhook/fire.mjs';
+import { SUMMONERS, recentlyDispatched, waitLine } from '../../dispatch/webhook/fire.mjs';
 
 /**
  * @typedef {object} IssueRow
@@ -282,6 +282,47 @@ export const ticketStatus = (ticket, { labels, now, blockers }) => {
  * @param {TicketStatus} status
  */
 export const mayPickUp = (status) => status.open && status.labels === 'ready' && status.holds.length === 0;
+
+/**
+ * Whether a ticket's author has a say in its repo: their association is one
+ * of `SUMMONERS` (dispatch/webhook/fire.mjs), the set that decides who may
+ * summon governor. An association not read is no say.
+ *
+ * @param {{ association?: string }} ticket
+ */
+export const authorHasSay = (ticket) => SUMMONERS.has(String(ticket.association ?? 'NONE'));
+
+/**
+ * The ready labels that do not count on a ticket, because no one with a say
+ * in the repo added them. Anyone may open an issue on a public repo, and an
+ * issue template's `labels:` field adds its labels whoever opens it, so a
+ * template listing every ready label would make a stranger's issue ready.
+ * Without triage access the author can add a label only that way, so a
+ * ready label does not count when its latest `labeled` event is the
+ * author's and the author has no say ({@link authorHasSay}). One with no
+ * `labeled` event on such a ticket does not count either: who added it is
+ * unknown, and the events can lag the label. Any label on a ticket whose
+ * author has a say counts, as does one a person with triage access, or the
+ * dispatcher's own release, added last.
+ *
+ * The claim's second read (dispatch/launch-plan.mjs) asks this, after
+ * `mayPickUp`, so the label webhook, the sweep and a blocker's close all
+ * pass through it.
+ *
+ * @param {{ author?: string, association?: string }} ticket
+ * @param {ReadonlyArray<{ label: string, actor: string }>} adds The ticket's
+ *   `labeled` events, oldest first.
+ * @param {readonly string[]} ready The repo's ready labels.
+ * @returns {string[]}
+ */
+export const uncountedReady = (ticket, adds, ready) => {
+  if (authorHasSay(ticket)) return [];
+  const author = String(ticket.author ?? '').toLowerCase();
+  return ready.filter((label) => {
+    const last = adds.filter((a) => a.label === label).at(-1);
+    return last === undefined || author === '' || last.actor.toLowerCase() === author;
+  });
+};
 
 /**
  * The marker on a not-planned comment that says governor took a ready label

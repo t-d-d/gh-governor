@@ -139,7 +139,7 @@ const harness = (over: {
           const status = row ?? 404;
           throw Object.assign(new Error(`GET /issues/${n} failed: ${status}`), { status });
         }
-        return { number: n, title: `Ticket ${n}`, body: '## Acceptance criteria\n\n- It reviews.', state: 'open', labels: ['mode: afk', 'type: nfr', 'workflow: under development'], pull: false, ...row };
+        return { number: n, title: `Ticket ${n}`, body: '## Acceptance criteria\n\n- It reviews.', state: 'open', labels: ['mode: afk', 'type: nfr', 'workflow: under development'], pull: false, association: 'MEMBER', ...row };
       },
       allComments: async () => over.thread ?? [],
       comment: async (issue: number, body: string) => { comments.push({ issue, body }); },

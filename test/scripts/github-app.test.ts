@@ -747,12 +747,36 @@ describe('githubReader', () => {
     await assert.rejects(reader.branchHead('main'), /main/);
   });
 
-  test('ticket reads an issue\'s title, body, state and label names', async () => {
+  test('ticket reads an issue\'s title, body, state, label names, and who opened it', async () => {
     const { fetch } = fakeFetch({
-      'https://api.github.com/repos/acme/factory/issues/12': { number: 12, title: 'T', body: null, state: 'open', labels: [{ name: 'mode: afk' }, 'type: nfr'] },
+      'https://api.github.com/repos/acme/factory/issues/12': { number: 12, title: 'T', body: null, state: 'open', labels: [{ name: 'mode: afk' }, 'type: nfr'], user: { login: 'stranger' }, author_association: 'CONTRIBUTOR' },
+      'https://api.github.com/repos/acme/factory/issues/13': { number: 13, title: 'T', body: '', state: 'open', labels: [] },
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    assert.deepEqual(await reader.ticket(12), { number: 12, title: 'T', body: '', state: 'open', labels: ['mode: afk', 'type: nfr'], pull: false });
+    assert.deepEqual(await reader.ticket(12), { number: 12, title: 'T', body: '', state: 'open', labels: ['mode: afk', 'type: nfr'], pull: false, author: 'stranger', association: 'CONTRIBUTOR' });
+    // An association not read is none: no say in the repo.
+    assert.equal((await reader.ticket(13)).association, 'NONE');
+  });
+
+  test('labelAdds pages through an issue\'s events for its label additions, each with the login that added it', async () => {
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/10/events': (_init: RequestInit | undefined, url: string) => {
+        const page = Number(new URL(url).searchParams.get('page'));
+        return page === 1
+          ? Array.from({ length: 100 }, () => ({ event: 'unlabeled', label: { name: 'mode: afk' }, created_at: 'a', actor: { login: 'p' } }))
+          : [
+            { event: 'labeled', label: { name: 'mode: afk' }, created_at: 'b', actor: { login: 'stranger' } },
+            { event: 'labeled', label: { name: 'workflow: ready for development' }, created_at: 'c', actor: { login: 'governor-app[bot]' } },
+            { event: 'closed', created_at: 'd', actor: { login: 'p' } },
+          ];
+      },
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual(await reader.labelAdds(10), [
+      { label: 'mode: afk', actor: 'stranger' },
+      { label: 'workflow: ready for development', actor: 'governor-app[bot]' },
+    ]);
+    assert.equal(calls.length, 2);
   });
 
   // A fire naming issues reads each on its own and orders them oldest first.

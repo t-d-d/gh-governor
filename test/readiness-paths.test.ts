@@ -84,7 +84,7 @@ const nameOf = (s: State) => `${s.open ? 'open' : 'closed'}, ${s.labels}, ${s.bl
 /** The ticket as the reader returns it, its blocker in its dependency summary or, without one, only in its `blocked_by` rows. */
 const ticketOf = (s: State) => {
   const body = bodyOf[s.line];
-  return { number: ISSUE, id: 9007, title: 'The ticket', body, state: s.open ? 'open' : 'closed', labels: labelsOf[s.labels], pull: false, ...(s.summary ? { openBlockers: s.blocker ? 1 : 0 } : {}), created_at: '2026-09-01T00:00:00Z', ...waitOf(body) };
+  return { number: ISSUE, id: 9007, title: 'The ticket', body, state: s.open ? 'open' : 'closed', labels: labelsOf[s.labels], pull: false, association: 'MEMBER', ...(s.summary ? { openBlockers: s.blocker ? 1 : 0 } : {}), created_at: '2026-09-01T00:00:00Z', ...waitOf(body) };
 };
 /** Its `blocked_by` rows. */
 const rowsOf = (s: State) => (s.blocker ? [{ number: 42, state: 'open', title: 'Another' }] : []);

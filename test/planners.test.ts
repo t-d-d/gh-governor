@@ -253,7 +253,7 @@ describe('planUnblocked: an unblocked fire\'s plan', () => {
   /** A context whose reader holds ticket 7, with `labels`, `rows` as its blockers and `comments` as its thread. */
   const ticketContext = ({ labels = [...READY] as string[], rows = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, over = {} as Record<string, unknown> } = {}) => {
     const posted: Array<{ issue: number, body: string }> = [];
-    const ticket = { number: 7, title: 'Issue 7', body: '', state: 'open', labels, pull: false };
+    const ticket = { number: 7, title: 'Issue 7', body: '', state: 'open', labels, pull: false, association: 'MEMBER' };
     const reader = {
       ticket: async () => ticket,
       blockers: async () => rows,

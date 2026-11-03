@@ -159,6 +159,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   addLabels: (n: number, labels: string[]) => Promise<void>,
  *   removeLabel: (n: number, label: string) => Promise<void>,
  *   labelRemovals: (n: number) => Promise<Array<{ label: string, at: string, ours: boolean }>>,
+ *   labelAdds: (n: number) => Promise<Array<{ label: string, actor: string }>>,
  *   addBlocker: (n: number, blockerId: number) => Promise<void>,
  *   removeBlocker: (n: number, blockerId: number) => Promise<void>,
  *   ensureLabel: (name: string) => Promise<void>,

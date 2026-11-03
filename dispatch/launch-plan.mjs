@@ -8,7 +8,7 @@
  * plan's `done`, and the stranded-claim lines.
  */
 
-import { mayPickUp, ticketStatus, unreadableOf } from '../scripts/lib/ready-work.mjs';
+import { authorHasSay, mayPickUp, ticketStatus, uncountedReady, unreadableOf } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { reportUnreadable } from './waits.mjs';
 import { OUTPUT_TAIL } from './deliveries.mjs';
@@ -169,7 +169,9 @@ export const launchPlan = async (plan, ctx, started) => {
    * one of the repo's excluded labels, given an open blocker or held by a
    * `Blocked until:` line since (`ticketStatus`, `mayPickUp`) is skipped,
    * untouched, since its session would proceed on the prompt's claim line
-   * over someone else's work, or on work that waits on another. A claim that fails is
+   * over someone else's work, or on work that waits on another. So is one
+   * whose ready labels its outside author's issue template added
+   * (`uncountedReady`), whose body is a stranger's. A claim that fails is
    * released, and starts nothing.
    *
    * @param {{ repo: string, issue: number }} ticket
@@ -200,8 +202,17 @@ export const launchPlan = async (plan, ctx, started) => {
         if (unread !== undefined) await reportUnreadable({ reader: github, repo, issue, value: unread, log });
         return 'taken';
       }
+      // A ready label counts only where someone with a say in the repo
+      // added it: a stranger's issue template can add every ready label.
+      if (!authorHasSay(read)) {
+        const uncounted = uncountedReady(read, await github.labelAdds(issue), labels.ready);
+        if (uncounted.length > 0) {
+          log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `ready labels ${JSON.stringify(uncounted)} were added by its ${read.association ?? 'NONE'} author ${JSON.stringify(read.author ?? '')}, or by no one the events name: someone with triage access adds them again to pick it up` });
+          return 'taken';
+        }
+      }
     } catch (error) {
-      log('dispatch-claim', { repo, issue, outcome: 'not claimed', error: `the ticket or its blockers could not be read: ${messageOf(error)}` });
+      log('dispatch-claim', { repo, issue, outcome: 'not claimed', error: `the ticket, its blockers or its label events could not be read: ${messageOf(error)}` });
       return 'failed';
     }
     claims.add(keyOf(ticket));

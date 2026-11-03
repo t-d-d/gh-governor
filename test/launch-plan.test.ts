@@ -47,7 +47,7 @@ const context = (over: {
   };
   const ctx = {
     readerFor: async (repo: string) => ({
-      ticket: async (issue: number) => ({ number: issue, title: `Issue ${issue}`, body: '', state: 'open', labels: over.labels?.(repo, issue) ?? READY, pull: false, openBlockers: 0 }),
+      ticket: async (issue: number) => ({ number: issue, title: `Issue ${issue}`, body: '', state: 'open', labels: over.labels?.(repo, issue) ?? READY, pull: false, association: 'MEMBER', openBlockers: 0 }),
       blockers: async () => [],
       ensureLabel: (label: string) => write({ repo, op: 'ensure', label }),
       addLabels: (issue: number, labels: string[]) => write({ repo, op: 'add', issue, labels }),
