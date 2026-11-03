@@ -26,7 +26,7 @@ jobs:
     steps:
       # The whole history, so test/starter-pin.test.ts can read the checker
       # at the commit the starter kit pins and check it is on main. On a pull
-      # request this checks out the merge of the head into main.
+      # request this checks out the merge of the head into its base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0

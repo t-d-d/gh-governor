@@ -25,7 +25,7 @@ Governor starts Claude Code cloud sessions for GitHub repos that install its App
 
 ## The gate
 
-- `npm run gate` runs everything: the public-repo scan, lint, types and the tests. It is the same command in CI, on every push and pull request.
+- `npm run gate` runs everything: the public-repo scan, lint, types and the tests. It is the same command in CI, on every pull request and before each deploy from main.
 - The gate is offline and holds no secrets.
 
 ## Branches and pull requests

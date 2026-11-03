@@ -30,7 +30,17 @@ function events(on: unknown): string[] {
   return Object.keys(on as Record<string, unknown>);
 }
 
-const PULL_REQUEST_EVENTS = ['pull_request', 'pull_request_target'];
+// Whether a workflow can run on a pull request's head: on a pull request, or
+// on a push to any branch but main. Either run puts its checks on the head.
+function runsOnPullRequestHead(on: unknown): boolean {
+  const names = events(on);
+  if (names.includes('pull_request') || names.includes('pull_request_target')) return true;
+  if (!names.includes('push')) return false;
+  const branches = typeof on === 'object' && !Array.isArray(on)
+    ? (on as Record<string, { branches?: unknown } | null>).push?.branches
+    : undefined;
+  return !(Array.isArray(branches) && branches.length === 1 && branches[0] === 'main');
+}
 
 describe('the gate runs once per pull request', () => {
   test('it is triggered by a pull request and a call, not by a push', () => {
@@ -43,15 +53,16 @@ describe('the gate runs once per pull request', () => {
     }
   });
 
-  test('no other workflow a pull request runs has a job whose check is named gate', () => {
+  test('no other workflow that runs on a pull request head has a job whose check is named gate', () => {
     const files = readdirSync(WORKFLOWS).filter((f) => /\.ya?ml$/.test(f) && f !== 'gate.yml');
     const clashes: string[] = [];
     for (const file of files) {
       const workflow = load(file);
-      if (!events(workflow.on).some((e) => PULL_REQUEST_EVENTS.includes(e))) continue;
+      if (!runsOnPullRequestHead(workflow.on)) continue;
       for (const [id, job] of Object.entries(workflow.jobs as Record<string, Record<string, unknown>>)) {
-        // A job's check is named by its `name:`, or by its id when it has none.
-        if ((job.name ?? id) === 'gate') clashes.push(`${file}: ${id}`);
+        // A job's check is named by its `name:`, or by its id when it has
+        // none. A job that calls a workflow names its checks `<id> / <name>`.
+        if (job.uses === undefined && (job.name ?? id) === 'gate') clashes.push(`${file}: ${id}`);
       }
     }
     assert.deepEqual(clashes, []);
