@@ -55,7 +55,7 @@ A test that holds a rule is a fitness function. Its describe name starts `fitnes
 
 ## The gate
 
-`npm run gate` runs a public-repo scan, ESLint with no warnings allowed, the TypeScript check, and every test. CI runs the same command on every push and pull request, and nothing deploys except a green merge to main. The gate is offline and holds no secrets: tests touch memory, temporary folders, and node, python3 and git, and never the network or AWS. So a fork's pull request can run it safely.
+`npm run gate` runs a public-repo scan, ESLint with no warnings allowed, the TypeScript check, and every test. CI runs the same command on every pull request and before each deploy from main, and nothing deploys except a green merge to main. The gate is offline and holds no secrets: tests touch memory, temporary folders, and node, python3 and git, and never the network or AWS. So a fork's pull request can run it safely.
 
 The repo is public and agents write most of it, so the scan ([scripts/public-repo-scan.mjs](../scripts/public-repo-scan.mjs)) refuses an AWS account id, a claude.ai session or environment id, a GitHub App installation id, an issue reference of four or more digits, and Podstow's private repo in any tracked file, with no file exempt, so a session cannot leak one by accident. Only a doc may name Podstow, and link its site.
 

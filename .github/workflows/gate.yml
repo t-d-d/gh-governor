@@ -1,17 +1,18 @@
 # The offline gate: the same `npm run gate` a contributor runs. It holds no
-# secret and reaches no AWS account, so it is safe to run on every push and
-# on a fork's pull request.
+# secret and reaches no AWS account, so it is safe to run on any pull
+# request, a fork's included.
 #
-# A branch pushed here is gated by its push run, so its pull request run
-# skips the job rather than gate the same commit twice. A fork's pull request
-# has no push run here, so its pull request run is what gates it.
+# It gates pull requests, not branch pushes. Gating both meant skipping the
+# pull request job for a branch here, and GitHub reports a skipped job as a
+# passed check named `gate`. Every pull request then carried a second `gate`
+# check that read as passed while the real one was still running. A branch
+# with no pull request gets no run; a session raises its pull request
+# straight after its push.
 name: gate
 
 on:
   # main is gated by deploy.yml and pages.yml, which call this before they
   # publish.
-  push:
-    branches-ignore: [main]
   pull_request:
   workflow_call:
 
@@ -21,11 +22,11 @@ permissions:
 jobs:
   gate:
     name: gate
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
     steps:
       # The whole history, so test/starter-pin.test.ts can read the checker
-      # at the commit the starter kit pins and check it is on main.
+      # at the commit the starter kit pins and check it is on main. On a pull
+      # request this checks out the merge of the head into its base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
