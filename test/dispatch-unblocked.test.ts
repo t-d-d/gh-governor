@@ -59,7 +59,7 @@ describe('closingFires', () => {
 
 describe('ticketRow', () => {
   const labels = { ready: ['mode: afk'], claim: 'claimed', exclude: ['type: prd', 'mode: human'] };
-  const ticket = (on: string[], state = 'open') => ({ number: 7, title: 'T', body: '', state, labels: on, pull: false });
+  const ticket = (on: string[], state = 'open') => ({ number: 7, title: 'T', body: '', state, labels: on, pull: false, association: 'MEMBER' });
   const done = { kind: 'unblocked' as const, repo: FACTORY, issue: 7, blocker: { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' } };
   const dropped = { ...done, blocker: { ...done.blocker, reason: 'not_planned' } };
   const unsaid = { kind: 'unblocked' as const, repo: FACTORY, issue: 7, blocker: { repo: 'acme/tools', number: 41, title: 'The parser' } };

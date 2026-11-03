@@ -28,7 +28,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { UNREADIED_MARKER, isWaiting, labelRow, mayPickUp, mayStartSpec, selectReadyWork, ticketStatus, waitOf } from '../../scripts/lib/ready-work.mjs';
+import { UNREADIED_MARKER, authorHasSay, isWaiting, labelRow, mayPickUp, mayStartSpec, selectReadyWork, ticketStatus, uncountedReady, waitOf } from '../../scripts/lib/ready-work.mjs';
 import * as unblocked from '../../dispatch/unblocked.mjs';
 import { dispatchMarker } from '../../dispatch/webhook/fire.mjs';
 
@@ -408,6 +408,38 @@ describe('mayPickUp', () => {
     const picked = rows.filter((row) => mayPickUp(ticketStatus(row, { labels: FACTORY_LABELS, now, blockers: blockers.get(row.number) }))).map((row) => row.number);
     assert.deepEqual(picked, selected);
     assert.deepEqual(picked, [1, 8]);
+  });
+});
+
+describe('uncountedReady: ready labels no one with a say added', () => {
+  const ready = [READY, 'mode: afk'];
+  const template = ready.map((label) => ({ label, actor: 'stranger' }));
+
+  test('an owner, member or collaborator author has a say, and every label counts', () => {
+    for (const association of ['OWNER', 'MEMBER', 'COLLABORATOR']) {
+      assert.equal(authorHasSay({ association }), true);
+      assert.deepEqual(uncountedReady({ author: 'stranger', association }, template, ready), [], association);
+    }
+  });
+
+  test('any other author, or one whose association was not read, has none', () => {
+    for (const association of ['NONE', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'MANNEQUIN', undefined]) {
+      const read = association === undefined ? {} : { association };
+      assert.equal(authorHasSay(read), false, String(association));
+      assert.deepEqual(uncountedReady({ author: 'stranger', ...read }, template, ready), ready, String(association));
+    }
+  });
+
+  test('a label counts once its latest add is not the outside author\'s', () => {
+    const t = { author: 'Stranger', association: 'NONE' };
+    assert.deepEqual(uncountedReady(t, [...template, { label: READY, actor: 'triager' }], ready), ['mode: afk']);
+    assert.deepEqual(uncountedReady(t, [...template, { label: READY, actor: 'triager' }, { label: 'mode: afk', actor: 'governor-app[bot]' }], ready), []);
+    // The latest add decides, and logins compare in any case.
+    assert.deepEqual(uncountedReady(t, [{ label: READY, actor: 'triager' }, { label: READY, actor: 'stranger' }, { label: 'mode: afk', actor: 'triager' }], ready), [READY]);
+  });
+
+  test('a label no event names does not count on an outsider\'s ticket', () => {
+    assert.deepEqual(uncountedReady({ author: 'stranger', association: 'NONE' }, [{ label: READY, actor: 'triager' }], ready), ['mode: afk']);
   });
 });
 

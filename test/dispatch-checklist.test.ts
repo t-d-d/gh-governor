@@ -80,7 +80,7 @@ const ask = async (over: {
         const status = row ?? 404;
         throw Object.assign(new Error(`GET /issues/${n} failed: ${status}`), { status });
       }
-      return { number: n, title: `Ticket ${n}`, body: '## Acceptance criteria\n\n- It reviews.', state: 'open', labels: ['mode: afk', 'type: nfr', 'workflow: under development'], pull: false, ...row };
+      return { number: n, title: `Ticket ${n}`, body: '## Acceptance criteria\n\n- It reviews.', state: 'open', labels: ['mode: afk', 'type: nfr', 'workflow: under development'], pull: false, association: 'MEMBER', ...row };
     },
   };
   const pull = over.pull ?? pullRow(over.body === undefined ? {} : { body: over.body });
@@ -857,7 +857,7 @@ describe('the state of the tickets a PR names', () => {
 describe('the claim check reads a closing ticket by the shared ready-label rule', () => {
   // No ticket rules, so only the claim check speaks to an excluded ticket.
   const noRules = { ...FACTORY_RULES, humanOnly: [], tickets: { require: [], forbid: [] } };
-  const ticket = (labels: string[]) => ({ number: 748, title: 'T', body: '', state: 'open', labels, pull: false });
+  const ticket = (labels: string[]) => ({ number: 748, title: 'T', body: '', state: 'open', labels, pull: false, association: 'MEMBER' });
   const own = { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [], exclude: ['type: prd', 'mode: human'] };
 
   test('a ready, unclaimed ticket carrying an excluded label passes, where the claim removes labels and where it removes none', () => {
@@ -885,7 +885,7 @@ describe('the claim check reads a closing ticket by the shared ready-label rule'
 
 describe('the checklist\'s parts', () => {
   test('decideInCode fails test 1 for an edit on a prose closing, and a fail no edit meets still comes first', () => {
-    const ticket = { number: 748, title: 'T', body: '', state: 'open', labels: ['mode: afk', 'type: nfr', 'workflow: under development'], pull: false };
+    const ticket = { number: 748, title: 'T', body: '', state: 'open', labels: ['mode: afk', 'type: nfr', 'workflow: under development'], pull: false, association: 'MEMBER' };
     const prose = [{ number: 840, text: 'fixed #840' }];
     const answer = decideInCode({ files: [], tickets: [ticket], rules: { ...FACTORY_RULES, humanOnly: [] }, prose });
     assert.ok(answer?.answer === 'fail', JSON.stringify(answer));
@@ -900,7 +900,7 @@ describe('the checklist\'s parts', () => {
 
   test('decideInCode skips the human-only list but the constraint files for a PR closing only claimed hitl or human tickets', () => {
     const files = [{ filename: '.claude/settings.json', status: 'modified' }, { filename: 'docs/constraints/auth.md', status: 'modified' }];
-    const ticket = (mode: string) => ({ number: 748, title: 'T', body: '', state: 'open', labels: [mode, 'type: bug', 'workflow: under development'], pull: false });
+    const ticket = (mode: string) => ({ number: 748, title: 'T', body: '', state: 'open', labels: [mode, 'type: bug', 'workflow: under development'], pull: false, association: 'MEMBER' });
     for (const mode of ['mode: hitl', 'mode: human']) {
       assert.equal(decideInCode({ files, tickets: [ticket(mode)], rules: FACTORY_RULES }), null, mode);
       assert.deepEqual(constraintsLeft(files, [ticket(mode)], FACTORY_RULES), ['docs/constraints/auth.md'], `${mode}: the model still reads the constraint file`);
@@ -1126,7 +1126,7 @@ describe('the human-only list', () => {
   });
 
   test('decideInCode leaves a PR passing both to the model', () => {
-    const ticket = { number: 748, title: 't', body: '', state: 'open', labels: ['mode: afk', 'workflow: under development'], pull: false };
+    const ticket = { number: 748, title: 't', body: '', state: 'open', labels: ['mode: afk', 'workflow: under development'], pull: false, association: 'MEMBER' };
     assert.equal(decideInCode({ files: FILES, tickets: [ticket], rules: FACTORY_RULES }), null);
     assert.equal(decideInCode({ files: FILES, tickets: [ticket], rules: FACTORY_RULES, others: [], owners: { verification: [{ ...ticket, number: 859 }], later: [] } }), null);
     assert.equal(decideInCode({ files: FILES, tickets: [], rules: FACTORY_RULES }), null, 'a PR needs no ticket');

@@ -253,7 +253,7 @@ describe('planUnblocked: an unblocked fire\'s plan', () => {
   /** A context whose reader holds ticket 7, with `labels`, `rows` as its blockers and `comments` as its thread. */
   const ticketContext = ({ labels = [...READY] as string[], rows = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, over = {} as Record<string, unknown> } = {}) => {
     const posted: Array<{ issue: number, body: string }> = [];
-    const ticket = { number: 7, title: 'Issue 7', body: '', state: 'open', labels, pull: false };
+    const ticket = { number: 7, title: 'Issue 7', body: '', state: 'open', labels, pull: false, association: 'MEMBER' };
     const reader = {
       ticket: async () => ticket,
       blockers: async () => rows,
@@ -351,7 +351,7 @@ describe('planSweep: the bare schedule fire\'s plan', () => {
   })();
   const LAST_FIRE = { at: new Date(NOW - 8 * 24 * 60 * 60 * 1000).toISOString(), session: null, baseline: false };
   const URL = 'https://claude.ai/code/session_01SWEPT';
-  const READY_TICKET = { number: 5, title: 'Issue 5', body: '', state: 'open', labels: [...SWEPT.labels.ready], created_at: '2026-09-20T00:00:00Z', openBlockers: 0, pull: false };
+  const READY_TICKET = { number: 5, title: 'Issue 5', body: '', state: 'open', labels: [...SWEPT.labels.ready], created_at: '2026-09-20T00:00:00Z', openBlockers: 0, pull: false, association: 'MEMBER' };
   const WAITING = { number: 9, title: 'Issue 9', body: 'Blocked until: 2026-09-20', state: 'open', labels: ['type: bug'], wait: { until: '2026-09-20' }, openBlockers: 0, pull: false };
 
   /** A bare fire's context over one served repo, its reader and its state, each overridable. */

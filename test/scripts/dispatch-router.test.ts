@@ -27,6 +27,7 @@ const issue = (number: number, labels: string[], over: Record<string, unknown> =
   state: 'open',
   created_at: `2026-09-${String(number).padStart(2, '0')}T00:00:00Z`,
   labels,
+  association: 'MEMBER',
   ...over,
 });
 
@@ -41,6 +42,8 @@ const fakeReader = (rows: {
   blocking?: Record<number, { number: number; state: string; title: string }[]>;
   parents?: Record<number, { number: number; state: string; labels: string[] } | null>;
   comments?: Record<number, { id: number; body: string; created_at: string }[]>;
+  /** Each issue's `labeled` events, oldest first. */
+  adds?: Record<number, { label: string; actor: string }[]>;
 }) => {
   const asked: string[] = [];
   return {
@@ -68,6 +71,10 @@ const fakeReader = (rows: {
       comments: async (n: number, options?: { since?: string }) => {
         asked.push(`comments ${n}${options?.since ? ` since ${options.since}` : ''}`);
         return rows.comments?.[n] ?? [];
+      },
+      labelAdds: async (n: number) => {
+        asked.push(`labelAdds ${n}`);
+        return rows.adds?.[n] ?? [];
       },
     },
   };
@@ -250,6 +257,40 @@ describe('a targeted schedule fire', () => {
  * order (oldest, then number) runs over all of them, each repo's tickets read
  * with its own labels and reader.
  */
+describe('planSchedule: ready labels an outsider\'s issue template added', () => {
+  const stranger = { author: 'stranger', association: 'NONE' };
+  const template = FACTORY_LABELS.ready.map((label) => ({ label, actor: 'stranger' }));
+  type Outsiders = NonNullable<Parameters<typeof planSchedule>[0]['outsiders']>;
+
+  test('such a ticket takes no place under the cap, and is recorded for the turn to log', async () => {
+    const { reader, asked } = fakeReader({
+      issues: [issue(1, READY, stranger), issue(2, READY, stranger), issue(3, READY), issue(4, READY)],
+      adds: { 1: template, 2: template },
+    });
+    const outsiders: Outsiders = [];
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, outsiders });
+    assert.deepEqual(plan.map((d) => d.issue), [3, 4]);
+    assert.deepEqual(outsiders, [1, 2].map((n) => ({ repo: REPO, issue: n, labels: FACTORY_LABELS.ready, author: 'stranger', association: 'NONE' })));
+    assert.ok(!asked.includes('labelAdds 3') && !asked.includes('labelAdds 4'), 'a member\'s ticket reads no events');
+  });
+
+  test('once someone with triage access adds the labels again, it is planned', async () => {
+    const { reader } = fakeReader({
+      issues: [issue(1, READY, stranger)],
+      adds: { 1: [...template, ...FACTORY_LABELS.ready.map((label) => ({ label, actor: 'triager' }))] },
+    });
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW });
+    assert.deepEqual(plan.map((d) => d.issue), [1]);
+  });
+
+  test('a named issue is judged the same way', async () => {
+    const { reader } = fakeReader({ issues: [issue(1, READY, stranger)], adds: { 1: template } });
+    const outsiders: Outsiders = [];
+    assert.deepEqual(await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, only: [1], outsiders }), []);
+    assert.equal(outsiders.length, 1);
+  });
+});
+
 describe('planSchedule over several repos', () => {
   const ASKME = 't-d-d/askme-mcp';
   const askme = { ready: ['mode: afk'], claim: 'claimed', exclude: ['type: prd'] };

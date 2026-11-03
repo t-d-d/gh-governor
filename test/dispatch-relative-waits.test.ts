@@ -113,7 +113,7 @@ const fakeReader = ({ body = 'Blocked until: 3 days after #143 closes\n\nThe res
     },
     blockers: async () => { asked.push('blockers'); return blockers; },
     addBlocker: async (n: number, id: number) => { links.push({ issue: n, id }); },
-    ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: state.body, state: 'open', labels, pull: false, openBlockers: 0, ...waitOf(state.body) }),
+    ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: state.body, state: 'open', labels, pull: false, association: 'MEMBER', openBlockers: 0, ...waitOf(state.body) }),
   };
   return { reader, comments, edits, links, asked, state };
 };
