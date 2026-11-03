@@ -104,7 +104,8 @@ const MERGEABLE_WAIT_MS = 3000;
 
 /**
  * The required status checks red on the PR's head, and those not finished
- * there: pending, or not yet started. A base with none required reads no
+ * there: any run of the name pending, or none started. Red wins over
+ * pending, and a name whose only run was skipped reads green. A base with none required reads no
  * check: a repo with no CI needs no checks permission.
  *
  * @param {ReviewReader} reader
@@ -116,7 +117,9 @@ const requiredStates = async (reader, pull) => {
   if (required.length === 0) return { red: [], pending: [] };
   const checks = await reader.checksAt(pull.headSha);
   const red = required.filter((name) => checks.some((c) => c.name === name && c.state === 'red'));
-  const pending = required.filter((name) => !red.includes(name) && !checks.some((c) => c.name === name && c.state === 'green'));
+  // A name is unfinished while any run of it is pending, even beside a green one: a run that skipped its job reads green while the push run of the same name is still going.
+  const pending = required.filter((name) => !red.includes(name)
+    && (checks.some((c) => c.name === name && c.state === 'pending') || !checks.some((c) => c.name === name && c.state === 'green')));
   return { red, pending };
 };
 

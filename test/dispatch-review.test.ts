@@ -1175,6 +1175,30 @@ describe('run — required checks still running, or run again', () => {
     }
   });
 
+  test('a required check with a skipped run and a run still going of its name skips the review: the green one does not finish it', async () => {
+    // `checksAt` reads a skipped run as green: a pull_request run that skips `gate` beside the push run still going.
+    for (const checks of [
+      [{ name: 'gate', state: 'green' as const }, { name: 'gate', state: 'pending' as const }],
+      [{ name: 'gate', state: 'pending' as const }, { name: 'gate', state: 'green' as const }],
+    ]) {
+      const h = tagalong({ required: ['gate'], checks });
+      const turn = await reviewTagalong(h);
+      assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped'], JSON.stringify(checks));
+      assert.match(String(turn.reviews[0]!.reason), /`gate`.*not finished/);
+      assert.deepEqual([h.judged.length, h.comments.length, h.approvals.length, h.merges.length], [0, 0, 0, 0]);
+    }
+  });
+
+  test('a required check with any red run reads red, even beside a green and a pending run of its name; one whose only run was skipped reads green', async () => {
+    const red = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'green' }, { name: 'gate', state: 'pending' }, { name: 'gate', state: 'red' }] });
+    await reviewTagalong(red);
+    assert.equal(red.judged.length, 0);
+    assert.match(red.comments[0]!.body, /^Waits for a push: the required check `gate` is red on its head \(test 8\)/);
+    const skipped = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'green' }] });
+    assert.deepEqual((await reviewTagalong(skipped)).reviews.map((r) => r.outcome), ['approved']);
+    assert.equal(skipped.judged.length, 1);
+  });
+
   test('a test-8 fail at the same head and body is read again: a re-run that turns the check green is reviewed', async () => {
     const red = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }] });
     await reviewTagalong(red);
