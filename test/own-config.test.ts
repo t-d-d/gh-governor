@@ -41,5 +41,6 @@ test('this repo\'s review never merges, forbids closing a PRD, and reads its che
   const resolved = await resolveFiles(read.config, async (path) => own(path));
   assert.ok(resolved.ok, JSON.stringify(resolved));
   const checklist = resolved.config.review?.checklist ?? '';
-  for (const n of [2, 3, 4, 5, 6]) assert.match(checklist, new RegExp(`^${n}\\. `, 'm'), `the checklist numbers test ${n}`);
+  // Tests 1, 7 and 8 are decided in code, and a fail comment names them too.
+  for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) assert.match(checklist, new RegExp(`^${n}\\. `, 'm'), `the checklist numbers test ${n}`);
 });

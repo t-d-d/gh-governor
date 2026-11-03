@@ -6,8 +6,9 @@ description: The checklist governor's PR review reads for this repo's pull reque
 # PR review
 
 Read the pull request's description, its changed files and the tickets it
-closes, then answer each test in order. You see no diff. The description
-follows .github/pull_request_template.md, and the tests follow its sections.
+closes, then answer each test in order. The review sees no diff. The
+description follows .github/pull_request_template.md, and the tests follow
+its sections.
 
 ## The checklist
 
@@ -35,6 +36,20 @@ follows .github/pull_request_template.md, and the tests follow its sections.
 
 6. **Left for later names an issue for each loose end, or says None.** A
    loose end with no issue number fails.
+
+7. **No changed file is on the human-only list.** The list is
+   `review.humanOnly` in `.github/dispatch.json`, and it is empty here. Governor
+   checks this in code.
+
+8. **No required status check is red on its head.** Governor checks this in
+   code, and a push that turns the check green meets it.
+
+## Dependabot
+
+A pull request `dependabot[bot]` opened is held to test 7 alone, with the
+Dependabot list (`review.dependabot` in `.github/dispatch.json`) in place of
+the human-only list. That list is empty here, so every Dependabot pull request
+waits for a person.
 
 ## The answer
 
