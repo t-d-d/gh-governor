@@ -27,8 +27,8 @@ const fakeApi = (over: Record<string, unknown> = {}, earlier: unknown[] = []) =>
   const api = {
     connectors: async () => ({ data: [FEED, GMAIL] }),
     triggers: async () => ({ data: [] as unknown[] }),
-    create: async (body: unknown) => { calls.push({ call: 'create', body }); return { id: 'trig_01NEW' }; },
-    update: async (id: string, body: unknown) => { calls.push({ call: 'update', id, body }); return { id }; },
+    create: async (body: unknown) => { calls.push({ call: 'create', body }); return { outcome: 'created', trigger: { id: 'trig_01NEW' } }; },
+    update: async (id: string, body: unknown) => { calls.push({ call: 'update', id, body }); return { trigger: { id } }; },
     run: async (id: string) => { calls.push({ call: 'run', id }); fired = true; return {}; },
     // The run's session shows on the second read after the fire.
     sessions: async (id: string) => {
@@ -269,6 +269,10 @@ describe('a periodic\'s routine run', () => {
       { create: async () => { throw new Error('POST /v1/code/triggers: 400 bad cron'); } },
       { triggers: async () => ({ data: [{ id: 'trig_01OLD', name: routineName(REPO, 'Weekly retro') }] }), sessions: async () => { throw new Error('GET sessions: 500'); } },
       { create: async () => ({}) },
+      { create: async () => ({ outcome: 'created', trigger: {} }) },
+      { create: async () => ({ outcome: 'created', trigger: { id: '' } }) },
+      // An id at the top of the answer is not the routine's: the live answer keeps it under `trigger`.
+      { create: async () => ({ id: 'trig_01NEW' }) },
     ]) {
       const { api } = fakeApi(over);
       const result = await launch(api);
@@ -349,8 +353,8 @@ describe('what the routines API answered, logged by shape', () => {
     const api = observed({
       connectors: async () => ({ data: [FEED] }),
       triggers: async () => ({ data: [{ id: 'trig_01OLD', name: 'governor acme/factory: Weekly retro', job_config: { ccr: { events: [{ data: { message: { content: prompt } } }] } } }], has_more: false }),
-      create: async () => ({ id: 'trig_01NEW', name: 'x' }),
-      update: async (id: string) => ({ id }),
+      create: async () => ({ outcome: 'created', trigger: { id: 'trig_01NEW', name: 'x' } }),
+      update: async (id: string) => ({ trigger: { id } }),
       run: async () => ({ type: 'run_started', session: { id: 'cse_01RUN', title: prompt }, last_run: null }),
       sessions: async () => ({ data: [{ id: 'cse_01RUN', title: prompt, created_at: '2026-10-31T12:00:05Z' }], has_more: true, last_id: 'cse_01RUN' }),
     }, (event, context) => logged.push({ event, ...context }), { repo: REPO, periodic: 'Weekly retro' });
@@ -358,8 +362,10 @@ describe('what the routines API answered, logged by shape', () => {
     await api.triggers();
     await api.run('trig_01OLD');
     await api.sessions('trig_01OLD');
+    await api.create({});
     assert.ok(logged.every((l) => l.event === ROUTINE_ANSWER && l.level === 'info' && l.repo === REPO && l.periodic === 'Weekly retro'), 'each line names the repo and periodic it is for');
-    assert.deepEqual(logged.map((l) => [l.call, l.routine ?? null]), [['connectors', null], ['triggers', null], ['run', 'trig_01OLD'], ['sessions', 'trig_01OLD']]);
+    assert.deepEqual(logged.map((l) => [l.call, l.routine ?? null]), [['connectors', null], ['triggers', null], ['run', 'trig_01OLD'], ['sessions', 'trig_01OLD'], ['create', null]]);
+    assert.deepEqual(logged[4]!.answer, { keys: { outcome: 'string', trigger: 'object' }, ids: { 'trigger.id': 'trig_01NEW' } });
     assert.deepEqual(logged[2]!.answer, { keys: { type: 'string', session: 'object', last_run: 'null' }, ids: { 'session.id': 'cse_01RUN' } });
     assert.deepEqual(logged[3]!.answer, {
       keys: { data: 'array', has_more: 'boolean', last_id: 'string' },

@@ -103,7 +103,8 @@ const ANY_SESSION_ID = /\b(?:cse|session)_[A-Za-z0-9]+/g;
  *   The account's connector list (`GET /v1/mcp_servers`), its routines
  *   (`GET /v1/code/triggers`, the page after `cursor` when one is given,
  *   as `next_cursor` names it), a routine created or updated, one fired, and
- *   one's run sessions, each answer parsed. Any refusal throws, as a
+ *   one's run sessions, each answer parsed. A create or an update answers
+ *   with the routine under `trigger` (`{ outcome, trigger }` for a create). Any refusal throws, as a
  *   {@link RoutinesApiError} where its cause is known.
  * @typedef {{ connector_uuid: string, name: string, url: string }} Connection
  * @typedef {{ status: number, output: string, missing?: string[], routine?: string }} RoutineResult
@@ -392,7 +393,8 @@ export const launchRoutine = async ({ api, repo, periodic, prompt, environment, 
     };
     const existing = await findRoutine(api, listedRoutines, name);
     if (existing === undefined) {
-      const created = /** @type {any} */ (await api.create(body));
+      // The create answers `{ outcome, trigger }`: the routine is `trigger`.
+      const created = /** @type {any} */ (await api.create(body))?.trigger;
       if (typeof created?.id !== 'string' || created.id === '') return { status: 1, output: `the routine ${name} was created with no id` };
       id = created.id;
     } else {
