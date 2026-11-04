@@ -113,6 +113,34 @@ import { droppedBy } from './switches.mjs';
 export const HOOK_EVENTS = Object.freeze(['check_run', 'issue_comment', 'issues', 'pull_request', 'pull_request_review', 'pull_request_review_comment', 'status', 'workflow_job', 'workflow_run']);
 
 /**
+ * The repository permissions governor uses, each at the level it needs,
+ * keyed as GitHub's API names them and named as the App's settings page
+ * does. The deploy's `app-permissions` and `installation-permissions` checks
+ * hold the App, and each installation on a listed owner, to cover them
+ * (scripts/lib/conformance-app-permissions.mjs), and docs/self-hosting.md
+ * lists the same.
+ *
+ * - Contents: the config file, prompt files, compares, the review's merge.
+ * - Issues: comments, labels, the claim, body edits, blockers.
+ * - Pull requests: PR reads, the session link in a PR's description.
+ * - Actions: runs and jobs, for CI and deploy messages, and the review's read of the CI run at a PR's head.
+ * - Checks: the review's reads of required checks, and its `governor` check.
+ * - Commit statuses: the review's reads of required statuses.
+ * - Metadata: every App has it.
+ *
+ * @type {ReadonlyArray<Readonly<{ key: string, name: string, level: 'read' | 'write' }>>}
+ */
+export const APP_PERMISSIONS = Object.freeze([
+  Object.freeze({ key: 'contents', name: 'Contents', level: 'write' }),
+  Object.freeze({ key: 'issues', name: 'Issues', level: 'write' }),
+  Object.freeze({ key: 'pull_requests', name: 'Pull requests', level: 'write' }),
+  Object.freeze({ key: 'actions', name: 'Actions', level: 'read' }),
+  Object.freeze({ key: 'checks', name: 'Checks', level: 'write' }),
+  Object.freeze({ key: 'statuses', name: 'Commit statuses', level: 'read' }),
+  Object.freeze({ key: 'metadata', name: 'Metadata', level: 'read' }),
+]);
+
+/**
  * The key, read once per warm environment. A read that failed (a throttle,
  * a permission the role lost) is not kept: keeping it would hand every later
  * delivery the same rejection for the environment's life.

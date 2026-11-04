@@ -33,7 +33,11 @@ Under your account's or organisation's **Settings → Developer settings → Git
    - **Issues**: Read and write. The claim, the claim label and the session-link comment.
    - **Pull requests**: Read and write.
    - **Actions**: Read. A finished run's jobs, the runs before it, and the CI run at a PR's head, which the review reads.
-   - **Checks**: Read and write, and **Commit statuses**: Read. The review reads a required check on a PR's head, and posts its own `governor` check. A check run or a status ending on a PR's head reviews it again.
+   - **Checks**: Read and write. The review reads a required check on a PR's head, and posts its own `governor` check. A check run ending on a PR's head reviews it again.
+   - **Commit statuses**: Read. The review reads a required status on a PR's head, and a status ending there reviews it again.
+   - **Metadata**: Read. Every App has it.
+
+   The deploy checks that the App holds each of these, and that each installation on a listed owner has accepted them. When you add a permission later, accept it on every installation too.
 4. **Subscribe to events**: Check run, Issue comment, Issues, Pull request, Pull request review, Pull request review comment, Status, Workflow job, Workflow run. The API cannot set these, so tick them here. The deploy refuses to point the webhook while one is missing.
 5. **Where can this GitHub App be installed?**: **Any account**. A private App installs only on the account that owns it. The deployment's owner list is what keeps an outsider's installation from using your login.
 6. Create the App. Note its **App ID** and its slug (the last part of its public URL).
