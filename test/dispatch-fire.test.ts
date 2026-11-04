@@ -12,7 +12,6 @@ import {
   dispatchMarker,
   lastDispatch,
   parseFire as parseNamed,
-  recentlyDispatched,
   shippingJob,
   build,
 } from '../dispatch/webhook/fire.mjs';
@@ -58,7 +57,7 @@ describe('dispatch marker', () => {
     const body = dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_abc' });
     assert.match(body, /<!-- governor:dispatched 2026-09-25T12:00:00\.000Z -->/);
     assert.match(body, /https:\/\/claude\.ai\/code\/session_abc/);
-    assert.equal(recentlyDispatched([{ id: 1, body, created_at: at }], NOW + 60_000), true);
+    assert.notEqual(lastDispatch([{ id: 1, body, created_at: at }], NOW + 60_000), null);
   });
 
   test('without a URL it still records the dispatch', () => {
@@ -70,11 +69,11 @@ describe('dispatch marker', () => {
   test('a marker older than the window no longer counts', () => {
     const at = new Date(NOW - DISPATCH_WINDOW_MS - 1).toISOString();
     const body = dispatchMarker({ at, sessionUrl: null });
-    assert.equal(recentlyDispatched([{ id: 1, body, created_at: at }], NOW), false);
+    assert.equal(lastDispatch([{ id: 1, body, created_at: at }], NOW), null);
   });
 
   test('an ordinary comment is not a dispatch', () => {
-    assert.equal(recentlyDispatched([{ id: 1, body: 'dispatched yesterday', created_at: '2026-09-25T11:59:00Z' }], NOW), false);
+    assert.equal(lastDispatch([{ id: 1, body: 'dispatched yesterday', created_at: '2026-09-25T11:59:00Z' }], NOW), null);
   });
 
   // The marker is the forwarding address: a message the PR's session refuses
@@ -450,7 +449,7 @@ describe('the vocabulary', () => {
       router: await import('../scripts/lib/dispatch-router.mjs'),
       coverage: await import('../dispatch/coverage.mjs'),
     };
-    const vocabulary = ['SUBSCRIPTION_EVENTS', 'RED', 'FAILED', 'WORKFLOW_PATH', 'MESSAGE_SESSION', 'SESSION_LINK', 'LABEL_PREFIX', 'deployedTarget', 'UNATTENDED', 'SUMMONERS', 'DISPATCH_MARKER', 'dispatchMarker', 'lastDispatch', 'recentlyDispatched', 'DISPATCH_WINDOW_MS', 'parseFire', 'parseInvocation'];
+    const vocabulary = ['SUBSCRIPTION_EVENTS', 'RED', 'FAILED', 'WORKFLOW_PATH', 'MESSAGE_SESSION', 'SESSION_LINK', 'LABEL_PREFIX', 'deployedTarget', 'UNATTENDED', 'SUMMONERS', 'DISPATCH_MARKER', 'dispatchMarker', 'lastDispatch', 'DISPATCH_WINDOW_MS', 'parseFire', 'parseInvocation'];
     for (const name of vocabulary.filter((n) => n !== 'parseInvocation')) assert.ok(name in fire, `fire.mjs exports ${name}`);
     for (const [module, exports] of Object.entries(others)) {
       for (const name of vocabulary) assert.equal(name in exports, false, `${module} spells ${name} again`);

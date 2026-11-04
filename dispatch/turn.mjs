@@ -1008,13 +1008,15 @@ const runOpen = (deps) => {
  *   One session a planner wants started, on `asked`, which the launcher's
  *   `start` takes with the repo. `claim`: the ticket is claimed
  *   before the launch and released on a failure (a picked-up ticket, not a
- *   spec session). `holdsRepo`: a failed launch skips the repo's later
+ *   spec session). A claimed ticket's launch leaves a dispatch comment
+ *   naming its builder; an unclaimed one, a spec session, is written into
+ *   the ticket's body as its owner instead. `holdsRepo`: a failed launch skips the repo's later
  *   launches (a ticket's or a periodic's). `periodic`: the periodic's name,
  *   which its launch line and a repo skip's line carry. `started`: the
  *   record this launch moves, called after the launch line with what the
  *   launch printed and when it was fired, unless a routine fault skipped it.
  *   `ask`: a message sent in place of the launch, whose fallback is `asked`
- *   and leaves its own marker. It settles its own records, and answers the
+ *   and names itself in the ticket's body. It settles its own records, and answers the
  *   fallback's launch, or null where none was tried.
  *
  * @typedef {{

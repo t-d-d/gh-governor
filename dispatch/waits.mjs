@@ -18,8 +18,7 @@
  * ({@link endedWaits}). A ticket whose date has passed and that is not
  * ready gets one comment, under a marker naming the date
  * ({@link waitEndedMarker}), and, with `unblocked` on, its spec work,
- * unless the thread shows a dispatch inside the window, or governor's
- * not-planned close still holds the ticket (`mayStartSpec`,
+ * unless governor's not-planned close still holds the ticket (`mayStartSpec`,
  * scripts/lib/ready-work.mjs). Where its body names a session, its owner,
  * that session is asked to rewrite its own spec on the repo's
  * `waitEndedOwnerSpec` prompt, so it keeps the ticket, with a spec session
@@ -52,7 +51,7 @@ import { relayedBody, sessionNamedIn } from './webhook/subscribe.mjs';
 import { AUTO, RELAY, authorKind, lets } from './trust.mjs';
 import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
-import { RELATIVE_WAIT, isWaiting, mayStartSpec, specHold, ticketStatus, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
+import { RELATIVE_WAIT, isWaiting, mayStartSpec, ticketStatus, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** The log event for a `Blocked until:` line governor cannot read. */
@@ -496,11 +495,13 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  *   ticket on;
  * - a date that has passed, on a ticket not ready: one comment, unless its
  *   thread carries the marker for that date, and, with `spec`, the ticket
- *   back as a {@link WaitSpec} unless a dispatch inside the window is on its
- *   thread, or governor's not-planned close still holds it
- *   (`mayStartSpec`, scripts/lib/ready-work.mjs). Its item stays until the turn has started the
+ *   back as a {@link WaitSpec} unless governor's not-planned close still
+ *   holds it (`mayStartSpec`, scripts/lib/ready-work.mjs). Its item stays until the turn has started the
  *   session, so a launch that fails, or one the turn has no room for, is
- *   tried at the next fire, and the marker keeps it to one comment.
+ *   tried at the next fire, and the marker keeps it to one comment. A spec
+ *   session the turn started is written into the ticket's body as its
+ *   owner, so an item a failed delete left is its owner's at the next fire:
+ *   a second message, never a second session.
  *   Otherwise the item goes.
  *
  * A ticket that cannot be read, or whose comment fails, keeps its item for
@@ -597,7 +598,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       }
       // A ticket governor unreadied on a not-planned close waits for a
       // person's answer first, as a later blocker's close does.
-      if (spec && mayStartSpec(thread, now)) {
+      if (spec && mayStartSpec(thread)) {
         // A session link counts only where trust.relay lets the body's author in.
         const owner = sessionNamedIn(relayedBody(ticket, relay));
         specs.push({ issue, title: ticket.title, until: wait.until, read: item.until, owner });
@@ -605,7 +606,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: told ? `ended: already told, ${work}` : `ended: commented, ${work}` });
         continue;
       }
-      await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: specHold(thread, now) === 'unreadied' ? `held: ${UNREADIED_HELD}` : 'dispatched inside the window' } : {}) });
+      await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: `held: ${UNREADIED_HELD}` } : {}) });
     } catch (error) {
       const message = messageOf(error);
       log(WAIT_UNHANDLED, { level: 'error', repo, issue, read: item.until, error: message, reason: 'its item stays, so the next fire tries again' });

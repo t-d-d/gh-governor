@@ -16,7 +16,7 @@ import { judgeReady } from './start.mjs';
 import { startOf } from './trust.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { reportUnreadable } from './waits.mjs';
-import { OUTPUT_TAIL } from './deliveries.mjs';
+import { OUTPUT_TAIL, nameSpecSession } from './deliveries.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 
 /**
@@ -279,7 +279,7 @@ export const launchPlan = async (plan, ctx, started) => {
       }
       // A message in place of the launch: an ended wait's owner, asked to
       // rewrite its own spec, with this launch as the message's fallback,
-      // which leaves its own marker. It runs here so the window and a repo
+      // which names itself in the ticket's body. It runs here so the window and a repo
       // skip hold it as they hold a launch.
       if (entry.ask !== undefined) {
         const fell = await entry.ask();
@@ -307,10 +307,16 @@ export const launchPlan = async (plan, ctx, started) => {
         // A routine the routines API refused is not (`routineFault`).
         skipped.add(entry.repo);
         log(REPO_SKIPPED, { level: 'error', repo: entry.repo, issue: entry.issue, ...periodic, status, reason: 'its launch started nothing: the rest of its tickets and periodics wait for the next fire' });
-      } else if (ticket !== null) {
+      } else if (ticket !== null && entry.claim) {
+        // A picked-up ticket's builder is named by its dispatch comment.
         const at = new Date(now()).toISOString();
         await (await readerFor(ticket.repo)).comment(ticket.issue, dispatchMarker({ at, sessionUrl }));
         if (sessionUrl !== null) claims.delete(keyOf(ticket));
+      } else if (ticket !== null && outcome !== 'failed') {
+        // A spec session is the ticket's owner, named in its body, where its
+        // next spec work finds it. It leaves no dispatch comment. A launch
+        // that started nothing names nobody.
+        await nameSpecSession(await readerFor(ticket.repo), { repo: ticket.repo, issue: ticket.issue, sessionUrl, log });
       }
       ran.push({ repo: entry.repo, issue: entry.issue, outcome, sessionUrl, planned: entry });
     }

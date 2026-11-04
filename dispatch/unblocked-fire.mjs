@@ -14,7 +14,7 @@
 
 import { DEFAULT_MODEL, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { outsiderReason, planSchedule, strangerReason } from '../scripts/lib/dispatch-router.mjs';
-import { mayStartSpec, specHold, ticketStatus, unreadableOf } from '../scripts/lib/ready-work.mjs';
+import { mayStartSpec, ticketStatus, unreadableOf } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { GITHUB_SOURCE } from './deliveries.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
@@ -25,7 +25,7 @@ import { relativeAtClose, reportUnreadable } from './waits.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 import { byOf } from './pickup.mjs';
 import { authorKind, autoOf, lets, relayOf, startOf } from './trust.mjs';
-import { dispatchMarker, lastDispatch } from './webhook/fire.mjs';
+import { lastDispatch } from './webhook/fire.mjs';
 import { relayedBody, sessionNamedIn } from './webhook/subscribe.mjs';
 
 /** @typedef {import('./turn.mjs').Reader} Reader */
@@ -179,11 +179,15 @@ export const planUnblocked = async (invocation, ctx) => {
       ctx.log('dispatch-unblocked', { ...about, outcome: lineSaid ? `the line's comment stands for the row's: ${settled?.outcome}` : 'commented', ...(unreadied === undefined ? {} : { unreadied }) });
       return { answer: { kind: invocation.kind, row, commented, dispatched: [] } };
     }
-    // The claimed ticket's session: the newest dispatch marker names it,
-    // whatever its age, since the session builds for as long as it takes.
-    const session = lastDispatch(await reader.comments(issue), ctx.now(), Infinity)?.sessionUrl ?? null;
+    // The claimed ticket's session: the newest dispatch marker names the
+    // builder pickup launched, whatever its age, since the session builds
+    // for as long as it takes. With none, the body's owner link: an owner
+    // that claimed its own ticket builds it. The link counts only where the
+    // repo's trust.relay lets the body's author in.
+    const session = lastDispatch(await reader.comments(issue), ctx.now(), Infinity)?.sessionUrl
+      ?? sessionNamedIn(relayedBody(ticket, relayOf(config)));
     if (session === null) {
-      ctx.log('dispatch-unblocked', { ...about, outcome: 'nobody told: no dispatch marker on the ticket names its session' });
+      ctx.log('dispatch-unblocked', { ...about, outcome: 'nobody told: no dispatch marker or owner link on the ticket names its session' });
       return { answer: { kind: invocation.kind, row, commented, messaged: null, dispatched: [] } };
     }
     const text = notPlanned ?? unblockedMessage(invocation, ctx.prompts);
@@ -206,19 +210,15 @@ export const planUnblocked = async (invocation, ctx) => {
     ctx.log('dispatch-unblocked', { ...about, level: 'info', outcome: `nothing starts and nothing is sent: opened by a ${authorKind(ticket)} author, whom trust.auto (${auto.join(', ') || 'empty'}) does not let in` });
     return { answer: { kind: invocation.kind, row, dispatched: [] } };
   }
-  // The spec session's holds: a thread that cannot be read fails the
-  // turn, never taken for no marker.
+  // The spec session's hold: governor's not-planned close, unanswered. A
+  // thread that cannot be read fails the turn, never taken for no hold.
   /** Why no spec work starts on a not-ready ticket, or null. @returns {Promise<string | null>} */
-  const specHeld = async () => {
-    const thread = await reader.allComments(issue);
-    const at = ctx.now();
-    if (mayStartSpec(thread, at)) return null;
-    return specHold(thread, at) === 'unreadied' ? UNREADIED_HELD : 'dispatched inside the window';
-  };
+  const specHeld = async () => (mayStartSpec(await reader.allComments(issue)) ? null : UNREADIED_HELD);
   const spec = () => ({ prompt: specPrompt({ fire: invocation, title: ticket.title, labels: config.labels, prompts: ctx.prompts }), sessionName: sessionName(issue, ticket.title) });
   // A not-ready ticket whose body names its owner: the owner rewrites its
-  // own spec and keeps the ticket. The spec session is the message's
-  // fallback, for an owner archived, and counts against DispatchCap as the
+  // own spec and keeps the ticket, and nothing is posted on it. The spec
+  // session is the message's fallback, for an owner archived, written into
+  // the body in the owner's place, and counts against DispatchCap as the
   // launch it replaces does, so with a cap of 0 the owner is still asked
   // and nothing starts in its place.
   // The owner counts only where the repo's trust.relay lets the body's
@@ -235,11 +235,7 @@ export const planUnblocked = async (invocation, ctx) => {
     let told;
     let loginStored = false;
     try {
-      told = await ctx.delivery().deliver({ session: owner }, ownerSpecMessage(invocation, ctx.prompts, config.labels), { source: GITHUB_SOURCE, on: [issue], fallback });
-      // An owner that took it is marked as a spec session's launch is, so
-      // the claimed row finds the session that builds, and the sweep stays
-      // off the ticket inside the window.
-      if (told.ok) await reader.comment(issue, dispatchMarker({ at: new Date(ctx.now()).toISOString(), sessionUrl: owner }));
+      told = await ctx.delivery().deliver({ session: owner }, ownerSpecMessage(invocation, ctx.prompts, config.labels), { source: GITHUB_SOURCE, on: [issue], fallback, spec: true });
     } finally {
       loginStored = await ctx.storeLogin();
     }
@@ -252,7 +248,7 @@ export const planUnblocked = async (invocation, ctx) => {
   if (ctx.cap === 0) {
     ctx.log('dispatch-unblocked', { ...about, outcome: 'not started', reason: CAP_ZERO_REASON });
   } else if (row === 'ready') {
-    // As pickup does: the selection's own checks, the window included.
+    // As pickup does: the selection's own checks.
     /** @type {import('../scripts/lib/dispatch-router.mjs').Outsider[]} */
     const outsiders = [];
     /** @type {import('../scripts/lib/dispatch-router.mjs').Stranger[]} */
@@ -273,14 +269,16 @@ export const planUnblocked = async (invocation, ctx) => {
       ? { outcome: 'skipped', reason: outsiderReason(outsider) }
       : stranger !== undefined
         ? { outcome: 'skipped', reason: strangerReason(stranger) }
-        : { outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, blocked, or no longer ready' : 'picking up' }) });
+        : { outcome: planned.length === 0 ? 'not selectable: blocked, or no longer ready' : 'picking up' }) });
     if (outsider !== undefined) await reportUncounted({ reader, outsider, log: ctx.log });
     if (stranger !== undefined) await reportUntasked({ reader, stranger, what: 'readied', ready: config.labels.ready, event: 'dispatch-unblocked', log: ctx.log });
   } else {
-    // The spec session is not claimed: its marker keeps the sweep off the
-    // ticket inside the window, and the claim it adds before it builds
-    // keeps it off after. A ticket governor unreadied on a not-planned
-    // close waits for a person's answer first.
+    // The spec session is not claimed: the ticket is not ready, so the
+    // sweep leaves it, and the claim it adds before it builds keeps it off
+    // after. Its launch writes it into the body as the ticket's owner
+    // (dispatch/launch-plan.mjs), where a later close finds it. A ticket
+    // governor unreadied on a not-planned close waits for a person's
+    // answer first.
     const held = await specHeld();
     if (held !== null) {
       ctx.log('dispatch-unblocked', { ...about, outcome: `not started: ${held}` });

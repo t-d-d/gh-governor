@@ -5,20 +5,16 @@
  * ready ticket starts (dispatch/unblocked.mjs).
  *
  * The selection walks `scripts/lib/ready-work.mjs`'s ordered candidates,
- * asking about blockers and recent dispatches only as far as the cap
- * needs. A fire can follow another within minutes (a run by hand beside the
- * schedule, and webhook bursts later), reading the backlog before the first
- * has claimed its tickets, so an issue dispatched inside
- * {@link DISPATCH_WINDOW_MS} is skipped. The record of a dispatch is a marker
- * comment on the issue (`dispatchMarker`), carrying the session URL where the
- * launcher printed one: the in-flight list lives on the ticket, not in a UI.
- * The turn claims each planned issue before its launch (`workflow: under
- * development`), which drops it from the selection, and puts the ready
- * label back on a launch that started nothing. The window still covers a
- * claim a person undid, or a fire racing the claim.
+ * asking about blockers and who added the ready labels only as far as the
+ * cap needs. The turn claims each planned issue before its launch
+ * (`workflow: under development`), which drops it from the selection, and
+ * puts the ready label back on a launch that started nothing. The claim
+ * label alone keeps a ticket out while it is built: a dispatch comment's
+ * age holds nothing, and a ticket whose claim a person removed is selected
+ * again. Fires run one at a time in the lane's one message group (`LANE`,
+ * dispatch/webhook/fire.mjs), so a fire cannot race another's claim.
  */
 
-import { DISPATCH_WINDOW_MS, recentlyDispatched } from '../../dispatch/webhook/fire.mjs';
 import { promptFor, sessionName } from './dispatch-prompt.mjs';
 import { authorPicked, byAge, mayPickUp, selectReadyWork, ticketStatus, unreadableOf } from './ready-work.mjs';
 import { judgeReady } from '../../dispatch/start.mjs';
@@ -147,10 +143,10 @@ export const strangerReason = ({ association }) =>
  * and with `unlooked`, each whose adder could not be looked up this turn.
  * Neither takes a place under the cap.
  *
- * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[], outsiders?: Outsider[], strangers?: Stranger[], unstarted?: import('../../dispatch/start.mjs').Unstarted[], unlooked?: import('../../dispatch/start.mjs').Unlooked[] }} args
+ * @param {{ sources: readonly Source[], cap: number, now: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[], outsiders?: Outsider[], strangers?: Stranger[], unstarted?: import('../../dispatch/start.mjs').Unstarted[], unlooked?: import('../../dispatch/start.mjs').Unlooked[] }} args
  * @returns {Promise<Dispatch[]>}
  */
-export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut, unreadable, relative, outsiders, strangers, unstarted, unlooked }) => {
+export const planSchedule = async ({ sources, cap, now, only, seen = [], unread, cut, unreadable, relative, outsiders, strangers, unstarted, unlooked }) => {
   /** @type {Set<string>} */
   const failed = new Set();
   /**
@@ -226,14 +222,9 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     }
   }
   const candidates = tagged.sort(byAge);
-  // Only the window's comments: a marker older than the window would not
-  // count, and the endpoint pages oldest first, so on a long thread the
-  // newest marker would otherwise sit past the page.
-  const since = new Date(now - windowMs).toISOString();
   /**
-   * Whether the selection starts a candidate: not blocked, its ready
-   * labels counted, and not dispatched inside the window. A read `read` answers with null starts
-   * nothing.
+   * Whether the selection starts a candidate: not blocked, and its ready
+   * labels counted. A read `read` answers with null starts nothing.
    * @param {(typeof candidates)[number]} candidate
    * @param {typeof guarded} read
    */
@@ -253,14 +244,11 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     // asks again (dispatch/launch-plan.mjs).
     const judged = await read(repo, () => judgeReady({ reader, repo, ticket: candidate, ready: labels.ready, start: candidate.source.start ?? START }));
     if (judged === null) return false;
-    if (!judged.counts) {
-      if ('outsider' in judged) outsiders?.push(judged.outsider);
-      else if ('unstarted' in judged) unstarted?.push(judged.unstarted);
-      else unlooked?.push(judged.unread);
-      return false;
-    }
-    const comments = await read(repo, () => reader.comments(candidate.number, { since }));
-    return comments !== null && !recentlyDispatched(comments, now, windowMs);
+    if (judged.counts) return true;
+    if ('outsider' in judged) outsiders?.push(judged.outsider);
+    else if ('unstarted' in judged) unstarted?.push(judged.unstarted);
+    else unlooked?.push(judged.unread);
+    return false;
   };
   /** @type {Dispatch[]} */
   const plan = [];

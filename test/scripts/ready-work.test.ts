@@ -481,23 +481,22 @@ describe('authorPicked: pickup starts tickets only from the authors its `by` lis
 });
 
 describe('mayStartSpec', () => {
-  const now = Date.parse('2026-11-04T12:00:00Z');
   const held = { body: `Governor took its ready label off #7.\n\n${UNREADIED_MARKER}`, ours: true };
-  const dispatched = (at: number) => ({ body: dispatchMarker({ at: new Date(at).toISOString(), sessionUrl: null }), ours: true });
 
-  test('a thread with neither an unanswered unreadied comment nor a recent dispatch may start one', () => {
-    assert.equal(mayStartSpec([], now), true);
-    assert.equal(mayStartSpec([{ body: 'Filed.', ours: false }], now), true);
+  test('a thread with no unanswered unreadied comment may start one', () => {
+    assert.equal(mayStartSpec([]), true);
+    assert.equal(mayStartSpec([{ body: 'Filed.', ours: false }]), true);
   });
 
   test('an unanswered unreadied comment stops it, and a person\'s answer frees it', () => {
-    assert.equal(mayStartSpec([held], now), false);
-    assert.equal(mayStartSpec([held, { body: 'Still stands.', ours: false }], now), true);
+    assert.equal(mayStartSpec([held]), false);
+    assert.equal(mayStartSpec([held, { body: 'Still stands.', ours: false }]), true);
   });
 
-  test('a dispatch inside the window stops it, and one past the window does not', () => {
-    assert.equal(mayStartSpec([dispatched(now - 60 * 60 * 1000)], now), false);
-    assert.equal(mayStartSpec([dispatched(now - 3 * 60 * 60 * 1000)], now), true);
+  // The ticket's body names its spec session, and delivery knows whether
+  // that session is still there, so no timer holds spec work.
+  test('a dispatch comment, however recent, does not stop it', () => {
+    assert.equal(mayStartSpec([{ body: dispatchMarker({ at: '2026-11-04T11:59:00.000Z', sessionUrl: null }), ours: true }]), true);
   });
 });
 

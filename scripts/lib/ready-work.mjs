@@ -20,7 +20,7 @@
  * Unit-tested in `test/scripts/ready-work.test.ts`.
  */
 
-import { PICKUP_BY, SUMMONERS, recentlyDispatched, waitLine } from '../../dispatch/webhook/fire.mjs';
+import { PICKUP_BY, SUMMONERS, waitLine } from '../../dispatch/webhook/fire.mjs';
 
 /**
  * @typedef {object} IssueRow
@@ -462,32 +462,16 @@ export const heldUnreadied = (thread) => {
 };
 
 /**
- * What keeps a spec session off a not-ready ticket, for its log: governor's
- * not-planned close still holds it (`unreadied`, {@link heldUnreadied}), or
- * a dispatch inside the window is on its thread (`window`,
- * `recentlyDispatched`). Undefined where nothing does.
- *
- * @param {ReadonlyArray<{ body: string, ours?: boolean }>} thread The ticket's whole thread, oldest first.
- * @param {number} now Epoch ms.
- * @returns {'unreadied' | 'window' | undefined}
- */
-export const specHold = (thread, now) => {
-  if (heldUnreadied(thread)) return 'unreadied';
-  if (recentlyDispatched([...thread], now)) return 'window';
-  return undefined;
-};
-
-/**
  * A spec session may start on a not-ready ticket: its thread has no
- * unanswered unreadied comment ({@link heldUnreadied}) and no dispatch
- * inside the window (`recentlyDispatched`). The unblocked row
+ * unanswered unreadied comment ({@link heldUnreadied}). A dispatch comment
+ * holds nothing: the ticket's body names its spec session, and a message to
+ * one that is archived is refused. The unblocked row
  * (`planUnblocked`, dispatch/unblocked-fire.mjs) and wait end (`endedWaits`, dispatch/waits.mjs) ask
- * this, and {@link specHold} says why it is no.
+ * this.
  *
  * @param {ReadonlyArray<{ body: string, ours?: boolean }>} thread The ticket's whole thread, oldest first.
- * @param {number} now Epoch ms.
  */
-export const mayStartSpec = (thread, now) => specHold(thread, now) === undefined;
+export const mayStartSpec = (thread) => !heldUnreadied(thread);
 
 /**
  * Whether the selection takes a ticket: pickup may start it
