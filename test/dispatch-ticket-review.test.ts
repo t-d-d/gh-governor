@@ -263,6 +263,16 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
     ] });
   });
 
+  test('labels are compared as GitHub compares them, ignoring case', async () => {
+    // GitHub adds the repo's "mode: afk" for "MODE: AFK", so the outsider rule must see it as the ready label.
+    await refused({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['MODE: AFK'] } }] }, /community/, /"MODE: AFK"/);
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['Seen'], neutral: ['seen'] } }] }, /triage/, /"seen"/);
+    await refused({ ticketReviews: [
+      { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['Looked at'] } },
+      { name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { neutral: ['looked at'] } },
+    ] }, /triage/, /community/, /"looked at"/);
+  });
+
   test('the outsider rule reads only trust.auto, not trust.task', () => {
     // task wider than auto lets nobody new in: the rule is about what governor sets going by itself.
     const read = readConfig(text({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR'], task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'], relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'], review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'] } }] }));
@@ -691,6 +701,23 @@ describe('fitness: dispatcher-review.md, a conclusion applies the labels the rep
     const h = harness({ reviews: [triage()], repoLabels: ['type: bug'] });
     await h.review();
     assert.deepEqual(h.ops, ['create triaged', 'add triaged', 'comment passes']);
+  });
+
+  test('a label the ticket carries in another case is the same label: it is removed by the name it carries, and not added again', async () => {
+    const h = harness({ reviews: [triage()], answers: [GAPS], ticket: { labels: ['type: bug', 'Triaged', 'Triage: Needs Edit'] }, repoLabels: ['type: bug', 'Triaged', 'Triage: Needs Edit'] });
+    await h.review();
+    assert.deepEqual(h.ops, ['remove Triaged', 'comment waits for an edit']);
+  });
+
+  test('a label governor creates carries a description GitHub accepts, at most 100 characters, whatever the review\'s name', async () => {
+    const descriptions: string[] = [];
+    const name = 'a'.repeat(64);
+    const h = harness({ reviews: [{ name, when: { on: 'opened' }, conclusions: TRIAGE }], repoLabels: ['type: bug'] });
+    const ensure = h.reader.ensureLabel;
+    h.reader.ensureLabel = async (label: string, description?: string) => { descriptions.push(String(description)); await ensure(label); };
+    await h.review();
+    assert.equal(descriptions.length, 1);
+    assert.ok(descriptions[0]!.length <= 100, `${descriptions[0]!.length} characters`);
   });
 
   test('a review that names no labels writes none', async () => {

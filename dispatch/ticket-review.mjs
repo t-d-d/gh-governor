@@ -383,8 +383,16 @@ export const parseConclusion = (output) => {
   return { sessionId: read.sessionId, ...(read.usage === undefined ? {} : { usage: read.usage }), conclusion: a.conclusion, text: a.text.trim() };
 };
 
-/** The description a label governor creates for a review's conclusion carries. @param {string} name @param {string} conclusion */
-const labelDescription = (name, conclusion) => `Added by governor's ${name} ticket review on a ${conclusion}`;
+/**
+ * The description a label governor creates for a review's conclusion
+ * carries, cut to the 100 characters GitHub takes: a review's name runs to
+ * 64, and a longer description would have every run on that conclusion
+ * refused.
+ *
+ * @param {string} name
+ * @param {string} conclusion
+ */
+const labelDescription = (name, conclusion) => `Added by governor's ${name} ticket review on a ${conclusion}`.slice(0, 100);
 
 /**
  * Apply a conclusion's labels to the ticket: remove each label the other
@@ -399,10 +407,15 @@ const labelDescription = (name, conclusion) => `Added by governor's ${name} tick
  */
 export const applyLabels = async ({ reader, ticket, name, conclusions, conclusion }) => {
   const named = (/** @type {string} */ c) => conclusions?.[/** @type {keyof import('./repo-config.mjs').Conclusions} */ (c)] ?? [];
+  // GitHub matches label names in any case, so a label the ticket carries
+  // in another case is the one named, and is removed by the name it has.
+  const keyed = (/** @type {string[]} */ labels) => new Set(labels.map((l) => l.toLowerCase()));
   const own = named(conclusion);
-  const others = CONCLUSIONS.filter((c) => c !== conclusion).flatMap(named).filter((l) => !own.includes(l));
-  const removed = others.filter((l) => ticket.labels.includes(l));
-  const added = own.filter((l) => !ticket.labels.includes(l));
+  const ownKeys = keyed(own);
+  const otherKeys = keyed(CONCLUSIONS.filter((c) => c !== conclusion).flatMap(named).filter((l) => !ownKeys.has(l.toLowerCase())));
+  const carried = keyed(ticket.labels);
+  const removed = ticket.labels.filter((l) => otherKeys.has(l.toLowerCase()));
+  const added = own.filter((l) => !carried.has(l.toLowerCase()));
   const refused = (/** @type {string} */ what, /** @type {unknown} */ error) => Object.assign(new Error(`${what}, so no comment posted: ${messageOf(error)}`), { status: /** @type {{ status?: number }} */ (error)?.status });
   for (const l of removed) {
     try {

@@ -461,26 +461,28 @@ export const configSchema = z.strictObject({
   // that readies a ticket on a review governor runs for an author outside
   // trust.auto: a stranger's text would set work going by itself.
   .superRefine((c, ctx) => {
-    /** @type {Map<string, string>} Each label, and the review that names it. */
+    /** @type {Map<string, string>} Each label, lower-cased as GitHub matches it, and the review that names it. */
     const owner = new Map();
     const auto = autoOf(c);
+    const readyKeys = new Set(c.labels.ready.map((l) => l.toLowerCase()));
     (c.ticketReviews ?? []).forEach(({ name, when, conclusions }, i) => {
-      /** @type {Map<string, string>} Each label, and the conclusion of this review that names it. */
+      /** @type {Map<string, string>} Each label, lower-cased as GitHub matches it, and the conclusion of this review that names it. */
       const under = new Map();
       for (const conclusion of CONCLUSION_NAMES) {
         for (const l of conclusions[conclusion]) {
           const path = ['ticketReviews', i, 'conclusions', conclusion];
-          const first = under.get(l);
+          const key = l.toLowerCase();
+          const first = under.get(key);
           if (first !== undefined && first !== conclusion) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under both ${first} and ${conclusion}: each run would add it and take it off. Name it under one conclusion` });
-          else if (first === undefined) under.set(l, conclusion);
-          const other = owner.get(l);
+          else if (first === undefined) under.set(key, conclusion);
+          const other = owner.get(key);
           if (other !== undefined && other !== name) ctx.addIssue({ code: 'custom', path, message: `the ${other} and ${name} reviews both name "${l}" in their conclusions: one review's run would take off a label the other added. Give each review labels of its own` });
-          else if (other === undefined) owner.set(l, name);
+          else if (other === undefined) owner.set(key, name);
         }
       }
       const beyond = (when.by ?? TICKET_REVIEW_BY).filter((a) => !auto.includes(a));
       if (beyond.length === 0) return;
-      const ready = CONCLUSION_NAMES.flatMap((conclusion) => conclusions[conclusion].filter((l) => c.labels.ready.includes(l)));
+      const ready = CONCLUSION_NAMES.flatMap((conclusion) => conclusions[conclusion].filter((l) => readyKeys.has(l.toLowerCase())));
       for (const l of new Set(ready)) {
         ctx.addIssue({ code: 'custom', path: ['ticketReviews', i, 'conclusions'], message: `the ${name} review names the ready label "${l}", and its by lets in ${beyond.join(', ')}, which trust.auto does not: a ticket from them could be readied with no person choosing it. Narrow the review's by to trust.auto, or give it labels that ready nothing` });
       }
