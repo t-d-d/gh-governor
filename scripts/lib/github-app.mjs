@@ -255,7 +255,7 @@ const labelNames = (row) =>
  * @typedef {{ number: number, id?: number, title: string, body: string, state: string, labels: string[], pull: boolean, created_at?: string, openBlockers?: number, wait?: import('./ready-work.mjs').Wait, author?: string, association?: string }} TicketRow
  *   `author`: the login that opened it; `association`: its `author_association`.
  * @typedef {{ id: number, body: string, created_at: string, ours: boolean }} ThreadRow `ours`: the reader's own App posted it.
- * @typedef {{ number: number, draft: boolean, base: string, head: string, title: string, html_url: string, body: string }} OpenPullRow
+ * @typedef {{ number: number, draft: boolean, base: string, head: string, headSha: string, title: string, html_url: string, body: string }} OpenPullRow
  */
 
 /** How a check run, or a workflow run, ends that blocks a merge on a check it is. */
@@ -982,13 +982,14 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       await call('POST', `/repos/${repo}/labels`, { name, color: 'ededed', description: 'Claimed by the dispatcher for the session it launched' });
     },
 
-    /** The open pull requests, each with whether it is a draft, its base branch, its head ({@link headOf}), title, link and body. @returns {Promise<OpenPullRow[]>} */
+    /** The open pull requests, each with whether it is a draft, its base branch, its head ({@link headOf}) and head commit, title, link and body. @returns {Promise<OpenPullRow[]>} */
     openPulls: async () =>
       (await allPages(call, `/repos/${repo}/pulls`, { state: 'open' })).map((row) => ({
         number: row.number,
         draft: row.draft === true,
         base: String(row.base?.ref ?? ''),
         head: headOf(row),
+        headSha: String(row.head?.sha ?? ''),
         title: String(row.title ?? ''),
         html_url: String(row.html_url ?? ''),
         body: row.body ?? '',

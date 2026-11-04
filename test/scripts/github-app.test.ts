@@ -658,18 +658,18 @@ describe('githubReader', () => {
     assert.equal(calls.length, 2);
   });
 
-  test('openPulls pages through the open PRs, each with whether it is a draft, its base, its head, its title, its link and its body', async () => {
+  test('openPulls pages through the open PRs, each with whether it is a draft, its base, its head and head commit, its title, its link and its body', async () => {
     const { fetch, calls } = fakeFetch({
       'https://api.github.com/repos/acme/factory/pulls': [
-        { number: 7, draft: false, title: 'x', html_url: 'https://github.com/acme/factory/pull/7', body: 'Closes #1', base: { ref: 'main' }, head: { ref: 'claude/a', repo: { full_name: 'acme/factory' } } },
-        { number: 8, draft: true, base: { ref: 'claude/a' }, head: { ref: 'claude/b', repo: { full_name: 'someone/fork' } } },
+        { number: 7, draft: false, title: 'x', html_url: 'https://github.com/acme/factory/pull/7', body: 'Closes #1', base: { ref: 'main' }, head: { ref: 'claude/a', sha: 'a'.repeat(40), repo: { full_name: 'acme/factory' } } },
+        { number: 8, draft: true, base: { ref: 'claude/a' }, head: { ref: 'claude/b', sha: 'b'.repeat(40), repo: { full_name: 'someone/fork' } } },
       ],
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
     assert.deepEqual(await reader.openPulls(), [
-      { number: 7, draft: false, base: 'main', head: 'claude/a', title: 'x', html_url: 'https://github.com/acme/factory/pull/7', body: 'Closes #1' },
-      { number: 8, draft: true, base: 'claude/a', head: '', title: '', html_url: '', body: '' },
-    ], 'a fork\'s head is not this repository\'s branch');
+      { number: 7, draft: false, base: 'main', head: 'claude/a', headSha: 'a'.repeat(40), title: 'x', html_url: 'https://github.com/acme/factory/pull/7', body: 'Closes #1' },
+      { number: 8, draft: true, base: 'claude/a', head: '', headSha: 'b'.repeat(40), title: '', html_url: '', body: '' },
+    ], 'a fork\'s head is not this repository\'s branch, though its commit is its head');
     assert.equal(new URL(calls[0]!.url).searchParams.get('state'), 'open');
   });
 

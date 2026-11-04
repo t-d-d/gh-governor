@@ -1359,7 +1359,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     return { kind: 'conflicts', head, checks, loginStored };
   }
 
-  // The PR review: one PR, or every open one, through the checklist. No
+  // The PR review: one PR, the open PRs at one commit, or every open one, through the checklist. No
   // run but the CI workflow's at the PR's head holds a merge. Each run's transcript goes to the drop
   // box whatever it answered.
   if (invocation.kind === 'review') {
@@ -1383,9 +1383,15 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       // The schema holds a section wherever prReview is on, and the switch was checked.
       if (review === undefined) throw new Error(`${fireRepo()}'s ${CONFIG_PATH} has no review section`);
       const base = await github.defaultBranch();
-      const targets = invocation.pr === undefined
-        ? (await github.openPulls()).filter((p) => !p.draft).map((p) => ({ number: p.number }))
-        : [{ number: invocation.pr, ...(invocation.headSha === undefined ? {} : { headSha: invocation.headSha }) }];
+      // A fire naming the PR reviews it; one carrying a commit alone, from a
+      // check run, a status or a run whose payload may list no PR, reviews
+      // each open PR at that head as if named; one with neither, every open PR.
+      const { pr, headSha } = invocation;
+      const targets = pr !== undefined
+        ? [{ number: pr, ...(headSha === undefined ? {} : { headSha }) }]
+        : headSha !== undefined
+          ? (await github.openPulls()).filter((p) => p.headSha === headSha).map((p) => ({ number: p.number, headSha, byCommit: true }))
+          : (await github.openPulls()).filter((p) => !p.draft).map((p) => ({ number: p.number }));
       // What each PR's run spent, for its log line: a run that reports
       // nothing leaves the line without it.
       /** @type {Map<number, import('./checklist.mjs').Usage>} */

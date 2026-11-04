@@ -250,6 +250,12 @@ describe('fitness: an unlisted owner queues nothing (dispatcher-repos.md)', () =
       ['scheduled red', run({ event: 'schedule' })],
       ['branch run', run({ event: 'workflow_dispatch', head_branch: 'claude/x', conclusion: 'success' })],
     ],
+    check_run: [
+      ['finished on a PR\'s head', { action: 'completed', check_run: { id: 800, name: 'gate', head_sha: SHA, status: 'completed', conclusion: 'success', app: { id: 15368 }, check_suite: { head_branch: 'claude/x' } } }],
+    ],
+    status: [
+      ['ended on a PR\'s head', { sha: SHA, state: 'failure', context: 'ci/other', branches: [{ name: 'claude/x' }] }],
+    ],
     workflow_job: [
       ['shipping job', { action: 'completed', workflow_job: { id: 9001, run_id: 500, run_attempt: 1, head_sha: SHA, head_branch: 'main', name: 'dev / Publish (dev) · deployed: dev', workflow_name: 'Deliver', status: 'completed', conclusion: 'success', html_url: 'https://github.com/x/y/actions/runs/500/job/9001' } }],
     ],
@@ -265,7 +271,7 @@ describe('fitness: an unlisted owner queues nothing (dispatcher-repos.md)', () =
     for (const [what, payload] of fixtures) {
       test(`${event} ${what}: queues as the factory's, and nothing from an unlisted owner, at info`, async () => {
         const owners = ['acme', 't-d-d'];
-        assert.ok(routeEvent({ event, payload: from(FACTORY, payload), owners }).fires.length > 0, `the fixture routes nowhere as the factory's: ${routeEvent({ event, payload: from(FACTORY, payload), owners }).reason}`);
+        assert.ok(routeEvent({ event, payload: from(FACTORY, payload), owners, appId: 1 }).fires.length > 0, `the fixture routes nowhere as the factory's: ${routeEvent({ event, payload: from(FACTORY, payload), owners, appId: 1 }).reason}`);
         const queued: unknown[] = [];
         const logged: Array<Record<string, unknown>> = [];
         const raw = JSON.stringify(from('stranger/repo', payload));
