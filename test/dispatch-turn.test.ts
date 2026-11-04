@@ -6191,10 +6191,10 @@ describe('run — a run dispatched on a branch', () => {
     repository: { full_name: REPO, default_branch: 'main' },
     workflow_run: { id: 600, name: 'Emulator', head_branch: BRANCH, head_sha: HEAD, status: 'completed', conclusion: 'success', html_url: `https://github.com/${REPO}/actions/runs/600`, event: 'workflow_dispatch', run_attempt: 1, ...over },
   });
-  /** What the receiver queues for the payload: one fire. */
+  /** What the receiver queues for the payload: one branch-run fire, beside the review of its commit any run off the default branch queues. */
   const fireOf = (p: ReturnType<typeof payload>) => {
     const { fires, reason } = routeEvent({ event: 'workflow_run', payload: p, owners: ['acme'] });
-    assert.equal(fires.length, 1, reason);
+    assert.deepEqual(fires.map((f) => f.fire.kind), ['branch-run', 'review'], reason);
     return fires[0]!.fire;
   };
   const jobs = [

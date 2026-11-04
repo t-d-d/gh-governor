@@ -378,7 +378,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
       const many = checks.pending.length + (ciWaits ? 1 : 0) > 1;
       const title = checks.pending.length === 0 ? 'Waits for its CI run to finish.' : ciWaits ? 'Waits for its CI run and required checks to finish.' : 'Waits for its required checks to finish.';
       await check('in_progress', title, `The PR review runs when the ${what} ${many ? 'have' : 'has'} finished on ${pull.headSha.slice(0, 12)}.`);
-      return skip(`#${number}'s ${what} ${many ? 'have' : 'has'} not finished on ${pull.headSha.slice(0, 12)}: the run's end reviews it`);
+      return skip(`#${number}'s ${what} ${many ? 'have' : 'has'} not finished on ${pull.headSha.slice(0, 12)}: its end reviews it`);
     }
     const redCi = cis === 'red' ? /** @type {string} */ (ci) : null;
 

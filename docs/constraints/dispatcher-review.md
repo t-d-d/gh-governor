@@ -10,8 +10,8 @@ served repos have their owner merge, so a pass there must not merge.
 
 - The review runs where the repo's file turns `prReview` on. It reads a PR
   into the repo's default branch, opened, readied, pushed to or with its
-  body edited, whose author may summon governor, and again when a run on
-  its head finishes. The receiver queues the fire from every served repo
+  body edited, whose author may summon governor, and again when a check on
+  its head ends. The receiver queues the fire from every served repo
   unless the repo's item in the hook table says `prReview` is off
   (dispatcher-state.md); the task still refuses it where the switch is off.
 - The repo's `review` section (`reviewSchema`, dispatch/repo-config.mjs)
@@ -51,8 +51,12 @@ served repos have their owner merge, so a pass there must not merge.
   not finished, or none at the head, skips the review as an unfinished
   required check does; one ended green or skipped passes. No other
   workflow's run, and no CI run at another commit, counts. A required check
-  not finished skips the review with no comment, and a test-8 fail is read
-  again at the same head. Test 8 leaves out the review's own `governor`
+  not finished skips the review with no comment, and the check's end queues
+  it again: a `check_run` completed, not from governor's own App, or a
+  `status` that ended, at the head, or a `workflow_run` completed for the CI
+  run. Each queues a fire carrying the commit and no PR, and the task
+  reviews each open PR at that head. A test-8 fail is read again at the
+  same head. Test 8 leaves out the review's own `governor`
   check.
 - The model answers under a fixed pass/fail schema. Its prompt is the repo's
   `checklist` plus a suffix naming what the code decided.
@@ -113,4 +117,4 @@ served repos have their owner merge, so a pass there must not merge.
   gate fails loudly, and the owner can bypass it.
 
 Judgment: that a repo's checklist numbers its model tests 2 to 6, and that a `quote` glob reaches only rule files, no check sees: both are the repo's prose.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. A closing ticket carrying an excluded label passes test 1 unclaimed in #145: it is not pickup's, so nobody claims it, and a repo that forbids closing one says so in its ticket rules. The receiver drops the review fire where the repo's hook-table item says `prReview` is off since #147. A pass posts the `governor` check and no approval, and every review comment reaches the session the PR names, since #388. Test 8 reads the `workflows.ci` run at the head beside the required checks since #398: a private repo on a free plan has no required checks, and merged a pass on red CI. A PR a review turn ran out of time before it reached gets a `failure` check since #403.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. A closing ticket carrying an excluded label passes test 1 unclaimed in #145: it is not pickup's, so nobody claims it, and a repo that forbids closing one says so in its ticket rules. The receiver drops the review fire where the repo's hook-table item says `prReview` is off since #147. A pass posts the `governor` check and no approval, and every review comment reaches the session the PR names, since #388. Test 8 reads the `workflows.ci` run at the head beside the required checks since #398: a private repo on a free plan has no required checks, and merged a pass on red CI. A PR a review turn ran out of time before it reached gets a `failure` check since #403. A required check's end queues the review again, by a `check_run` completed or a final `status` at the head beside `workflow_run` completed, with the fire carrying the commit so a fork's PR is read too, since #406.
