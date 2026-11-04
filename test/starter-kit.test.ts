@@ -86,7 +86,8 @@ describe('the starter kit\'s config file', () => {
     assert.ok(got.ok);
     const backlog = got.config.periodics.find((p) => p.name === 'Backlog review');
     const prompt = String(backlog?.prompt);
-    assert.match(prompt, /no ticket review ran on/);
+    assert.match(prompt, /only where the file turns ticket reviews on, open ones no ticket review ran on/, 'with the reviews off, every open ticket would read as stuck');
+    assert.match(prompt, /Leave out the heartbeat issue, the wait ticket/, 'no ticket review reads governor\'s own records');
     assert.match(prompt, /`failure` or `neutral`/);
     assert.match(prompt, /claimed[^.]*no open pull request/);
   });
@@ -338,7 +339,9 @@ test('docs/serving-a-repo.md\'s starter kit section describes the triage review 
   const section = doc.slice(at, doc.indexOf('\n### ', at + 1));
   assert.match(section, /`triage` ticket review/);
   for (const label of ['triaged', 'triage: needs edit', 'mode: human']) assert.ok(section.includes(`\`${label}\``), label);
-  assert.match(section, /backlog review[^.]*\./i);
+  assert.match(section, /a backlog review every 5 issues opened/);
+  assert.match(section, /where ticket reviews are on, open ones no ticket review ran on/);
+  assert.match(section, /taking off `mode: human`/);
   assert.match(section, /claimed ones with no open pull request/);
   assert.doesNotMatch(section, /ticket review every/);
 });
