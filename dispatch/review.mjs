@@ -23,10 +23,11 @@
  *   passing, so a fail the session owes is never `neutral`. A required
  *   check not finished is the check in progress, an author who may not
  *   summon governor is `neutral`, and a review that does not finish is
- *   `failure`. Every other skip posts no check. The check goes first: a
- *   pass's before its merge, which a ruleset requiring it would refuse
- *   otherwise, and a fail's before its comment, so a check write GitHub
- *   refuses leaves no marker either. An installation that has not
+ *   `failure`, and so is a PR a review of every open PR ran out of time
+ *   before it reached (`outOfTime`). Every other skip posts no check. The
+ *   check goes first: a pass's before its merge, which a ruleset requiring
+ *   it would refuse otherwise, and a fail's before its comment, so a check
+ *   write GitHub refuses leaves no marker either. An installation that has not
  *   granted the Checks write refuses it with a 403, which the review
  *   records and passes over.
  * - A PR whose author may not summon the dispatcher (fire.mjs's
@@ -105,7 +106,7 @@ import { RED_CONCLUSIONS } from '../scripts/lib/github-app.mjs';
  *   each red, green or pending. `ciRuns`: a workflow's runs at a commit,
  *   newest first.
  * @typedef {'in_progress' | 'success' | 'failure' | 'neutral'} CheckState
- * @typedef {'merged' | 'passed' | 'conflict' | 'commented' | 'marker-moved' | 'skipped' | 'limited' | 'failed'} Outcome
+ * @typedef {'merged' | 'passed' | 'conflict' | 'commented' | 'marker-moved' | 'skipped' | 'limited' | 'failed' | 'out-of-time'} Outcome
  * @typedef {{ pr: number, outcome: Outcome, reason: string | null, headSha: string | null, answer: Answer | null, error: string | null, check: string | null }} Reviewed
  *   `check`: the state of the check the review posted, `refused: <why>` where
  *   GitHub refused it with a 403, or null where it posted none.
@@ -119,6 +120,12 @@ const TITLE_CHARS = 200;
 
 /** How much of an error a check that did not finish quotes: a check run on a public repo is public. */
 const ERROR_CHARS = 300;
+
+/** The `governor` check's title for a review that did not finish or start. */
+const DID_NOT_RUN = 'The PR review did not run.';
+
+/** What a review that did not finish or start tells the reader to do. */
+const RUNS_AGAIN = 'A push or an edit to the description runs it again.';
 
 /**
  * A check's title: the first sentence of `text`, cut at {@link TITLE_CHARS}.
@@ -301,10 +308,14 @@ const bumpAnswer = async (reader, pull, list, red, redCi) => {
  *   base: string,
  *   started: (session: string) => Promise<boolean>,
  *   ci?: string,
+ *   outOfTime?: boolean,
  * }} args `started`: whether governor started a session, from its state table. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads.
+ *   `outOfTime`: the turn ran out of time for this PR. It goes through the
+ *   usual skips, then posts a `failure` check in place of reading the facts
+ *   and asking the model.
  * @returns {Promise<Reviewed>}
  */
-export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, ci }) => {
+export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, ci, outOfTime = false }) => {
   /** @type {import('./checklist.mjs').Rules} */
   const rules = { humanOnly: review.humanOnly, tickets: review.tickets, quote: review.quote, decides: review.decides, labels };
   /** @type {Reviewed} */
@@ -371,6 +382,15 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     }
     const redCi = cis === 'red' ? /** @type {string} */ (ci) : null;
 
+    // A required check would wait on a PR that gets no check at all, so it
+    // fails out loud, and the owner can bypass it.
+    // A held pass carries no check, so it gets this one too.
+    if (outOfTime) {
+      const why = `The review turn ran out of time before it reached this pull request. ${RUNS_AGAIN}`;
+      await check('failure', DID_NOT_RUN, why);
+      return { ...reviewed, outcome: /** @type {Outcome} */ ('out-of-time'), reason: why };
+    }
+
     // The facts are read again for a held pass: a ticket may have closed or
     // changed its labels since. Only the judgement is kept.
     const answer = bump
@@ -429,7 +449,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
       // that fails here too leaves the review's own error as the one told.
       const quoted = message.length <= ERROR_CHARS ? message : `${message.slice(0, ERROR_CHARS - 1).trimEnd()}…`;
       const why = limited ? `The claude.ai login's usage limit stopped it: ${quoted}` : `It failed: ${quoted}`;
-      await check('failure', 'The PR review did not run.', `${sentence(why)} A push or an edit to the description runs it again.`).catch(() => {});
+      await check('failure', DID_NOT_RUN, `${sentence(why)} ${RUNS_AGAIN}`).catch(() => {});
     }
     return { ...reviewed, outcome: limited ? 'limited' : 'failed', error: message };
   }
