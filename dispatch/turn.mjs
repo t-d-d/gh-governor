@@ -1408,6 +1408,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const github = { ...reader, requiredChecks };
       const config = configOf(fireRepo());
       const { review, labels, workflows } = config;
+      const trusted = reviewOf(config);
       // The schema holds a section wherever prReview is on, and the switch was checked.
       if (review === undefined) throw new Error(`${fireRepo()}'s ${CONFIG_PATH} has no review section`);
       const base = await github.defaultBranch();
@@ -1442,7 +1443,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           break;
         }
         const outOfTime = spentMs > REVIEW_WINDOW_MS;
-        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, trusted: reviewOf(config), outOfTime, ...(workflows.ci === undefined ? {} : { ci: workflows.ci }) });
+        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, trusted, outOfTime, ...(workflows.ci === undefined ? {} : { ci: workflows.ci }) });
         const usage = spent.get(reviewed.pr);
         deps.log('dispatch-review', { ...reviewed, ...(usage === undefined ? {} : { usage }) });
         reviews.push(reviewed);

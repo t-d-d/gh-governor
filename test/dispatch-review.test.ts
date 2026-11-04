@@ -25,6 +25,8 @@ import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { APP_ID, BODY, DEPENDABOT_COMMIT, FILES, HEAD, IAM, MERGE_BASE, PASS, REPO, SKILL, cliOutput, dependabotRow, pullRow } from './helpers/dispatch-review-fixtures.ts';
 import type { Answer, FileRow, Pull, PullCommit, TicketRow } from './helpers/dispatch-review-fixtures.ts';
 import { factoryFile } from './helpers/factory.ts';
+import { githubReader } from '../scripts/lib/github-app.mjs';
+import { BOT, REVIEW, authorKind, lets } from '../dispatch/trust.mjs';
 
 const NOW = Date.parse('2026-09-26T12:00:00Z');
 const MOVED = 'ffffffffffffffffffffffffffffffffffffffff';
@@ -571,6 +573,15 @@ describe('run — what a review skips, saying nothing', () => {
     assert.deepEqual(member.checkRuns.map((c) => c.state), ['neutral']);
     assert.match(member.checkRuns[0]!.summary, /trust\.review/);
     assert.match(member.checkRuns[0]!.summary, /A person merges it\./);
+  });
+
+  test('a PR GitHub marks as a bot\'s is judged as BOT by trust.review, whatever its login', async () => {
+    const row = { number: 767, title: 't', body: '', state: 'open', draft: false, base: { ref: 'main' }, head: { sha: HEAD }, html_url: '', user: { login: 'Copilot', type: 'Bot' }, author_association: 'COLLABORATOR' };
+    const fetch = (async () => new Response(JSON.stringify(row), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof globalThis.fetch;
+    const pull = await githubReader({ token: 't', repo: REPO, fetch, sleep: async () => {} }).pullRequest(767);
+    assert.equal(authorKind(pull), BOT);
+    assert.ok(lets([BOT], pull), 'a review listing BOT reads it');
+    assert.ok(!lets(REVIEW, pull), 'the default review, which leaves BOT out, does not');
   });
 });
 
