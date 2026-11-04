@@ -392,6 +392,7 @@ export const configSchema = z.strictObject({
  *   quote: string[],
  *   decides: string[],
  *   dependabot: string[],
+ *   requireChecks: string[],
  *   merge: boolean,
  * }} Review The PR review's settings, its checklist read.
  * @typedef {{ file: string }} PromptFile
