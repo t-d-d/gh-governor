@@ -16,7 +16,7 @@ import { DEADLINE_MS, exitCodeFor } from '../dispatch/cli.mjs';
 import { LAUNCH_TIMEOUT_MS, REVIEW_MARK_WINDOW_MS, REVIEW_WINDOW_MS, redactTranscript, run as runNamed } from '../dispatch/turn.mjs';
 import { CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
 import { standingLine } from '../dispatch/deliveries.mjs';
-import { ANSWER_SCHEMA, parseReview, readDigest } from '../dispatch/checklist.mjs';
+import { ANSWER_SCHEMA, PR_FRAME, parseReview, readDigest } from '../dispatch/checklist.mjs';
 import { bodyDigest, reviewMarker } from '../dispatch/pr-body.mjs';
 import { readFileSync } from 'node:fs';
 import { commentKey, commentText, heldPassReason, mergeConflictText, ownerActs, passOf, withoutMarker as withoutMarkerText } from '../dispatch/webhook/review-comment.mjs';
@@ -260,7 +260,7 @@ describe('run — a review fire, end to end', () => {
     const h = harness();
     await review({ kind: 'review', pr: 767 }, h);
     assert.equal(h.judged.length, 1);
-    assert.ok(h.judged[0]!.system.startsWith(SKILL));
+    assert.ok(h.judged[0]!.system.startsWith(`${PR_FRAME}\n\n${SKILL}`));
     assert.deepEqual(h.judged[0]!.schema, ANSWER_SCHEMA);
     for (const fact of ['#767', 'Run the PR review from the dispatcher', 'Adds the review fire.', 'src/voices.ts', '#748', 'Ticket 748', 'mode: afk', 'It reviews.']) {
       assert.ok(h.judged[0]!.prompt.includes(fact), `the prompt carries ${fact}`);
@@ -1431,7 +1431,7 @@ describe('fitness: a pass merges only where merge is on, and approves nothing (d
   test('the repo\'s own checklist is the model\'s prompt, not the factory\'s', async () => {
     const h = tagalong();
     await reviewTagalong(h);
-    assert.ok(h.judged[0]!.system.startsWith(TAGALONG_CHECKLIST), h.judged[0]!.system);
+    assert.ok(h.judged[0]!.system.startsWith(`${PR_FRAME}\n\n${TAGALONG_CHECKLIST}`), h.judged[0]!.system);
     assert.ok(!h.judged[0]!.system.includes(SKILL));
   });
 

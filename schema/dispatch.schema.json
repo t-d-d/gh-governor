@@ -731,7 +731,7 @@
               "additionalProperties": false
             }
           ],
-          "description": "Required. What is appended to the review model's system prompt: the text, or { \"file\": \"<path>\" }."
+          "description": "Required. The review model's system prompt, after governor's fixed frame and before a suffix naming what the code decided: the text, or { \"file\": \"<path>\" }."
         },
         "humanOnly": {
           "default": [],

@@ -2385,9 +2385,9 @@ export const realDeps = () => {
     // on stdin, no tools (the PR's text is someone else's, and the answer is
     // a judgement over it), the answer held to the schema. The only process
     // a review starts: it runs none of the served repo's code.
-    // A ticket review's run (`replace`) puts its frame and checklist in
-    // place of Claude Code's own system prompt, which is written for a
-    // coding agent with tools.
+    // The PR review and the ticket reviews (`replace`) put their frame and
+    // checklist in place of Claude Code's own system prompt, which is
+    // written for a coding agent with tools.
     review: async ({ system, prompt, schema, replace = false }) => {
       const dir = mkdtempSync(join(tmpdir(), 'governor-review-'));
       try {
