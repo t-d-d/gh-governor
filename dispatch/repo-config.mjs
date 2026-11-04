@@ -30,7 +30,7 @@
  */
 
 import { z } from 'zod';
-import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, WORKFLOW_PATH } from './webhook/fire.mjs';
+import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, SUMMONERS, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
 import { BOT, START, TRUST_VALUES, taskKey as taskKeyOf, taskSet } from './trust.mjs';
 
@@ -360,7 +360,7 @@ const hookSchema = z.strictObject({
  * Who a ticket review reads where its `when.by` is unset: the authors with a
  * say (dispatch/ticket-review.mjs).
  */
-export const TICKET_REVIEW_BY = Object.freeze(['OWNER', 'MEMBER', 'COLLABORATOR']);
+export const TICKET_REVIEW_BY = Object.freeze([...SUMMONERS]);
 
 /**
  * One ticket review (dispatch/ticket-review.mjs): its `name`, which goes

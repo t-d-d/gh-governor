@@ -1069,8 +1069,9 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
-     * The repo's open issues, pull requests left out, oldest first, up to
-     * one more than `max`, so a caller can tell it was cut.
+     * The repo's open issues, pull requests left out, newest first, so a
+     * cut drops the oldest, the least likely duplicates of a new ticket, up
+     * to one more than `max`, so a caller can tell it was cut.
      *
      * @param {number} max
      * @returns {Promise<Array<{ number: number, title: string }>>}
@@ -1080,7 +1081,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       const out = [];
       for (let page = 1; out.length <= max; page += 1) {
         /** @type {any[]} */
-        const batch = await call('GET', `/repos/${repo}/issues?state=open&sort=created&direction=asc&per_page=100&page=${page}`);
+        const batch = await call('GET', `/repos/${repo}/issues?state=open&sort=created&direction=desc&per_page=100&page=${page}`);
         for (const row of batch) if (!row.pull_request && out.length <= max) out.push({ number: row.number, title: String(row.title ?? '') });
         if (batch.length < 100) break;
       }

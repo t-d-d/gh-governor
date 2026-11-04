@@ -77,10 +77,6 @@
     {
       "name": "triage",
       "when": { "on": "opened", "exclude": ["workflow: under development"] }
-    },
-    {
-      "name": "community",
-      "when": { "on": "opened", "labels": ["type: bug"], "by": ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE"] }
     }
   ],
   "workflows": {

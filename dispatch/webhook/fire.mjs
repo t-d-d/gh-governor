@@ -388,8 +388,9 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  * @typedef {{ kind: 'wait', issue: number }} WaitFire
  *   An issue opened or edited whose new or old body holds a `Blocked until:` line.
  * @typedef {{ kind: 'ticketReview', issue: number }} TicketReviewFire
- *   An issue opened, reopened or with its body edited, not by a bot: its
- *   turn runs each of the repo's ticket reviews the issue now calls for.
+ *   An issue opened or reopened, or with its body edited by anyone but a
+ *   bot: its turn runs each of the repo's ticket reviews the issue now
+ *   calls for.
  * @typedef {{ kind: 'unblocked', issue: number, blocker: Blocker, pr?: ClosingPull }} UnblockedFire
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit

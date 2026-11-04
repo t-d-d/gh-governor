@@ -132,12 +132,27 @@ Rules on the conclusion:
  */
 export const ticketMarker = (name, conclusion, key) => `${TICKET_REVIEW_MARKER}${name} ${conclusion} ${key} -->`;
 
-const MARKER = /<!-- governor:ticket-review ([a-z0-9-]{1,64}) (success|failure|neutral) ([0-9a-f]{1,64}) -->/;
+/** The marker a comment ends with: one quoted earlier in its text is not read. */
+const MARKER = /<!-- governor:ticket-review ([a-z0-9-]{1,64}) (success|failure|neutral) ([0-9a-f]{1,64}) -->\s*$/;
+
+/** An HTML comment, to the end where unclosed: it renders as nothing. */
+const HTML_COMMENT = /<!--[\s\S]*?(?:-->|(?![\s\S]))/g;
+
+/**
+ * GitHub's answer for an issue that does not exist (404) or was deleted (410).
+ *
+ * @param {unknown} error
+ */
+const missing = (error) => {
+  const status = /** @type {{ status?: number }} */ (error)?.status;
+  return status === 404 || status === 410;
+};
 
 /**
  * Each review marker on the thread under `name`, oldest first, read only
- * from comments governor's App posted: a person's or another bot's comment
- * carrying a marker would spend a round, or hold the review.
+ * from comments governor's App posted, and only where the comment ends with
+ * it: a person's or another bot's comment carrying a marker, or one quoted
+ * in a review's text, would spend a round, or hold the review.
  *
  * @param {ThreadRow[]} thread
  * @param {string} name
@@ -177,7 +192,10 @@ const titled = (name) => `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
  * @param {{ name: string, conclusion: string, text: string, key: string }} answer
  */
 export const ticketComment = ({ name, conclusion, text, key }) => {
-  const body = text.trim();
+  // The text is the model's over someone else's ticket: an HTML comment in
+  // it would put a marker in a comment governor's App posted, which governor
+  // reads as its own record.
+  const body = text.replace(HTML_COMMENT, '').trim();
   // A list or several paragraphs start below the opening, so they render.
   const gap = body.includes('\n') || /^([-*+]|\d+\.)\s/.test(body) ? '\n\n' : ' ';
   return `${titled(name)} review: ${WORDS[/** @type {keyof typeof WORDS} */ (conclusion)]}.${gap}${body}\n\n${ticketMarker(name, conclusion, key)}`;
@@ -251,7 +269,7 @@ const contextOf = async ({ repo, ticket, reader, log }) => {
     try {
       row = await reader.ticket(n);
     } catch (error) {
-      if (/** @type {{ status?: number }} */ (error)?.status !== 404) throw error;
+      if (!missing(error)) throw error;
       skip(`#${n}`, 'no such issue');
       continue;
     }
@@ -264,7 +282,9 @@ const contextOf = async ({ repo, ticket, reader, log }) => {
   if (linked.length > 0) parts.push('', '# Issues its body links', ...linked);
   const open = await reader.openIssues(OPEN_LISTED);
   if (open.length > OPEN_LISTED) left.push(`open issues past the first ${OPEN_LISTED}`);
-  parts.push('', '# The repo\'s open issues', '', ...(open.length === 0 ? ['(none)'] : open.slice(0, OPEN_LISTED).map((i) => `#${i.number} ${i.title}`)));
+  // The ticket itself is no other issue that covers it.
+  const others = open.filter((i) => i.number !== ticket.number).slice(0, OPEN_LISTED);
+  parts.push('', '# The repo\'s open issues', '', ...(others.length === 0 ? ['(none)'] : others.map((i) => `#${i.number} ${i.title}`)));
   if (left.length > 0) parts.push('', `Left out to keep this short: ${left.join('; ')}.`);
   return parts.join('\n');
 };
@@ -309,12 +329,21 @@ export const reviewTicket = async ({ repo, issue, reader, config, run, transcrip
   };
   if (issue === config.heartbeat?.issue) return passed(`#${issue} is the heartbeat issue, governor's own record`);
   if (issue === config.waits?.issue) return passed(`#${issue} is the wait ticket, governor's own record`);
-  const ticket = await reader.ticket(issue);
+  /** @type {Ticket} */
+  let ticket;
+  try {
+    ticket = await reader.ticket(issue);
+  } catch (error) {
+    if (!missing(error)) throw error;
+    return passed(`#${issue} is gone: GitHub answered ${/** @type {{ status?: number }} */ (error).status}`);
+  }
   if (ticket.pull) return passed(`#${issue} is a pull request`);
   if (ticket.state !== 'open') return passed(`#${issue} is ${ticket.state}`);
   const trusted = reviewOf(config);
   if (!lets(trusted, ticket)) return passed(`#${issue} is by a ${authorKind(ticket)} author, whom the repo's trust.review does not let in`);
-  const thread = await reader.allComments(issue);
+  // The thread is read only where some review selects the ticket.
+  const unmet = new Map(reviews.map(({ name, when }) => [name, selects(when, ticket)]));
+  const thread = [...unmet.values()].some((u) => u === null) ? await reader.allComments(issue) : [];
   const key = bodyDigest(ticket.body);
   /** @type {Promise<string> | null} */
   let context = null;
@@ -322,11 +351,11 @@ export const reviewTicket = async ({ repo, issue, reader, config, run, transcrip
   let stopped = null;
   /** @type {Reviewed[]} */
   const out = [];
-  for (const { name, when } of reviews) {
+  for (const { name } of reviews) {
     const about = { repo, issue, review: name };
-    const unmet = selects(when, ticket);
+    const why = unmet.get(name) ?? null;
     const markers = markersOf(thread, name);
-    const reason = unmet !== null ? `#${issue} is not one the ${name} review selects: ${unmet}`
+    const reason = why !== null ? `#${issue} is not one the ${name} review selects: ${why}`
       : markers.at(-1)?.key === key ? `the ${name} review already read #${issue} as its body stands` : null;
     if (reason !== null) {
       log('dispatch-ticket-review', { level: 'info', ...about, outcome: 'skipped', reason });
