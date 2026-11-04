@@ -67,7 +67,7 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * written (`heartbeatUnwritten`), and no repo's part of the turn failed
  * (`unread`), refusal or not.
  *
- * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, fallback?: { outcome: string } | null } | null }} result
+ * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string } }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, fallback?: { outcome: string } | null } | null }} result
  * @returns {0 | 1}
  */
 export const exitCodeFor = (result) => {
@@ -94,7 +94,9 @@ export const exitCodeFor = (result) => {
   }
   if (result.kind === 'review' || result.kind === 'ticketReview' || result.kind === 'conflicts') {
     const outcomes = result.kind === 'conflicts' ? result.checks ?? [] : result.reviews ?? [];
-    return outcomes.some((r) => r.outcome === 'failed') ? 1 : 0;
+    // A loop guard's comment that did not post leaves the review standing,
+    // and the operator is told.
+    return outcomes.some((r) => r.outcome === 'failed' || /** @type {{ loop?: { error?: string } }} */ (r).loop?.error !== undefined) ? 1 : 0;
   }
   // A hook fire sent into its open session: the send is the turn.
   if (result.kind === 'hook' && result.messaged != null) return result.messaged.ok ? 0 : 1;
