@@ -331,9 +331,10 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
   // A PR merged before a later write failed keeps its check: the review ran.
   let merged = false;
   /**
-   * The `governor` check at the head read. A 403 is an installation that
-   * has not granted the Checks write: recorded, and the review goes on.
-   * Any other refusal throws.
+   * The `governor` check at the head read. A 403 on the read of the runs
+   * already there, or on the write, is an installation that has not granted
+   * the Checks permission: recorded, and the review goes on. Any other
+   * refusal throws.
    *
    * @param {CheckState} state
    * @param {string} title
