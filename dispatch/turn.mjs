@@ -1398,11 +1398,17 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         spent: (pr, usage) => { spent.set(pr, usage); },
       });
       for (const [i, target] of targets.entries()) {
-        if (deps.now() - started > REVIEW_WINDOW_MS) {
-          deps.log('dispatch-review', { unreviewed: targets.slice(i).map((t) => t.number), reason: `out of time: past ${REVIEW_WINDOW_MS} ms, another review might outrun the deadline; each is reviewed on its next push or edit` });
+        // Past the window no review starts: each PR left gets a `failure`
+        // check, through the review's usual skips, so a ruleset requiring
+        // `governor` does not wait on one that never comes. Past the second
+        // limit nothing more is written.
+        const spentMs = deps.now() - started;
+        if (spentMs > REVIEW_MARK_WINDOW_MS) {
+          deps.log('dispatch-review', { unreviewed: targets.slice(i).map((t) => t.number), reason: `out of time: past ${REVIEW_MARK_WINDOW_MS} ms, another check might outrun the deadline; each is reviewed on its next push or edit` });
           break;
         }
-        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession });
+        const outOfTime = spentMs > REVIEW_WINDOW_MS;
+        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, outOfTime });
         const usage = spent.get(reviewed.pr);
         deps.log('dispatch-review', { ...reviewed, ...(usage === undefined ? {} : { usage }) });
         reviews.push(reviewed);
@@ -1646,7 +1652,15 @@ export const STATE_TTL_ATTRIBUTE = 'ttl';
  * -p` run at the launch budget above, the mergeable reads and the upload
  * still end inside the task's deadline (dispatch/cli.mjs).
  */
-const REVIEW_WINDOW_MS = 5 * 60 * 1000;
+export const REVIEW_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * How long into a review turn the `governor` check may still go on a PR the
+ * window kept the turn from reaching. A review the window let start can run
+ * its whole launch budget past it, so the checks start late, and each is a
+ * few reads and one write: the last one still ends inside the deadline.
+ */
+export const REVIEW_MARK_WINDOW_MS = 14 * 60 * 1000;
 
 /**
  * What a transcript carries that the drop box must not: tokens and keys of

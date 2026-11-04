@@ -23,7 +23,8 @@
  *   passing, so a fail the session owes is never `neutral`. A required
  *   check not finished is the check in progress, an author who may not
  *   summon governor is `neutral`, and a review that does not finish is
- *   `failure`. Every other skip posts no check. The check goes first: a
+ *   `failure`, and so is a PR a review of every open PR ran out of time
+ *   before it reached (`outOfTime`). Every other skip posts no check. The check goes first: a
  *   pass's before its merge, which a ruleset requiring it would refuse
  *   otherwise, and a fail's before its comment, so a check write GitHub
  *   refuses leaves no marker either. An installation that has not
@@ -100,7 +101,7 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
  *   require. `checksAt`: the latest check runs and statuses at a commit,
  *   each red, green or pending.
  * @typedef {'in_progress' | 'success' | 'failure' | 'neutral'} CheckState
- * @typedef {'merged' | 'passed' | 'conflict' | 'commented' | 'marker-moved' | 'skipped' | 'limited' | 'failed'} Outcome
+ * @typedef {'merged' | 'passed' | 'conflict' | 'commented' | 'marker-moved' | 'skipped' | 'limited' | 'failed' | 'out-of-time'} Outcome
  * @typedef {{ pr: number, outcome: Outcome, reason: string | null, headSha: string | null, answer: Answer | null, error: string | null, check: string | null }} Reviewed
  *   `check`: the state of the check the review posted, `refused: <why>` where
  *   GitHub refused it with a 403, or null where it posted none.
@@ -275,10 +276,14 @@ const bumpAnswer = async (reader, pull, list, red) => {
  *   labels: import('./checklist.mjs').Rules['labels'],
  *   base: string,
  *   started: (session: string) => Promise<boolean>,
+ *   outOfTime?: boolean,
  * }} args `started`: whether governor started a session, from its state table.
+ *   `outOfTime`: the turn ran out of time for this PR. It goes through the
+ *   usual skips, then posts a `failure` check in place of reading the facts
+ *   and asking the model.
  * @returns {Promise<Reviewed>}
  */
-export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started }) => {
+export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, outOfTime = false }) => {
   /** @type {import('./checklist.mjs').Rules} */
   const rules = { humanOnly: review.humanOnly, tickets: review.tickets, quote: review.quote, decides: review.decides, labels };
   /** @type {Reviewed} */
@@ -325,7 +330,8 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // A pass whose merge an earlier review held, from before no run held a
     // merge: merged on that pass without judging it again.
     const heldReason = reviewedAlready ? heldPassReason(last.text) : null;
-    if (reviewedAlready && heldReason === null) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
+    // Out of time, a held pass waits for its next review too: its check stands.
+    if (reviewedAlready && (heldReason === null || outOfTime)) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
 
     // A required check not yet finished: its run's end queues the review
     // again (dispatch/webhook/route.mjs), so this one says nothing.
@@ -334,6 +340,14 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
       const names = checks.pending.map((c) => `\`${c}\``).join(', ');
       await check('in_progress', 'Waits for its required checks to finish.', `The PR review runs when ${names} ${checks.pending.length > 1 ? 'have' : 'has'} finished on ${pull.headSha.slice(0, 12)}.`);
       return skip(`#${number}'s required check${checks.pending.length > 1 ? 's' : ''} ${names} ${checks.pending.length > 1 ? 'have' : 'has'} not finished on ${pull.headSha.slice(0, 12)}: the run's end reviews it`);
+    }
+
+    // A required check would wait on a PR that gets no check at all, so it
+    // fails out loud, and the owner can bypass it.
+    if (outOfTime) {
+      const why = 'The review turn ran out of time before it reached this pull request. A push or an edit to the description runs it again.';
+      await check('failure', 'The PR review did not run.', why);
+      return { ...reviewed, outcome: /** @type {Outcome} */ ('out-of-time'), reason: why };
     }
 
     // The facts are read again for a held pass: a ticket may have closed or
