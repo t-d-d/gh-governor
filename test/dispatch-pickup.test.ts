@@ -8,7 +8,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
-import { SWEEP_HOURS, SWEEP_SLACK_MS, sweepDue, sweepHoursOf } from '../dispatch/pickup.mjs';
+import { SWEEP_HOURS, SWEEP_SLACK_MS, byOf, sweepDue, sweepHoursOf } from '../dispatch/pickup.mjs';
+import { ASSOCIATIONS } from '../dispatch/webhook/fire.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 const BASE = { environment: 'env_01ASK', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { pickup: true } };
@@ -45,6 +46,26 @@ describe('the config file\'s pickup section', () => {
     const read = readConfig(factoryFile(CONFIG_PATH));
     assert.ok(read.ok);
     assert.equal(typeof read.config.pickup?.sweepHours, 'number');
+    assert.ok(Array.isArray(read.config.pickup?.by));
+  });
+
+  test('a file may list whose tickets pickup starts, by GitHub\'s author_association values', () => {
+    const read = readConfig(file({ pickup: { by: ['OWNER', 'NONE'] } }));
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(byOf(read.config), ['OWNER', 'NONE']);
+    const every = readConfig(file({ pickup: { by: [...ASSOCIATIONS] } }));
+    assert.ok(every.ok, JSON.stringify(every));
+    for (const by of [[], ['owner'], ['ANYONE'], 'OWNER', [1]]) {
+      assert.ok(!readConfig(file({ pickup: { by } })).ok, JSON.stringify(by));
+    }
+  });
+
+  test('unset, by is OWNER, MEMBER and COLLABORATOR', () => {
+    for (const over of [{}, { pickup: {} }, { pickup: { sweepHours: 3 } }]) {
+      const read = readConfig(file(over));
+      assert.ok(read.ok, JSON.stringify(read));
+      assert.deepEqual(byOf(read.config), ['OWNER', 'MEMBER', 'COLLABORATOR']);
+    }
   });
 });
 

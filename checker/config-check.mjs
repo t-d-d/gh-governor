@@ -15,12 +15,19 @@
  * its marker, or a review glob that matches no path. Only governor can check
  * that `environment` resolves, because that needs the claude.ai login.
  *
+ * It also fails an issue template that names a ready label
+ * ({@link templateFaults}). Governor would read such a repo, so this is no
+ * fault in the config file, but a template's `labels:` adds its labels
+ * whoever opens the issue, and so readies every ticket of its kind before
+ * anyone has read it.
+ *
  * Governor itself still reads only the default branch
  * (docs/constraints/dispatcher-repos.md): this check reads the head inside
  * the served repo's own Actions run, and governor never sees what it reads.
  */
 
 import { pathToFileURL } from 'node:url';
+import yaml from 'js-yaml';
 import { globMatches } from '../dispatch/checklist.mjs';
 import { HEARTBEAT_MARKER } from '../dispatch/heartbeat.mjs';
 import { CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
@@ -38,9 +45,12 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
  *   throws. `paths`: every file at the head, and whether GitHub cut the
  *   list short. `labels`: the repo's label names. `issueBody`: an issue's
  *   body, null when there is no such issue.
- * @typedef {{ errors: string[], warnings: string[] }} Verdict
- *   `errors`: governor's faults, each failing the run. `warnings`: what a
- *   valid file names that cannot work.
+ * @typedef {{ file: string, fault: string }} TemplateFault
+ *   An issue template that names a ready label: its path, and what is wrong.
+ * @typedef {{ errors: string[], templates: TemplateFault[], warnings: string[] }} Verdict
+ *   `errors`: governor's faults, each failing the run. `templates`: issue
+ *   templates that name a ready label, each failing the run too.
+ *   `warnings`: what a valid file names that cannot work.
  * @typedef {(path: string) => Promise<any>} Api A GET on the REST API.
  */
 
@@ -97,21 +107,135 @@ const warningsOf = async (config, reads) => {
   return (await Promise.all([labels(), ci(), heartbeat(), globs()])).flat();
 };
 
+/** An issue template in the template folder GitHub reads: an issue form or a Markdown template, at its top level. */
+const FOLDER_TEMPLATE = /^\.github\/ISSUE_TEMPLATE\/[^/]+\.(md|ya?ml)$/i;
+
+/** The template chooser's own config, in the template folder, which is no template. */
+const CHOOSER = /^\.github\/ISSUE_TEMPLATE\/config\.ya?ml$/i;
+
+/** The single-file template's places GitHub reads: the root, `.github/` and `docs/`. */
+const SINGLE_TEMPLATES = ['ISSUE_TEMPLATE.md', '.github/ISSUE_TEMPLATE.md', 'docs/ISSUE_TEMPLATE.md'];
+
+/** A single-file template, in any case, at one of its places. */
+const SINGLE_TEMPLATE = /^(\.github\/|docs\/)?ISSUE_TEMPLATE\.md$/i;
+
 /**
- * One check of the pull request's config file. A read that fails, other
- * than a file that is not there, throws, so the run goes red rather than
- * pass a file it could not read.
+ * The label names a template's `labels:` value gives: a list, or a
+ * comma-separated string.
+ *
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+const labelNames = (value) => {
+  // An unquoted item such as `- mode: afk` loads as the one-pair mapping
+  // `{ mode: 'afk' }`, which still names the label `mode: afk`.
+  /** @param {unknown} v @returns {string | null} */
+  const name = (v) => {
+    if (typeof v === 'string' || typeof v === 'number') return String(v);
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      const pairs = Object.entries(v);
+      if (pairs.length === 1 && pairs[0] !== undefined && (typeof pairs[0][1] === 'string' || typeof pairs[0][1] === 'number')) return `${pairs[0][0]}: ${pairs[0][1]}`;
+    }
+    return null;
+  };
+  if (Array.isArray(value)) return value.map(name).filter((v) => v !== null).map((v) => v.trim()).filter((v) => v !== '');
+  if (typeof value === 'string') return value.split(',').map((v) => v.trim()).filter((v) => v !== '');
+  return [];
+};
+
+/**
+ * The labels an issue template adds, or null where governor cannot read
+ * them. An issue form is YAML; a Markdown template carries YAML front
+ * matter. Where the YAML does not parse, a top-level `labels:` line is
+ * still read as a comma-separated string, as people write it unquoted
+ * (`labels: type: bug, mode: afk`), so a fault is not missed for a colon.
+ *
+ * @param {string} path
+ * @param {string} text
+ * @returns {string[] | null}
+ */
+const templateLabels = (path, text) => {
+  let source = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+  if (/\.md$/i.test(path)) {
+    const front = /^---\n([\s\S]*?)\n---(\n|$)/.exec(source);
+    if (front === null) return [];
+    source = front[1] ?? '';
+  }
+  try {
+    const doc = yaml.load(source);
+    return doc !== null && typeof doc === 'object' && !Array.isArray(doc) ? labelNames(/** @type {Record<string, unknown>} */ (doc).labels) : [];
+  } catch {
+    const line = /^labels:[ \t]*(\S.*)$/m.exec(source);
+    if (line === null) return null;
+    return labelNames(String(line[1]).replace(/^\[|\]$/g, '').split(',').map((v) => v.trim().replace(/^(["'])(.*)\1$/, '$2')));
+  }
+};
+
+/**
+ * The issue templates at the pull request's head that name a ready label,
+ * each a fault, and a warning for each template whose labels governor
+ * could not read, or for a template folder it could not list. A template's
+ * `labels:` adds its labels whoever opens the issue, so one naming a ready
+ * label readies every ticket of its kind before anyone has read it. That
+ * holds whoever may open issues, so this reads no `pickup.by`. Labels match
+ * in any case, as GitHub's do.
+ *
+ * @param {readonly string[]} ready The file's ready labels.
+ * @param {Reads} reads
+ * @returns {Promise<{ templates: TemplateFault[], warnings: string[] }>}
+ */
+const templateFaults = async (ready, reads) => {
+  /** @type {string[]} */
+  const warnings = [];
+  const { paths, truncated } = await reads.paths();
+  if (truncated) warnings.push('.github/ISSUE_TEMPLATE: the repo\'s tree is too large for GitHub to list whole, so the template folder went unchecked for ready labels');
+  const found = paths.filter((p) => (FOLDER_TEMPLATE.test(p) && !CHOOSER.test(p)) || SINGLE_TEMPLATE.test(p));
+  // A tree listed short may leave out the single files, so they are read by name then.
+  const byName = truncated ? SINGLE_TEMPLATES.filter((p) => !found.some((f) => f.toLowerCase() === p.toLowerCase())) : [];
+  const candidates = [...new Set([...found, ...byName])].sort();
+  const wanted = new Map(ready.map((r) => [r.toLowerCase(), r]));
+  // Independent reads, run together; the faults keep the paths' order.
+  const texts = await Promise.all(candidates.map((file) => reads.read(file)));
+  /** @type {TemplateFault[]} */
+  const templates = [];
+  for (const [i, file] of candidates.entries()) {
+    const text = texts[i] ?? null;
+    if (text === null) continue;
+    const labels = templateLabels(file, text);
+    if (labels === null) {
+      warnings.push(`${file}: governor could not parse this issue template, so its labels went unchecked for ready labels`);
+      continue;
+    }
+    const named = [...new Set(labels.map((l) => wanted.get(l.toLowerCase())).filter((l) => l !== undefined))];
+    if (named.length === 0) continue;
+    const list = named.map((l) => JSON.stringify(l)).join(', ');
+    templates.push({
+      file,
+      fault: `this issue template's labels: names the ready label${named.length === 1 ? '' : 's'} ${list}, so every issue opened from it is ready before anyone has read it. Take ${named.length === 1 ? 'it' : 'them'} out: a person adds ready labels to one ticket at a time.`,
+    });
+  }
+  return { templates, warnings };
+};
+
+/**
+ * One check of the pull request's config file, and of its issue templates.
+ * A read that fails, other than a file that is not there, throws, so the
+ * run goes red rather than pass a file it could not read.
  *
  * @param {Reads} reads
  * @returns {Promise<Verdict>}
  */
 export const check = async (reads) => {
   const text = await reads.read(CONFIG_PATH);
-  if (text === null) return { errors: [], warnings: [`the pull request leaves no ${CONFIG_PATH}, so governor will not serve this repo once it merges`] };
+  if (text === null) return { errors: [], templates: [], warnings: [`the pull request leaves no ${CONFIG_PATH}, so governor will not serve this repo once it merges`] };
   const parsed = readConfig(text);
-  if (!parsed.ok) return { errors: [parsed.fault], warnings: [] };
-  const [resolved, warnings] = await Promise.all([resolveFiles(parsed.config, reads.read), warningsOf(parsed.config, reads)]);
-  return { errors: resolved.ok ? [] : [resolved.fault], warnings };
+  if (!parsed.ok) return { errors: [parsed.fault], templates: [], warnings: [] };
+  // The globs and the templates both read the tree: list it once.
+  /** @type {ReturnType<Reads['paths']> | undefined} */
+  let tree;
+  const shared = { ...reads, paths: () => (tree ??= reads.paths()) };
+  const [resolved, warnings, found] = await Promise.all([resolveFiles(parsed.config, shared.read), warningsOf(parsed.config, shared), templateFaults(parsed.config.labels.ready, shared)]);
+  return { errors: resolved.ok ? [] : [resolved.fault], templates: found.templates, warnings: [...warnings, ...found.warnings] };
 };
 
 /**
@@ -167,6 +291,14 @@ export const restReads = (api, repo, ref) => {
 const escaped = (text) => text.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
 
 /**
+ * A workflow command's property value, such as a `file=` path, escaped so a
+ * `,` or `:` in it cannot end the property early.
+ *
+ * @param {string} text
+ */
+const escapedProperty = (text) => escaped(text).replace(/:/g, '%3A').replace(/,/g, '%2C');
+
+/**
  * One run on the runner: the check over `reads`, each fault an error
  * annotation on the config file and each warning a warning one. Answers
  * the exit code: 1 when governor would refuse the file.
@@ -179,13 +311,15 @@ export const run = async ({ env, reads, log }) => {
   if (env.GITHUB_TOKEN === undefined || env.GITHUB_TOKEN === '') throw new Error('GITHUB_TOKEN is not set');
   const ref = String(env.CONFIG_CHECK_REF ?? '');
   if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error('CONFIG_CHECK_REF names no commit');
-  const { errors, warnings } = await check(reads(repo, ref));
+  const { errors, templates, warnings } = await check(reads(repo, ref));
   for (const e of errors) log(`::error file=${CONFIG_PATH},title=governor would refuse this file once it merges::${escaped(e)}`);
+  for (const t of templates) log(`::error file=${escapedProperty(t.file)},title=an issue template names a ready label::${escaped(t.fault)}`);
   for (const w of warnings) log(`::warning file=${CONFIG_PATH},title=governor reads this file but it cannot work::${escaped(w)}`);
   log(errors.length > 0
     ? `${CONFIG_PATH} at ${ref}: governor would refuse it, and the repo would go unserved.`
     : `${CONFIG_PATH} at ${ref}: governor reads it${warnings.length > 0 ? `, with ${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : ''}.`);
-  return errors.length > 0 ? 1 : 0;
+  if (templates.length > 0) log(`${templates.length} issue template${templates.length === 1 ? ' names' : 's name'} a ready label: ${templates.map((t) => t.file).join(', ')}.`);
+  return errors.length > 0 || templates.length > 0 ? 1 : 0;
 };
 
 /**

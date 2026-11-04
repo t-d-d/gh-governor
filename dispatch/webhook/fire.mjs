@@ -149,6 +149,18 @@ export const shippingJob = (name) => {
 /** The author associations GitHub reports that carry a say in the repository. */
 export const SUMMONERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
+/** Every `author_association` GitHub reports on an issue or pull request. */
+export const ASSOCIATIONS = /** @type {const} */ (['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'MANNEQUIN', 'NONE']);
+
+/**
+ * Whose tickets pickup starts where a repo's file sets no `pickup.by`: the
+ * authors with a say, so a stranger's ticket is not built even once someone
+ * with a say readies it.
+ *
+ * @type {readonly string[]}
+ */
+export const PICKUP_BY = Object.freeze([...SUMMONERS]);
+
 /** Dependabot's login: its bumps are reviewed by the Dependabot list, though it summons nothing, and no session owns them. */
 export const DEPENDABOT = 'dependabot[bot]';
 

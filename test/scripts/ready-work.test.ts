@@ -28,9 +28,9 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { UNREADIED_MARKER, authorHasSay, isWaiting, labelRow, mayPickUp, mayStartSpec, selectReadyWork, ticketStatus, uncountedReady, waitOf } from '../../scripts/lib/ready-work.mjs';
+import { UNREADIED_MARKER, authorHasSay, authorPicked, isWaiting, labelRow, mayPickUp, mayStartSpec, selectReadyWork, ticketStatus, uncountedReady, waitOf } from '../../scripts/lib/ready-work.mjs';
 import * as unblocked from '../../dispatch/unblocked.mjs';
-import { dispatchMarker } from '../../dispatch/webhook/fire.mjs';
+import { ASSOCIATIONS, PICKUP_BY, dispatchMarker } from '../../dispatch/webhook/fire.mjs';
 
 /** The factory's labels: two ready labels, the claim, and the default exclude. */
 const FACTORY_LABELS = { ready: ['workflow: ready for development', 'mode: afk'], claim: 'workflow: under development', exclude: ['type: prd'] };
@@ -433,13 +433,50 @@ describe('uncountedReady: ready labels no one with a say added', () => {
   test('a label counts once its latest add is not the outside author\'s', () => {
     const t = { author: 'Stranger', association: 'NONE' };
     assert.deepEqual(uncountedReady(t, [...template, { label: READY, actor: 'triager' }], ready), ['mode: afk']);
-    assert.deepEqual(uncountedReady(t, [...template, { label: READY, actor: 'triager' }, { label: 'mode: afk', actor: 'governor-app[bot]' }], ready), []);
+    assert.deepEqual(uncountedReady(t, [...template, { label: READY, actor: 'triager' }, { label: 'mode: afk', actor: 'governor-app[bot]', bot: true, ours: true }], ready), []);
     // The latest add decides, and logins compare in any case.
     assert.deepEqual(uncountedReady(t, [{ label: READY, actor: 'triager' }, { label: READY, actor: 'stranger' }, { label: 'mode: afk', actor: 'triager' }], ready), [READY]);
   });
 
   test('a label no event names does not count on an outsider\'s ticket', () => {
     assert.deepEqual(uncountedReady({ author: 'stranger', association: 'NONE' }, [{ label: READY, actor: 'triager' }], ready), ['mode: afk']);
+  });
+
+  test('a label a bot added last does not count, unless governor\'s own App added it', () => {
+    const t = { author: 'stranger', association: 'NONE' };
+    const people = ready.map((label) => ({ label, actor: 'triager', bot: false, ours: false }));
+    // A labelling workflow, or another App, acts on rules, not on someone reading the ticket.
+    for (const actor of ['github-actions[bot]', 'labeller[bot]']) {
+      assert.deepEqual(uncountedReady(t, [...people, { label: READY, actor, bot: true, ours: false }], ready), [READY], actor);
+    }
+    // A login GitHub names as a bot's is a bot's, even where the type was not read.
+    assert.deepEqual(uncountedReady(t, [...people, { label: READY, actor: 'github-actions[bot]' }], ready), [READY]);
+    // Governor's App puts back only ready labels a person added first.
+    assert.deepEqual(uncountedReady(t, [...people, { label: READY, actor: 'governor-app[bot]', bot: true, ours: true }], ready), []);
+    // Another person counts.
+    assert.deepEqual(uncountedReady(t, people, ready), []);
+  });
+});
+
+describe('authorPicked: pickup starts tickets only from the authors its `by` lists', () => {
+  test('by defaults to OWNER, MEMBER and COLLABORATOR', () => {
+    assert.deepEqual([...PICKUP_BY], ['OWNER', 'MEMBER', 'COLLABORATOR']);
+    for (const association of ASSOCIATIONS) {
+      assert.equal(authorPicked({ association }), PICKUP_BY.includes(association), association);
+    }
+    // An association not read is none.
+    assert.equal(authorPicked({}), false);
+    assert.equal(authorPicked({}, ['NONE']), true);
+  });
+
+  test('a repo\'s by widens or narrows it', () => {
+    assert.equal(authorPicked({ association: 'NONE' }, ['OWNER', 'NONE']), true);
+    assert.equal(authorPicked({ association: 'CONTRIBUTOR' }, ['OWNER', 'NONE']), false);
+    assert.equal(authorPicked({ association: 'MEMBER' }, ['OWNER']), false);
+  });
+
+  test('every value GitHub reports as an author_association is listed', () => {
+    assert.deepEqual([...ASSOCIATIONS].sort(), ['COLLABORATOR', 'CONTRIBUTOR', 'FIRST_TIMER', 'FIRST_TIME_CONTRIBUTOR', 'MANNEQUIN', 'MEMBER', 'NONE', 'OWNER']);
   });
 });
 
