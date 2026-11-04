@@ -26,7 +26,8 @@
  * with no fallback: the task drops a subscriber that refuses. An issue a
  * session filed names it the same way, and it hears of every event there
  * but labels and deploys (a `deployed: ` label) as its owner, with
- * no fallback, since an issue has nothing to take over; the task strikes its footer link should it refuse. A push, a
+ * no fallback, since an issue has nothing to take over; its link stays
+ * should it refuse, so the ticket names its last owner. A push, a
  * close, a label: each is a message fire per subscriber, the owner's with
  * no fallback either, since a gone session owes them nothing. A review
  * bot's findings go through too; they are what the session is waiting for,

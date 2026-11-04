@@ -14,8 +14,8 @@
  *   <!-- governor:subscribe https://claude.ai/code/session_… events=comments,reviews -->
  *
  * and unsubscribes by removing it; the dispatcher removes it for a session
- * that refuses a message (archived), and strikes an issue's owner link (under
- * its footer, or alone on its last line) for a filer that refuses. `events` absent means every one. The
+ * that refuses a message (archived). An owner link stays when its session
+ * refuses, an issue's as a PR's. `events` absent means every one. The
  * vocabulary is closed (`SUBSCRIPTION_EVENTS`, fire.mjs): an event it does not
  * know subscribes to nothing.
  *

@@ -503,9 +503,9 @@ export const deliveries = (deps) => {
 
   /**
    * Drop a subscriber that refused from the body of what it subscribed to:
-   * it is gone, and each later event would be one more refused send. Only
-   * its `governor:subscribe` line goes. An owner's link stays, an issue's
-   * as a PR's: a ticket keeps the link of the last session that owned it,
+   * it is gone, and each later event its line names would be one more
+   * refused send. Only its `governor:subscribe` line goes. An owner's link
+   * stays, an issue's as a PR's: a ticket keeps the link of the last session that owned it,
    * and its spec work starts a replacement that writes its own. A
    * write that fails is logged.
    *
@@ -617,7 +617,7 @@ export const deliveries = (deps) => {
           reason = `PR #${issue} has closed`;
         } else if (owner !== null && !sameSession(owner, session)) {
           const handed = await send(owner, text, about, until);
-          deps.log('dispatch-message', { session: owner, fromBody: true, ok: handed.ok, sessionUrl: handed.sessionUrl, error: handed.error, status: handed.status });
+          deps.log('dispatch-message', { ...(refusedBy(handed) ? { level: 'info' } : {}), session: owner, fromBody: true, ok: handed.ok, sessionUrl: handed.sessionUrl, error: handed.error, status: handed.status });
           if (handed.ok) fallback = { outcome: 'forwarded', sessionUrl: owner };
           else if (!refusedBy(handed)) fallback = { outcome: 'failed', sessionUrl: null };
         }

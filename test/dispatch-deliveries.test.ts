@@ -450,6 +450,8 @@ describe('deliver — with a fallback', () => {
     assert.equal(both.launches.length, 1);
     assert.deepEqual(fresh.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
     assert.equal(fresh.relinked, true);
+    const refusals = both.logged.filter((l) => l.event === 'dispatch-message');
+    assert.deepEqual(refusals.map((l) => l.level), ['info', 'info'], 'each refusal, the forwarded one too, is logged at info');
     const live = fakes({ send: async (m) => (m.session === 'session_01OLD' ? archived(m) : orgLookup(m)), reader: { pull } });
     const failed = await live.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
     assert.deepEqual(live.launches, []);
