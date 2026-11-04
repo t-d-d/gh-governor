@@ -91,10 +91,18 @@ export const namedOwners = (body) => {
   return { verification: [...new Set(verification)], later: [...new Set(later)] };
 };
 
-const MARKER = /<!-- governor:pr-review ([0-9a-f]{40}) ([0-9a-f]{64}) -->/;
+const MARKER = /<!-- governor:pr-review ([0-9a-f]{40}) ([0-9a-f]{64})(?: ([0-9a-f]{64}))? -->/;
 
-/** The marker a review's comment ends with. @param {string} headSha @param {string} bodySha */
-export const reviewMarker = (headSha, bodySha) => `${REVIEW_MARKER}${headSha} ${bodySha} -->`;
+/**
+ * The marker a review's comment ends with: the head and the body reviewed,
+ * and, where the model was asked or its pass reused, the digest of what it
+ * read (`readDigest`, dispatch/checklist.mjs).
+ *
+ * @param {string} headSha
+ * @param {string} bodySha
+ * @param {string | null} [readSha]
+ */
+export const reviewMarker = (headSha, bodySha, readSha = null) => `${REVIEW_MARKER}${headSha} ${bodySha}${readSha === null ? '' : ` ${readSha}`} -->`;
 
 /** The body as the marker names it. @param {string} body */
 export const bodyDigest = (body) => createHash('sha256').update(body).digest('hex');
@@ -103,16 +111,18 @@ export const bodyDigest = (body) => createHash('sha256').update(body).digest('he
  * The newest review on the thread: the last comment the dispatcher's own
  * App posted carrying a marker, with what it named and its text without the
  * marker. A person's or another bot's comment carrying a marker is not one:
- * a held pass there would merge unjudged.
+ * a held pass there would merge unjudged. `readSha` is null for a marker
+ * that names no digest of what the model read: one from before markers
+ * carried it, or a review decided in code.
  *
  * @param {ThreadRow[]} thread Oldest first.
- * @returns {{ id: number, headSha: string, bodySha: string, text: string } | null}
+ * @returns {{ id: number, headSha: string, bodySha: string, readSha: string | null, text: string } | null}
  */
 export const lastReview = (thread) => {
   for (const row of [...thread].reverse()) {
     if (!row.ours) continue;
     const found = MARKER.exec(row.body);
-    if (found) return { id: row.id, headSha: /** @type {string} */ (found[1]), bodySha: /** @type {string} */ (found[2]), text: row.body.replace(MARKER, '').trim() };
+    if (found) return { id: row.id, headSha: /** @type {string} */ (found[1]), bodySha: /** @type {string} */ (found[2]), readSha: found[3] ?? null, text: row.body.replace(MARKER, '').trim() };
   }
   return null;
 };

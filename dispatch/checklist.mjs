@@ -27,10 +27,13 @@
  * repo's checklist as its system prompt with a suffix saying what the code
  * decided, the PR's facts as its prompt (`reviewPrompt`), its answer held
  * to a schema (`ANSWER_SCHEMA`, `CONSTRAINT_ANSWER_SCHEMA`) and parsed
- * (`parseReview`), its transcript uploaded. Nothing here runs the served
- * repo's code.
+ * (`parseReview`), its transcript uploaded. Its pass at an earlier head
+ * is reused where what it reads hashes the same (`readDigest`): a push that
+ * only merges the base branch asks it nothing new. Nothing here runs the
+ * served repo's code.
  */
 
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { labelRow } from '../scripts/lib/ready-work.mjs';
@@ -41,7 +44,7 @@ import { DEPENDABOT } from './webhook/fire.mjs';
  * @typedef {import('../scripts/lib/github-app.mjs').FileRow} FileRow
  * @typedef {import('../scripts/lib/github-app.mjs').PullCommitRow} PullCommitRow
  * @typedef {import('../scripts/lib/github-app.mjs').TicketRow} TicketRow
- * @typedef {{ answer: 'pass', reason: string } | { answer: 'fail', test: number, reason: string, editable: boolean, claim?: true, push?: true, person?: { test: number, reason: string } }} Answer `claim`: the ticket waits for the author session to claim it, not for an edit. `push`: a required check is red, and waits for the author session's push. `person`: a later test no edit meets, beside a first one the author session meets by an edit, or by a claim with `claim`; `editable` is then false.
+ * @typedef {{ answer: 'pass', reason: string, reused?: string } | { answer: 'fail', test: number, reason: string, editable: boolean, claim?: true, push?: true, person?: { test: number, reason: string } }} Answer `reused`: the head an earlier review's model gave this pass at, reused at a new head with nothing it reads changed. `claim`: the ticket waits for the author session to claim it, not for an edit. `push`: a required check is red, and waits for the author session's push. `person`: a later test no edit meets, beside a first one the author session meets by an edit, or by a claim with `claim`; `editable` is then false.
  * @typedef {import('./repo-config.mjs').HumanOnly} HumanOnly
  * @typedef {import('./repo-config.mjs').TicketRule} TicketRule
  * @typedef {{
@@ -647,6 +650,42 @@ export const reviewPrompt = ({ pull, files, tickets, constraints }) => [
 ].join('\n');
 
 /**
+ * What the model is sent for a PR: the repo's checklist with the suffix
+ * saying what the code decided as its system prompt, the PR's facts as its
+ * prompt (`reviewPrompt`), and the schema its answer is held to. A prompt
+ * quoting files leaves test 7 for them to the model.
+ *
+ * @param {string} skill The repo's checklist.
+ * @param {Question} question
+ */
+const judgeRequest = (skill, question) => {
+  const constraints = question.constraints !== undefined;
+  return {
+    system: `${skill}\n\n${constraints ? CONSTRAINTS_LEFT : DECIDED_IN_CODE}`,
+    prompt: reviewPrompt(question),
+    schema: constraints ? CONSTRAINT_ANSWER_SCHEMA : ANSWER_SCHEMA,
+  };
+};
+
+/**
+ * The digest of everything the model reads for a PR: the request
+ * `judgeRequest` builds, with the commits the prompt names left out. That
+ * is the checklist, its suffix and the answer's schema, and a prompt
+ * holding the PR's title and body, the tickets it closes with their text
+ * and labels, one line per changed file, and each quoted file's text at
+ * the merge base and the head; a merge from the base branch changes none
+ * of them, unless it changes what the PR touches. Two heads with the same
+ * digest put the same question to the model.
+ *
+ * @param {Question} question
+ * @param {string} skill The repo's checklist.
+ */
+export const readDigest = ({ pull, files, tickets, constraints }, skill) => {
+  const request = judgeRequest(skill, { pull, files, tickets, ...(constraints === undefined ? {} : { constraints: { ...constraints, base: '', head: '' } }) });
+  return createHash('sha256').update(JSON.stringify(request)).digest('hex');
+};
+
+/**
  * The object inside the model's text: the whole of it, or the first `{` to
  * the last `}` (a fenced block, a sentence before it).
  *
@@ -779,14 +818,19 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  *   unattended: () => Promise<boolean>,
  *   held?: string | null,
  *   rules: Rules,
- * }} Facts `decideInCode`'s facts, and: `constraintTexts`, the read of the quoted files the model is to read, made only when it is asked; `unattended`, the read of whether governor started the PR's session, made only where a label's waiver changes the answer; `held`, the reason of a pass whose merge a promotion held, kept in place of a new judgement; `rules`, the repo's review settings and labels.
+ *   system?: string,
+ *   earlier?: { read: string, reason: string, at: string } | null,
+ *   read?: (digest: string) => void,
+ * }} Facts `decideInCode`'s facts, and: `constraintTexts`, the read of the quoted files the model is to read, made only when it is asked; `unattended`, the read of whether governor started the PR's session, made only where a label's waiver changes the answer; `held`, the reason of a pass whose merge a promotion held, kept in place of a new judgement; `rules`, the repo's review settings and labels; `system`, the repo's checklist, part of what the model reads; `earlier`, the model's pass at an earlier head, with the digest of what it read then (`readDigest`), its reason and the head it was given at; `read`, told the digest of what the model reads, wherever the code leaves the answer to it.
  */
 
 /**
  * The checklist's answer for a PR's facts: the code's fail when tests 1,
  * 7 and 8 or the owners decide one; otherwise a held pass's own reason, so a
  * pass waiting on a promotion is not judged twice; otherwise the
- * model's. The facts are a held pass's too: a ticket closed during the
+ * model's, or its pass at an earlier head where what it reads has the same
+ * digest: a merge from the base branch puts it the same question. A fail
+ * is never reused. The facts are a held pass's too: a ticket closed during the
  * promotion fails it in code. No edit to the description changes a
  * quoted file's text, so the model's test-7 fail is never editable.
  *
@@ -794,7 +838,7 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  * @param {Judge} judge
  * @returns {Promise<Answer>}
  */
-export const checklist = async ({ pull, files, tickets, others, owners, prose, foreign, red = [], redCi = null, constraintTexts, unattended, held = null, rules }, judge) => {
+export const checklist = async ({ pull, files, tickets, others, owners, prose, foreign, red = [], redCi = null, constraintTexts, unattended, held = null, rules, system = '', earlier = null, read = () => {} }, judge) => {
   const decide = (/** @type {boolean} */ unwatched) => decideInCode({ files, tickets, rules, others, owners, prose, foreign, red, redCi, unattended: unwatched });
   // The table is read only where a label's waiver changes the answer: a
   // read that fails then fails no review it could not change.
@@ -806,7 +850,12 @@ export const checklist = async ({ pull, files, tickets, others, owners, prose, f
   const left = constraintsLeft(files, tickets, rules);
   const constraints = left.length === 0 ? null : await constraintTexts(left);
   const found = tickets.filter(/** @returns {t is TicketRow} */ (t) => !('missing' in t));
-  const judged = await judge({ pull, files, tickets: found, ...(constraints === null ? {} : { constraints }) });
+  /** @type {Question} */
+  const question = { pull, files, tickets: found, ...(constraints === null ? {} : { constraints }) };
+  const digest = readDigest(question, system);
+  read(digest);
+  if (earlier !== null && earlier.read === digest) return { answer: 'pass', reason: earlier.reason, reused: earlier.at };
+  const judged = await judge(question);
   return judged.answer === 'fail' && judged.test === 7 ? { ...judged, editable: false } : judged;
 };
 
@@ -839,10 +888,9 @@ export const cliJudge = ({ skill, run, transcript, log, spent = () => {} }) => {
       const { error, pr: met } = limited;
       throw Object.assign(new Error(`no run started for #${pr}: #${met}'s run met the account's limit: ${messageOf(error)}`), { limit: /** @type {{ limit?: string }} */ (error).limit });
     }
-    const constraints = question.constraints !== undefined;
-    const system = `${skill}\n\n${constraints ? CONSTRAINTS_LEFT : DECIDED_IN_CODE}`;
-    const schema = constraints ? CONSTRAINT_ANSWER_SCHEMA : ANSWER_SCHEMA;
-    const ran = await run({ system, prompt: reviewPrompt(question), schema }, pr);
+    const request = judgeRequest(skill, question);
+    const { schema } = request;
+    const ran = await run(request, pr);
     /** @type {string | null} */
     let sessionId = null;
     /** @type {Usage | undefined} */
