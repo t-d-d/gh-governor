@@ -20,7 +20,7 @@
  * Unit-tested in `test/scripts/ready-work.test.ts`.
  */
 
-import { SUMMONERS, recentlyDispatched, waitLine } from '../../dispatch/webhook/fire.mjs';
+import { PICKUP_BY, SUMMONERS, recentlyDispatched, waitLine } from '../../dispatch/webhook/fire.mjs';
 
 /**
  * @typedef {object} IssueRow
@@ -296,25 +296,57 @@ export const mayPickUp = (status) => status.open && status.labels === 'ready' &&
 export const authorHasSay = (ticket) => SUMMONERS.has(String(ticket.association ?? 'NONE'));
 
 /**
- * The ready labels that do not count on a ticket, because no one with a say
- * in the repo added them. Anyone may open an issue on a public repo, and an
- * issue template's `labels:` field adds its labels whoever opens it, so a
- * template listing every ready label would make a stranger's issue ready.
- * Without triage access the author can add a label only that way, so a
- * ready label does not count when its latest `labeled` event is the
- * author's and the author has no say ({@link authorHasSay}). One with no
- * `labeled` event on such a ticket does not count either: who added it is
- * unknown, and the events can lag the label. Any label on a ticket whose
- * author has a say counts, as does one a person with triage access, or the
- * dispatcher's own release, added last.
+ * Whether pickup may start a ticket by who opened it: its author's
+ * association is one `by` lists, the repo's `pickup.by` (`byOf`,
+ * dispatch/pickup.mjs), `PICKUP_BY` where unset. An association not read is
+ * `NONE`. The selection (`planSchedule`, scripts/lib/dispatch-router.mjs)
+ * and the claim's second read (dispatch/launch-plan.mjs) ask this, before
+ * they read any label event.
  *
- * The claim's second read (dispatch/launch-plan.mjs) asks this, after
- * `mayPickUp`, so the label webhook, the sweep and a blocker's close all
- * pass through it.
+ * @param {{ association?: string }} ticket
+ * @param {readonly string[]} [by]
+ */
+export const authorPicked = (ticket, by = PICKUP_BY) => by.includes(String(ticket.association ?? 'NONE'));
+
+/**
+ * One label addition, from the ticket's events: the label, the login that
+ * added it, whether that login is a bot's, and whether governor's own App
+ * added it (`postedByApp`, dispatch/webhook/review-comment.mjs).
+ *
+ * @typedef {{ label: string, actor: string, bot?: boolean, ours?: boolean }} LabelAdd
+ */
+
+/**
+ * Whether a label add was a bot's: GitHub says so, or the login is one
+ * GitHub gives only to a bot, for a row whose type was not read.
+ *
+ * @param {LabelAdd} add
+ */
+const botAdd = (add) => add.bot === true || /\[bot\]$/i.test(add.actor);
+
+/**
+ * The ready labels that do not count on a ticket, because no one with a say
+ * in the repo decided it was ready. Anyone may open an issue on a public
+ * repo, and an issue template's `labels:` field adds its labels whoever
+ * opens it, so a template listing every ready label would make a stranger's
+ * issue ready. A labelling workflow (`github-actions[bot]`) or another App
+ * acts on rules, not on someone reading the ticket. So where the author has
+ * no say ({@link authorHasSay}), a ready label counts only when its latest
+ * `labeled` event was by a person other than the author, or by governor's
+ * own App, which puts back only the ready labels a failed launch took off.
+ * One with no `labeled` event does not count either: who added it is
+ * unknown, and the events can lag the label. Any label on a ticket whose
+ * author has a say counts.
+ *
+ * Pickup reads it only for a ticket whose author `pickup.by` lists
+ * ({@link authorPicked}), so under the default `by` it never decides. The
+ * selection and the claim's second read (dispatch/launch-plan.mjs) ask
+ * this, after `mayPickUp`, so the label webhook, the sweep and a blocker's
+ * close all pass through it.
  *
  * @param {{ author?: string, association?: string }} ticket
- * @param {ReadonlyArray<{ label: string, actor: string }>} adds The ticket's
- *   `labeled` events, oldest first.
+ * @param {ReadonlyArray<LabelAdd>} adds The ticket's `labeled` events,
+ *   oldest first.
  * @param {readonly string[]} ready The repo's ready labels.
  * @returns {string[]}
  */
@@ -323,9 +355,25 @@ export const uncountedReady = (ticket, adds, ready) => {
   const author = String(ticket.author ?? '').toLowerCase();
   return ready.filter((label) => {
     const last = adds.filter((a) => a.label === label).at(-1);
-    return last === undefined || author === '' || last.actor.toLowerCase() === author;
+    if (last === undefined) return true;
+    if (last.ours === true) return false;
+    return author === '' || botAdd(last) || last.actor.toLowerCase() === author;
   });
 };
+
+/**
+ * Who added each of `labels` last, from a ticket's `labeled` events, for
+ * the log and the ticket's comment: the login, or null where no event
+ * names the label, and whether it was a bot.
+ *
+ * @param {ReadonlyArray<LabelAdd>} adds Oldest first.
+ * @param {readonly string[]} labels
+ * @returns {Array<{ label: string, actor: string | null, bot: boolean }>}
+ */
+export const addedBy = (adds, labels) => labels.map((label) => {
+  const last = adds.filter((a) => a.label === label).at(-1);
+  return { label, actor: last?.actor ?? null, bot: last !== undefined && botAdd(last) };
+});
 
 /**
  * The marker on a not-planned comment that says governor took a ready label

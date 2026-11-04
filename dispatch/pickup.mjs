@@ -24,6 +24,7 @@
  */
 
 import { HOUR_MS } from './periodics.mjs';
+import { PICKUP_BY } from './webhook/fire.mjs';
 
 /**
  * The interval, in whole hours, for a file that sets none: the clock's own
@@ -57,6 +58,16 @@ export const SWEEP_SLACK_MS = 30 * 60 * 1000;
  * @param {{ pickup?: { sweepHours?: number } }} config
  */
 export const sweepHoursOf = (config) => config.pickup?.sweepHours ?? SWEEP_HOURS;
+
+/**
+ * Whose tickets pickup may start in a repo: the `author_association`
+ * values its file lists in `pickup.by`, or `PICKUP_BY`
+ * (dispatch/webhook/fire.mjs) where it lists none.
+ *
+ * @param {{ pickup?: { by?: readonly string[] } }} config
+ * @returns {readonly string[]}
+ */
+export const byOf = (config) => config.pickup?.by ?? PICKUP_BY;
 
 /**
  * Whether a repo whose last sweep was at `last` (null for none) is due a

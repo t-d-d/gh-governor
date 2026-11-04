@@ -20,7 +20,7 @@
 
 import { DISPATCH_WINDOW_MS, recentlyDispatched } from '../../dispatch/webhook/fire.mjs';
 import { promptFor, sessionName } from './dispatch-prompt.mjs';
-import { authorHasSay, byAge, mayPickUp, selectReadyWork, ticketStatus, uncountedReady, unreadableOf } from './ready-work.mjs';
+import { addedBy, authorHasSay, authorPicked, byAge, mayPickUp, selectReadyWork, ticketStatus, uncountedReady, unreadableOf } from './ready-work.mjs';
 
 /**
  * @typedef {{ issue?: number, repo: string, prompt: string, sessionName: string }} Dispatch
@@ -31,7 +31,7 @@ import { authorHasSay, byAge, mayPickUp, selectReadyWork, ticketStatus, uncounte
  *   ticket: (number: number) => Promise<import('./github-app.mjs').TicketRow>,
  *   blockers: (number: number) => Promise<import('./github-app.mjs').BlockerRow[]>,
  *   comments: (number: number, options?: { since?: string }) => Promise<import('./github-app.mjs').CommentRow[]>,
- *   labelAdds: (number: number) => Promise<Array<{ label: string, actor: string }>>,
+ *   labelAdds: (number: number) => Promise<import('./ready-work.mjs').LabelAdd[]>,
  * }} Reader
  *
  * @typedef {{ repo: string, issue: number, labels: string[], openBlockers?: number, wait?: import('./ready-work.mjs').Wait }} Seen
@@ -46,24 +46,43 @@ import { authorHasSay, byAge, mayPickUp, selectReadyWork, ticketStatus, uncounte
  *   A ready ticket held by a relative `Blocked until:` line, with its open
  *   blockers by its dependency summary where its read carries one.
  *
- * @typedef {{ repo: string, issue: number, labels: string[], author: string, association: string }} Outsider
- *   A ready ticket whose ready labels `labels` its outside author's issue
- *   template added (`uncountedReady`), so the selection skips it.
+ * @typedef {{ label: string, actor: string | null, bot: boolean }} AddedBy
+ *   Who added a ready label last: the login, null where no event names it,
+ *   and whether it was a bot.
  *
- * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, prompts?: Record<string, string | undefined> }} Source
+ * @typedef {{ repo: string, issue: number, labels: string[], author: string, association: string, addedBy: AddedBy[] }} Outsider
+ *   A ready ticket whose ready labels `labels` no person but its outside
+ *   author, or only a bot, added (`uncountedReady`), so the selection skips
+ *   it, with who added each.
+ *
+ * @typedef {{ repo: string, issue: number, association: string }} Stranger
+ *   A ready ticket whose author's association the repo's `pickup.by` does
+ *   not list (`authorPicked`), so the selection skips it.
+ *
+ * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, by?: readonly string[], prompts?: Record<string, string | undefined> }} Source
  *   A served repo's tickets: its reader, its config file's ready, claim and
- *   excluded labels, and its prompts.
+ *   excluded labels, whose tickets pickup starts (`byOf`,
+ *   dispatch/pickup.mjs; `PICKUP_BY` where unset), and its prompts.
  */
 
 /**
- * Why a ticket whose ready labels its outside author's template added is
- * skipped, for its info line: the selection's (dispatch/sweep.mjs,
+ * Why a ticket whose ready labels no person with a say added is skipped,
+ * for its warn line: the selection's (dispatch/sweep.mjs,
  * dispatch/unblocked-fire.mjs) and the claim's (dispatch/launch-plan.mjs).
  *
  * @param {{ labels: readonly string[], author: string, association: string }} outsider
  */
 export const outsiderReason = ({ labels, author, association }) =>
-  `ready labels ${JSON.stringify(labels)} were added by its ${association} author ${JSON.stringify(author)}, or by no one the events name: someone with triage access takes them off and puts them back to pick it up, since adding a label the ticket already carries records no event`;
+  `ready labels ${JSON.stringify(labels)} were added last by its ${association} author ${JSON.stringify(author)}, by a bot, or by no one the events name: someone with triage access takes them off and puts them back to pick it up, since adding a label the ticket already carries records no event`;
+
+/**
+ * Why a ticket whose author `pickup.by` does not list is skipped, for its
+ * info line.
+ *
+ * @param {{ association: string }} stranger
+ */
+export const strangerReason = ({ association }) =>
+  `opened by a ${association} author, and the repo's pickup.by does not list ${association}, so pickup does not start it`;
 
 /**
  * The schedule's plan: eligible issues oldest first, up to the cap,
@@ -107,14 +126,19 @@ export const outsiderReason = ({ labels, author, association }) =>
  * the summary and, where that counts none, by the `blocked_by` rows it
  * reads, so the plan does not read them too.
  *
- * With `outsiders`, each ticket the selection skips because its ready
- * labels came from its outside author's issue template is recorded there,
- * so the turn can log it. Such a ticket takes no place under the cap.
+ * With `strangers`, each ready ticket whose author's association the
+ * source's `by` does not list is recorded there, so the turn can log it.
+ * Such a ticket takes no place under the cap, and nothing more is read of it.
  *
- * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[], outsiders?: Outsider[] }} args
+ * With `outsiders`, each ticket the selection skips because no person with
+ * a say added its ready labels, only its outside author, an issue template
+ * or a bot, is recorded there with who added each, so the turn can log it
+ * and say so on the ticket. Such a ticket takes no place under the cap.
+ *
+ * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[], outsiders?: Outsider[], strangers?: Stranger[] }} args
  * @returns {Promise<Dispatch[]>}
  */
-export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut, unreadable, relative, outsiders }) => {
+export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut, unreadable, relative, outsiders, strangers }) => {
   /** @type {Set<string>} */
   const failed = new Set();
   /**
@@ -182,7 +206,12 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
       }
     }
     const ready = selectReadyWork(rows, { cap: Number.MAX_SAFE_INTEGER, labels, now });
-    tagged.push(...ready.map((row) => ({ ...row, source })));
+    // Pickup starts only tickets whose author the repo's `by` lists. Such a
+    // ticket is judged on its row alone, so it reads nothing more.
+    for (const row of ready) {
+      if (authorPicked(row, source.by)) tagged.push({ ...row, source });
+      else strangers?.push({ repo: source.repo, issue: row.number, association: row.association ?? 'NONE' });
+    }
   }
   const candidates = tagged.sort(byAge);
   // Only the window's comments: a marker older than the window would not
@@ -206,15 +235,16 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
       if (record !== undefined && blocking !== null) record.openBlockers = blocking.filter((b) => b.state === 'open').length;
       if (blocking === null || !mayPickUp(ticketStatus(candidate, { labels, now, blockers: blocking }))) return false;
     }
-    // Ready labels an outsider's issue template added do not count, so such
-    // a ticket takes no place under the cap (`uncountedReady`). The claim's
-    // second read asks again (dispatch/launch-plan.mjs).
+    // Ready labels an outsider's issue template or a bot added do not
+    // count, so such a ticket takes no place under the cap
+    // (`uncountedReady`). The claim's second read asks again
+    // (dispatch/launch-plan.mjs).
     if (!authorHasSay(candidate)) {
       const adds = await read(repo, () => reader.labelAdds(candidate.number));
       if (adds === null) return false;
       const uncounted = uncountedReady(candidate, adds, labels.ready);
       if (uncounted.length > 0) {
-        outsiders?.push({ repo, issue: candidate.number, labels: uncounted, author: candidate.author ?? '', association: candidate.association ?? 'NONE' });
+        outsiders?.push({ repo, issue: candidate.number, labels: uncounted, author: candidate.author ?? '', association: candidate.association ?? 'NONE', addedBy: addedBy(adds, uncounted) });
         return false;
       }
     }

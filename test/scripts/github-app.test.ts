@@ -760,25 +760,30 @@ describe('githubReader', () => {
     assert.equal((await reader.ticket(13)).association, 'NONE');
   });
 
-  test('labelAdds pages through an issue\'s events for its label additions, each with the login that added it', async () => {
+  test('labelAdds pages through an issue\'s events for its label additions, each with the login that added it, whether a bot did, and whether the reader\'s own App did', async () => {
     const { fetch, calls } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues/10/events': (_init: RequestInit | undefined, url: string) => {
         const page = Number(new URL(url).searchParams.get('page'));
         return page === 1
-          ? Array.from({ length: 100 }, () => ({ event: 'unlabeled', label: { name: 'mode: afk' }, created_at: 'a', actor: { login: 'p' } }))
+          ? Array.from({ length: 100 }, () => ({ event: 'unlabeled', label: { name: 'mode: afk' }, created_at: 'a', actor: { login: 'p', type: 'User' } }))
           : [
-            { event: 'labeled', label: { name: 'mode: afk' }, created_at: 'b', actor: { login: 'stranger' } },
-            { event: 'labeled', label: { name: 'workflow: ready for development' }, created_at: 'c', actor: { login: 'governor-app[bot]' } },
-            { event: 'closed', created_at: 'd', actor: { login: 'p' } },
+            { event: 'labeled', label: { name: 'mode: afk' }, created_at: 'b', actor: { login: 'stranger', type: 'User' }, performed_via_github_app: null },
+            { event: 'labeled', label: { name: 'workflow: ready for development' }, created_at: 'c', actor: { login: 'governor-app[bot]', type: 'Bot' }, performed_via_github_app: { id: 5075844 } },
+            { event: 'labeled', label: { name: 'mode: afk' }, created_at: 'd', actor: { login: 'github-actions[bot]', type: 'Bot' }, performed_via_github_app: { id: 15368 } },
+            { event: 'closed', created_at: 'e', actor: { login: 'p' } },
           ];
       },
     });
-    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', appId: 5075844, fetch });
     assert.deepEqual(await reader.labelAdds(10), [
-      { label: 'mode: afk', actor: 'stranger' },
-      { label: 'workflow: ready for development', actor: 'governor-app[bot]' },
+      { label: 'mode: afk', actor: 'stranger', bot: false, ours: false },
+      { label: 'workflow: ready for development', actor: 'governor-app[bot]', bot: true, ours: true },
+      { label: 'mode: afk', actor: 'github-actions[bot]', bot: true, ours: false },
     ]);
     assert.equal(calls.length, 2);
+    // A reader that does not know its App owns no add.
+    const blind = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.equal((await blind.labelAdds(10)).some((r) => r.ours), false);
   });
 
   // A fire naming issues reads each on its own and orders them oldest first.

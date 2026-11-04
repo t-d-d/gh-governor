@@ -8,8 +8,10 @@
  * plan's `done`, and the stranded-claim lines.
  */
 
-import { authorHasSay, mayPickUp, ticketStatus, uncountedReady, unreadableOf } from '../scripts/lib/ready-work.mjs';
-import { outsiderReason } from '../scripts/lib/dispatch-router.mjs';
+import { addedBy, authorHasSay, authorPicked, mayPickUp, ticketStatus, uncountedReady, unreadableOf } from '../scripts/lib/ready-work.mjs';
+import { outsiderReason, strangerReason } from '../scripts/lib/dispatch-router.mjs';
+import { byOf } from './pickup.mjs';
+import { reportUncounted } from './uncounted.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { reportUnreadable } from './waits.mjs';
 import { OUTPUT_TAIL } from './deliveries.mjs';
@@ -171,7 +173,8 @@ export const launchPlan = async (plan, ctx, started) => {
    * `Blocked until:` line since (`ticketStatus`, `mayPickUp`) is skipped,
    * untouched, since its session would proceed on the prompt's claim line
    * over someone else's work, or on work that waits on another. So is one
-   * whose ready labels its outside author's issue template added
+   * whose author the repo's `pickup.by` does not list (`authorPicked`),
+   * and one whose ready labels no person with a say added
    * (`uncountedReady`), whose body is a stranger's. A claim that fails is
    * released, and starts nothing.
    *
@@ -180,7 +183,8 @@ export const launchPlan = async (plan, ctx, started) => {
    */
   const claim = async (ticket) => {
     const { repo, issue } = ticket;
-    const { labels } = configOf(repo);
+    const config = configOf(repo);
+    const { labels } = config;
     try {
       const github = await readerFor(repo);
       const read = await github.ticket(issue);
@@ -203,12 +207,22 @@ export const launchPlan = async (plan, ctx, started) => {
         if (unread !== undefined) await reportUnreadable({ reader: github, repo, issue, value: unread, log });
         return 'taken';
       }
-      // A ready label counts only where someone with a say in the repo
-      // added it: a stranger's issue template can add every ready label.
+      // Pickup starts only tickets whose author the repo's `by` lists.
+      const association = read.association ?? 'NONE';
+      if (!authorPicked(read, byOf(config))) {
+        log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: strangerReason({ association }) });
+        return 'taken';
+      }
+      // A ready label counts only where a person with a say in the repo
+      // added it: a stranger's issue template or a labelling bot can add
+      // every ready label.
       if (!authorHasSay(read)) {
-        const uncounted = uncountedReady(read, await github.labelAdds(issue), labels.ready);
+        const adds = await github.labelAdds(issue);
+        const uncounted = uncountedReady(read, adds, labels.ready);
         if (uncounted.length > 0) {
-          log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: outsiderReason({ labels: uncounted, author: read.author ?? '', association: read.association ?? 'NONE' }) });
+          const outsider = { repo, issue, labels: uncounted, author: read.author ?? '', association, addedBy: addedBy(adds, uncounted) };
+          log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: outsiderReason(outsider) });
+          await reportUncounted({ reader: github, outsider, log });
           return 'taken';
         }
       }

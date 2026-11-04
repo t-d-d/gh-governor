@@ -259,35 +259,82 @@ describe('a targeted schedule fire', () => {
  */
 describe('planSchedule: ready labels an outsider\'s issue template added', () => {
   const stranger = { author: 'stranger', association: 'NONE' };
-  const template = FACTORY_LABELS.ready.map((label) => ({ label, actor: 'stranger' }));
+  const template = FACTORY_LABELS.ready.map((label) => ({ label, actor: 'stranger', bot: false, ours: false }));
+  /** A repo that builds strangers' tickets, so the ready-label rule decides. */
+  const WIDE = ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'];
   type Outsiders = NonNullable<Parameters<typeof planSchedule>[0]['outsiders']>;
 
-  test('such a ticket takes no place under the cap, and is recorded for the turn to log', async () => {
+  test('such a ticket takes no place under the cap, and is recorded for the turn to log, with who added each label', async () => {
     const { reader, asked } = fakeReader({
       issues: [issue(1, READY, stranger), issue(2, READY, stranger), issue(3, READY), issue(4, READY)],
-      adds: { 1: template, 2: template },
+      adds: { 1: template, 2: [template[0]!, { label: FACTORY_LABELS.ready[1]!, actor: 'github-actions[bot]', bot: true, ours: false }] },
     });
     const outsiders: Outsiders = [];
-    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, outsiders });
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS, by: WIDE }], cap: 2, now: NOW, outsiders });
     assert.deepEqual(plan.map((d) => d.issue), [3, 4]);
-    assert.deepEqual(outsiders, [1, 2].map((n) => ({ repo: REPO, issue: n, labels: FACTORY_LABELS.ready, author: 'stranger', association: 'NONE' })));
+    assert.deepEqual(outsiders, [
+      { repo: REPO, issue: 1, labels: FACTORY_LABELS.ready, author: 'stranger', association: 'NONE', addedBy: FACTORY_LABELS.ready.map((label) => ({ label, actor: 'stranger', bot: false })) },
+      { repo: REPO, issue: 2, labels: FACTORY_LABELS.ready, author: 'stranger', association: 'NONE', addedBy: [{ label: FACTORY_LABELS.ready[0], actor: 'stranger', bot: false }, { label: FACTORY_LABELS.ready[1], actor: 'github-actions[bot]', bot: true }] },
+    ]);
     assert.ok(!asked.includes('labelAdds 3') && !asked.includes('labelAdds 4'), 'a member\'s ticket reads no events');
+  });
+
+  test('a ready label no event names is recorded with no one as its adder', async () => {
+    const { reader } = fakeReader({ issues: [issue(1, READY, stranger)], adds: { 1: [] } });
+    const outsiders: Outsiders = [];
+    await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS, by: WIDE }], cap: 2, now: NOW, outsiders });
+    assert.deepEqual(outsiders[0]?.addedBy, FACTORY_LABELS.ready.map((label) => ({ label, actor: null, bot: false })));
   });
 
   test('once someone with triage access adds the labels again, it is planned', async () => {
     const { reader } = fakeReader({
       issues: [issue(1, READY, stranger)],
-      adds: { 1: [...template, ...FACTORY_LABELS.ready.map((label) => ({ label, actor: 'triager' }))] },
+      adds: { 1: [...template, ...FACTORY_LABELS.ready.map((label) => ({ label, actor: 'triager', bot: false, ours: false }))] },
     });
-    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW });
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS, by: WIDE }], cap: 2, now: NOW });
     assert.deepEqual(plan.map((d) => d.issue), [1]);
   });
 
   test('a named issue is judged the same way', async () => {
     const { reader } = fakeReader({ issues: [issue(1, READY, stranger)], adds: { 1: template } });
     const outsiders: Outsiders = [];
-    assert.deepEqual(await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, only: [1], outsiders }), []);
+    assert.deepEqual(await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS, by: WIDE }], cap: 2, now: NOW, only: [1], outsiders }), []);
     assert.equal(outsiders.length, 1);
+  });
+});
+
+/**
+ * Pickup starts a ticket only where its author's association is one its
+ * repo's `pickup.by` lists: OWNER, MEMBER and COLLABORATOR by default.
+ */
+describe('planSchedule: who opened the ticket', () => {
+  type Strangers = NonNullable<Parameters<typeof planSchedule>[0]['strangers']>;
+  const by = (association: string) => ({ author: 'someone', association });
+
+  test('by default a ticket opened by anyone but an owner, member or collaborator takes no place under the cap, and reads nothing', async () => {
+    const triaged = FACTORY_LABELS.ready.map((label) => ({ label, actor: 'triager', bot: false, ours: false }));
+    const { reader, asked } = fakeReader({
+      issues: [issue(1, READY, by('NONE')), issue(2, READY, by('CONTRIBUTOR')), issue(3, READY, by('OWNER')), issue(4, READY, by('COLLABORATOR')), issue(5, READY)],
+      adds: { 1: triaged, 2: triaged },
+    });
+    const strangers: Strangers = [];
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 3, now: NOW, strangers });
+    assert.deepEqual(plan.map((d) => d.issue), [3, 4, 5]);
+    assert.deepEqual(strangers, [{ repo: REPO, issue: 1, association: 'NONE' }, { repo: REPO, issue: 2, association: 'CONTRIBUTOR' }]);
+    assert.ok(!asked.some((a) => / [12]$/.test(a)), JSON.stringify(asked));
+  });
+
+  test('a repo\'s by narrows it', async () => {
+    const { reader } = fakeReader({ issues: [issue(1, READY, by('MEMBER')), issue(2, READY, by('OWNER'))] });
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS, by: ['OWNER'] }], cap: 3, now: NOW });
+    assert.deepEqual(plan.map((d) => d.issue), [2]);
+  });
+
+  test('a named issue is judged the same way', async () => {
+    const { reader } = fakeReader({ issues: [issue(1, READY, by('NONE'))] });
+    const strangers: Strangers = [];
+    assert.deepEqual(await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, only: [1], strangers }), []);
+    assert.deepEqual(strangers, [{ repo: REPO, issue: 1, association: 'NONE' }]);
   });
 });
 

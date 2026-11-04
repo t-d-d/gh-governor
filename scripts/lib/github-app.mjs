@@ -986,16 +986,23 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       })),
 
     /**
-     * An issue's label additions, oldest first, from its events: the label
-     * and the login that added it. The claim reads who added a ready label
-     * (`uncountedReady`, scripts/lib/ready-work.mjs).
+     * An issue's label additions, oldest first, from its events: the label,
+     * the login that added it, whether a bot did, and whether `appId`'s App
+     * did as its bot (`postedByApp`); a reader without `appId` owns none.
+     * Pickup reads who added a ready label (`uncountedReady`,
+     * scripts/lib/ready-work.mjs).
      *
      * @param {number} number
-     * @returns {Promise<Array<{ label: string, actor: string }>>}
+     * @returns {Promise<Array<{ label: string, actor: string, bot: boolean, ours: boolean }>>}
      */
     labelAdds: async (number) =>
       (await labelEvents(number, 'labeled'))
-        .map((row) => ({ label: row.label.name, actor: String(row.actor?.login ?? '') })),
+        .map((row) => ({
+          label: row.label.name,
+          actor: String(row.actor?.login ?? ''),
+          bot: row.actor?.type === 'Bot',
+          ours: postedByApp({ user: row.actor, performed_via_github_app: row.performed_via_github_app }, appId),
+        })),
 
     /**
      * An issue's label removals, oldest first, from its events: the label,
