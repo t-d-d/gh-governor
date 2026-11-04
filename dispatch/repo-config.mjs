@@ -32,7 +32,7 @@
 import { z } from 'zod';
 import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, SUMMONERS, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
-import { BOT, START, TRUST_VALUES, taskKey as taskKeyOf, taskSet } from './trust.mjs';
+import { BOT, START, TRUST_VALUES, autoOf, taskKey as taskKeyOf, taskSet } from './trust.mjs';
 
 /** Where the file lives, on the repo's default branch. */
 export const CONFIG_PATH = '.github/dispatch.json';
@@ -362,12 +362,16 @@ const hookSchema = z.strictObject({
  */
 export const TICKET_REVIEW_BY = Object.freeze([...SUMMONERS]);
 
+/** A ticket review's conclusions, in the words GitHub uses for a check run. */
+const CONCLUSION_NAMES = /** @type {const} */ (['success', 'failure', 'neutral']);
+
 /**
  * One ticket review (dispatch/ticket-review.mjs): its `name`, which goes
  * into every comment and marker it writes, and its selector, `when`. Only
  * `on: "opened"` is built; any other event fails loudly rather than be
- * read as something else. No other key yet: a file written for a later
- * governor fails here.
+ * read as something else. `conclusions` names the labels each conclusion
+ * adds, which the code applies (dispatch/ticket-review.mjs). No other key
+ * yet: a file written for a later governor fails here.
  */
 const ticketReviewSchema = z.strictObject({
   name: z.string().regex(HOOK_NAME, 'lower-case letters, digits and hyphens: it goes into a marker that can never be migrated').meta({ description: 'The review\'s name: lower-case letters, digits and hyphens, unique in the list. It goes into every comment and marker the review writes, so renaming a review starts its rounds afresh.' }),
@@ -377,6 +381,11 @@ const ticketReviewSchema = z.strictObject({
     exclude: z.array(label).optional().meta({ description: 'Labels the ticket must not carry, any of them. Default none.' }),
     by: z.array(z.enum(ASSOCIATIONS)).min(1).optional().meta({ description: 'Who may have opened the ticket, as GitHub\'s `author_association` values. Default `OWNER`, `MEMBER` and `COLLABORATOR`. The repo\'s `trust.review` bounds every review.' }),
   }).meta({ description: 'The review\'s selector: `on`, the event, and the labels and authors a ticket must meet.' }),
+  conclusions: z.strictObject({
+    success: z.array(label).default([]).meta({ description: 'The labels a `success` adds: the ticket passes. Default none.' }),
+    failure: z.array(label).default([]).meta({ description: 'The labels a `failure` adds: the ticket waits for an edit by whoever filed it. Default none.' }),
+    neutral: z.array(label).default([]).meta({ description: 'The labels a `neutral` adds: the ticket waits for a person. Default none.' }),
+  }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by` reaches beyond `trust.auto` names no ready label.' }),
 });
 
 /**
@@ -441,12 +450,44 @@ export const configSchema = z.strictObject({
         seen.add(name);
       }
     })
-    .meta({ description: 'The ticket reviews governor runs, in file order, each with its `name` and its selector `when`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person. At least one when the `ticketReviews` switch is on.' }),
+    .meta({ description: 'The ticket reviews governor runs, in file order, each with its `name`, its selector `when`, and the labels each of its `conclusions` adds. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion\'s labels. At least one when the `ticketReviews` switch is on.' }),
 }).refine((c) => c.features.prReview !== true || c.review !== undefined, { message: 'prReview is on, so the file needs a review section with its checklist', path: ['review'] })
   .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue', path: ['heartbeat'] })
   .refine((c) => c.features.periodics !== true || c.periodics.length > 0, { message: 'periodics is on, so the file lists at least one periodic', path: ['periodics'] })
   .refine((c) => c.features.hooks !== true || c.hooks.length > 0, { message: 'hooks is on, so the file lists at least one hook', path: ['hooks'] })
   .refine((c) => c.features.ticketReviews !== true || (c.ticketReviews?.length ?? 0) > 0, { message: 'ticketReviews is on, so the file lists at least one ticket review', path: ['ticketReviews'] })
+  // A conclusion's labels: each under one conclusion of one review, so no
+  // run removes a label another conclusion or review just added, and none
+  // that readies a ticket on a review governor runs for an author outside
+  // trust.auto: a stranger's text would set work going by itself.
+  .superRefine((c, ctx) => {
+    /** @type {Map<string, string>} Each label, lower-cased as GitHub matches it, and the review that names it. */
+    const owner = new Map();
+    const auto = autoOf(c);
+    const readyKeys = new Set(c.labels.ready.map((l) => l.toLowerCase()));
+    (c.ticketReviews ?? []).forEach(({ name, when, conclusions }, i) => {
+      /** @type {Map<string, string>} Each label, lower-cased as GitHub matches it, and the conclusion of this review that names it. */
+      const under = new Map();
+      for (const conclusion of CONCLUSION_NAMES) {
+        for (const l of conclusions[conclusion]) {
+          const path = ['ticketReviews', i, 'conclusions', conclusion];
+          const key = l.toLowerCase();
+          const first = under.get(key);
+          if (first !== undefined && first !== conclusion) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under both ${first} and ${conclusion}: each run would add it and take it off. Name it under one conclusion` });
+          else if (first === undefined) under.set(key, conclusion);
+          const other = owner.get(key);
+          if (other !== undefined && other !== name) ctx.addIssue({ code: 'custom', path, message: `the ${other} and ${name} reviews both name "${l}" in their conclusions: one review's run would take off a label the other added. Give each review labels of its own` });
+          else if (other === undefined) owner.set(key, name);
+        }
+      }
+      const beyond = (when.by ?? TICKET_REVIEW_BY).filter((a) => !auto.includes(a));
+      if (beyond.length === 0) return;
+      const ready = CONCLUSION_NAMES.flatMap((conclusion) => conclusions[conclusion].filter((l) => readyKeys.has(l.toLowerCase())));
+      for (const l of new Set(ready)) {
+        ctx.addIssue({ code: 'custom', path: ['ticketReviews', i, 'conclusions'], message: `the ${name} review names the ready label "${l}", and its by lets in ${beyond.join(', ')}, which trust.auto does not: a ticket from them could be readied with no person choosing it. Narrow the review's by to trust.auto, or give it labels that ready nothing` });
+      }
+    });
+  })
   // pickup.by is retired and read as trust.task, so a file may set one.
   .refine((c) => c.pickup?.by === undefined || c.trust?.task === undefined, { message: 'sets both pickup.by and trust.task: pickup.by is the older name of trust.task, so keep trust.task and remove pickup.by', path: ['pickup', 'by'] })
   // The chain auto ⊆ task ⊆ relay ⊆ review, for each two lists the file sets, BOT
@@ -497,7 +538,8 @@ export const configSchema = z.strictObject({
  * @typedef {{ start?: string[], auto?: string[], task?: string[], relay?: string[], review?: string[] }} Trust
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
- * @typedef {{ name: string, when: { on: 'opened', labels?: string[], exclude?: string[], by?: string[] } }} TicketReview One ticket review and its selector.
+ * @typedef {{ success: string[], failure: string[], neutral: string[] }} Conclusions The labels each conclusion of a ticket review adds.
+ * @typedef {{ name: string, when: { on: 'opened', labels?: string[], exclude?: string[], by?: string[] }, conclusions: Conclusions }} TicketReview One ticket review, its selector and its conclusions' labels.
  * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, periodics: Periodic[], hooks: Hook[], ticketReviews?: TicketReview[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the

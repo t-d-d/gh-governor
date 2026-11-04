@@ -11,6 +11,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { CONFIG_PATH, configSchema, readConfig } from '../dispatch/repo-config.mjs';
 import { bodyDigest } from '../dispatch/pr-body.mjs';
 import { exitCodeFor } from '../dispatch/cli.mjs';
@@ -20,10 +21,14 @@ import {
   DEFAULT_TICKET_CHECKLIST, LINKED_BODY_LIMIT, LINKED_LIMIT, OPEN_LISTED, TICKET_ANSWER_SCHEMA, TICKET_FRAME,
   LOOP_LIMIT, loopMarker, reviewTicket, ticketMarker,
 } from '../dispatch/ticket-review.mjs';
+import { check } from '../checker/config-check.mjs';
+import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { factoryFile } from './helpers/factory.ts';
+import { importClosure } from './helpers/imports.ts';
 import { APP_ID } from './helpers/dispatch-review-fixtures.ts';
 
 const REPO = 'acme/factory';
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BODY = '## Problem\n\nThe retry budget is spent twice.\n\n## Done when\n\n- The budget is spent once.\n\nParent PRD: #390';
 const KEY = bodyDigest(BODY);
 
@@ -47,7 +52,11 @@ const cliError = (text: string, sessionId = 'sess-x') => JSON.stringify({ type: 
 const PASSES: Conclusion = { conclusion: 'success', text: 'It states the problem and what done looks like.' };
 const GAPS: Conclusion = { conclusion: 'failure', text: 'No problem is stated, and nothing says when it is done.' };
 
-type Review = { name: string, when: { on: 'opened', labels?: string[], exclude?: string[], by?: string[] } };
+type Conclusions = { success?: string[], failure?: string[], neutral?: string[] };
+type Review = { name: string, when: { on: 'opened', labels?: string[], exclude?: string[], by?: string[] }, conclusions?: Conclusions };
+
+/** The labels each conclusion of `triage` adds in the label tests. */
+const TRIAGE: Conclusions = { success: ['triaged'], failure: ['triage: needs edit'], neutral: ['triage: needs a person'] };
 
 const harness = (over: {
   ticket?: Partial<Ticket>,
@@ -64,6 +73,12 @@ const harness = (over: {
   waits?: number,
   /** Issues GitHub answers 410 for: deleted. */
   gone?: number[],
+  /** The labels the repo has; default every label but the conclusions' own. */
+  repoLabels?: string[],
+  /** Throws for a label write GitHub refuses. */
+  labelWrite?: (op: string, label: string) => void,
+  /** The thread grows with each comment posted, as GitHub's does. */
+  live?: boolean,
 } = {}) => {
   const comments: Array<{ issue: number, body: string }> = [];
   const runs: Array<{ system: string, prompt: string, schema: unknown, replace?: boolean }> = [];
@@ -72,18 +87,48 @@ const harness = (over: {
   const openReads: number[] = [];
   let threadReads = 0;
   const answers = over.answers ?? [PASSES];
+  /** Every write to the ticket, in order: label removes, creates, adds and comments. */
+  const ops: string[] = [];
+  /** The ticket's labels and body as GitHub holds them now. */
+  const live = { labels: [...ticketRow(over.ticket).labels], body: ticketRow(over.ticket).body };
+  const repoLabels = new Set(over.repoLabels ?? ['type: bug', 'type: enhancement', 'mode: afk']);
+  const thread: Thread[] = [...(over.thread ?? [])];
   const reader = {
     ticket: async (n: number) => {
       if (over.gone?.includes(n)) throw Object.assign(new Error(`GET /issues/${n} failed: 410`), { status: 410 });
-      if (n === 501) return ticketRow(over.ticket);
+      if (n === 501) return ticketRow({ ...over.ticket, labels: [...live.labels], body: live.body });
       const row = over.issues?.[n];
       if (row === undefined || row === null) throw Object.assign(new Error(`GET /issues/${n} failed: 404`), { status: 404 });
       return ticketRow({ number: n, title: `Issue ${n}`, body: `Body of ${n}.`, ...row });
     },
     parentIssue: async () => (over.parent === undefined || over.parent === null ? null : { repo: REPO, ...ticketRow({ number: 390, title: 'The PRD', body: 'Non-goals: none.' }), ...over.parent }),
     openIssues: async (max: number) => { openReads.push(max); return over.open ?? [{ number: 501, title: 'Spend the retry budget once' }, { number: 502, title: 'Another' }]; },
-    allComments: async () => { threadReads += 1; return over.thread ?? []; },
-    comment: async (issue: number, body: string) => { if (over.comment) await over.comment(body); comments.push({ issue, body }); },
+    allComments: async () => { threadReads += 1; return over.live === true ? [...thread] : over.thread ?? []; },
+    comment: async (issue: number, body: string) => {
+      if (over.comment) await over.comment(body);
+      comments.push({ issue, body });
+      ops.push(`comment ${/review: ([^.]+)\./.exec(body)?.[1] ?? '?'}`);
+      thread.push({ id: thread.length + 100, body, created_at: '2026-11-04T00:00:00Z', ours: true });
+    },
+    ensureLabel: async (name: string) => {
+      over.labelWrite?.('ensure', name);
+      if (!repoLabels.has(name)) { repoLabels.add(name); ops.push(`create ${name}`); }
+    },
+    addLabels: async (issue: number, labels: string[]) => {
+      for (const label of labels) over.labelWrite?.('add', label);
+      assert.equal(issue, 501);
+      for (const label of labels) {
+        assert.ok(repoLabels.has(label), `${label} was ensured before it was added`);
+        if (!live.labels.includes(label)) live.labels.push(label);
+      }
+      ops.push(`add ${labels.join(', ')}`);
+    },
+    removeLabel: async (issue: number, label: string) => {
+      over.labelWrite?.('remove', label);
+      assert.equal(issue, 501);
+      live.labels = live.labels.filter((l) => l !== label);
+      ops.push(`remove ${label}`);
+    },
   };
   const config = {
     ticketReviews: over.reviews ?? [{ name: 'triage', when: { on: 'opened' as const } }],
@@ -99,7 +144,9 @@ const harness = (over: {
   const transcript = async (t: { sessionId: string, key: string }) => { transcripts.push(t); return { key: t.key }; };
   const log = (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); };
   const review = () => reviewTicket({ repo: REPO, issue: 501, reader, config: config as never, run, transcript, log });
-  return { review, comments, runs, transcripts, logged, openReads, threadReads: () => threadReads };
+  /** A person or session edits the ticket's body, or its labels. */
+  const edit = (change: { body?: string, labels?: string[] }) => { if (change.body !== undefined) live.body = change.body; if (change.labels !== undefined) live.labels = [...change.labels]; };
+  return { review, comments, runs, transcripts, logged, openReads, threadReads: () => threadReads, ops, live, edit, reader };
 };
 
 /** A comment governor's App posted, carrying a marker. */
@@ -136,7 +183,8 @@ describe('the ticketReviews config', () => {
       ['by BOT', [{ name: 'triage', when: { on: 'opened', by: ['BOT'] } }]],
       ['by a stranger', [{ name: 'triage', when: { on: 'opened', by: ['STRANGER'] } }]],
       ['a later slice\'s key', [{ name: 'triage', when: { on: 'opened' }, checklist: 'x' }]],
-      ['conclusions', [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['ok'] } }]],
+      ['a conclusion GitHub does not use', [{ name: 'triage', when: { on: 'opened' }, conclusions: { passed: ['ok'] } }]],
+      ['a conclusion that is not a list', [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: 'ok' } }]],
       ['types', [{ name: 'triage', when: { on: 'opened' }, types: [] }]],
     ];
     for (const [why, list] of faults) assert.equal(file(list).ok, false, why);
@@ -156,6 +204,86 @@ describe('the ticketReviews config', () => {
 
   test('the schema is the zod schema\'s', () => {
     assert.ok(configSchema);
+  });
+
+  test('conclusions names the labels each conclusion adds, each none where unset', () => {
+    const read = file([{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'] } }]);
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.config.ticketReviews?.[0]?.conclusions, { success: ['triaged'], failure: [], neutral: [] });
+    const bare = file([{ name: 'triage', when: { on: 'opened' } }]);
+    assert.ok(bare.ok);
+    assert.deepEqual(bare.config.ticketReviews?.[0]?.conclusions, { success: [], failure: [], neutral: [] });
+  });
+});
+
+describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a config may name', () => {
+  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triaged'], claim: 'claimed' }, features: { ticketReviews: true } };
+  const text = (over: Record<string, unknown>) => JSON.stringify({ ...base, ...over });
+  const refused = async (over: Record<string, unknown>, ...words: RegExp[]) => {
+    const read = readConfig(text(over));
+    assert.equal(read.ok, false, 'governor\'s config read refuses it');
+    const fault = read.ok ? '' : read.fault;
+    for (const word of words) assert.match(fault, word);
+    const checked = await check({ read: async (path: string) => (path === CONFIG_PATH ? text(over) : null), paths: async () => [] } as never);
+    assert.equal(checked.errors.length, 1, 'the config check refuses it');
+    for (const word of words) assert.match(checked.errors[0]!, word);
+  };
+
+  test('one label under two conclusions of one review is refused, naming the review and the label', async () => {
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged', 'seen'], neutral: ['seen'] } }] }, /triage/, /"seen"/);
+  });
+
+  test('one label in the conclusions of two reviews is refused, naming both reviews and the label', async () => {
+    await refused({ ticketReviews: [
+      { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'], failure: ['looked at'] } },
+      { name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { neutral: ['looked at'] } },
+    ] }, /triage/, /community/, /"looked at"/);
+  });
+
+  test('a review whose by reaches beyond trust.auto and names a ready label in any conclusion is refused', async () => {
+    const trust = { auto: ['OWNER'], task: ['OWNER', 'MEMBER', 'COLLABORATOR'] };
+    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'COLLABORATOR'] }, conclusions: { success: ['triaged'] } }] }, /triage/, /"triaged"/, /COLLABORATOR/, /trust\.auto/);
+    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'COLLABORATOR'] }, conclusions: { neutral: ['mode: afk'] } }] }, /"mode: afk"/);
+    // The default by is owners, members and collaborators, past an auto of the owner alone.
+    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'] } }] }, /triage/, /MEMBER/);
+  });
+
+  test('a review open to outsiders reads trust.auto as narrowed, and an unset auto is the three with a say', async () => {
+    await refused({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE', 'CONTRIBUTOR'] }, conclusions: { success: ['triaged'] } }] }, /community/, /NONE, CONTRIBUTOR/);
+    // trust.relay narrows an unset auto as autoOf does.
+    await refused({ trust: { relay: ['OWNER', 'BOT'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'MEMBER'] }, conclusions: { success: ['triaged'] } }] }, /MEMBER/);
+  });
+
+  test('a review inside trust.auto may ready a ticket, and one beyond it may name labels that ready nothing', () => {
+    const ok = (over: Record<string, unknown>) => { const read = readConfig(text(over)); assert.ok(read.ok, JSON.stringify(read)); };
+    ok({ trust: { auto: ['OWNER'], task: ['OWNER', 'MEMBER', 'COLLABORATOR'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER'] }, conclusions: { success: ['triaged'] } }] });
+    ok({ ticketReviews: [
+      { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'], failure: ['triage: needs edit'] } },
+      { name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['community: reviewed'], failure: ['community: needs info'] } },
+    ] });
+  });
+
+  test('labels are compared as GitHub compares them, ignoring case', async () => {
+    // GitHub adds the repo's "mode: afk" for "MODE: AFK", so the outsider rule must see it as the ready label.
+    await refused({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['MODE: AFK'] } }] }, /community/, /"MODE: AFK"/);
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['Seen'], neutral: ['seen'] } }] }, /triage/, /"seen"/);
+    await refused({ ticketReviews: [
+      { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['Looked at'] } },
+      { name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { neutral: ['looked at'] } },
+    ] }, /triage/, /community/, /"looked at"/);
+  });
+
+  test('the outsider rule reads only trust.auto, not trust.task', () => {
+    // task wider than auto lets nobody new in: the rule is about what governor sets going by itself.
+    const read = readConfig(text({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR'], task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'], relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'], review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'] } }] }));
+    assert.ok(read.ok, JSON.stringify(read));
+  });
+
+  test('the factory\'s review names labels for its conclusions', () => {
+    const read = readConfig(factoryFile(CONFIG_PATH));
+    assert.ok(read.ok);
+    const [triage] = read.config.ticketReviews ?? [];
+    for (const conclusion of ['success', 'failure', 'neutral'] as const) assert.ok((triage?.conclusions[conclusion] ?? []).length > 0, conclusion);
   });
 });
 
@@ -534,6 +662,154 @@ describe('fitness: dispatcher-review.md, the loop guard stops a review that keep
   });
 });
 
+describe('fitness: dispatcher-review.md, a conclusion applies the labels the repo names', () => {
+  const triage = (when: Review['when'] = { on: 'opened' }): Review => ({ name: 'triage', when, conclusions: TRIAGE });
+
+  test('a run removes the labels the other two conclusions name, then adds its own, then posts its comment, and touches no other label', async () => {
+    const h = harness({ reviews: [triage()], ticket: { labels: ['type: bug', 'mode: afk', 'triage: needs edit', 'triage: needs a person', 'anything else'] }, repoLabels: ['type: bug', 'mode: afk', 'triaged', 'triage: needs edit', 'triage: needs a person', 'anything else'] });
+    const result = await h.review();
+    assert.equal(result.reviews[0]!.outcome, 'commented');
+    assert.deepEqual(h.ops, ['remove triage: needs edit', 'remove triage: needs a person', 'add triaged', 'comment passes']);
+    assert.deepEqual(h.live.labels, ['type: bug', 'mode: afk', 'anything else', 'triaged']);
+  });
+
+  test('a label the ticket lacks is not removed, and one it carries is not added again', async () => {
+    const h = harness({ reviews: [triage()], answers: [GAPS], ticket: { labels: ['type: bug', 'triage: needs edit'] }, repoLabels: ['type: bug', 'triage: needs edit'] });
+    await h.review();
+    assert.deepEqual(h.ops, ['comment waits for an edit']);
+  });
+
+  test('each conclusion adds its own labels', async () => {
+    for (const [answer, added] of [[PASSES, 'triaged'], [GAPS, 'triage: needs edit'], [{ conclusion: 'neutral', text: 'It builds a non-goal.' }, 'triage: needs a person']] as const) {
+      const h = harness({ reviews: [triage()], answers: [answer] });
+      await h.review();
+      assert.ok(h.live.labels.includes(added), `${answer.conclusion} adds ${added}`);
+    }
+  });
+
+  test('a ticket that fails, then passes after an edit, carries the success labels and none of the failure labels', async () => {
+    const h = harness({ reviews: [triage()], answers: [GAPS, PASSES], live: true });
+    await h.review();
+    assert.deepEqual(h.live.labels, ['type: bug', 'triage: needs edit']);
+    h.edit({ body: `${BODY}\n\nNow with what done looks like.` });
+    await h.review();
+    assert.deepEqual(h.live.labels, ['type: bug', 'triaged']);
+    assert.equal(h.runs.length, 2);
+  });
+
+  test('a label the repo lacks is created before it is added', async () => {
+    const h = harness({ reviews: [triage()], repoLabels: ['type: bug'] });
+    await h.review();
+    assert.deepEqual(h.ops, ['create triaged', 'add triaged', 'comment passes']);
+  });
+
+  test('a label the ticket carries in another case is the same label: it is removed by the name it carries, and not added again', async () => {
+    const h = harness({ reviews: [triage()], answers: [GAPS], ticket: { labels: ['type: bug', 'Triaged', 'Triage: Needs Edit'] }, repoLabels: ['type: bug', 'Triaged', 'Triage: Needs Edit'] });
+    await h.review();
+    assert.deepEqual(h.ops, ['remove Triaged', 'comment waits for an edit']);
+  });
+
+  test('a label governor creates carries a description GitHub accepts, at most 100 characters, whatever the review\'s name', async () => {
+    const descriptions: string[] = [];
+    const name = 'a'.repeat(64);
+    const h = harness({ reviews: [{ name, when: { on: 'opened' }, conclusions: TRIAGE }], repoLabels: ['type: bug'] });
+    const ensure = h.reader.ensureLabel;
+    h.reader.ensureLabel = async (label: string, description?: string) => { descriptions.push(String(description)); await ensure(label); };
+    await h.review();
+    assert.equal(descriptions.length, 1);
+    assert.ok(descriptions[0]!.length <= 100, `${descriptions[0]!.length} characters`);
+  });
+
+  test('a review that names no labels writes none', async () => {
+    const h = harness({ reviews: [{ name: 'triage', when: { on: 'opened' } }], answers: [GAPS] });
+    await h.review();
+    assert.deepEqual(h.ops, ['comment waits for an edit']);
+  });
+
+  test('a label already gone when it is removed counts as removed', async () => {
+    const h = harness({ reviews: [triage()], ticket: { labels: ['type: bug', 'triage: needs edit'] }, labelWrite: (op) => { if (op === 'remove') throw Object.assign(new Error('DELETE failed: 404'), { status: 404 }); } });
+    const result = await h.review();
+    assert.equal(result.reviews[0]!.outcome, 'commented');
+    assert.deepEqual(h.ops, ['create triaged', 'add triaged', 'comment passes']);
+  });
+
+  for (const refused of ['remove', 'ensure', 'add']) {
+    test(`a label ${refused} GitHub refuses posts no comment, logs at error, lets the other reviews run, exits 1, and the next edit runs the review again`, async () => {
+      let refuse = true;
+      const h = harness({
+        reviews: [triage(), { name: 'scope', when: { on: 'opened' } }],
+        ticket: { labels: ['type: bug', 'triage: needs edit'] },
+        repoLabels: ['type: bug', 'triage: needs edit'],
+        live: true,
+        labelWrite: (op) => { if (refuse && op === refused) throw Object.assign(new Error(`${op} failed: 403`), { status: 403 }); },
+      });
+      const result = await h.review();
+      assert.deepEqual(result.reviews.map((r) => [r.name, r.outcome]), [['triage', 'failed'], ['scope', 'commented']]);
+      assert.match(String(result.reviews[0]!.error), /403/);
+      assert.deepEqual(h.comments.map((c) => c.body.split(' review:')[0]), ['Scope']);
+      const line = h.logged.find((l) => l.event === 'dispatch-ticket-review' && l.review === 'triage');
+      assert.equal(line?.level, 'error');
+      assert.equal(exitCodeFor({ kind: 'ticketReview', reviews: result.reviews } as never), 1);
+      refuse = false;
+      h.edit({ body: `${BODY}\n\nEdited.` });
+      const again = await h.review();
+      assert.deepEqual(again.reviews.map((r) => [r.name, r.outcome]), [['triage', 'commented'], ['scope', 'commented']]);
+      assert.ok(h.live.labels.includes('triaged'));
+      assert.ok(!h.live.labels.includes('triage: needs edit'));
+    });
+  }
+
+  test('a refused write never leaves an earlier success label under a later failure unsaid', async () => {
+    const h = harness({ reviews: [triage()], answers: [GAPS], ticket: { labels: ['type: bug', 'triaged'] }, labelWrite: (op) => { if (op === 'remove') throw Object.assign(new Error('DELETE failed: 403'), { status: 403 }); } });
+    const result = await h.review();
+    assert.equal(result.reviews[0]!.outcome, 'failed');
+    assert.ok(h.live.labels.includes('triaged'));
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-ticket-review' && l.level === 'error' && /triaged/.test(String(l.error))));
+  });
+
+  test('the loop guard still comes after the review\'s comment, at the fifth failure in a row', async () => {
+    const thread = [1, 2, 3, 4].map((i) => posted('triage', 'failure', `${i}`.repeat(8), true, i));
+    const h = harness({ reviews: [triage()], answers: [GAPS], thread, ticket: { labels: ['type: bug', 'triage: needs edit'] }, repoLabels: ['type: bug', 'triage: needs edit'] });
+    await h.review();
+    assert.deepEqual(h.ops, ['comment waits for an edit', 'comment stopped on this ticket after 5 failures in a row']);
+    const fresh = harness({ reviews: [triage()], answers: [GAPS], thread, ticket: { labels: ['type: bug', 'triaged'] } });
+    await fresh.review();
+    assert.deepEqual(fresh.ops, ['remove triaged', 'create triage: needs edit', 'add triage: needs edit', 'comment waits for an edit', 'comment stopped on this ticket after 5 failures in a row']);
+  });
+
+  test('a ready label from the review\'s success gates pickup: the next sweep selects a ticket the review passed, and not after a later failure', async () => {
+    const LABELS = { ready: ['mode: afk', 'triaged'], claim: 'claimed', exclude: ['type: prd'] };
+    const h = harness({ reviews: [triage()], answers: [PASSES, GAPS], ticket: { labels: ['type: bug', 'mode: afk'] }, live: true });
+    const sweep = () => planSchedule({
+      sources: [{
+        repo: REPO,
+        labels: LABELS,
+        reader: {
+          readyIssues: async () => [{ number: 501, title: 'Spend the retry budget once', state: 'open', created_at: '2026-10-01T00:00:00Z', labels: [...h.live.labels], association: 'MEMBER' }],
+          blockers: async () => [],
+          blocking: async () => [],
+          comments: async () => [],
+        },
+      }],
+      cap: 1,
+      now: Date.parse('2026-11-04T12:00:00Z'),
+    } as never);
+    assert.deepEqual(await sweep(), [], 'not ready before the review has passed it');
+    const passed = await h.review();
+    assert.deepEqual(Object.keys(passed), ['reviews'], 'the review queues no pickup fire');
+    assert.deepEqual((await sweep()).map((d) => d.issue), [501]);
+    h.edit({ body: `${BODY}\n\nEdited.` });
+    await h.review();
+    assert.deepEqual(await sweep(), []);
+  });
+
+  test('the ticket review shares no code with pickup', () => {
+    const closure = [...importClosure(ROOT, 'dispatch/ticket-review.mjs')];
+    const pickup = ['scripts/lib/ready-work.mjs', 'scripts/lib/dispatch-router.mjs', 'dispatch/pickup.mjs', 'dispatch/launch-plan.mjs'];
+    assert.deepEqual(closure.filter((path) => pickup.includes(path)), []);
+  });
+});
+
 describe('reviewTicket: what it logs and keeps', () => {
   test('each run logs dispatch-ticket-review with the repo, issue, review, conclusion and usage', async () => {
     const h = harness();
@@ -567,6 +843,7 @@ describe('run: a ticketReview fire through the turn', () => {
   const LOGIN = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-a', refreshToken: 'sk-ant-ort01-r', expiresAt: Date.parse('2026-11-04T13:00:00Z'), refreshTokenExpiresAt: Date.parse('2026-12-04T12:00:00Z'), scopes: ['user:profile', 'user:inference', 'user:sessions:claude_code'] } });
   const turn = async (config: string) => {
     const comments: Array<{ issue: number, body: string }> = [];
+    const added: string[] = [];
     const runs: unknown[] = [];
     const deps = {
       owners: ['acme'],
@@ -584,6 +861,9 @@ describe('run: a ticketReview fire through the turn', () => {
         openIssues: async () => [],
         allComments: async () => [],
         comment: async (issue: number, body: string) => { comments.push({ issue, body }); },
+        ensureLabel: async () => {},
+        addLabels: async (_n: number, labels: string[]) => { added.push(...labels); },
+        removeLabel: async () => {},
         openNaming: async () => [],
       }),
       hookTable: { publish: async () => true },
@@ -599,12 +879,14 @@ describe('run: a ticketReview fire through the turn', () => {
       state: {},
     };
     const result = await runTurn({ kind: 'ticketReview', issue: 501, repo: REPO }, deps as never);
-    return { result: result as unknown as { kind: string, refusal?: string, reviews?: Array<{ outcome: string }> }, comments, runs };
+    return { result: result as unknown as { kind: string, refusal?: string, reviews?: Array<{ outcome: string }> }, comments, runs, added };
   };
 
-  test('with the switch on, the fixture\'s review comments on the ticket', async () => {
-    const { result, comments } = await turn(factoryFile(CONFIG_PATH));
+  test('with the switch on, the fixture\'s review labels the ticket through the GitHub reader and comments on it', async () => {
+    const { result, comments, added } = await turn(factoryFile(CONFIG_PATH));
     assert.equal(result.kind, 'ticketReview');
+    const triage = (readConfig(factoryFile(CONFIG_PATH)) as { config: { ticketReviews: Array<{ conclusions: { success: string[] } }> } }).config.ticketReviews[0]!;
+    assert.deepEqual(added, triage.conclusions.success);
     assert.deepEqual(result.reviews?.map((r) => r.outcome), ['commented']);
     assert.equal(comments.length, 1);
     assert.equal(exitCodeFor(result as never), 0);

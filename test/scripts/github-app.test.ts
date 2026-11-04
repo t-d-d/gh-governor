@@ -1310,6 +1310,10 @@ describe('a served repo\'s reads', () => {
     });
     await githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch }).ensureLabel('claimed');
     assert.equal((created[0] as { name: string }).name, 'claimed');
+    assert.match((created[0] as { description: string }).description, /Claimed/);
+    created.length = 0;
+    await githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch }).ensureLabel('claimed', 'Added by a review');
+    assert.equal((created[0] as { description: string }).description, 'Added by a review');
     created.length = 0;
     await githubReader({ token: 't', repo: 'acme/factory', fetch }).ensureLabel('workflow: under development');
     assert.deepEqual(created, []);
