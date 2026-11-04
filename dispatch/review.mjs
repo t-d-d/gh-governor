@@ -148,19 +148,21 @@ const MERGEABLE_WAIT_MS = 3000;
 /**
  * The required status checks red on the PR's head, and those not finished
  * there: any run of the name pending, or none started. Red wins over
- * pending, and a name whose only run was skipped reads green. A base with
- * none required reads no check: a repo with no CI needs no checks
- * permission.
+ * pending, and a name whose only run was skipped reads green. The checks
+ * the base requires on GitHub and those the repo's `requireChecks` lists
+ * count alike, each name once. None required reads no check: a repo with
+ * no CI needs no checks permission.
  *
  * @param {ReviewReader} reader
  * @param {PullRequestRow} pull
+ * @param {readonly string[]} listed The repo's `review.requireChecks`.
  * @returns {Promise<{ red: string[], pending: string[] }>}
  */
-const requiredStates = async (reader, pull) => {
+const requiredStates = async (reader, pull, listed) => {
   // The review's own check is left out: a repo that requires it would
   // otherwise skip the review until the review had run, and read its own
   // earlier failure at the same head as a red required check.
-  const required = (await reader.requiredChecks(pull.base)).filter((name) => name !== CHECK);
+  const required = [...new Set([...(await reader.requiredChecks(pull.base)), ...listed])].filter((name) => name !== CHECK);
   if (required.length === 0) return { red: [], pending: [] };
   const checks = await reader.checksAt(pull.headSha);
   /** @type {string[]} */
@@ -373,7 +375,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // A required check, or the CI run at the head, not yet finished: its
     // end queues the review again (dispatch/webhook/route.mjs), so this
     // one says nothing.
-    const [checks, cis] = await Promise.all([requiredStates(reader, pull), ci === undefined ? null : ciState(reader, pull, ci)]);
+    const [checks, cis] = await Promise.all([requiredStates(reader, pull, review.requireChecks), ci === undefined ? null : ciState(reader, pull, ci)]);
     const ciWaits = cis === 'pending';
     if (checks.pending.length > 0 || ciWaits) {
       const names = checks.pending.map((c) => `\`${c}\``).join(', ');

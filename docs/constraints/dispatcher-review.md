@@ -37,6 +37,8 @@ served repos have their owner merge, so a pass there must not merge.
     unread.
   - `dependabot`: the manifests a Dependabot PR may change and pass with no
     model.
+  - `requireChecks`: names of check runs and status contexts test 8 treats
+    as required, beside those GitHub requires, each name once.
   - `merge`: whether a pass merges. True unless set.
 - The settings checks run in code before the model is asked anything, and a
   PR that fails one never reaches it: the ticket rules, each closing ticket
@@ -44,7 +46,8 @@ served repos have their owner merge, so a pass there must not merge.
   labels (`labelRow`, scripts/lib/ready-work.mjs), and closed by no other open PR,
   and no closing reference below the body's top lines or to another repo's
   issue, which fail for an edit (test 1); the human-only globs (test 7); the Dependabot list. A required
-  status check red on the head is test 8, for the author session's push.
+  status check red on the head is test 8, for the author session's push. A
+  check `requireChecks` lists is read as a required one.
   Where the file names `workflows.ci`, test 8 also reads the latest run of
   that workflow at the head, from the Actions API: one ended red, by the
   conclusions a red check has, fails it the same way, naming the file; one
@@ -121,4 +124,4 @@ served repos have their owner merge, so a pass there must not merge.
   gate fails loudly, and the owner can bypass it.
 
 Judgment: that a repo's checklist numbers its model tests 2 to 6, and that a `quote` glob reaches only rule files, no check sees: both are the repo's prose.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. A closing ticket carrying an excluded label passes test 1 unclaimed in #145: it is not pickup's, so nobody claims it, and a repo that forbids closing one says so in its ticket rules. The receiver drops the review fire where the repo's hook-table item says `prReview` is off since #147. A pass posts the `governor` check and no approval, and every review comment reaches the session the PR names, since #388. Test 8 reads the `workflows.ci` run at the head beside the required checks since #398: a private repo on a free plan has no required checks, and merged a pass on red CI. A PR a review turn ran out of time before it reached gets a `failure` check since #403. A required check's end queues the review again, by a `check_run` completed or a final `status` at the head beside `workflow_run` completed, with the fire carrying the commit so a fork's PR is read too, since #406. The check updates governor's own `governor` run at the head while it is in progress, rather than leaving a waiting run in progress under the verdict, since #407.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. A closing ticket carrying an excluded label passes test 1 unclaimed in #145: it is not pickup's, so nobody claims it, and a repo that forbids closing one says so in its ticket rules. The receiver drops the review fire where the repo's hook-table item says `prReview` is off since #147. A pass posts the `governor` check and no approval, and every review comment reaches the session the PR names, since #388. Test 8 reads the `workflows.ci` run at the head beside the required checks since #398: a private repo on a free plan has no required checks, and merged a pass on red CI. A PR a review turn ran out of time before it reached gets a `failure` check since #403. A required check's end queues the review again, by a `check_run` completed or a final `status` at the head beside `workflow_run` completed, with the fire carrying the commit so a fork's PR is read too, since #406. The check updates governor's own `governor` run at the head while it is in progress, rather than leaving a waiting run in progress under the verdict, since #407. A repo's `review.requireChecks` names checks test 8 reads as required, beside those GitHub requires, since #399: a plan that cannot require a check otherwise left only the CI workflow gating the review.

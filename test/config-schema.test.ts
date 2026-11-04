@@ -43,6 +43,13 @@ describe('the config file\'s JSON Schema', () => {
     assert.deepEqual(missing, [], 'give each a description with .meta() in dispatch/repo-config.mjs');
   });
 
+  test('documents the review section\'s requireChecks', () => {
+    const schema = configJsonSchema() as { properties: { review: { properties: Record<string, { description?: unknown, type?: unknown }> } } };
+    const listed = schema.properties.review.properties.requireChecks;
+    assert.equal(listed?.type, 'array');
+    assert.match(String(listed?.description), /check/);
+  });
+
   test('knows a top-level $schema key, and still refuses any other unknown key at the top', () => {
     const schema = configJsonSchema() as { additionalProperties?: unknown, properties: Record<string, { type?: unknown }> };
     assert.equal(schema.additionalProperties, false);
