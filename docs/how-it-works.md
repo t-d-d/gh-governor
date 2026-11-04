@@ -212,7 +212,7 @@ The review runs in each served repo whose file turns `prReview` on, from that re
 
 - Test 1, the tickets: each ticket the PR closes is open, meets `review.tickets`, and carries the claim label. A ticket not yet claimed gets a comment the author session hears. A PR closes tickets in its own repo only: a body that closes another repo's issue, by `owner/repo#N` or by its URL, fails for an edit, as does a closing reference below the body's top `Closes #N` lines. Work spanning repos links the tickets with `blocked by`: the other repo's ticket is blocked by an issue here, a PR here closes that issue, and its close unblocks the other ticket.
 - Test 7, the human-only list: no changed path, or path a rename left, matches `review.humanOnly`, unless every ticket carries one of the entry's `unless` labels. A modified file matching `review.quote` goes to the model instead, quoted whole at the merge base and at the head. A `decides` ticket's first line, `Constraint now lives at <path>, …`, passes the quoted files it names.
-- Test 8, required checks: no status check the default branch requires is red on the head. A check still running skips the review; the run finishing queues a new one. The review's own `governor` check is left out, so a repo that requires it never waits on it.
+- Test 8, required checks and CI: no status check the default branch requires is red on the head. Where the repo's file names `workflows.ci`, the latest run of that workflow at the head counts too, so a repo whose plan cannot require a check still holds a pass for red CI. A red CI run fails test 8 for the author session's push, naming the workflow file. A green or skipped run passes. A check or CI run still going, or a CI run not yet started at the head, skips the review; the run finishing queues a new one. Runs of any other workflow, and CI runs at other commits, do not count. A CI workflow with a `paths` filter skips some PRs, and those wait until a push or an edit, as a required check would. The review's own `governor` check is left out, so a repo that requires it never waits on it.
 
 So a checklist numbers its own tests 2 to 6. Code also fails tests 5 and 6 when the PR body's Verification table or Left for later names a ticket that is closed or does not exist; the rest of those tests are the model's.
 
@@ -224,7 +224,7 @@ So a checklist numbers its own tests 2 to 6. Code also fails tests 5 and 6 when 
 
 | The review | Check |
 |---|---|
-| A required check has not finished | `in_progress` |
+| A required check, or the CI run at the head, has not finished | `in_progress` |
 | Passes | `success` |
 | Passes, but conflicts with the base | `failure` |
 | Waits for a description edit, a claim or a push, with or without a person after it | `failure` |

@@ -35,7 +35,9 @@
  *   the branch below.
  * - A required status check red on the head fails in code (test 8): a
  *   check the settings cannot express is the repo's CI, never its code run
- *   here.
+ *   here. Where the repo's file names `workflows.ci`, the latest run of that
+ *   workflow at the head counts too, as a required check does: a repo whose
+ *   plan cannot require a check still holds a pass for its CI.
  * - A Dependabot PR is answered in code by the repo's Dependabot list
  *   (`dependabotAnswer`), not the checklist, and passes like any.
  *   Its conflict is no comment: Dependabot rebases its own PRs, and the
@@ -47,8 +49,8 @@
  * - A fail on the same test and editable as the last review's, or a
  *   conflict after a conflict, edits that comment in place, words and
  *   marker, instead of posting again.
- * - No run holds a merge (an earlier review held one while a Deploy Prod
- *   run was unfinished). A PR whose newest review is a held pass from
+ * - No run but the CI workflow's at the head holds a merge (an earlier
+ *   review held one while a Deploy Prod run was unfinished). A PR whose newest review is a held pass from
  *   before that change, same head and body, is merged on it without
  *   judging again, and the comment edited to say it merged.
  *
@@ -69,6 +71,7 @@ import { checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
 import { bodyDigest, closedBy, closingTickets, foreignClosings, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
+import { RED_CONCLUSIONS } from '../scripts/lib/github-app.mjs';
 
 /**
  * @typedef {import('../scripts/lib/github-app.mjs').PullRequestRow} PullRequestRow
@@ -95,10 +98,12 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
  *   checkRun: (run: { name: string, sha: string, state: CheckState, title: string, summary: string }) => Promise<void>,
  *   requiredChecks: (branch: string) => Promise<string[]>,
  *   checksAt: (sha: string) => Promise<Array<{ name: string, state: 'red' | 'green' | 'pending' }>>,
+ *   ciRuns: (path: string, sha: string) => Promise<Array<import('../scripts/lib/github-app.mjs').RunRow & { path: string }>>,
  * }} ReviewReader
  *   `requiredChecks`: the status checks a branch's protection and rulesets
  *   require. `checksAt`: the latest check runs and statuses at a commit,
- *   each red, green or pending.
+ *   each red, green or pending. `ciRuns`: a workflow's runs at a commit,
+ *   newest first.
  * @typedef {'in_progress' | 'success' | 'failure' | 'neutral'} CheckState
  * @typedef {'merged' | 'passed' | 'conflict' | 'commented' | 'marker-moved' | 'skipped' | 'limited' | 'failed'} Outcome
  * @typedef {{ pr: number, outcome: Outcome, reason: string | null, headSha: string | null, answer: Answer | null, error: string | null, check: string | null }} Reviewed
@@ -167,6 +172,25 @@ const requiredStates = async (reader, pull) => {
 };
 
 /**
+ * The state of the CI workflow's latest run at the PR's head: red where it
+ * ended in a way that blocks a merge, as `checksAt` reads a check, green
+ * where it ended otherwise (skipped included), pending while it runs or
+ * where none has started. Only runs of `ci` at the head count, whatever
+ * the reader answers.
+ *
+ * @param {ReviewReader} reader
+ * @param {PullRequestRow} pull
+ * @param {string} ci The workflow's file, the repo's `workflows.ci`.
+ * @returns {Promise<'red' | 'green' | 'pending'>}
+ */
+const ciState = async (reader, pull, ci) => {
+  const runs = (await reader.ciRuns(ci, pull.headSha)).filter((r) => r.path === ci && r.head_sha === pull.headSha);
+  const latest = runs.reduce((/** @type {typeof runs[number] | null} */ last, r) => (last === null || r.created_at > last.created_at ? r : last), null);
+  if (latest === null || latest.status !== 'completed') return 'pending';
+  return RED_CONCLUSIONS.has(String(latest.conclusion)) ? 'red' : 'green';
+};
+
+/**
  * Each quoted file's whole text at the merge base and at the head, for
  * the model to read on test 7. The merge base, not main's tip: a
  * rule main gained since the branch point is not the PR's change. A read
@@ -201,7 +225,7 @@ const constraintTexts = async (reader, pull, paths) => {
  * @param {ReviewReader} reader
  * @param {PullRequestRow} pull
  * @param {(session: string) => Promise<boolean>} started Whether governor started `session`; a read that fails throws.
- * @returns {Promise<Omit<Facts, 'held' | 'rules' | 'red'>>}
+ * @returns {Promise<Omit<Facts, 'held' | 'rules' | 'red' | 'redCi'>>}
  */
 export const readFacts = async (reader, pull, started) => {
   /** @type {Map<number, Promise<ClosedTicket>>} */
@@ -253,12 +277,13 @@ export const readFacts = async (reader, pull, started) => {
  * @param {PullRequestRow} pull
  * @param {string[]} list The Dependabot list.
  * @param {string[]} red The required checks red on its head.
+ * @param {string | null} redCi The CI workflow's file, where its run at the head is red.
  * @returns {Promise<Answer>}
  */
-const bumpAnswer = async (reader, pull, list, red) => {
+const bumpAnswer = async (reader, pull, list, red, redCi) => {
   const [files, commits] = await Promise.all([reader.pullFiles(pull.number), reader.pullCommits(pull.number)]);
   const answer = dependabotAnswer({ files, commits, list });
-  return answer.answer === 'pass' ? checksFailure(red) ?? answer : answer;
+  return answer.answer === 'pass' ? checksFailure(red, redCi) ?? answer : answer;
 };
 
 /**
@@ -275,10 +300,11 @@ const bumpAnswer = async (reader, pull, list, red) => {
  *   labels: import('./checklist.mjs').Rules['labels'],
  *   base: string,
  *   started: (session: string) => Promise<boolean>,
- * }} args `started`: whether governor started a session, from its state table.
+ *   ci?: string,
+ * }} args `started`: whether governor started a session, from its state table. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads.
  * @returns {Promise<Reviewed>}
  */
-export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started }) => {
+export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, ci }) => {
   /** @type {import('./checklist.mjs').Rules} */
   const rules = { humanOnly: review.humanOnly, tickets: review.tickets, quote: review.quote, decides: review.decides, labels };
   /** @type {Reviewed} */
@@ -320,27 +346,36 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     if (headSha !== undefined && headSha !== pull.headSha) return skip(`#${number} has moved past ${headSha.slice(0, 12)} to ${pull.headSha.slice(0, 12)}: that push's fire reviews it`);
     const bodySha = bodyDigest(pull.body);
     const last = lastReview(await reader.allComments(number));
-    // A red required check's fail is read again: a re-run can turn it green on the same head.
+    // A red required check's or CI run's fail is read again: a re-run can turn it green on the same head.
     const reviewedAlready = last !== null && last.headSha === pull.headSha && last.bodySha === bodySha && commentKey(last.text) !== 'push';
     // A pass whose merge an earlier review held, from before no run held a
     // merge: merged on that pass without judging it again.
     const heldReason = reviewedAlready ? heldPassReason(last.text) : null;
     if (reviewedAlready && heldReason === null) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
 
-    // A required check not yet finished: its run's end queues the review
-    // again (dispatch/webhook/route.mjs), so this one says nothing.
-    const checks = await requiredStates(reader, pull);
-    if (checks.pending.length > 0) {
+    // A required check, or the CI run at the head, not yet finished: its
+    // run's end queues the review again (dispatch/webhook/route.mjs), so
+    // this one says nothing.
+    const [checks, cis] = await Promise.all([requiredStates(reader, pull), ci === undefined ? null : ciState(reader, pull, ci)]);
+    const ciWaits = cis === 'pending';
+    if (checks.pending.length > 0 || ciWaits) {
       const names = checks.pending.map((c) => `\`${c}\``).join(', ');
-      await check('in_progress', 'Waits for its required checks to finish.', `The PR review runs when ${names} ${checks.pending.length > 1 ? 'have' : 'has'} finished on ${pull.headSha.slice(0, 12)}.`);
-      return skip(`#${number}'s required check${checks.pending.length > 1 ? 's' : ''} ${names} ${checks.pending.length > 1 ? 'have' : 'has'} not finished on ${pull.headSha.slice(0, 12)}: the run's end reviews it`);
+      const what = [
+        ...(checks.pending.length > 0 ? [`required check${checks.pending.length > 1 ? 's' : ''} ${names}`] : []),
+        ...(ciWaits ? [`CI workflow \`${ci}\``] : []),
+      ].join(' and ');
+      const many = checks.pending.length + (ciWaits ? 1 : 0) > 1;
+      const title = checks.pending.length === 0 ? 'Waits for its CI run to finish.' : ciWaits ? 'Waits for its CI run and required checks to finish.' : 'Waits for its required checks to finish.';
+      await check('in_progress', title, `The PR review runs when the ${what} ${many ? 'have' : 'has'} finished on ${pull.headSha.slice(0, 12)}.`);
+      return skip(`#${number}'s ${what} ${many ? 'have' : 'has'} not finished on ${pull.headSha.slice(0, 12)}: the run's end reviews it`);
     }
+    const redCi = cis === 'red' ? /** @type {string} */ (ci) : null;
 
     // The facts are read again for a held pass: a ticket may have closed or
     // changed its labels since. Only the judgement is kept.
     const answer = bump
-      ? await bumpAnswer(reader, pull, review.dependabot, checks.red)
-      : await checklist({ ...await readFacts(reader, pull, started), red: checks.red, held: heldReason, rules }, judge);
+      ? await bumpAnswer(reader, pull, review.dependabot, checks.red, redCi)
+      : await checklist({ ...await readFacts(reader, pull, started), red: checks.red, redCi, held: heldReason, rules }, judge);
     reviewed.answer = answer;
 
     let conflict = false;

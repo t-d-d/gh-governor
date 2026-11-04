@@ -258,8 +258,8 @@ const labelNames = (row) =>
  * @typedef {{ number: number, draft: boolean, base: string, head: string, title: string, html_url: string, body: string }} OpenPullRow
  */
 
-/** How a check run ends that blocks a merge on a check it is. */
-const RED_CONCLUSIONS = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure']);
+/** How a check run, or a workflow run, ends that blocks a merge on a check it is. */
+export const RED_CONCLUSIONS = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure']);
 
 /** The runs a page of a workflow's runs list holds. */
 export const RUNS_PER_PAGE = 50;
@@ -749,6 +749,33 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       const answer = await call('GET', `/repos/${repo}/actions/workflows/${file}/runs?${query}`);
       return (answer?.workflow_runs ?? []).map((/** @type {any} */ row) => ({
         id: row.id,
+        status: row.status,
+        conclusion: row.conclusion ?? null,
+        event: row.event,
+        head_branch: row.head_branch,
+        head_sha: row.head_sha,
+        html_url: row.html_url,
+        created_at: row.created_at,
+      }));
+    },
+
+    /**
+     * A workflow's runs at one commit, newest first, each with its workflow
+     * file: the PR review reads its CI workflow's run at a PR's head. The
+     * first hundred are plenty: a commit is pushed once, and re-runs are
+     * attempts of the same run.
+     *
+     * @param {string} path The workflow's file, e.g. `.github/workflows/ci.yml`.
+     * @param {string} sha
+     * @returns {Promise<Array<RunRow & { path: string }>>}
+     */
+    ciRuns: async (path, sha) => {
+      const file = encodeURIComponent(path.slice(path.lastIndexOf('/') + 1));
+      const query = new URLSearchParams({ head_sha: sha, per_page: '100' });
+      const answer = await call('GET', `/repos/${repo}/actions/workflows/${file}/runs?${query}`);
+      return (answer?.workflow_runs ?? []).map((/** @type {any} */ row) => ({
+        id: row.id,
+        path: String(row.path ?? ''),
         status: row.status,
         conclusion: row.conclusion ?? null,
         event: row.event,

@@ -514,15 +514,23 @@ const listFailure = (files, { humanOnly, quote }, decided, waived) => {
 };
 
 /**
- * Test 8's fail, or null: the required status checks red on the head. A
- * push that turns them green meets it, and the push is reviewed again.
+ * Test 8's fail, or null: the required status checks red on the head, and
+ * the CI workflow whose latest run there ended red. A push that turns them
+ * green meets it, and the push is reviewed again.
  *
  * @param {string[]} red
+ * @param {string | null} [ci] The CI workflow's file, where its run at the head is red.
  * @returns {Answer | null}
  */
-export const checksFailure = (red) => (red.length === 0 ? null : {
-  answer: 'fail', test: 8, reason: `the required check${red.length > 1 ? 's' : ''} ${named(red)} ${red.length > 1 ? 'are' : 'is'} red on its head`, editable: true, push: true,
-});
+export const checksFailure = (red, ci = null) => {
+  /** @type {string[]} */
+  const parts = [];
+  if (red.length > 0) parts.push(`the required check${red.length > 1 ? 's' : ''} ${named(red)}`);
+  if (ci !== null) parts.push(`the CI workflow \`${ci}\``);
+  if (parts.length === 0) return null;
+  const many = red.length > 1 || parts.length > 1;
+  return { answer: 'fail', test: 8, reason: `${parts.join(' and ')} ${many ? 'are' : 'is'} red on its head`, editable: true, push: true };
+};
 
 /**
  * Tests 1, 7 and 8, decided from the facts and the repo's rules before any
@@ -539,7 +547,7 @@ export const checksFailure = (red) => (red.length === 0 ? null : {
  *
  * Then the owners: a test-5 or test-6 fail an edit meets, the
  * author session's to meet first beside a test 7 no edit meets. Then the
- * required checks red on the head (test 8).
+ * required checks red on the head, and the CI workflow's run there (test 8).
  *
  * @param {{
  *   files: FileRow[],
@@ -550,11 +558,12 @@ export const checksFailure = (red) => (red.length === 0 ? null : {
  *   prose?: Array<{ number: number, text: string }>,
  *   foreign?: Array<{ repo: string, number: number, text: string }>,
  *   red?: string[],
+ *   redCi?: string | null,
  *   unattended?: boolean,
- * }} facts `tickets`: the body's closing tickets, in its order. `others`: the other open PRs and the tickets each closes. `owners`: the tickets `namedOwners` read, as read. `prose`: the body's `proseClosings`. `foreign`: its `foreignClosings`. `red`: the required checks red on the head. `unattended`: governor started the session the body names.
+ * }} facts `tickets`: the body's closing tickets, in its order. `others`: the other open PRs and the tickets each closes. `owners`: the tickets `namedOwners` read, as read. `prose`: the body's `proseClosings`. `foreign`: its `foreignClosings`. `red`: the required checks red on the head. `redCi`: the CI workflow's file, where its latest run at the head ended red. `unattended`: governor started the session the body names.
  * @returns {Answer | null}
  */
-export const decideInCode = ({ files, tickets, rules, others = [], owners = { verification: [], later: [] }, prose = [], foreign = [], red = [], unattended = false }) => {
+export const decideInCode = ({ files, tickets, rules, others = [], owners = { verification: [], later: [] }, prose = [], foreign = [], red = [], redCi = null, unattended = false }) => {
   const failures = ticketFailures(tickets, others, rules);
   const ticket = ticketFailure([...failures, ...referenceFailure(prose, foreign)]);
   // Each ticket that passes test 1 on its own decides its quoted files,
@@ -574,7 +583,7 @@ export const decideInCode = ({ files, tickets, rules, others = [], owners = { ve
   const owed = ticket
     ? { answer: 'fail', test: 1, reason: ticket.reason, editable: true, ...(ticket.claim ? { claim: ticket.claim } : {}) }
     : ownerFailure(owners, tickets.map((t) => t.number));
-  if (!listed) return owed ?? checksFailure(red);
+  if (!listed) return owed ?? checksFailure(red, redCi);
   // A person merges past test 7, and the session's part is still its to do.
   return owed?.answer === 'fail'
     ? { ...owed, editable: false, person: { test: 7, reason: listed } }
@@ -765,6 +774,7 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  *   prose: Array<{ number: number, text: string }>,
  *   foreign: Array<{ repo: string, number: number, text: string }>,
  *   red?: string[],
+ *   redCi?: string | null,
  *   constraintTexts: (paths: string[]) => Promise<ConstraintTexts>,
  *   unattended: () => Promise<boolean>,
  *   held?: string | null,
@@ -784,8 +794,8 @@ export const usageLimit = (text) => (/\bweekly limit\b/i.test(text) ? 'weekly' :
  * @param {Judge} judge
  * @returns {Promise<Answer>}
  */
-export const checklist = async ({ pull, files, tickets, others, owners, prose, foreign, red = [], constraintTexts, unattended, held = null, rules }, judge) => {
-  const decide = (/** @type {boolean} */ unwatched) => decideInCode({ files, tickets, rules, others, owners, prose, foreign, red, unattended: unwatched });
+export const checklist = async ({ pull, files, tickets, others, owners, prose, foreign, red = [], redCi = null, constraintTexts, unattended, held = null, rules }, judge) => {
+  const decide = (/** @type {boolean} */ unwatched) => decideInCode({ files, tickets, rules, others, owners, prose, foreign, red, redCi, unattended: unwatched });
   // The table is read only where a label's waiver changes the answer: a
   // read that fails then fails no review it could not change.
   const waived = decide(false);
