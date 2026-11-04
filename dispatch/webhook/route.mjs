@@ -117,7 +117,7 @@ export const HOOK_EVENTS = Object.freeze(['issue_comment', 'issues', 'pull_reque
  * - Contents: the config file, prompt files, compares, the review's merge.
  * - Issues: comments, labels, the claim, body edits, blockers.
  * - Pull requests: PR reads, the session link in a PR's description.
- * - Actions: runs and jobs, for CI and deploy messages.
+ * - Actions: runs and jobs, for CI and deploy messages, and the review's read of the CI run at a PR's head.
  * - Checks: the review's reads of required checks, and its `governor` check.
  * - Commit statuses: the review's reads of required statuses.
  * - Metadata: every App has it.
@@ -398,7 +398,7 @@ const reviewFire = (payload) => {
 
 /**
  * A run that finished on a PR's head, off the default branch: a `review`
- * fire for each PR the payload lists, at the head the run ran on. The review skips a PR whose required checks have not finished,
+ * fire for each PR the payload lists, at the head the run ran on. The review skips a PR whose required checks, or CI run at the head, have not finished,
  * so a run's end is when it is read again; a re-run that turns a red check
  * green is read the same way. A fork's PRs the payload does not list.
  *
