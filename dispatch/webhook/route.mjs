@@ -430,7 +430,9 @@ const headReview = (sha, reason) => one({ fire: build.review({ headSha: sha }), 
  */
 const finishedRunReviews = (payload, main) => {
   const run = payload?.workflow_run;
-  if (payload?.action !== 'completed' || run?.head_branch === main || !isCommit(run?.head_sha)) return nothing('');
+  // A fork's branch can share the default branch's name: its head is still a PR's.
+  const fork = typeof run?.head_repository?.full_name === 'string' && run.head_repository.full_name !== payload?.repository?.full_name;
+  if (payload?.action !== 'completed' || (run?.head_branch === main && !fork) || !isCommit(run?.head_sha)) return nothing('');
   return headReview(run.head_sha, `${String(run?.name)} run ${run?.id} finished on ${run.head_sha.slice(0, 12)}: review the open PRs at that head`);
 };
 

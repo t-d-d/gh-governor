@@ -1842,6 +1842,16 @@ describe('routeEvent — every served repo', () => {
     assert.deepEqual(unfinished.fires.filter((f) => f.fire.kind === 'review'), []);
     const onDefault = firesOf('workflow_run', run({ head_branch: 'trunk', pull_requests: prs }), ASKME, 'trunk');
     assert.deepEqual(onDefault.fires.filter((f) => f.fire.kind === 'review'), [], 'a run on the default branch reviews nothing');
+    const ownDefault = firesOf('workflow_run', run({ head_branch: 'trunk', head_repository: { full_name: ASKME } }), ASKME, 'trunk');
+    assert.deepEqual(ownDefault.fires.filter((f) => f.fire.kind === 'review'), [], 'nor does one on the repo\'s own default branch');
+  });
+
+  // A fork's PR from its own default branch: the run's head_branch is the
+  // fork's, and matches the base's default by name only.
+  test('a finished run on a fork\'s branch named like the default branch queues the review of its commit', () => {
+    const head = 'c'.repeat(40);
+    const { fires, reason } = firesOf('workflow_run', run({ head_branch: 'trunk', head_sha: head, event: 'pull_request', conclusion: 'success', head_repository: { full_name: 'someone/askme-mcp' } }), ASKME, 'trunk');
+    assert.deepEqual(fires.filter((f) => f.fire.kind === 'review').map((f) => f.fire), [{ kind: 'review', headSha: head, repo: ASKME }], reason);
   });
 
   const checkRun = (over: Record<string, unknown> = {}, suite: Record<string, unknown> = {}) => ({

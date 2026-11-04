@@ -1390,7 +1390,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const targets = pr !== undefined
         ? [{ number: pr, ...(headSha === undefined ? {} : { headSha }) }]
         : headSha !== undefined
-          ? (await github.openPulls()).filter((p) => p.headSha === headSha).map((p) => ({ number: p.number, headSha }))
+          ? (await github.openPulls()).filter((p) => p.headSha === headSha).map((p) => ({ number: p.number, headSha, byCommit: true }))
           : (await github.openPulls()).filter((p) => !p.draft).map((p) => ({ number: p.number }));
       // What each PR's run spent, for its log line: a run that reports
       // nothing leaves the line without it.

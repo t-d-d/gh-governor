@@ -309,13 +309,17 @@ const bumpAnswer = async (reader, pull, list, red, redCi) => {
  *   started: (session: string) => Promise<boolean>,
  *   ci?: string,
  *   outOfTime?: boolean,
+ *   byCommit?: boolean,
  * }} args `started`: whether governor started a session, from its state table. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads.
  *   `outOfTime`: the turn ran out of time for this PR. It goes through the
  *   usual skips, then posts a `failure` check in place of reading the facts
- *   and asking the model.
+ *   and asking the model. `byCommit`: the fire carried the commit and not
+ *   the PR, a check's end at that head. A PR whose author may not summon
+ *   governor got its `neutral` check at that head from the push's own fire,
+ *   so it is skipped without another.
  * @returns {Promise<Reviewed>}
  */
-export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, ci, outOfTime = false }) => {
+export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, ci, outOfTime = false, byCommit = false }) => {
   /** @type {import('./checklist.mjs').Rules} */
   const rules = { humanOnly: review.humanOnly, tickets: review.tickets, quote: review.quote, decides: review.decides, labels };
   /** @type {Reviewed} */
@@ -351,6 +355,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     if (pull.base !== base) return skip(`#${number} is into ${pull.base}, not ${base}: its retarget to ${base} reviews it`);
     const bump = pull.author === DEPENDABOT;
     if (!bump && !SUMMONERS.has(pull.association)) {
+      if (byCommit) return skip(`#${number} is by a ${pull.association} author, whose PR has its neutral check from the push: a check's end at ${pull.headSha.slice(0, 12)} adds none`);
       await check('neutral', 'Not reviewed: a person merges it.', `The PR review reads no pull request by a ${pull.association} author: only an owner, member or collaborator may summon governor. A person merges it.`);
       return skip(`#${number} is by a ${pull.association} author, who may not summon the dispatcher: a person merges it`);
     }
@@ -365,8 +370,8 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     if (reviewedAlready && heldReason === null) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
 
     // A required check, or the CI run at the head, not yet finished: its
-    // run's end queues the review again (dispatch/webhook/route.mjs), so
-    // this one says nothing.
+    // end queues the review again (dispatch/webhook/route.mjs), so this
+    // one says nothing.
     const [checks, cis] = await Promise.all([requiredStates(reader, pull), ci === undefined ? null : ciState(reader, pull, ci)]);
     const ciWaits = cis === 'pending';
     if (checks.pending.length > 0 || ciWaits) {

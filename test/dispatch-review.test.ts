@@ -454,6 +454,19 @@ describe('run — what reaches the owner session', () => {
     assert.equal(exitCodeFor(result as never), 0);
   });
 
+  // The push's own fire posted the `neutral` check at this head: one per
+  // check that ends would pile up a check run each.
+  test('a review fire carrying a commit posts no second neutral check on a PR whose author may not summon governor', async () => {
+    const h = harness({ open: [{ number: 767, draft: false, headSha: HEAD }], pulls: { 767: pullRow({ association: 'CONTRIBUTOR' }) } });
+    const result = await review({ kind: 'review', headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => [r.pr, r.outcome]), [[767, 'skipped']]);
+    assert.match(String(result.reviews[0]!.reason), /CONTRIBUTOR/);
+    assert.deepEqual(h.checkRuns, []);
+    const named = harness({ pulls: { 767: pullRow({ association: 'CONTRIBUTOR' }) } });
+    await review({ kind: 'review', pr: 767, headSha: HEAD }, named);
+    assert.deepEqual(named.checkRuns.map((c) => c.state), ['neutral'], 'a fire naming the PR still posts it');
+  });
+
   test('a review fire carrying a commit no open PR is at reviews nothing', async () => {
     const h = harness({ open: [{ number: 767, draft: false, headSha: 'c'.repeat(40) }] });
     const result = await review({ kind: 'review', headSha: HEAD }, h);
