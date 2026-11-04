@@ -276,7 +276,8 @@ describe('the check fails an issue template that names a ready label', () => {
       'docs/ISSUE_TEMPLATE.md': markdown('question'),
       'docs/mode-afk.md': markdown('"mode: afk"'),
     }, { labels: ['mode: afk', 'triaged'] }));
-    assert.deepEqual(got, { errors: [], templates: [], warnings: [] });
+    // This file's narrow pickup.by narrows the unset trust.auto, which the check notes.
+    assert.deepEqual(got, { errors: [], templates: [], warnings: [], narrowed: ['trust.auto: the file leaves it unset, so governor narrows it to OWNER to fit inside pickup.by'] });
   });
 
   test('a labels line YAML cannot parse is still read as comma-separated labels', async () => {
@@ -461,5 +462,46 @@ describe('the workflow a served repo calls', () => {
     const checkStep = steps.find((s) => (s.run ?? '').includes('config-check.mjs'));
     assert.equal(checkStep?.env?.CONFIG_CHECK_REF, '${{ github.event.pull_request.head.sha || github.sha }}');
     assert.doesNotMatch(all, /\$\{\{/, 'no expression inside a script, where GitHub would splice it in');
+  });
+});
+
+describe('the check says what a trust list exposes, and which unset list it narrowed', () => {
+  const env = { GITHUB_REPOSITORY: 'acme/factory', GITHUB_TOKEN: 'ghs_fake', CONFIG_CHECK_REF: 'a'.repeat(40) };
+  const WIDE = ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'];
+  const wide = () => reads({ '.github/dispatch.json': file({ ...base(), trust: { auto: WIDE }, pickup: { by: WIDE } }) }, { labels: ['mode: afk'] });
+
+  test('trust.auto beyond owners, members and collaborators is an exposure, in its own wording and not among the cannot-work warnings', async () => {
+    const got = await check(wide());
+    assert.deepEqual([got.errors, got.templates, got.warnings], [[], [], []]);
+    assert.equal(got.exposures?.length, 1);
+    const [said] = got.exposures ?? [];
+    assert.match(String(said), /^trust\.auto: lets in CONTRIBUTOR authors/);
+    for (const route of [/wait ends/, /blocker closes/, /periodic/, /conflicts/]) assert.match(String(said), route);
+    assert.doesNotMatch(String(said), /cannot work/);
+  });
+
+  test('the run writes it as a warning under a title of its own, and passes', async () => {
+    const lines: string[] = [];
+    const code = await run({ env, reads: () => wide(), log: (line) => lines.push(line) });
+    assert.equal(code, 0);
+    const line = lines.find((l) => l.startsWith('::warning ') && l.includes('trust.auto'));
+    assert.ok(line !== undefined, lines.join('\n'));
+    assert.match(line, /^::warning file=\.github\/dispatch\.json,title=this file lets more authors' text set governor going::/);
+    assert.doesNotMatch(line, /cannot work/);
+  });
+
+  test('an unset trust.auto narrowed to fit pickup.by is listed as a notice', async () => {
+    const narrow = reads({ '.github/dispatch.json': file({ ...base(), pickup: { by: ['OWNER'] } }) }, { labels: ['mode: afk'] });
+    const got = await check(narrow);
+    assert.deepEqual(got.exposures, undefined);
+    assert.deepEqual(got.narrowed, ['trust.auto: the file leaves it unset, so governor narrows it to OWNER to fit inside pickup.by']);
+    const lines: string[] = [];
+    assert.equal(await run({ env, reads: () => narrow, log: (line) => lines.push(line) }), 0);
+    assert.ok(lines.some((l) => /^::notice file=\.github\/dispatch\.json,title=governor narrowed a trust list this file leaves unset::trust\.auto: /.test(l)), lines.join('\n'));
+  });
+
+  test('at the defaults the verdict carries neither', async () => {
+    const got = await check(reads({ '.github/dispatch.json': file(base()) }, { labels: ['mode: afk'] }));
+    assert.deepEqual(got, { errors: [], templates: [], warnings: [] });
   });
 });

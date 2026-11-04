@@ -18,6 +18,7 @@ import { postedByApp } from '../../dispatch/webhook/review-comment.mjs';
 import { closedBy } from '../../dispatch/pr-body.mjs';
 import { sessionId, sessionsNamedIn } from '../../dispatch/webhook/subscribe.mjs';
 import { waitOf } from './ready-work.mjs';
+import { lets } from '../../dispatch/trust.mjs';
 
 const API = 'https://api.github.com';
 /** The version the gh-deps shim pins, so both read the same endpoint shapes. */
@@ -354,17 +355,20 @@ const pagesUntil = async (call, path, query, past, pages = 30) => {
 /**
  * Rows whose time `field` is after `since`, as a periodic's window counts
  * them (dispatch/periodics.mjs), oldest first. Pull requests are dropped
- * from an issues list.
+ * from an issues list. With `by`, a trust list (dispatch/trust.mjs), only
+ * the rows whose author it lets in are kept.
  *
  * @param {any[]} rows
  * @param {string} field
  * @param {string} since
+ * @param {readonly string[]} [by]
  * @returns {CountedRow[]}
  */
-const after = (rows, field, since) => {
+const after = (rows, field, since, by) => {
   const from = Date.parse(since);
   return rows
     .filter((row) => !row.pull_request && typeof row[field] === 'string' && Date.parse(row[field]) > from)
+    .filter((row) => by === undefined || lets(by, { author: row.user?.login, association: row.author_association, bot: row.user?.type === 'Bot' }))
     .map((row) => ({ number: row.number, title: String(row.title ?? ''), at: row[field] }))
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 };
@@ -465,24 +469,28 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
-     * The issues opened after `since`, newest first until a page's last predates it.
+     * The issues opened after `since`, newest first until a page's last
+     * predates it; with `by`, only those whose author it lets in.
      *
      * @param {string} since
+     * @param {readonly string[]} [by]
      * @returns {Promise<CountedRow[]>}
      */
-    issuesOpenedSince: async (since) => {
+    issuesOpenedSince: async (since, by) => {
       const rows = await pagesUntil(call, `/repos/${repo}/issues`, { state: 'all', sort: 'created', direction: 'desc' }, (row) => Date.parse(row.created_at) <= Date.parse(since));
-      return after(rows, 'created_at', since);
+      return after(rows, 'created_at', since, by);
     },
 
     /**
      * The issues closed after `since`: the closed ones updated since, a
-     * close being an update, kept where the close itself is after it.
+     * close being an update, kept where the close itself is after it; with
+     * `by`, only those whose author it lets in.
      *
      * @param {string} since
+     * @param {readonly string[]} [by]
      * @returns {Promise<CountedRow[]>}
      */
-    issuesClosedSince: async (since) => after(await allPages(call, `/repos/${repo}/issues`, { state: 'closed', since, sort: 'updated', direction: 'desc' }), 'closed_at', since),
+    issuesClosedSince: async (since, by) => after(await allPages(call, `/repos/${repo}/issues`, { state: 'closed', since, sort: 'updated', direction: 'desc' }), 'closed_at', since, by),
 
     /**
      * The native `blocked by` relationships, each naming its repo where

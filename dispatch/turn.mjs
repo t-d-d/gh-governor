@@ -130,6 +130,7 @@ import { HOOK_PER_HOUR, LANE, LANE_COUNTS, laneCount, ownerListed, ownersOf, par
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, writeHeartbeatIssue } from './heartbeat.mjs';
 import { launcher, routineLaunch } from './launcher.mjs';
+import { autoOf } from './trust.mjs';
 import { CAP_ZERO_REASON, REPO_SKIPPED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan, routineFault } from './launch-plan.mjs';
 
 export { CLAIM_STRANDED, CONNECTOR_MISSING, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, ticketOf } from './launch-plan.mjs';
@@ -798,7 +799,7 @@ const eventPeriodics = async ({ repo, config, counted, base, started, carried, s
   // carrying turn's result and the sign-off sweep still stand.
   try {
     const reader = deps.reader(await deps.githubToken(repo), await deps.appId(), repo);
-    ({ due, unread, beats: lines } = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(reader, base), open: runOpen(deps), event: counted }));
+    ({ due, unread, beats: lines } = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(reader, base, autoOf(config)), open: runOpen(deps), event: counted }));
     ({ credentials: stored, account } = readStoredLogin(await deps.secret.get()));
   } catch (error) {
     deps.log('dispatch-periodic-unread', { level: 'error', repo, counted, error: messageOf(error), reason: 'the periodics could not be checked: they wait for the next event or sweep' });
@@ -1351,6 +1352,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         deliver: delivery().deliver,
         inTime: () => deps.now() - started <= WORKFLOW_SEND_WINDOW_MS,
         prompts,
+        auto: autoOf(configOf(fireRepo())),
       }));
       for (const check of checks) deps.log('dispatch-conflicts', { merged: invocation.pr, sha: invocation.sha, head, ...check });
     } finally {

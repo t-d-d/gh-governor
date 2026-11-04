@@ -24,6 +24,7 @@ import { ROW_SWITCH, UNREADIED_HELD, mayBeUnreadied, notPlannedComment, ownerOut
 import { relativeAtClose, reportUnreadable } from './waits.mjs';
 import { reportUncounted } from './uncounted.mjs';
 import { byOf } from './pickup.mjs';
+import { authorKind, autoOf, lets } from './trust.mjs';
 import { dispatchMarker, lastDispatch } from './webhook/fire.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
 
@@ -196,6 +197,14 @@ export const planUnblocked = async (invocation, ctx) => {
     }
     ctx.log('dispatch-unblocked', { ...about, session, outcome: told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged' });
     return { answer: { kind: invocation.kind, row, commented, messaged: told, dispatched: [], loginStored } };
+  }
+  // A not-ready ticket's spec work starts with no person choosing the
+  // ticket, so only for an author the repo's trust.auto lets in. Anyone
+  // may open an issue and link it as blocked by a real ticket.
+  const auto = autoOf(config);
+  if (row === 'not-ready' && !lets(auto, ticket)) {
+    ctx.log('dispatch-unblocked', { ...about, level: 'info', outcome: `nothing starts and nothing is sent: opened by a ${authorKind(ticket)} author, whom trust.auto (${auto.join(', ') || 'empty'}) does not let in` });
+    return { answer: { kind: invocation.kind, row, dispatched: [] } };
   }
   // The spec session's holds: a thread that cannot be read fails the
   // turn, never taken for no marker.

@@ -32,6 +32,7 @@
 import { z } from 'zod';
 import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
+import { BOT, TRUST_VALUES } from './trust.mjs';
 
 /** Where the file lives, on the repo's default branch. */
 export const CONFIG_PATH = '.github/dispatch.json';
@@ -263,6 +264,19 @@ const pickupSchema = z.strictObject({
 });
 
 /**
+ * Whose GitHub text governor acts on (dispatch/trust.mjs). `auto`: whose
+ * issues and PRs governor sets going by itself, with no person choosing the
+ * ticket. It may never hold `BOT`: a bot's issue is a rule firing, and no
+ * one read it.
+ */
+const trustSchema = z.strictObject({
+  auto: z.array(z.enum(TRUST_VALUES))
+    .refine((list) => !list.includes(BOT), 'BOT is refused here: governor sets nothing going by itself on a bot\'s issue or PR, which no person has read')
+    .optional()
+    .meta({ description: 'Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket\'s wait ends or its blocker closes, a periodic\'s issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `pickup.by` where the file sets it. `BOT` is refused.' }),
+});
+
+/**
  * A recurring session: `name`, unique in the file, which the session is
  * named after and its record keyed by; `prompt`, what it runs; `days`, how
  * many whole days after its last fire it comes due. `counts`, each of
@@ -356,6 +370,7 @@ export const configSchema = z.strictObject({
   heartbeat: heartbeatSchema.optional().meta({ description: '`{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo\'s own marker, which the hourly sweep updates. Needed when `heartbeat` is on.' }),
   waits: waitsSchema.optional().meta({ description: '`{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing.' }),
   pickup: pickupSchema.optional().meta({ description: '`{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one, default one; and whose tickets pickup may start, by `author_association`, default `OWNER`, `MEMBER` and `COLLABORATOR`.' }),
+  trust: trustSchema.optional().meta({ description: '`{ "auto": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`.' }),
   periodics: z.array(periodicSchema).default([])
     .superRefine((list, ctx) => {
       const seen = new Set();
@@ -377,7 +392,17 @@ export const configSchema = z.strictObject({
 }).refine((c) => c.features.prReview !== true || c.review !== undefined, { message: 'prReview is on, so the file needs a review section with its checklist', path: ['review'] })
   .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue', path: ['heartbeat'] })
   .refine((c) => c.features.periodics !== true || c.periodics.length > 0, { message: 'periodics is on, so the file lists at least one periodic', path: ['periodics'] })
-  .refine((c) => c.features.hooks !== true || c.hooks.length > 0, { message: 'hooks is on, so the file lists at least one hook', path: ['hooks'] });
+  .refine((c) => c.features.hooks !== true || c.hooks.length > 0, { message: 'hooks is on, so the file lists at least one hook', path: ['hooks'] })
+  // The chain auto ⊆ task, where the file sets both. Until trust.task
+  // exists, pickup.by is the task list. A list the file leaves unset is
+  // narrowed instead (autoOf, dispatch/trust.mjs).
+  .superRefine((c, ctx) => {
+    const auto = c.trust?.auto;
+    const task = c.pickup?.by;
+    if (auto === undefined || task === undefined) return;
+    const outside = auto.filter((a) => a !== BOT && !task.includes(a));
+    if (outside.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${outside.join(', ')}, which pickup.by does not: governor would set going by itself a ticket pickup may not start. Narrow trust.auto, or widen pickup.by` });
+  });
 
 /**
  * @typedef {{ ci?: string, triage: string[], tags: Record<string, string> }} Workflows
@@ -398,9 +423,10 @@ export const configSchema = z.strictObject({
  * @typedef {{ file: string }} PromptFile
  * @typedef {{ issue: number, marker?: string }} Heartbeat
  * @typedef {{ sweepHours?: number, by?: string[] }} Pickup
+ * @typedef {{ auto?: string[] }} Trust
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
- * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, periodics: Periodic[], hooks: Hook[] }} RepoConfig
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, periodics: Periodic[], hooks: Hook[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
  *   ready labels the claim takes off, and a failed launch puts back.
@@ -415,6 +441,7 @@ export const configSchema = z.strictObject({
  *   names one.
  *   `pickup`: pickup's sweep interval and whose tickets it starts, where the
  *   file sets them.
+ *   `trust`: whose GitHub text governor acts on, where the file sets it.
  *   `periodics`: the recurring sessions the schedule fire starts.
  *   `hooks`: the hooks an outside system fires.
  * @typedef {Omit<RepoConfig, 'prompts' | 'review' | 'periodics' | 'hooks'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile }, periodics: Array<Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }>, hooks: Array<Omit<Hook, 'prompt'> & { prompt: string | PromptFile }> }} FileConfig

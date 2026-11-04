@@ -13,7 +13,10 @@
  * failing, on a file that is valid but cannot work: a ready label the repo
  * lacks, a `workflows.ci` file that is not there, a heartbeat issue without
  * its marker, or a review glob that matches no path. Only governor can check
- * that `environment` resolves, because that needs the claude.ai login.
+ * that `environment` resolves, because that needs the claude.ai login. It
+ * warns too, in wording of its own, where a `trust` list reaches beyond
+ * owners, members and collaborators, and notes each unset list governor
+ * narrowed (dispatch/trust.mjs).
  *
  * It also fails an issue template that names a ready label
  * ({@link templateFaults}). Governor would read such a repo, so this is no
@@ -31,6 +34,7 @@ import yaml from 'js-yaml';
 import { globMatches } from '../dispatch/checklist.mjs';
 import { HEARTBEAT_MARKER } from '../dispatch/heartbeat.mjs';
 import { CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
+import { narrowedLists, trustExposures } from '../dispatch/trust.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /**
@@ -47,10 +51,15 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
  *   body, null when there is no such issue.
  * @typedef {{ file: string, fault: string }} TemplateFault
  *   An issue template that names a ready label: its path, and what is wrong.
- * @typedef {{ errors: string[], templates: TemplateFault[], warnings: string[] }} Verdict
+ * @typedef {{ errors: string[], templates: TemplateFault[], warnings: string[], exposures?: string[], narrowed?: string[] }} Verdict
  *   `errors`: governor's faults, each failing the run. `templates`: issue
  *   templates that name a ready label, each failing the run too.
- *   `warnings`: what a valid file names that cannot work.
+ *   `warnings`: what a valid file names that cannot work. `exposures`, where
+ *   there are any: each trust list the file sets that reaches beyond owners,
+ *   members and collaborators, and what that opens. Such a file works, so
+ *   these have wording and a title of their own. `narrowed`, where there are
+ *   any: each trust list the file leaves unset that governor narrowed to fit
+ *   the lists it sets. Neither fails the run.
  * @typedef {(path: string) => Promise<any>} Api A GET on the REST API.
  */
 
@@ -235,7 +244,15 @@ export const check = async (reads) => {
   let tree;
   const shared = { ...reads, paths: () => (tree ??= reads.paths()) };
   const [resolved, warnings, found] = await Promise.all([resolveFiles(parsed.config, shared.read), warningsOf(parsed.config, shared), templateFaults(parsed.config.labels.ready, shared)]);
-  return { errors: resolved.ok ? [] : [resolved.fault], templates: found.templates, warnings: [...warnings, ...found.warnings] };
+  const exposures = trustExposures(parsed.config);
+  const narrowed = narrowedLists(parsed.config).map(({ list, to }) => `trust.${list}: the file leaves it unset, so governor narrows it to ${to.length === 0 ? 'nobody' : to.join(', ')} to fit inside pickup.by`);
+  return {
+    errors: resolved.ok ? [] : [resolved.fault],
+    templates: found.templates,
+    warnings: [...warnings, ...found.warnings],
+    ...(exposures.length === 0 ? {} : { exposures }),
+    ...(narrowed.length === 0 ? {} : { narrowed }),
+  };
 };
 
 /**
@@ -311,10 +328,12 @@ export const run = async ({ env, reads, log }) => {
   if (env.GITHUB_TOKEN === undefined || env.GITHUB_TOKEN === '') throw new Error('GITHUB_TOKEN is not set');
   const ref = String(env.CONFIG_CHECK_REF ?? '');
   if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error('CONFIG_CHECK_REF names no commit');
-  const { errors, templates, warnings } = await check(reads(repo, ref));
+  const { errors, templates, warnings, exposures = [], narrowed = [] } = await check(reads(repo, ref));
   for (const e of errors) log(`::error file=${CONFIG_PATH},title=governor would refuse this file once it merges::${escaped(e)}`);
   for (const t of templates) log(`::error file=${escapedProperty(t.file)},title=an issue template names a ready label::${escaped(t.fault)}`);
   for (const w of warnings) log(`::warning file=${CONFIG_PATH},title=governor reads this file but it cannot work::${escaped(w)}`);
+  for (const x of exposures) log(`::warning file=${CONFIG_PATH},title=this file lets more authors' text set governor going::${escaped(x)}`);
+  for (const n of narrowed) log(`::notice file=${CONFIG_PATH},title=governor narrowed a trust list this file leaves unset::${escaped(n)}`);
   log(errors.length > 0
     ? `${CONFIG_PATH} at ${ref}: governor would refuse it, and the repo would go unserved.`
     : `${CONFIG_PATH} at ${ref}: governor reads it${warnings.length > 0 ? `, with ${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : ''}.`);

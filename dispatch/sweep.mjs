@@ -27,6 +27,7 @@ import { dispatchMarker } from './webhook/fire.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
 import { byOf, sweepDue, sweepHoursOf } from './pickup.mjs';
+import { autoOf } from './trust.mjs';
 import { reportUncounted } from './uncounted.mjs';
 
 /** A fallback outcome that started the spec session, or handed the message on. */
@@ -161,7 +162,7 @@ export const planSweep = async (invocation, ctx) => {
       if (!turnsOn(config, 'waits')) continue;
       const reader = await ctx.readerFor(repo);
       const links = waitLinks({ reader, repo, board: config.waits?.issue, log: ctx.log });
-      const ended = await endedWaits({ reader, state: ctx.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), now: ctx.now(), log: ctx.log, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
+      const ended = await endedWaits({ reader, state: ctx.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), auto: autoOf(config), now: ctx.now(), log: ctx.log, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
       waitsUnread.push(...ended.unread);
       endedByRepo.push({ repo, config, ended });
     }
@@ -293,7 +294,7 @@ export const planSweep = async (invocation, ctx) => {
     // One open check for every served repo, so an expired login is refreshed once a turn.
     for (const { repo, config } of ctx.served) {
       if (!turnsOn(config, 'periodics')) continue;
-      const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(await ctx.readerFor(repo)), open: ctx.open });
+      const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(await ctx.readerFor(repo), undefined, autoOf(config)), open: ctx.open });
       due.push(...read.due.map((d) => ({ ...d, repo })));
       // A cap of 0 starts no periodic. The repo's due periodics get the
       // line an event logs under the cap, and their records stay, so each

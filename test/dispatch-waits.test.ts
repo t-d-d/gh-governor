@@ -265,7 +265,7 @@ describe('a waiting ticket that is gone or moved', () => {
   });
 
   test('an ended wait on a ticket governor unreadied, with no answer since, starts no spec session, and its item goes', async () => {
-    const notReady = async () => ({ number: 7, title: 'Held', state: 'open', labels: [], wait: { until: '2026-11-05' } });
+    const notReady = async () => ({ number: 7, title: 'Held', state: 'open', labels: [], association: 'MEMBER', wait: { until: '2026-11-05' } });
     const unreadied = { body: `Its work will not land as planned.\n\n${UNREADIED_MARKER}`, created_at: '2026-10-20T10:00:00Z', ours: true };
     const { state, dropped } = stateWith();
     const { reader, comments } = readerWith(notReady, [unreadied]);

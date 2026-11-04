@@ -49,6 +49,7 @@
 import { waitLine } from './webhook/fire.mjs';
 import { UNREADIED_HELD, ownerMessage, sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
+import { AUTO, authorKind, lets } from './trust.mjs';
 import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
 import { RELATIVE_WAIT, isWaiting, mayStartSpec, specHold, ticketStatus, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
@@ -196,7 +197,7 @@ export const waitOwnerMessage = ({ issue, until, labels, prompts }) => ownerMess
  *   for no item.
  *
  * @typedef {{
- *   ticket: (n: number) => Promise<{ number: number, id?: number, title: string, body?: string, state: string, labels: string[], pull?: boolean, openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
+ *   ticket: (n: number) => Promise<{ number: number, id?: number, title: string, body?: string, state: string, labels: string[], pull?: boolean, openBlockers?: number, author?: string, association?: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
  *   blockers: (n: number) => Promise<Array<{ state: string, id?: number }>>,
  *   allComments: (n: number) => Promise<Array<{ body: string, created_at?: string, ours: boolean }>>,
  *   comment: (n: number, body: string) => Promise<void>,
@@ -516,10 +517,14 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  * or cannot be read, its link comes off, as a turn that failed to take it
  * off left it.
  *
- * @param {{ reader: WaitReader, state: WaitState, repo: string, labels: import('../scripts/lib/ready-work.mjs').Labels, spec: boolean, now: number, log: Log, links?: WaitLinks, blocking?: LinkReader['blocking'] }} args
+ * With `auto`, the repo's `trust.auto` (dispatch/trust.mjs): a ticket whose
+ * author it does not let in gets its comment, but no spec work, and its
+ * item goes, logged at info.
+ *
+ * @param {{ reader: WaitReader, state: WaitState, repo: string, labels: import('../scripts/lib/ready-work.mjs').Labels, spec: boolean, now: number, log: Log, links?: WaitLinks, blocking?: LinkReader['blocking'], auto?: readonly string[] }} args
  * @returns {Promise<{ specs: WaitSpec[], unread: Array<{ repo: string, error: string }> }>}
  */
-export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, links, blocking }) => {
+export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, links, blocking, auto = AUTO }) => {
   /** @type {WaitSpec[]} */
   const specs = [];
   /** @type {Array<{ repo: string, error: string }>} */
@@ -584,6 +589,12 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       if (!told) await reader.comment(issue, waitEndedComment(wait.until));
       // A ticket governor unreadied on a not-planned close waits for a
       // person's answer first, as a later blocker's close does.
+      // The spec work starts with no person choosing the ticket, so only
+      // for an author the repo's trust.auto lets in.
+      if (spec && !lets(auto, ticket)) {
+        await drop(item, { until: wait.until, level: 'info', outcome: `${told ? 'ended: already told' : 'ended: commented'}; nothing starts and nothing is sent: opened by a ${authorKind(ticket)} author, whom trust.auto (${auto.join(', ') || 'empty'}) does not let in` });
+        continue;
+      }
       if (spec && mayStartSpec(thread, now)) {
         const owner = sessionNamedIn(ticket.body);
         specs.push({ issue, title: ticket.title, until: wait.until, read: item.until, owner });
