@@ -32,7 +32,7 @@
 import { z } from 'zod';
 import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
-import { BOT, TRUST_VALUES, taskKey as taskKeyOf, taskSet } from './trust.mjs';
+import { BOT, START, TRUST_VALUES, taskKey as taskKeyOf, taskSet } from './trust.mjs';
 
 /** Where the file lives, on the repo's default branch. */
 export const CONFIG_PATH = '.github/dispatch.json';
@@ -270,8 +270,15 @@ const pickupSchema = z.strictObject({
  * one read it. `task`: whose issue or PR may become work when a person sets
  * it going, by readying it or by a summons on it; nor may it hold `BOT`.
  * `relay`: whose text may reach a session that is already running.
+ * `start`: who may set work going; only the authors with a say, narrowed
+ * where the file sets it.
  */
 const trustSchema = z.strictObject({
+  start: z.array(z.enum(TRUST_VALUES))
+    .min(1)
+    .refine((list) => list.every((a) => START.includes(a)), 'takes only OWNER, MEMBER and COLLABORATOR: only someone with a say in the repo may set work going, and a repo may narrow that, never widen it')
+    .optional()
+    .meta({ description: 'Who may set work going, by `author_association`: whose ready label counts, and whose summons starts a session. Default `OWNER`, `MEMBER` and `COLLABORATOR`. A repo may narrow it, never widen it: any other value, and `BOT`, is refused.' }),
   auto: z.array(z.enum(TRUST_VALUES))
     .refine((list) => !list.includes(BOT), 'BOT is refused here: governor sets nothing going by itself on a bot\'s issue or PR, which no person has read')
     .optional()
@@ -379,7 +386,7 @@ export const configSchema = z.strictObject({
   heartbeat: heartbeatSchema.optional().meta({ description: '`{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo\'s own marker, which the hourly sweep updates. Needed when `heartbeat` is on.' }),
   waits: waitsSchema.optional().meta({ description: '`{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing.' }),
   pickup: pickupSchema.optional().meta({ description: '`{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one, default one; and `by`, the retired name of `trust.task`, which governor reads as it.' }),
-  trust: trustSchema.optional().meta({ description: '`{ "auto": [ … ], "task": [ … ], "relay": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`.' }),
+  trust: trustSchema.optional().meta({ description: '`{ "start": [ … ], "auto": [ … ], "task": [ … ], "relay": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `start` is who may set work going, by readying a ticket or writing a summons, default `OWNER`, `MEMBER` and `COLLABORATOR`, which a repo may narrow and never widen. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`.' }),
   periodics: z.array(periodicSchema).default([])
     .superRefine((list, ctx) => {
       const seen = new Set();
@@ -442,7 +449,7 @@ export const configSchema = z.strictObject({
  * @typedef {{ file: string }} PromptFile
  * @typedef {{ issue: number, marker?: string }} Heartbeat
  * @typedef {{ sweepHours?: number, by?: string[] }} Pickup
- * @typedef {{ auto?: string[], task?: string[], relay?: string[] }} Trust
+ * @typedef {{ start?: string[], auto?: string[], task?: string[], relay?: string[] }} Trust
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
  * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, periodics: Periodic[], hooks: Hook[] }} RepoConfig

@@ -28,7 +28,8 @@ import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
 import { byOf, sweepDue, sweepHoursOf } from './pickup.mjs';
 import { autoOf, relayOf } from './trust.mjs';
-import { reportUncounted, reportUntasked } from './uncounted.mjs';
+import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
+import { startOf } from './trust.mjs';
 
 /** A fallback outcome that started the spec session, or handed the message on. */
 const WENT = new Set(['dispatched', 'unconfirmed', 'forwarded']);
@@ -198,7 +199,7 @@ export const planSweep = async (invocation, ctx) => {
       }
       swept.set(repo, new Date(now).toISOString());
     }
-    sources.push({ repo, reader: await ctx.readerFor(repo), labels: config.labels, by: byOf(config), prompts: config.prompts, signOff: turnsOn(config, 'signOff') });
+    sources.push({ repo, reader: await ctx.readerFor(repo), labels: config.labels, by: byOf(config), start: startOf(config), prompts: config.prompts, signOff: turnsOn(config, 'signOff') });
   }
   // A fire naming its issue plans it alone, through the selection's own
   // checks, from a read of that issue rather than the ready list; the sweep
@@ -214,6 +215,10 @@ export const planSweep = async (invocation, ctx) => {
   const outsiders = [];
   /** @type {import('../scripts/lib/dispatch-router.mjs').Stranger[]} */
   const strangers = [];
+  /** @type {import('./start.mjs').Unstarted[]} */
+  const unstarted = [];
+  /** @type {import('./start.mjs').Unlooked[]} */
+  const unlooked = [];
   // In the bare fire one repo's refusal leaves the others to go; a fire
   // naming its repo throws on its own.
   const planned = await planSchedule({
@@ -223,6 +228,8 @@ export const planSweep = async (invocation, ctx) => {
     unreadable,
     outsiders,
     strangers,
+    unstarted,
+    unlooked,
     ...(only === undefined ? {} : { only, seen }),
     ...(ctx.bare ? { unread, cut, relative } : {}),
   });
@@ -256,10 +263,15 @@ export const planSweep = async (invocation, ctx) => {
   // anyone. Each ticket gets one comment, whatever the switches say, since
   // it reports a fault. Each report catches its own failure.
   await Promise.all(outsiders.map(async (outsider) => reportUncounted({ reader: await ctx.readerFor(outsider.repo), outsider, log: ctx.log })));
+  // A ready label a person outside the repo's trust.start added last starts
+  // nothing, said at info with the one refusal comment; an adder governor
+  // could not look up counts for nothing this turn, said at warn.
+  await Promise.all(unstarted.map(async (u) => reportUnstarted({ reader: await ctx.readerFor(u.repo), unstarted: u, what: 'readied', event: 'dispatch-pickup', log: ctx.log })));
+  for (const u of unlooked) reportUnlooked({ unlooked: u, event: 'dispatch-pickup', log: ctx.log });
   if (only !== undefined && planned.length === 0) {
     const why = ctx.cap === 0 ? { outcome: 'not started', reason: CAP_ZERO_REASON } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
     // A ticket skipped for its author, or for its ready labels, has its own line above.
-    const said = new Set([...strangers, ...outsiders].map((t) => `${t.repo}#${t.issue}`));
+    const said = new Set([...strangers, ...outsiders, ...unstarted, ...unlooked].map((t) => `${t.repo}#${t.issue}`));
     for (const { repo, issue, ...read } of seen) {
       if (said.has(`${repo}#${issue}`)) continue;
       ctx.log('dispatch-pickup', { level: 'info', repo, issue, ...why, reads: [read] });

@@ -24,6 +24,12 @@
  * authors with a say and any bot ({@link RELAY}). The receiver judges it from
  * the repo's hook-table item, and the task again from the file.
  *
+ * `start` is who may set work going: whose ready label counts
+ * (`judgeReady`, dispatch/start.mjs), and whose summons starts a session
+ * (dispatch/dispatch-fire.mjs). It holds only the authors with a say, and a
+ * repo may narrow it, never widen it ({@link startOf}). It sits outside the
+ * chain below: it is about who acts, not whose text the work is about.
+ *
  * The lists form a chain, `auto` within `task` within `relay`. A list the
  * file leaves unset is narrowed to fit the lists it sets, never widened
  * ({@link autoOf}); two lists the file sets that break the chain are a
@@ -43,7 +49,15 @@ export { BOT, RELAY, TRUST_VALUES, authorKind, lets };
 export const AUTO = Object.freeze([...SUMMONERS]);
 
 /**
- * @typedef {{ trust?: { auto?: readonly string[] | undefined, task?: readonly string[] | undefined, relay?: readonly string[] | undefined } | undefined, pickup?: { by?: readonly string[] | undefined } | undefined }} TrustConfig
+ * Who may set work going where the file sets no `trust.start`: the authors
+ * with a say. It is also the most a file may set.
+ *
+ * @type {readonly string[]}
+ */
+export const START = Object.freeze([...SUMMONERS]);
+
+/**
+ * @typedef {{ trust?: { start?: readonly string[] | undefined, auto?: readonly string[] | undefined, task?: readonly string[] | undefined, relay?: readonly string[] | undefined } | undefined, pickup?: { by?: readonly string[] | undefined } | undefined }} TrustConfig
  */
 
 /**
@@ -54,6 +68,24 @@ export const AUTO = Object.freeze([...SUMMONERS]);
  * @param {ReadonlyArray<readonly string[]>} above
  */
 const within = (list, above) => list.filter((a) => above.every((outer) => outer.includes(a)));
+
+/**
+ * A repo's `trust.start`: who may set work going, by readying a ticket or
+ * writing a summons. The list the file sets, or {@link START}.
+ *
+ * @param {TrustConfig} config
+ * @returns {readonly string[]}
+ */
+export const startOf = (config) => config.trust?.start ?? START;
+
+/**
+ * Whether a repo's `trust.start` leaves out any of the authors with a say.
+ * Only then is a ready label's adder looked up: at the default, anyone who
+ * can add a label but the author has triage access, and so is in it.
+ *
+ * @param {TrustConfig} config
+ */
+export const startNarrowed = (config) => START.some((a) => !startOf(config).includes(a));
 
 /**
  * A repo's `trust.relay`: whose text may reach a session that is already

@@ -1076,6 +1076,25 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         })),
 
     /**
+     * Whether the repo's owner is a `User` or an `Organization`, from the
+     * repo itself. Governor looks a ready label's adder up by it where a
+     * repo narrows `trust.start` (`startKinds`, dispatch/start.mjs).
+     *
+     * @returns {Promise<string>}
+     */
+    repoOwnerType: async () => String((await call('GET', `/repos/${repo}`))?.owner?.type ?? ''),
+
+    /**
+     * The logins of the repo's outside collaborators, every page: on an
+     * org's repo, a person who can add a label and is not one is a member
+     * (`startKinds`, dispatch/start.mjs).
+     *
+     * @returns {Promise<string[]>}
+     */
+    outsideCollaborators: async () =>
+      (await allPages(call, `/repos/${repo}/collaborators`, { affiliation: 'outside' })).map((row) => String(row?.login ?? '')),
+
+    /**
      * An issue's label removals, oldest first, from its events: the label,
      * when, and whether `appId`'s App made it as its bot (`postedByApp`); a
      * reader without `appId` owns none.

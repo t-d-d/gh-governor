@@ -28,7 +28,7 @@ import { outsiderReason, strangerReason } from '../scripts/lib/dispatch-router.m
 import { authorHasSay, uncountedReady } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { CONFIG_PATH } from './repo-config.mjs';
-import { BOT } from './webhook/fire.mjs';
+import { BOT, SUMMONERS } from './webhook/fire.mjs';
 import { sayOnce } from './waits.mjs';
 
 /** The marker on governor's one refusal comment on a ticket: its uncounted ready labels, or an author `trust.task` leaves out. */
@@ -41,9 +41,10 @@ const code = (text) => `\`${text.replace(/`/g, "'")}\``;
  * The comment: each uncounted label and who added it, and what starts the
  * ticket.
  *
- * @param {{ author: string, addedBy: ReadonlyArray<import('../scripts/lib/dispatch-router.mjs').AddedBy> }} args
+ * @param {{ author: string, association?: string, addedBy: ReadonlyArray<import('../scripts/lib/dispatch-router.mjs').AddedBy> }} args
+ *   `association`: the author's, which decides how the rule is put.
  */
-export const uncountedReadyComment = ({ author, addedBy }) => {
+export const uncountedReadyComment = ({ author, association = 'NONE', addedBy }) => {
   const who = addedBy.map(({ label, actor, bot }) => {
     if (actor === null) return `- ${code(label)}, which no label event on the ticket names.`;
     if (bot) return `- ${code(label)}, added by ${code(actor)}, a bot. A labelling workflow or another App adds labels by rule, without anyone reading the ticket.`;
@@ -51,11 +52,15 @@ export const uncountedReadyComment = ({ author, addedBy }) => {
     return `- ${code(label)}, added by ${code(actor)}.`;
   });
   return [
-    'Governor has not started this ticket. On a ticket opened by someone outside the repo, a ready label counts only when a person other than its author, or governor itself, added it last. These ready labels do not count:',
+    SUMMONERS.has(association)
+      ? `Governor has not started this ticket. A ready label counts only when a person the repo's ${code('trust.start')} lets in, or governor itself, added it last. These ready labels do not count:`
+      : 'Governor has not started this ticket. On a ticket opened by someone outside the repo, a ready label counts only when a person other than its author, or governor itself, added it last. These ready labels do not count:',
     '',
     ...who,
     '',
-    'Someone with triage access who takes these labels off and adds them again starts the ticket.',
+    SUMMONERS.has(association)
+      ? `Someone ${code('trust.start')} lets in who takes these labels off and adds them again starts the ticket.`
+      : 'Someone with triage access who takes these labels off and adds them again starts the ticket.',
     '',
     UNCOUNTED_READY_MARKER,
   ].join('\n');
@@ -81,7 +86,7 @@ export const reportUncounted = async ({ reader, outsider, log }) => {
   const labels = addedBy.map(({ label, actor }) => ({ label, addedBy: actor }));
   log('dispatch-pickup', { level: 'warn', repo, issue, outcome: 'skipped', labels, reason: outsiderReason(outsider) });
   try {
-    return await sayOnce(reader, issue, UNCOUNTED_READY_MARKER, uncountedReadyComment({ author, addedBy }));
+    return await sayOnce(reader, issue, UNCOUNTED_READY_MARKER, uncountedReadyComment({ author, association: outsider.association, addedBy }));
   } catch (error) {
     log('dispatch-pickup', { level: 'error', repo, issue, error: messageOf(error), reason: 'the ticket is not started, and governor could not say why on it this turn' });
     return 'failed';
@@ -144,4 +149,76 @@ export const reportUntasked = async ({ reader, stranger, what, ready = [], event
     log(event, { level: 'error', repo, issue, error: messageOf(error), reason: `nothing is started, and governor could not say why on it this turn: ${strangerReason(stranger)}` });
     return 'failed';
   }
+};
+
+/** A list of trust values as prose. @param {readonly string[]} values */
+const listed = (values) => (values.length === 1 ? code(String(values[0])) : `${values.slice(0, -1).map(code).join(', ')} and ${code(String(values.at(-1)))}`);
+
+/**
+ * Why work was not set going by someone the repo's `trust.start` leaves
+ * out, for its info line.
+ *
+ * @param {{ start: readonly string[], by: ReadonlyArray<{ actor: string, kind: string }> }} unstarted
+ */
+export const unstartedReason = ({ start, by }) =>
+  `set going by ${[...new Set(by.map(({ actor, kind }) => `${actor === '' ? 'someone' : actor} (${kind})`))].join(', ')}, whom the repo's trust.start, ${JSON.stringify(start)}, leaves out, so no work is started`;
+
+/**
+ * The refusal comment for work set going by a person the repo's
+ * `trust.start` leaves out: who did, what they count as, who may, and how
+ * to go on.
+ *
+ * @param {{ start: readonly string[], by: ReadonlyArray<{ label?: string, actor: string, kind: string }>, what: 'readied' | 'summoned' }} args
+ */
+export const unstartedComment = ({ start, by, what }) => [
+  `Governor has not ${what === 'readied' ? 'started this ticket' : 'started a session on this'}. In this repo only ${listed(start)} may set work going, by the repo's ${code('trust.start')}, and ${what === 'readied' ? 'these ready labels were added last by someone it leaves out' : 'the summons came from someone it leaves out'}:`,
+  '',
+  ...by.map(({ label, actor, kind }) => {
+    const who = actor === '' ? `someone who counts as ${code(kind)}` : `${code(actor)}, who counts as ${code(kind)}`;
+    return label === undefined ? `- ${who.charAt(0).toUpperCase()}${who.slice(1)}.` : `- ${code(label)}, added by ${who}.`;
+  }),
+  '',
+  what === 'readied'
+    ? `Someone ${code('trust.start')} lets in who takes the labels off and adds them again starts the ticket.`
+    : `Someone ${code('trust.start')} lets in can summon a session here.`,
+  '',
+  UNCOUNTED_READY_MARKER,
+].join('\n');
+
+/**
+ * Say that work set going by a person the repo's `trust.start` leaves out
+ * was not started: one line on `event` at info, since it is the repo's own
+ * choice, and the refusal comment once ({@link unstartedComment}), whatever
+ * the switches say, since someone with a say set it going and should hear
+ * why. A read or a comment that fails is logged at error and skipped.
+ *
+ * @param {{
+ *   reader: { allComments: (n: number) => Promise<Array<{ body: string }>>, comment: (n: number, body: string) => Promise<void> },
+ *   unstarted: import('./start.mjs').Unstarted,
+ *   what: 'readied' | 'summoned',
+ *   event: string,
+ *   log: (event: string, context?: Record<string, unknown>) => void,
+ * }} args
+ * @returns {Promise<'commented' | 'already told' | 'failed'>}
+ */
+export const reportUnstarted = async ({ reader, unstarted, what, event, log }) => {
+  const { repo, issue } = unstarted;
+  log(event, { level: 'info', repo, issue, outcome: what === 'readied' ? 'skipped' : 'refused', reason: unstartedReason(unstarted) });
+  try {
+    return await sayOnce(reader, issue, UNCOUNTED_READY_MARKER, unstartedComment({ ...unstarted, what }));
+  } catch (error) {
+    log(event, { level: 'error', repo, issue, error: messageOf(error), reason: `nothing is started, and governor could not say why on it this turn: ${unstartedReason(unstarted)}` });
+    return 'failed';
+  }
+};
+
+/**
+ * Say that work was not started because governor could not look up who set
+ * it going under a narrowed `trust.start`: one line at warn, and no
+ * comment, since the next turn looks again.
+ *
+ * @param {{ unlooked: import('./start.mjs').Unlooked, event: string, log: (event: string, context?: Record<string, unknown>) => void }} args
+ */
+export const reportUnlooked = ({ unlooked: { repo, issue, logins, error }, event, log }) => {
+  log(event, { level: 'warn', repo, issue, outcome: 'skipped', logins, reason: `governor could not look up whether trust.start lets in ${logins.join(', ')}, so their act counts for nothing this turn: ${error}` });
 };

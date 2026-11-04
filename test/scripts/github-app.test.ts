@@ -822,6 +822,24 @@ describe('githubReader', () => {
     assert.equal((await blind.labelAdds(10)).some((r) => r.ours), false);
   });
 
+  test('repoOwnerType reads whether the repo\'s owner is a user or an organization', async () => {
+    const { fetch } = fakeFetch({ 'https://api.github.com/repos/acme/factory': { full_name: 'acme/factory', owner: { login: 'acme', type: 'Organization' } } });
+    assert.equal(await githubReader({ token: 't', repo: 'acme/factory', fetch }).repoOwnerType(), 'Organization');
+  });
+
+  test('outsideCollaborators pages through the repo\'s outside collaborators for their logins', async () => {
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/collaborators': (_init: RequestInit | undefined, url: string) => {
+        assert.equal(new URL(url).searchParams.get('affiliation'), 'outside');
+        return Number(new URL(url).searchParams.get('page')) === 1 ? Array.from({ length: 100 }, (_, i) => ({ login: `p${i}` })) : [{ login: 'pat' }];
+      },
+    });
+    const logins = await githubReader({ token: 't', repo: 'acme/factory', fetch }).outsideCollaborators();
+    assert.equal(logins.length, 101);
+    assert.equal(logins.at(-1), 'pat');
+    assert.equal(calls.length, 2);
+  });
+
   // A fire naming issues reads each on its own and orders them oldest first.
   test('ticket carries its creation time, where the issue has one', async () => {
     const { fetch } = fakeFetch({

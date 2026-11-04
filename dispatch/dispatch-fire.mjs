@@ -3,7 +3,8 @@
  * own prompt, or one for a scheduled run on the default branch gone red,
  * on the run's facts the fire carries and the repo's instruction
  * (`redRunPrompt`, dispatch/workflow.mjs). A summons starts one only where
- * the repo's `trust.task` lets in the author of the issue or PR it is on.
+ * the repo's `trust.start` lets in who set it going, and its `trust.task`
+ * lets in the author of the issue or PR it is on.
  * A red scheduled run whose run before went red too starts nothing: the
  * session the red before started is on the failure.
  */
@@ -14,8 +15,9 @@ import { strangerReason } from '../scripts/lib/dispatch-router.mjs';
 import { DEFAULT_SESSION_NAME } from './deliveries.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { STALE_RUNS_PAUSES_MS, baselineIn, freshRuns } from './runs.mjs';
-import { taskOf } from './trust.mjs';
-import { reportUntasked } from './uncounted.mjs';
+import { startNarrowed, startOf, taskOf } from './trust.mjs';
+import { startKinds } from './start.mjs';
+import { reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 import { RED } from './webhook/fire.mjs';
 import { redRunPrompt } from './workflow.mjs';
 
@@ -58,6 +60,36 @@ const redBefore = async ({ workflowId, runId, branch }, getReader, { log, sleep 
 };
 
 /**
+ * Whether a summons was set going by someone the repo's `trust.start`
+ * leaves out, and if so, say so: at info with the one refusal comment on
+ * `on`, or at warn with none where an assigner could not be looked up.
+ *
+ * @param {{ repo: string, on: number, writer?: string | undefined, assigner?: string | undefined }} summons
+ * @param {import('./turn.mjs').TurnContext} ctx
+ * @returns {Promise<boolean>} true where nothing may start.
+ */
+const unstartedSummons = async ({ repo, on, writer, assigner }, ctx) => {
+  const config = ctx.configOf(repo);
+  const start = startOf(config);
+  if (writer !== undefined) {
+    if (start.includes(writer)) return false;
+    await reportUnstarted({ reader: await ctx.readerFor(repo), unstarted: { repo, issue: on, start, by: [{ actor: '', kind: writer }] }, what: 'summoned', event: 'dispatch-launch', log: ctx.log });
+    return true;
+  }
+  if (assigner === undefined || !startNarrowed(config)) return false;
+  const reader = await ctx.readerFor(repo);
+  const { kinds, error } = await startKinds({ reader, repo, logins: [assigner] });
+  const kind = kinds.get(assigner.toLowerCase());
+  if (kind === undefined) {
+    reportUnlooked({ unlooked: { repo, issue: on, logins: [assigner], error: error ?? 'no lookup placed them' }, event: 'dispatch-launch', log: ctx.log });
+    return true;
+  }
+  if (start.includes(kind)) return false;
+  await reportUnstarted({ reader, unstarted: { repo, issue: on, start, by: [{ actor: assigner, kind }] }, what: 'summoned', event: 'dispatch-launch', log: ctx.log });
+  return true;
+};
+
+/**
  * A dispatch fire's plan: one session in the fire's repo, unclaimed and
  * holding nothing, unless the fire is a red scheduled run after a red
  * ({@link redBefore}), which plans none. The fire carries its name and
@@ -69,7 +101,14 @@ const redBefore = async ({ workflowId, runId, branch }, getReader, { log, sleep 
  */
 export const planDispatch = async (invocation, ctx) => {
   const repo = fireRepoOf(invocation);
-  const { scheduled, on, author } = invocation;
+  const { scheduled, on, author, writer, assigner } = invocation;
+  // A summons starts a session only where the repo's trust.start lets in
+  // who set it going: its writer, or the assigner of an issue assigned to
+  // the summons account, looked up only where start is narrowed.
+  if (on !== undefined && (writer !== undefined || assigner !== undefined)) {
+    const refused = await unstartedSummons({ repo, on, writer, assigner }, ctx);
+    if (refused) return { launches: [], unread: [] };
+  }
   // A summons names the issue or PR it is on and who opened it: work is
   // about it only where the repo's trust.task lets that author in. A
   // refusal starts nothing and is said once on it, at info.

@@ -20,7 +20,9 @@
 
 import { DISPATCH_WINDOW_MS, recentlyDispatched } from '../../dispatch/webhook/fire.mjs';
 import { promptFor, sessionName } from './dispatch-prompt.mjs';
-import { addedBy, authorHasSay, authorPicked, byAge, mayPickUp, selectReadyWork, ticketStatus, uncountedReady, unreadableOf } from './ready-work.mjs';
+import { authorPicked, byAge, mayPickUp, selectReadyWork, ticketStatus, unreadableOf } from './ready-work.mjs';
+import { judgeReady } from '../../dispatch/start.mjs';
+import { START } from '../../dispatch/trust.mjs';
 
 /**
  * @typedef {{ issue?: number, repo: string, prompt: string, sessionName: string }} Dispatch
@@ -32,6 +34,8 @@ import { addedBy, authorHasSay, authorPicked, byAge, mayPickUp, selectReadyWork,
  *   blockers: (number: number) => Promise<import('./github-app.mjs').BlockerRow[]>,
  *   comments: (number: number, options?: { since?: string }) => Promise<import('./github-app.mjs').CommentRow[]>,
  *   labelAdds: (number: number) => Promise<import('./ready-work.mjs').LabelAdd[]>,
+ *   repoOwnerType?: () => Promise<string>,
+ *   outsideCollaborators?: () => Promise<string[]>,
  * }} Reader
  *
  * @typedef {{ repo: string, issue: number, labels: string[], openBlockers?: number, wait?: import('./ready-work.mjs').Wait }} Seen
@@ -60,10 +64,11 @@ import { addedBy, authorHasSay, authorPicked, byAge, mayPickUp, selectReadyWork,
  *   not list (`authorPicked`), so the selection skips it, with the author's
  *   login where it was read.
  *
- * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, by?: readonly string[], prompts?: Record<string, string | undefined>, signOff?: boolean }} Source
+ * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, by?: readonly string[], start?: readonly string[], prompts?: Record<string, string | undefined>, signOff?: boolean }} Source
  *   A served repo's tickets: its reader, its config file's ready, claim and
  *   excluded labels, whose tickets pickup starts (`byOf`,
- *   dispatch/pickup.mjs; `PICKUP_BY` where unset), its prompts, and whether
+ *   dispatch/pickup.mjs; `PICKUP_BY` where unset), who may ready one
+ *   (`startOf`, dispatch/trust.mjs; `START` where unset), its prompts, and whether
  *   its file turns `signOff` on, which the pickup prompt's ask reads.
  */
 
@@ -132,15 +137,20 @@ export const strangerReason = ({ association }) =>
  * source's `by` does not list is recorded there, so the turn can log it.
  * Such a ticket takes no place under the cap, and nothing more is read of it.
  *
- * With `outsiders`, each ticket the selection skips because no person with
- * a say added its ready labels, only its outside author, an issue template
- * or a bot, is recorded there with who added each, so the turn can log it
- * and say so on the ticket. Such a ticket takes no place under the cap.
+ * With `outsiders`, each ticket the selection skips because its outside
+ * author's issue template, a bot or no event added a ready label last is
+ * recorded there with who added each, so the turn can log it and say so on
+ * the ticket. Such a ticket takes no place under the cap.
  *
- * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[], outsiders?: Outsider[], strangers?: Stranger[] }} args
+ * With `unstarted`, each ticket the selection skips because a person the
+ * source's `start` leaves out added a ready label last is recorded there,
+ * and with `unlooked`, each whose adder could not be looked up this turn.
+ * Neither takes a place under the cap.
+ *
+ * @param {{ sources: readonly Source[], cap: number, now: number, windowMs?: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[], outsiders?: Outsider[], strangers?: Stranger[], unstarted?: import('../../dispatch/start.mjs').Unstarted[], unlooked?: import('../../dispatch/start.mjs').Unlooked[] }} args
  * @returns {Promise<Dispatch[]>}
  */
-export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut, unreadable, relative, outsiders, strangers }) => {
+export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WINDOW_MS, only, seen = [], unread, cut, unreadable, relative, outsiders, strangers, unstarted, unlooked }) => {
   /** @type {Set<string>} */
   const failed = new Set();
   /**
@@ -237,18 +247,17 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
       if (record !== undefined && blocking !== null) record.openBlockers = blocking.filter((b) => b.state === 'open').length;
       if (blocking === null || !mayPickUp(ticketStatus(candidate, { labels, now, blockers: blocking }))) return false;
     }
-    // Ready labels an outsider's issue template or a bot added do not
-    // count, so such a ticket takes no place under the cap
-    // (`uncountedReady`). The claim's second read asks again
-    // (dispatch/launch-plan.mjs).
-    if (!authorHasSay(candidate)) {
-      const adds = await read(repo, () => reader.labelAdds(candidate.number));
-      if (adds === null) return false;
-      const uncounted = uncountedReady(candidate, adds, labels.ready);
-      if (uncounted.length > 0) {
-        outsiders?.push({ repo, issue: candidate.number, labels: uncounted, author: candidate.author ?? '', association: candidate.association ?? 'NONE', addedBy: addedBy(adds, uncounted) });
-        return false;
-      }
+    // A ready label counts only when someone in the repo's trust.start, or
+    // governor's App, added it last, so a ticket readied by anyone else
+    // takes no place under the cap (`judgeReady`). The claim's second read
+    // asks again (dispatch/launch-plan.mjs).
+    const judged = await read(repo, () => judgeReady({ reader, repo, ticket: candidate, ready: labels.ready, start: candidate.source.start ?? START }));
+    if (judged === null) return false;
+    if (!judged.counts) {
+      if ('outsider' in judged) outsiders?.push(judged.outsider);
+      else if ('unstarted' in judged) unstarted?.push(judged.unstarted);
+      else unlooked?.push(judged.unread);
+      return false;
     }
     const comments = await read(repo, () => reader.comments(candidate.number, { since }));
     return comments !== null && !recentlyDispatched(comments, now, windowMs);

@@ -1411,6 +1411,127 @@ describe('run: ready labels an outsider\'s issue template or a bot added', () =>
 });
 
 /**
+ * `trust.start`: who may set work going. A ready label counts only when
+ * someone in it, or governor's own App, added it last. Where a repo narrows
+ * it, governor looks the adder up: the repo owner's login is `OWNER`, and
+ * on a user's repo anyone else who can add a label is a `COLLABORATOR`.
+ */
+describe('run: ready labels under a narrowed trust.start', () => {
+  const READY_LABELS = [READY, 'mode: afk'];
+  const blocker = { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' };
+  const FIRES = {
+    'the label webhook': { kind: 'schedule', issue: 9 },
+    'the sweep': { source: 'aws.events' },
+    'a blocker\'s close': { kind: 'unblocked', repo: REPO, issue: 9, blocker, pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' } },
+  };
+  const withStart = (start: string[] | undefined) => {
+    const file = JSON.parse(FACTORY_FILE);
+    if (start !== undefined) file.trust = { ...file.trust, start };
+    return JSON.stringify(file);
+  };
+  const OWNER_ONLY = withStart(['OWNER']);
+  type Add = { label: string, actor: string, bot?: boolean, ours?: boolean };
+  const by = (actor: string, extra: { bot?: boolean, ours?: boolean } = {}): Add[] => READY_LABELS.map((label) => ({ label, actor, bot: false, ours: false, ...extra }));
+  const readied = (adds: Add[], { file = OWNER_ONLY, author = 'acme', association = 'OWNER', thread = [] as Array<{ body: string }>, ownerType = 'User' as string | Error } = {}) => {
+    const base = harness();
+    const looked: string[] = [];
+    const h = harness({
+      configFile: async (repo: string) => (repo === REPO ? file : null),
+      reader: () => ({
+        ...base.deps.reader(''),
+        readyIssues: async () => [{ ...issue(9), author, association }],
+        ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: READY_LABELS, pull: false, author, association }),
+        labelAdds: async () => adds,
+        repoOwnerType: async () => { looked.push('owner'); if (ownerType instanceof Error) throw ownerType; return ownerType; },
+        outsideCollaborators: async () => { looked.push('outside'); return []; },
+        allComments: async () => thread,
+        comment: async (n: number, body: string) => { h.comments.push({ issue: n, body }); },
+        addLabels: async (n: number, labels: string[]) => { h.calls.push(`label #${n} +${labels.join(', ')}`); },
+        removeLabel: async (n: number, label: string) => { h.calls.push(`label #${n} -${label}`); },
+      }),
+    });
+    return { ...h, looked };
+  };
+  const lineFor = (logged: Array<Record<string, unknown>>) => logged.find((l) => ['dispatch-pickup', 'dispatch-unblocked'].includes(String(l.event)) && l.issue === 9 && l.outcome === 'skipped');
+
+  for (const [path, fire] of Object.entries(FIRES)) {
+    test(`${path}: with start set to OWNER, a collaborator's ready label starts nothing, and gets the refusal comment once, at info`, async () => {
+      const h = readied(by('pat'));
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(labelCalls(h.calls), []);
+      const told = h.comments.filter((c) => c.issue === 9);
+      assert.equal(told.length, 1, JSON.stringify(h.comments));
+      assert.ok(told[0]!.body.includes(UNCOUNTED_READY_MARKER));
+      assert.match(told[0]!.body, /`trust\.start`/);
+      assert.match(told[0]!.body, /`pat`/);
+      assert.match(told[0]!.body, /`COLLABORATOR`/);
+      assert.doesNotMatch(told[0]!.body, /@pat/);
+      const line = lineFor(h.logged);
+      assert.ok(line !== undefined, JSON.stringify(h.logged));
+      assert.equal(line.level, 'info');
+      assert.match(String(line.reason), /trust\.start/);
+    });
+
+    test(`${path}: with start set to OWNER, a second readying finds the marker and comments no more`, async () => {
+      const h = readied(by('pat'), { thread: [{ body: `Earlier.\n\n${UNCOUNTED_READY_MARKER}` }] });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 9), []);
+    });
+
+    test(`${path}: with start set to OWNER, the owner's ready label starts work, as a session acting through the owner's account does`, async () => {
+      const h = readied(by('acme'), { author: 'pat', association: 'COLLABORATOR' });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9')]);
+      assert.deepEqual(h.looked, [], 'the owner\'s login is placed with nothing read');
+    });
+
+    test(`${path}: a ready label github-actions[bot] added does not count, even on the owner's ticket, and logs at warn`, async () => {
+      const h = readied(by('github-actions[bot]', { bot: true }));
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      const told = h.comments.filter((c) => c.issue === 9);
+      assert.equal(told.length, 1);
+      assert.match(told[0]!.body, /`github-actions\[bot\]`, a bot/);
+      assert.doesNotMatch(told[0]!.body, /outside the repo/, 'the owner\'s ticket is not called a stranger\'s');
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-pickup' && l.issue === 9 && l.level === 'warn'), JSON.stringify(h.logged));
+    });
+
+    test(`${path}: a lookup that fails counts the label for nothing that turn, logged at warn, with no comment`, async () => {
+      const h = readied(by('pat'), { ownerType: new Error('HTTP 502') });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 9), []);
+      const line = lineFor(h.logged);
+      assert.ok(line !== undefined, JSON.stringify(h.logged));
+      assert.equal(line.level, 'warn');
+      assert.match(String(line.reason), /HTTP 502/);
+    });
+
+    test(`${path}: at the default start, no adder is looked up`, async () => {
+      for (const [association, author] of [['OWNER', 'acme'], ['MEMBER', 'mel']]) {
+        const h = readied(by('pat'), { file: withStart(undefined), author, association });
+        await run(fire, h.deps as never);
+        assert.equal(h.launches.length, 1, association);
+        assert.deepEqual(h.looked, [], association);
+      }
+    });
+  }
+
+  test('a NONE author\'s template readying its own ticket gets the comment, logged at warn, in a repo whose task builds it', async () => {
+    const file = JSON.parse(OWNER_ONLY);
+    delete file.pickup.by;
+    file.trust = { ...file.trust, task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] };
+    const h = readied(by('stranger'), { file: JSON.stringify(file), author: 'stranger', association: 'NONE' });
+    await run({ kind: 'schedule', issue: 9 }, h.deps as never);
+    assert.deepEqual(h.launches, []);
+    assert.equal(h.comments.filter((c) => c.issue === 9).length, 1);
+    assert.equal(lineFor(h.logged)?.level, 'warn');
+  });
+});
+
+/**
  * The CLI resolves the org UUID for each cloud call from
  * CLAUDE_CODE_ORGANIZATION_UUID, then `.claude.json`'s `oauthAccount`, then a
  * profile fetch whose failure it reports as `Unable to get organization
@@ -7074,6 +7195,97 @@ describe('run — every served repo', () => {
       await run({ ...on, author: 'MEMBER' }, h.deps as never);
       assert.deepEqual(h.launches, []);
       assert.equal(h.comments.filter((c) => c.issue === 3).length, 1);
+    });
+  });
+
+  /**
+   * A summons starts a session only when its writer is in the repo's
+   * `trust.start`. An assignment to the summons account is a summons by
+   * its assigner, whom the task looks up where `start` is narrowed: the
+   * repo owner's login is `OWNER`, and on a user's repo anyone else who can
+   * assign is a `COLLABORATOR`.
+   */
+  describe('a summons whose writer trust.start leaves out', () => {
+    const on = { ...summons, on: 3 };
+    const ownerOnly = JSON.stringify({ ...JSON.parse(askmeWith({ summons: true })), trust: { start: ['OWNER'] } });
+    const withLookups = (file: string, { ownerType = 'User' as string | Error, thread = [] as Array<{ body: string }> } = {}) => {
+      const h = twoRepos({ askmeFile: file });
+      const looked: string[] = [];
+      const reader = h.deps.reader;
+      h.deps.reader = ((...a: unknown[]) => ({
+        ...(reader as (...b: unknown[]) => Record<string, unknown>)(...a),
+        allComments: async () => thread,
+        repoOwnerType: async () => { looked.push('owner'); if (ownerType instanceof Error) throw ownerType; return ownerType; },
+        outsideCollaborators: async () => { looked.push('outside'); return []; },
+      })) as never;
+      return { ...h, looked };
+    };
+
+    test('with start set to OWNER, a collaborator\'s summons starts nothing, and gets the refusal comment once, at info', async () => {
+      const h = withLookups(ownerOnly);
+      await run({ ...on, author: 'MEMBER', writer: 'COLLABORATOR' }, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      const told = h.comments.filter((c) => c.issue === 3);
+      assert.equal(told.length, 1, JSON.stringify(h.comments));
+      assert.ok(told[0]!.body.includes(UNCOUNTED_READY_MARKER));
+      assert.match(told[0]!.body, /`trust\.start`/);
+      assert.match(told[0]!.body, /`COLLABORATOR`/);
+      const line = h.logged.find((l) => l.event === 'dispatch-launch' && l.outcome === 'refused');
+      assert.ok(line !== undefined, JSON.stringify(h.logged));
+      assert.equal(line.level, 'info');
+      assert.match(String(line.reason), /trust\.start/);
+    });
+
+    test('a second summons finds the marker and comments no more', async () => {
+      const h = withLookups(ownerOnly, { thread: [{ body: `Earlier.\n\n${UNCOUNTED_READY_MARKER}` }] });
+      await run({ ...on, writer: 'COLLABORATOR' }, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 3), []);
+    });
+
+    test('the owner\'s summons, a session\'s through the owner\'s account among them, starts a session', async () => {
+      const h = withLookups(ownerOnly);
+      await run({ ...on, author: 'MEMBER', writer: 'OWNER' }, h.deps as never);
+      assert.equal(h.launches.length, 1);
+    });
+
+    test('at the default start any of the three starts a session, and a fire queued before the writer was named starts as before', async () => {
+      for (const fire of [{ ...on, writer: 'COLLABORATOR' }, { ...on, writer: 'MEMBER' }, on]) {
+        const h = withLookups(askmeWith({ summons: true }));
+        await run(fire, h.deps as never);
+        assert.equal(h.launches.length, 1, JSON.stringify(fire));
+      }
+    });
+
+    test('an assignment is its assigner\'s summons: the owner\'s starts, a collaborator\'s is refused once', async () => {
+      const owner = withLookups(ownerOnly);
+      await run({ ...on, assigner: 't-d-d' }, owner.deps as never);
+      assert.equal(owner.launches.length, 1);
+      assert.deepEqual(owner.looked, []);
+      const pat = withLookups(ownerOnly);
+      await run({ ...on, assigner: 'pat' }, pat.deps as never);
+      assert.deepEqual(pat.launches, []);
+      const told = pat.comments.filter((c) => c.issue === 3);
+      assert.equal(told.length, 1);
+      assert.match(told[0]!.body, /`pat`/);
+      assert.match(told[0]!.body, /`COLLABORATOR`/);
+    });
+
+    test('at the default start an assigner is not looked up', async () => {
+      const h = withLookups(askmeWith({ summons: true }));
+      await run({ ...on, assigner: 'pat' }, h.deps as never);
+      assert.equal(h.launches.length, 1);
+      assert.deepEqual(h.looked, []);
+    });
+
+    test('an assigner that cannot be looked up starts nothing that turn, logged at warn, with no comment', async () => {
+      const h = withLookups(ownerOnly, { ownerType: new Error('HTTP 502') });
+      await run({ ...on, assigner: 'pat' }, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 3), []);
+      const line = h.logged.find((l) => l.event === 'dispatch-launch' && l.level === 'warn');
+      assert.ok(line !== undefined, JSON.stringify(h.logged));
+      assert.match(String(line.reason), /HTTP 502/);
     });
   });
 

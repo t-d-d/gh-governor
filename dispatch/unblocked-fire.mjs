@@ -22,9 +22,9 @@ import { fireRepoOf } from './repos.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { ROW_SWITCH, UNREADIED_HELD, mayBeUnreadied, notPlannedComment, ownerOutcome, ownerSpecMessage, readyPrompt, readyToTakeOff, rowOf, specPrompt, unblockedMessage, unreadiedSince } from './unblocked.mjs';
 import { relativeAtClose, reportUnreadable } from './waits.mjs';
-import { reportUncounted, reportUntasked } from './uncounted.mjs';
+import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 import { byOf } from './pickup.mjs';
-import { authorKind, autoOf, lets, relayOf } from './trust.mjs';
+import { authorKind, autoOf, lets, relayOf, startOf } from './trust.mjs';
 import { dispatchMarker, lastDispatch } from './webhook/fire.mjs';
 import { relayedBody, sessionNamedIn } from './webhook/subscribe.mjs';
 
@@ -257,11 +257,19 @@ export const planUnblocked = async (invocation, ctx) => {
     const outsiders = [];
     /** @type {import('../scripts/lib/dispatch-router.mjs').Stranger[]} */
     const strangers = [];
-    const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, by: byOf(config), prompts: ctx.prompts, signOff: turnsOn(config, 'signOff') }], cap: 1, now: ctx.now(), only: [issue], outsiders, strangers });
+    /** @type {import('./start.mjs').Unstarted[]} */
+    const unstarted = [];
+    /** @type {import('./start.mjs').Unlooked[]} */
+    const unlooked = [];
+    const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, by: byOf(config), start: startOf(config), prompts: ctx.prompts, signOff: turnsOn(config, 'signOff') }], cap: 1, now: ctx.now(), only: [issue], outsiders, strangers, unstarted, unlooked });
     for (const d of planned) launches.push({ repo: d.repo, issue, claim: true, holdsRepo: true, asked: { prompt: readyPrompt(d.prompt, invocation, ctx.prompts), sessionName: d.sessionName, model: DEFAULT_MODEL } });
     const [outsider] = outsiders;
     const [stranger] = strangers;
-    ctx.log('dispatch-unblocked', { ...about, ...(outsider !== undefined
+    const [refused] = unstarted;
+    const [unknown] = unlooked;
+    if (refused !== undefined) await reportUnstarted({ reader, unstarted: refused, what: 'readied', event: 'dispatch-unblocked', log: (event, context) => ctx.log(event, { ...about, ...context }) });
+    else if (unknown !== undefined) reportUnlooked({ unlooked: unknown, event: 'dispatch-unblocked', log: (event, context) => ctx.log(event, { ...about, ...context }) });
+    else ctx.log('dispatch-unblocked', { ...about, ...(outsider !== undefined
       ? { outcome: 'skipped', reason: outsiderReason(outsider) }
       : stranger !== undefined
         ? { outcome: 'skipped', reason: strangerReason(stranger) }

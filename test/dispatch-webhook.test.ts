@@ -292,6 +292,38 @@ describe('routeEvent — a mention', () => {
     assert.deepEqual([review.on, review.author], [724, 'CONTRIBUTOR']);
   });
 
+  /**
+   * A summons starts a session only when its writer is in the repo's
+   * `trust.start`. The receiver keeps the three as the ceiling, and the fire
+   * carries the writer's association for the task to judge. An assignment
+   * carries no association, so the fire names its assigner, whom the task
+   * looks up where `start` is narrowed.
+   */
+  test('a summons carries its writer\'s association for trust.start', () => {
+    for (const association of ['OWNER', 'MEMBER', 'COLLABORATOR']) {
+      const fire = dispatchOf('issue_comment', commentEvent({}, { author_association: association })) as unknown as { writer?: string, assigner?: string };
+      assert.equal(fire.writer, association);
+      assert.equal(fire.assigner, undefined);
+    }
+    const opened = dispatchOf('issues', issuesEvent('opened', { issue: { ...issuesEvent('opened').issue, body: '@claude look', author_association: 'COLLABORATOR' } })) as unknown as { writer?: string };
+    assert.equal(opened.writer, 'COLLABORATOR', 'an issue opened with a mention is its author\'s summons');
+    const review = dispatchOf('pull_request_review', { action: 'submitted', pull_request: pullRequest, review: { id: 6, body: '@claude fix it', state: 'commented', html_url: 'https://github.com/acme/factory/pull/724#pullrequestreview-6', user: member, author_association: 'OWNER' }, repository: { full_name: REPO } }) as unknown as { writer?: string };
+    assert.equal(review.writer, 'OWNER');
+  });
+
+  test('an assignment to claude carries its assigner\'s login, and no writer', () => {
+    const fire = dispatchOf('issues', issuesEvent('assigned', { assignee: { login: 'claude' }, sender: { login: 'pat', type: 'User' } })) as unknown as { writer?: string, assigner?: string };
+    assert.equal(fire.assigner, 'pat');
+    assert.equal(fire.writer, undefined);
+  });
+
+  test('a summons fire\'s writer and assigner read back, and a bad one is refused', () => {
+    assert.deepEqual(parseFire({ kind: 'dispatch', repo: REPO, prompt: 'p', on: 3, writer: 'COLLABORATOR', assigner: 'pat' }), { kind: 'dispatch', repo: REPO, prompt: 'p', on: 3, writer: 'COLLABORATOR', assigner: 'pat' });
+    for (const bad of [{ writer: 'owner' }, { writer: 1 }, { assigner: '' }, { assigner: 'a b' }, { assigner: 7 }]) {
+      assert.throws(() => parseFire({ kind: 'dispatch', repo: REPO, prompt: 'p', ...bad }), JSON.stringify(bad));
+    }
+  });
+
   test('a summons on an issue governor\'s own App opened carries no author: every list lets it in', () => {
     const decision = route({ event: 'issue_comment', payload: commentEvent({ issue: { number: 717, title: 'An issue', html_url: 'https://github.com/acme/factory/issues/717', user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE', performed_via_github_app: { id: APP_ID } } }), owners: OWNERS, appId: APP_ID });
     const fire = decision.fire as unknown as { kind: string, on?: number, author?: string };

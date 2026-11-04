@@ -10,7 +10,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
-import { AUTO, BOT, RELAY, autoOf, fitsInside, lets, narrowedLists, relayOf, taskOf, trustExposures } from '../dispatch/trust.mjs';
+import { AUTO, BOT, RELAY, START, autoOf, fitsInside, lets, narrowedLists, relayOf, startNarrowed, startOf, taskOf, trustExposures } from '../dispatch/trust.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 const BASE = { environment: 'my-env', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { pickup: true } };
@@ -262,5 +262,41 @@ describe('what a task the file widens exposes', () => {
     assert.match(String(said), /ready/);
     assert.match(String(said), /@claude/);
     assert.doesNotMatch(String(said), /cannot work/);
+  });
+});
+
+describe('trust.start in the config file', () => {
+  test('unset, it is OWNER, MEMBER and COLLABORATOR, and not narrowed', () => {
+    assert.deepEqual([...START], ['OWNER', 'MEMBER', 'COLLABORATOR']);
+    for (const over of [{}, { trust: {} }, { trust: { relay: ['OWNER'] } }, { pickup: { by: ['OWNER'] } }]) {
+      assert.deepEqual(startOf(config(over)), ['OWNER', 'MEMBER', 'COLLABORATOR'], JSON.stringify(over));
+      assert.equal(startNarrowed(config(over)), false, JSON.stringify(over));
+    }
+  });
+
+  test('a file may narrow it', () => {
+    assert.deepEqual(startOf(config({ trust: { start: ['OWNER'] } })), ['OWNER']);
+    assert.equal(startNarrowed(config({ trust: { start: ['OWNER'] } })), true);
+    assert.equal(startNarrowed(config({ trust: { start: ['COLLABORATOR', 'MEMBER', 'OWNER'] } })), false, 'the three in any order narrow nothing');
+  });
+
+  test('any value beyond the three is refused, saying why', () => {
+    for (const value of ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'MANNEQUIN', 'NONE', 'BOT']) {
+      const read = readConfig(file({ trust: { start: ['OWNER', value] } }));
+      assert.ok(!read.ok, value);
+      assert.match(read.fault, /trust\.start/, value);
+      assert.match(read.fault, /OWNER, MEMBER and COLLABORATOR/, value);
+    }
+  });
+
+  test('an empty start is refused: nobody could set work going', () => {
+    assert.ok(!readConfig(file({ trust: { start: [] } })).ok);
+  });
+
+  test('start sits outside the chain: it narrows no other list, and the check warns of nothing', () => {
+    const narrowed = config({ trust: { start: ['OWNER'] } });
+    assert.deepEqual([autoOf(narrowed), taskOf(narrowed), relayOf(narrowed)], [['OWNER', 'MEMBER', 'COLLABORATOR'], ['OWNER', 'MEMBER', 'COLLABORATOR'], [...RELAY]]);
+    assert.deepEqual(narrowedLists(narrowed), []);
+    assert.deepEqual(trustExposures(narrowed), []);
   });
 });
