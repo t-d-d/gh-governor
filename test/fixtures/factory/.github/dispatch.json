@@ -81,7 +81,15 @@
         "success": ["triaged"],
         "failure": ["triage: needs edit"],
         "neutral": ["triage: needs a person"]
-      }
+      },
+      "checklist": { "file": ".github/ticket-review/triage.md" },
+      "types": [
+        {
+          "labels": ["type: bug"],
+          "checklist": { "file": ".github/ticket-review/bug.md" },
+          "conclusions": { "failure": ["triage: needs repro"] }
+        }
+      ]
     }
   ],
   "workflows": {

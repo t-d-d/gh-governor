@@ -784,7 +784,7 @@ describe('the config file\'s hooks', () => {
   test('a hook\'s prompt file is read from the default branch, and a missing one is the file\'s fault', async () => {
     const read = readConfig(withHooks({ hooks: true }, [{ name: 'operator-prod', prompt: { file: 'ops/alarm.md' }, keyVersion: 1 }]));
     assert.ok(read.ok);
-    const files: Record<string, string> = { '.claude/skills/pr-review/SKILL.md': factoryFile('.claude/skills/pr-review/SKILL.md'), 'ops/alarm.md': 'Look into the alarm.\n' };
+    const files: Record<string, string> = Object.fromEntries([...['.claude/skills/pr-review/SKILL.md', '.github/ticket-review/triage.md', '.github/ticket-review/bug.md'].map((path) => [path, factoryFile(path)]), ['ops/alarm.md', 'Look into the alarm.\n']]);
     const resolved = await resolveFiles(read.config, async (path) => files[path] ?? null);
     assert.ok(resolved.ok);
     assert.deepEqual(resolved.config.hooks, [{ name: 'operator-prod', prompt: 'Look into the alarm.', keyVersion: 1 }]);
