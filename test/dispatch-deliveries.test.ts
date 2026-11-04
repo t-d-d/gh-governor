@@ -15,7 +15,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { DELIVER_LAUNCHES, DISPATCHER_LABEL, GITHUB_SOURCE, deliveries, fromDispatcher, hookLabel, hookSource, standingLine } from '../dispatch/deliveries.mjs';
 import { subscribeLine, subscribersFor } from '../dispatch/webhook/subscribe.mjs';
-import { dispatchMarker } from '../dispatch/webhook/fire.mjs';
+import { RELAY, dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { SIGN_OFF } from '../scripts/lib/session-signoff.mjs';
 import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
@@ -63,6 +63,7 @@ const fakes = (over: {
   launchTimeoutMs?: number;
   repo?: string;
   signOff?: boolean;
+  relay?: readonly string[];
 } = {}) => {
   const sent: Message[] = [];
   const untils: number[] = [];
@@ -92,6 +93,7 @@ const fakes = (over: {
     signOff: over.signOff ?? true,
     reader: async () => { readers += 1; return reader as never; },
     repo: over.repo ?? REPO,
+    relay: over.relay ?? RELAY,
     send: async (m: Message, until: number) => {
       sent.push(m);
       untils.push(until);
@@ -377,7 +379,7 @@ describe('deliver — with a fallback', () => {
     const remark = {
       action: 'created',
       repository: { full_name: REPO },
-      issue: { number: 724, title: 'Grant', html_url: 'https://github.com/acme/factory/pull/724', body: f.edits[0]?.body, pull_request: { url: 'https://api.github.com/repos/acme/factory/pulls/724' } },
+      issue: { number: 724, user: { login: 'tdickinson', type: 'User' }, author_association: 'OWNER', title: 'Grant', html_url: 'https://github.com/acme/factory/pull/724', body: f.edits[0]?.body, pull_request: { url: 'https://api.github.com/repos/acme/factory/pulls/724' } },
       comment: { id: 78, body: 'One more thing.', html_url: 'https://github.com/acme/factory/pull/724#issuecomment-78', user: { login: 'tdickinson', type: 'User' }, author_association: 'OWNER' },
     };
     const { fires, reason } = routeEvent({ event: 'issue_comment', payload: remark, owners: ['acme'] });
@@ -491,6 +493,14 @@ describe('deliver — a session\'s standing', () => {
     assert.match(text, /PR #730: Open 730/);
     assert.match(text, /Issue #717: Open 717/);
     assert.doesNotMatch(text, /#724: Open/, 'the PR the message is about is not "else"');
+  });
+
+  test('the search reads bodies under the file\'s relay: a stranger\'s issue naming the session is not counted (subscribe.mjs)', async () => {
+    const lists: unknown[] = [];
+    const narrow = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+    const f = fakes({ relay: narrow, reader: { openNaming: async (_id: string, relay: unknown) => { lists.push(relay); return []; } } });
+    await f.deliver({ session: OWNER }, 'A comment.', { on: [724] });
+    assert.deepEqual(lists, [narrow]);
   });
 
   test('with nothing else open, it says so; a close asks it to sign off; something open asks nothing', async () => {
@@ -730,9 +740,9 @@ describe('deliver — to the owner of a PR', () => {
   const LOCAL = 'https://claude.ai/code/session_01LOCAL';
   const PR = 4492;
   const unnamed = (over: Record<string, unknown> = {}) => ({
-    pull: async (n: number) => ({ number: n, body: UNNAMED, head: BRANCH, open: true }),
+    pull: async (n: number) => ({ number: n, body: UNNAMED, head: BRANCH, open: true, association: 'OWNER' }),
     issue: async (n: number) => ({ number: n, body: UNNAMED, pull: true }),
-    openPulls: async () => [{ number: PR, draft: false, base: 'main', head: BRANCH, title: 'Lessons', html_url: `https://github.com/${REPO}/pull/${PR}`, body: UNNAMED }],
+    openPulls: async () => [{ number: PR, draft: false, base: 'main', head: BRANCH, title: 'Lessons', html_url: `https://github.com/${REPO}/pull/${PR}`, body: UNNAMED, association: 'OWNER' }],
     ...over,
   });
   /** A finder that knows which local session holds each branch, recording what it was asked. */
@@ -787,7 +797,21 @@ describe('deliver — to the owner of a PR', () => {
   });
 
   test('a body that has named its session since the fire was queued: that session is told, and the finder is not asked', async () => {
-    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH, open: true }) }), sessions: () => { throw new Error('not asked'); } });
+    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH, open: true, association: 'OWNER' }) }), sessions: () => { throw new Error('not asked'); } });
+    await f.deliver({ pr: PR }, 'Why?', { on: [PR] });
+    assert.deepEqual(f.sent.map((m) => m.session), ['https://claude.ai/code/session_01NAMED']);
+  });
+
+  test('a body naming a session, opened by an author trust.relay does not let in, names none: the branch\'s session is the owner', async () => {
+    const asked: Array<{ branch: string; bridgeOnly?: boolean }> = [];
+    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH, open: true, author: 'drive-by', association: 'NONE' }) }), sessions: holding({ [BRANCH]: LOCAL }, asked) });
+    await f.deliver({ pr: PR }, 'Why?', { on: [PR] });
+    assert.deepEqual(f.sent.map((m) => m.session), [LOCAL]);
+    assert.equal(asked[0]?.branch, BRANCH, 'the finder is asked');
+  });
+
+  test('where the file\'s relay lets NONE in, the same body names its session', async () => {
+    const f = fakes({ relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT', 'NONE'], reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH, open: true, author: 'drive-by', association: 'NONE' }) }), sessions: () => { throw new Error('not asked'); } });
     await f.deliver({ pr: PR }, 'Why?', { on: [PR] });
     assert.deepEqual(f.sent.map((m) => m.session), ['https://claude.ai/code/session_01NAMED']);
   });
@@ -816,7 +840,7 @@ describe('deliver — to the owner of a PR', () => {
       openPulls: async () => [
         { number: 889, draft: false, base: 'main', head: OTHER, title: 'Second thing', html_url: `https://github.com/${REPO}/pull/889`, body: UNNAMED },
         { number: 895, draft: false, base: 'main', head: 'claude/someone-else', title: 'Not its', html_url: `https://github.com/${REPO}/pull/895`, body: UNNAMED },
-        { number: 901, draft: false, base: 'main', head: OTHER, title: 'Named', html_url: `https://github.com/${REPO}/pull/901`, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01ELSE` },
+        { number: 901, draft: false, base: 'main', head: OTHER, title: 'Named', html_url: `https://github.com/${REPO}/pull/901`, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01ELSE`, association: 'OWNER' },
       ],
     });
     const f = fakes({ reader, sessions: holding({ [BRANCH]: LOCAL, [OTHER]: LOCAL, 'claude/someone-else': 'https://claude.ai/code/session_01SOMEONE' }) });

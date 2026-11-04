@@ -24,7 +24,7 @@
  */
 
 import { HOUR_MS } from './periodics.mjs';
-import { PICKUP_BY } from './webhook/fire.mjs';
+import { taskOf } from './trust.mjs';
 
 /**
  * The interval, in whole hours, for a file that sets none: the clock's own
@@ -62,12 +62,13 @@ export const sweepHoursOf = (config) => config.pickup?.sweepHours ?? SWEEP_HOURS
 /**
  * Whose tickets pickup may start in a repo: the `author_association`
  * values its file lists in `pickup.by`, or `PICKUP_BY`
- * (dispatch/webhook/fire.mjs) where it lists none.
+ * (dispatch/webhook/fire.mjs) where it lists none, narrowed to fit a
+ * `trust.relay` the file sets (`taskOf`, dispatch/trust.mjs).
  *
- * @param {{ pickup?: { by?: readonly string[] } }} config
+ * @param {import('./trust.mjs').TrustConfig} config
  * @returns {readonly string[]}
  */
-export const byOf = (config) => config.pickup?.by ?? PICKUP_BY;
+export const byOf = (config) => taskOf(config);
 
 /**
  * Whether a repo whose last sweep was at `last` (null for none) is due a

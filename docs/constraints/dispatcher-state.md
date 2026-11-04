@@ -19,9 +19,9 @@ group.
   the state table holds records other checks trust. It is built the same
   way. It holds only what the receiver reads and counts: one item per served
   repo, `hooks#<repo>` / `listed`, each hook's name, `keyVersion` and
-  `perHour`, each of the repo's switches and its ready labels as the task
-  read them, which the task puts in one write each time it reads the repo's
-  file; and one
+  `perHour`, each of the repo's switches, its ready labels and its `trust`
+  lists as the task read them, which the task puts in one write each time
+  it reads the repo's file; and one
   item per hook and clock hour, `fires#<repo>#<hook>` / `<hour>`, the
   receiver's count of that hook's fires and the signatures it counted,
   raised by one conditional `UpdateItem` while under the cap and only for a
@@ -34,9 +34,10 @@ group.
 - A missing item means the use's fallback (the first turn after a deploy, a
   lost item); a read that fails means the turn refuses. Never treat a failed
   read as a missing item. The one exception is the receiver's read of a
-  repo's switches and ready labels: a missing item, an item without them
-  and a failed read all queue the fire, which leaves the task to decide, and
-  the failed read is logged at error.
+  repo's switches, ready labels and trust lists: a missing item, an item
+  without them and a failed read all queue the fire, which leaves the task
+  to decide, and judge a message by the default `trust.relay`; the failed
+  read is logged at error.
 - Every use survives a lost item: there is no point-in-time recovery. A new
   deployment starts with an empty table, and every workflow finds its
   baseline in its runs list.
@@ -104,6 +105,18 @@ group.
   delivery's reason says so. A missing item, one without `ready`, malformed
   labels and a failed read queue the selection fire, as for the switches
   (dispatch/webhook/route.mjs).
+- What the receiver knows of whose text reaches a session: the same item's
+  `trust`, a map from each list the receiver reads to its values,
+  `relay` as governor reads the file (`relayOf`, dispatch/trust.mjs),
+  written in the same `PutItem` as the switches and read in the same one
+  read. The receiver drops a message only where its author, or the author
+  of the body that named the session, is outside `OWNER`, `MEMBER` and
+  `COLLABORATOR` and the list, a silent refusal. A missing item, one
+  without `trust` and a failed read judge by the default list; malformed
+  lists are a failed read. The task always judges each message again from
+  the file (dispatch/turn.mjs), so an item the file has since narrowed
+  past lets nothing through. Each list is a key of its own in the map, so
+  another can join it without reshaping the item.
 - A hook's fires this hour: `fires#<repo>#<hook>` / `<hour>` in the hook
   table, raised by the receiver in one `UpdateItem` conditioned on the count
   being under the hook's cap and the request's signature not yet in the
@@ -125,4 +138,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185. The hook table's item holds the repo's `trust` section, written by the task and read by the receiver, which drops a message only where the refusal is silent and reads the defaults when the item lacks the section or the read fails, since #419, under PRD #396.

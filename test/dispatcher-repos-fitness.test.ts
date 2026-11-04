@@ -15,7 +15,7 @@
  */
 
 import { test, describe } from 'node:test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { CONFIG_PATH, GENERIC_SWITCHES, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
 import { repoServed, servedRepos } from '../dispatch/repos.mjs';
@@ -210,7 +210,7 @@ describe('fitness: an unlisted owner queues nothing (dispatcher-repos.md)', () =
   const WATCHER = 'https://claude.ai/code/session_01WATCHES';
   const person = { login: 'someone', type: 'User' };
   const body = `The change.\n\n<!-- governor:subscribe ${WATCHER} -->\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${OWNER}`;
-  const pr = { number: 12, title: 'A change', html_url: 'https://github.com/x/y/pull/12', body, head: { ref: 'claude/x', sha: SHA }, base: { ref: 'main' } };
+  const pr = { number: 12, user: person, author_association: 'OWNER', title: 'A change', html_url: 'https://github.com/x/y/pull/12', body, head: { ref: 'claude/x', sha: SHA }, base: { ref: 'main' } };
   const prIssue = { number: 12, title: 'A change', html_url: 'https://github.com/x/y/pull/12', body, pull_request: { url: 'x' } };
   const issue = { number: 4, title: 'An issue', html_url: 'https://github.com/x/y/issues/4', body: `Filed.\n\n<!-- governor:subscribe ${WATCHER} -->\n\n${OWNER}`, labels: [], user: person, author_association: 'OWNER', assignees: [] };
   const mention = (over: Record<string, unknown> = {}) => ({ id: 7, body: '@claude look at this', html_url: 'https://github.com/x/y/issues/4#c7', user: person, author_association: 'MEMBER', ...over });
@@ -428,4 +428,44 @@ describe('fitness: governor\'s own routes answer to trust.auto, and no route kee
       assert.doesNotMatch(text, /\bSUMMONERS\b/);
     });
   }
+});
+
+/**
+ * A session link or a subscribe line in a body routes text into a session
+ * only where the repo's trust.relay lets the body's author in. Every place
+ * governor reads a session out of a body to route by it goes through the one
+ * gate, `relayedBody` (dispatch/webhook/subscribe.mjs), which hands the
+ * readers an empty body for an author it does not let in.
+ */
+describe('fitness: a body names a session to route by only through relayedBody (dispatcher-repos.md)', () => {
+  const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+  const READERS = /\b(sessionNamedIn|subscribersFor|sessionsNamedIn)\(([^)]*)/g;
+  /**
+   * Reads that route nothing: the PR review's check of whether governor
+   * started the session that wrote a PR, which `trust.review` governs, and
+   * the receiver's, whose bodies are gated where they are read
+   * (`onBody`, `body`) and checked below.
+   */
+  const OUTSIDE = new Set(['dispatch/review.mjs', 'dispatch/webhook/mention.mjs', 'dispatch/webhook/subscribe.mjs']);
+  const files = [
+    ...readdirSync(new URL('../dispatch/', import.meta.url)).filter((f) => f.endsWith('.mjs')).map((f) => `dispatch/${f}`),
+    ...readdirSync(new URL('../dispatch/webhook/', import.meta.url)).filter((f) => f.endsWith('.mjs')).map((f) => `dispatch/webhook/${f}`),
+    ...readdirSync(new URL('../scripts/lib/', import.meta.url)).filter((f) => f.endsWith('.mjs')).map((f) => `scripts/lib/${f}`),
+  ];
+
+  for (const path of files.filter((f) => !OUTSIDE.has(f))) {
+    const calls = [...source(path).matchAll(READERS)];
+    if (calls.length === 0) continue;
+    test(`${path} reads a body's sessions only through relayedBody`, () => {
+      for (const [call, , arg] of calls) assert.match(String(arg), /^relayedBody\(/, `${path}: ${call}`);
+    });
+  }
+
+  test('the receiver reads no payload\'s body for its sessions without the gate', () => {
+    const text = source('dispatch/webhook/mention.mjs');
+    for (const [call, , arg] of text.matchAll(READERS)) assert.doesNotMatch(String(arg), /\?\.body|\.body\b/, call);
+    assert.match(text, /const onBody = relayedBody\(/);
+    assert.match(text, /body: relayedBody\(\{ body: issue\?\.body/);
+    assert.match(text, /body: relayedBody\(\{ body: pr\?\.body/);
+  });
 });

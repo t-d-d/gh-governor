@@ -162,6 +162,50 @@ export const ASSOCIATIONS = /** @type {const} */ (['OWNER', 'MEMBER', 'COLLABORA
  */
 export const PICKUP_BY = Object.freeze([...SUMMONERS]);
 
+/** The value a trust list names for any account GitHub marks as a bot. */
+export const BOT = 'BOT';
+
+/** Every value a trust list may name (dispatch/trust.mjs). */
+export const TRUST_VALUES = /** @type {const} */ ([...ASSOCIATIONS, BOT]);
+
+const TRUST_SET = /** @type {ReadonlySet<string>} */ (new Set(TRUST_VALUES));
+
+/**
+ * Whose text may reach a session that is already running where a repo's
+ * file sets no `trust.relay`: the authors with a say, and any bot, since a
+ * review bot's findings are what a session waits for.
+ *
+ * @type {readonly string[]}
+ */
+export const RELAY = Object.freeze([...SUMMONERS, BOT]);
+
+/**
+ * The author of an issue, a PR or a remark, as a trust list judges it:
+ * `author`, its login; `association`, its `author_association`; `bot`,
+ * whether GitHub marks its account as a bot (its user's `type`); `own`,
+ * whether governor's own App wrote it, which every list lets in.
+ *
+ * @typedef {{ author?: string, association?: string, bot?: boolean, own?: boolean }} Author
+ */
+
+/**
+ * What an author counts as in a trust list: `BOT` for an account GitHub
+ * marks as a bot (`bot`) or whose login ends in `[bot]`, as a GitHub App's
+ * does, else its `author_association`, `NONE` where none was read.
+ *
+ * @param {Author} row
+ */
+export const authorKind = ({ author, association, bot }) => (bot === true || /\[bot\]$/.test(String(author ?? '')) ? BOT : String(association ?? 'NONE'));
+
+/**
+ * Whether `list` lets an author in. Governor's own App (`own`) is never
+ * judged: every list lets it in.
+ *
+ * @param {readonly string[]} list
+ * @param {Author} row
+ */
+export const lets = (list, row) => row.own === true || list.includes(authorKind(row));
+
 /** Dependabot's login: its bumps are reviewed by the Dependabot list, though it summons nothing, and no session owns them. */
 export const DEPENDABOT = 'dependabot[bot]';
 
@@ -293,13 +337,19 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  * @typedef {{ kind: 'probe' }} ProbeFire
  * @typedef {{ kind: 'dispatch', prompt: string, sessionName?: string, model?: string, scheduled?: ScheduledRun }} DispatchFire
  *   `scheduled`: the scheduled run gone red the session is for (route.mjs).
- * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true }
+ * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[] }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
  *   `subscribed`: the session hears by subscription, a `governor:subscribe`
  *   line or as an issue's filer, which the repo's subscribe-messages switch
  *   turns on; without it, it is the PR's owner, whose is the PR-messages
  *   switch (dispatch/repo-config.mjs).
+ *   `authors`: what the receiver judged the fire by under the repo's
+ *   `trust.relay`, each a trust value ({@link authorKind}): who wrote what
+ *   it relays, and who opened the issue or PR whose body named the session
+ *   or that an event is on. Governor's own App is never among them. The
+ *   task judges them again from the file. A fire queued before the
+ *   receiver judged by them carries none, and was judged by the default.
  * @typedef {{ kind: 'workflow', name: string, path?: string, branch: string, event?: string, runId: number, url: string, conclusion: string, headSha: string, runAttempt?: number }} WorkflowFire
  *   A run of any workflow on the default branch, `branch`, that ended red;
  *   `path`: its file, where the run named one; `event`: what started it.
@@ -373,10 +423,11 @@ export const build = Object.freeze({
    * @param {({ session: string, byBranch?: undefined, poster?: undefined } | { session?: undefined, byBranch: true, poster?: string | undefined }) & {
    *   text: string, on?: number | undefined, event?: SubscriptionEvent | undefined, commit?: string | undefined,
    *   closing?: boolean | undefined, subscribed?: boolean | undefined, fallback?: Fallback | undefined,
+   *   authors?: string[] | undefined,
    * }} args
    * @returns {MessageFire}
    */
-  message: ({ session, byBranch, poster, text, on, event, commit, closing, subscribed, fallback }) => /** @type {MessageFire} */ ({
+  message: ({ session, byBranch, poster, text, on, event, commit, closing, subscribed, fallback, authors }) => /** @type {MessageFire} */ ({
     kind: 'message',
     ...(byBranch === true ? { byBranch, ...present({ poster }) } : { session }),
     text,
@@ -386,6 +437,7 @@ export const build = Object.freeze({
       commit,
       closing: closing === true ? /** @type {true} */ (true) : undefined,
       subscribed: subscribed === true ? /** @type {true} */ (true) : undefined,
+      authors,
       fallback: fallback && present(fallback),
     }),
   }),
@@ -714,6 +766,9 @@ const parseMessage = (e, event) => {
   if (e.subscribed !== undefined && e.subscribed !== true) {
     throw new Error(`a message invocation's subscribed is true or absent, got: ${JSON.stringify(e.subscribed)}`);
   }
+  if (e.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => TRUST_SET.has(String(a)) && typeof a === 'string'))) {
+    throw new Error(`a message invocation's authors are trust values, got: ${JSON.stringify(e.authors)}`);
+  }
   const to = e.byBranch === true
     ? { byBranch: /** @type {true} */ (true), on: Number(e.on), ...(typeof e.poster === 'string' ? { poster: e.poster } : {}) }
     : { session: /** @type {string} */ (e.session) };
@@ -727,6 +782,7 @@ const parseMessage = (e, event) => {
     ...(e.commit === undefined ? {} : { commit: e.commit }),
     ...(e.closing === true ? { closing: /** @type {true} */ (true) } : {}),
     ...(e.subscribed === true ? { subscribed: /** @type {true} */ (true) } : {}),
+    ...(e.authors === undefined ? {} : { authors: /** @type {string[]} */ ([...e.authors]) }),
   };
 };
 

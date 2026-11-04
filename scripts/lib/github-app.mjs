@@ -16,7 +16,7 @@
 import { createSign } from 'node:crypto';
 import { postedByApp } from '../../dispatch/webhook/review-comment.mjs';
 import { closedBy } from '../../dispatch/pr-body.mjs';
-import { sessionId, sessionsNamedIn } from '../../dispatch/webhook/subscribe.mjs';
+import { relayedBody, sessionId, sessionsNamedIn } from '../../dispatch/webhook/subscribe.mjs';
 import { waitOf } from './ready-work.mjs';
 import { lets } from '../../dispatch/trust.mjs';
 
@@ -241,8 +241,9 @@ const labelNames = (row) =>
  *   `wait`: what its body's `Blocked until:` line says, where it has one (`waitOf`).
  * @typedef {{ number: number, state: string, title: string, id?: number }} BlockerRow
  * @typedef {{ id: number, body: string, created_at: string }} CommentRow
- * @typedef {{ number: number, title: string, html_url: string, body: string, merged_at: string | null, merge_commit_sha: string | null, head: string, author: string }} PullRow
- *   `head`: its head branch, '' for a fork's; `author`: the login that opened it.
+ * @typedef {{ number: number, title: string, html_url: string, body: string, merged_at: string | null, merge_commit_sha: string | null, head: string } & Required<import('../../dispatch/webhook/fire.mjs').Author>} PullRow
+ *   `head`: its head branch, '' for a fork's; `author`: the login that opened it, with its
+ *   `association`, whether it is a bot, and whether governor's own App opened it (`own`).
  * @typedef {{ name: string, conclusion: string | null, html_url: string }} JobRow
  * @typedef {{ id: number, status: string, conclusion: string | null, event: string, head_branch: string | null, head_sha: string, html_url: string, created_at: string }} RunRow
  * @typedef {RunRow & { path: string, run_attempt: number }} RunDetail One run read by id: a RunRow and its workflow file.
@@ -256,7 +257,7 @@ const labelNames = (row) =>
  * @typedef {{ number: number, id?: number, title: string, body: string, state: string, labels: string[], pull: boolean, created_at?: string, openBlockers?: number, wait?: import('./ready-work.mjs').Wait, author?: string, association?: string }} TicketRow
  *   `author`: the login that opened it; `association`: its `author_association`.
  * @typedef {{ id: number, body: string, created_at: string, ours: boolean }} ThreadRow `ours`: the reader's own App posted it.
- * @typedef {{ number: number, draft: boolean, base: string, head: string, headSha: string, title: string, html_url: string, body: string }} OpenPullRow
+ * @typedef {{ number: number, draft: boolean, base: string, head: string, headSha: string, title: string, html_url: string, body: string } & Required<import('../../dispatch/webhook/fire.mjs').Author>} OpenPullRow
  */
 
 /** How a check run, or a workflow run, ends that blocks a merge on a check it is. */
@@ -389,9 +390,23 @@ const after = (rows, field, since, by) => {
  * conflict check's: the open PRs, and the commit main is at.
  *
  * @param {{ token: string, repo: string, appId?: number, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown> }} args
- * `appId`: the App the token is an installation of, whose comments `allComments` marks.
+ * `appId`: the App the token is an installation of, whose comments `allComments` marks,
+ * and whose issues and PRs every trust list lets in (`own`).
  */
 export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sleep = realSleep }) => {
+  /**
+   * The author of an issue or PR row, as a trust list judges it
+   * (dispatch/webhook/fire.mjs): `NONE` where GitHub gave no association.
+   *
+   * @param {any} row
+   * @returns {Required<import('../../dispatch/webhook/fire.mjs').Author>}
+   */
+  const authorOf = (row) => ({
+    author: String(row?.user?.login ?? ''),
+    association: String(row?.author_association ?? 'NONE'),
+    bot: row?.user?.type === 'Bot',
+    own: postedByApp(row, appId),
+  });
   /**
    * A pull request's head branch, or '' for one on a fork (or a deleted
    * fork): a fork's branch is not this repository's, and a session holding
@@ -402,8 +417,10 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
   const headOf = (row) => (String(row?.head?.repo?.full_name ?? '').toLowerCase() === repo.toLowerCase() ? String(row.head.ref ?? '') : '');
 
   const call = githubApi({ token, fetch, sleep });
-  /** Every open issue and PR, with the ids of the sessions its body names, read once for `openNaming`. @type {Promise<Array<OpenRow & { sessions: Set<string> }>> | null} */
+  /** Every open issue and PR, its body and its author, read once for `openNaming`. @type {Promise<Array<OpenRow & { body: unknown } & import('../../dispatch/webhook/fire.mjs').Author>> | null} */
   let openRows = null;
+  /** Each open issue's and PR's sessions under a trust list, keyed by the list, each body read once per list. @type {Map<string, Promise<Array<OpenRow & { sessions: Set<string> }>>>} */
+  const openSessions = new Map();
   /**
    * An issue's `event` rows that name a label, oldest first: the one read
    * behind `labelAdds` and `labelRemovals`.
@@ -638,7 +655,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     /** A pull request's body, a null one as '', its head branch ({@link headOf}), and whether it is open, neither closed nor merged. @param {number} number @returns {Promise<{ number: number, body: string, head: string, open: boolean }>} */
     pull: async (number) => {
       const row = await call('GET', `/repos/${repo}/pulls/${number}`);
-      return { number: row.number, body: row.body ?? '', head: headOf(row), open: row.state === 'open' };
+      return { number: row.number, body: row.body ?? '', head: headOf(row), open: row.state === 'open', ...authorOf(row) };
     },
 
     /** Rewrite a pull request's body. @param {number} number @param {{ body: string }} change */
@@ -665,22 +682,30 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
 
     /**
      * The open issues and PRs whose body names `session` (its link or id)
-     * as its owner or in a subscribe line ({@link sessionsNamedIn}). A
-     * member's body that quotes or cites the session is not one. Read from
+     * as its owner or in a subscribe line ({@link sessionsNamedIn}), where
+     * `relay`, the repo's `trust.relay`, lets the body's author in
+     * (`relayedBody`). A member's body that quotes or cites the session is
+     * not one, nor a stranger's that names it. Read from
      * the issues list, which carries PRs too and is on the core rate limit,
      * once per reader (one per turn), each body read for its sessions once,
      * and filtered here: the search API allows an installation about thirty
      * calls a minute, which the App's other callers spend too.
      *
      * @param {string} session
+     * @param {readonly string[]} relay
      * @returns {Promise<OpenRow[]>}
      */
-    openNaming: async (session) => {
-      openRows ??= allPages(call, `/repos/${repo}/issues`, { state: 'open' })
-        .then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: Boolean(row.pull_request), sessions: sessionsNamedIn(row.body) })))
-        .catch((error) => { openRows = null; throw error; });
+    openNaming: async (session, relay) => {
+      const read = openRows ??= allPages(call, `/repos/${repo}/issues`, { state: 'open' })
+        .then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: Boolean(row.pull_request), body: row.body, ...authorOf(row) })))
+        .catch((error) => { openRows = null; openSessions.clear(); throw error; });
+      const key = relay.join(',');
+      let named = openSessions.get(key);
+      if (named === undefined) {
+        openSessions.set(key, named = read.then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: row.pull, sessions: sessionsNamedIn(relayedBody(row, relay)) }))));
+      }
       const id = sessionId(session);
-      return (await openRows).filter((row) => row.sessions.has(id)).map(({ sessions: _sessions, ...row }) => row);
+      return (await named).filter((row) => row.sessions.has(id)).map(({ sessions: _sessions, ...row }) => row);
     },
 
     /**
@@ -718,7 +743,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         merged_at: row.merged_at ?? null,
         merge_commit_sha: row.merge_commit_sha ?? null,
         head: headOf(row),
-        author: String(row.user?.login ?? ''),
+        ...authorOf(row),
       }));
     },
 
@@ -1001,6 +1026,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         title: String(row.title ?? ''),
         html_url: String(row.html_url ?? ''),
         body: row.body ?? '',
+        ...authorOf(row),
       })),
 
     /** The commit a branch is at. @param {string} branch @returns {Promise<string>} */

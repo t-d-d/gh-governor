@@ -51,11 +51,11 @@
 
 import { closedBy } from './pr-body.mjs';
 import { pathsMatch, shippingLabelsOf, ticketLabelOf } from './labels.mjs';
-import { FAILED, LABEL_PREFIX, WORKFLOW_PATH } from './webhook/fire.mjs';
+import { FAILED, LABEL_PREFIX, WORKFLOW_PATH, authorKind, lets } from './webhook/fire.mjs';
 import {
   BASELINE_READS_MAX, OUT_OF_READS, STALE_RUNS_PAUSES_MS, baselineIn, builtCommit, freshRuns, rangeSince, shippedNothing, shipsAs, short, stoppedAt,
 } from './runs.mjs';
-import { sameSession, sessionId, subscribersFor } from './webhook/subscribe.mjs';
+import { relayedBody, sameSession, sessionId, subscribersFor } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { isCi } from './repo-config.mjs';
 
@@ -149,13 +149,17 @@ export const byMerge = (a, b) => String(a.merged_at).localeCompare(String(b.merg
  * The sessions `prs` name for `event`, each with the PRs it wrote and those
  * it subscribes to, oldest merge first. A PR naming none has its owner
  * looked up by head branch; one still with nobody is `unnamed`. `owned`:
- * the PRs a session wrote.
+ * the PRs a session wrote. A PR whose author `relay`, the repo's
+ * `trust.relay`, does not let in is `unnamed` too, its head branch not
+ * looked up: a deploy or a red run is an event on it, judged by its author,
+ * and its body names no session ({@link relayedBody}).
  *
  * @param {PullRow[]} prs
  * @param {'ci' | 'deploys'} event
  * @param {((branch: string) => Promise<string | null>) | undefined} onBranch
+ * @param {readonly string[]} relay
  */
-const sessionsOf = async (prs, event, onBranch) => {
+const sessionsOf = async (prs, event, onBranch, relay) => {
   /** @type {Map<string, Heard>} */
   const sessions = new Map();
   /** @type {Set<number>} */
@@ -163,7 +167,11 @@ const sessionsOf = async (prs, event, onBranch) => {
   /** @type {Array<{ pr: number, reason: string }>} */
   const unnamed = [];
   for (const pr of [...prs].sort(byMerge)) {
-    let subscribers = subscribersFor(pr.body, event);
+    if (!lets(relay, pr)) {
+      unnamed.push({ pr: pr.number, reason: `PR #${pr.number} is by ${pr.author || 'someone'} (${authorKind(pr)}), whom the repo's trust.relay does not let in: nobody hears of its ${event}` });
+      continue;
+    }
+    let subscribers = subscribersFor(relayedBody(pr, relay), event);
     /** Why the PR has no owner, where it has none. @type {string} */
     let ownerless = 'a person\'s, or its footer is gone';
     let lookupFailed = false;
@@ -293,24 +301,26 @@ const noBaseline = (what, runId, file, branch, got) =>
  *   reader: WorkflowReader,
  *   repo: string,
  *   workflows: Workflows,
+ *   relay: readonly string[],
  *   sleep: (ms: number) => Promise<void>,
  *   cursor: (workflow: string, label: string | null) => Promise<Cursor | null>,
  *   onBranch?: (branch: string) => Promise<string | null>,
  * }} args `workflows`: the repo's config file's (dispatch/repo-config.mjs).
+ *   `relay`: its `trust.relay` (dispatch/trust.mjs), whose PRs' sessions hear.
  *   `sleep`: the pause before a stale runs list is read again.
  *   `cursor`: the cursor of `label` under `workflow` (CI's is label-less),
  *   null when it has none; a read that fails throws. `onBranch`: the live
  *   session holding a branch, or null; a lookup that fails throws.
  * @returns {Promise<Coverage>}
  */
-export const coverageOf = async ({ invocation, reader, repo, workflows, sleep, cursor, onBranch }) => {
+export const coverageOf = async ({ invocation, reader, repo, workflows, relay, sleep, cursor, onBranch }) => {
   const { name, runId } = invocation.kind === 'job' ? { name: invocation.workflow, runId: invocation.runId } : invocation;
   const { branch } = invocation;
   /** @type {Coverage} */
   const facts = {
     reason: null, stale: null, workflow: null, label: null, declared: null, jobs: [], from: null, at: null, baseline: null, range: null,
     merges: [], shipped: [], picked: [], closes: new Map(),
-    sessions: (prs, event) => sessionsOf(prs, event, onBranch),
+    sessions: (prs, event) => sessionsOf(prs, event, onBranch, relay),
   };
   /** @param {string} reason @param {Partial<Coverage>} [more] @returns {Coverage} */
   const stop = (reason, more = {}) => ({ ...facts, ...more, reason });
