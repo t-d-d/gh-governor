@@ -45,20 +45,32 @@ export function dispatchAppEventFindings({ slug, events, declared = HOOK_EVENTS 
 }
 
 /**
- * The events GitHub says the App subscribes to, or undefined for no such App.
+ * What GitHub's public App endpoint answers for the App, or undefined for no
+ * such App. The app-permissions check reads the same answer.
  *
  * @param {string} slug
- * @returns {Promise<string[] | undefined>}
+ * @returns {Promise<{ events?: unknown, permissions?: unknown } | undefined>}
  */
-async function readAppEvents(slug) {
+export async function readApp(slug) {
   const response = await fetch(`https://api.github.com/apps/${encodeURIComponent(slug)}`, {
     headers: { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' },
     signal: AbortSignal.timeout(READ_TIMEOUT_MS),
   });
   if (response.status === 404) return undefined;
   if (!response.ok) throw new Error(`GET /apps/${slug} failed: ${response.status} ${response.statusText}`);
-  const body = /** @type {{ events?: unknown }} */ (await response.json());
-  return Array.isArray(body.events) ? body.events.map(String) : [];
+  return /** @type {{ events?: unknown, permissions?: unknown }} */ (await response.json());
+}
+
+/**
+ * The events GitHub says the App subscribes to, or undefined for no such App.
+ *
+ * @param {string} slug
+ * @returns {Promise<string[] | undefined>}
+ */
+async function readAppEvents(slug) {
+  const app = await readApp(slug);
+  if (app === undefined) return undefined;
+  return Array.isArray(app.events) ? app.events.map(String) : [];
 }
 
 /**
