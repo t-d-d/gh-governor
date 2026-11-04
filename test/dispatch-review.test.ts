@@ -55,7 +55,7 @@ const ciRun = (over: Partial<CiRun> = {}): CiRun => ({
 
 const harness = (over: {
   pulls?: Record<number, Pull | Pull[]>,
-  open?: Array<{ number: number, draft: boolean, body?: string }>,
+  open?: Array<{ number: number, draft: boolean, body?: string, headSha?: string }>,
   thread?: Thread[],
   /** Each PR's own thread, over `thread`. */
   threads?: Record<number, Thread[]>,
@@ -434,6 +434,47 @@ describe('run — what reaches the owner session', () => {
     assert.deepEqual(result.reviews.map((r) => [r.pr, r.outcome]), [[767, 'commented'], [773, 'commented']]);
     assert.ok(!h.logged.some((l) => 'untold' in l), JSON.stringify(h.logged));
     for (const { body } of h.comments) assert.ok(receiverFires(body)[0]?.fallback, 'each comment\'s fire carries the fallback');
+  });
+
+  // A check run or a status names a commit, and a fork's PR is not listed on
+  // a run's payload, so the receiver's fire carries the commit alone.
+  test('a review fire carrying a commit reviews each open PR whose head is that commit, at that head, and nothing else', async () => {
+    const OTHER = 'c'.repeat(40);
+    const h = harness({
+      open: [
+        { number: 767, draft: false, headSha: HEAD },
+        { number: 773, draft: false, headSha: OTHER },
+        { number: 774, draft: false, headSha: HEAD },
+      ],
+      pulls: { 767: pullRow(), 774: pullRow({ number: 774, html_url: `https://github.com/${REPO}/pull/774` }) },
+    });
+    const result = await review({ kind: 'review', headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => r.pr), [767, 774]);
+    assert.ok(!h.reads.includes(773), 'a PR at another head is not read');
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  // The push's own fire posted the `neutral` check at this head: one per
+  // check that ends would pile up a check run each.
+  test('a review fire carrying a commit posts no second neutral check on a PR whose author may not summon governor', async () => {
+    const h = harness({ open: [{ number: 767, draft: false, headSha: HEAD }], pulls: { 767: pullRow({ association: 'CONTRIBUTOR' }) } });
+    const result = await review({ kind: 'review', headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => [r.pr, r.outcome]), [[767, 'skipped']]);
+    assert.match(String(result.reviews[0]!.reason), /CONTRIBUTOR/);
+    assert.deepEqual(h.checkRuns, []);
+    const named = harness({ pulls: { 767: pullRow({ association: 'CONTRIBUTOR' }) } });
+    await review({ kind: 'review', pr: 767, headSha: HEAD }, named);
+    assert.deepEqual(named.checkRuns.map((c) => c.state), ['neutral'], 'a fire naming the PR still posts it');
+  });
+
+  test('a review fire carrying a commit no open PR is at reviews nothing', async () => {
+    const h = harness({ open: [{ number: 767, draft: false, headSha: 'c'.repeat(40) }] });
+    const result = await review({ kind: 'review', headSha: HEAD }, h);
+    assert.deepEqual(result.reviews, []);
+    assert.deepEqual(h.reads, []);
+    assert.deepEqual(h.checkRuns, []);
+    assert.deepEqual(h.comments, []);
+    assert.equal(exitCodeFor(result as never), 0);
   });
 
   test('the owner\'s fire, refused, starts the fallback in its own turn: a fresh session told to take the PR over', async () => {

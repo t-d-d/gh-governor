@@ -1205,6 +1205,27 @@ describe('routeEvent — a workflow run', () => {
     workflow_run: { id: 500, name: 'CI', head_branch: 'main', head_sha: SHA, status: 'completed', conclusion: 'failure', html_url: `https://github.com/${REPO}/actions/runs/500`, event: 'push', run_attempt: 1, ...over },
     repository: { full_name: REPO, default_branch: 'main' },
   });
+  // A run that finished off the default branch also queues a review of its
+  // commit (the next test). The tests after it read the rest of its fires.
+  const runFires = (args: Parameters<typeof routeEvent>[0]) => {
+    const decision = routeEvent(args);
+    return { ...decision, fires: decision.fires.filter((f) => f.fire.kind !== 'review') };
+  };
+  const routeRun = (args: Parameters<typeof routeEvent>[0]) => {
+    const { fires, reason } = runFires(args);
+    assert.ok(fires.length <= 1, `expected at most one fire, got ${fires.length}: ${reason}`);
+    return { fire: fires[0]?.fire, reason: fires[0]?.reason ?? reason };
+  };
+
+  test('a run that finished off the default branch, whatever started it and however it ended, queues one review of the commit it ran on', () => {
+    for (const [event, conclusion] of [['pull_request', 'success'], ['push', 'failure'], ['workflow_dispatch', 'cancelled']] as const) {
+      const { fires, reason } = routeEvent({ event: 'workflow_run', payload: workflowRun({ head_branch: 'claude/a-branch', event, conclusion }), owners: OWNERS });
+      assert.deepEqual(fires.filter((f) => f.fire.kind === 'review').map((f) => f.fire), [{ kind: 'review', headSha: SHA, repo: REPO }], reason);
+    }
+    for (const payload of [workflowRun({ head_branch: 'main' }), workflowRun({ head_branch: 'claude/a-branch' }, 'in_progress'), workflowRun({ head_branch: 'claude/a-branch', head_sha: 'main' })]) {
+      assert.deepEqual(routeEvent({ event: 'workflow_run', payload, owners: OWNERS }).fires.filter((f) => f.fire.kind === 'review'), [], JSON.stringify(payload));
+    }
+  });
 
   test('a red CI run on main, and a red run of a deploy workflow, queue a workflow fire naming the run', () => {
     for (const [name, event] of [['CI', 'push'], ['Deliver', 'workflow_run'], ['Deliver', 'workflow_dispatch'], ['Dispatch stack', 'push']] as const) {
@@ -1295,7 +1316,7 @@ describe('routeEvent — a workflow run', () => {
       workflowRun({ name: 'Deliver', conclusion: 'cancelled' }),
       workflowRun({ head_branch: 'claude/a-branch' }),
     ]) {
-      const decision = route({ event: 'workflow_run', payload, owners: OWNERS });
+      const decision = routeRun({ event: 'workflow_run', payload, owners: OWNERS });
       assert.equal(decision.fire, undefined, JSON.stringify(payload.workflow_run));
       assert.ok(decision.reason.length > 0);
     }
@@ -1311,14 +1332,14 @@ describe('routeEvent — a workflow run', () => {
 
     test('finished, whatever the workflow and whatever it concluded, queues a branch-run fire naming the run and its branch', () => {
       for (const [name, conclusion] of [['Emulator', 'success'], ['Device', 'failure'], ['Apple E2E', 'timed_out'], ['CI', 'cancelled'], ['E2E', 'startup_failure']] as const) {
-        const { fires, reason } = routeEvent({ event: 'workflow_run', payload: dispatched({ name, conclusion }), owners: OWNERS });
+        const { fires, reason } = runFires({ event: 'workflow_run', payload: dispatched({ name, conclusion }), owners: OWNERS });
         assert.deepEqual(fires.map((f) => f.fire), [{ kind: 'branch-run', name, runId: 500, url: `https://github.com/${REPO}/actions/runs/500`, conclusion, headSha: SHA, branch: BRANCH, runAttempt: 1, repo: REPO }], reason);
         assert.doesNotThrow(() => parseFire(fires[0]!.fire), 'what the receiver queues, the task accepts');
       }
     });
 
     test('a re-run is told too: the session that re-ran it waits on it', () => {
-      const { fire, reason } = route({ event: 'workflow_run', payload: dispatched({ run_attempt: 2 }), owners: OWNERS });
+      const { fire, reason } = routeRun({ event: 'workflow_run', payload: dispatched({ run_attempt: 2 }), owners: OWNERS });
       assert.deepEqual(fire, { kind: 'branch-run', name: 'Emulator', runId: 500, url: `https://github.com/${REPO}/actions/runs/500`, conclusion: 'success', headSha: SHA, branch: BRANCH, runAttempt: 2, repo: REPO }, reason);
     });
 
@@ -1348,7 +1369,7 @@ describe('routeEvent — a workflow run', () => {
         dispatched({ html_url: 'http://github.com/x' }),
         dispatched({ conclusion: null }),
       ]) {
-        const decision = route({ event: 'workflow_run', payload, owners: OWNERS });
+        const decision = routeRun({ event: 'workflow_run', payload, owners: OWNERS });
         assert.equal(decision.fire, undefined, JSON.stringify(payload.workflow_run));
         assert.ok(decision.reason.length > 0);
       }
@@ -1360,7 +1381,7 @@ describe('routeEvent — a workflow run', () => {
     });
 
     test('its fire fits on the lane, whatever the branch and workflow are called', () => {
-      const { fire } = route({ event: 'workflow_run', payload: dispatched({ name: 'W'.repeat(1000), head_branch: `claude/${'b'.repeat(250)}` }), owners: OWNERS });
+      const { fire } = routeRun({ event: 'workflow_run', payload: dispatched({ name: 'W'.repeat(1000), head_branch: `claude/${'b'.repeat(250)}` }), owners: OWNERS });
       assert.ok(fireWeight(fire) <= FIRE_BUDGET, `${fireWeight(fire)} bytes`);
       assert.doesNotThrow(() => parseFire(fire));
     });
@@ -1805,20 +1826,82 @@ describe('routeEvent — every served repo', () => {
   });
 
   // A required check pending at the push is read again when its run ends.
-  test('a finished run on a PR\'s head queues a review fire for each PR it lists, at the head it ran on', () => {
+  // The fire carries the commit alone: a fork's PR is not on the payload.
+  test('a finished run on a PR\'s head queues one review fire carrying the commit it ran on, whether or not its payload lists a PR', () => {
     const head = 'c'.repeat(40);
     const prs = [{ number: 12, head: { ref: 'claude/x', sha: head }, base: { ref: 'trunk' } }, { number: 13, head: { ref: 'claude/x', sha: head }, base: { ref: 'trunk' } }];
-    for (const conclusion of ['success', 'failure']) {
-      const decision = firesOf('workflow_run', run({ head_branch: 'claude/x', head_sha: head, event: 'pull_request', conclusion, pull_requests: prs }), ASKME, 'trunk');
-      const reviews = decision.fires.filter((f) => f.fire.kind === 'review');
-      assert.deepEqual(reviews.map((f) => f.fire), [{ kind: 'review', pr: 12, headSha: head, repo: ASKME }, { kind: 'review', pr: 13, headSha: head, repo: ASKME }], conclusion);
-      assert.equal(new Set(reviews.map((f) => f.key)).size, 2, 'each PR its own fire on the one delivery');
-      for (const f of reviews) assert.doesNotThrow(() => parseFire(f.fire));
+    for (const listed of [prs, [], undefined]) {
+      for (const conclusion of ['success', 'failure']) {
+        const decision = firesOf('workflow_run', run({ head_branch: 'claude/x', head_sha: head, event: 'pull_request', conclusion, ...(listed === undefined ? {} : { pull_requests: listed }) }), ASKME, 'trunk');
+        const reviews = decision.fires.filter((f) => f.fire.kind === 'review');
+        assert.deepEqual(reviews.map((f) => f.fire), [{ kind: 'review', headSha: head, repo: ASKME }], `${conclusion}, ${JSON.stringify(listed)}`);
+        for (const f of reviews) assert.doesNotThrow(() => parseFire(f.fire));
+      }
     }
     const unfinished = firesOf('workflow_run', { ...run({ head_branch: 'claude/x', event: 'pull_request', pull_requests: prs }), action: 'in_progress' }, ASKME, 'trunk');
     assert.deepEqual(unfinished.fires.filter((f) => f.fire.kind === 'review'), []);
     const onDefault = firesOf('workflow_run', run({ head_branch: 'trunk', pull_requests: prs }), ASKME, 'trunk');
     assert.deepEqual(onDefault.fires.filter((f) => f.fire.kind === 'review'), [], 'a run on the default branch reviews nothing');
+    const ownDefault = firesOf('workflow_run', run({ head_branch: 'trunk', head_repository: { full_name: ASKME } }), ASKME, 'trunk');
+    assert.deepEqual(ownDefault.fires.filter((f) => f.fire.kind === 'review'), [], 'nor does one on the repo\'s own default branch');
+  });
+
+  // A fork's PR from its own default branch: the run's head_branch is the
+  // fork's, and matches the base's default by name only.
+  test('a finished run on a fork\'s branch named like the default branch queues the review of its commit', () => {
+    const head = 'c'.repeat(40);
+    const { fires, reason } = firesOf('workflow_run', run({ head_branch: 'trunk', head_sha: head, event: 'pull_request', conclusion: 'success', head_repository: { full_name: 'someone/askme-mcp' } }), ASKME, 'trunk');
+    assert.deepEqual(fires.filter((f) => f.fire.kind === 'review').map((f) => f.fire), [{ kind: 'review', headSha: head, repo: ASKME }], reason);
+  });
+
+  const checkRun = (over: Record<string, unknown> = {}, suite: Record<string, unknown> = {}) => ({
+    action: 'completed',
+    check_run: { id: 800, name: 'gate', head_sha: 'c'.repeat(40), status: 'completed', conclusion: 'success', app: { id: 15368, slug: 'github-actions' }, check_suite: { id: 700, head_branch: 'claude/x', head_sha: 'c'.repeat(40) }, ...over },
+    ...suite,
+  });
+
+  test('a check run completed on a PR\'s head queues one review fire carrying the commit, whatever it concluded', () => {
+    for (const conclusion of ['success', 'failure', 'neutral', 'cancelled']) {
+      const { fires } = firesOf('check_run', checkRun({ conclusion }), ASKME, 'trunk');
+      assert.deepEqual(fires.map((f) => f.fire), [{ kind: 'review', headSha: 'c'.repeat(40), repo: ASKME }], conclusion);
+      assert.doesNotThrow(() => parseFire(fires[0]!.fire));
+    }
+    const fork = checkRun({ check_suite: { id: 700, head_branch: null, head_sha: 'c'.repeat(40) }, pull_requests: [] });
+    assert.equal(firesOf('check_run', fork, ASKME, 'trunk').fires.length, 1, 'a fork\'s check run lists no PR and no branch here, and is still read');
+  });
+
+  test('a check run from governor\'s own App, not completed, on the default branch, or at no commit queues nothing', () => {
+    const none = (payload: Record<string, unknown>, what: string, branch: string | null = 'trunk') =>
+      assert.deepEqual(firesOf('check_run', payload, ASKME, branch ?? undefined).fires, [], what);
+    none(checkRun({ name: 'governor', app: { id: APP_ID, slug: 'governor-app' } }), 'governor\'s own check would queue a review that posts another');
+    none(checkRun({ app: { id: APP_ID } }), 'governor\'s own App, whatever the check\'s name');
+    none({ ...checkRun(), action: 'created' }, 'a check run started');
+    none({ ...checkRun(), action: 'rerequested' }, 'a check run asked for again');
+    none(checkRun({ check_suite: { id: 700, head_branch: 'trunk', head_sha: 'c'.repeat(40) } }), 'a check run on the default branch');
+    none(checkRun({ head_sha: 'main' }), 'a check run naming no commit');
+    none(checkRun(), 'a payload naming no default branch', null);
+    assert.deepEqual(routeEvent({ event: 'check_run', payload: { ...checkRun(), repository: at(ASKME) }, owners: OWNERS }).fires, [], 'with no App id the receiver cannot tell its own check, so it queues none');
+  });
+
+  const status = (over: Record<string, unknown> = {}) => ({
+    id: 900, sha: 'c'.repeat(40), context: 'ci/other', state: 'success', branches: [{ name: 'claude/x', commit: { sha: 'c'.repeat(40) } }], ...over,
+  });
+
+  test('a status of success, failure or error queues one review fire carrying the commit', () => {
+    for (const state of ['success', 'failure', 'error']) {
+      for (const branches of [[{ name: 'claude/x' }], [], [{ name: 'trunk' }, { name: 'claude/x' }]]) {
+        const { fires } = firesOf('status', status({ state, branches }), ASKME, 'trunk');
+        assert.deepEqual(fires.map((f) => f.fire), [{ kind: 'review', headSha: 'c'.repeat(40), repo: ASKME }], `${state} ${JSON.stringify(branches)}`);
+        assert.doesNotThrow(() => parseFire(fires[0]!.fire));
+      }
+    }
+  });
+
+  test('a pending status, one on a commit only the default branch holds, or one naming no commit queues nothing', () => {
+    assert.deepEqual(firesOf('status', status({ state: 'pending' }), ASKME, 'trunk').fires, []);
+    assert.deepEqual(firesOf('status', status({ branches: [{ name: 'trunk' }] }), ASKME, 'trunk').fires, []);
+    assert.deepEqual(firesOf('status', status({ sha: 'trunk' }), ASKME, 'trunk').fires, []);
+    assert.deepEqual(firesOf('status', status(), ASKME).fires, [], 'a payload naming no default branch');
   });
 
   // The receiver forwards workflow and merge events from every
@@ -1851,7 +1934,7 @@ describe('routeEvent — every served repo', () => {
       .fires.find((f) => f.fire.kind === 'conflicts')?.fire as { base?: string };
     assert.equal(merged.base, 'trunk');
     const onMain = firesOf('workflow_run', run({ event: 'workflow_dispatch', head_branch: 'main' }), ASKME, 'trunk').fires;
-    assert.deepEqual(onMain.map((f) => f.fire.kind), ['branch-run'], 'main is a branch like any other in a repo whose default is trunk');
+    assert.deepEqual(onMain.map((f) => f.fire.kind), ['branch-run', 'review'], 'main is a branch like any other in a repo whose default is trunk, and a PR\'s head may be on it');
   });
 
   test('a merge in another repo still tells the PR\'s sessions', () => {
@@ -1879,7 +1962,7 @@ describe('routeEvent — every served repo', () => {
   });
 
   test('the events the receiver routes are the ones the App\'s webhook subscribes to', () => {
-    assert.deepEqual([...HOOK_EVENTS].sort(), ['issue_comment', 'issues', 'pull_request', 'pull_request_review', 'pull_request_review_comment', 'workflow_job', 'workflow_run']);
+    assert.deepEqual([...HOOK_EVENTS].sort(), ['check_run', 'issue_comment', 'issues', 'pull_request', 'pull_request_review', 'pull_request_review_comment', 'status', 'workflow_job', 'workflow_run']);
   });
 });
 
@@ -1927,6 +2010,22 @@ describe('fitness: the receiver drops a fire only where the repo\'s hook-table i
     assert.equal(response.statusCode, 202, response.body);
     assert.ok(kinds(queued).length > 0);
     assert.ok(!kinds(queued).includes('review'), JSON.stringify(kinds(queued)));
+  });
+
+  test('a check run or a status ending in a repo with prReview off queues nothing; with it on, the review fire', async () => {
+    const head = 'c'.repeat(40);
+    const deliveries: Array<[string, Record<string, unknown>]> = [
+      ['check_run', { action: 'completed', repository: at, check_run: { id: 800, name: 'gate', head_sha: head, status: 'completed', conclusion: 'success', app: { id: 15368 }, check_suite: { head_branch: 'claude/x' } } }],
+      ['status', { repository: at, sha: head, state: 'failure', context: 'ci/other', branches: [{ name: 'claude/x' }] }],
+    ];
+    for (const [event, payload] of deliveries) {
+      const off = await handled(event, payload, item(ALL.filter((n) => n !== 'prReview')));
+      assert.equal(off.response.statusCode, 200, off.response.body);
+      assert.deepEqual(off.queued, [], event);
+      const on = await handled(event, payload, item(['prReview']));
+      assert.equal(on.response.statusCode, 202, on.response.body);
+      assert.deepEqual(kinds(on.queued), ['review'], event);
+    }
   });
 
   test('a push to a PR in a repo with prReview on queues the same fires as a repo with no item', async () => {

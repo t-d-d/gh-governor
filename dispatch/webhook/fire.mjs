@@ -35,7 +35,8 @@
  * the one that earns a `deployed: ` label ({@link shippingJob});
  * a `branch-run` a finished run dispatched on another
  * branch (dispatch/branch-run.mjs); a `review` a PR and the head it was
- * queued for, or no PR for every open one (dispatch/review.mjs); a
+ * queued for, a commit alone for each open PR at that head, or neither for
+ * every open one (dispatch/review.mjs); a
  * `conflicts` a PR merged into the default branch and its merge commit
  * (dispatch/conflicts.mjs). Each of those names the default branch its
  * payload did: no fire takes it for `main`. A `periodics` fire names an
@@ -646,8 +647,8 @@ const parseKind = (event) => {
     if (e?.pr !== undefined && !isPositiveInt(e.pr)) {
       throw new Error(`a review invocation's pr must be a positive integer, got: ${JSON.stringify(e.pr)}`);
     }
-    if (e?.headSha !== undefined && !(e.pr !== undefined && isCommit(e.headSha))) {
-      throw new Error(`a review invocation's headSha must be a commit id on a named pr, got: ${JSON.stringify(e.headSha)}`);
+    if (e?.headSha !== undefined && !isCommit(e.headSha)) {
+      throw new Error(`a review invocation's headSha must be a commit id, got: ${JSON.stringify(e.headSha)}`);
     }
     return {
       kind,

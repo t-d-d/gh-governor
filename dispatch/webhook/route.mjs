@@ -38,7 +38,11 @@
  * commit it tested is waiting on it (dispatch/branch-run.mjs).
  * A fifth, `review`, runs the PR review (the repo's `review.checklist`) over
  * a PR opened, readied, pushed to or its body edited, naming the PR and its
- * head. No run's end queues one: a merge is never held.
+ * head. A check that ended off the default branch queues one too, carrying
+ * its commit and no PR: a check run completed, not governor's own, a
+ * status that ended, or a workflow run completed. The task reviews each
+ * open PR at that head, so a review that waited on a required check, or on
+ * the CI run, reads the PR again when it ends.
  * A sixth, `conflicts`, is queued by a PR merged into the default branch: GitHub sends no
  * event when that merge leaves another PR conflicted, so the task reads every
  * open PR's mergeable state and tells the conflicted ones' sessions
@@ -97,14 +101,16 @@ import { droppedBy } from './switches.mjs';
 
 /**
  * The events the receiver acts on, which the App's webhook subscribes to:
- * issues for the selection, the three a mention of @claude can arrive in
+ * check runs and statuses, for a check that ended on a PR's head, issues
+ * for the selection, the three a mention of @claude can arrive in
  * (mention.mjs), pull requests, for a push or a close a subscriber hears
  * of, workflow jobs, for a shipping job that succeeded on main,
- * and workflow runs, for a red main and a red deploy. Alphabetical, as
+ * and workflow runs, for a red main, a red deploy and a run that ended on
+ * a PR's head. Alphabetical, as
  * GitHub lists them. The nightly `dispatch-app-events` check holds the
  * App's subscription to cover them (scripts/lib/conformance-app-events.mjs).
  */
-export const HOOK_EVENTS = Object.freeze(['issue_comment', 'issues', 'pull_request', 'pull_request_review', 'pull_request_review_comment', 'workflow_job', 'workflow_run']);
+export const HOOK_EVENTS = Object.freeze(['check_run', 'issue_comment', 'issues', 'pull_request', 'pull_request_review', 'pull_request_review_comment', 'status', 'workflow_job', 'workflow_run']);
 
 /**
  * The repository permissions governor uses, each at the level it needs,
@@ -397,10 +403,26 @@ const reviewFire = (payload) => {
 };
 
 /**
- * A run that finished on a PR's head, off the default branch: a `review`
- * fire for each PR the payload lists, at the head the run ran on. The review skips a PR whose required checks, or CI run at the head, have not finished,
- * so a run's end is when it is read again; a re-run that turns a red check
- * green is read the same way. A fork's PRs the payload does not list.
+ * A commit a check on some PR's head may have finished at: one `review`
+ * fire carrying the commit and no PR. The task reviews each open PR whose
+ * head it is, as if named, and none where no open PR is at it. The review
+ * skips a PR whose required checks, or CI run at the head, have not
+ * finished, so each one's end is when it is read again; a re-run that turns
+ * a red check green is read the same way. No PR is named because a fork's
+ * PR is on no `workflow_run` or `check_run` payload, a `status` payload
+ * lists none, and the receiver holds no token to look one up.
+ *
+ * @param {string} sha
+ * @param {string} reason
+ * @returns {Decision}
+ */
+const headReview = (sha, reason) => one({ fire: build.review({ headSha: sha }), reason, key: 'review' });
+
+/**
+ * A run that finished off the default branch: a review of the commit it ran
+ * on ({@link headReview}), whether or not its payload lists a PR. Where the
+ * file names `workflows.ci`, the review waits for that run itself to be
+ * marked complete, which only this event reports.
  *
  * @param {any} payload
  * @param {string} main The repo's default branch.
@@ -408,14 +430,56 @@ const reviewFire = (payload) => {
  */
 const finishedRunReviews = (payload, main) => {
   const run = payload?.workflow_run;
-  if (payload?.action !== 'completed' || run?.head_branch === main || !isCommit(run?.head_sha)) return nothing('');
+  // A fork's branch can share the default branch's name: its head is still a PR's.
+  const fork = typeof run?.head_repository?.full_name === 'string' && run.head_repository.full_name !== payload?.repository?.full_name;
+  if (payload?.action !== 'completed' || (run?.head_branch === main && !fork) || !isCommit(run?.head_sha)) return nothing('');
+  return headReview(run.head_sha, `${String(run?.name)} run ${run?.id} finished on ${run.head_sha.slice(0, 12)}: review the open PRs at that head`);
+};
+
+/**
+ * A check run that completed off the default branch: a review of its commit
+ * ({@link headReview}). The run's own end can lag its jobs' checks by
+ * minutes, and a check from another App has no run at all. A check from
+ * governor's own App queues nothing: its `governor` check ending would queue
+ * a review that posts another, and a review that did not run leaves no
+ * comment marker to stop the repeat. Without the App's id the receiver
+ * cannot tell its own check, so it queues none.
+ *
+ * @param {any} payload
+ * @param {string} main The repo's default branch.
+ * @param {number | undefined} appId
+ * @returns {Decision}
+ */
+const finishedCheckReview = (payload, main, appId) => {
+  const check = payload?.check_run;
+  if (payload?.action !== 'completed') return nothing(`check_run ${payload?.action}: only a finished check is read`);
+  if (appId === undefined) return nothing(`check run "${String(check?.name)}" finished, and with no App id the receiver cannot tell governor's own: nothing queued`);
+  if (check?.app?.id === appId) return nothing(`check run "${String(check?.name)}" is governor's own: its end reviews nothing`);
+  if (check?.check_suite?.head_branch === main) return nothing(`check run "${String(check?.name)}" finished on ${main}: no PR's head to review`);
+  if (!isCommit(check?.head_sha)) return nothing(`check run "${String(check?.name)}" names no commit: nothing to review`);
+  return headReview(check.head_sha, `check run "${String(check.name)}" finished ${String(check.conclusion)} on ${check.head_sha.slice(0, 12)}: review the open PRs at that head`);
+};
+
+/** The `status` states that end a commit status. */
+const FINAL_STATUS = new Set(['success', 'failure', 'error']);
+
+/**
+ * A commit status that ended: a review of its commit ({@link headReview}).
+ * A pending one has not ended, and one on a commit only the default branch
+ * holds is on no PR's head.
+ *
+ * @param {any} payload
+ * @param {string} main The repo's default branch.
+ * @returns {Decision}
+ */
+const finalStatusReview = (payload, main) => {
+  const context = String(payload?.context);
+  if (!FINAL_STATUS.has(String(payload?.state))) return nothing(`status "${context}" ${payload?.state}: only a final status is read`);
   /** @type {any[]} */
-  const prs = Array.isArray(run?.pull_requests) ? run.pull_requests : [];
-  return prs.filter((p) => Number.isInteger(p?.number) && p.number > 0).map((p) => one({
-    fire: build.review({ pr: p.number, headSha: run.head_sha }),
-    reason: `${String(run?.name)} run ${run?.id} finished on #${p.number}'s head: review it`,
-    key: `review-${p.number}`,
-  })).reduce(both, nothing(''));
+  const branches = Array.isArray(payload?.branches) ? payload.branches : [];
+  if (branches.length > 0 && branches.every((b) => b?.name === main)) return nothing(`status "${context}" is on a commit only ${main} holds: no PR's head to review`);
+  if (!isCommit(payload?.sha)) return nothing(`status "${context}" names no commit: nothing to review`);
+  return headReview(payload.sha, `status "${context}" ended ${payload.state} on ${payload.sha.slice(0, 12)}: review the open PRs at that head`);
 };
 
 /**
@@ -560,6 +624,10 @@ const routeFor = ({ event, payload, appId }) => {
     if (event === 'workflow_job') return jobFire(payload, main);
     if (payload?.action === 'completed' && payload?.workflow_run?.event === 'schedule') return scheduledRedFire(payload.workflow_run, main);
     return both(workflowRunFire(payload, main), finishedRunReviews(payload, main));
+  }
+  if (event === 'check_run' || event === 'status') {
+    if (main === null) return unbranched;
+    return event === 'check_run' ? finishedCheckReview(payload, main, appId) : finalStatusReview(payload, main);
   }
   if (MENTION_EVENTS.has(String(event))) {
     return mentionFires({ event, payload, appId }) ?? nothing(`${event} ${payload?.action}: no ${MENTION} mention and no subscriber`);

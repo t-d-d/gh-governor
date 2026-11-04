@@ -348,17 +348,19 @@ describe('a branch-run invocation', () => {
 describe('a review invocation', () => {
   const SHA = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
 
-  test('parseFire keeps the PR and the head it was queued for; with no PR it is every open PR', () => {
+  test('parseFire keeps the PR and the head it was queued for; a commit alone is each open PR at that head; neither is every open PR', () => {
     assert.deepEqual(parseFire({ kind: 'review', pr: 724, headSha: SHA }), { kind: 'review', pr: 724, headSha: SHA });
     assert.deepEqual(parseFire({ kind: 'review', pr: 724 }), { kind: 'review', pr: 724 });
+    assert.deepEqual(parseFire({ kind: 'review', headSha: SHA }), { kind: 'review', headSha: SHA });
     assert.deepEqual(parseFire({ kind: 'review' }), { kind: 'review' });
   });
 
-  test('refuses a PR that is not a number, a head that is not a commit, and a head with no PR', () => {
+  test('refuses a PR that is not a number and a head that is not a commit, with or without a PR', () => {
     assert.throws(() => parseFire({ kind: 'review', pr: '724' }), /pr/);
     assert.throws(() => parseFire({ kind: 'review', pr: 0 }), /pr/);
     assert.throws(() => parseFire({ kind: 'review', pr: 724, headSha: 'main' }), /headSha/);
-    assert.throws(() => parseFire({ kind: 'review', headSha: SHA }), /headSha/);
+    assert.throws(() => parseFire({ kind: 'review', headSha: 'main' }), /headSha/);
+    assert.throws(() => parseFire({ kind: 'review', headSha: SHA.slice(0, 12) }), /headSha/);
   });
 });
 
