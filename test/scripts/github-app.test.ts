@@ -1169,6 +1169,60 @@ describe('a served repo\'s reads', () => {
     await assert.rejects(githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch }).checkRun({ name: 'governor', sha: 'b'.repeat(40), state: 'success', title: 'Passes.', summary: 'Passes.' }), (error: { status?: number }) => error.status === 403);
   });
 
+  describe('checkRun over a governor run already at the commit', () => {
+    const SHA = 'b'.repeat(40);
+    const APP = 77;
+    const LIST = `https://api.github.com/repos/t-d-d/askme-mcp/commits/${SHA}/check-runs`;
+    const POST = 'https://api.github.com/repos/t-d-d/askme-mcp/check-runs';
+    const writes = (latest: unknown[]) => {
+      const done: Array<{ method: string | undefined, url: string, body: unknown }> = [];
+      const record = (init: RequestInit | undefined, url: string) => { done.push({ method: init?.method, url, body: JSON.parse(String(init?.body)) }); return { id: 9 }; };
+      const { fetch, calls } = fakeFetch({ [LIST]: { total_count: latest.length, check_runs: latest }, [`${POST}/41`]: record, [POST]: record });
+      return { reader: githubReader({ token: 't', repo: 't-d-d/askme-mcp', appId: APP, fetch }), done, calls };
+    };
+    const waiting = { id: 41, name: 'governor', status: 'in_progress', conclusion: null, app: { id: APP } };
+
+    test('a verdict over governor\'s own waiting run updates that run and creates none', async () => {
+      const { reader, done, calls } = writes([waiting]);
+      await reader.checkRun({ name: 'governor', sha: SHA, state: 'success', title: 'Passes.', summary: 'Passes.' });
+      assert.deepEqual(done, [{ method: 'PATCH', url: `${POST}/41`, body: { status: 'completed', conclusion: 'success', output: { title: 'Passes.', summary: 'Passes.' } } }]);
+      const read = new URL(calls[0]!.url);
+      assert.equal(read.pathname, `/repos/t-d-d/askme-mcp/commits/${SHA}/check-runs`);
+      assert.equal(read.searchParams.get('check_name'), 'governor');
+      assert.equal(read.searchParams.get('filter'), 'latest');
+      assert.equal(read.searchParams.get('app_id'), String(APP));
+    });
+
+    test('a waiting write over a waiting run updates it, so one waiting run remains', async () => {
+      const { reader, done } = writes([waiting]);
+      await reader.checkRun({ name: 'governor', sha: SHA, state: 'in_progress', title: 'Waits for ci.', summary: 'The review runs when ci ends.' });
+      assert.deepEqual(done, [{ method: 'PATCH', url: `${POST}/41`, body: { status: 'in_progress', output: { title: 'Waits for ci.', summary: 'The review runs when ci ends.' } } }]);
+    });
+
+    test('a completed run is a verdict and is never edited; with none at the commit, a new run is created', async () => {
+      for (const latest of [[{ ...waiting, status: 'completed', conclusion: 'failure' }], []]) {
+        const { reader, done } = writes(latest);
+        await reader.checkRun({ name: 'governor', sha: SHA, state: 'success', title: 'Passes.', summary: 'Passes.' });
+        assert.deepEqual(done, [{ method: 'POST', url: POST, body: { name: 'governor', head_sha: SHA, status: 'completed', conclusion: 'success', output: { title: 'Passes.', summary: 'Passes.' } } }], JSON.stringify(latest));
+      }
+    });
+
+    test('a governor run from another App is never updated', async () => {
+      const { reader, done } = writes([{ ...waiting, app: { id: 5 } }]);
+      await reader.checkRun({ name: 'governor', sha: SHA, state: 'success', title: 'Passes.', summary: 'Passes.' });
+      assert.deepEqual(done.map((d) => [d.method, d.url]), [['POST', POST]]);
+      const bare = writes([waiting]);
+      const unowned = githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch: fakeFetch({ [LIST]: { check_runs: [waiting] }, [POST]: (init: RequestInit | undefined) => { bare.done.push({ method: init?.method, url: POST, body: null }); return { id: 9 }; } }).fetch });
+      await unowned.checkRun({ name: 'governor', sha: SHA, state: 'success', title: 'Passes.', summary: 'Passes.' });
+      assert.deepEqual(bare.done.map((d) => [d.method, d.url]), [['POST', POST]]);
+    });
+
+    test('a 403 on the read throws with its status, as one on the write does', async () => {
+      const { fetch } = fakeFetch({ [LIST]: () => new Response('{"message":"Resource not accessible by integration"}', { status: 403, statusText: 'Forbidden' }) });
+      await assert.rejects(githubReader({ token: 't', repo: 't-d-d/askme-mcp', appId: APP, fetch }).checkRun({ name: 'governor', sha: SHA, state: 'success', title: 'Passes.', summary: 'Passes.' }), (error: { status?: number }) => error.status === 403);
+    });
+  });
+
   test('ensureLabel creates a label the repo lacks, and leaves one it has', async () => {
     const created: unknown[] = [];
     const { fetch } = fakeFetch({

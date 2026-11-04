@@ -939,20 +939,31 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
-     * Post a check run named `name` at `sha`: in progress, or completed with
-     * `state` as its conclusion. Each call is a new run; GitHub shows the
-     * latest of a name. Needs the App's Checks write, and a refusal throws
-     * with its status.
+     * Write the check run named `name` at `sha`: in progress, or completed
+     * with `state` as its conclusion. Where `appId`'s App has a run of the
+     * name at `sha` still in progress, its latest, that run is updated, to
+     * new waiting text or to the verdict, so a review that waited leaves no
+     * run in progress under its answer. Otherwise a new run is created: a
+     * completed run is a verdict and is never edited, and a run from another
+     * App, or any run for a reader without `appId`, is never governor's.
+     * GitHub shows the latest run of a name. The lane runs one turn at a
+     * time, so no other governor write lands between the read and the
+     * update. Needs the App's Checks write, and a refusal of the read or the
+     * write throws with its status.
      *
      * @param {{ name: string, sha: string, state: 'in_progress' | 'success' | 'failure' | 'neutral', title: string, summary: string }} run
      */
     checkRun: async ({ name, sha, state, title, summary }) => {
-      await call('POST', `/repos/${repo}/check-runs`, {
-        name,
-        head_sha: sha,
-        ...(state === 'in_progress' ? { status: 'in_progress' } : { status: 'completed', conclusion: state }),
-        output: { title, summary },
-      });
+      const result = state === 'in_progress' ? { status: 'in_progress' } : { status: 'completed', conclusion: state };
+      if (appId !== undefined) {
+        const answer = await call('GET', `/repos/${repo}/commits/${sha}/check-runs?${new URLSearchParams({ check_name: name, filter: 'latest', app_id: String(appId), per_page: '100' })}`);
+        const waiting = (answer?.check_runs ?? []).find((/** @type {any} */ r) => r?.name === name && r?.app?.id === appId && r?.status !== 'completed' && Number.isSafeInteger(r?.id));
+        if (waiting) {
+          await call('PATCH', `/repos/${repo}/check-runs/${waiting.id}`, { ...result, output: { title, summary } });
+          return;
+        }
+      }
+      await call('POST', `/repos/${repo}/check-runs`, { name, head_sha: sha, ...result, output: { title, summary } });
     },
 
     /**

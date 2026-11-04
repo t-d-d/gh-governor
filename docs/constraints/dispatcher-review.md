@@ -70,9 +70,13 @@ served repos have their owner merge, so a pass there must not merge.
   window no review starts, and the check says the turn ran out of time.
   Those checks stop at a second limit inside the task's deadline, and the
   PRs past it are logged. Every other
-  skip posts no check. The check goes before the merge and the comment. A
-  403 on its write is logged and passed over; any other refusal fails the
-  review.
+  skip posts no check. Where governor's own latest `governor` run at the
+  head is still in progress, the check updates that run, to new waiting
+  text or to the verdict, so the head ends with one `governor` run; a
+  completed run is a verdict, never edited, and a later review at the same
+  head posts a new run. The check goes before the merge and the comment. A
+  403 on its read or its write is logged and passed over; any other refusal
+  fails the review.
 - Every review comment reaches the session the PR names, without its
   marker, and no other subscriber. Only a comment the session can act on
   carries the fallback that hands a gone session's PR to a fresh one.
@@ -113,4 +117,4 @@ served repos have their owner merge, so a pass there must not merge.
   gate fails loudly, and the owner can bypass it.
 
 Judgment: that a repo's checklist numbers its model tests 2 to 6, and that a `quote` glob reaches only rule files, no check sees: both are the repo's prose.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. A closing ticket carrying an excluded label passes test 1 unclaimed in #145: it is not pickup's, so nobody claims it, and a repo that forbids closing one says so in its ticket rules. The receiver drops the review fire where the repo's hook-table item says `prReview` is off since #147. A pass posts the `governor` check and no approval, and every review comment reaches the session the PR names, since #388. Test 8 reads the `workflows.ci` run at the head beside the required checks since #398: a private repo on a free plan has no required checks, and merged a pass on red CI. A PR a review turn ran out of time before it reached gets a `failure` check since #403.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. A closing ticket carrying an excluded label passes test 1 unclaimed in #145: it is not pickup's, so nobody claims it, and a repo that forbids closing one says so in its ticket rules. The receiver drops the review fire where the repo's hook-table item says `prReview` is off since #147. A pass posts the `governor` check and no approval, and every review comment reaches the session the PR names, since #388. Test 8 reads the `workflows.ci` run at the head beside the required checks since #398: a private repo on a free plan has no required checks, and merged a pass on red CI. A PR a review turn ran out of time before it reached gets a `failure` check since #403. The check updates governor's own `governor` run at the head while it is in progress, rather than leaving a waiting run in progress under the verdict, since #407.
