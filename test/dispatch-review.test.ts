@@ -1618,6 +1618,60 @@ describe('run — the CI workflow\'s run at the head (test 8)', () => {
   });
 });
 
+/**
+ * The checks a repo's `review.requireChecks` lists: test 8 reads them as it
+ * reads the checks GitHub requires. A private repo on a free plan can
+ * require none, so its file names the checks the review waits for.
+ */
+describe('run — the checks the review section lists (test 8)', () => {
+  test('a listed check red on the head fails test 8 for the author session\'s push, before the model', async () => {
+    const h = tagalong({ checks: [{ name: 'codeql', state: 'red' }] }, { requireChecks: ['codeql'] });
+    const turn = await reviewTagalong(h);
+    assert.deepEqual(turn.reviews.map((r) => r.outcome), ['commented']);
+    assert.equal(h.judged.length, 0);
+    const text = h.comments[0]!.body;
+    assert.match(text, /^Waits for a push: the required check `codeql` is red on its head \(test 8\)\./);
+    assert.ok(ownerActs(withoutMarkerText(text)), 'the author session hears it: the push is its');
+    assert.deepEqual(h.checkRuns.map((c) => c.state), ['failure']);
+  });
+
+  test('a listed check not finished, or not posted, skips the review with `governor` in progress', async () => {
+    for (const checks of [[{ name: 'codeql', state: 'pending' as const }], [], [{ name: 'lint', state: 'green' as const }]]) {
+      const h = tagalong({ checks }, { requireChecks: ['codeql'] });
+      const turn = await reviewTagalong(h);
+      assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped'], JSON.stringify(checks));
+      assert.match(String(turn.reviews[0]!.reason), /`codeql`.*not finished/);
+      assert.deepEqual([h.judged.length, h.comments.length], [0, 0]);
+      assert.deepEqual(h.checkRuns.map((c) => [c.sha, c.state]), [[HEAD, 'in_progress']]);
+      assert.match(h.checkRuns[0]!.summary, /`codeql`/);
+    }
+  });
+
+  test('a listed check green lets the review reach the model, beside GitHub\'s required ones', async () => {
+    const h = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'green' }, { name: 'codeql', state: 'green' }] }, { requireChecks: ['codeql'] });
+    assert.deepEqual((await reviewTagalong(h)).reviews.map((r) => r.outcome), ['passed']);
+    assert.equal(h.judged.length, 1);
+    const red = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'green' }, { name: 'codeql', state: 'red' }] }, { requireChecks: ['codeql'] });
+    await reviewTagalong(red);
+    assert.equal(red.judged.length, 0, 'GitHub requiring other checks does not hide a listed one');
+  });
+
+  test('a name GitHub also requires counts once', async () => {
+    const red = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }] }, { requireChecks: ['gate', 'gate'] });
+    await reviewTagalong(red);
+    assert.match(red.comments[0]!.body, /^Waits for a push: the required check `gate` is red on its head \(test 8\)\./);
+    const pending = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'pending' }] }, { requireChecks: ['gate'] });
+    await reviewTagalong(pending);
+    assert.equal(pending.checkRuns[0]!.title, 'Waits for its required checks to finish.');
+    assert.equal(pending.checkRuns[0]!.summary, `The PR review runs when the required check \`gate\` has finished on ${HEAD.slice(0, 12)}.`);
+  });
+
+  test('a listed `governor` is left out, as a required one is', async () => {
+    const h = tagalong({ checks: [{ name: 'governor', state: 'red' }] }, { requireChecks: ['governor'] });
+    assert.deepEqual((await reviewTagalong(h)).reviews.map((r) => r.outcome), ['passed']);
+  });
+});
+
 describe('run — any served repo\'s review', () => {
   test('reads PRs into the repo\'s default branch: a `trunk` repo reviews a PR into trunk and skips one into main', async () => {
     const into = tagalong({ base: 'trunk', pulls: { 767: pullRow({ base: 'trunk' }) } });

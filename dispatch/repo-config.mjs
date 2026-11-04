@@ -184,7 +184,8 @@ const ticketRule = z.strictObject({
  * takes a path back out); `decides`, the labels of a ticket whose body's
  * first line, `Constraint now lives at <path>, …`, decides the quoted files
  * it names, so they pass unread; `dependabot`, the manifests a Dependabot PR may
- * change; `merge`, whether a pass merges. Settings, never code: a check
+ * change; `requireChecks`, the checks the review requires beside those
+ * GitHub requires; `merge`, whether a pass merges. Settings, never code: a check
  * they cannot express is the repo's CI, read as a required status check.
  */
 const reviewSchema = z.strictObject({
@@ -201,6 +202,7 @@ const reviewSchema = z.strictObject({
   quote: z.array(z.string().trim().regex(/^!?[^!\s]/, 'a glob, or `!` and a glob')).default([]).meta({ description: 'Globs of changed files the review model reads whole, at the merge base and at the head. Only a modified file is quoted: one added, removed or renamed waits for a person. A `!` entry takes a path back out. Default none.' }),
   decides: z.array(label).default([]).meta({ description: 'Labels of a ticket that may decide a quoted file\'s change: its body\'s first line, `Constraint now lives at <path>, …`, names the files it decides, which then pass unread. Default none.' }),
   dependabot: z.array(glob).default([]).meta({ description: 'Globs of the manifests a Dependabot PR may change and pass with no model. Default none.' }),
+  requireChecks: z.array(z.string().trim().min(1)).default([]).meta({ description: 'Names of check runs and commit status contexts the review treats as required, beside any the default branch requires on GitHub. One red on the PR\'s head fails the review for a push; one not finished, or not posted, holds the review with `governor` in progress until it ends. Default none.' }),
   merge: z.boolean().default(true).meta({ description: 'Whether a pass merges the PR. With false, a pass posts its comment and a success check, and the owner merges. Default true.' }),
 });
 
