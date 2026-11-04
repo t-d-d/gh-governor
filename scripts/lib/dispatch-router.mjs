@@ -59,10 +59,11 @@ import { addedBy, authorHasSay, authorPicked, byAge, mayPickUp, selectReadyWork,
  *   A ready ticket whose author's association the repo's `pickup.by` does
  *   not list (`authorPicked`), so the selection skips it.
  *
- * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, by?: readonly string[], prompts?: Record<string, string | undefined> }} Source
+ * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, by?: readonly string[], prompts?: Record<string, string | undefined>, signOff?: boolean }} Source
  *   A served repo's tickets: its reader, its config file's ready, claim and
  *   excluded labels, whose tickets pickup starts (`byOf`,
- *   dispatch/pickup.mjs; `PICKUP_BY` where unset), and its prompts.
+ *   dispatch/pickup.mjs; `PICKUP_BY` where unset), its prompts, and whether
+ *   its file turns `signOff` on, which the pickup prompt's ask reads.
  */
 
 /**
@@ -256,7 +257,7 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
   for (const candidate of candidates) {
     const full = plan.length >= cap;
     if (full && cut === undefined) break;
-    const { repo, labels, prompts } = candidate.source;
+    const { repo, labels, prompts, signOff } = candidate.source;
     if (failed.has(repo) || (full && cut?.has(repo))) continue;
     if (full) {
       // Past the cap a read that fails starts nothing, so it is no refusal:
@@ -269,7 +270,7 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     plan.push({
       issue: candidate.number,
       repo,
-      prompt: promptFor(candidate.number, candidate.title, repo, labels.claim, prompts),
+      prompt: promptFor(candidate.number, candidate.title, repo, labels.claim, prompts, { signOff }),
       sessionName: sessionName(candidate.number, candidate.title),
     });
   }

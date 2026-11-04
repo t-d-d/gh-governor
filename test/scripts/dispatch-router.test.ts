@@ -95,6 +95,14 @@ describe('planSchedule', () => {
     assert.equal(plan[0]?.sessionName, sessionName(5, 'Issue 5'));
   });
 
+  test("writes the repo's sign-off switch into its pickup prompt", async () => {
+    const { reader } = fakeReader({ issues: [issue(5, READY)] });
+    const prompts = { signOff: 'End with `Signing off.`' };
+    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS, prompts, signOff: true }], cap: 1, now: NOW });
+    assert.equal(plan[0]?.prompt, promptFor(5, 'Issue 5', REPO, FACTORY_LABELS.claim, prompts, { signOff: true }));
+    assert.match(plan[0]?.prompt ?? '', /End with `Signing off\.`$/);
+  });
+
   test('skips an issue with an open blocker, asking only as far as the cap needs', async () => {
     const { reader, asked } = fakeReader({
       issues: [issue(3, READY), issue(4, READY), issue(6, READY)],

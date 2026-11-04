@@ -63,6 +63,57 @@ describe('promptFor', () => {
   });
 });
 
+/**
+ * The default pickup prompt checks the ticket against the code before it
+ * builds. A ticket the code already settles, or one far larger than it reads,
+ * gets a comment and no build, and keeps its claim so pickup does not start
+ * it again. No PR closes to ask such a session to sign off, so where the repo
+ * turns `signOff` on the stop asks it, in the repo's own words where it has
+ * them. A repo's own `pickup` prompt is sent as it is.
+ */
+describe('promptFor: the check before building', () => {
+  const CLAIM = 'workflow: under development';
+
+  test('tells the session to read the ticket against the code first', () => {
+    const prompt = promptFor(700, 'T', 'o/r', CLAIM);
+    assert.match(prompt, /Before you build, read #700 against the code/);
+    assert.ok(prompt.indexOf('against the code') < prompt.indexOf('Closes #700'), 'the check comes before the build');
+  });
+
+  test('on either finding, comments, stops without building and leaves the claim', () => {
+    const prompt = promptFor(700, 'T', 'o/r', CLAIM);
+    assert.match(prompt, /already does what it asks/);
+    assert.match(prompt, /far larger than the ticket reads/);
+    assert.match(prompt, /comment on #700/);
+    assert.match(prompt, /stop without building/);
+    assert.match(prompt, /Leave `workflow: under development` on #700/);
+  });
+
+  test('carries no ask to sign off where the switch is off', () => {
+    assert.doesNotMatch(promptFor(700, 'T', 'o/r', CLAIM), /[Ss]ign/);
+    assert.doesNotMatch(promptFor(700, 'T', 'o/r', CLAIM, { signOff: 'Say goodbye.' }, { signOff: false }), /goodbye/);
+  });
+
+  test('asks the session that stopped to sign off where the switch is on', () => {
+    const prompt = promptFor(700, 'T', 'o/r', CLAIM, {}, { signOff: true });
+    assert.match(prompt, /If you stopped at the check, no pull request will close to ask you to sign off\. Sign this session off unless you know otherwise/);
+    assert.match(prompt, /`Signing off\.`/);
+  });
+
+  test("asks in the repo's signOff prompt where it sets one", () => {
+    const prompt = promptFor(700, 'T', 'o/r', CLAIM, { signOff: 'End with `Signing off.` and nothing after it.' }, { signOff: true });
+    assert.match(prompt, /If you stopped at the check, no pull request will close to ask you to sign off\. End with `Signing off\.` and nothing after it\.$/);
+    assert.doesNotMatch(prompt, /unless you know otherwise/);
+  });
+
+  test("sends a repo's own pickup prompt unchanged, whatever the switch says", () => {
+    const own = 'Build #{issue} in {repo}.';
+    for (const signOff of [true, false]) {
+      assert.equal(promptFor(700, 'T', 'o/r', CLAIM, { pickup: own }, { signOff }), "Pickup #700 'T'\n\nBuild #700 in o/r.");
+    }
+  });
+});
+
 describe('sessionName', () => {
   /**
    * Set explicitly via the CLI's `--name` rather than left to the namer:

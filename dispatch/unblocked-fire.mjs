@@ -255,7 +255,7 @@ export const planUnblocked = async (invocation, ctx) => {
     const outsiders = [];
     /** @type {import('../scripts/lib/dispatch-router.mjs').Stranger[]} */
     const strangers = [];
-    const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, by: byOf(config), prompts: ctx.prompts }], cap: 1, now: ctx.now(), only: [issue], outsiders, strangers });
+    const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, by: byOf(config), prompts: ctx.prompts, signOff: turnsOn(config, 'signOff') }], cap: 1, now: ctx.now(), only: [issue], outsiders, strangers });
     for (const d of planned) launches.push({ repo: d.repo, issue, claim: true, holdsRepo: true, asked: { prompt: readyPrompt(d.prompt, invocation, ctx.prompts), sessionName: d.sessionName, model: DEFAULT_MODEL } });
     const [outsider] = outsiders;
     const [stranger] = strangers;

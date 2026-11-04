@@ -46,20 +46,35 @@ export const sessionName = (number, title) => {
  * the session before it fetches anything. {@link sessionName} and the
  * launcher's `--name` do the naming.
  *
+ * The default tells the session to check the ticket against the code
+ * first, and to comment and stop where the code already settles it or the
+ * work is far larger than it reads. No PR's merge or close will come to ask
+ * such a session to sign off, so where the repo turns `signOff` on, the
+ * default ends by asking it, in the repo's `signOff` prompt where it sets
+ * one. With the switch off it carries no ask, as the standing line does not
+ * (docs/constraints/session-signoff.md). A repo's own `pickup` prompt is
+ * sent as it is.
+ *
  * @param {number} number
  * @param {string | undefined} title
  * @param {string} repo
  * @param {string} claim The label the dispatcher claimed it with: the repo's own (dispatch/repo-config.mjs).
  * @param {Record<string, string | undefined>} [prompts] The repo's config file's prompts.
+ * @param {{ signOff?: boolean }} [options] `signOff`: whether the repo's file turns the switch on.
  */
-export const promptFor = (number, title, repo, claim, prompts = {}) => {
+export const promptFor = (number, title, repo, claim, prompts = {}, { signOff = false } = {}) => {
   const lead = oneLine(title);
+  const asks = signOff && prompts.pickup === undefined;
   return [
     lead ? `Pickup #${number} '${lead}'` : `Pickup #${number}`,
     '',
     instruction(prompts, 'pickup', { issue: number, repo, claim }),
+    ...(asks ? [`${STOPPED} ${instruction(prompts, 'signOff')}`] : []),
   ].join('\n');
 };
+
+/** The default pickup prompt's lead into the ask to sign off. */
+const STOPPED = 'If you stopped at the check, no pull request will close to ask you to sign off.';
 
 /**
  * What one exit status of `dispatch/launch-session.py` means.
