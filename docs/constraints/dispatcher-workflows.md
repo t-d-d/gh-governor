@@ -29,8 +29,11 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   workflow, job, scheduled and conflicts fire carries it, and the task reads
   runs and PRs on that branch. A delivery naming none routes no run and no
   merge.
-- **No run holds a merge.** The review merges a pass whatever workflow is
-  running.
+- **No run but the PR's own CI run at its head holds a merge.** Where the
+  file names `ci` and turns `prReview` on, the latest run of that workflow
+  at the PR's head is test 8's, as a required check is
+  (dispatcher-review.md). A deploy, or any other run, holds no merge: the
+  review merges a pass whatever else is running.
 - **The receiver forwards, from every served repo:**
   - a completed red run on the default branch;
   - a red scheduled run;
@@ -64,6 +67,9 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   test/dispatch-turn.test.ts a cursor per repo, file and label.
 - The drop: `droppedBy` in dispatch/webhook/switches.mjs, which also holds
   `switchOf`, called by `handle` in dispatch/webhook/route.mjs.
+- test/dispatch-review.test.ts pins that the review reads only the CI
+  workflow's runs at the PR's head, and none where the file names no `ci`,
+  in the `fitness:` block that names this file.
 
 ## Do not
 
@@ -84,8 +90,9 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   which the config file holds.
 - Do not declare a label in a variable the receiver cannot see: the
   `workflow_job` payload carries the job's name and no file.
-- Do not hold a merge while a run is unfinished: a PR then waits on a sweep
-  that may never come.
+- Do not hold a merge while any run but the CI run at the PR's head is
+  unfinished: a PR then waits on a sweep that may never come. The CI run at
+  the head is the one exception, because its end queues the review again.
 
 Judgment: that a served repo's workflows write the job-name suffix and `TICKET_LABEL_PATHS`, no check here sees: governor cannot read another repo's files at that repo's merge time.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The receiver drops a fire whose switch the repo's hook-table item says is off, the conflicts check never, since #147.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The receiver drops a fire whose switch the repo's hook-table item says is off, the conflicts check never, since #147. The PR's own CI run at its head holds its merge, as test 8, since #398: a repo whose plan cannot require a check would otherwise merge a pass on red CI.

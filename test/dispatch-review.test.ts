@@ -45,6 +45,14 @@ const COSTS: Answer = { answer: 'fail', test: 3, reason: 'the description names 
 
 type Thread = { id: number; body: string; created_at: string; ours: boolean };
 
+/** The factory's CI workflow, as its file's `workflows.ci` names it. */
+const CI = '.github/workflows/ci.yml';
+type CiRun = { id: number, path: string, status: string, conclusion: string | null, event: string, head_branch: string | null, head_sha: string, html_url: string, created_at: string };
+/** A run of the factory's CI at the PR's head, ended green, over `over`. */
+const ciRun = (over: Partial<CiRun> = {}): CiRun => ({
+  id: 900, path: CI, status: 'completed', conclusion: 'success', event: 'pull_request', head_branch: 'claude/x', head_sha: HEAD, html_url: `https://github.com/${REPO}/actions/runs/900`, created_at: '2026-09-26T11:00:00Z', ...over,
+});
+
 const harness = (over: {
   pulls?: Record<number, Pull | Pull[]>,
   open?: Array<{ number: number, draft: boolean, body?: string }>,
@@ -75,6 +83,8 @@ const harness = (over: {
   checks?: Array<{ name: string, state: 'red' | 'green' | 'pending' }>,
   /** The checks at each head, over `checks`. */
   checksAt?: (sha: string) => Array<{ name: string, state: 'red' | 'green' | 'pending' }>,
+  /** The runs the CI workflow's list answers at the head: one green run of the factory's `ci.yml` at HEAD by default. */
+  ciRuns?: CiRun[],
   /** The check write: GitHub's refusal, for one that throws. */
   checkRun?: (run: { name: string, sha: string, state: string, title: string, summary: string }) => Promise<void>,
   /** The comment write: GitHub's refusal, for one that throws. */
@@ -99,6 +109,7 @@ const harness = (over: {
   const fileReads: string[] = [];
   const readerApps: number[] = [];
   const sessionsRead: string[] = [];
+  const ciReads: Array<[string, string]> = [];
   const pulls = over.pulls ?? { 767: pullRow() };
   const answers = over.answers ?? [PASS];
   let judgedCount = 0;
@@ -113,8 +124,9 @@ const harness = (over: {
     githubToken: async () => 'ghs_t',
     appId: async () => APP_ID,
     reader: (_token: string, appId: number) => { readerApps.push(appId); return {
-      // No run holds a merge, so the review reads none.
-      workflowRuns: async (file: string) => { throw new Error(`the review read the runs of ${file}: a merge is never held`); },
+      // No run but the CI workflow's at the head holds a merge, so the review reads no runs list.
+      workflowRuns: async (file: string) => { throw new Error(`the review read the runs of ${file}: only the CI workflow's run at the head holds a merge`); },
+      ciRuns: async (path: string, sha: string) => { ciReads.push([path, sha]); return over.ciRuns ?? [ciRun()]; },
       openPulls: async () => over.open ?? [],
       defaultBranch: async () => over.base ?? 'main',
       requiredChecks: async (branch: string) => { requiredReads.push(branch); return over.required ?? []; },
@@ -188,7 +200,7 @@ const harness = (over: {
       },
     },
   };
-  return { deps, sessionsRead, checkRuns, writes, comments, commentEdits, merges, judged, transcripts, messages, launches, logged, reads, requiredReads, baseReads, fileReads, readerApps };
+  return { deps, sessionsRead, ciReads, checkRuns, writes, comments, commentEdits, merges, judged, transcripts, messages, launches, logged, reads, requiredReads, baseReads, fileReads, readerApps };
 };
 
 type Review = { pr: number, outcome: string, reason?: string | null, error?: string | null, test?: number };
@@ -585,7 +597,7 @@ describe('run — a Dependabot PR', () => {
     const first = harness({ pulls: { 767: dependabotRow() }, files });
     await review({ kind: 'review', pr: 767 }, first);
     const said = first.comments[0]!.body;
-    const h = harness({ pulls: { 767: dependabotRow({ headSha: MOVED }) }, files, thread: [{ id: 9, body: said, created_at: 't', ours: true }] });
+    const h = harness({ pulls: { 767: dependabotRow({ headSha: MOVED }) }, files, ciRuns: [ciRun({ head_sha: MOVED })], thread: [{ id: 9, body: said, created_at: 't', ours: true }] });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(h.comments, []);
@@ -696,15 +708,17 @@ const RUN_URL = `https://github.com/${REPO}/actions/runs/900`;
 const HELD = `Passes the PR review: ${PASS.reason}. The merge waits for Deploy Prod run [900](${RUN_URL}) (in_progress) to end, and the review after it merges.`;
 
 /**
- * A merge is never held. An earlier review held every pass while a Deploy
- * Prod run was unfinished; the one delivery workflow needs no hold, so the
- * review merges a pass whatever is running. A PR whose newest review is a
- * held pass from before this change is merged on its next review with the
- * judgement kept, so no PR waits on a sweep that no longer comes.
+ * No run holds a merge but the PR's own CI run at its head. An earlier
+ * review held every pass while a Deploy Prod run was unfinished; the one
+ * delivery workflow needs no hold, so a deploy, or any run but the CI
+ * workflow's at the head, holds nothing. The CI run at the head is test 8's,
+ * as a required check is, and its end queues the review again. A PR whose
+ * newest review is a held pass from before this change is merged on its
+ * next review with the judgement kept, so no PR waits on a sweep that no
+ * longer comes.
  */
-describe('fitness: run — no run holds a merge (dispatcher-workflows.md)', () => {
-
-  test('no code path holds a merge for a run of any workflow: the review takes no promotion, and the turn reads no deploy runs', () => {
+describe('fitness: run — no run but the CI workflow\'s at the head holds a merge (dispatcher-workflows.md)', () => {
+  test('no code path holds a merge for a deploy\'s run: the review takes no promotion, and the turn reads no deploy runs', () => {
     const review = readFileSync(new URL('../dispatch/review.mjs', import.meta.url), 'utf8');
     const turn = readFileSync(new URL('../dispatch/turn.mjs', import.meta.url), 'utf8');
     for (const [text, name] of [[review, 'review.mjs'], [turn, 'turn.mjs']] as const) {
@@ -712,15 +726,23 @@ describe('fitness: run — no run holds a merge (dispatcher-workflows.md)', () =
       assert.doesNotMatch(text, /deploy-prod\.yml|workflowRuns\('deliver\.yml'/, `${name} reads a deploy workflow's runs`);
       assert.doesNotMatch(text, /\('held'\)|'held'\s*\|\s*'skipped'/, `${name} knows a held outcome`);
     }
+    assert.doesNotMatch(review, /workflowRuns\(/, 'the review reads no workflow\'s runs list, only the CI workflow\'s runs at the head');
     assert.equal(heldPassReason(HELD), `${PASS.reason}.`, 'the old held pass is still read, so it merges');
   });
 
-  test('a pass merges whatever is running: the review reads no workflow runs', async () => {
-    const h = harness();
+  test('a pass merges whatever else is running: the review reads only the CI workflow\'s runs, at the PR\'s head', async () => {
+    const h = harness({ ciRuns: [ciRun(), ciRun({ id: 901, path: '.github/workflows/deploy-prod.yml', status: 'in_progress', conclusion: null })] });
     const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
+    assert.deepEqual(h.ciReads, [[CI, HEAD]]);
     assert.deepEqual(h.merges, [{ pr: 767, sha: HEAD }]);
     assert.deepEqual(h.comments, [{ issue: 767, body: marked(textOf(PASS)) }]);
+  });
+
+  test('a repo whose file names no `workflows.ci` reads no workflow runs', async () => {
+    const h = tagalong();
+    assert.deepEqual((await reviewTagalong(h)).reviews.map((r) => r.outcome), ['passed']);
+    assert.deepEqual(h.ciReads, []);
   });
 
   test('a PR whose newest review is a held pass from before the change is merged on its next review without judging, and its comment edited to say so', async () => {
@@ -1021,6 +1043,8 @@ describe('run — a review of every open PR', () => {
         threads: { 781: [{ id: 9, body: marked(textOf(PASS)), created_at: 't', ours: true }] },
         required: ['gate'],
         checksAt: (sha) => [{ name: 'gate', state: sha === PENDING_HEAD ? 'pending' : 'green' }],
+        // The CI run at each head has finished green: only #784's required check waits.
+        ciRuns: [HEAD, OTHER_HEAD, PENDING_HEAD].map((sha) => ciRun({ head_sha: sha })),
         // The one review the window let start runs past it.
         answers: () => { t += REVIEW_WINDOW_MS + 1; return cliOutput(IAM); },
         now: () => t,
@@ -1464,6 +1488,92 @@ describe('run — required checks still running, or run again', () => {
     assert.equal(green.judged.length, 1);
     const still = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }], thread });
     assert.deepEqual((await reviewTagalong(still)).reviews.map((r) => r.outcome), ['marker-moved'], 'still red: the comment stands, edited in place');
+  });
+});
+
+describe('run — the CI workflow\'s run at the head (test 8)', () => {
+  test('a red CI run at the head fails test 8 for the author session\'s push, naming the workflow file, and the model is not asked', async () => {
+    for (const conclusion of ['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure']) {
+      const h = harness({ ciRuns: [ciRun({ conclusion })] });
+      const turn = await review({ kind: 'review', pr: 767 }, h);
+      assert.deepEqual(turn.reviews.map((r) => r.outcome), ['commented'], conclusion);
+      assert.equal(h.judged.length, 0, conclusion);
+      assert.deepEqual(h.merges, [], conclusion);
+      const text = h.comments[0]!.body;
+      assert.match(text, /^Waits for a push: the CI workflow `\.github\/workflows\/ci\.yml` is red on its head \(test 8\)\. A push that turns it green meets it, and the review runs again on the push\./, conclusion);
+      assert.ok(ownerActs(withoutMarkerText(text)), 'the author session hears it: the push is its');
+      assert.deepEqual(h.checkRuns.map((c) => c.state), ['failure'], conclusion);
+    }
+  });
+
+  test('a CI run not finished, or none at the head, skips the review and posts `governor` in progress', async () => {
+    for (const runs of [[ciRun({ status: 'in_progress', conclusion: null })], [ciRun({ status: 'queued', conclusion: null })], []]) {
+      const h = harness({ ciRuns: runs });
+      const turn = await review({ kind: 'review', pr: 767 }, h);
+      assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped'], JSON.stringify(runs));
+      assert.match(String(turn.reviews[0]!.reason), /CI workflow `\.github\/workflows\/ci\.yml`.*not finished/);
+      assert.deepEqual([h.judged.length, h.comments.length, h.merges.length], [0, 0, 0]);
+      assert.deepEqual(h.checkRuns.map((c) => [c.sha, c.state]), [[HEAD, 'in_progress']]);
+      assert.match(h.checkRuns[0]!.summary, /`\.github\/workflows\/ci\.yml`/);
+    }
+  });
+
+  test('a green or skipped CI run lets the review reach the model', async () => {
+    for (const conclusion of ['success', 'skipped', 'neutral']) {
+      const h = harness({ ciRuns: [ciRun({ conclusion })] });
+      const turn = await review({ kind: 'review', pr: 767 }, h);
+      assert.deepEqual(turn.reviews.map((r) => r.outcome), ['merged'], conclusion);
+      assert.equal(h.judged.length, 1, conclusion);
+    }
+  });
+
+  test('the latest CI run at the head decides: a re-run that ended green passes, one still going waits', async () => {
+    const green = harness({ ciRuns: [ciRun({ id: 902, created_at: '2026-09-26T11:30:00Z' }), ciRun({ conclusion: 'failure' })] });
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, green)).reviews.map((r) => r.outcome), ['merged']);
+    const going = harness({ ciRuns: [ciRun({ conclusion: 'failure' }), ciRun({ id: 902, status: 'in_progress', conclusion: null, created_at: '2026-09-26T11:30:00Z' })] });
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, going)).reviews.map((r) => r.outcome), ['skipped']);
+  });
+
+  test('another workflow\'s run, or a CI run at another commit, does not count', async () => {
+    const other = harness({ ciRuns: [ciRun({ path: '.github/workflows/e2e.yml', conclusion: 'failure' }), ciRun()] });
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, other)).reviews.map((r) => r.outcome), ['merged']);
+    const elsewhere = harness({ ciRuns: [ciRun({ head_sha: MOVED, conclusion: 'failure', created_at: '2026-09-26T11:30:00Z' }), ciRun()] });
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, elsewhere)).reviews.map((r) => r.outcome), ['merged']);
+    for (const runs of [[ciRun({ path: '.github/workflows/e2e.yml' })], [ciRun({ head_sha: MOVED })]]) {
+      const h = harness({ ciRuns: runs });
+      assert.deepEqual((await review({ kind: 'review', pr: 767 }, h)).reviews.map((r) => r.outcome), ['skipped'], 'no CI run at the head: it waits');
+      assert.equal(h.judged.length, 0);
+    }
+  });
+
+  test('a test-8 fail from the CI run is read again at the same head and body', async () => {
+    const red = harness({ ciRuns: [ciRun({ conclusion: 'failure' })] });
+    await review({ kind: 'review', pr: 767 }, red);
+    const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
+    const green = harness({ thread });
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, green)).reviews.map((r) => r.outcome), ['merged']);
+    assert.equal(green.judged.length, 1);
+    const still = harness({ ciRuns: [ciRun({ conclusion: 'failure' })], thread });
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, still)).reviews.map((r) => r.outcome), ['marker-moved'], 'still red: the comment stands, edited in place');
+  });
+
+  test('a repo whose CI is also a required check reads both, to the same result', async () => {
+    const red = harness({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }], ciRuns: [ciRun({ conclusion: 'failure' })] });
+    await review({ kind: 'review', pr: 767 }, red);
+    assert.equal(red.judged.length, 0);
+    assert.match(red.comments[0]!.body, /^Waits for a push: the required check `gate` and the CI workflow `\.github\/workflows\/ci\.yml` are red on its head \(test 8\)/);
+    const pending = harness({ required: ['gate'], checks: [{ name: 'gate', state: 'pending' }], ciRuns: [ciRun({ status: 'in_progress', conclusion: null })] });
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, pending)).reviews.map((r) => r.outcome), ['skipped']);
+    assert.deepEqual(pending.checkRuns.map((c) => c.state), ['in_progress']);
+    const green = harness({ required: ['gate'], checks: [{ name: 'gate', state: 'green' }] });
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, green)).reviews.map((r) => r.outcome), ['merged']);
+  });
+
+  test('a Dependabot bump on the repo\'s list still fails a red CI run', async () => {
+    const h = harness({ pulls: { 767: dependabotRow() }, files: [{ filename: 'package-lock.json', status: 'modified' }], ciRuns: [ciRun({ conclusion: 'failure' })] });
+    await review({ kind: 'review', pr: 767 }, h);
+    assert.equal(h.judged.length, 0);
+    assert.match(h.comments[0]!.body, /^Waits for a push: the CI workflow .* \(test 8\)/);
   });
 });
 
