@@ -8,25 +8,30 @@
  * edited (dispatch/webhook/route.mjs). The turn reads the issue and runs,
  * in file order, each review the repo's `ticketReviews` list holds whose
  * selector the ticket meets now ({@link selects}) and whose newest marker
- * does not carry the ticket's current key, a digest of its body. Governor's
+ * does not carry the ticket's current key ({@link keyFor}): a digest of its
+ * body, and of its type labels where the review has `types`. Governor's
  * own records are never reviewed: a closed issue, a pull request, the
  * heartbeat issue and the wait ticket. A review runs only where the
  * ticket's author is in the repo's `trust.review` and in the review's own
  * `by`.
  *
  * Each run is one `claude -p` with no tools, its system prompt replaced by
- * governor's fixed frame ({@link TICKET_FRAME}) and the default checklist
- * ({@link DEFAULT_TICKET_CHECKLIST}), its answer held to
+ * governor's fixed frame ({@link TICKET_FRAME}) and the review's checklist
+ * for the ticket ({@link checklistFor}): the repo's own `checklist` or the
+ * default ({@link DEFAULT_TICKET_CHECKLIST}), then each matching `types`
+ * entry's. Its answer is held to
  * {@link TICKET_ANSWER_SCHEMA}. On stdin the model reads the ticket, its
  * parent and the same-repo issues its body links, the repo's open issues,
  * and which round of this review it is. The answer is posted as a new
  * comment ending in `<!-- governor:ticket-review <name> <conclusion> <key> -->`.
  * Only a comment governor's App posted is read as a review's.
  *
- * Before its comment, a run applies the labels the review's `conclusions`
- * names ({@link applyLabels}): it removes each label the other two
- * conclusions name that the ticket carries, then creates and adds each of
- * its own conclusion's labels the ticket lacks. It touches no other label,
+ * Before its comment, a run applies the labels the review names for its
+ * conclusion on this ticket ({@link conclusionsFor}, {@link applyLabels}):
+ * it removes each label the other two conclusions name, in the review's
+ * `conclusions` or any `types` entry's, that the ticket carries, then
+ * creates and adds each of its own conclusion's labels the ticket lacks. It
+ * touches no other label,
  * and reads no other part of the config to decide. The model applies none.
  *
  * A run that fails, or answers outside the schema, a label write GitHub
@@ -155,6 +160,67 @@ Rules on the conclusion:
  *   `loop`: where the run met the loop guard, the failures in a row, and
  *   why the guard's comment did not post where it did not.
  */
+
+/** A label as GitHub matches it: in any case. @param {string} label */
+const keyOf = (label) => label.toLowerCase();
+
+/**
+ * The review's `types` entries a ticket matches, in file order: each whose
+ * labels the ticket carries any of, in any case.
+ *
+ * @param {TicketReview} review
+ * @param {Ticket} ticket
+ */
+export const typesOf = (review, ticket) => {
+  const carried = new Set(ticket.labels.map(keyOf));
+  return (review.types ?? []).filter((t) => t.labels.some((l) => carried.has(keyOf(l))));
+};
+
+/**
+ * The review's checklist for a ticket: its base, the repo's own `checklist`
+ * or governor's default, then each matching entry's checklist in file
+ * order. A ticket matching no entry gets the base alone, and no entry can
+ * drop the base.
+ *
+ * @param {TicketReview} review
+ * @param {Ticket} ticket
+ */
+export const checklistFor = (review, ticket) => [
+  review.checklist ?? DEFAULT_TICKET_CHECKLIST,
+  ...typesOf(review, ticket).flatMap((t) => (t.checklist === undefined ? [] : [t.checklist])),
+].join('\n\n');
+
+/**
+ * The labels each conclusion adds on a ticket: for each conclusion, those
+ * of the first matching entry, in file order, that names it, and otherwise
+ * the review's own `conclusions`.
+ *
+ * @param {TicketReview} review
+ * @param {Ticket} ticket
+ * @returns {import('./repo-config.mjs').Conclusions}
+ */
+export const conclusionsFor = (review, ticket) => {
+  const matched = typesOf(review, ticket);
+  const of = (/** @type {keyof import('./repo-config.mjs').Conclusions} */ c) => matched.find((t) => t.conclusions?.[c] !== undefined)?.conclusions?.[c] ?? review.conclusions?.[c] ?? [];
+  return { success: of('success'), failure: of('failure'), neutral: of('neutral') };
+};
+
+/**
+ * The ticket's key for a review: the body's digest, and with `types` the
+ * ticket's labels that the review's entries name as well, lower-cased and
+ * sorted, so a ticket whose type changed is reviewed again. A review with no
+ * `types` keeps the body's digest alone, so the markers already on threads
+ * still match.
+ *
+ * @param {TicketReview} review
+ * @param {Ticket} ticket
+ */
+export const keyFor = (review, ticket) => {
+  if (review.types === undefined) return bodyDigest(ticket.body);
+  const named = new Set(review.types.flatMap((t) => t.labels.map(keyOf)));
+  const labels = [...new Set(ticket.labels.map(keyOf).filter((l) => named.has(l)))].sort();
+  return bodyDigest(JSON.stringify([ticket.body, labels]));
+};
 
 /**
  * The marker a review's comment ends with.
@@ -402,17 +468,26 @@ const labelDescription = (name, conclusion) => `Added by governor's ${name} tick
  * edit: a ticket must not keep an earlier `success` label under a later
  * `failure` with nobody told.
  *
- * @param {{ reader: TicketReader, ticket: Ticket, name: string, conclusions: import('./repo-config.mjs').Conclusions | undefined, conclusion: string }} args
+ * `conclusions` is the labels each conclusion adds on this ticket
+ * ({@link conclusionsFor}). `every` is each set the review names, its own
+ * `conclusions` and each `types` entry's, where it has entries: the labels
+ * to remove are those any of them names under another conclusion, so a
+ * ticket whose type changed loses an earlier type's labels, and never one
+ * that the conclusion being applied names in any of them, so a `success` on
+ * an enhancement never takes off a ready label a bug entry's `success` adds.
+ *
+ * @param {{ reader: TicketReader, ticket: Ticket, name: string, conclusions: import('./repo-config.mjs').Conclusions | undefined, every?: Array<Partial<import('./repo-config.mjs').Conclusions> | undefined>, conclusion: string }} args
  * @returns {Promise<{ removed: string[], added: string[] }>}
  */
-export const applyLabels = async ({ reader, ticket, name, conclusions, conclusion }) => {
+export const applyLabels = async ({ reader, ticket, name, conclusions, every = [conclusions], conclusion }) => {
   const named = (/** @type {string} */ c) => conclusions?.[/** @type {keyof import('./repo-config.mjs').Conclusions} */ (c)] ?? [];
+  const anywhere = (/** @type {string} */ c) => every.flatMap((set) => set?.[/** @type {keyof import('./repo-config.mjs').Conclusions} */ (c)] ?? []);
   // GitHub matches label names in any case, so a label the ticket carries
   // in another case is the one named, and is removed by the name it has.
   const keyed = (/** @type {string[]} */ labels) => new Set(labels.map((l) => l.toLowerCase()));
   const own = named(conclusion);
-  const ownKeys = keyed(own);
-  const otherKeys = keyed(CONCLUSIONS.filter((c) => c !== conclusion).flatMap(named).filter((l) => !ownKeys.has(l.toLowerCase())));
+  const ownKeys = keyed([...own, ...anywhere(conclusion)]);
+  const otherKeys = keyed(CONCLUSIONS.filter((c) => c !== conclusion).flatMap((c) => [...named(c), ...anywhere(c)]).filter((l) => !ownKeys.has(l.toLowerCase())));
   const carried = keyed(ticket.labels);
   const removed = ticket.labels.filter((l) => otherKeys.has(l.toLowerCase()));
   const added = own.filter((l) => !carried.has(l.toLowerCase()));
@@ -479,15 +554,16 @@ export const reviewTicket = async ({ repo, issue, reader, config, run, transcrip
   // The thread is read only where some review selects the ticket.
   const unmet = new Map(reviews.map(({ name, when }) => [name, selects(when, ticket)]));
   const thread = [...unmet.values()].some((u) => u === null) ? await reader.allComments(issue) : [];
-  const key = bodyDigest(ticket.body);
   /** @type {Promise<string> | null} */
   let context = null;
   /** @type {{ limit: string, error: string } | null} */
   let stopped = null;
   /** @type {Reviewed[]} */
   const out = [];
-  for (const { name, conclusions } of reviews) {
+  for (const review of reviews) {
+    const { name } = review;
     const about = { repo, issue, review: name };
+    const key = keyFor(review, ticket);
     const why = unmet.get(name) ?? null;
     const markers = markersOf(thread, name);
     const reason = why !== null ? `#${issue} is not one the ${name} review selects: ${why}`
@@ -513,7 +589,7 @@ export const reviewTicket = async ({ repo, issue, reader, config, run, transcrip
     try {
       context ??= contextOf({ repo, ticket, reader, log });
       const prompt = `${await context}\n\n# Round\n\nThis is round ${round} of this review.\n`;
-      const ran = await run({ system: `${TICKET_FRAME}\n\n${DEFAULT_TICKET_CHECKLIST}`, prompt, schema: TICKET_ANSWER_SCHEMA, replace: true }, `${name} review of #${issue}`);
+      const ran = await run({ system: `${TICKET_FRAME}\n\n${checklistFor(review, ticket)}`, prompt, schema: TICKET_ANSWER_SCHEMA, replace: true }, `${name} review of #${issue}`);
       let answer;
       try {
         answer = parseConclusion(ran.output);
@@ -523,7 +599,7 @@ export const reviewTicket = async ({ repo, issue, reader, config, run, transcrip
         throw error;
       }
       ({ sessionId, usage } = answer);
-      const labelled = await applyLabels({ reader, ticket, name, conclusions, conclusion: answer.conclusion });
+      const labelled = await applyLabels({ reader, ticket, name, conclusions: conclusionsFor(review, ticket), every: [review.conclusions, ...(review.types ?? []).map((t) => t.conclusions)], conclusion: answer.conclusion });
       if (labelled.removed.length + labelled.added.length > 0) log('dispatch-ticket-review-labels', { level: 'info', ...about, conclusion: answer.conclusion, ...labelled });
       await reader.comment(issue, ticketComment({ name, conclusion: answer.conclusion, text: answer.text, key }));
       log('dispatch-ticket-review', { ...about, outcome: 'commented', conclusion: answer.conclusion, round, ...(usage === undefined ? {} : { usage }) });

@@ -13,7 +13,11 @@ import { factoryFile } from './helpers/factory.ts';
 
 const FACTORY_FILE = factoryFile(CONFIG_PATH);
 /** The factory's config file and the checklist file it names, as its default branch holds them. */
-const FACTORY_FILES = { 'acme/factory': FACTORY_FILE, 'acme/factory:.claude/skills/pr-review/SKILL.md': factoryFile('.claude/skills/pr-review/SKILL.md') };
+/** The prompt files the factory's config names, each by its path. */
+const FACTORY_PROMPTS = ['.claude/skills/pr-review/SKILL.md', '.github/ticket-review/triage.md', '.github/ticket-review/bug.md'];
+/** The factory's files under `repo`, as `reads` keys them. */
+const factoryFilesOf = (repo: string) => Object.fromEntries([[repo, FACTORY_FILE], ...FACTORY_PROMPTS.map((path) => [`${repo}:${path}`, factoryFile(path)])]);
+const FACTORY_FILES = factoryFilesOf('acme/factory');
 const ASKME_FILE = JSON.stringify({
   environment: 'env_01ASK',
   labels: { ready: ['mode: afk'], claim: 'claimed' },
@@ -55,7 +59,7 @@ describe('readConfig', () => {
   // No switch is repo-specific. The factory's file, which turns every
   // switch on, serves any repo that commits it.
   test('the factory\'s file serves another repo with every switch on', async () => {
-    const r = reads({ 't-d-d/askme-mcp': FACTORY_FILE, 't-d-d/askme-mcp:.claude/skills/pr-review/SKILL.md': FACTORY_FILES['acme/factory:.claude/skills/pr-review/SKILL.md'] });
+    const r = reads(factoryFilesOf('t-d-d/askme-mcp'));
     const served = await repoServed({ ...r, repo: 't-d-d/askme-mcp' });
     assert.ok(served, JSON.stringify(r.logged));
     for (const name of GENERIC_SWITCHES) assert.equal(served.config.features[name], true, name);
