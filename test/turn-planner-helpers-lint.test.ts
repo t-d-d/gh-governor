@@ -26,7 +26,6 @@ const HELPERS: Array<[string, string]> = [
   ['ticketStatus', '../scripts/lib/ready-work.mjs'],
   ['mayPickUp', '../scripts/lib/ready-work.mjs'],
   ['mayStartSpec', '../scripts/lib/ready-work.mjs'],
-  ['specHold', '../scripts/lib/ready-work.mjs'],
 ];
 
 /** The rule ids eslint reports for `code` linted as the file at `path`. */

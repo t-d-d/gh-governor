@@ -11,7 +11,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { DISPATCH_WINDOW_MS, dispatchMarker } from '../../dispatch/webhook/fire.mjs';
+import { dispatchMarker } from '../../dispatch/webhook/fire.mjs';
 import { planSchedule, type Seen } from '../../scripts/lib/dispatch-router.mjs';
 import { promptFor, sessionName } from '../../scripts/lib/dispatch-prompt.mjs';
 
@@ -149,27 +149,18 @@ describe('planSchedule', () => {
     assert.ok(!asked.some((a) => a.startsWith('parent')), `read a parent: ${asked.join('; ')}`);
   });
 
-  test('skips an issue dispatched inside the window, so a burst of fires starts one session', async () => {
-    const at = new Date(NOW - 5 * 60_000).toISOString();
+  // The claim label keeps a ticket out while it is built, not a dispatch
+  // comment's age: a ticket whose claim was removed is selected again, and
+  // its thread is not read.
+  test('an issue with a dispatch comment from a minute ago is still selected, and its comments are not read', async () => {
+    const at = new Date(NOW - 60_000).toISOString();
     const { reader, asked } = fakeReader({
-      issues: [issue(3, READY), issue(4, READY)],
-      comments: { 3: [{ id: 1, body: dispatchMarker({ at, sessionUrl: null }), created_at: at }] },
-    });
-    const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 1, now: NOW });
-    assert.deepEqual(plan.map((d) => d.issue), [4]);
-    // Only the window's comments are asked for: a marker older than the
-    // window would not count, and a long thread's page would hide the newest.
-    assert.ok(asked.includes(`comments 3 since ${new Date(NOW - DISPATCH_WINDOW_MS).toISOString()}`), asked.join('; '));
-  });
-
-  test('an issue dispatched before the window is selectable again: a session that never started is retried', async () => {
-    const at = new Date(NOW - DISPATCH_WINDOW_MS - 60_000).toISOString();
-    const { reader } = fakeReader({
       issues: [issue(3, READY)],
-      comments: { 3: [{ id: 1, body: dispatchMarker({ at, sessionUrl: null }), created_at: at }] },
+      comments: { 3: [{ id: 1, body: dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_01WORK' }), created_at: at }] },
     });
     const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 1, now: NOW });
     assert.deepEqual(plan.map((d) => d.issue), [3]);
+    assert.ok(!asked.some((a) => a.startsWith('comments ')), asked.join('; '));
   });
 
   test('nothing eligible is an empty plan, not an error', async () => {
@@ -412,14 +403,13 @@ describe('planSchedule over several repos', () => {
   });
 
   test('with `cut`, a ticket past the cap the selection would skip is no cut, and a repo is judged once', async () => {
-    const at = new Date(NOW - 5 * 60_000).toISOString();
     const factory = fakeReader({
       issues: [issue(1, READY), issue(2, READY), issue(3, READY), issue(4, READY), issue(5, READY)],
       blockers: { 3: [{ number: 8, state: 'open', title: 'Issue 8' }] },
     });
     const other = fakeReader({
       issues: [issue(9, ['mode: afk', 'type: bug'])],
-      comments: { 9: [{ id: 1, body: dispatchMarker({ at, sessionUrl: null }), created_at: at }] },
+      blockers: { 9: [{ number: 10, state: 'open', title: 'Issue 10' }] },
     });
     const cut = new Set<string>();
     await planSchedule({
@@ -428,13 +418,13 @@ describe('planSchedule over several repos', () => {
       now: NOW,
       cut,
     });
-    assert.deepEqual([...cut], [REPO], 'the blocked #3 is passed over for #4; the other repo\'s one ticket was dispatched inside the window');
+    assert.deepEqual([...cut], [REPO], 'the blocked #3 is passed over for #4; the other repo\'s one ticket is blocked');
     assert.ok(!factory.asked.some((a) => / 5( |$)/.test(a)), `asked past the repo's first cut ticket: ${factory.asked.join('; ')}`);
   });
 
   test('with `cut`, a read past the cap that fails counts the repo cut, not unread', async () => {
     const factory = fakeReader({ issues: [issue(1, READY), issue(2, READY), issue(3, READY)] });
-    const reader = { ...factory.reader, comments: async (n: number) => { if (n === 3) throw new Error('GET /comments failed: 502'); return []; } };
+    const reader = { ...factory.reader, blockers: async (n: number) => { if (n === 3) throw new Error('GET /blocked_by failed: 502'); return []; } };
     const cut = new Set<string>();
     const unread: Array<{ repo: string; error: string }> = [];
     const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, cut, unread });

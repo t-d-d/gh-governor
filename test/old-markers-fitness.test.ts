@@ -1,7 +1,7 @@
 /**
  * Governor writes and reads only `governor:` markers. A ticket or a PR body
  * carrying only the markers of the repo governor was extracted from is
- * unmarked to it: the ticket is dispatchable, the PR has no subscriber but
+ * unmarked to it: the ticket names no builder, the PR has no subscriber but
  * its footer's owner, and the thread has no review. Each case beside it
  * shows the same text with governor's marker read as marked, so a pass here
  * means the old prefix is ignored, not that the reader is broken.
@@ -12,38 +12,22 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { dispatchMarker } from '../dispatch/webhook/fire.mjs';
+import { dispatchMarker, lastDispatch } from '../dispatch/webhook/fire.mjs';
 import { subscribeLine, subscribersFor } from '../dispatch/webhook/subscribe.mjs';
 import { lastReview, reviewMarker } from '../dispatch/pr-body.mjs';
-import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 
 const OLD = `${['pod', 'stow'].join('')}:`;
 /** The text with each governor marker given the old prefix instead. */
 const old = (text: string) => text.replaceAll('governor:', OLD);
 
-const REPO = 'acme/factory';
 const NOW = Date.parse('2026-10-28T12:00:00Z');
 const AT = '2026-10-28T11:30:00.000Z';
-const LABELS = { ready: ['mode: afk'], claim: 'claimed', exclude: ['type: prd'] };
 const SESSION = 'https://claude.ai/code/session_01OTHER';
 const OWNER = 'https://claude.ai/code/session_01OWNER';
 const FOOTER = `🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${OWNER}`;
 
-/** A ready ticket #7 whose one comment is `marker`. */
-const plan = (marker: string) => planSchedule({
-  sources: [{
-    repo: REPO,
-    labels: LABELS,
-    reader: {
-      readyIssues: async () => [{ number: 7, title: 'Seven', state: 'open', created_at: '2026-10-01T00:00:00Z', labels: ['mode: afk'], association: 'MEMBER' }],
-      blockers: async () => [],
-      blocking: async () => [],
-      comments: async () => [{ id: 1, body: marker, created_at: AT }],
-    },
-  }],
-  cap: 1,
-  now: NOW,
-} as never);
+/** The builder a thread whose one comment is `marker` names, or null. */
+const builder = (marker: string) => lastDispatch([{ id: 1, body: marker, created_at: AT }], NOW, Infinity)?.sessionUrl ?? null;
 
 describe('fitness: governor reads no old-prefix marker (dispatcher-repos.md)', () => {
   test('the old prefix is the extracted repo\'s name and a colon, and governor writes none of it', () => {
@@ -55,10 +39,10 @@ describe('fitness: governor reads no old-prefix marker (dispatcher-repos.md)', (
     }
   });
 
-  test('a ticket whose only dispatch marker is the old one is dispatched, as if unmarked', async () => {
+  test('a ticket whose only dispatch marker is the old one names no builder, as if unmarked', () => {
     const marked = dispatchMarker({ at: AT, sessionUrl: SESSION });
-    assert.deepEqual((await plan(marked)).map((d) => d.issue), [], 'governor\'s own marker holds the ticket');
-    assert.deepEqual((await plan(old(marked))).map((d) => d.issue), [7]);
+    assert.equal(builder(marked), SESSION, 'governor\'s own marker names the builder');
+    assert.equal(builder(old(marked)), null);
   });
 
   test('a PR body whose only subscribe line is the old one has no subscriber but its owner', () => {

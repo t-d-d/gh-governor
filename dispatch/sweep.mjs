@@ -23,7 +23,6 @@ import { GITHUB_SOURCE } from './deliveries.mjs';
 import { ownerOutcome } from './unblocked.mjs';
 import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
-import { dispatchMarker } from './webhook/fire.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
 import { byOf, sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -77,7 +76,7 @@ const waitLaunch = (ctx, { repo, config, wait, withFallback, unread }) => {
         try {
           await drop({ outcome: 'spec session started' });
         } catch (error) {
-          ctx.log('dispatch-wait-unhandled', { level: 'error', repo, issue, read, error: messageOf(error), reason: 'its spec session started and its item stays: the next fire finds the session\'s dispatch marker and deletes it' });
+          ctx.log('dispatch-wait-unhandled', { level: 'error', repo, issue, read, error: messageOf(error), reason: 'its spec session started and its item stays: the next fire messages the session the ticket\'s body names and deletes it' });
           unread.push({ repo, error: `wait #${issue}: ${messageOf(error)}` });
         }
       },
@@ -94,9 +93,8 @@ const waitLaunch = (ctx, { repo, config, wait, withFallback, unread }) => {
       let told = null;
       try {
         const fallback = withFallback ? { prompt: asked.prompt, sessionName: asked.sessionName, issue } : undefined;
-        told = await ctx.delivery(repo).deliver({ session: owner }, waitOwnerMessage({ issue, until, labels: config.labels, prompts: config.prompts }), { source: GITHUB_SOURCE, on: [issue], fallback });
+        told = await ctx.delivery(repo).deliver({ session: owner }, waitOwnerMessage({ issue, until, labels: config.labels, prompts: config.prompts }), { source: GITHUB_SOURCE, on: [issue], fallback, spec: true });
         const outcome = ownerOutcome(told, 'the spec session is past DispatchCap: left for the next fire');
-        if (told.ok) await (await ctx.readerFor(repo)).comment(issue, dispatchMarker({ at: new Date(ctx.now()).toISOString(), sessionUrl: owner }));
         if (told.ok || (told.fallback !== null && WENT.has(told.fallback.outcome))) {
           await drop({ owner, outcome });
         } else {
@@ -104,7 +102,7 @@ const waitLaunch = (ctx, { repo, config, wait, withFallback, unread }) => {
           if (!told.refused) unread.push({ repo, error: `wait #${issue}: ${outcome}${told.error === null ? '' : `: ${told.error}`}` });
         }
       } catch (error) {
-        ctx.log('dispatch-wait-unhandled', { level: 'error', repo, issue, read, owner, error: messageOf(error), reason: 'its owner could not be asked, marked or its item deleted, so the next fire tries again' });
+        ctx.log('dispatch-wait-unhandled', { level: 'error', repo, issue, read, owner, error: messageOf(error), reason: 'its owner could not be asked or its item deleted, so the next fire tries again' });
         unread.push({ repo, error: `wait #${issue}: ${messageOf(error)}` });
       }
       const fell = told?.fallback ?? null;
@@ -268,7 +266,7 @@ export const planSweep = async (invocation, ctx) => {
   await Promise.all(unstarted.map(async (u) => reportUnstarted({ reader: await ctx.readerFor(u.repo), unstarted: u, what: 'readied', event: 'dispatch-pickup', log: ctx.log })));
   for (const u of unlooked) reportUnlooked({ unlooked: u, event: 'dispatch-pickup', log: ctx.log });
   if (only !== undefined && planned.length === 0) {
-    const why = ctx.cap === 0 ? { outcome: 'not started', reason: CAP_ZERO_REASON } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
+    const why = ctx.cap === 0 ? { outcome: 'not started', reason: CAP_ZERO_REASON } : { outcome: 'not started: not ready, blocked, or held by its Blocked until: line' };
     // A ticket skipped for its author, or for its ready labels, has its own line above.
     const said = new Set([...strangers, ...outsiders, ...unstarted, ...unlooked].map((t) => `${t.repo}#${t.issue}`));
     for (const { repo, issue, ...read } of seen) {
