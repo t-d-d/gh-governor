@@ -9,6 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { coverageOf } from '../dispatch/coverage.mjs';
+import { RELAY } from '../dispatch/webhook/fire.mjs';
 import { BASELINE_READS_MAX, RUNS_PAGES_MAX, STALE_RUNS_PAUSES_MS } from '../dispatch/runs.mjs';
 import { RUNS_PER_PAGE } from '../scripts/lib/github-app.mjs';
 import { ticketsOf } from '../dispatch/turn.mjs';
@@ -27,7 +28,7 @@ const marked = (name: string, label: string, commit?: string) => `${name}${commi
 const MCP_JOB = marked('Publish to MCP Registry', LABEL);
 const file = (env: string, on = 'on:\n  workflow_dispatch:\n', jobs = `  publish:\n    name: "${MCP_JOB}"\n    runs-on: ubuntu-latest\n    steps: []\n`) => `name: W\n${on}${env}jobs:\n${jobs}`;
 const run = (id: number, conclusion: string, head: string, event = 'workflow_dispatch') => ({ id, status: 'completed', conclusion, event, head_branch: 'main', head_sha: head, html_url: `https://x/${id}`, created_at: `2026-09-25T11:${String(id % 60).padStart(2, '0')}:00Z` });
-const pull = (number: number, sha: string, body: string, head = '') => ({ number, title: `PR ${number}`, html_url: `https://x/${number}`, body, merged_at: `2026-09-25T11:0${number % 10}:00Z`, merge_commit_sha: sha, head });
+const pull = (number: number, sha: string, body: string, head = '', association = 'OWNER') => ({ number, title: `PR ${number}`, html_url: `https://x/${number}`, body, merged_at: `2026-09-25T11:0${number % 10}:00Z`, merge_commit_sha: sha, head, author: 'someone', association, bot: false, own: false });
 const merge = (n: number) => String(n).padStart(40, '0');
 /** The job fire the receiver queues for MCP_JOB succeeding in run 500. */
 const invocation = { kind: 'job' as const, name: MCP_JOB, workflow: 'Publish to MCP Registry', branch: 'main', runId: 500, jobId: 9001, url: 'https://x/500/job/9001', headSha: HEAD, label: LABEL, commit: HEAD };
@@ -55,10 +56,10 @@ const reader = (over: Record<string, unknown> = {}) => {
 };
 type Cursor = { runId: number; commit: string; created: string } | null;
 type CursorRead = (workflow: string, label: string | null) => Promise<Cursor>;
-const cover = (r: ReturnType<typeof reader>, over: Record<string, unknown> = {}, cursor: CursorRead = async () => null, onBranch?: (branch: string) => Promise<string | null>) =>
-  coverageOf({ invocation: { ...invocation, ...over } as never, reader: r.reader as never, repo: REPO, workflows: FACTORY_WORKFLOWS, sleep: async () => {}, cursor, ...(onBranch === undefined ? {} : { onBranch }) });
+const cover = (r: ReturnType<typeof reader>, over: Record<string, unknown> = {}, cursor: CursorRead = async () => null, onBranch?: (branch: string) => Promise<string | null>, relay: readonly string[] = RELAY) =>
+  coverageOf({ invocation: { ...invocation, ...over } as never, reader: r.reader as never, repo: REPO, workflows: FACTORY_WORKFLOWS, relay, sleep: async () => {}, cursor, ...(onBranch === undefined ? {} : { onBranch }) });
 const coverRed = (r: ReturnType<typeof reader>, over: Record<string, unknown> = {}, cursor: CursorRead = async () => null) =>
-  coverageOf({ invocation: { ...red, ...over } as never, reader: r.reader as never, repo: REPO, workflows: FACTORY_WORKFLOWS, sleep: async () => {}, cursor });
+  coverageOf({ invocation: { ...red, ...over } as never, reader: r.reader as never, repo: REPO, workflows: FACTORY_WORKFLOWS, relay: RELAY, sleep: async () => {}, cursor });
 
 describe('coverageOf — a shipping job that succeeded', () => {
   test('covers the merges since the last green run that shipped its label, the PRs its paths pick, and each PR\'s closing tickets', async () => {
@@ -183,7 +184,7 @@ describe('coverageOf — a shipping job that succeeded', () => {
   test('a runs list that lacks the run after every re-read covers nothing, naming the newest run it held', async () => {
     const slept: number[] = [];
     const r = reader({ workflowRuns: async () => [run(497, 'success', BASE)] });
-    const c = await coverageOf({ invocation: invocation as never, reader: r.reader as never, repo: REPO, workflows: FACTORY_WORKFLOWS, sleep: async (ms: number) => { slept.push(ms); }, cursor: async () => null });
+    const c = await coverageOf({ invocation: invocation as never, reader: r.reader as never, repo: REPO, workflows: FACTORY_WORKFLOWS, relay: RELAY, sleep: async (ms: number) => { slept.push(ms); }, cursor: async () => null });
     assert.deepEqual(slept, STALE_RUNS_PAUSES_MS);
     assert.match(String(c.reason), /run 497/);
     assert.equal(c.stale?.newest?.id, 497);
@@ -239,6 +240,24 @@ describe('coverageOf — a shipping job that succeeded', () => {
     assert.deepEqual(unnamed, []);
     const none = await cover(r, {}, async () => null, async () => null);
     assert.match(String((await none.sessions(none.picked, 'deploys')).unnamed[0]?.reason), /no live session holds its head branch feature\/b/);
+  });
+
+  test('a PR opened by an author trust.relay does not let in names no session, and its deploy and CI reach nobody, by branch or by line', async () => {
+    const r = reader({
+      fileAt: async () => file('env:\n  TICKET_LABEL_PATHS: all\n'),
+      pullsForCommit: async (sha: string) => (sha === merge(1) ? [pull(1, sha, `Closes #11\n\n<!-- governor:subscribe https://claude.ai/code/session_01WATCHES -->\n\n${SESSION}`, 'feature/a', 'NONE')] : []),
+    });
+    const branches: string[] = [];
+    const c = await cover(r, {}, async () => null, async (branch) => { branches.push(branch); return 'https://claude.ai/code/session_01LOCAL'; });
+    for (const event of ['deploys', 'ci'] as const) {
+      const { sessions, owned, unnamed } = await c.sessions(c.picked, event);
+      assert.deepEqual([...sessions.keys()], [], event);
+      assert.deepEqual([...owned], []);
+      assert.match(String(unnamed[0]?.reason), /PR #1 .*NONE.*trust\.relay/);
+    }
+    assert.deepEqual(branches, [], 'its head branch is not looked up: an event is judged by the PR\'s author');
+    const open = await cover(r, {}, async () => null, async () => null, [...RELAY, 'NONE']);
+    assert.deepEqual([...(await open.sessions(open.picked, 'deploys')).sessions.values()].map((s) => s.session), [SESSION, 'https://claude.ai/code/session_01WATCHES']);
   });
 });
 
@@ -422,7 +441,7 @@ describe('coverageOf — the runs list', () => {
     const lists = [[run(497, 'success', OLDER)], [run(500, 'success', HEAD), run(499, 'success', BASE), run(497, 'success', OLDER)]];
     const slept: number[] = [];
     const r = reader({ workflowRuns: async () => { r.asked.push('runs'); return lists.shift() ?? []; } });
-    const c = await coverageOf({ invocation: invocation as never, reader: r.reader as never, repo: REPO, workflows: FACTORY_WORKFLOWS, sleep: async (ms: number) => { slept.push(ms); }, cursor: async () => null });
+    const c = await coverageOf({ invocation: invocation as never, reader: r.reader as never, repo: REPO, workflows: FACTORY_WORKFLOWS, relay: RELAY, sleep: async (ms: number) => { slept.push(ms); }, cursor: async () => null });
     assert.deepEqual(slept, [STALE_RUNS_PAUSES_MS[0]]);
     assert.equal(r.asked.filter((a) => a === 'runs').length, 2);
     assert.equal(c.reason, null);

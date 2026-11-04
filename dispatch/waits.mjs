@@ -48,8 +48,8 @@
 
 import { waitLine } from './webhook/fire.mjs';
 import { UNREADIED_HELD, ownerMessage, sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
-import { sessionNamedIn } from './webhook/subscribe.mjs';
-import { AUTO, authorKind, lets } from './trust.mjs';
+import { relayedBody, sessionNamedIn } from './webhook/subscribe.mjs';
+import { AUTO, RELAY, authorKind, lets } from './trust.mjs';
 import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
 import { RELATIVE_WAIT, isWaiting, mayStartSpec, specHold, ticketStatus, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
@@ -519,12 +519,14 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  *
  * With `auto`, the repo's `trust.auto` (dispatch/trust.mjs): a ticket whose
  * author it does not let in gets its comment, but no spec work, and its
- * item goes, logged at info.
+ * item goes, logged at info. With `relay`, its `trust.relay`: a session
+ * link that ends a ticket's body names its owner only where the body's
+ * author is let in (`relayedBody`, dispatch/webhook/subscribe.mjs).
  *
- * @param {{ reader: WaitReader, state: WaitState, repo: string, labels: import('../scripts/lib/ready-work.mjs').Labels, spec: boolean, now: number, log: Log, links?: WaitLinks, blocking?: LinkReader['blocking'], auto?: readonly string[] }} args
+ * @param {{ reader: WaitReader, state: WaitState, repo: string, labels: import('../scripts/lib/ready-work.mjs').Labels, spec: boolean, now: number, log: Log, links?: WaitLinks, blocking?: LinkReader['blocking'], auto?: readonly string[], relay?: readonly string[] }} args
  * @returns {Promise<{ specs: WaitSpec[], unread: Array<{ repo: string, error: string }> }>}
  */
-export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, links, blocking, auto = AUTO }) => {
+export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, links, blocking, auto = AUTO, relay = RELAY }) => {
   /** @type {WaitSpec[]} */
   const specs = [];
   /** @type {Array<{ repo: string, error: string }>} */
@@ -596,7 +598,8 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       // A ticket governor unreadied on a not-planned close waits for a
       // person's answer first, as a later blocker's close does.
       if (spec && mayStartSpec(thread, now)) {
-        const owner = sessionNamedIn(ticket.body);
+        // A session link counts only where trust.relay lets the body's author in.
+        const owner = sessionNamedIn(relayedBody(ticket, relay));
         specs.push({ issue, title: ticket.title, until: wait.until, read: item.until, owner });
         const work = owner === null ? 'starting a spec session' : `asking its owner, ${owner}, to rewrite its spec`;
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: told ? `ended: already told, ${work}` : `ended: commented, ${work}` });

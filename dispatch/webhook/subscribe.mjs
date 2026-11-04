@@ -33,10 +33,28 @@
  * scripts/lib/github-app.mjs; the image copies both files) read bodies with it.
  */
 
-import { SESSION_LINK as LINK, SUBSCRIPTION_EVENTS } from './fire.mjs';
+import { SESSION_LINK as LINK, SUBSCRIPTION_EVENTS, lets } from './fire.mjs';
 import commonmark from './vendor/commonmark.cjs';
 
 /** @typedef {import('./fire.mjs').SubscriptionEvent} SubscriptionEvent */
+
+/**
+ * The body of an issue or PR as governor reads sessions from it to route
+ * text into them: the body, where `relay`, the repo's `trust.relay`, lets
+ * its author in; else the empty body, which names no session and
+ * subscribes no one. The one gate between a body and the readers below
+ * ({@link sessionNamedIn}, {@link subscribersFor}, {@link sessionsNamedIn})
+ * wherever governor routes by them: anyone can open an issue on a public
+ * repo, and session links are public on every PR a session wrote, so a
+ * stranger's body that names a session would otherwise route owners'
+ * comments and events into it. A body whose author was not read is
+ * `NONE`'s.
+ *
+ * @param {{ body?: unknown } & import('./fire.mjs').Author} on
+ * @param {readonly string[]} relay
+ * @returns {string}
+ */
+export const relayedBody = (on, relay) => (lets(relay, on) ? String(on.body ?? '') : '');
 
 const KNOWN = new Set(/** @type {readonly string[]} */ (SUBSCRIPTION_EVENTS));
 

@@ -501,6 +501,25 @@ describe('the check says what a trust list exposes, and which unset list it narr
     assert.ok(lines.some((l) => /^::notice file=\.github\/dispatch\.json,title=governor narrowed a trust list this file leaves unset::trust\.auto: /.test(l)), lines.join('\n'));
   });
 
+  test('trust.relay beyond the three is an exposure that says whose text reaches a running session', async () => {
+    const got = await check(reads({ '.github/dispatch.json': file({ ...base(), trust: { relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT', 'NONE'] } }) }, { labels: ['mode: afk'] }));
+    assert.deepEqual([got.errors, got.templates, got.warnings], [[], [], []]);
+    const [said, ...rest] = got.exposures ?? [];
+    assert.deepEqual(rest, []);
+    assert.match(String(said), /^trust\.relay: lets in BOT and NONE authors/);
+    assert.match(String(said), /running session/);
+    assert.match(String(said), /quotes strangers' issues/);
+  });
+
+  test('a relay the file narrows lists the unset auto and pickup.by it narrowed', async () => {
+    const got = await check(reads({ '.github/dispatch.json': file({ ...base(), trust: { relay: ['OWNER'] } }) }, { labels: ['mode: afk'] }));
+    assert.deepEqual(got.exposures, undefined);
+    assert.deepEqual(got.narrowed, [
+      'trust.auto: the file leaves it unset, so governor narrows it to OWNER to fit inside trust.relay',
+      'pickup.by: the file leaves it unset, so governor narrows it to OWNER to fit inside trust.relay',
+    ]);
+  });
+
   test('at the defaults the verdict carries neither', async () => {
     const got = await check(reads({ '.github/dispatch.json': file(base()) }, { labels: ['mode: afk'] }));
     assert.deepEqual(got, { errors: [], templates: [], warnings: [] });

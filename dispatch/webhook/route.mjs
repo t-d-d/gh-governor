@@ -93,7 +93,7 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, REPO_NAME, RED, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob, waitLine } from './fire.mjs';
+import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, RELAY, REPO_NAME, RED, SUMMONERS, TRUST_VALUES, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob, waitLine } from './fire.mjs';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { errorText } from './error-text.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
@@ -559,27 +559,31 @@ const mergedFire = (payload, main) => {
  * table says the repo's file leaves `prReview` off, and the task refuses it
  * where the file does.
  *
- * @param {{ event: string | undefined, payload: any, owners: readonly string[], appId?: number | undefined }} args
+ * @param {{ event: string | undefined, payload: any, owners: readonly string[], appId?: number | undefined, relay?: readonly string[] }} args
  * `owners`: the stack's owner list. `appId`: the dispatcher's own App,
- * whose comment alone is the PR review's; without it, no comment is.
+ * whose comment alone is the PR review's, and which every trust list lets
+ * in; without it, no comment is. `relay`: whose text may reach a running
+ * session ({@link receiverRelay}), the defaults where the receiver knows
+ * no other (mention.mjs).
  * @returns {Decision}
  */
-export const routeEvent = ({ event, payload, owners, appId }) => {
+export const routeEvent = ({ event, payload, owners, appId, relay }) => {
   const repo = payload?.repository?.full_name;
   if (typeof repo !== 'string' || !REPO_NAME.test(repo)) return nothing(`${event ?? 'unnamed'} delivery names no repository`);
   const owner = repo.slice(0, repo.indexOf('/'));
   if (!ownerListed(owners, owner)) return nothing(`delivery is for ${repo}, whose owner ${owner} is not on the owner list`);
-  const decision = routeFor({ event, payload, appId });
+  const decision = routeFor({ event, payload, appId, relay });
   return { ...decision, fires: decision.fires.map((queued) => ({ ...queued, fire: { ...queued.fire, repo } })) };
 };
 
 /**
  * A listed repo's delivery, routed.
  *
- * @param {{ event: string | undefined, payload: any, appId?: number | undefined }} args
+ * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[] | undefined }} args
  * @returns {Decision}
  */
-const routeFor = ({ event, payload, appId }) => {
+const routeFor = ({ event, payload, appId, relay }) => {
+  const trust = { appId, ...(relay === undefined ? {} : { relay }) };
   const main = defaultBranch(payload);
   const unbranched = nothing(`${event} delivery names no default branch: no run or merge on it to read`);
   if (event === 'issues') {
@@ -607,16 +611,16 @@ const routeFor = ({ event, payload, appId }) => {
         : nothing('issue closed with no number: nothing to free');
     }
     // The selection's fire, where there is one, beside each subscriber's.
-    if (selection !== null) return both(selection, issueEventFires(payload));
-    if (action === 'reopened') return both(issueEventFires(payload), waitFire(payload));
-    if (action === 'labeled' || action === 'unlabeled') return issueEventFires(payload);
-    const mentioned = mentionFires({ event, payload, appId }) ?? nothing(`issues ${action}: nothing to select from`);
+    if (selection !== null) return both(selection, issueEventFires(payload, trust));
+    if (action === 'reopened') return both(issueEventFires(payload, trust), waitFire(payload));
+    if (action === 'labeled' || action === 'unlabeled') return issueEventFires(payload, trust);
+    const mentioned = mentionFires({ event, payload, ...trust }) ?? nothing(`issues ${action}: nothing to select from`);
     // An issue opened is counted on its summons, or on a fire of its own.
     const counted = action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened', 'dispatch') : mentioned;
     return both(counted, waitFire(payload));
   }
   if (event === 'pull_request') {
-    const reviewed = both(pullRequestFires(payload), reviewFire(payload));
+    const reviewed = both(pullRequestFires(payload, trust), reviewFire(payload));
     return main === null ? reviewed : both(reviewed, mergedFire(payload, main));
   }
   if (event === 'workflow_run' || event === 'workflow_job') {
@@ -630,7 +634,7 @@ const routeFor = ({ event, payload, appId }) => {
     return event === 'check_run' ? finishedCheckReview(payload, main, appId) : finalStatusReview(payload, main);
   }
   if (MENTION_EVENTS.has(String(event))) {
-    return mentionFires({ event, payload, appId }) ?? nothing(`${event} ${payload?.action}: no ${MENTION} mention and no subscriber`);
+    return mentionFires({ event, payload, ...trust }) ?? nothing(`${event} ${payload?.action}: no ${MENTION} mention and no subscriber`);
   }
   return nothing(`${event ?? 'unnamed'} event: not one the dispatcher acts on`);
 };
@@ -731,7 +735,7 @@ export const handle = async (request, deps) => {
   }
   const event = headers['x-github-event'];
   const delivery = headers['x-github-delivery'];
-  const decision = await switchedOn(routeEvent({ event, payload, owners: deps.owners, appId: deps.appId }), delivery, deps);
+  const decision = await judged(({ relay }) => routeEvent({ event, payload, owners: deps.owners, appId: deps.appId, relay }), delivery, deps);
   if (decision.fires.length === 0) {
     // Never an error: an outsider who installed the App must not page anyone.
     deps.log('webhook-ignored', { level: 'info', delivery: delivery ?? null, github: event, reason: decision.reason });
@@ -752,34 +756,69 @@ export const handle = async (request, deps) => {
 };
 
 /**
- * A delivery's fires less those the repo's item in the hook table drops: a
- * selection fire for a label the item's ready labels do not list, and each
- * fire whose switch the item says is off ({@link droppedBy}). The item is
- * read once, and only for a delivery that would queue a fire. An item
- * without ready labels drops no selection fire, and one without switches
- * drops nothing by switch. A read that fails, or an item that is malformed,
- * is logged at error and drops nothing: the task still refuses a fire its
- * repo's file does not allow, and a 503 would lose the delivery, which
- * GitHub does not send again by itself. A dropped fire's reason names the
- * label or the switch, so the App's Recent Deliveries says why it went
- * nowhere.
+ * Whose text the receiver lets reach a running session in a repo whose
+ * hook-table item names `relay` (null where it cannot say): the authors
+ * with a say, whatever the item names, and the item's list, or the
+ * default where it names none. The receiver drops only an author outside
+ * the three, whose refusal is silent; the task judges every fire again
+ * from the file (dispatch/turn.mjs), so an item a file has since narrowed
+ * past lets nothing through.
  *
- * @param {Decision} decision
+ * @param {readonly string[] | null | undefined} relay
+ * @returns {readonly string[]}
+ */
+export const receiverRelay = (relay) => [...new Set([...SUMMONERS, ...(relay ?? RELAY)])];
+
+/**
+ * A delivery routed under the repo's item in the hook table, less the fires
+ * the item drops. It is first routed under every trust value: a delivery
+ * that queues nothing then queues nothing under any list, short of a
+ * session's own post on a stranger's PR naming that session, and reads no
+ * item. Otherwise the item is read once, the delivery routed again under
+ * the item's `trust.relay` ({@link receiverRelay}), and each fire the
+ * item's ready labels or switches drop is dropped ({@link switchedOn}). A
+ * read that fails, or an item that is malformed, is logged at error and
+ * routes under the defaults and drops nothing by switch or label: the task
+ * still refuses a fire its repo's file does not allow, and a 503 would
+ * lose the delivery, which GitHub does not send again by itself.
+ *
+ * @param {(trust: { relay: readonly string[] }) => Decision} route
  * @param {string | undefined} delivery
  * @param {Deps} deps
  * @returns {Promise<Decision>}
  */
-const switchedOn = async (decision, delivery, deps) => {
-  const repo = decision.fires[0]?.fire.repo;
-  if (repo === undefined) return decision;
+const judged = async (route, delivery, deps) => {
+  const widest = route({ relay: TRUST_VALUES });
+  const repo = widest.fires[0]?.fire.repo;
+  if (repo === undefined) return widest;
   /** @type {import('./hook-table.mjs').Known | null} */
   let item;
   try {
     item = await deps.repoItem(repo);
   } catch (error) {
     deps.log('webhook-switches-unread', { level: 'error', delivery: delivery ?? null, repo, error: String(/** @type {any} */ (error)?.message ?? error) });
-    return decision;
+    return route({ relay: receiverRelay(null) });
   }
+  return switchedOn(route({ relay: receiverRelay(item?.relay) }), item, delivery, deps);
+};
+
+/**
+ * A delivery's fires less those the repo's item in the hook table drops: a
+ * selection fire for a label the item's ready labels do not list, and each
+ * fire whose switch the item says is off ({@link droppedBy}). An item
+ * without ready labels drops no selection fire, and one without switches
+ * drops nothing by switch. A dropped fire's reason names the label or the
+ * switch, so the App's Recent Deliveries says why it went nowhere.
+ *
+ * @param {Decision} decision
+ * @param {import('./hook-table.mjs').Known | null} item
+ * @param {string | undefined} delivery
+ * @param {Deps} deps
+ * @returns {Decision}
+ */
+const switchedOn = (decision, item, delivery, deps) => {
+  const repo = decision.fires[0]?.fire.repo;
+  if (repo === undefined) return decision;
   /** @type {Queued[]} */
   const kept = [];
   /** @type {string[]} */

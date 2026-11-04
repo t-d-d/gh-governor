@@ -25,7 +25,7 @@ import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { instruction } from './prompts.mjs';
 import { DISPATCH_WINDOW_MS, dispatchMarker, lastDispatch } from './webhook/fire.mjs';
 import { commitSession } from './branch-run.mjs';
-import { disown, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
+import { disown, relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /**
@@ -198,12 +198,12 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  * @typedef {{
  *   comments: import('../scripts/lib/dispatch-router.mjs').Reader['comments'],
  *   comment: (n: number, body: string) => Promise<void>,
- *   pull: (n: number) => Promise<{ number: number, body: string, head: string, open: boolean }>,
+ *   pull: (n: number) => Promise<{ number: number, body: string, head: string, open: boolean } & import('./webhook/fire.mjs').Author>,
  *   updatePull: (n: number, change: { body: string }) => Promise<void>,
  *   issue: (n: number) => Promise<{ number: number, body: string, pull: boolean }>,
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
  *   openPulls: () => Promise<import('../scripts/lib/github-app.mjs').OpenPullRow[]>,
- *   openNaming: (session: string) => Promise<OpenRow[]>,
+ *   openNaming: (session: string, relay: readonly string[]) => Promise<OpenRow[]>,
  *   commit: (sha: string) => Promise<{ sha: string, message: string, parents?: string[] }>,
  * }} DeliveryReader
  *   The GitHub reads and writes a delivery makes.
@@ -218,6 +218,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   signOff: boolean,
  *   reader: () => Promise<DeliveryReader>,
  *   repo: string,
+ *   relay: readonly string[],
  *   send: (message: { session: string, text: string }, until: number) => Promise<LaunchResult>,
  *   launch: (launch: Launch, until: number) => Promise<{ outcome: LaunchOutcome, sessionUrl: string | null }>,
  *   sessions: (asking: string) => (branch: string, options?: import('../scripts/lib/session-branch.mjs').FindOptions) => Promise<string | null>,
@@ -230,7 +231,11 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   its file turns sign-off on; off, a close asks no session to sign off,
  *   since the sweep would not archive it. `reader`:
  *   the turn's GitHub reader, built on first use. `repo`: the one it reads,
- *   named in each standing. `send`: the CLI's
+ *   named in each standing. `relay`: its file's `trust.relay`
+ *   (dispatch/trust.mjs): a PR or issue body names a session to a
+ *   delivery, the owner's standing and the owner by branch, only where its
+ *   author is let in (`relayedBody`, dispatch/webhook/subscribe.mjs).
+ *   `send`: the CLI's
  *   `-p --cloud <session>`, under what is left before `until`. `launch`: a
  *   session through the launcher, the same. `sessions`: the sessions API's
  *   finder by branch, under the turn's login; a login it cannot use throws,
@@ -323,7 +328,7 @@ export const deliveries = (deps) => {
       let found = standings.get(id);
       if (found === undefined) {
         standings.set(id, found = deps.reader().then(async (github) => {
-          const named = await github.openNaming(id);
+          const named = await github.openNaming(id, deps.relay);
           if (!foundOnBranch.has(id)) return named;
           const held = await localPulls(github, session);
           return [...named, ...held.filter((p) => !named.some((n) => n.number === p.number))];
@@ -402,7 +407,7 @@ export const deliveries = (deps) => {
    * @returns {Promise<OpenRow[]>}
    */
   const localPulls = async (github, session) => {
-    const unnamed = (await github.openPulls()).filter((p) => p.head !== '' && sessionNamedIn(p.body) === null);
+    const unnamed = (await github.openPulls()).filter((p) => p.head !== '' && sessionNamedIn(relayedBody(p, deps.relay)) === null);
     try {
       const find = deps.sessions(`which sessions own the open PRs`);
       // The finder reads the list and each record once, so the asks run together.
@@ -424,8 +429,9 @@ export const deliveries = (deps) => {
    * @returns {Promise<{ session: string | null, branch: string }>}
    */
   const ownerOf = async (pr) => {
-    const { body, head } = await (await deps.reader()).pull(pr);
-    const named = sessionNamedIn(body);
+    const row = await (await deps.reader()).pull(pr);
+    const { head } = row;
+    const named = sessionNamedIn(relayedBody(row, deps.relay));
     if (named !== null) return { session: named, branch: head };
     return { session: head === '' ? null : await onBranch(head), branch: head };
   };

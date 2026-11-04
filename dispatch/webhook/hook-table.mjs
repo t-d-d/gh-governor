@@ -8,7 +8,9 @@
  * `publish`): `hooks#<repo>` / `listed`, a map from each hook's name to its
  * `keyVersion`, empty when the file turns hooks off or lists none, beside
  * it a map from each name to its `perHour`, a map from each of the repo's
- * switches to whether the file turns it on, and the file's ready labels.
+ * switches to whether the file turns it on, the file's ready labels, and
+ * its `trust` section, each list governor reads as the file sets or
+ * narrows it (dispatch/trust.mjs).
  * Each list is an attribute of its own, so another can join the item
  * without reshaping it. The
  * receiver reads the item after
@@ -18,13 +20,15 @@
  * task decides (dispatch/hooks.mjs), so a lost item costs task starts and
  * nothing more.
  *
- * The receiver also reads the item's switches and ready labels ({@link
- * hookTable} `item`) for a GitHub delivery that would queue a fire, in one
- * read. It drops a fire whose switch it says is off (switches.mjs), and a
- * selection fire for a label that is not one of the ready labels (route.mjs).
- * There a missing item, one written before it held either, and a read that
- * fails all queue the fire, which leaves the task to decide, as it did
- * before the item held them.
+ * The receiver also reads the item's switches, ready labels and trust
+ * lists ({@link hookTable} `item`) for a GitHub delivery that would queue a
+ * fire, in one read. It drops a fire whose switch it says is off
+ * (switches.mjs), a selection fire for a label that is not one of the ready
+ * labels, and a message an author outside the three and `trust.relay`
+ * wrote or is judged by (route.mjs). There a missing item, one written
+ * before it held them, and a read that fails all queue the fire by switch
+ * and label, which leaves the task to decide, as it did before the item
+ * held them, and judge by the default `trust.relay`.
  *
  * The receiver also counts each hook's fires here ({@link hookTable}
  * `count`), one item per hook and clock hour, `fires#<repo>#<hook>` /
@@ -45,7 +49,7 @@
  */
 
 import { ConditionalCheckFailedException, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
-import { HOOK_PER_HOUR } from './fire.mjs';
+import { HOOK_PER_HOUR, TRUST_VALUES } from './fire.mjs';
 
 // Defined in the pure leaf fire.mjs, so route.mjs need not load the SDK for it.
 export { HOOK_KEY_STALE } from './fire.mjs';
@@ -101,15 +105,37 @@ const readyOf = (repo, value) => {
 };
 
 /**
+ * The item's `trust.relay`. An item written before it held its trust lists
+ * has none, and the receiver reads the default. Malformed lists are a
+ * failed read, never a missing one.
+ *
+ * @param {string} repo
+ * @param {import('@aws-sdk/client-dynamodb').AttributeValue} value
+ * @returns {readonly string[]}
+ */
+const relayOf = (repo, value) => {
+  const list = value.M?.relay?.L?.map((entry) => entry.S);
+  if (list === undefined || list.some((entry) => typeof entry !== 'string' || !TRUST.has(entry))) {
+    throw new Error(`the hook table's trust lists for ${repo} are malformed: ${JSON.stringify(value)}`);
+  }
+  return /** @type {string[]} */ (list);
+};
+
+/** Every value a trust list may name. */
+const TRUST = /** @type {ReadonlySet<string>} */ (new Set(TRUST_VALUES));
+
+/**
  * @typedef {{ keyVersion: number, perHour: number }} Listed A hook as the
  *   repo's file named it when the task last read it.
- * @typedef {{ hooks: ReadonlyArray<{ name: string } & Listed>, switches: Readonly<Record<string, boolean>>, ready: readonly string[] }} Listing
+ * @typedef {{ hooks: ReadonlyArray<{ name: string } & Listed>, switches: Readonly<Record<string, boolean>>, ready: readonly string[], trust?: { relay: readonly string[] } }} Listing
  *   What the task writes of a repo's file: its hooks, each switch as
- *   `turnsOn` reads it, and its ready labels (`labels.ready`).
- * @typedef {{ switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null }} Known
+ *   `turnsOn` reads it, its ready labels (`labels.ready`), and its trust
+ *   lists as governor reads them (`relayOf`, dispatch/trust.mjs), which the
+ *   turn always writes; an item without them reads as the defaults.
+ * @typedef {{ switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null, relay?: readonly string[] }} Known
  *   What the receiver reads of a repo's item for a GitHub delivery: each
- *   switch, on or off, and the ready labels, each null where the item was
- *   written before it held them.
+ *   switch, on or off, the ready labels, and `trust.relay`, each null or
+ *   absent where the item was written before it held them.
  * @typedef {{
  *   listed: (repo: string) => Promise<ReadonlyMap<string, Listed> | null>,
  *   item: (repo: string) => Promise<Known | null>,
@@ -120,10 +146,10 @@ const readyOf = (repo, value) => {
  *   its key version and its cap; null when the repo has no item. An item
  *   written before hooks had a cap gives each one 20. A read that fails, or
  *   an item that is malformed, throws: never a missing item.
- *   `item`: the repo's switches and ready labels, as the file read when the
+ *   `item`: the repo's switches, ready labels and `trust.relay`, as the file read when the
  *   task last read it; null when the repo has no item. A read that fails,
  *   or switches or ready labels that are malformed, throw.
- *   `publish`: the repo's hooks, switches and ready labels, as the file read at `at` holds them, put
+ *   `publish`: the repo's hooks, switches, ready labels and trust lists, as the file read at `at` holds them, put
  *   unless a write from a later read stands, false then. Any other failure
  *   throws.
  *   `count`: one more fire of the hook in the clock hour holding `at`, taken
@@ -166,11 +192,11 @@ export const hookTable = (client, table) => {
     item: async (repo) => {
       const item = await read(repo);
       if (item === undefined) return null;
-      return { switches: switchesOf(repo, item.switches), ready: readyOf(repo, item.ready) };
+      return { switches: switchesOf(repo, item.switches), ready: readyOf(repo, item.ready), ...(item.trust === undefined ? {} : { relay: relayOf(repo, item.trust) }) };
     },
     // Only over an item from an earlier read: two turns racing cannot put an
     // older file's list back.
-    publish: async (repo, { hooks, switches, ready }, at) => {
+    publish: async (repo, { hooks, switches, ready, trust }, at) => {
       try {
         await client.send(new PutItemCommand({
           TableName: table,
@@ -181,6 +207,7 @@ export const hookTable = (client, table) => {
             perHour: { M: Object.fromEntries(hooks.map(({ name, perHour }) => [name, { N: String(perHour) }])) },
             switches: { M: Object.fromEntries(Object.entries(switches).map(([name, on]) => [name, { BOOL: on }])) },
             ready: { L: ready.map((label) => ({ S: label })) },
+            ...(trust === undefined ? {} : { trust: { M: { relay: { L: trust.relay.map((value) => ({ S: value })) } } } }),
           },
           ConditionExpression: 'attribute_not_exists(pk) OR #at <= :at',
           ExpressionAttributeNames: { '#at': 'at' },

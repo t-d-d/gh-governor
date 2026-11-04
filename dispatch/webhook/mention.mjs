@@ -48,6 +48,16 @@
  * every comment a session posts ends in the Claude Code footer, and one
  * quoting "@claude" back would otherwise start a session that starts one.
  *
+ * Whose text reaches a session: an author the repo's `trust.relay` lets in
+ * (`relay`, the receiver's list, route.mjs). A comment or review is judged
+ * by its own author; a session link or a subscribe line in a body counts
+ * only where the body's author is let in ({@link relayedBody}); and an
+ * event that carries no text, a label, a close, a reopen or a push, is
+ * judged by the author of the issue or PR it is on, since the payload
+ * carries no association for its sender. Governor's own App is never
+ * judged. Each message fire names the kinds it was judged by
+ * (`authors`), so the task judges them again from the repo's file.
+ *
  * Who wrote a session's post: the session whose link sits under the footer,
  * or alone on the line above it, and that session is not messaged with its
  * own post. The footer Claude Code puts on a comment names no session, so a
@@ -62,9 +72,9 @@
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
-import { DISPATCH_MARKER, FIRE_BUDGET, SIGN_POSTS, SUMMONERS, UNATTENDED, build, deployedTarget, isBranch, isCommit, fireWeight } from './fire.mjs';
+import { DISPATCH_MARKER, FIRE_BUDGET, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
-import { ownSessionPost, postedBy, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
+import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
 
 export const MENTION = '@claude';
 
@@ -175,7 +185,7 @@ const splitQuote = (text) => {
  * @typedef {'mention' | 'owner' | 'subscriber'} Role
  * @typedef {import('./fire.mjs').SubscriptionEvent} SubscriptionEvent
  * @typedef {{ login?: string, type?: string }} User
- * @typedef {{ body?: unknown, user?: User, performed_via_github_app?: { id?: unknown } | null }} Written
+ * @typedef {{ body?: unknown, user?: User, author_association?: unknown, performed_via_github_app?: { id?: unknown } | null }} Written
  * @typedef {import('./fire.mjs').DispatchFire} DispatchFire
  * @typedef {import('./fire.mjs').MessageFire} MessageFire
  * @typedef {{ fire: DispatchFire | MessageFire, reason: string, key?: string }} Queued
@@ -215,24 +225,57 @@ const notASummons = ({ body, user, association, issue = false }) => {
 const reviewComment = (written, appId) => String(written?.body ?? '').includes(REVIEW_MARKER) && postedByApp(written, appId);
 
 /**
- * Why `written` reaches no subscriber, or null when it may. A bot's
+ * The author of an issue, a PR or a remark in a payload, as a trust list
+ * judges it: governor's own App (`appId`) is `own`.
+ *
+ * @param {Written | undefined} row
+ * @param {number | undefined} appId
+ * @returns {import('./fire.mjs').Author}
+ */
+const authorOf = (row, appId) => ({
+  ...(typeof row?.user?.login === 'string' ? { author: row.user.login } : {}),
+  ...(typeof row?.author_association === 'string' ? { association: row.author_association } : {}),
+  bot: row?.user?.type === 'Bot',
+  own: postedByApp(row, appId),
+});
+
+/**
+ * Why `relay` does not let `author` in, for a refusal's reason, naming
+ * whose `what` it is.
+ *
+ * @param {import('./fire.mjs').Author} author
+ * @param {string} what
+ */
+const unrelayed = (author, what) => `${what} by ${author.author ?? 'someone'} (${authorKind(author)}), whom the repo's trust.relay does not let in`;
+
+/**
+ * The kinds a message fire was judged by, for the task to judge again from
+ * the file: each author but governor's own App, once each.
+ *
+ * @param {ReadonlyArray<import('./fire.mjs').Author | null>} authors
+ * @returns {string[]}
+ */
+const kindsOf = (authors) => [...new Set(authors.filter((a) => a !== null && a.own !== true).map((a) => authorKind(/** @type {import('./fire.mjs').Author} */ (a))))];
+
+/**
+ * Why `written` reaches no subscriber, or null when it may: only an author
+ * `relay` lets in may, and governor's own App always. By default a bot's
  * may: a review bot's findings are what a session waits for. A stranger's
  * may not, nor the dispatcher's own marker, nor a person quoting the PR
  * review's marker. Whose post it is decides only who is skipped
  * ({@link fanOut}); the PR review's comment reaches only the owner,
  * whatever it says.
  *
- * @param {{ written: Written | undefined, association: unknown }} args
+ * @param {{ written: Written | undefined, relay: readonly string[], appId: number | undefined }} args
  * @returns {string | null}
  */
-const notAnUpdate = ({ written, association }) => {
+const notAnUpdate = ({ written, relay, appId }) => {
   const text = String(written?.body ?? '');
   const user = written?.user;
   if (text.includes(DISPATCH_MARKER)) return "the dispatcher's own marker";
   if (text.includes(REVIEW_MARKER) && user?.type !== 'Bot') return "a person's comment quoting the PR review's marker";
-  if (user?.type !== 'Bot' && !SUMMONERS.has(String(association))) {
-    return `${user?.login ?? 'someone'} (${association ?? 'no association'}) has no say in the repository`;
-  }
+  const author = authorOf(written, appId);
+  if (!lets(relay, author)) return unrelayed(author, 'written');
   return null;
 };
 
@@ -280,13 +323,15 @@ const summons = (prompt, on, reason) => ({
  *   closing?: boolean,
  *   issue?: boolean,
  *   unsigned?: boolean,
+ *   authors: string[],
  *   reason: string,
  * }} args `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
+ *   `authors`: the kinds the fire was judged by, which the task judges again.
  *   `unsigned`: a session's post naming no session, which the message says
  *   ({@link UNSIGNED}). A session's post carries no fallback.
  * @returns {Queued}
  */
-const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, reason }) => {
+const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, authors, reason }) => {
   const role = owner ? 'owner' : 'subscriber';
   const number = Number.isInteger(on?.number) ? on.number : undefined;
   /** @param {string} text @returns {MessageFire} */
@@ -298,6 +343,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
     commit,
     closing,
     subscribed: !owner || issue,
+    authors,
     fallback: owner && fallback
       ? { prompt: `${text}\n${HANDOFF}\n${UNATTENDED}`, sessionName: sessionName(on?.number, on?.title), issue: number }
       : undefined,
@@ -322,6 +368,9 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *
  * @param {{
  *   on: any,
+ *   body: string,
+ *   by: import('./fire.mjs').Author | null,
+ *   onAuthor: import('./fire.mjs').Author,
  *   event: SubscriptionEvent,
  *   poster: string | null,
  *   prompt: (role: Role, limit: number) => string,
@@ -334,7 +383,12 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   unsigned?: boolean,
  *   issue?: boolean,
  *   reason: string,
- * }} args `ownerOnly`: the PR's owner hears it, and no subscriber.
+ * }} args `body`: `on`'s body as {@link relayedBody} lets sessions be read
+ *   from it. `by`: who wrote what is relayed, null for an event, which
+ *   carries no text; `onAuthor`: who opened `on`. A fire to a session the
+ *   body names is judged by both, a fire to the live session on a PR's
+ *   head branch by what was written alone, or by `onAuthor` for an event.
+ *   `ownerOnly`: the PR's owner hears it, and no subscriber.
  *   `issue`: `on` is an issue, whose owner hears `deploys` only by a line.
  *   `byBranch`: `on` is a PR, and with no session its body names, the
  *   live session on its head branch is the owner; `sessionPost`, what was
@@ -345,15 +399,16 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   ({@link UNSIGNED}).
  * @returns {Fanout}
  */
-const fanOut = ({ on, event, poster, prompt, fallback = false, commit, closing = false, ownerOnly = false, byBranch = false, sessionPost = false, unsigned = false, issue = false, reason }) => {
+const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = false, commit, closing = false, ownerOnly = false, byBranch = false, sessionPost = false, unsigned = false, issue = false, reason }) => {
   /** @type {Queued[]} */
   const fires = [];
   /** @type {string[]} */
   const skipped = [];
-  const subscribers = subscribersFor(on?.body, event, { issue });
-  if (byBranch && sessionNamedIn(on?.body) === null) {
+  const subscribers = subscribersFor(body, event, { issue });
+  const named = kindsOf([by, onAuthor]);
+  if (byBranch && sessionNamedIn(body) === null) {
     if (sessionPost && poster === null) skipped.push("a session's post naming no session, taken for the local session's own");
-    else fires.push(messageFire({ prompt, subscriber: { session: null, owner: true }, poster, on, event, fallback, commit, closing, reason }));
+    else fires.push(messageFire({ prompt, subscriber: { session: null, owner: true }, poster, on, event, fallback, commit, closing, authors: kindsOf([by ?? onAuthor]), reason }));
   }
   for (const subscriber of subscribers) {
     if (ownerOnly && !subscriber.owner) continue;
@@ -361,7 +416,7 @@ const fanOut = ({ on, event, poster, prompt, fallback = false, commit, closing =
       skipped.push(`${sessionId(poster)}'s own post`);
       continue;
     }
-    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, issue, unsigned, reason }));
+    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, issue, unsigned, authors: named, reason }));
   }
   const heard = fires.length === 0 && skipped.length === 0 ? [`${reason}: nobody subscribes to ${event}`] : [];
   return { fires, reason: [...fires.map((f) => f.reason), ...skipped, ...heard].join('; ') };
@@ -532,18 +587,22 @@ const joined = (parts) => ({
  * @param {string} event
  * @param {any} payload
  * @param {number | undefined} appId The dispatcher's App, whose comment alone is the PR review's.
+ * @param {readonly string[]} relay Whose text may reach a running session.
  * @returns {Fanout | null}
  */
-const writtenFires = (written, event, payload, appId) => {
+const writtenFires = (written, event, payload, appId, relay) => {
   const action = payload?.action;
   const { on, pr, by, wanted, what, event: subscribed, prompt } = written(payload ?? {});
   const body = String(by?.body ?? '');
+  const onAuthor = authorOf(on, appId);
+  // The sessions `on` names, read only where relay lets its author in.
+  const onBody = relayedBody({ body: on?.body, ...onAuthor }, relay);
   /** @type {Fanout[]} */
   const parts = [];
   let summoned = false;
   // A mention summons a fresh session where no session owns the PR: the
   // owner, where there is one, is messaged instead.
-  if ((pr ? sessionNamedIn(on?.body) : null) === null && mentions(body)) {
+  if ((pr ? sessionNamedIn(onBody) : null) === null && mentions(body)) {
     if (action !== wanted) {
       parts.push({ fires: [], reason: `${event} ${action}: only a ${wanted} ${what} summons a session` });
     } else {
@@ -554,8 +613,8 @@ const writtenFires = (written, event, payload, appId) => {
     }
   }
   // A PR naming no session is its head branch's session's, unless a mention summoned one.
-  const byBranch = pr && sessionNamedIn(on?.body) === null && !summoned;
-  if (subscribersFor(on?.body, subscribed).length === 0 && !byBranch) return parts.length === 0 ? null : joined(parts);
+  const byBranch = pr && sessionNamedIn(onBody) === null && !summoned;
+  if (subscribersFor(onBody, subscribed).length === 0 && !byBranch) return parts.length === 0 ? null : joined(parts);
   if (action !== wanted) {
     parts.push({ fires: [], reason: `${event} ${action}: only a ${wanted} ${what} reaches a subscriber` });
   } else if (what === 'review' && body.trim() === '' && !VERDICTS.has(by?.state)) {
@@ -570,12 +629,15 @@ const writtenFires = (written, event, payload, appId) => {
     // posted, and a pass or a person's wait starts no session with nothing
     // to do.
     const ownerOnly = reviewComment(by, appId);
-    const refused = notAnUpdate({ written: by, association: by?.author_association });
+    const refused = notAnUpdate({ written: by, relay, appId });
     // The PR review's marker is the receiver's to read, not the session's
     // to quote: a reply quoting it would be refused as a person's.
     const told = ownerOnly ? { ...payload, comment: { ...payload?.comment, body: withoutMarker(body) } } : payload;
     parts.push(refused ? { fires: [], reason: refused } : fanOut({
       on,
+      body: onBody,
+      by: authorOf(by, appId),
+      onAuthor,
       event: subscribed,
       poster: postedBy(body),
       prompt: (role, limit) => prompt(told, role, limit),
@@ -602,14 +664,16 @@ const writtenFires = (written, event, payload, appId) => {
  * carries no mention and is on nothing anyone subscribes to (the caller has
  * a better reason).
  *
- * @param {{ event: string | undefined, payload: any, appId?: number | undefined }} args
+ * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[] }} args
  * `appId`: the dispatcher's App, whose comment alone is the PR review's.
+ * `relay`: whose text may reach a running session, the defaults where the
+ * receiver knows no other (route.mjs).
  * @returns {Fanout | null}
  */
-export const mentionFires = ({ event, payload, appId }) => {
+export const mentionFires = ({ event, payload, appId, relay = RELAY }) => {
   const action = payload?.action;
   const written = WRITTEN[String(event)];
-  if (written) return writtenFires(written, String(event), payload, appId);
+  if (written) return writtenFires(written, String(event), payload, appId, relay);
   if (event === 'issues') {
     const issue = payload?.issue;
     // The one just assigned is `assignee`; `issue.assignees` is everyone,
@@ -657,18 +721,26 @@ const addedLabel = (action, label) => (action === 'labeled' ? label?.name : null
  * reached a target, which on a closed issue ends what a subscriber waits on
  * as a close does, and the filer hears of it only by a line too.
  *
+ * Judged by the issue's author, under `relay`.
+ *
  * @param {any} payload
+ * @param {{ relay?: readonly string[], appId?: number | undefined }} [trust]
  * @returns {Fanout}
  */
-export const issueEventFires = (payload) => {
+export const issueEventFires = (payload, { relay = RELAY, appId } = {}) => {
   const action = payload?.action;
   const target = deployedTarget(addedLabel(action, payload?.label));
   const deployed = target !== null;
   const event = deployed ? 'deploys' : ISSUE_EVENTS[String(action)];
   if (event === undefined) return { fires: [], reason: `issues ${action}: nothing a subscriber hears of` };
   const issue = payload?.issue;
+  const onAuthor = authorOf(issue, appId);
+  if (!lets(relay, onAuthor)) return { fires: [], reason: `issue #${issue?.number} ${action}: no subscriber hears of it, as it is ${unrelayed(onAuthor, 'opened')}` };
   return fanOut({
     on: issue,
+    body: relayedBody({ body: issue?.body, ...onAuthor }, relay),
+    by: null,
+    onAuthor,
     event,
     poster: null,
     prompt: () => issueEventPrompt(payload, target),
@@ -685,16 +757,24 @@ export const issueEventFires = (payload) => {
  * (its `Claude-Session` trailer): a push is a session's post too, and the
  * receiver cannot read the commit. Every other action is acknowledged.
  *
+ * Judged by the PR's author, under `relay`.
+ *
  * @param {any} payload
+ * @param {{ relay?: readonly string[], appId?: number | undefined }} [trust]
  * @returns {Fanout}
  */
-export const pullRequestFires = (payload) => {
+export const pullRequestFires = (payload, { relay = RELAY, appId } = {}) => {
   const pr = payload?.pull_request;
   const action = payload?.action;
+  if (action !== 'synchronize' && action !== 'closed') return { fires: [], reason: `pull_request ${action}: only a push or a close reaches a subscriber` };
+  const onAuthor = authorOf(pr, appId);
+  if (!lets(relay, onAuthor)) return { fires: [], reason: `#${pr?.number} ${action}: no subscriber hears of it, as it is ${unrelayed(onAuthor, 'opened')}` };
+  const judged = { body: relayedBody({ body: pr?.body, ...onAuthor }, relay), by: null, onAuthor };
   if (action === 'synchronize') {
     const after = typeof payload?.after === 'string' ? payload.after : pr?.head?.sha;
     return fanOut({
       on: pr,
+      ...judged,
       event: 'pushes',
       poster: null,
       prompt: (role) => pushPrompt(payload, role),
@@ -702,16 +782,14 @@ export const pullRequestFires = (payload) => {
       reason: `push to #${pr?.number}`,
     });
   }
-  if (action === 'closed') {
-    return fanOut({
-      on: pr,
-      event: 'close',
-      poster: null,
-      prompt: (role) => prClosedPrompt(payload, role),
-      closing: !pr?.merged,
-      byBranch: true,
-      reason: `#${pr?.number} ${pr?.merged ? 'merged' : 'closed'}`,
-    });
-  }
-  return { fires: [], reason: `pull_request ${action}: only a push or a close reaches a subscriber` };
+  return fanOut({
+    on: pr,
+    ...judged,
+    event: 'close',
+    poster: null,
+    prompt: (role) => prClosedPrompt(payload, role),
+    closing: !pr?.merged,
+    byBranch: true,
+    reason: `#${pr?.number} ${pr?.merged ? 'merged' : 'closed'}`,
+  });
 };

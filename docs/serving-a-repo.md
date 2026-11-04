@@ -11,6 +11,7 @@ How a repo puts governor to work: what each feature does, how to opt in, what `.
   - [Pickup's sweep interval](#pickups-sweep-interval)
   - [Whose tickets pickup starts](#whose-tickets-pickup-starts)
   - [Whose issues governor sets going by itself](#whose-issues-governor-sets-going-by-itself)
+  - [Whose text reaches a running session](#whose-text-reaches-a-running-session)
   - [The heartbeat checker](#the-heartbeat-checker)
   - [The config check](#the-config-check)
 
@@ -115,7 +116,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](../dispatch/repo-conf
 | `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the hourly sweep updates. Needed when `heartbeat` is on. |
 | `waits` | no | `{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing. |
 | `pickup` | no | `{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one, default one; and whose tickets pickup may start, by `author_association`, default `OWNER`, `MEMBER` and `COLLABORATOR`. |
-| `trust` | no | `{ "auto": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. |
+| `trust` | no | `{ "auto": [ … ], "relay": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `relay` is whose text may reach a running session, default those three and `BOT`. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on. |
 | `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on. |
@@ -265,7 +266,7 @@ The fire's clock is the deployment's, which the file cannot see, so a repo is sw
 
 ### Whose tickets pickup starts
 
-Pickup starts a ticket only where the person who opened it has one of the GitHub `author_association` values the file lists in `pickup.by`. The default is `OWNER`, `MEMBER` and `COLLABORATOR`, so a stranger's ticket is not started, even once someone with a say adds its ready labels. A repo that builds strangers' tickets lists more:
+Pickup starts a ticket only where the person who opened it has one of the GitHub `author_association` values the file lists in `pickup.by`. The default is `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit a `trust.relay` the file sets ([Whose text reaches a running session](#whose-text-reaches-a-running-session)), so a stranger's ticket is not started, even once someone with a say adds its ready labels. A repo that builds strangers' tickets lists more:
 
 ```json
 "pickup": { "by": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE"] }
@@ -287,7 +288,22 @@ The default is `OWNER`, `MEMBER` and `COLLABORATOR`. So a stranger's issue linke
 "trust": { "auto": ["OWNER"] }
 ```
 
-Or widen it, with the same values pickup reads. Governor refuses `BOT` in it, since no person read a bot's issue. Where the file sets `pickup.by` too, every value `auto` names must be in `pickup.by`, or governor refuses the file: it would set going a ticket that pickup may not start. Where the file leaves `auto` unset and sets a narrower `pickup.by`, `auto` is narrowed to fit, never widened. The [config check](#the-config-check) warns where `auto` reaches beyond owners, members and collaborators, saying what that opens, and notes where it narrowed an unset `auto`.
+Or widen it, with the same values pickup reads. Governor refuses `BOT` in it, since no person read a bot's issue. Where the file sets `pickup.by` too, every value `auto` names must be in `pickup.by`, or governor refuses the file: it would set going a ticket that pickup may not start. Where the file leaves `auto` unset and sets a narrower `pickup.by` or `trust.relay`, `auto` is narrowed to fit, never widened. The [config check](#the-config-check) warns where `auto` reaches beyond owners, members and collaborators, saying what that opens, and notes where it narrowed an unset `auto`.
+
+### Whose text reaches a running session
+
+`trust.relay` lists, by GitHub `author_association`, whose text may reach a session that is already working:
+
+- their comments, review comments and reviews on a PR or issue a session owns or subscribes to;
+- a session link, or a `governor:subscribe` line, in the body of an issue or PR they opened. Only then does it name a session, for the receiver's messages, a message to a PR's owner, CI and deploy messages, and a session's standing line.
+
+An event with no text, a label, a close, a reopen or a push, is judged by the author of the issue or PR it is on. The default is `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`, where `BOT` is any account GitHub marks as a bot, so a review bot's findings reach the session waiting for them. Governor's own App is never judged, so the PR review's comment reaches its PR's owner whatever the list says. So a stranger who copies a session link from a merged PR into a new issue routes nothing to that session, and a stranger's comment on a session's PR is not relayed. Each refusal is logged at info, and nothing pages the operator. A repo can drop bots:
+
+```json
+"trust": { "relay": ["OWNER", "MEMBER", "COLLABORATOR"] }
+```
+
+Or widen it, for an open-source repo whose sessions should hear outside contributors. Where the file sets `auto` or `pickup.by` too, every value each names, `BOT` aside, must be in `relay`, or governor refuses the file: it would start work on a ticket whose author's comments could not reach its session. Where the file sets `relay` and leaves `auto` or `pickup.by` unset, each is narrowed to fit, never widened. An `auto` set wider than an unset `relay` narrows nothing. The [config check](#the-config-check) warns where `relay` reaches beyond owners, members and collaborators. `BOT` in a `relay` the file sets warns too: a bot that quotes strangers' issues, such as a triage or summary bot, carries their text into a session.
 
 ### The heartbeat checker
 
@@ -373,7 +389,7 @@ It warns, without failing, on a file governor reads but that cannot work:
 - a `review.humanOnly` or `review.quote` glob that matches no path;
 - an issue template it cannot parse, or a template folder in a tree too large for GitHub to list whole, so its labels went unchecked.
 
-It warns too, under a title of its own, where a `trust` list the file sets reaches beyond `OWNER`, `MEMBER` and `COLLABORATOR`, and says what that list opens. Such a file works, so this is not a "cannot work" warning. It adds a notice for each `trust` list the file leaves unset that governor narrowed to fit the lists it sets ([Whose issues governor sets going by itself](#whose-issues-governor-sets-going-by-itself)).
+It warns too, under a title of its own, where a `trust` list the file sets reaches beyond `OWNER`, `MEMBER` and `COLLABORATOR`, and says what that list opens. Such a file works, so this is not a "cannot work" warning. It adds a notice for each list the file leaves unset that governor narrowed to fit the lists it sets, `pickup.by` among them ([Whose issues governor sets going by itself](#whose-issues-governor-sets-going-by-itself), [Whose text reaches a running session](#whose-text-reaches-a-running-session)).
 
 A pull request that deletes the file gets a warning that governor will stop serving the repo.
 

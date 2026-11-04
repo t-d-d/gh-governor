@@ -113,7 +113,7 @@ const receiverFires = (text: string, body = BODY) => routeEvent({
   appId: APP_ID,
   payload: {
     action: 'created',
-    issue: { number: 767, title: 'Run the PR review from the dispatcher', html_url: `https://github.com/${REPO}/pull/767`, body, pull_request: { url: 'p' } },
+    issue: { number: 767, user: { login: 'tdickinson', type: 'User' }, author_association: 'OWNER', title: 'Run the PR review from the dispatcher', html_url: `https://github.com/${REPO}/pull/767`, body, pull_request: { url: 'p' } },
     comment: { id: 1, body: `${text}\n\n${reviewMarker(HEAD, bodyDigest(body))}`, html_url: 'c', user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE', performed_via_github_app: { id: APP_ID } },
     repository: { full_name: REPO },
   },
