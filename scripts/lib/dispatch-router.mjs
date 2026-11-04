@@ -270,7 +270,7 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     plan.push({
       issue: candidate.number,
       repo,
-      prompt: promptFor(candidate.number, candidate.title, repo, labels.claim, prompts, { signOff }),
+      prompt: promptFor(candidate.number, candidate.title, repo, labels.claim, prompts, { signOff: signOff === true }),
       sessionName: sessionName(candidate.number, candidate.title),
     });
   }
