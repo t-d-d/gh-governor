@@ -58,7 +58,7 @@ const context = (over: Record<string, unknown> = {}) => {
     delivery: () => ({
       deliver: async ({ session }: { session: string }, text: string, { source }: { source: unknown }) => {
         sent.push({ session, text, source });
-        return { ok: true, answered: true, refused: false, sessionUrl: session, error: null, fallback: null, dropped: null, skipped: null };
+        return { ok: true, answered: true, refused: false, sessionUrl: session, error: null, fallback: null, dropped: null, skipped: null, relinked: null };
       },
     }),
     storeLogin: async () => {
@@ -162,7 +162,7 @@ describe('planHook: a hook fire\'s plan', () => {
   });
 
   test('a send the CLI refused as archived plans a new session over the record read; any other failure answers, starting nothing', async () => {
-    const refused = { ok: false, answered: true, refused: true, sessionUrl: OPEN.session, error: 'archived', fallback: null, dropped: null, skipped: null };
+    const refused = { ok: false, answered: true, refused: true, sessionUrl: OPEN.session, error: 'archived', fallback: null, dropped: null, skipped: null, relinked: null };
     const failed = { ...refused, refused: false, answered: false, error: 'timed out' };
     for (const [told, starts] of [[refused, true], [failed, false]] as const) {
       const { ctx, records, stored } = context({ delivery: () => ({ deliver: async () => told }) });

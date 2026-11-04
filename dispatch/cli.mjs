@@ -39,7 +39,8 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * What the process exits with, 0 when:
  * - a probe: it proved the runtime;
  * - a message: the session took it; or, refusing, its fallback started,
- *   forwarded the remark or found a session already on the PR; or a
+ *   and for a takeover the PR body's link now names it; or the session the
+ *   PR body names now took it; or the PR had closed so nothing started; or a
  *   refusing subscriber's line was dropped (`dropped` is set
  *   whenever that was tried); or the push was the session's own;
  * - a workflow, job or branch run: no send faulted (taken, or refused by a
@@ -67,7 +68,7 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * written (`heartbeatUnwritten`), and no repo's part of the turn failed
  * (`unread`), refusal or not.
  *
- * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string } }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, fallback?: { outcome: string } | null } | null }} result
+ * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string } }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, fallback?: { outcome: string } | null } | null }} result
  * @returns {0 | 1}
  */
 export const exitCodeFor = (result) => {
@@ -105,6 +106,9 @@ export const exitCodeFor = (result) => {
   // session in its place started nothing.
   if (result.kind === 'unblocked' && result.messaged != null) return faultedSend(result.messaged) ? 1 : 0;
   if (result.kind === 'message') {
+    // A takeover's session whose link the PR body did not take: the body
+    // still names the archived owner, so the operator is told.
+    if (result.relinked === false) return 1;
     return result.ok || result.skipped != null || result.dropped != null
       || (result.fallback != null && result.fallback.outcome !== 'failed') ? 0 : 1;
   }

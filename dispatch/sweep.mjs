@@ -29,8 +29,8 @@ import { byOf, sweepDue, sweepHoursOf } from './pickup.mjs';
 import { autoOf, relayOf, startOf } from './trust.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 
-/** A fallback outcome that started the spec session, or handed the message on. */
-const WENT = new Set(['dispatched', 'unconfirmed', 'forwarded']);
+/** A fallback outcome that started the spec session. */
+const WENT = new Set(['dispatched', 'unconfirmed']);
 
 /** A fallback outcome that was a launch. */
 const LAUNCHED = new Set(['dispatched', 'unconfirmed', 'failed']);
@@ -42,8 +42,8 @@ const LAUNCHED = new Set(['dispatched', 'unconfirmed', 'failed']);
  * `withFallback`. The message runs in the launch loop, so the launch window
  * and a repo skip hold it as they hold a launch (dispatch/launch-plan.mjs).
  *
- * The item goes once the spec session started, the owner took the message,
- * or the message was forwarded. Nothing is posted on the ticket: an owner
+ * The item goes once the spec session started or the owner took the
+ * message. Nothing is posted on the ticket: an owner
  * that took it is already named in the body, and a spec session started as
  * its fallback is written there in its place (`nameSpecSession`,
  * dispatch/deliveries.mjs). A send that

@@ -4089,7 +4089,7 @@ describe('run — a message into a session', () => {
     const result = await run({ kind: 'message', session: 'session_01ABC', text: 'the reviewer asked for a test' }, deps as never);
     assert.ok(calls.indexOf('workspace.writeLogin') < calls.indexOf('message session_01ABC'), calls.join(', '));
     assert.deepEqual(messages, [{ session: 'session_01ABC', text: fromDispatcher(`the reviewer asked for a test\n\n${standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })}`, GITHUB_SOURCE) }]);
-    assert.deepEqual(result, { kind: 'message', ok: true, answered: true, refused: false, sessionUrl: 'https://claude.ai/code/session_01ABC', error: null, fallback: null, dropped: null, skipped: null, archived: false, loginStored: false, signoffs: { archived: [], kept: [], unsigned: 0, deferred: 0, skipped: null } });
+    assert.deepEqual(result, { kind: 'message', ok: true, answered: true, refused: false, sessionUrl: 'https://claude.ai/code/session_01ABC', error: null, fallback: null, dropped: null, skipped: null, relinked: null, archived: false, loginStored: false, signoffs: { archived: [], kept: [], unsigned: 0, deferred: 0, skipped: null } });
     assert.deepEqual(launches, []);
     assert.deepEqual(comments, []);
     assert.ok(!calls.includes('heartbeat'));
@@ -4239,15 +4239,30 @@ describe('run — a message with a fallback', () => {
     assert.equal(r.archived, false, 'the fallback is the dispatcher\'s, and it started nothing');
   });
 
-  // A message fire's fallback takes the PR over: the marker, and the PR body relinked to it.
-  test('a refused message on a PR launches the fallback, marks the PR and points its body at the fresh session', async () => {
+  // A message fire's fallback takes the PR over: the PR body's link, its one
+  // record of the session, is rewritten to it, and nothing is posted.
+  test('a refused message on a PR launches the fallback, points its body at the fresh session and posts no comment', async () => {
     const { deps, launches, comments, edits } = harness({ message: async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }) });
     const result = await run({ kind: 'message', session: 'https://claude.ai/code/session_01OLD', text: 'hi', fallback: { ...fallback, issue: 724 } }, deps as never);
     assert.deepEqual(launches.map((l) => [l.prompt, l.sessionName]), [[signed(fromDispatcher(fallback.prompt, GITHUB_SOURCE)), fallback.sessionName]]);
-    assert.deepEqual(comments, [{ issue: 724, body: dispatchMarker({ at: new Date(NOW).toISOString(), sessionUrl: 'https://claude.ai/code/session_01ABC' }) }]);
+    assert.deepEqual(comments, [], 'no dispatch comment');
     assert.deepEqual(edits, [{ pr: 724, body: PR_BODY.replace('session_01OLD', 'session_01ABC') }]);
     assert.deepEqual((result as { fallback: unknown }).fallback, { outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01ABC' });
     assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('a takeover whose PR body GitHub refuses to relink logs at error and exits 1, though its session started', async () => {
+    const base = harness();
+    const { deps, launches, comments, logged } = harness({
+      message: async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }),
+      reader: () => ({ ...base.deps.reader(''), updatePull: async () => { throw new Error('PATCH /repos/acme/factory/pulls/724 failed: 403 Forbidden'); } }),
+    });
+    const result = await run({ kind: 'message', session: 'https://claude.ai/code/session_01OLD', text: 'hi', fallback: { ...fallback, issue: 724 } }, deps as never);
+    assert.equal(launches.length, 1);
+    assert.deepEqual(comments, []);
+    assert.equal((result as { relinked: unknown }).relinked, false);
+    assert.ok(logged.some((l) => l.event === 'dispatch-relink' && l.level === 'error'), JSON.stringify(logged));
+    assert.equal(exitCodeFor(result as never), 1);
   });
 
   // A remark's fallback takes the PR over, so its session starts on the PR's
@@ -4279,26 +4294,23 @@ describe('run — a message with a fallback', () => {
   const onPr = { ...fallback, issue: 724 };
 
   /**
-   * A send, a forward and a fallback launch are three budgeted calls; the
-   * deadline fits two. They share one budget, so a fallback launch
-   * after two slow sends gets only what the sends left, and a launch that
+   * A send and a fallback launch share one budget, so a fallback launch
+   * after a slow send gets only what the send left, and a launch that
    * outlives it is a thrown turn with the refreshed login stored first.
    */
-  test('a send, a forward and a fallback launch share one budget, and the launch gets only what the sends left', async () => {
-    const at = new Date(NOW - 5 * 60_000).toISOString();
+  test('a send and a fallback launch share one budget, and the launch gets only what the send left', async () => {
     let clock = NOW;
     const { deps, stored, setLoginOnDisk } = harness({
       now: () => clock,
       launchTimeoutMs: 100,
       message: async (m: { session: string; text: string }) => {
-        clock += 80;
+        clock += 160;
         return archived(m);
       },
       launch: () => {
         setLoginOnDisk(REFRESHED);
         return new Promise<never>(() => {});
       },
-      reader: () => ({ ...harness().deps.reader(''), comments: async () => [{ id: 5, body: dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_01NEW' }), created_at: at }], comment: async () => {} }),
     });
     await assert.rejects(run({ kind: 'message', session: 'session_01OLD', text: 'hi', fallback: { ...onPr, sessionName: 'LATE' } }, deps as never), /LATE.*40 ms/);
     assert.deepEqual(stored, [SECRET_REFRESHED]);
@@ -4308,54 +4320,18 @@ describe('run — a message with a fallback', () => {
    * A launcher started with nothing left would run on past the store-back,
    * free to refresh the login after it was read; so it is not started.
    */
-  test('a fallback launch the sends left no budget for is not started, and the turn throws with the login stored', async () => {
-    const at = new Date(NOW - 5 * 60_000).toISOString();
+  test('a fallback launch the send left no budget for is not started, and the turn throws with the login stored', async () => {
     let clock = NOW;
     const { deps, stored, launches, setLoginOnDisk } = harness({
       now: () => clock,
       launchTimeoutMs: 100,
       message: async (m: { session: string; text: string }) => {
-        clock += 100;
+        clock += 200;
         setLoginOnDisk(REFRESHED);
         return archived(m);
       },
-      reader: () => ({ ...harness().deps.reader(''), comments: async () => [{ id: 5, body: dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_01NEW' }), created_at: at }], comment: async () => {} }),
     });
     await assert.rejects(run({ kind: 'message', session: 'session_01OLD', text: 'hi', fallback: { ...onPr, sessionName: 'LATE' } }, deps as never), /no budget left to start LATE/);
-    assert.deepEqual(launches, []);
-    assert.deepEqual(stored, [SECRET_REFRESHED]);
-  });
-
-  /**
-   * A send spends the same budget: a forward the first send and the
-   * marker read left nothing for is not sent, and the refusal names the
-   * session it was for. The send takes all of its own cap; the read, which
-   * no cap holds, takes the rest.
-   */
-  test('a forward the first send and the marker read left no budget for is not sent, and the turn throws naming it with the login stored', async () => {
-    const at = new Date(NOW - 5 * 60_000).toISOString();
-    let clock = NOW;
-    const sent: string[] = [];
-    const { deps, stored, launches, setLoginOnDisk } = harness({
-      now: () => clock,
-      launchTimeoutMs: 100,
-      message: async (m: { session: string; text: string }) => {
-        sent.push(m.session);
-        clock += 100;
-        setLoginOnDisk(REFRESHED);
-        return archived(m);
-      },
-      reader: () => ({
-        ...harness().deps.reader(''),
-        comments: async () => {
-          clock += 100;
-          return [{ id: 5, body: dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_01NEW' }), created_at: at }];
-        },
-        comment: async () => {},
-      }),
-    });
-    await assert.rejects(run({ kind: 'message', session: 'session_01OLD', text: 'hi', fallback: onPr }, deps as never), /no budget left to start https:\/\/claude\.ai\/code\/session_01NEW/);
-    assert.deepEqual(sent, ['session_01OLD'], 'the forward is not sent');
     assert.deepEqual(launches, []);
     assert.deepEqual(stored, [SECRET_REFRESHED]);
   });
@@ -5004,19 +4980,7 @@ describe('run — the dispatcher labels what it sends', () => {
     assert.doesNotMatch(DISPATCHER_LABEL, /not instructions/, 'a remark it relays may be one the session should act on');
   });
 
-  test('a forward and a fallback\'s prompt carry it too, once', async () => {
-    const at = new Date(NOW - 5 * 60_000).toISOString();
-    const sent: Array<{ session: string; text: string }> = [];
-    const forward = harness({
-      message: async (m: { session: string; text: string }) => {
-        sent.push(m);
-        return m.session === 'session_01OLD' ? archived(m) : { status: 0, output: JSON.stringify({ ok: true }) };
-      },
-      reader: () => ({ ...harness().deps.reader(''), comments: async () => [{ id: 5, body: dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_01NEW' }), created_at: at }], comment: async () => {} }),
-    });
-    await run({ kind: 'message', session: 'session_01OLD', text: 'hi', fallback: { prompt: 'p', issue: 724 } }, forward.deps as never);
-    assert.deepEqual(sent.map((m) => m.text), [fromDispatcher(`hi\n\n${standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })}`, GITHUB_SOURCE), fromDispatcher(`hi\n\n${standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })}`, GITHUB_SOURCE)]);
-
+  test('a fallback\'s prompt carries it too, once', async () => {
     const fresh = harness({ message: archived });
     await run({ kind: 'message', session: 'session_01OLD', text: 'hi', fallback: { prompt: 'take the PR over' } }, fresh.deps as never);
     assert.equal(fresh.launches[0]?.prompt, signed(fromDispatcher('take the PR over', GITHUB_SOURCE)));
@@ -5199,13 +5163,15 @@ describe('run — a merge to main leaves PRs conflicted', () => {
    * A reader over the open PRs: `reads` gives each PR's mergeable per read
    * (the last repeats), `rows` overrides a PR's row.
    */
-  const conflictReader = ({ pulls, reads, rows = {} }: {
+  const conflictReader = ({ pulls, reads, rows = {}, refuseEdits = false }: {
     pulls: ReturnType<typeof open>[];
     reads: Record<number, Array<boolean | null>>;
     rows?: Record<number, Record<string, unknown>>;
+    refuseEdits?: boolean;
   }) => {
     const asked: string[] = [];
     const comments: Array<{ issue: number; body: string }> = [];
+    const edits: Array<{ pr: number; body: string }> = [];
     const count: Record<number, number> = {};
     const reader = {
       ...harness().deps.reader(''),
@@ -5219,12 +5185,15 @@ describe('run — a merge to main leaves PRs conflicted', () => {
         return row(n, seq[i] ?? null, rows[n]);
       },
       pull: async (n: number) => ({ number: n, body: String(rows[n]?.body ?? BODY), head: pulls.find((p) => p.number === n)?.head ?? `claude/branch-${n}`, open: true, association: String(rows[n]?.association ?? row(n, null).association) }),
-      updatePull: async () => {},
+      updatePull: async (n: number, { body }: { body: string }) => {
+        if (refuseEdits) throw new Error(`PATCH /repos/${REPO}/pulls/${n} failed: 403 Forbidden`);
+        edits.push({ pr: n, body });
+      },
       comment: async (n: number, text: string) => { comments.push({ issue: n, body: text }); },
       updateComment: async () => { throw new Error('the check edits no comment'); },
       allComments: async () => { throw new Error('the check reads no review comment'); },
     };
-    return { reader: () => reader, asked, comments };
+    return { reader: () => reader, asked, comments, edits };
   };
   const fire = { kind: 'conflicts', pr: 793, sha: MERGED, base: 'main' };
   const sleep = async () => {};
@@ -5271,10 +5240,24 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     assert.match(launches[0]!.prompt, /yours now/);
     assert.match(launches[0]!.sessionName, /#804/);
     assert.equal(launches[0]!.branch, 'claude/branch-804', 'the session starts on the PR\'s head branch and pushes there, so it opens no new branch or PR');
-    assert.ok(r0.comments.some((c) => c.issue === 804 && c.body.includes('governor:dispatched')), 'the fallback leaves the dispatch marker, as for a remark');
-    assert.equal(r0.comments.length, 1, 'the dispatch marker alone');
+    assert.deepEqual(r0.comments, [], 'no dispatch comment: the PR body names the new owner');
+    assert.deepEqual(r0.edits.map((e) => e.pr), [804]);
+    assert.ok(r0.edits[0]!.body.includes('https://claude.ai/code/session_01ABC'), 'the body\'s session link is the fresh session');
+    assert.ok(!r0.edits[0]!.body.includes(OWNER), 'and no longer the archived owner');
     assert.deepEqual(r.checks.map((c) => c.outcome), ['fallback']);
     assert.equal(exitCodeFor(r as never), 0);
+  });
+
+  test('a takeover whose PR body GitHub refuses to relink fails the PR\'s check: the turn exits 1', async () => {
+    const r0 = conflictReader({ pulls: [open(804)], reads: { 804: [false] }, refuseEdits: true });
+    const { deps, messages, launches, logged } = harness({ reader: r0.reader, sleep, message: async (m: { session: string; text: string }) => { messages.push(m); return archived(m); } });
+    const r = await run(fire, deps as never) as Result;
+    assert.equal(launches.length, 1, 'the fresh session still started');
+    assert.deepEqual(r0.comments, []);
+    assert.deepEqual(r.checks.map((c) => c.outcome), ['failed']);
+    assert.match(String(r.checks[0]!.error), /PR #804's body/);
+    assert.ok(logged.some((l) => l.event === 'dispatch-relink' && l.level === 'error'), JSON.stringify(logged));
+    assert.equal(exitCodeFor(r as never), 1);
   });
 
   // A fork's head branch is not this repo's, so there is none to push to:
