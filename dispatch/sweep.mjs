@@ -16,7 +16,7 @@
  */
 
 import { DEFAULT_MODEL, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
-import { outsiderReason, planSchedule } from '../scripts/lib/dispatch-router.mjs';
+import { outsiderReason, planSchedule, strangerReason } from '../scripts/lib/dispatch-router.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { WAIT_RELATIVE, endedWaits, repairRelative, reportUnreadable, waitLinks, waitOwnerMessage, waitSpecPrompt } from './waits.mjs';
 import { GITHUB_SOURCE } from './deliveries.mjs';
@@ -26,7 +26,8 @@ import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
-import { sweepDue, sweepHoursOf } from './pickup.mjs';
+import { byOf, sweepDue, sweepHoursOf } from './pickup.mjs';
+import { reportUncounted } from './uncounted.mjs';
 
 /** A fallback outcome that started the spec session, or handed the message on. */
 const WENT = new Set(['dispatched', 'unconfirmed', 'forwarded']);
@@ -196,7 +197,7 @@ export const planSweep = async (invocation, ctx) => {
       }
       swept.set(repo, new Date(now).toISOString());
     }
-    sources.push({ repo, reader: await ctx.readerFor(repo), labels: config.labels, prompts: config.prompts });
+    sources.push({ repo, reader: await ctx.readerFor(repo), labels: config.labels, by: byOf(config), prompts: config.prompts });
   }
   // A fire naming its issue plans it alone, through the selection's own
   // checks, from a read of that issue rather than the ready list; the sweep
@@ -210,6 +211,8 @@ export const planSweep = async (invocation, ctx) => {
   const relative = [];
   /** @type {import('../scripts/lib/dispatch-router.mjs').Outsider[]} */
   const outsiders = [];
+  /** @type {import('../scripts/lib/dispatch-router.mjs').Stranger[]} */
+  const strangers = [];
   // In the bare fire one repo's refusal leaves the others to go; a fire
   // naming its repo throws on its own.
   const planned = await planSchedule({
@@ -218,6 +221,7 @@ export const planSweep = async (invocation, ctx) => {
     now: ctx.now(),
     unreadable,
     outsiders,
+    strangers,
     ...(only === undefined ? {} : { only, seen }),
     ...(ctx.bare ? { unread, cut, relative } : {}),
   });
@@ -238,11 +242,16 @@ export const planSweep = async (invocation, ctx) => {
       ctx.log(WAIT_RELATIVE, { level: 'error', repo, issue, after, error: messageOf(error), reason: 'the ticket stays held, and the next sweep tries again' });
     }
   }));
-  // Ready labels a stranger's issue template added start nothing, and are
-  // said at info: anyone can open an issue, so it must not page anyone.
-  for (const { repo, issue, labels, author, association } of outsiders) {
-    ctx.log('dispatch-pickup', { level: 'info', repo, issue, outcome: 'skipped', reason: outsiderReason({ labels, author, association }) });
+  // A ticket whose author the repo's `pickup.by` does not list is not
+  // started, and is said at info: it is the repo's own choice.
+  for (const stranger of strangers) {
+    ctx.log('dispatch-pickup', { level: 'info', repo: stranger.repo, issue: stranger.issue, outcome: 'skipped', reason: strangerReason(stranger) });
   }
+  // Ready labels no person with a say added start nothing, and are said at
+  // warn, never error: anyone can open an issue, so it must not page
+  // anyone. Each ticket gets one comment, whatever the switches say, since
+  // it reports a fault. Each report catches its own failure.
+  await Promise.all(outsiders.map(async (outsider) => reportUncounted({ reader: await ctx.readerFor(outsider.repo), outsider, reason: outsiderReason(outsider), log: ctx.log })));
   if (only !== undefined && planned.length === 0) {
     const why = ctx.cap === 0 ? { outcome: 'not started', reason: CAP_ZERO_REASON } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
     for (const { repo, issue, ...read } of seen) {

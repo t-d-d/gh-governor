@@ -37,7 +37,8 @@
     "issue": 413
   },
   "pickup": {
-    "sweepHours": 2
+    "sweepHours": 2,
+    "by": ["OWNER", "MEMBER", "COLLABORATOR"]
   },
   "periodics": [
     {

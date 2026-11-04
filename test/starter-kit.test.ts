@@ -222,9 +222,13 @@ describe('the starter kit\'s config check', () => {
     assert.deepEqual(workflow.permissions, { contents: 'read' });
   });
 
-  test('runs on pull requests that change the config file, and tells a repo with prompt files to add their paths', () => {
+  test('runs on pull requests that change the config file or an issue template, and tells a repo with prompt files to add their paths', () => {
     assert.deepEqual(Object.keys(workflow.on), ['pull_request']);
     assert.ok(workflow.on.pull_request?.paths?.includes(CONFIG_PATH));
+    assert.ok(workflow.on.pull_request?.paths?.includes('.github/ISSUE_TEMPLATE/**'), JSON.stringify(workflow.on.pull_request?.paths));
+    for (const single of ['ISSUE_TEMPLATE.md', '.github/ISSUE_TEMPLATE.md', 'docs/ISSUE_TEMPLATE.md']) {
+      assert.ok(workflow.on.pull_request?.paths?.includes(single), single);
+    }
     assert.match(text, /# .*prompts? (live )?in files[\s\S]*paths/i);
   });
 });

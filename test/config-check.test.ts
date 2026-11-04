@@ -113,7 +113,7 @@ describe('the check passes the files governor ships', () => {
       labels: async () => ['mode: afk', 'claimed'],
       issueBody: async () => `Governor records its fires here.\n\n${HEARTBEAT_MARKER}\n`,
     }));
-    assert.deepEqual(got, { errors: [], warnings: [] });
+    assert.deepEqual(got, { errors: [], templates: [], warnings: [] });
   });
 });
 
@@ -141,7 +141,7 @@ describe('the check warns, without failing, on a valid file that cannot work', (
   const good = { labels: ['Mode: AFK', 'ready'], issues: { 7: `Fires.\n\n${HEARTBEAT_MARKER}\n` } };
 
   test('a file whose every name resolves warns of nothing', async () => {
-    assert.deepEqual(await check(reads(tree(full()), good)), { errors: [], warnings: [] });
+    assert.deepEqual(await check(reads(tree(full()), good)), { errors: [], templates: [], warnings: [] });
   });
 
   test('a ready label the repo lacks', async () => {
@@ -188,7 +188,10 @@ describe('the check warns, without failing, on a valid file that cannot work', (
 
   test('a tree too large for GitHub to list whole skips the globs, and says so', async () => {
     const got = await check({ ...reads(tree(full()), good), paths: async () => ({ paths: [], truncated: true }) });
-    assert.deepEqual(got.warnings, ['review: the repo\'s tree is too large for GitHub to list whole, so the humanOnly and quote globs went unchecked']);
+    assert.deepEqual(got.warnings, [
+      'review: the repo\'s tree is too large for GitHub to list whole, so the humanOnly and quote globs went unchecked',
+      '.github/ISSUE_TEMPLATE: the repo\'s tree is too large for GitHub to list whole, so the template folder went unchecked for ready labels',
+    ]);
   });
 
   test('a label or issue read the token may not make warns that it went unchecked', async () => {
@@ -211,6 +214,100 @@ describe('the check warns, without failing, on a valid file that cannot work', (
     const got = await check(reads(tree(config), { ...good, labels: [] }));
     assert.equal(got.errors.length, 1);
     assert.equal(got.warnings.length, 2);
+  });
+});
+
+/**
+ * An issue template's `labels:` adds its labels whoever opens the issue, so
+ * a template naming a ready label readies every ticket of its kind before
+ * anyone has read it. The check fails such a template, whoever may open
+ * issues, and whatever pickup's `by` says.
+ */
+describe('the check fails an issue template that names a ready label', () => {
+  const config = file({ ...base(), labels: { ready: ['mode: afk', 'triaged'], claim: 'claimed' }, pickup: { by: ['OWNER'] } });
+  const withTemplate = (path: string, text: string): Files => ({ '.github/dispatch.json': config, [path]: text });
+  const form = (labels: string) => `name: Bug\ndescription: Report a bug\nlabels: ${labels}\nbody:\n  - type: textarea\n    attributes:\n      label: What happened\n`;
+  const markdown = (labels: string) => `---\nname: Feature\nabout: Ask for a feature\nlabels: ${labels}\n---\n\nWhat do you want?\n`;
+
+  test('an issue form, its labels a list or a comma-separated string, in any case', async () => {
+    for (const labels of ['["type: bug", "Mode: AFK"]', '\n  - "type: bug"\n  - "mode: afk"', '"type: bug, mode: afk"']) {
+      for (const path of ['.github/ISSUE_TEMPLATE/bug.yml', '.github/ISSUE_TEMPLATE/bug.yaml']) {
+        const got = await check(reads(withTemplate(path, form(labels))));
+        assert.deepEqual(got.errors, [], labels);
+        assert.equal(got.templates.length, 1, `${path} ${labels}`);
+        assert.equal(got.templates[0]?.file, path);
+        assert.match(String(got.templates[0]?.fault), /"mode: afk"/i);
+      }
+    }
+  });
+
+  test('a Markdown template\'s front matter, its labels a list or a comma-separated string', async () => {
+    for (const labels of ['"type: enhancement, triaged"', '["triaged"]', '\n  - triaged']) {
+      const got = await check(reads(withTemplate('.github/ISSUE_TEMPLATE/feature.md', markdown(labels))));
+      assert.deepEqual(got.templates.map((t) => t.file), ['.github/ISSUE_TEMPLATE/feature.md'], labels);
+      assert.match(String(got.templates[0]?.fault), /"triaged"/);
+    }
+  });
+
+  test('a single ISSUE_TEMPLATE.md at the root, in .github/ or in docs/', async () => {
+    for (const path of ['ISSUE_TEMPLATE.md', '.github/ISSUE_TEMPLATE.md', 'docs/ISSUE_TEMPLATE.md', '.github/issue_template.md']) {
+      const got = await check(reads(withTemplate(path, markdown('"mode: afk"'))));
+      assert.deepEqual(got.templates.map((t) => t.file), [path], path);
+    }
+  });
+
+  test('every ready label a template names is in its one fault, and each template has its own', async () => {
+    const got = await check(reads({
+      '.github/dispatch.json': config,
+      '.github/ISSUE_TEMPLATE/a.yml': form('["mode: afk", triaged]'),
+      '.github/ISSUE_TEMPLATE/b.md': markdown('triaged'),
+    }));
+    assert.deepEqual(got.templates.map((t) => t.file), ['.github/ISSUE_TEMPLATE/a.yml', '.github/ISSUE_TEMPLATE/b.md']);
+    assert.match(String(got.templates[0]?.fault), /"mode: afk".*"triaged"/);
+  });
+
+  test('templates that name no ready label pass, and the template chooser\'s config is no template', async () => {
+    const got = await check(reads({
+      '.github/dispatch.json': config,
+      '.github/ISSUE_TEMPLATE/bug.yml': form('[type: bug]'),
+      '.github/ISSUE_TEMPLATE/feature.md': markdown('type: enhancement'),
+      '.github/ISSUE_TEMPLATE/plain.md': 'No front matter.\n',
+      '.github/ISSUE_TEMPLATE/config.yml': 'blank_issues_enabled: false\nlabels: [mode: afk]\n',
+      'docs/ISSUE_TEMPLATE.md': markdown('question'),
+      'docs/mode-afk.md': markdown('"mode: afk"'),
+    }, { labels: ['mode: afk', 'triaged'] }));
+    assert.deepEqual(got, { errors: [], templates: [], warnings: [] });
+  });
+
+  test('a labels line YAML cannot parse is still read as comma-separated labels', async () => {
+    const got = await check(reads(withTemplate('.github/ISSUE_TEMPLATE/feature.md', markdown('type: enhancement, mode: afk'))));
+    assert.deepEqual(got.templates.map((t) => t.file), ['.github/ISSUE_TEMPLATE/feature.md']);
+    assert.match(String(got.templates[0]?.fault), /"mode: afk"/);
+  });
+
+  test('a template governor cannot parse, with no labels line it can read, warns that its labels went unchecked', async () => {
+    const got = await check(reads(withTemplate('.github/ISSUE_TEMPLATE/bug.yml', 'name: [broken\n'), { labels: ['mode: afk', 'triaged'] }));
+    assert.deepEqual(got.templates, []);
+    assert.equal(got.warnings.length, 1);
+    assert.match(String(got.warnings[0]), /^\.github\/ISSUE_TEMPLATE\/bug\.yml: .*unchecked/);
+  });
+
+  test('a tree too large to list whole warns that the template folder went unchecked, and still reads the single files', async () => {
+    const got = await check({ ...reads(withTemplate('docs/ISSUE_TEMPLATE.md', markdown('"mode: afk"'))), paths: async () => ({ paths: [], truncated: true }) });
+    assert.deepEqual(got.templates.map((t) => t.file), ['docs/ISSUE_TEMPLATE.md']);
+    assert.ok(got.warnings.some((w) => /ISSUE_TEMPLATE.*unchecked/.test(w)), JSON.stringify(got.warnings));
+  });
+
+  test('the run fails, with an error annotation on the template', async () => {
+    const lines: string[] = [];
+    const code = await run({
+      env: { GITHUB_REPOSITORY: 'acme/factory', GITHUB_TOKEN: 'ghs_fake', CONFIG_CHECK_REF: 'a'.repeat(40) },
+      reads: () => reads(withTemplate('.github/ISSUE_TEMPLATE/bug.yml', form('["mode: afk"]'))),
+      log: (line) => lines.push(line),
+    });
+    assert.equal(code, 1);
+    assert.ok(lines.some((l) => /^::error file=\.github\/ISSUE_TEMPLATE\/bug\.yml,title=[^:]*ready label[^:]*::/.test(l)), lines.join('\n'));
+    assert.ok(!lines.some((l) => l.startsWith('::error file=.github/dispatch.json')), lines.join('\n'));
   });
 });
 

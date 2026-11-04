@@ -9,6 +9,7 @@ How a repo puts governor to work: what each feature does, how to opt in, what `.
   - [Deploy messages and labels](#deploy-messages-and-labels)
   - [Editing the file with its JSON Schema](#editing-the-file-with-its-json-schema)
   - [Pickup's sweep interval](#pickups-sweep-interval)
+  - [Whose tickets pickup starts](#whose-tickets-pickup-starts)
   - [The heartbeat checker](#the-heartbeat-checker)
   - [The config check](#the-config-check)
 
@@ -74,7 +75,7 @@ The kit holds four files:
 - `.github/dispatch.json` names its JSON Schema in `$schema`, at the commit the config check is pinned to, so an editor describes each key on hover. Its `features` lists every switch, so the file shows every feature governor has: the ones it leaves off are `false`. It turns on pickup, summons, PR messages, subscriptions, sign-off, the heartbeat and three periodics: a code review every 10 merges into the default branch, a ticket review every 5 issues opened, each also weekly when its count has counted anything, and a weekly review on its day limit alone. Each prompt is plain text that needs no skill, and acts on the window governor writes under it: the last fire's time, and what each count counted since. A repo can swap any prompt for one that calls its own skill.
 - `.github/dispatch.dark-factory.json` is the same file with every switch but `hooks` on. It keeps the placeholders and the three periodics, names the CI workflow `ciMessages` reads in `workflows.ci`, and has a `review` section: a plain-text checklist that needs no skill, `merge` true, and a human-only list that leaves every `CLAUDE.md`, `.claude/`, `.github/workflows/`, `.github/actions/`, `.github/dispatch.json` itself and `infra/` to a person, each with its reason. A PR touching one of them waits for a person to merge it.
 - `.github/workflows/heartbeat.yml` calls [the heartbeat checker](#the-heartbeat-checker) every hour, pinned to a commit of this repo.
-- `.github/workflows/config-check.yml` calls [the config check](#the-config-check) on each pull request that changes `dispatch.json`, pinned to a commit of this repo.
+- `.github/workflows/config-check.yml` calls [the config check](#the-config-check) on each pull request that changes `dispatch.json` or an issue template, pinned to a commit of this repo.
 
 To use it:
 
@@ -112,7 +113,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](../dispatch/repo-conf
 | `review` | when `prReview` is on | The PR review's settings: its checklist, and the lists it checks a PR against. Needed when `prReview` is on. |
 | `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the hourly sweep updates. Needed when `heartbeat` is on. |
 | `waits` | no | `{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing. |
-| `pickup` | no | `{ "sweepHours": <number> }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default one, which sweeps at every fire. |
+| `pickup` | no | `{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one, default one; and whose tickets pickup may start, by `author_association`, default `OWNER`, `MEMBER` and `COLLABORATOR`. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on. |
 | `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on. |
@@ -259,6 +260,16 @@ A ready label a person adds, and the close of a ready ticket's last open blocker
 
 The fire's clock is the deployment's, which the file cannot see, so a repo is swept at the first fire at or after its interval. An interval shorter than the clock's tick sweeps at every fire. Pickup's line on the heartbeat issue records each sweep.
 
+### Whose tickets pickup starts
+
+Pickup starts a ticket only where the person who opened it has one of the GitHub `author_association` values the file lists in `pickup.by`. The default is `OWNER`, `MEMBER` and `COLLABORATOR`, so a stranger's ticket is not started, even once someone with a say adds its ready labels. A repo that builds strangers' tickets lists more:
+
+```json
+"pickup": { "by": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE"] }
+```
+
+On such a ticket, a ready label counts only when a person other than its author, or governor's own App, added it last. A label the author added, as an issue template does, or that a labelling workflow or another App added, does not count. Governor logs `dispatch-pickup` at warn and comments once on the ticket, naming the labels and who added each. Someone with triage access who takes the labels off and adds them again starts the ticket. The [config check](#the-config-check) fails an issue template that names a ready label, whatever `pickup.by` says.
+
 ### The heartbeat checker
 
 Governor cannot report that it has stopped, so the check runs in the served repo, on GitHub Actions. The repo calls the reusable workflow [.github/workflows/heartbeat-check.yml](../.github/workflows/heartbeat-check.yml) on a schedule of its own, pinned to a commit of this repo:
@@ -304,7 +315,7 @@ It runs on the caller's own token, `contents: read` and `issues: write`, and hol
 
 ### The config check
 
-Governor reads `.github/dispatch.json` from the default branch only, so a bad file shows up only after it merges. The repo then goes unserved, and the alarm pages the operator, not the repo. The config check catches the file on the pull request instead. The repo calls the reusable workflow [.github/workflows/config-check.yml](../.github/workflows/config-check.yml) on pull requests that change the file, pinned to a commit of this repo. It passes the same commit as `commit`, because a called workflow cannot learn which commit it runs from:
+Governor reads `.github/dispatch.json` from the default branch only, so a bad file shows up only after it merges. The repo then goes unserved, and the alarm pages the operator, not the repo. The config check catches the file on the pull request instead. The repo calls the reusable workflow [.github/workflows/config-check.yml](../.github/workflows/config-check.yml) on pull requests that change the file or an issue template, pinned to a commit of this repo. It passes the same commit as `commit`, because a called workflow cannot learn which commit it runs from:
 
 ```yaml
 name: config check
@@ -312,6 +323,10 @@ on:
   pull_request:
     paths:
       - .github/dispatch.json
+      - .github/ISSUE_TEMPLATE/**
+      - ISSUE_TEMPLATE.md
+      - .github/ISSUE_TEMPLATE.md
+      - docs/ISSUE_TEMPLATE.md
 permissions:
   contents: read
 jobs:
@@ -328,14 +343,16 @@ The workflow fetches this repo at `commit` with git, installs the task's depende
 The run fails, with governor's fault text, on:
 
 - a file that is not JSON, or that the schema refuses, a rule across keys included, such as a claim label that is also a ready label or `prReview` on with no `review` section;
-- a prompt file that is missing or empty, or that names a fact its kind lacks.
+- a prompt file that is missing or empty, or that names a fact its kind lacks;
+- an issue template whose `labels:` names one of the file's ready labels: an issue form or a Markdown template's front matter under `.github/ISSUE_TEMPLATE/`, or a single `ISSUE_TEMPLATE.md` at the root, in `.github/` or in `docs/`. The template adds its labels whoever opens the issue, so it would ready every ticket of its kind before anyone read it. The error is on the template, and holds whatever `pickup.by` says.
 
 It warns, without failing, on a file governor reads but that cannot work:
 
 - a ready label the repo does not have;
 - a `workflows.ci` file that is not in the repo;
 - a heartbeat issue that does not exist or lacks its marker, `<!-- governor:heartbeat -->`, or the repo's own in the older shape;
-- a `review.humanOnly` or `review.quote` glob that matches no path.
+- a `review.humanOnly` or `review.quote` glob that matches no path;
+- an issue template it cannot parse, or a template folder in a tree too large for GitHub to list whole, so its labels went unchecked.
 
 A pull request that deletes the file gets a warning that governor will stop serving the repo.
 

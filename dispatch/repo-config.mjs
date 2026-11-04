@@ -30,7 +30,7 @@
  */
 
 import { z } from 'zod';
-import { COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, WORKFLOW_PATH } from './webhook/fire.mjs';
+import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
 
 /** Where the file lives, on the repo's default branch. */
@@ -252,10 +252,12 @@ const waitsSchema = z.strictObject({
 /**
  * Pickup's settings (dispatch/pickup.mjs). `sweepHours`: how many whole
  * hours the bare schedule fire leaves between two sweeps of the repo's ready
- * tickets, one when unset.
+ * tickets, one when unset. `by`: the `author_association` values whose
+ * tickets pickup may start (`PICKUP_BY` when unset).
  */
 const pickupSchema = z.strictObject({
   sweepHours: z.number().int().min(1).optional().meta({ description: 'How many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one. Default one, which sweeps at every fire.' }),
+  by: z.array(z.enum(ASSOCIATIONS)).min(1).optional().meta({ description: 'Whose tickets pickup may start: the `author_association` values GitHub gives the person who opened the ticket. Default `OWNER`, `MEMBER` and `COLLABORATOR`, so a stranger\'s ticket is not started even once it is ready. Where a repo lists any other value, a ready label on such a ticket counts only when a person other than its author, or governor\'s own App, added it last.' }),
 });
 
 /**
@@ -351,7 +353,7 @@ export const configSchema = z.strictObject({
   review: reviewSchema.optional().meta({ description: 'The PR review\'s settings: its checklist, and the lists it checks a PR against. Needed when `prReview` is on.' }),
   heartbeat: heartbeatSchema.optional().meta({ description: '`{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo\'s own marker, which the hourly sweep updates. Needed when `heartbeat` is on.' }),
   waits: waitsSchema.optional().meta({ description: '`{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing.' }),
-  pickup: pickupSchema.optional().meta({ description: '`{ "sweepHours": <number> }`: how many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one. Default one, which sweeps at every fire.' }),
+  pickup: pickupSchema.optional().meta({ description: '`{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one, default one; and whose tickets pickup may start, by `author_association`, default `OWNER`, `MEMBER` and `COLLABORATOR`.' }),
   periodics: z.array(periodicSchema).default([])
     .superRefine((list, ctx) => {
       const seen = new Set();
@@ -392,7 +394,7 @@ export const configSchema = z.strictObject({
  * }} Review The PR review's settings, its checklist read.
  * @typedef {{ file: string }} PromptFile
  * @typedef {{ issue: number, marker?: string }} Heartbeat
- * @typedef {{ sweepHours?: number }} Pickup
+ * @typedef {{ sweepHours?: number, by?: string[] }} Pickup
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
  * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, periodics: Periodic[], hooks: Hook[] }} RepoConfig
@@ -408,7 +410,8 @@ export const configSchema = z.strictObject({
  *   marker in the old shape.
  *   `waits`: the wait ticket waiting tickets are linked to, where the file
  *   names one.
- *   `pickup`: pickup's sweep interval, where the file sets one.
+ *   `pickup`: pickup's sweep interval and whose tickets it starts, where the
+ *   file sets them.
  *   `periodics`: the recurring sessions the schedule fire starts.
  *   `hooks`: the hooks an outside system fires.
  * @typedef {Omit<RepoConfig, 'prompts' | 'review' | 'periodics' | 'hooks'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile }, periodics: Array<Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }>, hooks: Array<Omit<Hook, 'prompt'> & { prompt: string | PromptFile }> }} FileConfig

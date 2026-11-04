@@ -85,7 +85,7 @@ export const waitUnreadableComment = (value) => {
  * @param {string} text
  * @returns {Promise<'commented' | 'already told'>}
  */
-const sayOnce = async (reader, issue, marker, text) => {
+export const sayOnce = async (reader, issue, marker, text) => {
   const thread = await reader.allComments(issue);
   if (thread.some((c) => String(c.body ?? '').includes(marker))) return 'already told';
   await reader.comment(issue, text);

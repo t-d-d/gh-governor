@@ -926,7 +926,7 @@
       "additionalProperties": false
     },
     "pickup": {
-      "description": "`{ \"sweepHours\": <number> }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default one, which sweeps at every fire.",
+      "description": "`{ \"sweepHours\": <number>, \"by\": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one, default one; and whose tickets pickup may start, by `author_association`, default `OWNER`, `MEMBER` and `COLLABORATOR`.",
       "type": "object",
       "properties": {
         "sweepHours": {
@@ -934,6 +934,24 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
+        },
+        "by": {
+          "description": "Whose tickets pickup may start: the `author_association` values GitHub gives the person who opened the ticket. Default `OWNER`, `MEMBER` and `COLLABORATOR`, so a stranger's ticket is not started even once it is ready. Where a repo lists any other value, a ready label on such a ticket counts only when a person other than its author, or governor's own App, added it last.",
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "OWNER",
+              "MEMBER",
+              "COLLABORATOR",
+              "CONTRIBUTOR",
+              "FIRST_TIME_CONTRIBUTOR",
+              "FIRST_TIMER",
+              "MANNEQUIN",
+              "NONE"
+            ]
+          }
         }
       },
       "additionalProperties": false
