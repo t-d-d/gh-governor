@@ -18,12 +18,11 @@
  * --cloud <session>`, the text on stdin), which needs no pseudo-terminal;
  * a session that refuses (the CLI answers it archived) gets
  * the message's fallback, if it carries one, started as a fresh session
- * through the launcher, which rewrites the PR body's session link to it and
- * leaves the dispatch marker on the PR. The body is the address: the
- * receiver messages the session it names. The marker is the forwarding
- * address when the rewrite failed or the launch printed no URL: the next
- * refusal on that PR inside the window messages the session the marker
- * names instead of starting a third. Whom a message reaches and what a
+ * through the launcher, and the PR body's session link is rewritten to it,
+ * with no comment posted. The body is the address, and the one record of
+ * the PR's session: the receiver messages the session it names. A rewrite
+ * that fails fails the turn, and the next refusal on that PR takes it over
+ * again. Whom a message reaches and what a
  * refusal does is dispatch/deliveries.mjs; each kind plans, then delivers
  * each note through it.
  * A `workflow` turn sends the same way: a red run on the default branch, told to the
@@ -1168,7 +1167,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   if (invocation.kind === 'message') {
     const { on, event, commit, closing, text, fallback } = invocation;
     /** @type {import('./deliveries.mjs').Delivery} */
-    let told = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: null };
+    let told = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: null, relinked: null };
     let loginStored = false;
     try {
       told = await delivery().deliver(
@@ -1201,7 +1200,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   // nobody hears of, and why, is a `dispatch-workflow` line, or
   // `dispatch-stale-runs` when the runs list was stale.
   if (invocation.kind === 'workflow' || invocation.kind === 'job') {
-    /** @type {Array<{ prs: number[], session: string } & Omit<import('./deliveries.mjs').Delivery, 'sessionUrl' | 'dropped' | 'skipped'>>} */
+    /** @type {Array<{ prs: number[], session: string } & Omit<import('./deliveries.mjs').Delivery, 'sessionUrl' | 'dropped' | 'skipped' | 'relinked'>>} */
     const deliveries = [];
     /** @type {string | null} */
     let reason = null;
@@ -1340,7 +1339,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   // fallback (dispatch/branch-run.mjs). A `dispatch-branch-run` line says
   // whom, or why nobody.
   if (invocation.kind === 'branch-run') {
-    /** @type {Array<{ prs: number[], session: string } & Omit<import('./deliveries.mjs').Delivery, 'sessionUrl' | 'dropped' | 'skipped'>>} */
+    /** @type {Array<{ prs: number[], session: string } & Omit<import('./deliveries.mjs').Delivery, 'sessionUrl' | 'dropped' | 'skipped' | 'relinked'>>} */
     const deliveries = [];
     /** @type {string | null} */
     let reason = null;
@@ -1605,8 +1604,8 @@ export const LAUNCH_TIMEOUT_MS = 6 * 60 * 1000;
 export const EVENT_PERIODIC_WINDOW_MS = SCHEDULE_LAUNCH_WINDOW_MS;
 
 /**
- * One delivery's budget: its send, a forward and a fallback launch
- * together. A quick send leaves the launch its full budget; slow ones cut
+ * One delivery's budget: its send and a fallback launch together. A
+ * quick send leaves the launch its full budget; a slow one cuts
  * it short, and a launch cut short is a thrown turn with the login stored.
  */
 export const DELIVER_BUDGET_MS = DELIVER_LAUNCHES * LAUNCH_TIMEOUT_MS;

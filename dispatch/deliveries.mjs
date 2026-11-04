@@ -6,13 +6,12 @@
  * A delivery sends the text, labelled as the dispatcher's
  * ({@link fromDispatcher}), with the session's standing under it
  * ({@link standingLine}); resends a failure that is not a refusal once; and
- * on a refusal (the CLI answers the session archived) forwards to the
- * session a dispatch marker inside the window names, or launches the
- * fallback, leaving the marker and, for a takeover, starting it on the
- * PR's head branch and relinking the PR body to it, unless the takeover's
- * PR has closed since. A ticket's spec work (`spec`) neither reads nor
- * leaves a marker: its fallback is written into the ticket's body as its
- * owner link ({@link nameSpecSession}). With no fallback it
+ * on a refusal (the CLI answers the session archived) launches the
+ * fallback, posting nothing where it went. A takeover's starts on the PR's
+ * head branch and the PR body is relinked to it, unless the takeover's PR
+ * has closed since. A ticket's spec work (`spec`) has its fallback written
+ * into the ticket's body as its owner link ({@link nameSpecSession}). No
+ * fallback reads or leaves a dispatch marker. With no fallback it
  * drops the refusing subscriber, or disowns an issue's filer. A session's
  * own push, or a branch owner's own post, is skipped. The owner of a PR whose body names no session is the live local
  * session on its head branch.
@@ -25,7 +24,6 @@
 
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { instruction } from './prompts.mjs';
-import { DISPATCH_WINDOW_MS, dispatchMarker, lastDispatch } from './webhook/fire.mjs';
 import { commitSession } from './branch-run.mjs';
 import { disown, relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
@@ -87,7 +85,7 @@ export const hookSource = (hook) => ({ kind: 'hook', hook });
 
 /**
  * The first line of everything the dispatcher sends into a session that
- * relays GitHub activity: a message, a forward, a fallback's prompt. It
+ * relays GitHub activity: a message or a fallback's prompt. It
  * lands as an ordinary user turn, so without it the session reads a report
  * built from GitHub (a PR title, job names, a quoted remark anyone with a
  * say or a bot wrote) as typed by the operator. It does not say the quoted
@@ -179,7 +177,7 @@ export const OUTPUT_TAIL = 2000;
 /** The name a session gets when its invocation names none. */
 export const DEFAULT_SESSION_NAME = 'dispatch';
 
-/** How many launch budgets one delivery's send, forward and fallback launch share. */
+/** How many launch budgets one delivery's send and fallback launch share. */
 export const DELIVER_LAUNCHES = 2;
 
 /**
@@ -277,7 +275,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   session through the launcher, the same. `sessions`: the sessions API's
  *   finder by branch, under the turn's login; a login it cannot use throws,
  *   saying what it was `asking`. `launchTimeoutMs`: one launch budget; a
- *   delivery's send, forward and fallback share {@link DELIVER_LAUNCHES} of
+ *   delivery's send and fallback share {@link DELIVER_LAUNCHES} of
  *   them, and with none, no end.
  *
  * @typedef {{ session: string } | { pr: number, poster?: string }} Recipient
@@ -298,11 +296,13 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   `source`: where the text comes from, which names the line it opens
  *   with; a fallback's prompt opens with the same line. `fallback`: what a
  *   refusal starts. A `takeover`'s fallback owns the PR, so it starts on
- *   the PR's head branch and the body is relinked to it; a red CI's fix session did not write the merged PR it
- *   is told of, so that body keeps its author. `spec`: the message is a
- *   ticket's spec work to its owner, and its fallback the ticket's new
- *   spec session, which reads no marker and leaves none, and is written
- *   into the ticket's body as its owner ({@link nameSpecSession}). `on`: the PRs or
+ *   the PR's head branch and the body's link is rewritten to it, the one
+ *   record of the PR's session; a red CI's fix session did not write the
+ *   merged PR it is told of, so that body keeps its author and nothing is
+ *   posted on it. `spec`: the message is a ticket's spec work to its
+ *   owner, and its fallback the ticket's new spec session, written into
+ *   the ticket's body as its owner ({@link nameSpecSession}). No fallback
+ *   reads or leaves a dispatch marker. `on`: the PRs or
  *   issue the message is about, left out of the standing. `closing`: a close
  *   or a change deployed. `dropFrom`: those of `on` the session subscribes
  *   to, which a refusal with no fallback drops it from. `commit`: the push
@@ -314,15 +314,18 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   refused: boolean,
  *   sessionUrl: string | null,
  *   error: string | null,
- *   fallback: { outcome: LaunchOutcome | 'forwarded' | 'skipped', sessionUrl: string | null } | null,
+ *   fallback: { outcome: LaunchOutcome | 'skipped', sessionUrl: string | null } | null,
  *   dropped: boolean | null,
  *   skipped: string | null,
+ *   relinked: boolean | null,
  * }} Delivery
  *   What came of it. `ok`: the session took it. `answered`: the CLI
  *   answered at all, null when nothing was sent. `refused`: it answered the
- *   session archived. `fallback`: what a refusal with one did: forwarded to
- *   the marked session, skipped beside a marker naming none, or launched
- *   (dispatched, unconfirmed, failed). `dropped`: whether a refusal with no
+ *   session archived. `fallback`: what a refusal with one did: skipped for
+ *   a takeover of a PR that has closed, or launched (dispatched,
+ *   unconfirmed, failed). `relinked`: whether a takeover's session was
+ *   written into the PR body's link, null where none was tried; false
+ *   fails the turn, since the body still names the archived owner. `dropped`: whether a refusal with no
  *   fallback dropped the session from what it subscribes to, null when none
  *   was tried. `skipped`: why nobody was sent to. `error`: why the send
  *   failed, or why no owner could be found.
@@ -523,31 +526,39 @@ export const deliveries = (deps) => {
   };
 
   /**
-   * Point the PR body's session link at the session a fallback started, so
-   * the receiver messages it for every later remark, past the marker's
-   * window. A rewrite that fails is logged and leaves the marker to forward.
+   * Point the PR body's session link at the session a takeover started, so
+   * the receiver messages it for every later remark: the body's link is the
+   * one record of a PR's session. A launch that printed no link, or a
+   * rewrite GitHub refuses, logs at error and the caller fails the turn;
+   * the next remark finds the archived owner in the body and takes the PR
+   * over again.
    *
    * @param {number} pr
-   * @param {string} sessionUrl
+   * @param {string | null} sessionUrl
    * @returns {Promise<boolean>}
    */
   const relink = async (pr, sessionUrl) => {
+    const reason = 'the PR body still names the archived owner, so its next remark starts another session';
+    if (sessionUrl === null) {
+      deps.log('dispatch-relink', { level: 'error', pr, sessionUrl, error: 'the launcher printed no session link', reason });
+      return false;
+    }
     try {
       const github = await deps.reader();
       const { body } = await github.pull(pr);
       await github.updatePull(pr, { body: relinkSession(body, sessionUrl) });
       return true;
     } catch (error) {
-      deps.log('dispatch-relink', { pr, sessionUrl, error: messageOf(error) });
+      deps.log('dispatch-relink', { level: 'error', pr, sessionUrl, error: messageOf(error), reason });
       return false;
     }
   };
 
   /**
    * One message into a session, and its fallback should the session refuse.
-   * The send, a forward and a fallback launch share one budget
-   * (DELIVER_LAUNCHES launch budgets): three at the launch budget would
-   * outrun the task's deadline, and the refreshed login with it.
+   * The send and a fallback launch share one budget (DELIVER_LAUNCHES
+   * launch budgets): more at the launch budget would outrun the task's
+   * deadline, and the refreshed login with it.
    *
    * @param {string} session
    * @param {string} text
@@ -566,33 +577,18 @@ export const deliveries = (deps) => {
     let fallback = null;
     // Only a refusal (archived) starts anything: any other failure says
     // nothing of the session, and a fresh session told to take the PR over
-    // would orphan a live one; the exit code pages it instead. On a
-    // PR, a marker inside the window forwards the remark to the session it
-    // names, unless that one just refused (a handoff puts the marked
-    // session's link in the body); a marker naming none means a session
-    // exists that cannot be reached, so nothing starts beside it. Otherwise
-    // a fresh session starts on the fallback's prompt, and on a PR leaves
-    // the marker and, for a takeover, is written into the body's link. A
-    // ticket's spec work reads no marker and leaves none: its new spec
-    // session is written into the ticket's body as its owner.
+    // would orphan a live one; the exit code pages it instead. A fresh
+    // session starts on the fallback's prompt and nothing is posted where
+    // it went. A takeover's is written into the PR body's link, the one
+    // record of the PR's session. A ticket's spec session is written into
+    // the ticket's body as its owner. A red run's fix session raises a PR
+    // of its own, and the suspect PR keeps its owner.
+    /** @type {boolean | null} */
+    let relinked = null;
     if (refused && withFallback) {
       const { issue, prompt } = withFallback;
       const sessionName = withFallback.sessionName ?? DEFAULT_SESSION_NAME;
-      const now = deps.now();
-      const marked = issue === undefined || spec
-        ? null
-        : lastDispatch(await (await deps.reader()).comments(issue, { since: new Date(now - DISPATCH_WINDOW_MS).toISOString() }), now);
-      if (marked?.sessionUrl && sessionId(marked.sessionUrl) !== sessionId(session)) {
-        const forwarded = await send(marked.sessionUrl, text, about, until);
-        deps.log('dispatch-message', { session: marked.sessionUrl, forwarded: true, ok: forwarded.ok, sessionUrl: forwarded.sessionUrl, error: forwarded.error, status: forwarded.status });
-        if (forwarded.ok) fallback = { outcome: 'forwarded', sessionUrl: marked.sessionUrl };
-        // A forward that failed on anything but the marked session archived:
-        // it may be live, so nothing starts beside it.
-        else if (!refusedBy(forwarded)) fallback = { outcome: 'failed', sessionUrl: null };
-      } else if (marked && marked.sessionUrl === null) {
-        fallback = { outcome: 'skipped', sessionUrl: null };
-      }
-      let relinked = false;
+      let named = false;
       /** Why nothing started, when the fallback was skipped for it. @type {string | null} */
       let reason = null;
       /** The PR's head branch a takeover's session starts on and pushes to, or '' for none. */
@@ -605,7 +601,7 @@ export const deliveries = (deps) => {
       // A fork's head is '' here, so none is named. A fallback that is not a
       // takeover (a red run on a merge) is meant for a closed PR, and starts
       // a branch of its own.
-      if (fallback === null && takeover && issue !== undefined) {
+      if (takeover && issue !== undefined) {
         const pr = await (await deps.reader()).pull(issue);
         if (pr.open) {
           branch = pr.head;
@@ -619,14 +615,13 @@ export const deliveries = (deps) => {
         fallback = { outcome: started.outcome, sessionUrl: started.sessionUrl };
         if (issue !== undefined && started.outcome !== 'failed') {
           if (spec) {
-            relinked = await nameSpecSession(await deps.reader(), { repo: deps.repo, issue, sessionUrl: started.sessionUrl, log: deps.log });
-          } else {
-            await (await deps.reader()).comment(issue, dispatchMarker({ at: new Date(now).toISOString(), sessionUrl: started.sessionUrl }));
-            if (takeover && started.sessionUrl !== null) relinked = await relink(issue, started.sessionUrl);
+            named = await nameSpecSession(await deps.reader(), { repo: deps.repo, issue, sessionUrl: started.sessionUrl, log: deps.log });
+          } else if (takeover) {
+            named = relinked = await relink(issue, started.sessionUrl);
           }
         }
       }
-      deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, branch: branch === '' ? null : branch, ...fallback, relinked, ...(reason === null ? {} : { reason }) });
+      deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, branch: branch === '' ? null : branch, ...fallback, relinked: named, ...(reason === null ? {} : { reason }) });
     }
     // A refusal with none: a subscriber gone. Its line goes; the turn is not
     // a failure, since nothing was owed to a session that is not there.
@@ -636,7 +631,7 @@ export const deliveries = (deps) => {
       dropped = false;
       for (const from of dropFrom) dropped = (await drop(from, session)) || dropped;
     }
-    return { ok, answered, refused, sessionUrl, error, fallback, dropped };
+    return { ok, answered, refused, sessionUrl, error, fallback, dropped, relinked };
   };
 
   /** @type {Deliveries['deliver']} */
@@ -644,7 +639,7 @@ export const deliveries = (deps) => {
     // Before anything is read or sent: a message with no source is refused.
     relayLabel(source);
     /** @type {Delivery} */
-    const nobody = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: null };
+    const nobody = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: null, relinked: null };
     /** @type {string} */
     let session;
     if ('pr' in to) {

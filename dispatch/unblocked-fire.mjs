@@ -184,7 +184,7 @@ export const planUnblocked = async (invocation, ctx) => {
     // for as long as it takes. With none, the body's owner link: an owner
     // that claimed its own ticket builds it. The link counts only where the
     // repo's trust.relay lets the body's author in.
-    const session = lastDispatch(await reader.comments(issue), ctx.now(), Infinity)?.sessionUrl
+    const session = lastDispatch(await reader.comments(issue))?.sessionUrl
       ?? sessionNamedIn(relayedBody(ticket, relayOf(config)));
     if (session === null) {
       ctx.log('dispatch-unblocked', { ...about, outcome: 'nobody told: no dispatch marker or owner link on the ticket names its session' });

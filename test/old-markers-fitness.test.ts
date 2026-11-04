@@ -20,14 +20,13 @@ const OLD = `${['pod', 'stow'].join('')}:`;
 /** The text with each governor marker given the old prefix instead. */
 const old = (text: string) => text.replaceAll('governor:', OLD);
 
-const NOW = Date.parse('2026-10-28T12:00:00Z');
 const AT = '2026-10-28T11:30:00.000Z';
 const SESSION = 'https://claude.ai/code/session_01OTHER';
 const OWNER = 'https://claude.ai/code/session_01OWNER';
 const FOOTER = `🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${OWNER}`;
 
 /** The builder a thread whose one comment is `marker` names, or null. */
-const builder = (marker: string) => lastDispatch([{ id: 1, body: marker, created_at: AT }], NOW, Infinity)?.sessionUrl ?? null;
+const builder = (marker: string) => lastDispatch([{ id: 1, body: marker, created_at: AT }])?.sessionUrl ?? null;
 
 describe('fitness: governor reads no old-prefix marker (dispatcher-repos.md)', () => {
   test('the old prefix is the extracted repo\'s name and a colon, and governor writes none of it', () => {

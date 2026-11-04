@@ -226,8 +226,8 @@ export const UNATTENDED = 'Unattended session: nobody answers a question here. D
  * every session that hears of it, its author included. The turn ends every
  * launch's prompt with it (dispatch/turn.mjs), and a message about a post
  * naming no session carries it (mention.mjs). It names no literal link: a
- * refused message goes on, as it is, to the session a dispatch marker
- * names, and a cloud session knows its own link.
+ * refused message goes on, as it is, to the fresh session that takes the
+ * PR over, and a cloud session knows its own link.
  */
 export const SIGN_POSTS = "On every comment, review and reply you post on GitHub, put this session's link, its https://claude.ai/code/session_… URL, alone on the line just above the Claude Code footer. The dispatcher reads the link there, so it does not send you your own posts.";
 
@@ -261,13 +261,6 @@ export const waitLine = (body) => {
 // ── The dispatch marker ──────────────────────────────────────────────────
 
 /**
- * How long a dispatch marker on a PR stays its forwarding address: a remark
- * the PR's own session refuses goes to the session a marker inside it names
- * (dispatch/deliveries.mjs). Nothing else reads a marker's age.
- */
-export const DISPATCH_WINDOW_MS = 2 * 60 * 60 * 1000;
-
-/**
  * How the comment a dispatch leaves on its issue or PR starts: the receiver
  * keeps it off every subscriber, and the task reads the dispatch back by it.
  */
@@ -292,17 +285,16 @@ export const dispatchMarker = ({ at, sessionUrl }) =>
   ].join('\n');
 
 /**
- * The newest dispatch a comment records inside the window, and the session
- * it went to where the launcher printed one; null when none did. The
- * marker is the forwarding address: a message the PR's own session refuses
- * goes to the session the marker names rather than starting another.
+ * The newest dispatch a comment records, by the time it carries, and the
+ * session it went to where the launcher printed one; null when none did.
+ * On a claimed ticket it names the builder pickup started
+ * (dispatch/unblocked-fire.mjs). Nothing reads a marker's age, and no
+ * message is forwarded by one: a PR's session is its body's link alone.
  *
  * @param {Array<{ body: string } & Record<string, unknown>>} comments
- * @param {number} now
- * @param {number} [windowMs]
  * @returns {{ at: string, sessionUrl: string | null } | null}
  */
-export const lastDispatch = (comments, now, windowMs = DISPATCH_WINDOW_MS) => {
+export const lastDispatch = (comments) => {
   /** @type {{ at: string, sessionUrl: string | null, stamped: number } | null} */
   let newest = null;
   for (const comment of comments) {
@@ -310,7 +302,7 @@ export const lastDispatch = (comments, now, windowMs = DISPATCH_WINDOW_MS) => {
     const at = MARKER.exec(body)?.[1];
     if (!at) continue;
     const stamped = Date.parse(at);
-    if (!Number.isFinite(stamped) || now - stamped >= windowMs) continue;
+    if (!Number.isFinite(stamped)) continue;
     if (newest === null || stamped > newest.stamped) {
       newest = { at, sessionUrl: MARKED_SESSION.exec(body)?.[1] ?? null, stamped };
     }
@@ -395,7 +387,7 @@ export const lastDispatch = (comments, now, windowMs = DISPATCH_WINDOW_MS) => {
  *
  * @typedef {{ workflowId: number, runId: number, branch: string }} ScheduledRun A scheduled run on the default branch, `branch`, gone red, and its workflow.
  * @typedef {{ prompt: string, sessionName?: string, issue?: number }} Fallback
- *   `issue`: the PR the remark is on, where the turn leaves the dispatch marker and reads it back.
+ *   `issue`: the PR the remark is on, whose body's session link a takeover rewrites to its fresh session.
  *   A takeover's fresh session starts on that PR's head branch, which the delivery reads from the PR (dispatch/deliveries.mjs).
  *
  * @typedef {{ fire: Fire, reason: string, delivery?: string, github?: string, attempt?: number, retryOf?: string }} FireMessage

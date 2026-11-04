@@ -65,8 +65,14 @@ describe('exitCodeFor', () => {
     assert.equal(exitCodeFor({ kind: 'message', ok: false, sessionUrl: null, error: 'archived', loginStored: false, fallback: { outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01NEW' } }), 0);
     assert.equal(exitCodeFor({ kind: 'message', ok: false, sessionUrl: null, error: 'archived', loginStored: false, fallback: { outcome: 'unconfirmed', sessionUrl: null } }), 0);
     assert.equal(exitCodeFor({ kind: 'message', ok: false, sessionUrl: null, error: 'archived', loginStored: false, fallback: { outcome: 'failed', sessionUrl: null } }), 1);
-    assert.equal(exitCodeFor({ kind: 'message', ok: false, sessionUrl: null, error: 'archived', loginStored: false, fallback: { outcome: 'forwarded', sessionUrl: 'https://claude.ai/code/session_01NEW' } }), 0);
     assert.equal(exitCodeFor({ kind: 'message', ok: false, sessionUrl: null, error: 'archived', loginStored: false, fallback: { outcome: 'skipped', sessionUrl: null } }), 0);
+  });
+  // A takeover's session started but the PR body still names the archived
+  // owner: the operator is told, and the next remark takes the PR over again.
+  test('a takeover whose relink GitHub refused exits 1, though its session started', () => {
+    assert.equal(exitCodeFor({ kind: 'message', ok: false, sessionUrl: null, error: 'archived', loginStored: false, fallback: { outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01NEW' }, relinked: false }), 1);
+    assert.equal(exitCodeFor({ kind: 'message', ok: false, sessionUrl: null, error: 'archived', loginStored: false, fallback: { outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01NEW' }, relinked: true }), 0);
+    assert.equal(exitCodeFor({ kind: 'message', ok: false, sessionUrl: null, error: 'archived', loginStored: false, fallback: { outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01NEW' }, relinked: null }), 0);
   });
   /**
    * A subscriber's message: a refusal is a gone subscriber, dropped

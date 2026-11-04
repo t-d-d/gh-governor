@@ -145,7 +145,7 @@ Every message ends with the session's standing: the other open PRs and issues th
 
 **A session's own post** is skipped only where the session signed it, with its link under the Claude Code footer or alone on the line just above it. The footer Claude Code puts on a comment names no session, so every session governor starts is told in its opening prompt to sign its posts. A post with the footer and no link may be any session's. It reaches the owner and every subscriber. The message tells each one that if it wrote the post, it should post nothing about it and sign its posts from then on. Skipping the owner instead would lose a remark from another session, such as a reviewer's, and an owner that nothing wakes leaves its PR idle.
 
-**When the owner is archived**, the message is refused, and governor starts a fresh session on the same text, told to take the PR over. It rewrites the PR body's session link to the fresh session, so later remarks go straight to it, and leaves a dispatch marker on the PR. If the rewrite failed, a refusal within the next two hours forwards to the session the marker names rather than starting a third.
+**When the owner is archived**, the message is refused, and governor starts a fresh session on the same text, told to take the PR over. It rewrites the PR body's session link to the fresh session, so later remarks go straight to it, and posts no comment on the PR: the body's link is the one record of a PR's session. A rewrite GitHub refuses, or a launch that printed no session link, logs `dispatch-relink` at error and the turn exits 1. The body then still names the archived owner, so the next remark takes the PR over again.
 
 Only one answer counts as a refusal: `cloud session <id> is archived`. Any other failure says nothing about the session, which may be live. Governor sends once more five seconds later; if that fails too, it starts no fallback, drops nothing, and fails the turn.
 
@@ -191,7 +191,7 @@ A local session with Remote Control on is listed and swept like a cloud one. The
 
 **CI.** The repo's `workflows.ci` names its CI workflow. Only a run started by a push counts: a run dispatched by hand tested no merge. A red run whose previous run was green blames the merges between them.
 
-- One suspect PR: its session is told the run, the failed jobs and the PR, and asked to fix it on a new branch if its change caused it. If that session is archived, a fresh session starts on the same text.
+- One suspect PR: its session is told the run, the failed jobs and the PR, and asked to fix it on a new branch if its change caused it. If that session is archived, a fresh session starts on the same text. It raises a PR of its own, and nothing is posted on the suspect PR, whose owner does not change.
 - Several suspects: none of their sessions is told. One fresh session gets the run and the suspects, finds the culprit, and fixes it.
 - One suspect Dependabot opened: one fresh session, to fix forward or revert the bump.
 
@@ -214,7 +214,7 @@ GitHub's runs list can lag. A list missing the run is read again after 10, 30, 6
 
 GitHub has no event for a PR that a merge leaves conflicted. So a PR merged into the default branch queues a `conflicts` fire (`dispatch/conflicts.mjs`), whose turn reads each open, non-draft PR's `mergeable`. A `null` starts GitHub's computation, so those are read again three seconds later, up to five reads. A PR still `null` is never taken for a conflict.
 
-Each conflicted PR's owner session is told the PR, the merge that moved the base and the base's new commit, and asked to merge the base in, resolve, check and push. An archived owner gets a fresh session told to take the PR over. That session starts on the PR's head branch and pushes there, so it opens no second PR. A PR from a fork has no head branch in the repo, so its session starts from the default branch. Nothing is posted on the PR. Each PR is told of each merge once, recorded in the state table. A PR with no owner session is told nothing. A PR whose author the repo's `trust.auto` does not let in, `OWNER`, `MEMBER` and `COLLABORATOR` by default, is skipped: a person tells its author.
+Each conflicted PR's owner session is told the PR, the merge that moved the base and the base's new commit, and asked to merge the base in, resolve, check and push. An archived owner gets a fresh session told to take the PR over. That session starts on the PR's head branch and pushes there, so it opens no second PR, and the PR body's session link is rewritten to it, as for a remark. A PR from a fork has no head branch in the repo, so its session starts from the default branch. Nothing is posted on the PR. Each PR is told of each merge once, recorded in the state table. A PR with no owner session is told nothing. A PR whose author the repo's `trust.auto` does not let in, `OWNER`, `MEMBER` and `COLLABORATOR` by default, is skipped: a person tells its author.
 
 ## The PR review
 
@@ -399,6 +399,7 @@ A file in the older shape, `"heartbeat": { "issue": <number>, "marker": "<!-- â€
 | The receiver could not read a repo's switches, ready labels and trust lists from the hook table | `webhook-switches-unread`, at error, in `/aws/lambda/governor-webhook`; every fire is queued and the task decides, but a message is judged by the default `trust.relay` | none |
 | A ticket's `Blocked until:` line holds no date governor can read | `dispatch-wait-unreadable`, at warn, each turn that sees it; one comment on the ticket. A thread or comment that fails logs it again at error, and the next turn tries again | none |
 | A relative `Blocked until:` line the sweep cannot settle, or one it could not read or write | `dispatch-wait-relative`, at warn with one comment on the ticket, or at error; the ticket stays held and the next sweep tries again | none |
+| A takeover's session link could not be written into its PR's body, or its launch printed none | `dispatch-relink`, at error, naming the PR; the session still runs, the turn exits 1, and the PR's next remark takes it over again | `governor-errors` |
 | A new spec session's link could not be written into its ticket's body, or its launch printed none | `dispatch-spec-owner`, at error, naming the repo and the ticket; the session still runs, and the ticket's next spec work starts another | none |
 | A repo's wait items, or a ticket whose wait ended, could not be read, or its comment written | `dispatch-wait-unhandled`, at error; the item stays for the next fire, and the turn exits 1 | `governor-errors` |
 | A periodic's record, or its last run's session, could not be read, or its baseline written | `dispatch-periodic-unread` or `dispatch-periodic-unrecorded`; that periodic waits and the turn exits 1 | `governor-errors` |
