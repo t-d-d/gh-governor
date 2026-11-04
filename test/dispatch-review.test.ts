@@ -1623,7 +1623,7 @@ describe('run — the CI workflow\'s run at the head (test 8)', () => {
  * reads the checks GitHub requires. A private repo on a free plan can
  * require none, so its file names the checks the review waits for.
  */
-describe('run — the checks the review section lists (test 8)', () => {
+describe('run, the checks the review section lists (test 8)', () => {
   test('a listed check red on the head fails test 8 for the author session\'s push, before the model', async () => {
     const h = tagalong({ checks: [{ name: 'codeql', state: 'red' }] }, { requireChecks: ['codeql'] });
     const turn = await reviewTagalong(h);
