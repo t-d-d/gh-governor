@@ -325,24 +325,93 @@ export const authorPicked = (ticket, by = PICKUP_BY) => by.includes(String(ticke
 const botAdd = (add) => add.bot === true || /\[bot\]$/i.test(add.actor);
 
 /**
- * The ready labels that do not count on a ticket, because no one with a say
- * in the repo decided it was ready. Anyone may open an issue on a public
- * repo, and an issue template's `labels:` field adds its labels whoever
- * opens it, so a template listing every ready label would make a stranger's
- * issue ready. A labelling workflow (`github-actions[bot]`) or another App
- * acts on rules, not on someone reading the ticket. So where the author has
- * no say ({@link authorHasSay}), a ready label counts only when its latest
- * `labeled` event was by a person other than the author, or by governor's
- * own App, which puts back only the ready labels a failed launch took off.
- * One with no `labeled` event does not count either: who added it is
- * unknown, and the events can lag the label. Any label on a ticket whose
- * author has a say counts.
+ * Whether a ticket's `labeled` events are read to judge its ready labels
+ * ({@link startRefused}): always where the repo's `trust.start` leaves out
+ * any of the authors with a say, and otherwise only where the ticket's
+ * author has none ({@link authorHasSay}). At the default `start`, someone
+ * without triage access can add a label only through an issue template, so
+ * on a ticket whose author has a say every person who could add one is in
+ * `start`.
  *
- * Pickup reads it only for a ticket whose author `trust.task` lists
- * ({@link authorPicked}), so under the default `by` it never decides. The
- * selection and the claim's second read (dispatch/launch-plan.mjs) ask
- * this, after `mayPickUp`, so the label webhook, the sweep and a blocker's
- * close all pass through it.
+ * @param {{ association?: string }} ticket
+ * @param {readonly string[]} start The repo's `trust.start`.
+ */
+export const readsAdders = (ticket, start) => !authorHasSay(ticket) || [...SUMMONERS].some((a) => !start.includes(a));
+
+/**
+ * Why a ready label does not count: its latest add was the outside author's
+ * own (`template`: an issue template adds its labels this way), a bot's
+ * (`bot`), named by no event (`unknown`), a person's `trust.start` leaves out
+ * (`outside`), or a person's governor could not look up (`unread`).
+ *
+ * @typedef {'template' | 'bot' | 'unknown' | 'outside' | 'unread'} Unstarted
+ * @typedef {{ label: string, actor: string | null, bot: boolean, why: Unstarted, kind?: string }} Refused
+ *   `kind`: what the adder counts as, for `outside`.
+ */
+
+/**
+ * The ready labels on a ticket whose latest add was by no one in the repo's
+ * `trust.start`, nor by governor's own App, which puts back only the ready
+ * labels a failed launch took off. Anyone may open an issue on a public
+ * repo, and an issue template's `labels:` field adds its labels whoever
+ * opens it. A labelling workflow (`github-actions[bot]`) or another App acts
+ * on rules, not on someone reading the ticket, and `start` never holds a
+ * bot. A label no `labeled` event names does not count either: who added it
+ * is unknown, and the events can lag the label.
+ *
+ * The author is judged by the association on the issue. Anyone else is
+ * judged by `kindOf`, which looks them up and answers null where the
+ * lookup failed. Without `kindOf`, at the default `start`, anyone else is
+ * in it, since only someone with triage access can add a label but through
+ * a template, as before `trust.start` existed, and the events are read then
+ * only for a ticket whose author has no say ({@link readsAdders}).
+ *
+ * @param {{ author?: string, association?: string }} ticket
+ * @param {ReadonlyArray<LabelAdd>} adds The ticket's `labeled` events,
+ *   oldest first.
+ * @param {readonly string[]} ready The repo's ready labels.
+ * @param {readonly string[]} start The repo's `trust.start`.
+ * @param {(login: string) => string | null} [kindOf] What a login other
+ *   than the author's counts as, null where it could not be looked up.
+ * @returns {Refused[]}
+ */
+export const startRefused = (ticket, adds, ready, start, kindOf) => {
+  const author = String(ticket.author ?? '').toLowerCase();
+  const association = String(ticket.association ?? 'NONE');
+  const say = authorHasSay(ticket);
+  /** @type {Refused[]} */
+  const refused = [];
+  for (const label of ready) {
+    const last = adds.filter((a) => a.label === label).at(-1);
+    if (last === undefined) {
+      refused.push({ label, actor: null, bot: false, why: 'unknown' });
+      continue;
+    }
+    if (last.ours === true) continue;
+    const actor = last.actor;
+    if (botAdd(last)) {
+      refused.push({ label, actor, bot: true, why: 'bot' });
+      continue;
+    }
+    const own = author !== '' && actor.toLowerCase() === author;
+    if (own || (author === '' && !say)) {
+      // Who opened it is unknown: on a stranger's ticket, the label is
+      // taken for their own.
+      if (own && start.includes(association)) continue;
+      refused.push({ label, actor, bot: false, why: say ? 'outside' : 'template', ...(say ? { kind: association } : {}) });
+      continue;
+    }
+    if (kindOf === undefined) continue;
+    const kind = kindOf(actor);
+    if (kind === null) refused.push({ label, actor, bot: false, why: 'unread' });
+    else if (!start.includes(kind)) refused.push({ label, actor, bot: false, why: 'outside', kind });
+  }
+  return refused;
+};
+
+/**
+ * The ready labels that do not count on a ticket at the default
+ * `trust.start` ({@link startRefused}): none where its author has a say.
  *
  * @param {{ author?: string, association?: string }} ticket
  * @param {ReadonlyArray<LabelAdd>} adds The ticket's `labeled` events,
@@ -350,16 +419,8 @@ const botAdd = (add) => add.bot === true || /\[bot\]$/i.test(add.actor);
  * @param {readonly string[]} ready The repo's ready labels.
  * @returns {string[]}
  */
-export const uncountedReady = (ticket, adds, ready) => {
-  if (authorHasSay(ticket)) return [];
-  const author = String(ticket.author ?? '').toLowerCase();
-  return ready.filter((label) => {
-    const last = adds.filter((a) => a.label === label).at(-1);
-    if (last === undefined) return true;
-    if (last.ours === true) return false;
-    return author === '' || botAdd(last) || last.actor.toLowerCase() === author;
-  });
-};
+export const uncountedReady = (ticket, adds, ready) =>
+  (authorHasSay(ticket) ? [] : startRefused(ticket, adds, ready, [...SUMMONERS]).map((r) => r.label));
 
 /**
  * Who added each of `labels` last, from a ticket's `labeled` events, for

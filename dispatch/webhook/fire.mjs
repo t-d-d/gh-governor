@@ -335,14 +335,19 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  *   the receiver does not know; the turn ends before the login unless it is
  *   one of them.
  * @typedef {{ kind: 'probe' }} ProbeFire
- * @typedef {{ kind: 'dispatch', prompt: string, sessionName?: string, model?: string, scheduled?: ScheduledRun, on?: number, author?: string }} DispatchFire
+ * @typedef {{ kind: 'dispatch', prompt: string, sessionName?: string, model?: string, scheduled?: ScheduledRun, on?: number, author?: string, writer?: string, assigner?: string }} DispatchFire
  *   `scheduled`: the scheduled run gone red the session is for (route.mjs).
  *   `on`: the issue or PR a summons is on (mention.mjs). `author`: who opened
  *   it, as a trust value ({@link authorKind}), which the task judges by the
  *   repo's `trust.task` and refuses, with one comment on `on`, where it is
  *   left out (dispatch/dispatch-fire.mjs). A summons on what governor's own
  *   App opened carries none, as every list lets it in; so does a fire queued
- *   before the receiver named it.
+ *   before the receiver named it. `writer`: the association of who wrote
+ *   the summons, which the task judges by the repo's `trust.start`.
+ *   `assigner`: the login that assigned the issue to the summons account,
+ *   whose association the payload does not carry, so the task looks it up
+ *   where `trust.start` is narrowed (dispatch/start.mjs). A fire queued
+ *   before the receiver named either carries neither.
  * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[] }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
@@ -420,10 +425,10 @@ export const build = Object.freeze({
   schedule: ({ issue, freed, label }) => ({ kind: 'schedule', ...present({ issue, freed, label }) }),
 
   /**
-   * @param {{ prompt: string, sessionName?: string | undefined, model?: string | undefined, scheduled?: ScheduledRun | undefined, on?: number | undefined, author?: string | undefined }} args
+   * @param {{ prompt: string, sessionName?: string | undefined, model?: string | undefined, scheduled?: ScheduledRun | undefined, on?: number | undefined, author?: string | undefined, writer?: string | undefined, assigner?: string | undefined }} args
    * @returns {DispatchFire}
    */
-  dispatch: ({ prompt, sessionName, model, scheduled, on, author }) => ({ kind: 'dispatch', prompt, ...present({ sessionName, model, scheduled, on, author }) }),
+  dispatch: ({ prompt, sessionName, model, scheduled, on, author, writer, assigner }) => ({ kind: 'dispatch', prompt, ...present({ sessionName, model, scheduled, on, author, writer, assigner }) }),
 
   /**
    * @param {({ session: string, byBranch?: undefined, poster?: undefined } | { session?: undefined, byBranch: true, poster?: string | undefined }) & {
@@ -577,12 +582,26 @@ const positiveOn = (v) => {
 };
 
 /**
- * A dispatch fire's `author`: one trust value.
+ * A dispatch fire's `author` or `writer`: one trust value.
+ *
+ * @param {unknown} v
+ * @param {string} [field]
+ */
+const trustValue = (v, field = 'author') => {
+  if (typeof v !== 'string' || !TRUST_SET.has(v)) throw new Error(`a dispatch invocation's ${field} is a trust value, got: ${JSON.stringify(v)}`);
+  return v;
+};
+
+/** A GitHub login, a bot's `[bot]` suffix included: one word. */
+export const LOGIN = /^[\w.[\]-]+$/;
+
+/**
+ * A dispatch fire's `assigner`: a login ({@link LOGIN}).
  *
  * @param {unknown} v
  */
-const trustValue = (v) => {
-  if (typeof v !== 'string' || !TRUST_SET.has(v)) throw new Error(`a dispatch invocation's author is a trust value, got: ${JSON.stringify(v)}`);
+const login = (v) => {
+  if (typeof v !== 'string' || !LOGIN.test(v)) throw new Error(`a dispatch invocation's assigner is a login, got: ${JSON.stringify(v)}`);
   return v;
 };
 
@@ -717,6 +736,8 @@ const parseKind = (event) => {
       ...(e.scheduled === undefined ? {} : { scheduled: parseScheduled(e.scheduled) }),
       ...(e.on === undefined ? {} : { on: positiveOn(e.on) }),
       ...(e.author === undefined ? {} : { author: trustValue(e.author) }),
+      ...(e.writer === undefined ? {} : { writer: trustValue(e.writer, 'writer') }),
+      ...(e.assigner === undefined ? {} : { assigner: login(e.assigner) }),
     };
   }
   if (kind === 'message') return parseMessage(e, event);

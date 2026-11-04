@@ -8,10 +8,12 @@
  * plan's `done`, and the stranded-claim lines.
  */
 
-import { addedBy, authorHasSay, authorPicked, mayPickUp, ticketStatus, uncountedReady, unreadableOf } from '../scripts/lib/ready-work.mjs';
+import { authorPicked, mayPickUp, ticketStatus, unreadableOf } from '../scripts/lib/ready-work.mjs';
 import { outsiderReason, strangerReason } from '../scripts/lib/dispatch-router.mjs';
 import { byOf } from './pickup.mjs';
-import { reportUncounted } from './uncounted.mjs';
+import { reportUncounted, reportUnlooked, reportUnstarted } from './uncounted.mjs';
+import { judgeReady } from './start.mjs';
+import { startOf } from './trust.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { reportUnreadable } from './waits.mjs';
 import { OUTPUT_TAIL } from './deliveries.mjs';
@@ -173,9 +175,9 @@ export const launchPlan = async (plan, ctx, started) => {
    * `Blocked until:` line since (`ticketStatus`, `mayPickUp`) is skipped,
    * untouched, since its session would proceed on the prompt's claim line
    * over someone else's work, or on work that waits on another. So is one
-   * whose author the repo's `pickup.by` does not list (`authorPicked`),
-   * and one whose ready labels no person with a say added
-   * (`uncountedReady`), whose body is a stranger's. A claim that fails is
+   * whose author the repo's `trust.task` does not list (`authorPicked`),
+   * and one whose ready labels no one in the repo's `trust.start` added
+   * last (`judgeReady`). A claim that fails is
    * released, and starts nothing.
    *
    * @param {{ repo: string, issue: number }} ticket
@@ -213,18 +215,21 @@ export const launchPlan = async (plan, ctx, started) => {
         log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: strangerReason({ association }) });
         return 'taken';
       }
-      // A ready label counts only where a person with a say in the repo
-      // added it: a stranger's issue template or a labelling bot can add
-      // every ready label.
-      if (!authorHasSay(read)) {
-        const adds = await github.labelAdds(issue);
-        const uncounted = uncountedReady(read, adds, labels.ready);
-        if (uncounted.length > 0) {
-          const outsider = { repo, issue, labels: uncounted, author: read.author ?? '', association, addedBy: addedBy(adds, uncounted) };
-          log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: outsiderReason(outsider) });
-          await reportUncounted({ reader: github, outsider, log });
-          return 'taken';
+      // A ready label counts only where someone in the repo's trust.start,
+      // or governor's App, added it last: a stranger's issue template, a
+      // labelling bot or a person the repo leaves out can add every ready
+      // label (`judgeReady`).
+      const judged = await judgeReady({ reader: github, repo, ticket: { ...read, number: issue }, ready: labels.ready, start: startOf(config) });
+      if (!judged.counts) {
+        if ('outsider' in judged) {
+          log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: outsiderReason(judged.outsider) });
+          await reportUncounted({ reader: github, outsider: judged.outsider, log });
+        } else if ('unstarted' in judged) {
+          await reportUnstarted({ reader: github, unstarted: judged.unstarted, what: 'readied', event: 'dispatch-claim', log });
+        } else {
+          reportUnlooked({ unlooked: judged.unread, event: 'dispatch-claim', log });
         }
+        return 'taken';
       }
     } catch (error) {
       log('dispatch-claim', { repo, issue, outcome: 'not claimed', error: `the ticket, its blockers or its label events could not be read: ${messageOf(error)}` });

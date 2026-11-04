@@ -116,7 +116,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](../dispatch/repo-conf
 | `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the hourly sweep updates. Needed when `heartbeat` is on. |
 | `waits` | no | `{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing. |
 | `pickup` | no | `{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one, default one; and `by`, the retired name of `trust.task`, which governor reads as it. |
-| `trust` | no | `{ "auto": [ … ], "task": [ … ], "relay": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`. |
+| `trust` | no | `{ "start": [ … ], "auto": [ … ], "task": [ … ], "relay": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `start` is who may set work going, by readying a ticket or writing a summons, default `OWNER`, `MEMBER` and `COLLABORATOR`, which a repo may narrow and never widen. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on. |
 | `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on. |
@@ -264,6 +264,23 @@ A ready label a person adds, and the close of a ready ticket's last open blocker
 
 The fire's clock is the deployment's, which the file cannot see, so a repo is swept at the first fire at or after its interval. An interval shorter than the clock's tick sweeps at every fire. Pickup's line on the heartbeat issue records each sweep.
 
+### Who may set work going
+
+`trust.start` lists, by GitHub `author_association`, who may set work going:
+
+- a ready label counts only when its latest add was by someone in it, or by governor's own App;
+- an `@claude` summons starts a session only when its writer is in it. An issue assigned to `claude` is a summons by whoever assigned it.
+
+The default is `OWNER`, `MEMBER` and `COLLABORATOR`, and a repo may only narrow it. Governor refuses any other value, and `BOT`. A repo where only the owner starts work sets:
+
+```json
+"trust": { "start": ["OWNER"] }
+```
+
+Sessions act through the owner's account, so they still start work there. At the default nobody is looked up: without triage access a person can add a label only through an issue template, so anyone but the ticket's author who added one is in the three, and the author's association is on the issue. Once `start` is narrowed, governor looks up whoever added a ready label, or assigned an issue to `claude`. The repo owner's login is `OWNER`. On a user's repo anyone else who can add a label is a `COLLABORATOR`, and on an org's repo the repo's outside-collaborator list tells a `COLLABORATOR` from a `MEMBER`. A lookup that fails starts nothing that turn and logs at warn, and the next turn looks again.
+
+When a person outside `start` readies a ticket or summons a session, nothing starts. Governor logs it at info and comments once on the issue or pull request, under the `<!-- governor:uncounted-ready -->` marker, naming who set it going, what they count as, and who may. Someone `start` lets in who takes the labels off and adds them again starts the ticket.
+
 ### Whose issues and pull requests work may be about
 
 `trust.task` lists, by GitHub `author_association`, whose issue or pull request may become work when a person sets it going:
@@ -279,7 +296,7 @@ The default is `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit a `trust.re
 
 Governor refuses `BOT` in it. The older `pickup.by` is read as `trust.task`, so a file that sets it keeps working, but a file that sets both is refused. Where the file sets `trust.relay` too, every value `task` names, `BOT` aside, must be in `relay`. The [config check](#the-config-check) warns where `trust.task` reaches beyond owners, members and collaborators, saying what that opens.
 
-On a ticket whose author has no say, a ready label counts only when a person other than its author, or governor's own App, added it last. A label the author added, as an issue template does, or that a labelling workflow or another App added, does not count. Governor logs `dispatch-pickup` at warn and comments once on the ticket, naming the labels and who added each. Someone with triage access who takes the labels off and adds them again starts the ticket. The [config check](#the-config-check) fails an issue template that names a ready label, whatever `trust.task` says.
+On a ticket whose author has no say, a ready label counts only when a person other than its author, or governor's own App, added it last. A label the author added, as an issue template does, or that a labelling workflow or another App added, does not count. Once `trust.start` is narrowed, the same holds on every ticket: a bot's label never counts. Governor logs `dispatch-pickup` at warn and comments once on the ticket, naming the labels and who added each. Someone with triage access who takes the labels off and adds them again starts the ticket. The [config check](#the-config-check) fails an issue template that names a ready label, whatever `trust.task` says.
 
 ### Whose issues governor sets going by itself
 

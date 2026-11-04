@@ -421,6 +421,10 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
   let openRows = null;
   /** Each open issue's and PR's sessions under a trust list, keyed by the list, each body read once per list. @type {Map<string, Promise<Array<OpenRow & { sessions: Set<string> }>>>} */
   const openSessions = new Map();
+  /** The repo owner's type, read once a reader: a narrowed `trust.start` asks it of every ready ticket. @type {Promise<string> | null} */
+  let ownerType = null;
+  /** The repo's outside collaborators, read once a reader, for the same reason. @type {Promise<string[]> | null} */
+  let outside = null;
   /**
    * An issue's `event` rows that name a label, oldest first: the one read
    * behind `labelAdds` and `labelRemovals`.
@@ -1074,6 +1078,32 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
           bot: row.actor?.type === 'Bot',
           ours: postedByApp({ user: row.actor, performed_via_github_app: row.performed_via_github_app }, appId),
         })),
+
+    /**
+     * Whether the repo's owner is a `User` or an `Organization`, from the
+     * repo itself, read once a reader. Governor looks a ready label's adder
+     * up by it where a repo narrows `trust.start` (`startKinds`,
+     * dispatch/start.mjs).
+     *
+     * @returns {Promise<string>}
+     */
+    repoOwnerType: () => (ownerType ??= call('GET', `/repos/${repo}`).then((row) => String(row?.owner?.type ?? ''))),
+
+    /**
+     * The logins of the repo's outside collaborators, every page, read once
+     * a reader: on an org's repo, a person who can add a label and is not
+     * one is a member (`startKinds`, dispatch/start.mjs). A list that fills
+     * every page read throws, since a collaborator past the last page would
+     * read as a member.
+     *
+     * @returns {Promise<string[]>}
+     */
+    outsideCollaborators: () => (outside ??= (async () => {
+      const pages = 30;
+      const rows = await allPages(call, `/repos/${repo}/collaborators`, { affiliation: 'outside' }, pages);
+      if (rows.length >= pages * 100) throw new Error(`the repo has more outside collaborators than the ${pages * 100} governor reads`);
+      return rows.map((row) => String(row?.login ?? ''));
+    })()),
 
     /**
      * An issue's label removals, oldest first, from its events: the label,
