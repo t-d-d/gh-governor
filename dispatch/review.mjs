@@ -64,7 +64,7 @@
  */
 
 import { DEPENDABOT, SUMMONERS } from './webhook/fire.mjs';
-import { commentKey, commentText, heldPassReason, ownerActs } from './webhook/review-comment.mjs';
+import { commentKey, commentText, heldPassReason, ownerActs, sentence } from './webhook/review-comment.mjs';
 import { checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
 import { bodyDigest, closedBy, closingTickets, foreignClosings, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
@@ -120,14 +120,11 @@ const ERROR_CHARS = 300;
  *
  * @param {string} text
  */
-export const firstSentence = (text) => {
+const firstSentence = (text) => {
   const end = /[.!?](?=\s|$)/.exec(text);
   const first = end === null ? text.trim() : text.slice(0, end.index + 1).trim();
   return first.length <= TITLE_CHARS ? first : `${first.slice(0, TITLE_CHARS - 1).trimEnd()}…`;
 };
-
-/** @param {string} text */
-const sentence = (text) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
 
 /** The `owner/repo` a PR's URL names, or undefined. @param {string} url */
 const repoOf = (url) => /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\//.exec(url)?.[1];
@@ -288,6 +285,8 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
   const reviewed = { pr: number, outcome: 'skipped', reason: null, headSha: null, answer: null, error: null, check: null };
   /** @param {string} reason */
   const skip = (reason) => ({ ...reviewed, outcome: /** @type {Outcome} */ ('skipped'), reason });
+  // A PR merged before a later write failed keeps its check: the review ran.
+  let merged = false;
   /**
    * The `governor` check at the head read. A 403 is an installation that
    * has not granted the Checks write: recorded, and the review goes on.
@@ -369,8 +368,9 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // check: never one the author session can act on.
     await check(answer.answer === 'pass' && !conflict ? 'success' : ownerActs(said) ? 'failure' : 'neutral', firstSentence(text), text);
     if (outcome === 'merged') {
-      const merged = await reader.merge(number, { sha: pull.headSha });
-      if (!merged.merged) throw new Error(`GitHub did not merge #${number}`);
+      const done = await reader.merge(number, { sha: pull.headSha });
+      if (!done.merged) throw new Error(`GitHub did not merge #${number}`);
+      merged = true;
     }
 
     const body = `${text}\n\n${marker}`;
@@ -389,7 +389,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
   } catch (error) {
     const limited = /** @type {{ limit?: string }} */ (error)?.limit === 'session';
     const message = messageOf(error);
-    if (reviewed.headSha !== null && reviewed.headSha !== '') {
+    if (reviewed.headSha !== null && reviewed.headSha !== '' && !merged) {
       // A gate fails out loud, and the owner can bypass it. A check write
       // that fails here too leaves the review's own error as the one told.
       const quoted = message.length <= ERROR_CHARS ? message : `${message.slice(0, ERROR_CHARS - 1).trimEnd()}…`;

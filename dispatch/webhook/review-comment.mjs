@@ -51,8 +51,8 @@ const MERGE_CONFLICT = /^Conflicts with its base since main moved to ([0-9a-f]{4
  */
 export const mergeConflictSha = (text) => MERGE_CONFLICT.exec(text)?.[1] ?? null;
 
-/** @param {string} text */
-const sentence = (text) => {
+/** `text` trimmed, ending in a full stop unless it ends a sentence already. @param {string} text */
+export const sentence = (text) => {
   const trimmed = text.trim();
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 };

@@ -73,6 +73,8 @@ const harness = (over: {
   checks?: Array<{ name: string, state: 'red' | 'green' | 'pending' }>,
   /** The check write: GitHub's refusal, for one that throws. */
   checkRun?: () => Promise<void>,
+  /** The comment write: GitHub's refusal, for one that throws. */
+  comment?: () => Promise<void>,
   /** The sessions the state table says governor started; a string is the error its read fails with. */
   started?: string[] | string,
 } = {}) => {
@@ -145,7 +147,7 @@ const harness = (over: {
         return { number: n, title: `Ticket ${n}`, body: '## Acceptance criteria\n\n- It reviews.', state: 'open', labels: ['mode: afk', 'type: nfr', 'workflow: under development'], pull: false, association: 'MEMBER', ...row };
       },
       allComments: async () => over.thread ?? [],
-      comment: async (issue: number, body: string) => { comments.push({ issue, body }); writes.push('comment'); },
+      comment: async (issue: number, body: string) => { if (over.comment) await over.comment(); comments.push({ issue, body }); writes.push('comment'); },
       updateComment: async (id: number, body: string) => { commentEdits.push({ id, body }); },
       // The send path's reads: the standing line, a fallback's marker and relink.
       openNaming: async () => [],
@@ -1240,6 +1242,13 @@ describe('fitness: the review posts its verdict as the `governor` check (dispatc
       assert.equal(exitCodeFor(turn as never), 0, outcome);
       assert.ok(h.logged.some((l) => l.event === 'dispatch-review' && /403/.test(String(l.check))), outcome);
     }
+  });
+
+  test('a comment refused after the merge leaves the merged head\'s check as success: the review ran', async () => {
+    const h = harness({ comment: async () => { throw Object.assign(new Error('POST /repos/acme/factory/issues/767/comments failed: 502 Bad Gateway'), { status: 502 }); } });
+    const turn = await review({ kind: 'review', pr: 767 }, h);
+    assert.deepEqual(turn.reviews.map((r) => r.outcome), ['failed']);
+    assert.deepEqual(h.writes, ['check success', 'merge']);
   });
 
   test('any other refusal of the check write fails the review before its comment: no marker, so the next fire reads it again', async () => {
