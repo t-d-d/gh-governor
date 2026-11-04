@@ -24,9 +24,9 @@ import { ROW_SWITCH, UNREADIED_HELD, mayBeUnreadied, notPlannedComment, ownerOut
 import { relativeAtClose, reportUnreadable } from './waits.mjs';
 import { reportUncounted } from './uncounted.mjs';
 import { byOf } from './pickup.mjs';
-import { authorKind, autoOf, lets } from './trust.mjs';
+import { authorKind, autoOf, lets, relayOf } from './trust.mjs';
 import { dispatchMarker, lastDispatch } from './webhook/fire.mjs';
-import { sessionNamedIn } from './webhook/subscribe.mjs';
+import { relayedBody, sessionNamedIn } from './webhook/subscribe.mjs';
 
 /** @typedef {import('./turn.mjs').Reader} Reader */
 
@@ -221,7 +221,9 @@ export const planUnblocked = async (invocation, ctx) => {
   // fallback, for an owner archived, and counts against DispatchCap as the
   // launch it replaces does, so with a cap of 0 the owner is still asked
   // and nothing starts in its place.
-  const owner = row === 'not-ready' ? sessionNamedIn(ticket.body) : null;
+  // The owner counts only where the repo's trust.relay lets the body's
+  // author in: a session link in a stranger's body routes nothing.
+  const owner = row === 'not-ready' ? sessionNamedIn(relayedBody(ticket, relayOf(config))) : null;
   if (owner !== null) {
     const held = await specHeld();
     if (held !== null) {

@@ -162,6 +162,7 @@ const harness = (over: Record<string, unknown> = {}) => {
   const recorded: string[] = [];
   // Each write to the receiver's hook table: a repo's hooks, switches and ready labels as its file was read.
   const published: Array<{ repo: string; hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; at: string }> = [];
+  const publishedTrust: Array<{ repo: string; trust: { relay: string[] } | undefined }> = [];
   let loginOnDisk: string | null = null;
   const accounts: unknown[] = [];
   const deps = {
@@ -312,8 +313,9 @@ const harness = (over: Record<string, unknown> = {}) => {
     }),
     uuid: () => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
     hookTable: {
-      publish: async (repo: string, { hooks, switches, ready }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[] }, at: string) => {
+      publish: async (repo: string, { hooks, switches, ready, trust }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; trust?: { relay: string[] } }, at: string) => {
         published.push({ repo, hooks, switches, ready, at });
+        publishedTrust.push({ repo, trust });
         return true;
       },
     },
@@ -391,7 +393,7 @@ const harness = (over: Record<string, unknown> = {}) => {
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -2224,6 +2226,21 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual([h.launches, h.messages], [[], []]);
   });
 
+  // trust.relay: the session a body names counts only where the body's
+  // author is let in, so a ticket auto lets in but relay does not gets a
+  // spec session, never a message into the session its body names.
+  test('not ready, by a CONTRIBUTOR that a wider trust.auto lets in and the default relay does not: the spec session, and its body\'s link is not told', async () => {
+    const h = ticketTurn({ labels: ['enhancement'], body: OWNED, association: 'CONTRIBUTOR' });
+    const file = JSON.parse(FACTORY_FILE);
+    const wide = ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'];
+    file.trust = { auto: wide };
+    file.pickup = { ...file.pickup, by: wide };
+    h.deps.configFile = async (repo: string) => (repo === REPO ? JSON.stringify(file) : null);
+    await run(fire(), h.deps as never);
+    assert.deepEqual(h.messages, []);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
+  });
+
   test('not ready and owned, with unblocked off: the owner is not asked', async () => {
     const h = ticketTurn({ labels: ['enhancement'], body: OWNED, features: { unblocked: false } });
     await run(fire(), h.deps as never);
@@ -2661,6 +2678,15 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
         assert.ok(said !== undefined, JSON.stringify(h.logged));
         assert.equal(said.level ?? 'info', 'info');
       }
+    });
+
+    test('a ticket by a CONTRIBUTOR that a wider trust.auto lets in and the default relay does not: the spec session, and its body\'s link is not told', async () => {
+      const wide = ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'];
+      const file = JSON.stringify({ ...JSON.parse(FACTORY_FILE), trust: { auto: wide }, pickup: { ...JSON.parse(FACTORY_FILE).pickup, by: wide } });
+      const h = waitsTurn({ file, ticket: { ...owned, association: 'CONTRIBUTOR' } });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(h.messages, []);
+      assert.equal(specOf(h).length, 1);
     });
 
     test('a ticket opened by an OWNER gets its spec session as a member\'s does', async () => {
@@ -4146,6 +4172,7 @@ describe('run — a workflow run on main', () => {
     body: `The change.${footer(SESSION)}`,
     merged_at: '2026-09-25T11:00:00Z',
     merge_commit_sha: SHA,
+    association: 'OWNER',
     ...over,
   });
   const runRow = (id: number, conclusion: string, over: Record<string, unknown> = {}) => ({ id, status: 'completed', conclusion, event: 'push', head_branch: 'main', head_sha: `sha${id}`, html_url: `https://github.com/${REPO}/actions/runs/${id}`, created_at: new Date(NOW - (500 - id) * 60_000).toISOString(), ...over });
@@ -4898,7 +4925,7 @@ describe('run — a subscriber to several of a run\'s PRs refuses', () => {
   const footer = (session: string) => `\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${session}`;
   const prs = [767, 786].map((number) => ({ number, body: `The change.\n\n${subscribeLine(REVIEWER, ['deploys'])}${footer(`https://claude.ai/code/session_01OWN${number}`)}` }));
   const shas = ['m4390', HEAD];
-  const pulls = prs.map((p, i) => ({ number: p.number, title: `The change ${p.number}`, html_url: `https://github.com/${REPO}/pull/${p.number}`, body: p.body, merged_at: `2026-09-26T${String(p.number - 748).padStart(2, '0')}:00:00Z`, merge_commit_sha: shas[i] }));
+  const pulls = prs.map((p, i) => ({ number: p.number, title: `The change ${p.number}`, html_url: `https://github.com/${REPO}/pull/${p.number}`, body: p.body, merged_at: `2026-09-26T${String(p.number - 748).padStart(2, '0')}:00:00Z`, merge_commit_sha: shas[i], association: 'OWNER' }));
 
   test('it is told once and dropped from each', async () => {
     const sent: string[] = [];
@@ -4969,7 +4996,7 @@ describe('run — a merge to main leaves PRs conflicted', () => {
         count[n] = (count[n] ?? 0) + 1;
         return row(n, seq[i] ?? null, rows[n]);
       },
-      pull: async (n: number) => ({ number: n, body: String(rows[n]?.body ?? BODY), head: pulls.find((p) => p.number === n)?.head ?? `claude/branch-${n}`, open: true }),
+      pull: async (n: number) => ({ number: n, body: String(rows[n]?.body ?? BODY), head: pulls.find((p) => p.number === n)?.head ?? `claude/branch-${n}`, open: true, association: String(rows[n]?.association ?? row(n, null).association) }),
       updatePull: async () => {},
       comment: async (n: number, text: string) => { comments.push({ issue: n, body: text }); },
       updateComment: async () => { throw new Error('the check edits no comment'); },
@@ -5988,7 +6015,7 @@ describe('run — a PR whose body names no session', () => {
     openPulls: async () => [{ number: PR, draft: false, base: 'main', head: BRANCH, title: 'Lessons', html_url: `https://github.com/${REPO}/pull/${PR}`, body: UNNAMED }],
     ...over,
   });
-  const prPayload = { number: PR, title: 'Lessons', html_url: `https://github.com/${REPO}/pull/${PR}`, body: UNNAMED };
+  const prPayload = { number: PR, user: { login: 'tdickinson', type: 'User' }, author_association: 'OWNER', title: 'Lessons', html_url: `https://github.com/${REPO}/pull/${PR}`, body: UNNAMED };
   const remark = (body = 'Why the new section?') => routeEvent({
     event: 'issue_comment',
     owners: ['acme'],
@@ -6072,7 +6099,7 @@ describe('run — a PR whose body names no session', () => {
     const SHA = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
     const runRow = (id: number, conclusion: string) => ({ id, status: 'completed', conclusion, event: 'push', head_branch: 'main', head_sha: `sha${id}`, html_url: `https://github.com/${REPO}/actions/runs/${id}`, created_at: at(500 - id) });
     const reader = unnamedReader({
-      pullsForCommit: async (sha: string) => (sha === SHA ? [{ ...prPayload, head: BRANCH, merged_at: at(60), merge_commit_sha: SHA }] : []),
+      pullsForCommit: async (sha: string) => (sha === SHA ? [{ ...prPayload, head: BRANCH, merged_at: at(60), merge_commit_sha: SHA, association: 'OWNER' }] : []),
       runJobs: async () => [stage(DEV), stage(PROD)],
       workflowRuns: async () => [runRow(500, 'success'), runRow(498, 'success')],
       compareCommits: headMerge,
@@ -6146,7 +6173,7 @@ describe('run — a PR whose body names no session', () => {
     const REVIEWER = 'https://claude.ai/code/session_01REVIEWER';
     const runRow = (id: number) => ({ id, status: 'completed', conclusion: 'success', event: 'push', head_branch: 'main', head_sha: `sha${id}`, html_url: `https://github.com/${REPO}/actions/runs/${id}`, created_at: at(500 - id) });
     const reader = unnamedReader({
-      pullsForCommit: async () => [{ ...prPayload, body: `${UNNAMED}\n${subscribeLine(REVIEWER, ['deploys'])}`, head: BRANCH, merged_at: at(60), merge_commit_sha: SHA }],
+      pullsForCommit: async () => [{ ...prPayload, body: `${UNNAMED}\n${subscribeLine(REVIEWER, ['deploys'])}`, head: BRANCH, merged_at: at(60), merge_commit_sha: SHA, association: 'OWNER' }],
       runJobs: async () => [stage(DEV), stage(PROD)],
       workflowRuns: async () => [runRow(500), runRow(498)],
       compareCommits: headMerge,
@@ -6385,7 +6412,7 @@ describe('run — the tickets a green run shipped', () => {
   const PLAY = 'deployed: play track';
   const runRow = (id: number, conclusion: string, head: string) => ({ id, status: 'completed', conclusion, event: 'workflow_dispatch', head_branch: 'main', head_sha: head, html_url: `https://github.com/${REPO}/actions/runs/${id}`, created_at: new Date(NOW - (500 - id) * 60_000).toISOString() });
   const workflowFile = (paths: string) => `name: A release\non:\n  workflow_dispatch:\nenv:\n  TICKET_LABEL_PATHS: ${paths}\njobs:\n  release:\n    name: "Publish to Play testing track \u00b7 ${PLAY}"\n    runs-on: ubuntu-latest\n    steps: []\n`;
-  const pull = (number: number, sha: string, body: string) => ({ number, title: `PR ${number}`, html_url: `https://github.com/${REPO}/pull/${number}`, body, merged_at: '2026-09-25T11:00:00Z', merge_commit_sha: sha, head: '' });
+  const pull = (number: number, sha: string, body: string) => ({ number, title: `PR ${number}`, html_url: `https://github.com/${REPO}/pull/${number}`, body, merged_at: '2026-09-25T11:00:00Z', merge_commit_sha: sha, head: '', association: 'OWNER' });
   const playJob = (id: number) => ({ name: `Publish to Play testing track \u00b7 ${PLAY}`, conclusion: 'success', html_url: `https://github.com/${REPO}/actions/runs/${id}/job/2` });
 
   const labelReader = (over: Record<string, unknown> = {}) => {
@@ -7618,7 +7645,7 @@ describe('fitness: a served repo\'s red CI reaches its merges\' sessions (dispat
       workflowRuns: async (name: string) => (name === 'gate.yml' ? [runRow(500, 'failure', SHA), { ...runRow(499, 'success', 'c'.repeat(40)), head_branch: 'claude/x' }, runRow(498, 'success', BEFORE)] : []),
       runJobs: async () => [{ name: 'gate', conclusion: 'failure', html_url: `https://github.com/${TDD}/actions/runs/500/job/1` }],
       compareCommits: async (_b: string, head: string) => [{ sha: head, message: 'Merge pull request #12 from t-d-d/branch' }],
-      pullsForCommit: async (sha: string) => (sha === SHA ? [{ number: 12, title: 'A change', html_url: `https://github.com/${TDD}/pull/12`, body: `The change.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${OWNER}`, merged_at: '2026-09-25T11:00:00Z', merge_commit_sha: SHA, head: 'claude/x', author: 'someone' }] : []),
+      pullsForCommit: async (sha: string) => (sha === SHA ? [{ number: 12, title: 'A change', html_url: `https://github.com/${TDD}/pull/12`, body: `The change.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${OWNER}`, merged_at: '2026-09-25T11:00:00Z', merge_commit_sha: SHA, head: 'claude/x', author: 'someone', association: 'OWNER' }] : []),
     };
     return harness({
       installations: async () => [{ account: 't-d-d', repos: [TDD] }],
@@ -7680,7 +7707,7 @@ describe('fitness: a merge into a served repo\'s default branch reaches its conf
       branchHead: async (branch: string) => { asked.push(`head ${branch}`); return TRUNK; },
       openPulls: async () => [{ number: 12, draft: false, base: 'trunk' }, { number: 13, draft: false, base: 'main' }],
       pullRequest: async (n: number) => { asked.push(`pull ${n}`); return { number: n, title: `PR ${n}`, body: BODY, state: 'open', draft: false, base: 'trunk', headSha: 'f'.repeat(40), mergeable: false, html_url: `https://github.com/${TDD}/pull/${n}`, association: 'OWNER' }; },
-      pull: async (n: number) => ({ number: n, body: BODY, head: `claude/branch-${n}`, open: true }),
+      pull: async (n: number) => ({ number: n, body: BODY, head: `claude/branch-${n}`, open: true, association: 'OWNER' }),
     };
     const h = harness({ configFile: async (repo: string) => (repo === TDD ? FILE : FACTORY_FILE), reader: () => reader, sleep: async () => {} });
     await run(fire, h.deps as never);
@@ -8439,4 +8466,45 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
       }
     });
   }
+});
+
+/**
+ * The receiver judges a message fire by the repo's hook-table item, and
+ * drops only an author outside the three; the task judges every fire again
+ * from the file, which the item may lag.
+ */
+describe('fitness: a message fire reaches its session only where the file\'s trust.relay lets in whom it was judged by (dispatcher-repos.md)', () => {
+  const withRelay = (relay: string[]) => async (repo: string) => (repo === REPO ? JSON.stringify({ ...JSON.parse(FACTORY_FILE), trust: { relay } }) : null);
+  const message = (authors?: string[]) => ({ kind: 'message', session: 'session_01ABC', text: 'A remark.', on: 724, event: 'comments', ...(authors === undefined ? {} : { authors }) });
+
+  test('at the defaults, a fire judged by an owner and a bot is sent', async () => {
+    const h = harness();
+    await run(message(['BOT', 'OWNER']), h.deps as never);
+    assert.deepEqual(h.messages.map((m) => m.session), ['session_01ABC']);
+  });
+
+  test('a fire judged by an author the file\'s relay leaves out is refused at info, sends nothing and exits 0', async () => {
+    const h = harness({ configFile: withRelay(['OWNER', 'MEMBER', 'COLLABORATOR']) });
+    const result = await run(message(['BOT', 'OWNER']), h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.messages, []);
+    assert.match(String(result.refusal), /trust\.relay/);
+    assert.match(String(result.refusal), /BOT/);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-refused' && l.level === 'info'), JSON.stringify(h.logged));
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('a relay that lists NONE lets a NONE author\'s fire through', async () => {
+    const h = harness({ configFile: withRelay(['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT', 'NONE']) });
+    await run(message(['NONE', 'OWNER']), h.deps as never);
+    assert.deepEqual(h.messages.map((m) => m.session), ['session_01ABC']);
+  });
+
+  test('every turn writes the file\'s relay to the repo\'s hook-table item, the default where it sets none', async () => {
+    const plain = harness();
+    await run(message(['OWNER']), plain.deps as never);
+    assert.deepEqual(plain.publishedTrust, [{ repo: REPO, trust: { relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT'] } }]);
+    const narrow = harness({ configFile: withRelay(['OWNER', 'MEMBER', 'COLLABORATOR']) });
+    await run(message(['OWNER']), narrow.deps as never);
+    assert.deepEqual(narrow.publishedTrust, [{ repo: REPO, trust: { relay: ['OWNER', 'MEMBER', 'COLLABORATOR'] } }]);
+  });
 });

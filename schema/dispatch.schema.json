@@ -966,11 +966,29 @@
       "additionalProperties": false
     },
     "trust": {
-      "description": "`{ \"auto\": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`.",
+      "description": "`{ \"auto\": [ … ], \"relay\": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `relay` is whose text may reach a running session, default those three and `BOT`.",
       "type": "object",
       "properties": {
         "auto": {
-          "description": "Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket's wait ends or its blocker closes, a periodic's issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `pickup.by` where the file sets it. `BOT` is refused.",
+          "description": "Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket's wait ends or its blocker closes, a periodic's issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `pickup.by` and `relay` where the file sets them. `BOT` is refused.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "OWNER",
+              "MEMBER",
+              "COLLABORATOR",
+              "CONTRIBUTOR",
+              "FIRST_TIME_CONTRIBUTOR",
+              "FIRST_TIMER",
+              "MANNEQUIN",
+              "NONE",
+              "BOT"
+            ]
+          }
+        },
+        "relay": {
+          "description": "Whose text may reach a session that is already running, by `author_association`, with `BOT` for any account GitHub marks as a bot: their comments and reviews, and a session link or `governor:subscribe` line in the body of an issue or PR they open. An event such as a label, a close or a push is judged by the author of the issue or PR it is on. Default `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`. Governor's own App is never judged.",
           "type": "array",
           "items": {
             "type": "string",

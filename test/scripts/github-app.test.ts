@@ -20,9 +20,13 @@ import {
   appInstallations,
   installationToken,
 } from '../../scripts/lib/github-app.mjs';
+import { RELAY } from '../../dispatch/webhook/fire.mjs';
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const PEM = privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
+
+/** A row's author where GitHub named none: no login, and NONE, as a trust list reads it. */
+const UNREAD = { author: '', association: 'NONE', bot: false, own: false };
 
 const b64url = (s: string) => Buffer.from(s, 'base64url').toString('utf8');
 
@@ -386,10 +390,10 @@ describe('githubReader', () => {
       'https://api.github.com/repos/acme/factory/pulls/13': { number: 13, title: 'G', body: 'B', state: 'closed', head: { ref: 'main', sha: 'fed', repo: null } },
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    assert.deepEqual(await reader.pull(10), { number: 10, body: 'B', head: 'claude/x', open: true });
-    assert.deepEqual(await reader.pull(11), { number: 11, body: '', head: '', open: true });
-    assert.deepEqual(await reader.pull(12), { number: 12, body: 'B', head: '', open: true }, 'a fork\'s branch');
-    assert.deepEqual(await reader.pull(13), { number: 13, body: 'B', head: '', open: false }, 'a deleted fork\'s branch, on a closed PR');
+    assert.deepEqual(await reader.pull(10), { number: 10, body: 'B', head: 'claude/x', open: true, ...UNREAD });
+    assert.deepEqual(await reader.pull(11), { number: 11, body: '', head: '', open: true, ...UNREAD });
+    assert.deepEqual(await reader.pull(12), { number: 12, body: 'B', head: '', open: true, ...UNREAD }, 'a fork\'s branch');
+    assert.deepEqual(await reader.pull(13), { number: 13, body: 'B', head: '', open: false, ...UNREAD }, 'a deleted fork\'s branch, on a closed PR');
   });
 
   test('updatePull patches the pull request\'s body and nothing else', async () => {
@@ -422,9 +426,9 @@ describe('githubReader', () => {
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
     assert.deepEqual(await reader.pullsForCommit('abc'), [
-      { number: 7, title: 'T', html_url: 'u', body: 'B', merged_at: '2026-09-25T00:00:00Z', merge_commit_sha: 'abc', head: 'claude/x', author: 'dependabot[bot]' },
-      { number: 8, title: 'O', html_url: 'v', body: '', merged_at: null, merge_commit_sha: 'zzz', head: '', author: '' },
-      { number: 9, title: 'F', html_url: 'w', body: 'B', merged_at: '2026-09-25T00:00:00Z', merge_commit_sha: 'abc', head: '', author: 'someone' },
+      { number: 7, title: 'T', html_url: 'u', body: 'B', merged_at: '2026-09-25T00:00:00Z', merge_commit_sha: 'abc', head: 'claude/x', author: 'dependabot[bot]', association: 'NONE', bot: false, own: false },
+      { number: 8, title: 'O', html_url: 'v', body: '', merged_at: null, merge_commit_sha: 'zzz', head: '', author: '', association: 'NONE', bot: false, own: false },
+      { number: 9, title: 'F', html_url: 'w', body: 'B', merged_at: '2026-09-25T00:00:00Z', merge_commit_sha: 'abc', head: '', author: 'someone', association: 'NONE', bot: false, own: false },
     ]);
   });
 
@@ -539,7 +543,7 @@ describe('githubReader', () => {
   // other callers of the App spend it too; the issues list is on the core
   // limit. One read of every open issue and PR serves the whole turn.
   test('openNaming lists open issues and PRs whose body names the session as owner or subscriber, reading the list once per reader and never searching', async () => {
-    const row = (number: number, body: string | null, pull = false) => ({ number, title: `T${number}`, html_url: `u${number}`, body, ...(pull ? { pull_request: { url: 'x' } } : {}) });
+    const row = (number: number, body: string | null, pull = false) => ({ number, title: `T${number}`, html_url: `u${number}`, body, author_association: 'OWNER', ...(pull ? { pull_request: { url: 'x' } } : {}) });
     const { fetch, calls } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues': (_init: RequestInit | undefined, url: string) => {
         const params = new URL(url).searchParams;
@@ -550,11 +554,11 @@ describe('githubReader', () => {
       },
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    assert.deepEqual(await reader.openNaming('session_01ABC'), [
+    assert.deepEqual(await reader.openNaming('session_01ABC', RELAY), [
       { number: 7, title: 'T7', html_url: 'u7', pull: true },
       { number: 8, title: 'T8', html_url: 'u8', pull: false },
     ]);
-    assert.deepEqual(await reader.openNaming('session_01OTHER'), [{ number: 10, title: 'T10', html_url: 'u10', pull: false }]);
+    assert.deepEqual(await reader.openNaming('session_01OTHER', RELAY), [{ number: 10, title: 'T10', html_url: 'u10', pull: false }]);
     assert.equal(calls.length, 2, 'two pages, read once for both sessions');
     assert.ok(calls.every((c) => !c.url.includes('/search/')), 'no search call');
   });
@@ -566,15 +570,32 @@ describe('githubReader', () => {
     const footer = '---\n_Generated by [Claude Code](https://claude.ai/code)_';
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues': () => [
-        { number: 20, title: 'Quoted', html_url: 'u20', body: `The session said:\n\n> It is fixed.\n>\n> ${link}\n>\n> ${footer.replace('\n', '\n> ')}\n\nIt is not.` },
-        { number: 21, title: 'Cited', html_url: 'u21', body: `See what ${link} found, and the fix it pushed.\n\nThanks.` },
-        { number: 22, title: 'Filed', html_url: 'u22', body: `Found in passing.\n\n${link}\n\n${footer}` },
-        { number: 23, title: 'Cited above its own footer', html_url: 'u23', body: `Supersedes ${link}.\n\nhttps://claude.ai/code/session_01OTHER\n\n${footer}` },
+        { number: 20, author_association: 'MEMBER', title: 'Quoted', html_url: 'u20', body: `The session said:\n\n> It is fixed.\n>\n> ${link}\n>\n> ${footer.replace('\n', '\n> ')}\n\nIt is not.` },
+        { number: 21, author_association: 'MEMBER', title: 'Cited', html_url: 'u21', body: `See what ${link} found, and the fix it pushed.\n\nThanks.` },
+        { number: 22, author_association: 'OWNER', title: 'Filed', html_url: 'u22', body: `Found in passing.\n\n${link}\n\n${footer}` },
+        { number: 23, author_association: 'OWNER', title: 'Cited above its own footer', html_url: 'u23', body: `Supersedes ${link}.\n\nhttps://claude.ai/code/session_01OTHER\n\n${footer}` },
       ],
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    assert.deepEqual(await reader.openNaming('session_01ABC'), [{ number: 22, title: 'Filed', html_url: 'u22', pull: false }]);
-    assert.deepEqual(await reader.openNaming('session_01OTHER'), [{ number: 23, title: 'Cited above its own footer', html_url: 'u23', pull: false }]);
+    assert.deepEqual(await reader.openNaming('session_01ABC', RELAY), [{ number: 22, title: 'Filed', html_url: 'u22', pull: false }]);
+    assert.deepEqual(await reader.openNaming('session_01OTHER', RELAY), [{ number: 23, title: 'Cited above its own footer', html_url: 'u23', pull: false }]);
+  });
+
+  test('openNaming counts a body only where the repo\'s trust.relay lets its author in, reading the list once for every list', async () => {
+    const link = 'https://claude.ai/code/session_01ABC';
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues': () => [
+        { number: 30, author_association: 'NONE', user: { login: 'drive-by', type: 'User' }, title: 'Hijack', html_url: 'u30', body: `Please.\n\n${link}` },
+        { number: 31, author_association: 'NONE', user: { login: 'drive-by', type: 'User' }, title: 'Lines', html_url: 'u31', body: `<!-- governor:subscribe ${link} -->` },
+        { number: 32, author_association: 'OWNER', user: { login: 'owner', type: 'User' }, title: 'Filed', html_url: 'u32', body: `Found.\n\n${link}` },
+        { number: 33, user: { login: 'governor-app[bot]', type: 'Bot' }, performed_via_github_app: { id: 77 }, title: 'Governor\'s own', html_url: 'u33', body: `Waits.\n\n${link}` },
+      ],
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', appId: 77, fetch });
+    assert.deepEqual((await reader.openNaming(link, RELAY)).map((r) => r.number), [32, 33]);
+    assert.deepEqual((await reader.openNaming(link, [...RELAY, 'NONE'])).map((r) => r.number), [30, 31, 32, 33]);
+    assert.deepEqual((await reader.openNaming(link, ['OWNER'])).map((r) => r.number), [32, 33], 'governor\'s own App passes every list');
+    assert.equal(calls.length, 1);
   });
 
   test('openNaming reads the list again after a read that failed', async () => {
@@ -582,11 +603,11 @@ describe('githubReader', () => {
     const { fetch, calls } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues': () => (answered++ === 0
         ? new Response('boom', { status: 502, statusText: 'Bad Gateway' })
-        : [{ number: 7, title: 'T7', html_url: 'u7', body: 'Filed.\n\nhttps://claude.ai/code/session_01ABC' }]),
+        : [{ number: 7, author_association: 'OWNER', title: 'T7', html_url: 'u7', body: 'Filed.\n\nhttps://claude.ai/code/session_01ABC' }]),
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    await assert.rejects(reader.openNaming('session_01ABC'), /502/);
-    assert.deepEqual(await reader.openNaming('session_01ABC'), [{ number: 7, title: 'T7', html_url: 'u7', pull: false }]);
+    await assert.rejects(reader.openNaming('session_01ABC', RELAY), /502/);
+    assert.deepEqual(await reader.openNaming('session_01ABC', RELAY), [{ number: 7, title: 'T7', html_url: 'u7', pull: false }]);
     assert.equal(calls.length, 2);
   });
 
@@ -667,8 +688,8 @@ describe('githubReader', () => {
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
     assert.deepEqual(await reader.openPulls(), [
-      { number: 7, draft: false, base: 'main', head: 'claude/a', headSha: 'a'.repeat(40), title: 'x', html_url: 'https://github.com/acme/factory/pull/7', body: 'Closes #1' },
-      { number: 8, draft: true, base: 'claude/a', head: '', headSha: 'b'.repeat(40), title: '', html_url: '', body: '' },
+      { number: 7, draft: false, base: 'main', head: 'claude/a', headSha: 'a'.repeat(40), title: 'x', html_url: 'https://github.com/acme/factory/pull/7', body: 'Closes #1', ...UNREAD },
+      { number: 8, draft: true, base: 'claude/a', head: '', headSha: 'b'.repeat(40), title: '', html_url: '', body: '', ...UNREAD },
     ], 'a fork\'s head is not this repository\'s branch, though its commit is its head');
     assert.equal(new URL(calls[0]!.url).searchParams.get('state'), 'open');
   });

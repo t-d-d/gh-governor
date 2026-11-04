@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { coverageOf } from '../dispatch/coverage.mjs';
 import { planWorkflow } from '../dispatch/workflow.mjs';
 import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
-import { UNATTENDED } from '../dispatch/webhook/fire.mjs';
+import { RELAY, UNATTENDED } from '../dispatch/webhook/fire.mjs';
 import { FINAL_LABELS, FACTORY_WORKFLOWS, WORKFLOW_PATHS, headMerge, workflowFile } from './helpers/dispatch-workflows.ts';
 import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
 import { factoryFile } from './helpers/factory.ts';
@@ -33,6 +33,7 @@ const pr = (number: number, over: Record<string, unknown> = {}) => ({
   merged_at: '2026-09-25T11:00:00Z',
   merge_commit_sha: SHA,
   head: '',
+  association: 'OWNER',
   ...over,
 });
 const runRow = (id: number, conclusion: string, over: Record<string, unknown> = {}) => ({ id, status: 'completed', conclusion, event: 'push', head_branch: 'main', head_sha: `sha${id}`, html_url: `https://github.com/${REPO}/actions/runs/${id}`, created_at: new Date(NOW - (500 - id) * 60_000).toISOString(), ...over });
@@ -77,7 +78,7 @@ type Cursor = { runId: number; commit: string; created: string } | null;
 type Invocation = ReturnType<typeof fire> | ReturnType<typeof jobFire>;
 /** The plan for `invocation`, from a reading of what it covers. */
 const planOf = async (invocation: Invocation, r: ReturnType<typeof reader>, { cursor = async () => null, onBranch }: { cursor?: () => Promise<Cursor>; onBranch?: (branch: string) => Promise<string | null> } = {}) => {
-  const coverage = await coverageOf({ invocation: invocation as never, reader: r.reader as never, repo: REPO, workflows: FACTORY_WORKFLOWS, sleep: async () => {}, cursor, ...(onBranch === undefined ? {} : { onBranch }) });
+  const coverage = await coverageOf({ invocation: invocation as never, reader: r.reader as never, repo: REPO, workflows: FACTORY_WORKFLOWS, relay: RELAY, sleep: async () => {}, cursor, ...(onBranch === undefined ? {} : { onBranch }) });
   return planWorkflow({ invocation: invocation as never, coverage, prompts: PROMPTS, workflows: FACTORY_WORKFLOWS });
 };
 /** A reader for a green Deliver run 500 at SHA after a green run 498: the job fires' usual ground. */
