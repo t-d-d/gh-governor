@@ -966,7 +966,7 @@
       "additionalProperties": false
     },
     "trust": {
-      "description": "`{ \"start\": [ … ], \"auto\": [ … ], \"task\": [ … ], \"relay\": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `start` is who may set work going, by readying a ticket or writing a summons, default `OWNER`, `MEMBER` and `COLLABORATOR`, which a repo may narrow and never widen. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`.",
+      "description": "`{ \"start\": [ … ], \"auto\": [ … ], \"task\": [ … ], \"relay\": [ … ], \"review\": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `start` is who may set work going, by readying a ticket or writing a summons, default `OWNER`, `MEMBER` and `COLLABORATOR`, which a repo may narrow and never widen. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`. `review` is whose pull requests the PR review reads, default the three.",
       "type": "object",
       "properties": {
         "start": {
@@ -989,7 +989,7 @@
           }
         },
         "auto": {
-          "description": "Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket's wait ends or its blocker closes, a periodic's issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `task` (or `pickup.by`) and `relay` where the file sets them. `BOT` is refused.",
+          "description": "Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket's wait ends or its blocker closes, a periodic's issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `task` (or `pickup.by`), `relay` and `review` where the file sets them. `BOT` is refused.",
           "type": "array",
           "items": {
             "type": "string",
@@ -1007,7 +1007,7 @@
           }
         },
         "task": {
-          "description": "Whose issue or PR may become work when a person sets it going, by `author_association`: pickup starts a ready ticket, and a summons starts a session, only where its author is listed. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `relay` where the file sets it. `BOT` is refused. The older `pickup.by` is read as this list, and a file may not set both.",
+          "description": "Whose issue or PR may become work when a person sets it going, by `author_association`: pickup starts a ready ticket, and a summons starts a session, only where its author is listed. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `relay` and `review` where the file sets them. `BOT` is refused. The older `pickup.by` is read as this list, and a file may not set both.",
           "type": "array",
           "items": {
             "type": "string",
@@ -1025,7 +1025,25 @@
           }
         },
         "relay": {
-          "description": "Whose text may reach a session that is already running, by `author_association`, with `BOT` for any account GitHub marks as a bot: their comments and reviews, and a session link or `governor:subscribe` line in the body of an issue or PR they open. An event such as a label, a close or a push is judged by the author of the issue or PR it is on. Default `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`. Governor's own App is never judged.",
+          "description": "Whose text may reach a session that is already running, by `author_association`, with `BOT` for any account GitHub marks as a bot: their comments and reviews, and a session link or `governor:subscribe` line in the body of an issue or PR they open. An event such as a label, a close or a push is judged by the author of the issue or PR it is on. Default `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`, less any of the first three a `review` the file sets leaves out. Governor's own App is never judged.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "OWNER",
+              "MEMBER",
+              "COLLABORATOR",
+              "CONTRIBUTOR",
+              "FIRST_TIME_CONTRIBUTOR",
+              "FIRST_TIMER",
+              "MANNEQUIN",
+              "NONE",
+              "BOT"
+            ]
+          }
+        },
+        "review": {
+          "description": "Whose pull requests governor's PR review reads, by `author_association`, with `BOT` for any account GitHub marks as a bot. A pull request by an author it leaves out gets a `neutral` `governor` check, and a person merges it. Dependabot's pull requests are read by `review.dependabot` whatever it says. Default `OWNER`, `MEMBER` and `COLLABORATOR`.",
           "type": "array",
           "items": {
             "type": "string",

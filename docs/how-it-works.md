@@ -121,7 +121,7 @@ The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`, `hoo
 | Deploy run on the default branch went red | Its workflow marks a shipping job | Messages, or one fresh session for a `triage` target | `deployMessages` |
 | Scheduled run on the default branch went red | First attempt | One fresh session on the run | `redScheduledRun` |
 | Dispatched run on another branch finished | Any outcome | A message to the session that wrote its commit | `branchRunMessages` |
-| PR opened, ready, pushed to, or its body or base edited | Not a draft; by an owner, member or collaborator | The PR review | `prReview` |
+| PR opened, ready, pushed to, or its body or base edited | Not a draft | The PR review | `prReview` |
 | Check run completed, status ended, or workflow run finished, off the default branch | Not governor's own check; a status that is not pending | The PR review of each open PR at that commit | `prReview` |
 | A signed `POST /hooks/<owner>/<repo>/<hook>` | The signature matches the hook's key, its time no more than 30 seconds ahead of the receiver's clock or 4 minutes 10 seconds behind it; the file lists the hook at that key version | One session on the hook's prompt, with the caller's text below it, or a message into the hook's last session while it is open | `hooks` |
 
@@ -237,14 +237,14 @@ So a checklist numbers its own tests 2 to 6. Code also fails tests 5 and 6 when 
 | Passes, but conflicts with the base | `failure` |
 | Waits for a description edit, a claim or a push, with or without a person after it | `failure` |
 | Waits for a person | `neutral` |
-| Skips a PR by an author who may not summon governor | `neutral`, saying a person merges it |
+| Skips a PR by an author the repo's `trust.review` leaves out | `neutral`, saying a person merges it |
 | Does not finish: the login's usage limit stops it, or it fails | `failure`, saying it did not run and why, and that a push or an edit runs it again |
 
 GitHub counts `neutral` as passing a required check, so only a PR handed to a person gets it. Every other skip posts no check. A pass's check goes before its merge, and a fail's before its comment. The check needs the App's Checks write. An installation that has not accepted it answers 403, which the review logs as `check` on its `dispatch-review` line and passes over. Governor reads a check run's end only from other Apps, so its own check ending queues nothing and its Re-run button does nothing. A push or an edit to the description reviews again.
 
 **Who hears it.** Every comment ends with `<!-- governor:pr-review <head sha> <body sha256> -->`, and where the model was asked or its pass reused, ` <read sha256>` after the body's digest. The receiver takes a comment for the review's only when it carries that marker and the stack's own App posted it. The owner session is messaged with every new comment, the marker taken out. Only a comment that asks something of it carries the fallback that hands a gone session's PR to a fresh one: an edit, a ticket to claim, a red required check or a conflict. A pass, or a fail only a person can clear, would give a fresh session nothing to do. Subscribers are not messaged.
 
-**Skipped.** A PR whose head and body the last marker names, a draft, a closed PR, a PR into any branch but the default, and a PR by someone not an owner, member or collaborator.
+**Skipped.** A PR whose head and body the last marker names, a draft, a closed PR, a PR into any branch but the default, and a PR by an author the repo's `trust.review` does not let in (`dispatch/trust.mjs`), `OWNER`, `MEMBER` and `COLLABORATOR` by default. Dependabot's PRs are read by the Dependabot list whatever it says. The receiver queues the review for every PR, and the task judges the author, so a PR it skips this way still gets its `neutral` check.
 
 **Dependabot.** A PR `dependabot[bot]` opened is held to tests 7 and 8 alone, with no model run, using `review.dependabot` in place of the human-only list. It passes when every changed file is on that list and modified, and every commit's author is `dependabot[bot]` and was committed and signed by GitHub. Anything else waits for a person. A pass merges, or with `merge` false waits for the owner. A conflict posts nothing: Dependabot rebases its own PRs.
 
