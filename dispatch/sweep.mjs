@@ -16,7 +16,7 @@
  */
 
 import { DEFAULT_MODEL, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
-import { outsiderReason, planSchedule, strangerReason } from '../scripts/lib/dispatch-router.mjs';
+import { planSchedule, strangerReason } from '../scripts/lib/dispatch-router.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { WAIT_RELATIVE, endedWaits, repairRelative, reportUnreadable, waitLinks, waitOwnerMessage, waitSpecPrompt } from './waits.mjs';
 import { GITHUB_SOURCE } from './deliveries.mjs';
@@ -251,10 +251,13 @@ export const planSweep = async (invocation, ctx) => {
   // warn, never error: anyone can open an issue, so it must not page
   // anyone. Each ticket gets one comment, whatever the switches say, since
   // it reports a fault. Each report catches its own failure.
-  await Promise.all(outsiders.map(async (outsider) => reportUncounted({ reader: await ctx.readerFor(outsider.repo), outsider, reason: outsiderReason(outsider), log: ctx.log })));
+  await Promise.all(outsiders.map(async (outsider) => reportUncounted({ reader: await ctx.readerFor(outsider.repo), outsider, log: ctx.log })));
   if (only !== undefined && planned.length === 0) {
     const why = ctx.cap === 0 ? { outcome: 'not started', reason: CAP_ZERO_REASON } : { outcome: 'not started: not ready, blocked, held by its Blocked until: line, or dispatched inside the window' };
+    // A ticket skipped for its author, or for its ready labels, has its own line above.
+    const said = new Set([...strangers, ...outsiders].map((t) => `${t.repo}#${t.issue}`));
     for (const { repo, issue, ...read } of seen) {
+      if (said.has(`${repo}#${issue}`)) continue;
       ctx.log('dispatch-pickup', { level: 'info', repo, issue, ...why, reads: [read] });
     }
   }

@@ -127,7 +127,18 @@ const SINGLE_TEMPLATE = /^(\.github\/|docs\/)?ISSUE_TEMPLATE\.md$/i;
  * @returns {string[]}
  */
 const labelNames = (value) => {
-  if (Array.isArray(value)) return value.filter((v) => typeof v === 'string' || typeof v === 'number').map((v) => String(v).trim()).filter((v) => v !== '');
+  // An unquoted item such as `- mode: afk` loads as the one-pair mapping
+  // `{ mode: 'afk' }`, which still names the label `mode: afk`.
+  /** @param {unknown} v @returns {string | null} */
+  const name = (v) => {
+    if (typeof v === 'string' || typeof v === 'number') return String(v);
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      const pairs = Object.entries(v);
+      if (pairs.length === 1 && pairs[0] !== undefined && (typeof pairs[0][1] === 'string' || typeof pairs[0][1] === 'number')) return `${pairs[0][0]}: ${pairs[0][1]}`;
+    }
+    return null;
+  };
+  if (Array.isArray(value)) return value.map(name).filter((v) => v !== null).map((v) => v.trim()).filter((v) => v !== '');
   if (typeof value === 'string') return value.split(',').map((v) => v.trim()).filter((v) => v !== '');
   return [];
 };
@@ -144,7 +155,7 @@ const labelNames = (value) => {
  * @returns {string[] | null}
  */
 const templateLabels = (path, text) => {
-  let source = text.replace(/\r\n/g, '\n');
+  let source = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
   if (/\.md$/i.test(path)) {
     const front = /^---\n([\s\S]*?)\n---(\n|$)/.exec(source);
     if (front === null) return [];
@@ -179,13 +190,16 @@ const templateFaults = async (ready, reads) => {
   const { paths, truncated } = await reads.paths();
   if (truncated) warnings.push('.github/ISSUE_TEMPLATE: the repo\'s tree is too large for GitHub to list whole, so the template folder went unchecked for ready labels');
   const found = paths.filter((p) => (FOLDER_TEMPLATE.test(p) && !CHOOSER.test(p)) || SINGLE_TEMPLATE.test(p));
-  // The single files are read by name too, so a tree listed short still has them checked.
-  const candidates = [...new Set([...found, ...SINGLE_TEMPLATES.filter((p) => !found.some((f) => f.toLowerCase() === p.toLowerCase()))])].sort();
+  // A tree listed short may leave out the single files, so they are read by name then.
+  const byName = truncated ? SINGLE_TEMPLATES.filter((p) => !found.some((f) => f.toLowerCase() === p.toLowerCase())) : [];
+  const candidates = [...new Set([...found, ...byName])].sort();
   const wanted = new Map(ready.map((r) => [r.toLowerCase(), r]));
+  // Independent reads, run together; the faults keep the paths' order.
+  const texts = await Promise.all(candidates.map((file) => reads.read(file)));
   /** @type {TemplateFault[]} */
   const templates = [];
-  for (const file of candidates) {
-    const text = await reads.read(file);
+  for (const [i, file] of candidates.entries()) {
+    const text = texts[i] ?? null;
     if (text === null) continue;
     const labels = templateLabels(file, text);
     if (labels === null) {
@@ -216,7 +230,11 @@ export const check = async (reads) => {
   if (text === null) return { errors: [], templates: [], warnings: [`the pull request leaves no ${CONFIG_PATH}, so governor will not serve this repo once it merges`] };
   const parsed = readConfig(text);
   if (!parsed.ok) return { errors: [parsed.fault], templates: [], warnings: [] };
-  const [resolved, warnings, found] = await Promise.all([resolveFiles(parsed.config, reads.read), warningsOf(parsed.config, reads), templateFaults(parsed.config.labels.ready, reads)]);
+  // The globs and the templates both read the tree: list it once.
+  /** @type {ReturnType<Reads['paths']> | undefined} */
+  let tree;
+  const shared = { ...reads, paths: () => (tree ??= reads.paths()) };
+  const [resolved, warnings, found] = await Promise.all([resolveFiles(parsed.config, shared.read), warningsOf(parsed.config, shared), templateFaults(parsed.config.labels.ready, shared)]);
   return { errors: resolved.ok ? [] : [resolved.fault], templates: found.templates, warnings: [...warnings, ...found.warnings] };
 };
 
@@ -273,6 +291,14 @@ export const restReads = (api, repo, ref) => {
 const escaped = (text) => text.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
 
 /**
+ * A workflow command's property value, such as a `file=` path, escaped so a
+ * `,` or `:` in it cannot end the property early.
+ *
+ * @param {string} text
+ */
+const escapedProperty = (text) => escaped(text).replace(/:/g, '%3A').replace(/,/g, '%2C');
+
+/**
  * One run on the runner: the check over `reads`, each fault an error
  * annotation on the config file and each warning a warning one. Answers
  * the exit code: 1 when governor would refuse the file.
@@ -287,7 +313,7 @@ export const run = async ({ env, reads, log }) => {
   if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error('CONFIG_CHECK_REF names no commit');
   const { errors, templates, warnings } = await check(reads(repo, ref));
   for (const e of errors) log(`::error file=${CONFIG_PATH},title=governor would refuse this file once it merges::${escaped(e)}`);
-  for (const t of templates) log(`::error file=${t.file},title=an issue template names a ready label::${escaped(t.fault)}`);
+  for (const t of templates) log(`::error file=${escapedProperty(t.file)},title=an issue template names a ready label::${escaped(t.fault)}`);
   for (const w of warnings) log(`::warning file=${CONFIG_PATH},title=governor reads this file but it cannot work::${escaped(w)}`);
   log(errors.length > 0
     ? `${CONFIG_PATH} at ${ref}: governor would refuse it, and the repo would go unserved.`

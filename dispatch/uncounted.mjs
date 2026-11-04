@@ -13,6 +13,7 @@
  * whatever the repo's switches say.
  */
 
+import { outsiderReason } from '../scripts/lib/dispatch-router.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { sayOnce } from './waits.mjs';
 
@@ -57,15 +58,14 @@ export const uncountedReadyComment = ({ author, addedBy }) => {
  * @param {{
  *   reader: { allComments: (n: number) => Promise<Array<{ body: string }>>, comment: (n: number, body: string) => Promise<void> },
  *   outsider: import('../scripts/lib/dispatch-router.mjs').Outsider,
- *   reason: string,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  * }} args
  * @returns {Promise<'commented' | 'already told' | 'failed'>}
  */
-export const reportUncounted = async ({ reader, outsider, reason, log }) => {
+export const reportUncounted = async ({ reader, outsider, log }) => {
   const { repo, issue, author, addedBy } = outsider;
   const labels = addedBy.map(({ label, actor }) => ({ label, addedBy: actor }));
-  log('dispatch-pickup', { level: 'warn', repo, issue, outcome: 'skipped', labels, reason });
+  log('dispatch-pickup', { level: 'warn', repo, issue, outcome: 'skipped', labels, reason: outsiderReason(outsider) });
   try {
     return await sayOnce(reader, issue, UNCOUNTED_READY_MARKER, uncountedReadyComment({ author, addedBy }));
   } catch (error) {

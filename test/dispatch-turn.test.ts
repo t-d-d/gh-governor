@@ -1221,6 +1221,13 @@ describe('run: pickup selects tickets by who opened them', () => {
       }
     });
 
+    test(`${path}: a stranger's ticket gets the one line saying why, not a second calling it unready`, async () => {
+      const h = opened('NONE');
+      await run(fire, h.deps as never);
+      const lines = h.logged.filter((l) => ['dispatch-pickup', 'dispatch-unblocked'].includes(l.event) && l.issue === 9);
+      assert.deepEqual(lines.map((l) => l.outcome), ['skipped'], JSON.stringify(lines));
+    });
+
     test(`${path}: a repo whose by lists only OWNER does not start a member's ticket`, async () => {
       const h = opened('MEMBER', narrow);
       await run(fire, h.deps as never);

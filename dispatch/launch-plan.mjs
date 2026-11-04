@@ -222,7 +222,7 @@ export const launchPlan = async (plan, ctx, started) => {
         if (uncounted.length > 0) {
           const outsider = { repo, issue, labels: uncounted, author: read.author ?? '', association, addedBy: addedBy(adds, uncounted) };
           log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: outsiderReason(outsider) });
-          await reportUncounted({ reader: github, outsider, reason: outsiderReason(outsider), log });
+          await reportUncounted({ reader: github, outsider, log });
           return 'taken';
         }
       }

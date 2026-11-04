@@ -255,7 +255,7 @@ export const planUnblocked = async (invocation, ctx) => {
       : stranger !== undefined
         ? { outcome: 'skipped', reason: strangerReason(stranger) }
         : { outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, blocked, or no longer ready' : 'picking up' }) });
-    if (outsider !== undefined) await reportUncounted({ reader, outsider, reason: outsiderReason(outsider), log: ctx.log });
+    if (outsider !== undefined) await reportUncounted({ reader, outsider, log: ctx.log });
   } else {
     // The spec session is not claimed: its marker keeps the sweep off the
     // ticket inside the window, and the claim it adds before it builds

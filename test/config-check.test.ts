@@ -298,6 +298,39 @@ describe('the check fails an issue template that names a ready label', () => {
     assert.ok(got.warnings.some((w) => /ISSUE_TEMPLATE.*unchecked/.test(w)), JSON.stringify(got.warnings));
   });
 
+  test('an unquoted list item with a colon, which YAML reads as a one-pair mapping, still names its label', async () => {
+    for (const labels of ['[type: bug, mode: afk]', '\n  - type: bug\n  - mode: afk']) {
+      const got = await check(reads(withTemplate('.github/ISSUE_TEMPLATE/bug.yml', form(labels))));
+      assert.deepEqual(got.templates.map((t) => t.file), ['.github/ISSUE_TEMPLATE/bug.yml'], labels);
+      assert.match(String(got.templates[0]?.fault), /"mode: afk"/);
+    }
+  });
+
+  test('a Markdown template saved with a byte order mark still has its front matter read', async () => {
+    const got = await check(reads(withTemplate('.github/ISSUE_TEMPLATE/feature.md', `\uFEFF${markdown('"mode: afk"')}`)));
+    assert.deepEqual(got.templates.map((t) => t.file), ['.github/ISSUE_TEMPLATE/feature.md']);
+  });
+
+  test('the repo\'s tree is listed once, for the globs and the templates both', async () => {
+    let listed = 0;
+    const files = withTemplate('.github/ISSUE_TEMPLATE/bug.yml', form('[triaged]'));
+    const withReview = { ...files, '.github/dispatch.json': file({ ...base(), labels: { ready: ['mode: afk', 'triaged'], claim: 'claimed' }, review: { checklist: 'Check it.', humanOnly: [{ glob: '.github/**', reason: 'r' }] } }) };
+    const got = await check({ ...reads(withReview), paths: async () => { listed += 1; return { paths: Object.keys(withReview), truncated: false }; } });
+    assert.deepEqual(got.errors, []);
+    assert.equal(got.templates.length, 1);
+    assert.equal(listed, 1);
+  });
+
+  test('a template path with a comma or colon stays one annotation property', async () => {
+    const lines: string[] = [];
+    await run({
+      env: { GITHUB_REPOSITORY: 'acme/factory', GITHUB_TOKEN: 'ghs_fake', CONFIG_CHECK_REF: 'a'.repeat(40) },
+      reads: () => reads(withTemplate('.github/ISSUE_TEMPLATE/bug, crash: report.yml', form('["mode: afk"]'))),
+      log: (line) => lines.push(line),
+    });
+    assert.ok(lines.some((l) => l.startsWith('::error file=.github/ISSUE_TEMPLATE/bug%2C crash%3A report.yml,title=')), lines.join('\n'));
+  });
+
   test('the run fails, with an error annotation on the template', async () => {
     const lines: string[] = [];
     const code = await run({
