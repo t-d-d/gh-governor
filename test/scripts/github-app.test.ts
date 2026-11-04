@@ -888,6 +888,16 @@ describe('githubReader', () => {
     await assert.rejects(githubReader({ token: 't', repo: 'acme/factory', fetch }).merge(10, { sha: 'h' }), /403.*not accessible/);
   });
 
+  test('ciRuns reads a workflow\'s runs at one commit by its file name, each with its workflow file', async () => {
+    const sha = 'a'.repeat(40);
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/actions/workflows/ci.yml/runs': { total_count: 1, workflow_runs: [{ id: 5, path: '.github/workflows/ci.yml', status: 'completed', conclusion: 'failure', event: 'pull_request', head_branch: 'claude/x', head_sha: sha, html_url: 'h', created_at: '2026-09-27T11:57:47Z', name: 'CI' }] },
+    });
+    const runs = await githubReader({ token: 't', repo: 'acme/factory', fetch }).ciRuns('.github/workflows/ci.yml', sha);
+    assert.deepEqual(runs, [{ id: 5, path: '.github/workflows/ci.yml', status: 'completed', conclusion: 'failure', event: 'pull_request', head_branch: 'claude/x', head_sha: sha, html_url: 'h', created_at: '2026-09-27T11:57:47Z' }]);
+    assert.equal(new URL(calls[0]!.url).searchParams.get('head_sha'), sha);
+  });
+
   test('workflowRuns takes a workflow id', async () => {
     const { fetch, calls } = fakeFetch({
       'https://api.github.com/repos/acme/factory/actions/workflows/77/runs': { total_count: 0, workflow_runs: [] },

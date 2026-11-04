@@ -32,7 +32,7 @@ Under your account's or organisation's **Settings → Developer settings → Git
    - **Contents**: Read and write. The config file is read from it, and the review's merge writes.
    - **Issues**: Read and write. The claim, the claim label and the session-link comment.
    - **Pull requests**: Read and write.
-   - **Actions**: Read. A finished run's jobs, and the runs before it.
+   - **Actions**: Read. A finished run's jobs, the runs before it, and the CI run at a PR's head, which the review reads.
    - **Checks**: Read and write, and **Commit statuses**: Read. The review reads a required check on a PR's head, and posts its own `governor` check.
 4. **Subscribe to events**: Issue comment, Issues, Pull request, Pull request review, Pull request review comment, Workflow job, Workflow run. The API cannot set these, so tick them here. The deploy refuses to point the webhook while one is missing.
 5. **Where can this GitHub App be installed?**: **Any account**. A private App installs only on the account that owns it. The deployment's owner list is what keeps an outsider's installation from using your login.

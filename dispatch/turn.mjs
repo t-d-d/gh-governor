@@ -56,8 +56,8 @@
  * settings say (dispatch/review.mjs, the checklist in
  * dispatch/checklist.mjs); the comment is the record, and the receiver
  * turns each new one into a message fire for the session the PR names,
- * with the fallback only where the session can act on it. No run holds a
- * merge. Each run's
+ * with the fallback only where the session can act on it. No run but the
+ * CI workflow's at the PR's head holds a merge. Each run's
  * transcript goes to the drop box the stack names, if any.
  * Every fire but the bare schedule fire names its repo: the turn
  * mints its GitHub token for that repo, reads its config file
@@ -1360,7 +1360,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   }
 
   // The PR review: one PR, or every open one, through the checklist. No
-  // run holds a merge. Each run's transcript goes to the drop
+  // run but the CI workflow's at the PR's head holds a merge. Each run's transcript goes to the drop
   // box whatever it answered.
   if (invocation.kind === 'review') {
     /** @type {import('./review.mjs').Reviewed[]} */
@@ -1379,7 +1379,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         return checks;
       };
       const github = { ...reader, requiredChecks };
-      const { review, labels } = configOf(fireRepo());
+      const { review, labels, workflows } = configOf(fireRepo());
       // The schema holds a section wherever prReview is on, and the switch was checked.
       if (review === undefined) throw new Error(`${fireRepo()}'s ${CONFIG_PATH} has no review section`);
       const base = await github.defaultBranch();
@@ -1402,7 +1402,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           deps.log('dispatch-review', { unreviewed: targets.slice(i).map((t) => t.number), reason: `out of time: past ${REVIEW_WINDOW_MS} ms, another review might outrun the deadline; each is reviewed on its next push or edit` });
           break;
         }
-        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession });
+        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, ...(workflows.ci === undefined ? {} : { ci: workflows.ci }) });
         const usage = spent.get(reviewed.pr);
         deps.log('dispatch-review', { ...reviewed, ...(usage === undefined ? {} : { usage }) });
         reviews.push(reviewed);
