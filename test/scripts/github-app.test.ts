@@ -1211,10 +1211,9 @@ describe('a served repo\'s reads', () => {
       const { reader, done } = writes([{ ...waiting, app: { id: 5 } }]);
       await reader.checkRun({ name: 'governor', sha: SHA, state: 'success', title: 'Passes.', summary: 'Passes.' });
       assert.deepEqual(done.map((d) => [d.method, d.url]), [['POST', POST]]);
-      const bare = writes([waiting]);
-      const unowned = githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch: fakeFetch({ [LIST]: { check_runs: [waiting] }, [POST]: (init: RequestInit | undefined) => { bare.done.push({ method: init?.method, url: POST, body: null }); return { id: 9 }; } }).fetch });
-      await unowned.checkRun({ name: 'governor', sha: SHA, state: 'success', title: 'Passes.', summary: 'Passes.' });
-      assert.deepEqual(bare.done.map((d) => [d.method, d.url]), [['POST', POST]]);
+      const bare = fakeFetch({ [LIST]: { check_runs: [waiting] }, [POST]: { id: 9 } });
+      await githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch: bare.fetch }).checkRun({ name: 'governor', sha: SHA, state: 'success', title: 'Passes.', summary: 'Passes.' });
+      assert.deepEqual(bare.calls.map((c) => [c.init?.method, c.url]), [['POST', POST]]);
     });
 
     test('a 403 on the read throws with its status, as one on the write does', async () => {
