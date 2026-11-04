@@ -16,10 +16,10 @@ import { DEADLINE_MS, exitCodeFor } from '../dispatch/cli.mjs';
 import { LAUNCH_TIMEOUT_MS, REVIEW_MARK_WINDOW_MS, REVIEW_WINDOW_MS, redactTranscript, run as runNamed } from '../dispatch/turn.mjs';
 import { CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
 import { standingLine } from '../dispatch/deliveries.mjs';
-import { ANSWER_SCHEMA, parseReview } from '../dispatch/checklist.mjs';
+import { ANSWER_SCHEMA, parseReview, readDigest } from '../dispatch/checklist.mjs';
 import { bodyDigest, reviewMarker } from '../dispatch/pr-body.mjs';
 import { readFileSync } from 'node:fs';
-import { commentKey, commentText, heldPassReason, mergeConflictText, ownerActs, withoutMarker as withoutMarkerText } from '../dispatch/webhook/review-comment.mjs';
+import { commentKey, commentText, heldPassReason, mergeConflictText, ownerActs, passOf, withoutMarker as withoutMarkerText } from '../dispatch/webhook/review-comment.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { APP_ID, BODY, DEPENDABOT_COMMIT, FILES, HEAD, IAM, MERGE_BASE, PASS, REPO, SKILL, cliOutput, dependabotRow, pullRow } from './helpers/dispatch-review-fixtures.ts';
@@ -217,6 +217,16 @@ const textOf = (answer: Answer, conflict = false) => commentText(answer as Param
 
 const marked = (text: string, head = HEAD, body = BODY) => `${text}\n\n${reviewMarker(head, bodyDigest(body))}`;
 
+/** The digest of what the model reads for the harness's PR as it stands by default: its body, its files, ticket #748 and the checklist. */
+const READ = readDigest({
+  pull: pullRow() as never,
+  files: FILES as never,
+  tickets: [{ number: 748, title: 'Ticket 748', body: '## Acceptance criteria\n\n- It reviews.', state: 'open', labels: ['mode: afk', 'type: nfr', 'workflow: under development'], pull: false }] as never,
+}, SKILL);
+
+/** A comment as a review that asked the model about the default PR writes it: its marker names what the model read. */
+const asked = (text: string, head = HEAD, body = BODY) => `${text}\n\n${reviewMarker(head, bodyDigest(body), READ)}`;
+
 type Fire = { kind: string, session?: string, text?: string, on?: number, fallback?: { prompt: string, sessionName: string, issue?: number } };
 
 /** What the receiver queues for a comment the review posted on #767, or edited with `action` `edited`. */
@@ -239,7 +249,7 @@ describe('run — a review fire, end to end', () => {
     assert.deepEqual(result.reviews.map((r) => [r.pr, r.outcome]), [[767, 'merged']]);
     assert.equal(h.comments.length, 1);
     assert.equal(h.comments[0]!.issue, 767);
-    assert.equal(h.comments[0]!.body, `Passes the PR review: ${PASS.reason}.\n\n<!-- governor:pr-review ${HEAD} ${sha256(BODY)} -->`);
+    assert.equal(h.comments[0]!.body, `Passes the PR review: ${PASS.reason}.\n\n<!-- governor:pr-review ${HEAD} ${sha256(BODY)} ${READ} -->`);
     assert.deepEqual(h.merges, [{ pr: 767, sha: HEAD }]);
     assert.equal(exitCodeFor(result as never), 0);
   });
@@ -276,7 +286,7 @@ describe('run — a review fire, end to end', () => {
   test('a fail no edit can meet says a person merges it', async () => {
     const h = harness({ answers: [IAM] });
     await review({ kind: 'review', pr: 767 }, h);
-    assert.equal(h.comments[0]!.body, marked('Waits for a person: the change adds an IAM grant (test 3). No edit to the description makes it pass. A person merges it.'));
+    assert.equal(h.comments[0]!.body, asked('Waits for a person: the change adds an IAM grant (test 3). No edit to the description makes it pass. A person merges it.'));
   });
 
   test('no comment it posts carries the Claude Code footer: the receiver would drop it as the author session\'s own', async () => {
@@ -682,7 +692,7 @@ describe('run — a fail said already', () => {
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(h.comments, []);
-    assert.deepEqual(h.commentEdits, [{ id: 41, body: marked(textOf(IAM)) }]);
+    assert.deepEqual(h.commentEdits, [{ id: 41, body: asked(textOf(IAM)) }]);
   });
 
   test('the same test and editable, reworded, edits the existing comment to the new words and posts nothing', async () => {
@@ -691,7 +701,7 @@ describe('run — a fail said already', () => {
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(h.comments, []);
-    assert.deepEqual(h.commentEdits, [{ id: 41, body: marked(textOf(reworded)) }]);
+    assert.deepEqual(h.commentEdits, [{ id: 41, body: asked(textOf(reworded)) }]);
   });
 
   test('a different test, or the same test with a different editable, is a new comment', async () => {
@@ -722,7 +732,7 @@ describe('run — a conflict said already', () => {
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(h.comments, []);
-    assert.deepEqual(h.commentEdits, [{ id: 41, body: marked(textOf(PASS, true)) }]);
+    assert.deepEqual(h.commentEdits, [{ id: 41, body: asked(textOf(PASS, true)) }]);
     assert.deepEqual(h.merges, []);
   });
 
@@ -732,7 +742,7 @@ describe('run — a conflict said already', () => {
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(h.comments, []);
-    assert.deepEqual(h.commentEdits, [{ id: 41, body: marked(textOf(PASS, true)) }]);
+    assert.deepEqual(h.commentEdits, [{ id: 41, body: asked(textOf(PASS, true)) }]);
   });
 
   test('a conflict after a fail comment is a new comment', async () => {
@@ -741,6 +751,134 @@ describe('run — a conflict said already', () => {
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['conflict']);
     assert.equal(h.comments.length, 1);
     assert.deepEqual(h.commentEdits, []);
+  });
+});
+
+/**
+ * A PR that catches up to its base gets a new head, and the model would be
+ * asked the question it already answered: its prompt holds the PR's title
+ * and body, the tickets it closes, its changed-file lines and any quoted
+ * files' text, none of which a merge from main changes. Where the last
+ * review at an earlier head was a pass, and what the model would read hashes
+ * the same, the pass is posted again at the new head with no model call.
+ * Every test decided in code still runs first, and a fail is never reused.
+ */
+describe('run — a pass reused at a new head', () => {
+  const EARLIER = 'e'.repeat(40);
+  const LATER = '9'.repeat(40);
+  const QUOTED = 'docs/constraints/review.md';
+  /** Each file's text at the merge base and at `head`, the quoted rule changed from `before` to `after`. */
+  const ruleTexts = (head: string, before = 'The old rule.', after = 'The new rule.') => ({ [`${MERGE_BASE}:${QUOTED}`]: before, [`${head}:${QUOTED}`]: after });
+  type Over = Parameters<typeof harness>[0];
+  /** The review's comment at EARLIER, by a turn reviewing the PR there, over `over`. */
+  const reviewedAt = async (head: string, over: Over = {}, thread: Thread[] = []) => {
+    const h = harness({ pulls: { 767: pullRow({ headSha: head, mergeable: false }) }, ciRuns: [ciRun({ head_sha: head })], thread, ...over });
+    await review({ kind: 'review', pr: 767 }, h);
+    const said = h.comments[0]?.body ?? h.commentEdits[0]?.body;
+    assert.ok(said !== undefined, 'the earlier review posted a comment');
+    return said;
+  };
+  const ours = (body: string): Thread[] => [{ id: 41, body, created_at: 't', ours: true }];
+
+  test('a PR passed at one head, given a new head with the same body, tickets and file list, passes at the new head with no model call', async () => {
+    // The #414 shape: a conflict at the earlier head, the model's pass in it, and a push that only merges main.
+    const earlier = await reviewedAt(EARLIER);
+    assert.match(earlier, /^Passes the PR review, but conflicts with its base/);
+    const h = harness({ thread: ours(earlier) });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(h.judged, [], 'no model call');
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
+    assert.deepEqual(h.checkRuns.map((c) => [c.sha, c.state]), [[HEAD, 'success']], 'the check names the new head');
+    assert.deepEqual(h.merges, [{ pr: 767, sha: HEAD }]);
+    const said = h.comments[0]!.body;
+    assert.match(said, new RegExp(`^Passes the PR review: ${PASS.reason}\\. Reuses the answer given at ${EARLIER}: nothing the model reads has changed since\\.\\n\\n<!-- governor:pr-review ${HEAD} ${sha256(BODY)} [0-9a-f]{64} -->$`));
+  });
+
+  test('a pass the owner merges is reused too, and a reused pass again at a later head names the head the answer was given at', async () => {
+    const earlier = await reviewedAt(EARLIER, { config: tagalongFile(), tickets: { 748: { labels: ['claimed'] } }, pulls: { 767: pullRow({ headSha: EARLIER }) } });
+    assert.match(earlier, /^Passes the PR review: .* The repo's owner merges it\./);
+    const middle = await reviewedAt(HEAD, { config: tagalongFile(), tickets: { 748: { labels: ['claimed'] } }, pulls: { 767: pullRow() }, answers: () => { throw new Error('the model was asked'); } }, ours(earlier));
+    assert.match(middle, new RegExp(`^Passes the PR review: ${PASS.reason}\\. Reuses the answer given at ${EARLIER}: nothing the model reads has changed since\\. The repo's owner merges it\\.\\n\\n<!-- governor:pr-review ${HEAD} `));
+    const h = tagalong({ pulls: { 767: pullRow({ headSha: LATER }) }, ciRuns: [ciRun({ head_sha: LATER })], thread: ours(middle) });
+    const result = await reviewTagalong(h);
+    assert.deepEqual(h.judged, []);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['passed']);
+    assert.deepEqual(h.checkRuns.map((c) => [c.sha, c.state]), [[LATER, 'success']]);
+    assert.match(h.comments[0]!.body, new RegExp(`Reuses the answer given at ${EARLIER}: .*\\n\\n<!-- governor:pr-review ${LATER} `));
+  });
+
+  test('a quoted file the same at the base and the head reuses the pass', async () => {
+    const files: FileRow[] = [...FILES, { filename: QUOTED, status: 'modified' }];
+    const earlier = await reviewedAt(EARLIER, { files, texts: ruleTexts(EARLIER) });
+    const h = harness({ files, texts: ruleTexts(HEAD), thread: ours(earlier) });
+    await review({ kind: 'review', pr: 767 }, h);
+    assert.deepEqual(h.judged, []);
+    assert.match(h.comments[0]!.body, /^Passes the PR review: .* Reuses the answer given at /);
+  });
+
+  test('a new head that changes the file list, a closing ticket\'s text or labels, or a quoted file\'s text at the base or the head asks the model', async () => {
+    const files: FileRow[] = [...FILES, { filename: QUOTED, status: 'modified' }];
+    const earlier = await reviewedAt(EARLIER, { files, texts: ruleTexts(EARLIER) });
+    const changes: Array<[string, Over]> = [
+      ['the file list', { files: [...files, { filename: 'src/added.ts', status: 'added' }], texts: ruleTexts(HEAD) }],
+      ['a file\'s status', { files: [FILES[0]!, { filename: 'docs/claude-code-setup.md', status: 'removed' }, files[2]!], texts: ruleTexts(HEAD) }],
+      ['the ticket\'s text', { files, texts: ruleTexts(HEAD), tickets: { 748: { body: '## Acceptance criteria\n\n- It reviews, and says why.' } } }],
+      ['the ticket\'s labels', { files, texts: ruleTexts(HEAD), tickets: { 748: { labels: ['mode: afk', 'type: nfr', 'workflow: under development', 'size: s'] } } }],
+      ['the quoted file at the base', { files, texts: ruleTexts(HEAD, 'The older rule.') }],
+      ['the quoted file at the head', { files, texts: ruleTexts(HEAD, 'The old rule.', 'The newer rule.') }],
+      ['the title', { files, texts: ruleTexts(HEAD), pulls: { 767: pullRow({ title: 'Another title' }) } }],
+    ];
+    for (const [what, over] of changes) {
+      const h = harness({ ...over, thread: ours(earlier) });
+      await review({ kind: 'review', pr: 767 }, h);
+      assert.equal(h.judged.length, 1, what);
+      assert.doesNotMatch(h.comments[0]?.body ?? '', /Reuses the answer/, what);
+    }
+  });
+
+  test('a new head whose last review failed asks the model', async () => {
+    const earlier = await reviewedAt(EARLIER, { answers: [COSTS], pulls: { 767: pullRow({ headSha: EARLIER }) } });
+    assert.match(earlier, /^Waits for a description edit: /);
+    const h = harness({ thread: ours(earlier) });
+    const result = await review({ kind: 'review', pr: 767 }, h);
+    assert.equal(h.judged.length, 1);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
+  });
+
+  test('a tests-in-code fail at the new head still fails, whatever the earlier pass', async () => {
+    const earlier = await reviewedAt(EARLIER);
+    const red = harness({ thread: ours(earlier), required: ['gate'], checks: [{ name: 'gate', state: 'red' }] });
+    await review({ kind: 'review', pr: 767 }, red);
+    assert.match(red.comments[0]!.body, /^Waits for a push: the required check `gate` is red on its head \(test 8\)/);
+    assert.deepEqual(red.checkRuns.map((c) => c.state), ['failure']);
+    const conflict = harness({ thread: ours(earlier), pulls: { 767: pullRow({ mergeable: false }) } });
+    const conflicted = await review({ kind: 'review', pr: 767 }, conflict);
+    assert.deepEqual(conflicted.reviews.map((r) => r.outcome), ['marker-moved'], 'the conflict comment is edited to the new head');
+    assert.deepEqual(conflict.merges, []);
+    assert.deepEqual(conflict.checkRuns.map((c) => c.state), ['failure']);
+    const human = harness({ thread: ours(earlier), files: [...FILES, { filename: 'infra/stack.yml', status: 'modified' }] });
+    await review({ kind: 'review', pr: 767 }, human);
+    assert.match(human.comments[0]!.body, /^Waits for a person: `infra\/stack\.yml` is on the human-only list/);
+    for (const h of [red, conflict, human]) {
+      assert.deepEqual(h.judged, []);
+      assert.deepEqual(h.merges, []);
+    }
+  });
+
+  test('a marker with no hash asks the model', async () => {
+    const earlier = await reviewedAt(EARLIER);
+    const unhashed = earlier.replace(/ [0-9a-f]{64} -->$/, ' -->');
+    assert.match(unhashed, new RegExp(`<!-- governor:pr-review ${EARLIER} ${sha256(BODY)} -->$`));
+    const h = harness({ thread: ours(unhashed) });
+    await review({ kind: 'review', pr: 767 }, h);
+    assert.equal(h.judged.length, 1);
+  });
+
+  test('a body edited since the pass asks the model', async () => {
+    const earlier = await reviewedAt(EARLIER);
+    const h = harness({ thread: ours(earlier), pulls: { 767: pullRow({ body: `${BODY}\n\nOne more line.` }) } });
+    await review({ kind: 'review', pr: 767 }, h);
+    assert.equal(h.judged.length, 1);
   });
 });
 
@@ -777,7 +915,7 @@ describe('fitness: run — no run but the CI workflow\'s at the head holds a mer
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
     assert.deepEqual(h.ciReads, [[CI, HEAD]]);
     assert.deepEqual(h.merges, [{ pr: 767, sha: HEAD }]);
-    assert.deepEqual(h.comments, [{ issue: 767, body: marked(textOf(PASS)) }]);
+    assert.deepEqual(h.comments, [{ issue: 767, body: asked(textOf(PASS)) }]);
   });
 
   test('a repo whose file names no `workflows.ci` reads no workflow runs', async () => {
@@ -1691,6 +1829,26 @@ describe('run — any served repo\'s review', () => {
 });
 
 describe('the comment\'s parts', () => {
+  test('passOf reads the model\'s pass back from a pass, one the owner merges, a conflict and a reused pass, and nothing from a fail or a held pass', () => {
+    const at = 'e'.repeat(40);
+    const reason = 'closes #748 as written. Nothing is left open';
+    const passes = { answer: 'pass', reason } as const;
+    assert.deepEqual(passOf(textOf(passes)), { reason: `${reason}.`, reused: null });
+    assert.deepEqual(passOf(commentText(passes, { conflict: false, merge: false })), { reason: `${reason}.`, reused: null });
+    assert.deepEqual(passOf(textOf(passes, true)), { reason: `${reason}.`, reused: null });
+    for (const conflict of [false, true]) {
+      for (const merge of [false, true]) {
+        const text = commentText({ ...passes, reused: at }, { conflict, merge });
+        assert.match(text, new RegExp(`Reuses the answer given at ${at}: nothing the model reads has changed since\\.`));
+        assert.deepEqual(passOf(text), { reason: `${reason}.`, reused: at }, text);
+      }
+    }
+    assert.equal(passOf(textOf(IAM)), null);
+    assert.equal(passOf(textOf(COSTS)), null);
+    assert.equal(passOf(HELD), null);
+    assert.equal(passOf(mergeConflictText({ mainSha: MOVED, merged: 793 })), null, 'a merge to main\'s conflict carries no answer of the model\'s');
+  });
+
   test('commentKey names a fail comment by its test and editable, and a conflict comment as one, never by the reason', () => {
     const quoting: Answer = { ...IAM, reason: 'the grant (test 2). No edit to the description meets it' };
     assert.notEqual(commentKey(textOf(IAM)), null);

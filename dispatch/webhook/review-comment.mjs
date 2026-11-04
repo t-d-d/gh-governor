@@ -66,6 +66,17 @@ const PUSH = 'Waits for a push: ';
 /** What a pass says where the repo's `review.merge` is false: nothing merged, and the owner merges it. */
 const OWNER_MERGES = 'The repo\'s owner merges it.';
 
+/** A pass's fixed opening. */
+const PASSES = 'Passes the PR review: ';
+
+/**
+ * What a pass reused at a new head says after its reason: the head the
+ * model gave the answer at.
+ *
+ * @param {string} sha
+ */
+const reusedText = (sha) => `Reuses the answer given at ${sha}: nothing the model reads has changed since.`;
+
 /** The openings of a fail whose first test the author session meets and a later one only a person does. */
 const CLAIM_THEN = 'Waits for its ticket to be claimed, then a person: ';
 const EDIT_THEN = 'Waits for a description edit, then a person: ';
@@ -83,8 +94,9 @@ const EDIT_THEN = 'Waits for a description edit, then a person: ';
  */
 export const commentText = (answer, { conflict, merge = true }) => {
   if (answer.answer === 'pass') {
-    if (conflict) return `${CONFLICT} ${sentence(answer.reason)}`;
-    return merge ? `Passes the PR review: ${sentence(answer.reason)}` : `Passes the PR review: ${sentence(answer.reason)} ${OWNER_MERGES}`;
+    const reason = answer.reused === undefined ? sentence(answer.reason) : `${sentence(answer.reason)} ${reusedText(answer.reused)}`;
+    if (conflict) return `${CONFLICT} ${reason}`;
+    return merge ? `${PASSES}${reason}` : `${PASSES}${reason} ${OWNER_MERGES}`;
   }
   const reason = answer.reason.trim().replace(/[.!?]$/, '');
   const { person } = answer;
@@ -111,6 +123,25 @@ const HELD_PASS = /^Passes the PR review: ([\s\S]*?) The merge waits for Deploy 
  * @param {string} text
  */
 export const heldPassReason = (text) => HELD_PASS.exec(text.trim())?.[1] ?? null;
+
+const escaped = (/** @type {string} */ text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const PASSED = new RegExp(`^(?:${escaped(PASSES)}|${escaped(CONFLICT)} )([\\s\\S]+?)(?: Reuses the answer given at ([0-9a-f]{40}): nothing the model reads has changed since\\.)?(?: ${escaped(OWNER_MERGES)})?$`);
+
+/**
+ * The model's pass a comment carries, or null for any other text: a pass,
+ * one the owner merges, or a conflict, each with the model's reason, and
+ * the head the answer was given at where the comment reused it. A held
+ * pass is none: it waits on a merge, and `heldPassReason` reads it.
+ *
+ * @param {string} text
+ * @returns {{ reason: string, reused: string | null } | null}
+ */
+export const passOf = (text) => {
+  const trimmed = text.trim();
+  if (heldPassReason(trimmed) !== null) return null;
+  const found = PASSED.exec(trimmed);
+  return found ? { reason: /** @type {string} */ (found[1]), reused: found[2] ?? null } : null;
+};
 
 const FAIL = /^Waits for (a description edit|a person): [\s\S]* \(test (\d+)\)\. (?:An|No) edit to the description (?:meets|makes it pass)/;
 const EDIT_THEN_FAIL = /^Waits for a description edit, then a person: [\s\S]* \(test (\d+)\)\. An edit to the description meets test \1,/;

@@ -56,7 +56,11 @@
  *   judging again, and the comment edited to say it merged.
  *
  * Every comment ends with a marker (dispatch/pr-body.mjs) naming the head
- * and the body reviewed, so neither is read twice. The comment is the
+ * and the body reviewed, so neither is read twice, and, where the model
+ * was asked, the digest of what it read. A pass at an earlier head is
+ * reused at a new one where that digest is the same: the tests decided in
+ * code run again, and only the model's answer is kept. A fail is never
+ * reused. The comment is the
  * record, and also how the session the PR body names hears the review:
  * the receiver queues that session a message fire for each new comment
  * (webhook/mention.mjs). Only one the session can act on, a fail an edit,
@@ -67,7 +71,7 @@
  */
 
 import { DEPENDABOT, SUMMONERS } from './webhook/fire.mjs';
-import { commentKey, commentText, heldPassReason, ownerActs, sentence } from './webhook/review-comment.mjs';
+import { commentKey, commentText, heldPassReason, ownerActs, passOf, sentence } from './webhook/review-comment.mjs';
 import { checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
 import { bodyDigest, closedBy, closingTickets, foreignClosings, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
@@ -305,14 +309,14 @@ const bumpAnswer = async (reader, pull, list, red, redCi) => {
  *   reader: ReviewReader,
  *   judge: Judge,
  *   sleep: (ms: number) => Promise<void>,
- *   review: Omit<import('./repo-config.mjs').Review, 'checklist'>,
+ *   review: Omit<import('./repo-config.mjs').Review, 'checklist'> & { checklist?: string },
  *   labels: import('./checklist.mjs').Rules['labels'],
  *   base: string,
  *   started: (session: string) => Promise<boolean>,
  *   ci?: string,
  *   outOfTime?: boolean,
  *   byCommit?: boolean,
- * }} args `started`: whether governor started a session, from its state table. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads.
+ * }} args `review.checklist`: the checklist the model reads, part of the digest a pass is reused by. `started`: whether governor started a session, from its state table. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads.
  *   `outOfTime`: the turn ran out of time for this PR. It goes through the
  *   usual skips, then posts a `failure` check in place of reading the facts
  *   and asking the model. `byCommit`: the fire carried the commit and not
@@ -371,6 +375,17 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // merge: merged on that pass without judging it again.
     const heldReason = reviewedAlready ? heldPassReason(last.text) : null;
     if (reviewedAlready && heldReason === null) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
+    // The model's pass at an earlier head, offered for reuse: the checklist
+    // reuses it only where what the model reads has the same digest. A
+    // marker naming no digest, or a fail, offers nothing.
+    /** @type {{ read: string, reason: string, at: string } | null} */
+    let earlier = null;
+    if (last !== null && last.readSha !== null && last.headSha !== pull.headSha) {
+      const passed = passOf(last.text);
+      if (passed !== null) earlier = { read: last.readSha, reason: passed.reason, at: passed.reused ?? last.headSha };
+    }
+    /** @type {string | null} The digest of what the model read, or would have: null where the code decided. */
+    let readSha = null;
 
     // A required check, or the CI run at the head, not yet finished: its
     // end queues the review again (dispatch/webhook/route.mjs), so this
@@ -403,7 +418,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // changed its labels since. Only the judgement is kept.
     const answer = bump
       ? await bumpAnswer(reader, pull, review.dependabot, checks.red, redCi)
-      : await checklist({ ...await readFacts(reader, pull, started), red: checks.red, redCi, held: heldReason, rules }, judge);
+      : await checklist({ ...await readFacts(reader, pull, started), red: checks.red, redCi, held: heldReason, rules, system: review.checklist ?? '', earlier, read: (digest) => { readSha = digest; } }, judge);
     reviewed.answer = answer;
 
     let conflict = false;
@@ -426,7 +441,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     let outcome = /** @type {Outcome} */ (answer.answer === 'pass' ? (conflict ? 'conflict' : review.merge ? 'merged' : 'passed') : 'commented');
     const said = commentText(answer, { conflict, merge: review.merge });
     const text = heldReason !== null && outcome === 'merged' ? `${said} Merged once the promotion ended.` : said;
-    const marker = reviewMarker(pull.headSha, bodySha);
+    const marker = reviewMarker(pull.headSha, bodySha, readSha);
     // A fail only a person meets is `neutral`, which passes a required
     // check: never one the author session can act on.
     await check(answer.answer === 'pass' && !conflict ? 'success' : ownerActs(said) ? 'failure' : 'neutral', firstSentence(text), text);
