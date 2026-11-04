@@ -201,7 +201,7 @@ const reviewSchema = z.strictObject({
   quote: z.array(z.string().trim().regex(/^!?[^!\s]/, 'a glob, or `!` and a glob')).default([]).meta({ description: 'Globs of changed files the review model reads whole, at the merge base and at the head. Only a modified file is quoted: one added, removed or renamed waits for a person. A `!` entry takes a path back out. Default none.' }),
   decides: z.array(label).default([]).meta({ description: 'Labels of a ticket that may decide a quoted file\'s change: its body\'s first line, `Constraint now lives at <path>, …`, names the files it decides, which then pass unread. Default none.' }),
   dependabot: z.array(glob).default([]).meta({ description: 'Globs of the manifests a Dependabot PR may change and pass with no model. Default none.' }),
-  merge: z.boolean().default(true).meta({ description: 'Whether a pass merges the PR. With false, a pass approves and the owner merges. Default true.' }),
+  merge: z.boolean().default(true).meta({ description: 'Whether a pass merges the PR. With false, a pass posts its comment and a success check, and the owner merges. Default true.' }),
 });
 
 // A deploy target, as a shipping job's name ends `deployed: <target>`.

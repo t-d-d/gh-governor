@@ -89,7 +89,7 @@ A repo turns each feature on with a switch in its `.github/dispatch.json`.
 | Summons | `@claude` in an issue, a comment or a review starts a session on that remark. |
 | PR messages | Every comment, review, push and merge on a pull request goes to the session that wrote it. A fresh session takes over if that one is archived. |
 | CI and deploys | A red build tells the sessions whose merges may have broken it. A deploy tells the sessions whose work it shipped, and labels their tickets. |
-| PR review | A model checks each pull request against the repo's own checklist, from its description, the list of files it changes and the tickets it closes, and CI checks the code. A pass merges it, or approves it for a person to merge. |
+| PR review | A model checks each pull request against the repo's own checklist, from its description, the list of files it changes and the tickets it closes, and CI checks the code. A pass merges it, or leaves it for a person to merge, and each review posts a `governor` check a ruleset can require. |
 | Periodics | Recurring sessions, such as a code review every 10 merges or a weekly ticket review. |
 | Hooks | A system outside GitHub, such as a cloud alarm, starts a session with a signed request. |
 | Waits | A ticket that opens with `Blocked until: 2026-11-20` is not started before that date. |
@@ -102,7 +102,7 @@ A dark factory runs with the lights off, because nobody works on the floor. Each
 | The repo turns on | What is left for a person |
 |---|---|
 | Pickup and PR messages | Review and merge every pull request. This repo runs this way. |
-| The PR review, with `merge` off | Merge the pull requests the model approved. |
+| The PR review, with `merge` off | Merge the pull requests the model passed. |
 | The PR review, with `merge` on | Only what the review cannot pass, such as a change to a human-only path. Podstow's repo runs this way, and most of its pull requests merge with no person. |
 
 The rules for what a person keeps are plain config. [The test fixture's file](test/fixtures/factory/.github/dispatch.json) shows what they look like for a repo with the merge on: 37 human-only paths, each with its reason. They cover the architectural rules, the agents' own instructions and skills, the infrastructure, and the deploy and promotion gates.
@@ -143,7 +143,7 @@ Two CloudFormation stacks hold all of it, and GitHub Actions deploys them after 
 
 Governor is built for one developer running their own repos on their own Claude subscription. It is not a team or enterprise product, and does not try to be. One login, one queue and one task are enough for one person's backlog, and they keep the moving parts few. What that choice costs:
 
-- **This repo does not run the automatic merge.** Governor reviews this repo's pull requests with merge off, so a pass approves and a person still merges every one here. Governor never passes its own code with nobody looking. Podstow's repo does run the merge.
+- **This repo does not run the automatic merge.** Governor reviews this repo's pull requests with merge off, so a pass posts a comment and a check, and a person still merges every one here. Governor never passes its own code with nobody looking. Podstow's repo does run the merge.
 - **It depends on Claude Code internals.** Governor starts a session by driving `claude --cloud` in a pseudo-terminal, with flags the CLI does not document, and reads a session's last reply from the sessions API. A CLI release can break it. The probe after each deploy, and 17 CloudWatch alarms, are how that shows up.
 - **Your login, your terms.** Every session runs on your own claude.ai login, copied from an interactive sign-in, so governor is for your own repos, not a service for other people. Check your plan's terms before you leave it running unattended. The operator mints it again about every two weeks, and an alarm warns three days ahead. The subscription's usage limits, not AWS, set the real ceiling on throughput and cost.
 - **Nobody else runs it yet.** [Running your own governor](docs/self-hosting.md) has every step, but only its author has deployed it.

@@ -364,7 +364,7 @@ const after = (rows, field, since) => {
  * commit's message, and what is open naming a session. The PR review's:
  * a PR whole, its files, the open PRs, a ticket, a whole thread,
  * the repo's default branch, the checks it requires and the checks at a
- * commit; its writes are a comment edited, a merge and an approval. The
+ * commit; its writes are a comment edited, a merge and the `governor` check run. The
  * conflict check's: the open PRs, and the commit main is at.
  *
  * @param {{ token: string, repo: string, appId?: number, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown> }} args
@@ -914,25 +914,20 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
-     * Approve a pull request at `sha`, the head reviewed: a pass in a repo
-     * whose owner merges.
+     * Post a check run named `name` at `sha`: in progress, or completed with
+     * `state` as its conclusion. Each call is a new run; GitHub shows the
+     * latest of a name. Needs the App's Checks write, and a refusal throws
+     * with its status.
      *
-     * @param {number} number
-     * @param {{ sha: string, body: string }} options
+     * @param {{ name: string, sha: string, state: 'in_progress' | 'success' | 'failure' | 'neutral', title: string, summary: string }} run
      */
-    approve: async (number, { sha, body }) => {
-      await call('POST', `/repos/${repo}/pulls/${number}/reviews`, { commit_id: sha, event: 'APPROVE', body });
-    },
-
-    /** A pull request's submitted reviews, each with whether a bot wrote it. @param {number} number @returns {Promise<Array<{ id: number, state: string, body: string, bot: boolean }>>} */
-    pullReviews: async (number) =>
-      (await allPages(call, `/repos/${repo}/pulls/${number}/reviews`, {})).map((row) => ({
-        id: row.id, state: String(row.state ?? ''), body: row.body ?? '', bot: row.user?.type === 'Bot',
-      })),
-
-    /** Dismiss a review, saying why. @param {number} number @param {number} id @param {string} message */
-    dismissReview: async (number, id, message) => {
-      await call('PUT', `/repos/${repo}/pulls/${number}/reviews/${id}/dismissals`, { message, event: 'DISMISS' });
+    checkRun: async ({ name, sha, state, title, summary }) => {
+      await call('POST', `/repos/${repo}/check-runs`, {
+        name,
+        head_sha: sha,
+        ...(state === 'in_progress' ? { status: 'in_progress' } : { status: 'completed', conclusion: state }),
+        output: { title, summary },
+      });
     },
 
     /**

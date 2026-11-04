@@ -33,7 +33,7 @@ Under your account's or organisation's **Settings → Developer settings → Git
    - **Issues**: Read and write. The claim, the claim label and the session-link comment.
    - **Pull requests**: Read and write.
    - **Actions**: Read. A finished run's jobs, and the runs before it.
-   - **Checks**: Read, and **Commit statuses**: Read. The review reads a required check on a PR's head.
+   - **Checks**: Read and write, and **Commit statuses**: Read. The review reads a required check on a PR's head, and posts its own `governor` check.
 4. **Subscribe to events**: Issue comment, Issues, Pull request, Pull request review, Pull request review comment, Workflow job, Workflow run. The API cannot set these, so tick them here. The deploy refuses to point the webhook while one is missing.
 5. **Where can this GitHub App be installed?**: **Any account**. A private App installs only on the account that owns it. The deployment's owner list is what keeps an outsider's installation from using your login.
 6. Create the App. Note its **App ID** and its slug (the last part of its public URL).
@@ -59,7 +59,7 @@ Under your account's or organisation's **Settings → Developer settings → Git
 
    and create its ready label, `mode: afk`.
 
-   You can also turn `prReview` on, as this repo does. Give it a `review` section that names its `checklist`, which the section needs, and sets `"merge": false`, since `merge` is true unless set. Then a pass only posts a comment and an approving review, and you still merge every pull request, so governor never passes a change to its own code with nobody looking. A pull request cannot review itself either: the review runs the image deployed from main and reads its checklist from main. This repo's checklist is `.claude/skills/pr-review/SKILL.md`. Each review is a `claude -p` run on the stored login, so it draws on the same usage limit as the sessions.
+   You can also turn `prReview` on, as this repo does. Give it a `review` section that names its `checklist`, which the section needs, and sets `"merge": false`, since `merge` is true unless set. Then a pass only posts a comment and a `governor` check, and you still merge every pull request, so governor never passes a change to its own code with nobody looking. A pull request cannot review itself either: the review runs the image deployed from main and reads its checklist from main. This repo's checklist is `.claude/skills/pr-review/SKILL.md`. Each review is a `claude -p` run on the stored login, so it draws on the same usage limit as the sessions.
 
 ### 3. Create an AWS account and apply the bootstrap stack
 

@@ -218,19 +218,18 @@ const reviewComment = (written, appId) => String(written?.body ?? '').includes(R
  * Why `written` reaches no subscriber, or null when it may. A bot's
  * may: a review bot's findings are what a session waits for. A stranger's
  * may not, nor the dispatcher's own marker, nor a person quoting the PR
- * review's marker, nor a PR review comment the owner cannot act on.
- * Whose post it is decides only who is skipped ({@link fanOut}); the PR
- * review's comment reaches only the owner.
+ * review's marker. Whose post it is decides only who is skipped
+ * ({@link fanOut}); the PR review's comment reaches only the owner,
+ * whatever it says.
  *
- * @param {{ written: Written | undefined, association: unknown, review: boolean }} args `review`: {@link reviewComment}.
+ * @param {{ written: Written | undefined, association: unknown }} args
  * @returns {string | null}
  */
-const notAnUpdate = ({ written, association, review }) => {
+const notAnUpdate = ({ written, association }) => {
   const text = String(written?.body ?? '');
   const user = written?.user;
   if (text.includes(DISPATCH_MARKER)) return "the dispatcher's own marker";
   if (text.includes(REVIEW_MARKER) && user?.type !== 'Bot') return "a person's comment quoting the PR review's marker";
-  if (review && !ownerActs(withoutMarker(text))) return "the PR review's comment: nothing in it for the session to do, and the comment is the record";
   if (user?.type !== 'Bot' && !SUMMONERS.has(String(association))) {
     return `${user?.login ?? 'someone'} (${association ?? 'no association'}) has no say in the repository`;
   }
@@ -564,12 +563,14 @@ const writtenFires = (written, event, payload, appId) => {
     // comments, each of which arrives as an event of its own.
     parts.push({ fires: [], reason: `review ${by?.id} on #${on?.number} carries no text and no verdict: its comments arrive as their own events` });
   } else {
-    // The PR review's comment reaches the PR's owner alone: a subscriber
-    // reads it on the PR. The owner's fire carries the fallback, so
-    // a gone session is replaced whenever in the review turn the comment was
-    // posted.
+    // The PR review's comment reaches the PR's owner alone, whatever it
+    // says: a subscriber reads it on the PR. The owner's fire carries the
+    // fallback only where the comment asks something of the session, so a
+    // gone session is replaced whenever in the review turn the comment was
+    // posted, and a pass or a person's wait starts no session with nothing
+    // to do.
     const ownerOnly = reviewComment(by, appId);
-    const refused = notAnUpdate({ written: by, association: by?.author_association, review: ownerOnly });
+    const refused = notAnUpdate({ written: by, association: by?.author_association });
     // The PR review's marker is the receiver's to read, not the session's
     // to quote: a reply quoting it would be refused as a person's.
     const told = ownerOnly ? { ...payload, comment: { ...payload?.comment, body: withoutMarker(body) } } : payload;
@@ -583,7 +584,7 @@ const writtenFires = (written, event, payload, appId) => {
       // remark is not worth a takeover. A fresh session started on one
       // tends to post and sign off, and its post would start the next. A
       // person's reply quoting a session's post is the person's remark.
-      fallback: pr && !ownSessionPost(body),
+      fallback: pr && !ownSessionPost(body) && (!ownerOnly || ownerActs(withoutMarker(body))),
       issue: !pr,
       ownerOnly,
       byBranch,

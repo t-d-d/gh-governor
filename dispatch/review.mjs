@@ -14,8 +14,21 @@
  *   comment: a merge GitHub refuses leaves no
  *   marker, so the next fire reads the PR again. A conflict is a comment
  *   telling the author session the base merge is its to push. In a repo
- *   whose `review.merge` is false, a pass is an approving review pinned to
- *   that head, and the comment, and nothing merges: the owner does.
+ *   whose `review.merge` is false, a pass is the comment alone, and
+ *   nothing merges: the owner does. Nothing approves.
+ * - Every answer is also the `governor` check run on the head reviewed
+ *   (`CHECK`), which a ruleset can require: `success` for a pass,
+ *   `failure` for a conflict and for any fail the author session meets,
+ *   `neutral` where only a person can act. GitHub counts `neutral` as
+ *   passing, so a fail the session owes is never `neutral`. A required
+ *   check not finished is the check in progress, an author who may not
+ *   summon governor is `neutral`, and a review that does not finish is
+ *   `failure`. Every other skip posts no check. The check goes first: a
+ *   pass's before its merge, which a ruleset requiring it would refuse
+ *   otherwise, and a fail's before its comment, so a check write GitHub
+ *   refuses leaves no marker either. An installation that has not
+ *   granted the Checks write refuses it with a 403, which the review
+ *   records and passes over.
  * - A PR whose author may not summon the dispatcher (fire.mjs's
  *   SUMMONERS) is not read: a person merges it. Nor is a PR into any base
  *   but the repo's default branch: a stacked PR's pass would merge it into
@@ -41,20 +54,17 @@
  *
  * Every comment ends with a marker (dispatch/pr-body.mjs) naming the head
  * and the body reviewed, so neither is read twice. The comment is the
- * record, and also how the
- * session the PR body names hears what it can act on: for a new fail an
- * edit or a claim meets, a person's merge beside it or not, and a
- * conflict, the receiver queues that session a message fire with the
- * fallback any comment carries (webhook/review-comment.mjs).
- * A pass is followed by the merge's own message, a fail with only a
- * person's part waits for the person, and a comment edited in place is no
- * new delivery.
+ * record, and also how the session the PR body names hears the review:
+ * the receiver queues that session a message fire for each new comment
+ * (webhook/mention.mjs). Only one the session can act on, a fail an edit,
+ * a claim or a push meets and a conflict, carries the fallback that takes
+ * a gone session's PR over. A comment edited in place is no new delivery.
  *
  * `reviewPull` reads and writes through the injected reader.
  */
 
 import { DEPENDABOT, SUMMONERS } from './webhook/fire.mjs';
-import { REVIEW_MARKER, commentKey, commentText, heldPassReason } from './webhook/review-comment.mjs';
+import { commentKey, commentText, heldPassReason, ownerActs, sentence } from './webhook/review-comment.mjs';
 import { checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
 import { bodyDigest, closedBy, closingTickets, foreignClosings, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
@@ -82,18 +92,39 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
  *   comment: (n: number, body: string) => Promise<void>,
  *   updateComment: (id: number, body: string) => Promise<void>,
  *   merge: (n: number, options: { sha: string }) => Promise<{ merged: boolean, sha: string }>,
- *   approve: (n: number, options: { sha: string, body: string }) => Promise<void>,
- *   pullReviews: (n: number) => Promise<Array<{ id: number, state: string, body: string, bot: boolean }>>,
- *   dismissReview: (n: number, id: number, message: string) => Promise<void>,
+ *   checkRun: (run: { name: string, sha: string, state: CheckState, title: string, summary: string }) => Promise<void>,
  *   requiredChecks: (branch: string) => Promise<string[]>,
  *   checksAt: (sha: string) => Promise<Array<{ name: string, state: 'red' | 'green' | 'pending' }>>,
  * }} ReviewReader
  *   `requiredChecks`: the status checks a branch's protection and rulesets
  *   require. `checksAt`: the latest check runs and statuses at a commit,
  *   each red, green or pending.
- * @typedef {'merged' | 'approved' | 'conflict' | 'commented' | 'marker-moved' | 'skipped' | 'limited' | 'failed'} Outcome
- * @typedef {{ pr: number, outcome: Outcome, reason: string | null, headSha: string | null, answer: Answer | null, error: string | null }} Reviewed
+ * @typedef {'in_progress' | 'success' | 'failure' | 'neutral'} CheckState
+ * @typedef {'merged' | 'passed' | 'conflict' | 'commented' | 'marker-moved' | 'skipped' | 'limited' | 'failed'} Outcome
+ * @typedef {{ pr: number, outcome: Outcome, reason: string | null, headSha: string | null, answer: Answer | null, error: string | null, check: string | null }} Reviewed
+ *   `check`: the state of the check the review posted, `refused: <why>` where
+ *   GitHub refused it with a 403, or null where it posted none.
  */
+
+/** The check run the review posts its verdict as. It is named for governor, not the review: it is a gate, and approves nothing. */
+export const CHECK = 'governor';
+
+/** How long a check's title runs before it is cut. */
+const TITLE_CHARS = 200;
+
+/** How much of an error a check that did not finish quotes: a check run on a public repo is public. */
+const ERROR_CHARS = 300;
+
+/**
+ * A check's title: the first sentence of `text`, cut at {@link TITLE_CHARS}.
+ *
+ * @param {string} text
+ */
+const firstSentence = (text) => {
+  const end = /[.!?](?=\s|$)/.exec(text);
+  const first = end === null ? text.trim() : text.slice(0, end.index + 1).trim();
+  return first.length <= TITLE_CHARS ? first : `${first.slice(0, TITLE_CHARS - 1).trimEnd()}…`;
+};
 
 /** The `owner/repo` a PR's URL names, or undefined. @param {string} url */
 const repoOf = (url) => /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\//.exec(url)?.[1];
@@ -114,7 +145,10 @@ const MERGEABLE_WAIT_MS = 3000;
  * @returns {Promise<{ red: string[], pending: string[] }>}
  */
 const requiredStates = async (reader, pull) => {
-  const required = await reader.requiredChecks(pull.base);
+  // The review's own check is left out: a repo that requires it would
+  // otherwise skip the review until the review had run, and read its own
+  // earlier failure at the same head as a red required check.
+  const required = (await reader.requiredChecks(pull.base)).filter((name) => name !== CHECK);
   if (required.length === 0) return { red: [], pending: [] };
   const checks = await reader.checksAt(pull.headSha);
   /** @type {string[]} */
@@ -248,9 +282,29 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
   /** @type {import('./checklist.mjs').Rules} */
   const rules = { humanOnly: review.humanOnly, tickets: review.tickets, quote: review.quote, decides: review.decides, labels };
   /** @type {Reviewed} */
-  const reviewed = { pr: number, outcome: 'skipped', reason: null, headSha: null, answer: null, error: null };
+  const reviewed = { pr: number, outcome: 'skipped', reason: null, headSha: null, answer: null, error: null, check: null };
   /** @param {string} reason */
   const skip = (reason) => ({ ...reviewed, outcome: /** @type {Outcome} */ ('skipped'), reason });
+  // A PR merged before a later write failed keeps its check: the review ran.
+  let merged = false;
+  /**
+   * The `governor` check at the head read. A 403 is an installation that
+   * has not granted the Checks write: recorded, and the review goes on.
+   * Any other refusal throws.
+   *
+   * @param {CheckState} state
+   * @param {string} title
+   * @param {string} summary
+   */
+  const check = async (state, title, summary) => {
+    try {
+      await reader.checkRun({ name: CHECK, sha: /** @type {string} */ (reviewed.headSha), state, title, summary });
+      reviewed.check = state;
+    } catch (error) {
+      if (/** @type {{ status?: number }} */ (error)?.status !== 403) throw error;
+      reviewed.check = `refused: ${messageOf(error)}`;
+    }
+  };
   try {
     const pull = await reader.pullRequest(number);
     reviewed.headSha = pull.headSha;
@@ -259,7 +313,10 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // A stacked PR's pass would merge it into the branch below, not the default branch.
     if (pull.base !== base) return skip(`#${number} is into ${pull.base}, not ${base}: its retarget to ${base} reviews it`);
     const bump = pull.author === DEPENDABOT;
-    if (!bump && !SUMMONERS.has(pull.association)) return skip(`#${number} is by a ${pull.association} author, who may not summon the dispatcher: a person merges it`);
+    if (!bump && !SUMMONERS.has(pull.association)) {
+      await check('neutral', 'Not reviewed: a person merges it.', `The PR review reads no pull request by a ${pull.association} author: only an owner, member or collaborator may summon governor. A person merges it.`);
+      return skip(`#${number} is by a ${pull.association} author, who may not summon the dispatcher: a person merges it`);
+    }
     if (headSha !== undefined && headSha !== pull.headSha) return skip(`#${number} has moved past ${headSha.slice(0, 12)} to ${pull.headSha.slice(0, 12)}: that push's fire reviews it`);
     const bodySha = bodyDigest(pull.body);
     const last = lastReview(await reader.allComments(number));
@@ -273,7 +330,11 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // A required check not yet finished: its run's end queues the review
     // again (dispatch/webhook/route.mjs), so this one says nothing.
     const checks = await requiredStates(reader, pull);
-    if (checks.pending.length > 0) return skip(`#${number}'s required check${checks.pending.length > 1 ? 's' : ''} ${checks.pending.map((c) => `\`${c}\``).join(', ')} ${checks.pending.length > 1 ? 'have' : 'has'} not finished on ${pull.headSha.slice(0, 12)}: the run's end reviews it`);
+    if (checks.pending.length > 0) {
+      const names = checks.pending.map((c) => `\`${c}\``).join(', ');
+      await check('in_progress', 'Waits for its required checks to finish.', `The PR review runs when ${names} ${checks.pending.length > 1 ? 'have' : 'has'} finished on ${pull.headSha.slice(0, 12)}.`);
+      return skip(`#${number}'s required check${checks.pending.length > 1 ? 's' : ''} ${names} ${checks.pending.length > 1 ? 'have' : 'has'} not finished on ${pull.headSha.slice(0, 12)}: the run's end reviews it`);
+    }
 
     // The facts are read again for a held pass: a ticket may have closed or
     // changed its labels since. Only the judgement is kept.
@@ -299,24 +360,19 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
       if (conflict && bump) return skip(`#${number} conflicts with ${base}: Dependabot rebases its own PRs, and the rebase's push is reviewed`);
     }
 
-    let outcome = /** @type {Outcome} */ (answer.answer === 'pass' ? (conflict ? 'conflict' : review.merge ? 'merged' : 'approved') : 'commented');
+    let outcome = /** @type {Outcome} */ (answer.answer === 'pass' ? (conflict ? 'conflict' : review.merge ? 'merged' : 'passed') : 'commented');
     const said = commentText(answer, { conflict, merge: review.merge });
+    const text = heldReason !== null && outcome === 'merged' ? `${said} Merged once the promotion ended.` : said;
     const marker = reviewMarker(pull.headSha, bodySha);
+    // A fail only a person meets is `neutral`, which passes a required
+    // check: never one the author session can act on.
+    await check(answer.answer === 'pass' && !conflict ? 'success' : ownerActs(said) ? 'failure' : 'neutral', firstSentence(text), text);
     if (outcome === 'merged') {
-      const merged = await reader.merge(number, { sha: pull.headSha });
-      if (!merged.merged) throw new Error(`GitHub did not merge #${number}`);
-    } else if (outcome === 'approved') {
-      // The repo's owner merges: an approval pinned to the head
-      // reviewed, and no merge call. Its marker lets a later fail find it.
-      await reader.approve(number, { sha: pull.headSha, body: `${said}\n\n${marker}` });
-    } else if (!review.merge) {
-      // A head that no longer passes keeps no approval of an earlier one,
-      // which the owner, or auto-merge, could merge on.
-      const stale = (await reader.pullReviews(number)).filter((r) => r.state === 'APPROVED' && r.bot && r.body.includes(REVIEW_MARKER));
-      for (const { id } of stale) await reader.dismissReview(number, id, `The PR review no longer passes at ${pull.headSha.slice(0, 12)}: see its comment.`);
+      const done = await reader.merge(number, { sha: pull.headSha });
+      if (!done.merged) throw new Error(`GitHub did not merge #${number}`);
+      merged = true;
     }
 
-    const text = heldReason !== null && outcome === 'merged' ? `${said} Merged once the promotion ended.` : said;
     const body = `${text}\n\n${marker}`;
     const key = commentKey(text);
     const saidAlready = last !== null && key !== null && commentKey(last.text) === key;
@@ -332,6 +388,14 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     return { ...reviewed, outcome, reason: text };
   } catch (error) {
     const limited = /** @type {{ limit?: string }} */ (error)?.limit === 'session';
-    return { ...reviewed, outcome: limited ? 'limited' : 'failed', error: messageOf(error) };
+    const message = messageOf(error);
+    if (reviewed.headSha !== null && reviewed.headSha !== '' && !merged) {
+      // A gate fails out loud, and the owner can bypass it. A check write
+      // that fails here too leaves the review's own error as the one told.
+      const quoted = message.length <= ERROR_CHARS ? message : `${message.slice(0, ERROR_CHARS - 1).trimEnd()}…`;
+      const why = limited ? `The claude.ai login's usage limit stopped it: ${quoted}` : `It failed: ${quoted}`;
+      await check('failure', 'The PR review did not run.', `${sentence(why)} A push or an edit to the description runs it again.`).catch(() => {});
+    }
+    return { ...reviewed, outcome: limited ? 'limited' : 'failed', error: message };
   }
 };
