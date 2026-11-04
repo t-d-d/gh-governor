@@ -18,7 +18,7 @@ import { run as runTurn } from '../dispatch/turn.mjs';
 import { cliResult } from '../dispatch/cli-answer.mjs';
 import {
   DEFAULT_TICKET_CHECKLIST, LINKED_BODY_LIMIT, LINKED_LIMIT, OPEN_LISTED, TICKET_ANSWER_SCHEMA, TICKET_FRAME,
-  reviewTicket, ticketMarker,
+  LOOP_LIMIT, loopMarker, reviewTicket, ticketMarker,
 } from '../dispatch/ticket-review.mjs';
 import { factoryFile } from './helpers/factory.ts';
 import { APP_ID } from './helpers/dispatch-review-fixtures.ts';
@@ -408,6 +408,129 @@ describe('reviewTicket: a run that does not answer', () => {
     const h = harness({ answers: [cliError('You have hit your weekly limit')] });
     const result = await h.review();
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['failed']);
+  });
+});
+
+describe('fitness: dispatcher-review.md, the loop guard stops a review that keeps failing', () => {
+  /** The review's markers on the thread, oldest first, one comment each. */
+  const rounds = (...conclusions: string[]) => conclusions.map((c, i) => posted('triage', c, `a${i}`, true, i + 1));
+  const guard = (name = 'triage', ours = true, id = 99): Thread => ({ id, body: `Stopped.\n\n${loopMarker(name)}`, created_at: '2026-11-02T00:00:00Z', ours });
+  const fails = (n: number) => rounds(...Array.from({ length: n }, () => 'failure'));
+  const guards = (h: ReturnType<typeof harness>) => h.comments.filter((c) => c.body.includes('governor:ticket-review-loop'));
+
+  test('the limit is five, and the guard\'s marker names the review', () => {
+    assert.equal(LOOP_LIMIT, 5);
+    assert.equal(loopMarker('triage'), '<!-- governor:ticket-review-loop triage -->');
+  });
+
+  test('at the fifth failure in a row, governor posts one guard comment ending in its marker, and logs at error', async () => {
+    const h = harness({ thread: fails(4), answers: [GAPS] });
+    const result = await h.review();
+    assert.deepEqual(result.reviews.map((r) => [r.name, r.outcome, r.conclusion]), [['triage', 'commented', 'failure']]);
+    assert.equal(h.comments.length, 2);
+    assert.match(h.comments[0]!.body, /^Triage review: waits for an edit\./);
+    const [stop] = guards(h);
+    assert.ok(stop!.body.endsWith(loopMarker('triage')), stop!.body);
+    assert.match(stop!.body, /^Triage review: stopped on this ticket after 5 failures in a row\./);
+    assert.match(stop!.body, /person decides/);
+    assert.match(stop!.body, /Deleting this comment/);
+    const line = h.logged.find((l) => l.event === 'dispatch-ticket-review-loop');
+    assert.deepEqual(line, { event: 'dispatch-ticket-review-loop', level: 'error', repo: REPO, issue: 501, review: 'triage', count: 5 });
+    assert.equal(exitCodeFor({ kind: 'ticketReview', reviews: result.reviews } as never), 0);
+  });
+
+  test('the fourth failure in a row, or a fifth run that does not fail, posts no guard', async () => {
+    for (const [thread, answer] of [[fails(3), GAPS], [fails(4), PASSES], [fails(4), { conclusion: 'neutral', text: 'It repeats #502.' }]] as const) {
+      const h = harness({ thread, answers: [answer] });
+      await h.review();
+      assert.deepEqual(guards(h), []);
+      assert.equal(h.logged.some((l) => l.event === 'dispatch-ticket-review-loop'), false);
+    }
+  });
+
+  test('a success or neutral between failures starts the count again', async () => {
+    for (const between of ['success', 'neutral']) {
+      const h = harness({ thread: rounds('failure', 'failure', between, 'failure', 'failure', 'failure'), answers: [GAPS] });
+      await h.review();
+      assert.deepEqual(guards(h), [], between);
+    }
+    const h = harness({ thread: rounds('failure', 'failure', 'success', 'failure', 'failure', 'failure', 'failure'), answers: [GAPS] });
+    await h.review();
+    assert.equal(guards(h).length, 1);
+  });
+
+  test('another review\'s failures do not count toward this one\'s', async () => {
+    const thread = [...fails(2), ...[3, 4, 5].map((id) => posted('other', 'failure', `b${id}`, true, id))];
+    const h = harness({ thread, answers: [GAPS] });
+    await h.review();
+    assert.deepEqual(guards(h), []);
+  });
+
+  test('with the guard on the thread, later edits do not run that review, and other reviews on the ticket still run', async () => {
+    const h = harness({ thread: [...fails(5), guard()], reviews: [{ name: 'triage', when: { on: 'opened' } }, { name: 'second', when: { on: 'opened' } }], answers: [PASSES] });
+    const result = await h.review();
+    assert.deepEqual(result.reviews.map((r) => [r.name, r.outcome]), [['triage', 'skipped'], ['second', 'commented']]);
+    assert.match(String(result.reviews[0]!.reason), /loop guard/);
+    assert.equal(h.runs.length, 1);
+    assert.match(h.comments[0]!.body, /^Second review/);
+    const line = h.logged.find((l) => l.event === 'dispatch-ticket-review' && l.review === 'triage');
+    assert.equal(line?.level, 'info');
+    assert.equal(line?.outcome, 'skipped');
+  });
+
+  test('a guard for another review does not stop this one', async () => {
+    const h = harness({ thread: [guard('other')] });
+    await h.review();
+    assert.equal(h.runs.length, 1);
+  });
+
+  test('after the guard is deleted, the review runs at the next edit, and the guard comes back only at the tenth failure in a row', async () => {
+    const sixth = harness({ thread: fails(5), answers: [GAPS] });
+    await sixth.review();
+    assert.equal(sixth.runs.length, 1);
+    assert.deepEqual(guards(sixth), []);
+    for (const n of [6, 7, 8]) {
+      const h = harness({ thread: fails(n), answers: [GAPS] });
+      await h.review();
+      assert.deepEqual(guards(h), [], `failure ${n + 1}`);
+    }
+    const tenth = harness({ thread: fails(9), answers: [GAPS] });
+    await tenth.review();
+    assert.equal(guards(tenth).length, 1);
+    assert.match(guards(tenth)[0]!.body, /after 10 failures in a row/);
+    assert.equal(tenth.logged.find((l) => l.event === 'dispatch-ticket-review-loop')?.count, 10);
+  });
+
+  test('a guard marker in a comment governor\'s App did not post, or one quoted mid-comment, stops nothing', async () => {
+    const quoted: Thread = { id: 98, body: `It said ${loopMarker('triage')} here.\n\nMore text.`, created_at: '2026-11-02T00:00:00Z', ours: true };
+    for (const row of [guard('triage', false), quoted]) {
+      const h = harness({ thread: [...fails(5), row] });
+      await h.review();
+      assert.equal(h.runs.length, 1, row.body);
+    }
+  });
+
+  test('the guard\'s marker is never read as a review\'s, so it spends no round', async () => {
+    const h = harness({ thread: [posted('triage', 'failure', 'a'), guard('other')] });
+    await h.review();
+    assert.match(h.runs[0]!.prompt, /This is round 2 of this review\./);
+    const named = harness({ thread: [guard('triage-loop')], reviews: [{ name: 'triage-loop', when: { on: 'opened' } }, { name: 'triage', when: { on: 'opened' } }] });
+    const result = await named.review();
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['skipped', 'commented']);
+    assert.match(named.runs[0]!.prompt, /This is round 1 of this review\./);
+  });
+
+  test('a refused guard comment leaves the review standing, logs at error, and makes the turn exit 1', async () => {
+    let calls = 0;
+    const h = harness({ thread: fails(4), answers: [GAPS], comment: async () => { calls += 1; if (calls === 2) throw Object.assign(new Error('POST failed: 403'), { status: 403 }); } });
+    const result = await h.review();
+    assert.equal(result.reviews[0]!.outcome, 'commented');
+    assert.equal(result.reviews[0]!.conclusion, 'failure');
+    assert.equal(h.comments.length, 1);
+    const line = h.logged.find((l) => l.event === 'dispatch-ticket-review-loop');
+    assert.equal(line?.level, 'error');
+    assert.match(String(line?.error), /403/);
+    assert.equal(exitCodeFor({ kind: 'ticketReview', reviews: result.reviews } as never), 1);
   });
 });
 

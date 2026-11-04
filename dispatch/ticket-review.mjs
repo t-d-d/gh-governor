@@ -29,6 +29,16 @@
  * stops is `limited`, and no later review in the turn runs. With no
  * marker, the ticket is reviewed again at its next edit.
  *
+ * The loop guard stops a review that keeps failing. Where a run's comment
+ * posts `failure` and that review's markers end in a multiple of
+ * {@link LOOP_LIMIT} failures in a row, governor posts one comment ending in
+ * `<!-- governor:ticket-review-loop <name> -->` and logs
+ * `dispatch-ticket-review-loop` at error. While that comment stands, the
+ * review does not run on the ticket. Deleting it lets the review run again,
+ * and the failures before it stay on the thread, so the next guard comes
+ * {@link LOOP_LIMIT} failures later. A guard comment GitHub refuses leaves
+ * the review standing and makes the turn exit 1.
+ *
  * The selector is this module's own: reviews and pickup share no code, and
  * meet only through labels a repo's config names.
  *
@@ -43,6 +53,16 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** The start of the marker every ticket review comment ends with. */
 export const TICKET_REVIEW_MARKER = '<!-- governor:ticket-review ';
+
+/** The start of the marker the loop guard's comment ends with. */
+export const LOOP_MARKER = '<!-- governor:ticket-review-loop ';
+
+/**
+ * The failures in a row at which the loop guard stops a review. It sits
+ * above the default checklist's limit of three rounds, so a working
+ * checklist never reaches it, and no repo setting changes it.
+ */
+export const LOOP_LIMIT = 5;
 
 /** The most same-repo issues a ticket's body links that stdin carries. */
 export const LINKED_LIMIT = 10;
@@ -120,7 +140,9 @@ Rules on the conclusion:
  *   to one more than `max` so a cut can be told. `allComments`: the thread,
  *   oldest first, each marked with whether governor's App posted it.
  * @typedef {{ ticketReviews?: TicketReview[] | undefined, heartbeat?: { issue: number } | undefined, waits?: { issue: number } | undefined } & import('./trust.mjs').TrustConfig} ReviewConfig
- * @typedef {{ name: string, outcome: 'commented' | 'skipped' | 'failed' | 'limited', conclusion?: string, reason?: string, error?: string }} Reviewed
+ * @typedef {{ name: string, outcome: 'commented' | 'skipped' | 'failed' | 'limited', conclusion?: string, reason?: string, error?: string, loop?: { count: number, error?: string } }} Reviewed
+ *   `loop`: where the run met the loop guard, the failures in a row, and
+ *   why the guard's comment did not post where it did not.
  */
 
 /**
@@ -134,6 +156,40 @@ export const ticketMarker = (name, conclusion, key) => `${TICKET_REVIEW_MARKER}$
 
 /** The marker a comment ends with: one quoted earlier in its text is not read. */
 const MARKER = /<!-- governor:ticket-review ([a-z0-9-]{1,64}) (success|failure|neutral) ([0-9a-f]{1,64}) -->\s*$/;
+
+/**
+ * The marker the loop guard's comment ends with.
+ *
+ * @param {string} name
+ */
+export const loopMarker = (name) => `${LOOP_MARKER}${name} -->`;
+
+/**
+ * The guard's marker a comment ends with. `MARKER` needs a space after
+ * `ticket-review`, so it never reads this one as a review's.
+ */
+const LOOP = /<!-- governor:ticket-review-loop ([a-z0-9-]{1,64}) -->\s*$/;
+
+/**
+ * Whether the loop guard stands on the thread for `name`: a comment
+ * governor's App posted that ends with the guard's marker. A person's
+ * comment, or a marker quoted mid-comment, stops nothing.
+ *
+ * @param {ThreadRow[]} thread
+ * @param {string} name
+ */
+export const guarded = (thread, name) => thread.some((row) => row.ours && LOOP.exec(row.body)?.[1] === name);
+
+/**
+ * The failures in a row at the end of a review's markers, oldest first.
+ *
+ * @param {Array<{ conclusion: string }>} markers
+ */
+const failuresInARow = (markers) => {
+  let count = 0;
+  for (let i = markers.length - 1; i >= 0 && markers[i]?.conclusion === 'failure'; i -= 1) count += 1;
+  return count;
+};
 
 /** An HTML comment, to the end where unclosed: it renders as nothing. */
 const HTML_COMMENT = /<!--[\s\S]*?(?:-->|(?![\s\S]))/g;
@@ -200,6 +256,15 @@ export const ticketComment = ({ name, conclusion, text, key }) => {
   const gap = body.includes('\n') || /^([-*+]|\d+\.)\s/.test(body) ? '\n\n' : ' ';
   return `${titled(name)} review: ${WORDS[/** @type {keyof typeof WORDS} */ (conclusion)]}.${gap}${body}\n\n${ticketMarker(name, conclusion, key)}`;
 };
+
+/**
+ * The loop guard's comment. It asks nothing of the filer session, which
+ * hears it as it hears any comment.
+ *
+ * @param {string} name
+ * @param {number} count
+ */
+export const loopComment = (name, count) => `${titled(name)} review: stopped on this ticket after ${count} failures in a row. It will not run here again while this comment stands. A person decides what happens to the ticket. Deleting this comment lets the review run again at the ticket's next edit.\n\n${loopMarker(name)}`;
 
 /**
  * The issues a body links, in the order they first appear: the issue
@@ -356,7 +421,8 @@ export const reviewTicket = async ({ repo, issue, reader, config, run, transcrip
     const why = unmet.get(name) ?? null;
     const markers = markersOf(thread, name);
     const reason = why !== null ? `#${issue} is not one the ${name} review selects: ${why}`
-      : markers.at(-1)?.key === key ? `the ${name} review already read #${issue} as its body stands` : null;
+      : markers.at(-1)?.key === key ? `the ${name} review already read #${issue} as its body stands`
+        : guarded(thread, name) ? `the loop guard stopped the ${name} review on #${issue}, and its comment stands` : null;
     if (reason !== null) {
       log('dispatch-ticket-review', { level: 'info', ...about, outcome: 'skipped', reason });
       out.push({ name, outcome: 'skipped', reason });
@@ -389,7 +455,22 @@ export const reviewTicket = async ({ repo, issue, reader, config, run, transcrip
       ({ sessionId, usage } = answer);
       await reader.comment(issue, ticketComment({ name, conclusion: answer.conclusion, text: answer.text, key }));
       log('dispatch-ticket-review', { ...about, outcome: 'commented', conclusion: answer.conclusion, round, ...(usage === undefined ? {} : { usage }) });
-      out.push({ name, outcome: 'commented', conclusion: answer.conclusion });
+      /** @type {Reviewed} */
+      const done = { name, outcome: 'commented', conclusion: answer.conclusion };
+      out.push(done);
+      const count = answer.conclusion === 'failure' ? failuresInARow(markers) + 1 : 0;
+      if (count > 0 && count % LOOP_LIMIT === 0) {
+        // The review's own comment has posted, so the review stands whether
+        // or not the guard's does.
+        try {
+          await reader.comment(issue, loopComment(name, count));
+          log('dispatch-ticket-review-loop', { level: 'error', ...about, count });
+          done.loop = { count };
+        } catch (error) {
+          log('dispatch-ticket-review-loop', { level: 'error', ...about, count, error: `the guard's comment was refused: ${messageOf(error)}` });
+          done.loop = { count, error: messageOf(error) };
+        }
+      }
     } catch (error) {
       const limit = /** @type {{ limit?: string }} */ (error)?.limit;
       if (limit !== undefined) stopped = { limit, error: messageOf(error) };
