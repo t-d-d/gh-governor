@@ -10,6 +10,7 @@ The [README](../README.md) is the overview. [Serving a repo](serving-a-repo.md) 
 - [CI and deploys](#ci-and-deploys)
 - [Conflicts after a merge](#conflicts-after-a-merge)
 - [The PR review](#the-pr-review)
+- [Ticket reviews](#ticket-reviews)
 - [Prompts](#prompts)
 - [Hooks](#hooks)
 - [When a repo's file goes wrong](#when-a-repos-file-goes-wrong)
@@ -123,6 +124,7 @@ The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`, `hoo
 | Dispatched run on another branch finished | Any outcome | A message to the session that wrote its commit | `branchRunMessages` |
 | PR opened, ready, pushed to, or its body or base edited | Not a draft | The PR review | `prReview` |
 | Check run completed, status ended, or workflow run finished, off the default branch | Not governor's own check; a status that is not pending | The PR review of each open PR at that commit | `prReview` |
+| Issue opened, reopened, or its body edited | Not a bot's edit | Each ticket review whose selector the issue meets and whose marker its body has moved past | `ticketReviews` |
 | A signed `POST /hooks/<owner>/<repo>/<hook>` | The signature matches the hook's key, its time no more than 30 seconds ahead of the receiver's clock or 4 minutes 10 seconds behind it; the file lists the hook at that key version | One session on the hook's prompt, with the caller's text below it, or a message into the hook's last session while it is open | `hooks` |
 
 A mention starts a session only from someone with a say in the repo. A bot cannot, and neither can a session, whose posts end in the Claude Code footer. On a PR a session owns, a mention starts nobody: the owner is messaged instead. The receiver drops a mention from anyone else, silently. The summons fire names the issue or PR it is on and its author's `author_association`, `BOT` for a bot and none for governor's own App, and the task starts the session only where the repo's `trust.task` lets that author in (`dispatch/dispatch-fire.mjs`). A refused summons starts nothing, logs `dispatch-launch` at info, and gets governor's one refusal comment, under the `<!-- governor:uncounted-ready -->` marker, so a second summons there gets no second comment. The receiver does not read `trust.task`: every summons it refuses needs that comment, and the writer check already drops the rest. The fire also names who set it going, judged by the repo's `trust.start`: the writer's `author_association`, which the receiver has held to the three, or, for an issue assigned to `claude`, the assigner's login, which the task looks up only where `start` is narrowed, as pickup looks up who added a ready label. A summons from someone outside `start` starts nothing, logs `dispatch-launch` at info, and gets the same one refusal comment. An assigner the lookup cannot place starts nothing that turn, logged at warn.
@@ -253,6 +255,33 @@ GitHub counts `neutral` as passing a required check, so only a PR handed to a pe
 **Transcripts.** With `DropBoxUrl` set and the writer saved, each review's transcript is redacted, gzipped and PUT to `<DropBoxUrl>/<date>/pr-review-<PR>-<session>.jsonl.gz` (`dispatch-review-transcript`).
 
 **Spend.** Each review's `dispatch-review` line carries `usage`, what its model run spent as the CLI's result line reports it: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens` and `costUsd`. A failed or `limited` run logs what its result line carried. A field the line lacks is left out, and a review with no model run, or whose run printed no result line, has no `usage`.
+
+## Ticket reviews
+
+A repo whose file turns `ticketReviews` on lists its reviews in `ticketReviews`, each with a `name` and a selector, `when` ([constraints/dispatcher-review.md](constraints/dispatcher-review.md)). An issue opened, reopened, or with its body edited queues one `ticketReview` fire naming it. A title-only edit queues none, and nor does a body edit a bot made: governor edits bodies itself, when it takes a session link off a ticket or rewrites a relative wait line, and those edits must not spend a round. Sessions edit as the owner's account, so their edits run the review.
+
+The turn (`dispatch/ticket-review.mjs`) reads the issue and reviews nothing for a closed issue, a pull request, the heartbeat issue or the wait ticket. It reviews only a ticket whose author the repo's `trust.review` lets in, `OWNER`, `MEMBER` and `COLLABORATOR` by default. The receiver queues the fire whoever opened the issue, and the task judges the author. Then, in file order, it runs each review whose selector the ticket meets now and whose newest marker on the thread does not carry the ticket's current key, a sha256 of its body:
+
+- `when.on`: the event. Only `"opened"` is built, which covers the opening, a reopening and a body edit.
+- `when.labels`: labels the ticket must carry, every one. Default none.
+- `when.exclude`: labels that keep the ticket out, any one. Default none.
+- `when.by`: who may have opened it, as `author_association` values. Default `OWNER`, `MEMBER` and `COLLABORATOR`. A missing association reads as `NONE`.
+
+Each run is one `claude -p` under the stored login with no tools. Governor's fixed frame and its default checklist replace Claude Code's system prompt (`--system-prompt-file`), and the answer is held to a schema: a conclusion and its text. On stdin the model reads the ticket's title, labels and body; the title and body of its sub-issue parent and of each same-repo issue its body links; the numbers and titles of the repo's open issues; and which round of this review this is, one more than the review's own markers on the thread. A link to another repo's issue, an issue that does not exist, and a pull request are skipped, logged on `dispatch-ticket-review-link` at info. At most 10 linked issues are read, each body cut at 6,000 characters, and at most 300 open issues listed; stdin says what it left out.
+
+The default checklist checks that the ticket states the problem and who has it, says what done looks like, fits its parent and builds none of its non-goals, and repeats no open issue. A ticket that builds a non-goal is `neutral` even if it is also incomplete. A claim about the code is judged as written. From round 3 it concludes `neutral` rather than ask for another edit.
+
+| Conclusion | Comment |
+|---|---|
+| `success` | `<Name> review: passes. <reason>` |
+| `failure` | `<Name> review: waits for an edit. <gaps>` |
+| `neutral` | `<Name> review: waits for a person. <reason or gaps>` |
+
+Each run posts a new comment, ending `<!-- governor:ticket-review <name> <conclusion> <key> -->`. Only a comment governor's App posted is read as a review's. The comment is an ordinary comment: the filer session hears it as it hears any comment on its issue, and a person gets GitHub's notification. This slice applies no labels.
+
+**Failures.** A run that fails or answers outside the schema, and a comment GitHub refuses, post no marker and log `dispatch-ticket-review` at error. The turn's other reviews still run, and the turn exits 1. A run the login's session limit stops is `limited`: it does not alarm, and no later review in the turn runs. The weekly limit is a fault. With no marker, the ticket is reviewed again at its next edit.
+
+**Logs and transcripts.** Each review logs `dispatch-ticket-review` with the repo, the issue, the review's name, its conclusion, its round and `usage`. With `DropBoxUrl` set, each run's transcript goes to `<DropBoxUrl>/<date>/ticket-review-<name>-<issue>-<session>.jsonl.gz`.
 
 ## Prompts
 

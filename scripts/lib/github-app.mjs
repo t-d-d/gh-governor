@@ -1049,6 +1049,45 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
+     * An issue's sub-issue parent, with the repo it is in, or null for an
+     * issue that has none (GitHub answers 404).
+     *
+     * @param {number} number
+     * @returns {Promise<(TicketRow & { repo: string }) | null>}
+     */
+    parentIssue: async (number) => {
+      /** @type {any} */
+      let row;
+      try {
+        row = await call('GET', `/repos/${repo}/issues/${number}/parent`);
+      } catch (error) {
+        if (/** @type {{ status?: number }} */ (error)?.status === 404) return null;
+        throw error;
+      }
+      const at = /\/repos\/([^/]+\/[^/]+)$/.exec(String(row?.repository_url ?? ''))?.[1] ?? repo;
+      return { repo: at, number: row.number, title: row.title ?? '', body: row.body ?? '', state: row.state, labels: labelNames(row), pull: Boolean(row.pull_request) };
+    },
+
+    /**
+     * The repo's open issues, pull requests left out, oldest first, up to
+     * one more than `max`, so a caller can tell it was cut.
+     *
+     * @param {number} max
+     * @returns {Promise<Array<{ number: number, title: string }>>}
+     */
+    openIssues: async (max) => {
+      /** @type {Array<{ number: number, title: string }>} */
+      const out = [];
+      for (let page = 1; out.length <= max; page += 1) {
+        /** @type {any[]} */
+        const batch = await call('GET', `/repos/${repo}/issues?state=open&sort=created&direction=asc&per_page=100&page=${page}`);
+        for (const row of batch) if (!row.pull_request && out.length <= max) out.push({ number: row.number, title: String(row.title ?? '') });
+        if (batch.length < 100) break;
+      }
+      return out;
+    },
+
+    /**
      * An issue's or a PR's whole thread, oldest first, each marked with
      * whether `appId`'s App posted it as its bot (`postedByApp`); a reader
      * without `appId` owns no comment.

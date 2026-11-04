@@ -138,6 +138,10 @@
           "description": "Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off.",
           "type": "boolean"
         },
+        "ticketReviews": {
+          "description": "Each review the `ticketReviews` list holds comments on a ticket it selects, when the ticket is opened, reopened or has its body edited: whether it passes, waits for an edit, or waits for a person.",
+          "type": "boolean"
+        },
         "mergeHandoff": {
           "deprecated": true,
           "description": "Retired: read as unblocked.",
@@ -1207,6 +1211,78 @@
           "name",
           "prompt",
           "keyVersion"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "ticketReviews": {
+      "description": "The ticket reviews governor runs, in file order, each with its `name` and its selector `when`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person. At least one when the `ticketReviews` switch is on.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,64}$",
+            "description": "The review's name: lower-case letters, digits and hyphens, unique in the list. It goes into every comment and marker the review writes, so renaming a review starts its rounds afresh."
+          },
+          "when": {
+            "type": "object",
+            "properties": {
+              "on": {
+                "type": "string",
+                "const": "opened",
+                "description": "The event that runs the review. Only `\"opened\"`: an open issue opened, reopened or with its body edited."
+              },
+              "labels": {
+                "description": "Labels the ticket must carry, every one of them. Default none.",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 50,
+                  "pattern": "^[^,]*$"
+                }
+              },
+              "exclude": {
+                "description": "Labels the ticket must not carry, any of them. Default none.",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 50,
+                  "pattern": "^[^,]*$"
+                }
+              },
+              "by": {
+                "description": "Who may have opened the ticket, as GitHub's `author_association` values. Default `OWNER`, `MEMBER` and `COLLABORATOR`. The repo's `trust.review` bounds every review.",
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "OWNER",
+                    "MEMBER",
+                    "COLLABORATOR",
+                    "CONTRIBUTOR",
+                    "FIRST_TIME_CONTRIBUTOR",
+                    "FIRST_TIMER",
+                    "MANNEQUIN",
+                    "NONE"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "on"
+            ],
+            "additionalProperties": false,
+            "description": "The review's selector: `on`, the event, and the labels and authors a ticket must meet."
+          }
+        },
+        "required": [
+          "name",
+          "when"
         ],
         "additionalProperties": false
       }

@@ -120,6 +120,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](../dispatch/repo-conf
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on. |
 | `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on. |
+| `ticketReviews` | when `ticketReviews` is on | The ticket reviews governor runs, in file order, each with its `name` and its selector `when`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person. At least one when the `ticketReviews` switch is on. |
 
 The switches in `features`:
 
@@ -142,6 +143,7 @@ The switches in `features`:
 | `hooks` | A session on a hook's prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook's last session is open goes into that session as a message. |
 | `waits` | When a ticket's `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker's close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch. |
 | `signOff` | Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off. |
+| `ticketReviews` | Each review the `ticketReviews` list holds comments on a ticket it selects, when the ticket is opened, reopened or has its body edited: whether it passes, waits for an edit, or waits for a person. |
 
 `workflows`:
 

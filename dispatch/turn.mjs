@@ -124,6 +124,7 @@ import { checkConflicts } from './conflicts.mjs';
 import { closingFires } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
+import { reviewTicket } from './ticket-review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
@@ -171,7 +172,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   mergedSince: (base: string, since: string) => Promise<import('./periodics.mjs').Counted[]>,
  *   issuesOpenedSince: (since: string, by?: readonly string[]) => Promise<import('./periodics.mjs').Counted[]>,
  *   issuesClosedSince: (since: string, by?: readonly string[]) => Promise<import('./periodics.mjs').Counted[]>,
- * } & import('./review.mjs').ReviewReader & import('./waits.mjs').RelativeReader} Reader
+ * } & import('./review.mjs').ReviewReader & import('./waits.mjs').RelativeReader & Pick<import('./ticket-review.mjs').TicketReader, 'parentIssue' | 'openIssues'>} Reader
  *
  * @typedef {{
  *   owners: readonly string[],
@@ -198,8 +199,8 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   launchTimeoutMs?: number,
  *   probe: () => Promise<{ ok: boolean, detail: string }>,
  *   message: (message: { session: string, text: string }) => Promise<LaunchResult>,
- *   review: (run: { system: string, prompt: string, schema: object }) => Promise<LaunchResult>,
- *   transcript: (run: { sessionId: string, pr: number }) => Promise<{ key: string } | { skipped: string }>,
+ *   review: (run: { system: string, prompt: string, schema: object, replace?: boolean }) => Promise<LaunchResult>,
+ *   transcript: (run: { sessionId: string } & ({ pr: number } | { key: string })) => Promise<{ key: string } | { skipped: string }>,
  *   sleep: (ms: number) => Promise<void>,
  *   archive: import('../scripts/lib/session-signoff.mjs').Archive,
  *   fires?: import('../scripts/lib/session-signoff.mjs').Fires | undefined,
@@ -1454,6 +1455,29 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     return { kind: 'review', reviews, loginStored };
   }
 
+  // The ticket reviews: each review the repo lists whose selector the
+  // issue meets and whose marker its body has moved past, one `claude -p`
+  // apiece with no tools (dispatch/ticket-review.mjs).
+  if (invocation.kind === 'ticketReview') {
+    let loginStored = false;
+    /** @type {{ reviews: import('./ticket-review.mjs').Reviewed[], skipped?: string }} */
+    let reviewed;
+    try {
+      reviewed = await reviewTicket({
+        repo: fireRepo(),
+        issue: invocation.issue,
+        reader: await getReader(),
+        config: configOf(fireRepo()),
+        run: (request, label) => budgeted(() => deps.review(request), label),
+        transcript: deps.transcript,
+        log: deps.log,
+      });
+    } finally {
+      loginStored = await storeIfRefreshed(deps, original, account);
+    }
+    return { kind: 'ticketReview', issue: invocation.issue, ...reviewed, loginStored };
+  }
+
   if (invocation.kind === 'wait') {
     // A ticket opened or edited with a `Blocked until:` line: its wait item
     // put, rewritten or deleted to match (dispatch/waits.mjs).
@@ -2361,14 +2385,17 @@ export const realDeps = () => {
     // on stdin, no tools (the PR's text is someone else's, and the answer is
     // a judgement over it), the answer held to the schema. The only process
     // a review starts: it runs none of the served repo's code.
-    review: async ({ system, prompt, schema }) => {
+    // A ticket review's run (`replace`) puts its frame and checklist in
+    // place of Claude Code's own system prompt, which is written for a
+    // coding agent with tools.
+    review: async ({ system, prompt, schema, replace = false }) => {
       const dir = mkdtempSync(join(tmpdir(), 'governor-review-'));
       try {
         const systemFile = join(dir, 'system.md');
         writeFileSync(systemFile, system);
         const child = spawn('claude', [
           '-p', '--output-format', 'json', '--model', DEFAULT_MODEL,
-          '--append-system-prompt-file', systemFile, '--json-schema', JSON.stringify(schema), '--tools', '',
+          replace ? '--system-prompt-file' : '--append-system-prompt-file', systemFile, '--json-schema', JSON.stringify(schema), '--tools', '',
         ], { cwd, env: cliEnv(env, home, account), stdio: ['pipe', 'pipe', 'pipe'] });
         child.stdin.on('error', () => {});
         child.stdin.end(prompt);
@@ -2380,8 +2407,10 @@ export const realDeps = () => {
       }
     },
     // The run's transcript, to the drop box the stack names, under governor's
-    // own writer, named for the review so a reader tells it from a session's.
-    transcript: async ({ sessionId, pr }) => {
+    // own writer, named for the review so a reader tells it from a session's:
+    // the PR review's by its PR, a ticket review's by the key it gives.
+    transcript: async (run) => {
+      const { sessionId } = run;
       const url = env.SESSION_LOG_URL;
       if (!url || !env.SESSION_LOG_SECRET_ID) return { skipped: 'no drop box configured' };
       const secret = (await secretText(env.SESSION_LOG_SECRET_ID)).trim();
@@ -2391,10 +2420,11 @@ export const realDeps = () => {
         ? readdirSync(projects).map((d) => join(projects, d, `${sessionId}.jsonl`)).find((f) => existsSync(f))
         : undefined;
       if (file === undefined) return { skipped: `no transcript for ${sessionId}` };
-      const key = `${new Date().toISOString().slice(0, 10)}/pr-review-${pr}-${sessionId}.jsonl.gz`;
+      const name = 'key' in run ? run.key : `pr-review-${run.pr}-${sessionId}`;
+      const key = `${new Date().toISOString().slice(0, 10)}/${name}.jsonl.gz`;
       const response = await fetch(`${url.replace(/\/+$/, '')}/${key}`, {
         method: 'PUT',
-        headers: { referer: secret, 'content-type': 'application/gzip', 'x-amz-meta-pr': String(pr) },
+        headers: { referer: secret, 'content-type': 'application/gzip', ...('pr' in run ? { 'x-amz-meta-pr': String(run.pr) } : {}) },
         body: gzipSync(redactTranscript(readFileSync(file, 'utf8'), secret)),
       });
       if (!response.ok) throw new Error(`PUT ${key} failed: ${response.status} ${response.statusText}`);

@@ -52,7 +52,7 @@ describe('the receiver: an issue opened or edited with a `Blocked until:` line',
 
   test('an issue opened with the line still counts for the periodics, on a fire of its own', () => {
     const { fires } = routeEvent({ event: 'issues', payload: issuesEvent('opened', 'Blocked until: 2026-11-05'), owners: OWNERS });
-    assert.deepEqual(fires.map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted]), [['periodics', 'issuesOpened'], ['wait', undefined]]);
+    assert.deepEqual(fires.map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted]), [['periodics', 'issuesOpened'], ['wait', undefined], ['ticketReview', undefined]]);
   });
 
   test('an edit whose new or old body holds the line queues one; an edit not touching the body queues none', () => {

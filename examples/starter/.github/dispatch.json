@@ -19,7 +19,8 @@
     "periodics": true,
     "hooks": false,
     "waits": false,
-    "signOff": true
+    "signOff": true,
+    "ticketReviews": false
   },
   "heartbeat": { "issue": 1 },
   "pickup": { "sweepHours": 1 },
