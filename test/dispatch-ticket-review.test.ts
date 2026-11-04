@@ -12,14 +12,14 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { CONFIG_PATH, configSchema, readConfig } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, configSchema, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
 import { bodyDigest } from '../dispatch/pr-body.mjs';
 import { exitCodeFor } from '../dispatch/cli.mjs';
 import { run as runTurn } from '../dispatch/turn.mjs';
 import { cliResult } from '../dispatch/cli-answer.mjs';
 import {
   DEFAULT_TICKET_CHECKLIST, LINKED_BODY_LIMIT, LINKED_LIMIT, OPEN_LISTED, TICKET_ANSWER_SCHEMA, TICKET_FRAME,
-  LOOP_LIMIT, loopMarker, reviewTicket, ticketMarker,
+  LOOP_LIMIT, checklistFor, conclusionsFor, keyFor, loopMarker, reviewTicket, ticketMarker,
 } from '../dispatch/ticket-review.mjs';
 import { check } from '../checker/config-check.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
@@ -31,6 +31,7 @@ const REPO = 'acme/factory';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BODY = '## Problem\n\nThe retry budget is spent twice.\n\n## Done when\n\n- The budget is spent once.\n\nParent PRD: #390';
 const KEY = bodyDigest(BODY);
+const BODY_KEY_OF = bodyDigest;
 
 type Ticket = { number: number, title: string, body: string, state: string, labels: string[], pull: boolean, author: string, association: string };
 type Thread = { id: number, body: string, created_at: string, ours: boolean };
@@ -53,7 +54,8 @@ const PASSES: Conclusion = { conclusion: 'success', text: 'It states the problem
 const GAPS: Conclusion = { conclusion: 'failure', text: 'No problem is stated, and nothing says when it is done.' };
 
 type Conclusions = { success?: string[], failure?: string[], neutral?: string[] };
-type Review = { name: string, when: { on: 'opened', labels?: string[], exclude?: string[], by?: string[] }, conclusions?: Conclusions };
+type TypeEntry = { labels: string[], checklist?: string, conclusions?: Conclusions };
+type Review = { name: string, when: { on: 'opened', labels?: string[], exclude?: string[], by?: string[] }, conclusions?: Conclusions, checklist?: string, types?: TypeEntry[] };
 
 /** The labels each conclusion of `triage` adds in the label tests. */
 const TRIAGE: Conclusions = { success: ['triaged'], failure: ['triage: needs edit'], neutral: ['triage: needs a person'] };
@@ -182,10 +184,14 @@ describe('the ticketReviews config', () => {
       ['no on', [{ name: 'triage', when: {} }]],
       ['by BOT', [{ name: 'triage', when: { on: 'opened', by: ['BOT'] } }]],
       ['by a stranger', [{ name: 'triage', when: { on: 'opened', by: ['STRANGER'] } }]],
-      ['a later slice\'s key', [{ name: 'triage', when: { on: 'opened' }, checklist: 'x' }]],
+      ['a key no slice has built', [{ name: 'triage', when: { on: 'opened' }, model: 'x' }]],
+      ['an empty checklist', [{ name: 'triage', when: { on: 'opened' }, checklist: ' ' }]],
       ['a conclusion GitHub does not use', [{ name: 'triage', when: { on: 'opened' }, conclusions: { passed: ['ok'] } }]],
       ['a conclusion that is not a list', [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: 'ok' } }]],
-      ['types', [{ name: 'triage', when: { on: 'opened' }, types: [] }]],
+      ['an empty types', [{ name: 'triage', when: { on: 'opened' }, types: [] }]],
+      ['a type with no label', [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: [] }] }]],
+      ['a type\'s unknown key', [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], when: {} }] }]],
+      ['a type\'s conclusion GitHub does not use', [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], conclusions: { passed: ['ok'] } }] }]],
     ];
     for (const [why, list] of faults) assert.equal(file(list).ok, false, why);
   });
@@ -284,6 +290,184 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
     assert.ok(read.ok);
     const [triage] = read.config.ticketReviews ?? [];
     for (const conclusion of ['success', 'failure', 'neutral'] as const) assert.ok((triage?.conclusions[conclusion] ?? []).length > 0, conclusion);
+  });
+});
+
+describe('fitness: dispatcher-repos.md, a ticket review\'s checklists are prompt values read from the default branch', () => {
+  const config = (ticketReviews: unknown) => {
+    const read = readConfig(JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { ticketReviews: true }, ticketReviews }));
+    assert.ok(read.ok, JSON.stringify(read));
+    return read.config;
+  };
+  const files = (texts: Record<string, string>) => async (path: string) => texts[path] ?? null;
+
+  test('a checklist and each type\'s checklist, as text or as a file, are read into text', async () => {
+    const file = config([{
+      name: 'triage', when: { on: 'opened' }, checklist: { file: '.github/triage.md' },
+      types: [{ labels: ['type: bug'], checklist: 'Bugs name their repro.' }, { labels: ['type: enhancement'], checklist: { file: '.github/enhancement.md' } }, { labels: ['type: chore'] }],
+    }]);
+    const resolved = await resolveFiles(file, files({ '.github/triage.md': '---\nname: triage\n---\n\n# Ours\n', '.github/enhancement.md': 'Enhancements name a user.' }));
+    assert.ok(resolved.ok, JSON.stringify(resolved));
+    const [triage] = resolved.config.ticketReviews ?? [];
+    assert.equal(triage?.checklist, '# Ours');
+    assert.deepEqual(triage?.types?.map((t) => t.checklist), ['Bugs name their repro.', 'Enhancements name a user.', undefined]);
+  });
+
+  test('a missing or empty checklist file makes the config invalid, naming the key and the path', async () => {
+    const missing = await resolveFiles(config([{ name: 'triage', when: { on: 'opened' }, checklist: { file: '.github/gone.md' } }]), files({}));
+    assert.equal(missing.ok, false);
+    assert.match(missing.ok ? '' : missing.fault, /ticketReviews\.triage\.checklist: \.github\/gone\.md is not on the default branch/);
+    const empty = await resolveFiles(config([{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'] }, { labels: ['type: chore'], checklist: { file: '.github/chore.md' } }] }]), files({ '.github/chore.md': '---\nname: x\n---\n' }));
+    assert.equal(empty.ok, false);
+    assert.match(empty.ok ? '' : empty.fault, /ticketReviews\.triage\.types\.1\.checklist: \.github\/chore\.md is empty/);
+  });
+
+  test('the config check fails a missing checklist file as governor\'s read does', async () => {
+    const text = JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { ticketReviews: true }, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], checklist: { file: '.github/bug.md' } }] }] });
+    const checked = await check({ read: async (path: string) => (path === CONFIG_PATH ? text : null), paths: async () => ({ paths: [], truncated: false }), labels: async () => ['mode: afk', 'claimed'], issueBody: async () => null } as never);
+    assert.equal(checked.errors.length, 1);
+    assert.match(checked.errors[0]!, /ticketReviews\.triage\.types\.0\.checklist: \.github\/bug\.md/);
+  });
+
+  test('the factory\'s review has a checklist file and a types entry, and both read', async () => {
+    const read = readConfig(factoryFile(CONFIG_PATH));
+    assert.ok(read.ok);
+    const resolved = await resolveFiles(read.config, async (path) => { try { return factoryFile(path); } catch { return null; } });
+    assert.ok(resolved.ok, JSON.stringify(resolved));
+    const [triage] = resolved.config.ticketReviews ?? [];
+    assert.ok((triage?.checklist ?? '').length > 0);
+    assert.ok((triage?.types ?? []).length > 0);
+    assert.ok((triage?.types ?? []).some((t) => (t.checklist ?? '').length > 0));
+  });
+});
+
+describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a types entry may name', () => {
+  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triaged'], claim: 'claimed' }, features: { ticketReviews: true } };
+  const text = (over: Record<string, unknown>) => JSON.stringify({ ...base, ...over });
+  const refused = async (over: Record<string, unknown>, ...words: RegExp[]) => {
+    const read = readConfig(text(over));
+    assert.equal(read.ok, false, 'governor\'s config read refuses it');
+    const fault = read.ok ? '' : read.fault;
+    for (const word of words) assert.match(fault, word);
+    const checked = await check({ read: async (path: string) => (path === CONFIG_PATH ? text(over) : null), paths: async () => [] } as never);
+    assert.equal(checked.errors.length, 1, 'the config check refuses it');
+    for (const word of words) assert.match(checked.errors[0]!, word);
+  };
+  const ok = (over: Record<string, unknown>) => { const read = readConfig(text(over)); assert.ok(read.ok, JSON.stringify(read)); };
+
+  test('one label under two conclusions of one review, across its default and its entries, is refused', async () => {
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['seen'] }, types: [{ labels: ['type: bug'], conclusions: { failure: ['Seen'] } }] }] }, /triage/, /"Seen"/);
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], conclusions: { success: ['seen'] } }, { labels: ['type: chore'], conclusions: { neutral: ['seen'] } }] }] }, /triage/, /"seen"/);
+  });
+
+  test('the same label under the same conclusion in the default and an entry is allowed', () => {
+    ok({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'] }, types: [{ labels: ['type: bug'], conclusions: { success: ['triaged', 'mode: afk'] } }] }] });
+  });
+
+  test('one label in two reviews\' conclusions, where either names it in an entry, is refused', async () => {
+    await refused({ ticketReviews: [
+      { name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], conclusions: { failure: ['looked at'] } }] },
+      { name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { neutral: ['looked at'] } },
+    ] }, /triage/, /community/, /"looked at"/);
+  });
+
+  test('a review whose by reaches beyond trust.auto and whose bug entry names a ready label is refused', async () => {
+    await refused({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['community: reviewed'] }, types: [{ labels: ['type: bug'], conclusions: { success: ['mode: afk'] } }] }] }, /community/, /"mode: afk"/, /NONE/, /trust\.auto/);
+  });
+
+  test('a conclusion that names a label a types entry matches on is refused, in the default or in an entry', async () => {
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { neutral: ['Type: Bug'] }, types: [{ labels: ['type: bug'] }] }] }, /triage/, /"Type: Bug"/, /type/);
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'] }, { labels: ['type: chore'], conclusions: { failure: ['type: bug'] } }] }] }, /triage/, /"type: bug"/);
+    // Another review's type label is a type too: applying it would change what that review reads.
+    await refused({ ticketReviews: [
+      { name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'] }] },
+      { name: 'scope', when: { on: 'opened' }, conclusions: { success: ['type: bug'] } },
+    ] }, /scope/, /"type: bug"/);
+  });
+});
+
+describe('fitness: dispatcher-review.md, a ticket review\'s checklists and labels per ticket type', () => {
+  const BUG: TypeEntry = { labels: ['type: bug'], checklist: 'Bugs name their repro.', conclusions: { success: ['triaged', 'mode: afk'] } };
+  const SMALL: TypeEntry = { labels: ['size: small', 'size: tiny'], checklist: 'Small tickets name one file.', conclusions: { neutral: ['small: needs a person'], success: ['small: passed'] } };
+  const review = (over: Partial<Review> = {}): Review => ({ name: 'triage', when: { on: 'opened' }, conclusions: TRIAGE, ...over });
+  const asTicket = (labels: string[]) => ticketRow({ labels });
+
+  test('a review\'s own checklist replaces the default, after governor\'s frame', async () => {
+    const h = harness({ reviews: [review({ checklist: '# Ours\n\nCheck one thing.' })] });
+    await h.review();
+    assert.equal(h.runs[0]!.system, `${TICKET_FRAME}\n\n# Ours\n\nCheck one thing.`);
+    assert.ok(!h.runs[0]!.system.includes(DEFAULT_TICKET_CHECKLIST));
+  });
+
+  test('a ticket matching two entries gets both checklists after the base, in file order; one matching none gets the base alone', () => {
+    const r = review({ checklist: 'Base.', types: [SMALL, BUG] }) as never;
+    assert.equal(checklistFor(r, asTicket(['Type: Bug', 'size: tiny'])), 'Base.\n\nSmall tickets name one file.\n\nBugs name their repro.');
+    assert.equal(checklistFor(r, asTicket(['type: enhancement'])), 'Base.');
+    assert.equal(checklistFor(review({ types: [BUG] }) as never, asTicket(['type: bug'])), `${DEFAULT_TICKET_CHECKLIST}\n\nBugs name their repro.`);
+    assert.equal(checklistFor(review({ types: [{ labels: ['type: bug'] }] }) as never, asTicket(['type: bug'])), DEFAULT_TICKET_CHECKLIST);
+  });
+
+  test('the run reads the ticket\'s checklists, and a ticket with no type label is reviewed, not failed for lacking one', async () => {
+    const h = harness({ reviews: [review({ types: [BUG] })], ticket: { labels: [] } });
+    const result = await h.review();
+    assert.equal(result.reviews[0]!.outcome, 'commented');
+    assert.equal(h.runs[0]!.system, `${TICKET_FRAME}\n\n${DEFAULT_TICKET_CHECKLIST}`);
+    const bug = harness({ reviews: [review({ types: [BUG] })] });
+    await bug.review();
+    assert.equal(bug.runs[0]!.system, `${TICKET_FRAME}\n\n${DEFAULT_TICKET_CHECKLIST}\n\nBugs name their repro.`);
+  });
+
+  test('for each conclusion, the labels come from the first matching entry that names it, and otherwise from the default', () => {
+    const r = review({ types: [SMALL, BUG, { labels: ['type: bug'], conclusions: { success: ['never'], failure: ['bug: needs repro'] } }] }) as never;
+    assert.deepEqual(conclusionsFor(r, asTicket(['type: bug', 'size: small'])), { success: ['small: passed'], failure: ['bug: needs repro'], neutral: ['small: needs a person'] });
+    assert.deepEqual(conclusionsFor(r, asTicket(['type: bug'])), { success: ['triaged', 'mode: afk'], failure: ['bug: needs repro'], neutral: TRIAGE.neutral });
+    assert.deepEqual(conclusionsFor(r, asTicket([])), { success: TRIAGE.success, failure: TRIAGE.failure, neutral: TRIAGE.neutral });
+  });
+
+  test('a bug\'s success adds mode: afk, and a success on an enhancement never removes it', async () => {
+    const repoLabels = ['type: bug', 'type: enhancement', 'mode: afk', 'triaged', 'triage: needs edit'];
+    const bug = harness({ reviews: [review({ types: [BUG] })], ticket: { labels: ['type: bug'] }, repoLabels });
+    await bug.review();
+    assert.deepEqual(bug.live.labels, ['type: bug', 'triaged', 'mode: afk']);
+    const enhancement = harness({ reviews: [review({ types: [BUG] })], ticket: { labels: ['type: enhancement', 'mode: afk'] }, repoLabels });
+    await enhancement.review();
+    assert.deepEqual(enhancement.ops, ['add triaged', 'comment passes']);
+    assert.deepEqual(enhancement.live.labels, ['type: enhancement', 'mode: afk', 'triaged']);
+  });
+
+  test('a failure takes off a label an entry\'s success named, even where the ticket\'s type has changed since', async () => {
+    const h = harness({ reviews: [review({ types: [BUG] })], answers: [GAPS], ticket: { labels: ['type: enhancement', 'triaged', 'mode: afk'] }, repoLabels: ['type: enhancement', 'triaged', 'mode: afk', 'triage: needs edit'] });
+    await h.review();
+    assert.deepEqual(h.ops, ['remove triaged', 'remove mode: afk', 'add triage: needs edit', 'comment waits for an edit']);
+  });
+
+  test('with types, adding or removing a label an entry names changes the key; with no types the key is the body\'s digest', () => {
+    const r = review({ types: [BUG, SMALL] }) as never;
+    const key = keyFor(r, asTicket(['type: bug']));
+    assert.match(key, /^[0-9a-f]{64}$/);
+    assert.notEqual(key, BODY_KEY_OF(BODY));
+    assert.equal(keyFor(r, asTicket(['Type: Bug', 'anything'])), key, 'a label no entry names, and case, leave it');
+    assert.notEqual(keyFor(r, asTicket(['type: bug', 'size: tiny'])), key);
+    assert.notEqual(keyFor(r, asTicket([])), key);
+    assert.equal(keyFor(r, asTicket(['size: tiny', 'type: bug'])), keyFor(r, asTicket(['type: bug', 'size: tiny'])), 'sorted');
+    assert.equal(keyFor(review() as never, asTicket(['type: bug', 'size: tiny'])), KEY);
+  });
+
+  test('a ticket whose type label changes is reviewed again, and one whose other labels change is not', async () => {
+    const h = harness({ reviews: [review({ types: [BUG] })], live: true });
+    await h.review();
+    h.edit({ labels: [...h.live.labels, 'anything'] });
+    await h.review();
+    assert.equal(h.runs.length, 1);
+    h.edit({ labels: h.live.labels.filter((l) => l !== 'type: bug').concat('type: enhancement') });
+    await h.review();
+    assert.equal(h.runs.length, 2);
+  });
+
+  test('the marker carries the key with the ticket\'s type', async () => {
+    const h = harness({ reviews: [review({ types: [BUG] })] });
+    await h.review();
+    assert.ok(h.comments[0]!.body.endsWith(ticketMarker('triage', 'success', keyFor(review({ types: [BUG] }) as never, ticketRow()))));
   });
 });
 

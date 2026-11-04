@@ -120,7 +120,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](../dispatch/repo-conf
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on. |
 | `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on. |
-| `ticketReviews` | when `ticketReviews` is on | The ticket reviews governor runs, in file order, each with its `name`, its selector `when`, and the labels each of its `conclusions` adds. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. At least one when the `ticketReviews` switch is on. |
+| `ticketReviews` | when `ticketReviews` is on | The ticket reviews governor runs, in file order, each with its `name`, its selector `when`, the labels each of its `conclusions` adds, and optionally its own `checklist` and checks and labels per ticket type (`types`). Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. At least one when the `ticketReviews` switch is on. |
 
 The switches in `features`:
 
@@ -369,7 +369,36 @@ On every run governor adds the conclusion's labels and removes the ones the othe
 
 Put the `neutral` labels in `labels.exclude`, as `mode: human` is, so pickup never takes a ticket the review doubted. Put the claim label in `when.exclude`, so a ticket already being built is not reviewed when its session edits the body. A person overrules a review by adding its `success` label by hand.
 
-Governor refuses a file where one label appears under two conclusions of one review, where one label appears in two reviews' conclusions, or where a review whose `by` reaches beyond `trust.auto` names a ready label. On an open-source repo, keep the default `by` on the review whose labels can ready a ticket, and give strangers a second review whose labels ready nothing.
+Governor refuses a file where one label appears under two conclusions of one review, where one label appears in two reviews' conclusions, where a review whose `by` reaches beyond `trust.auto` names a ready label, or where a conclusion names a label a `types` entry matches on. Each rule reads a review's `conclusions` with every `types` entry's. On an open-source repo, keep the default `by` on the review whose labels can ready a ticket, and give strangers a second review whose labels ready nothing.
+
+### A ticket review's checklists and ticket types
+
+A review's `checklist` replaces governor's default checklist, after governor's fixed frame. It is text or `{ "file": "<path>" }`, read from the default branch with the config file, as `review.checklist` is. A missing or empty file makes the config invalid.
+
+`types` adds checks and labels per ticket type, matched by label:
+
+```json
+"ticketReviews": [
+  {
+    "name": "triage",
+    "when": { "on": "opened", "exclude": ["workflow: under development"] },
+    "checklist": { "file": ".github/ticket-review.md" },
+    "conclusions": { "success": ["triaged"], "failure": ["triage: needs edit"], "neutral": ["mode: human"] },
+    "types": [
+      {
+        "labels": ["type: bug"],
+        "checklist": "A bug says how to make it happen, what happened, and what should have.",
+        "conclusions": { "success": ["triaged", "mode: afk"] }
+      }
+    ]
+  }
+]
+```
+
+- An entry matches a ticket carrying any of its `labels`, in any case.
+- A ticket gets the base checklist, then each matching entry's `checklist`, in file order. A ticket matching no entry gets the base alone, and is not failed for lacking a type label.
+- An entry's `conclusions` names only the conclusions it overrides. For each conclusion, the labels come from the first matching entry that names it, and otherwise from the review's `conclusions`. Here a bug that passes is readied with no person, and an enhancement that passes waits for one.
+- With `types`, a ticket is reviewed again when a label an entry names is added or removed.
 
 ### The heartbeat checker
 

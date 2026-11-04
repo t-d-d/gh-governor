@@ -19,7 +19,8 @@
  * no secret: a served repo may be public.
  *
  * Every prompt value, each in `prompts`, the review's `checklist`, each
- * periodic's `prompt` and each hook's, is the
+ * periodic's `prompt` and each hook's, and a ticket review's `checklist` and
+ * each of its `types` entries', is the
  * text or `{ "file": "<path>" }`, a file in the repo read from the default
  * branch beside the config file ({@link resolveFiles}).
  *
@@ -366,12 +367,29 @@ export const TICKET_REVIEW_BY = Object.freeze([...SUMMONERS]);
 const CONCLUSION_NAMES = /** @type {const} */ (['success', 'failure', 'neutral']);
 
 /**
+ * One `types` entry of a ticket review: the labels that match a ticket
+ * carrying any of them, in any case; the checklist it adds after the
+ * review's base; and the conclusions whose labels it overrides.
+ */
+const ticketTypeSchema = z.strictObject({
+  labels: z.array(label).min(1).meta({ description: 'The labels that match a ticket carrying any of them, in any case. At least one.' }),
+  checklist: z.union([z.string().trim().min(1), promptFile]).optional().meta({ description: 'Checks a matching ticket gets after the review\'s base checklist: the text, or { "file": "<path>" }. Default none.' }),
+  conclusions: z.strictObject({
+    success: z.array(label).optional().meta({ description: 'The labels a `success` adds on a matching ticket, in place of the review\'s.' }),
+    failure: z.array(label).optional().meta({ description: 'The labels a `failure` adds on a matching ticket, in place of the review\'s.' }),
+    neutral: z.array(label).optional().meta({ description: 'The labels a `neutral` adds on a matching ticket, in place of the review\'s.' }),
+  }).optional().meta({ description: 'The conclusions whose labels this entry overrides, each a list. A conclusion it leaves out takes its labels from an entry later in the file that matches, or from the review\'s `conclusions`.' }),
+});
+
+/**
  * One ticket review (dispatch/ticket-review.mjs): its `name`, which goes
  * into every comment and marker it writes, and its selector, `when`. Only
  * `on: "opened"` is built; any other event fails loudly rather than be
  * read as something else. `conclusions` names the labels each conclusion
- * adds, which the code applies (dispatch/ticket-review.mjs). No other key
- * yet: a file written for a later governor fails here.
+ * adds, which the code applies (dispatch/ticket-review.mjs). `checklist` is
+ * the review's base checklist, a prompt value, and `types` adds checks and
+ * labels per ticket type, matched by label. No other key yet: a file
+ * written for a later governor fails here.
  */
 const ticketReviewSchema = z.strictObject({
   name: z.string().regex(HOOK_NAME, 'lower-case letters, digits and hyphens: it goes into a marker that can never be migrated').meta({ description: 'The review\'s name: lower-case letters, digits and hyphens, unique in the list. It goes into every comment and marker the review writes, so renaming a review starts its rounds afresh.' }),
@@ -385,7 +403,9 @@ const ticketReviewSchema = z.strictObject({
     success: z.array(label).default([]).meta({ description: 'The labels a `success` adds: the ticket passes. Default none.' }),
     failure: z.array(label).default([]).meta({ description: 'The labels a `failure` adds: the ticket waits for an edit by whoever filed it. Default none.' }),
     neutral: z.array(label).default([]).meta({ description: 'The labels a `neutral` adds: the ticket waits for a person. Default none.' }),
-  }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by` reaches beyond `trust.auto` names no ready label.' }),
+  }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by` reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on.' }),
+  checklist: z.union([z.string().trim().min(1), promptFile]).optional().meta({ description: 'The review\'s base checklist, after governor\'s fixed frame: the text, or { "file": "<path>" }. Default governor\'s own checklist.' }),
+  types: z.array(ticketTypeSchema).min(1).optional().meta({ description: 'Checks and labels per ticket type, each entry matched by label. A ticket gets the base checklist and then each matching entry\'s, in file order; one matching none gets the base alone. For each conclusion, the labels come from the first matching entry that names it, and otherwise from `conclusions`.' }),
 });
 
 /**
@@ -450,14 +470,16 @@ export const configSchema = z.strictObject({
         seen.add(name);
       }
     })
-    .meta({ description: 'The ticket reviews governor runs, in file order, each with its `name`, its selector `when`, and the labels each of its `conclusions` adds. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion\'s labels. At least one when the `ticketReviews` switch is on.' }),
+    .meta({ description: 'The ticket reviews governor runs, in file order, each with its `name`, its selector `when`, the labels each of its `conclusions` adds, and optionally its own `checklist` and checks and labels per ticket type (`types`). Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion\'s labels. At least one when the `ticketReviews` switch is on.' }),
 }).refine((c) => c.features.prReview !== true || c.review !== undefined, { message: 'prReview is on, so the file needs a review section with its checklist', path: ['review'] })
   .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue', path: ['heartbeat'] })
   .refine((c) => c.features.periodics !== true || c.periodics.length > 0, { message: 'periodics is on, so the file lists at least one periodic', path: ['periodics'] })
   .refine((c) => c.features.hooks !== true || c.hooks.length > 0, { message: 'hooks is on, so the file lists at least one hook', path: ['hooks'] })
   .refine((c) => c.features.ticketReviews !== true || (c.ticketReviews?.length ?? 0) > 0, { message: 'ticketReviews is on, so the file lists at least one ticket review', path: ['ticketReviews'] })
-  // A conclusion's labels: each under one conclusion of one review, so no
-  // run removes a label another conclusion or review just added, and none
+  // A conclusion's labels, in the review's `conclusions` and in each of its
+  // `types` entries: each under one conclusion of one review, so no run
+  // removes a label another conclusion or review just added; none that a
+  // `types` entry matches on, so no run changes a ticket's type; and none
   // that readies a ticket on a review governor runs for an author outside
   // trust.auto: a stranger's text would set work going by itself.
   .superRefine((c, ctx) => {
@@ -465,25 +487,41 @@ export const configSchema = z.strictObject({
     const owner = new Map();
     const auto = autoOf(c);
     const readyKeys = new Set(c.labels.ready.map((l) => l.toLowerCase()));
-    (c.ticketReviews ?? []).forEach(({ name, when, conclusions }, i) => {
+    /** @type {Map<string, string>} Each label a `types` entry matches on, lower-cased, and the review whose entry names it. */
+    const typeKeys = new Map();
+    for (const { name, types } of c.ticketReviews ?? []) {
+      for (const entry of types ?? []) for (const l of entry.labels) if (!typeKeys.has(l.toLowerCase())) typeKeys.set(l.toLowerCase(), name);
+    }
+    (c.ticketReviews ?? []).forEach(({ name, when, conclusions, types }, i) => {
+      /** @type {Array<{ path: Array<string | number>, sets: Partial<Record<string, string[]>> }>} The default's labels, then each entry's. */
+      const places = [
+        { path: ['ticketReviews', i, 'conclusions'], sets: conclusions },
+        ...(types ?? []).map((entry, j) => ({ path: ['ticketReviews', i, 'types', j, 'conclusions'], sets: entry.conclusions ?? {} })),
+      ];
       /** @type {Map<string, string>} Each label, lower-cased as GitHub matches it, and the conclusion of this review that names it. */
       const under = new Map();
-      for (const conclusion of CONCLUSION_NAMES) {
-        for (const l of conclusions[conclusion]) {
-          const path = ['ticketReviews', i, 'conclusions', conclusion];
-          const key = l.toLowerCase();
-          const first = under.get(key);
-          if (first !== undefined && first !== conclusion) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under both ${first} and ${conclusion}: each run would add it and take it off. Name it under one conclusion` });
-          else if (first === undefined) under.set(key, conclusion);
-          const other = owner.get(key);
-          if (other !== undefined && other !== name) ctx.addIssue({ code: 'custom', path, message: `the ${other} and ${name} reviews both name "${l}" in their conclusions: one review's run would take off a label the other added. Give each review labels of its own` });
-          else if (other === undefined) owner.set(key, name);
+      /** @type {string[]} */
+      const ready = [];
+      for (const { path: at, sets } of places) {
+        for (const conclusion of CONCLUSION_NAMES) {
+          for (const l of sets[conclusion] ?? []) {
+            const path = [...at, conclusion];
+            const key = l.toLowerCase();
+            const first = under.get(key);
+            if (first !== undefined && first !== conclusion) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under both ${first} and ${conclusion}: each run would add it and take it off. Name it under one conclusion` });
+            else if (first === undefined) under.set(key, conclusion);
+            const other = owner.get(key);
+            if (other !== undefined && other !== name) ctx.addIssue({ code: 'custom', path, message: `the ${other} and ${name} reviews both name "${l}" in their conclusions: one review's run would take off a label the other added. Give each review labels of its own` });
+            else if (other === undefined) owner.set(key, name);
+            const typed = typeKeys.get(key);
+            if (typed !== undefined) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and a types entry of the ${typed} review matches on it: applying it would change the ticket's type. Give the conclusion a label no types entry matches on` });
+            if (readyKeys.has(key) && !ready.includes(l)) ready.push(l);
+          }
         }
       }
       const beyond = (when.by ?? TICKET_REVIEW_BY).filter((a) => !auto.includes(a));
       if (beyond.length === 0) return;
-      const ready = CONCLUSION_NAMES.flatMap((conclusion) => conclusions[conclusion].filter((l) => readyKeys.has(l.toLowerCase())));
-      for (const l of new Set(ready)) {
+      for (const l of ready) {
         ctx.addIssue({ code: 'custom', path: ['ticketReviews', i, 'conclusions'], message: `the ${name} review names the ready label "${l}", and its by lets in ${beyond.join(', ')}, which trust.auto does not: a ticket from them could be readied with no person choosing it. Narrow the review's by to trust.auto, or give it labels that ready nothing` });
       }
     });
@@ -539,7 +577,10 @@ export const configSchema = z.strictObject({
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
  * @typedef {{ success: string[], failure: string[], neutral: string[] }} Conclusions The labels each conclusion of a ticket review adds.
- * @typedef {{ name: string, when: { on: 'opened', labels?: string[], exclude?: string[], by?: string[] }, conclusions: Conclusions }} TicketReview One ticket review, its selector and its conclusions' labels.
+ * @typedef {{ labels: string[], checklist?: string, conclusions?: Partial<Conclusions> }} TicketType One `types` entry of a ticket review, its checklist read.
+ * @typedef {{ name: string, when: { on: 'opened', labels?: string[], exclude?: string[], by?: string[] }, conclusions: Conclusions, checklist?: string, types?: TicketType[] }} TicketReview
+ *   One ticket review, its selector, its conclusions' labels, and its
+ *   checklists read.
  * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, periodics: Periodic[], hooks: Hook[], ticketReviews?: TicketReview[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
@@ -559,7 +600,9 @@ export const configSchema = z.strictObject({
  *   `periodics`: the recurring sessions the schedule fire starts.
  *   `hooks`: the hooks an outside system fires.
  *   `ticketReviews`: the ticket reviews, where the file lists them.
- * @typedef {Omit<RepoConfig, 'prompts' | 'review' | 'periodics' | 'hooks'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile }, periodics: Array<Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }>, hooks: Array<Omit<Hook, 'prompt'> & { prompt: string | PromptFile }> }} FileConfig
+ * @typedef {Omit<TicketReview, 'checklist' | 'types'> & { checklist?: string | PromptFile, types?: Array<Omit<TicketType, 'checklist'> & { checklist?: string | PromptFile }> }} FileTicketReview
+ *   A ticket review as the file holds it, before its checklist files are read.
+ * @typedef {Omit<RepoConfig, 'prompts' | 'review' | 'periodics' | 'hooks' | 'ticketReviews'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile }, periodics: Array<Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }>, hooks: Array<Omit<Hook, 'prompt'> & { prompt: string | PromptFile }>, ticketReviews?: FileTicketReview[] }} FileConfig
  *   The file as read, before {@link resolveFiles} reads the prompt files it names.
  */
 
@@ -633,11 +676,23 @@ export const resolveFiles = async (config, read) => {
   /** @type {string[]} */
   const faults = [];
   const entries = Object.entries(config.prompts).filter(/** @returns {e is [string, string | PromptFile]} */ (e) => e[1] !== undefined);
-  const [texts, checklist, periodicTexts, hookTexts] = await Promise.all([
+  /**
+   * A value that may be unset: unset reads as unset.
+   *
+   * @param {string} key
+   * @param {string | PromptFile | undefined} value
+   * @returns {Promise<{ text?: string } | { fault: string }>}
+   */
+  const optionalTextOf = async (key, value) => (value === undefined ? {} : textOf(key, value));
+  const [texts, checklist, periodicTexts, hookTexts, ticketTexts] = await Promise.all([
     Promise.all(entries.map(([kind, value]) => textOf(`prompts.${kind}`, value))),
     config.review === undefined ? null : textOf('review.checklist', config.review.checklist),
     Promise.all(config.periodics.map((p) => textOf(`periodics.${p.name}.prompt`, p.prompt))),
     Promise.all(config.hooks.map((h) => textOf(`hooks.${h.name}.prompt`, h.prompt))),
+    Promise.all((config.ticketReviews ?? []).map((r) => Promise.all([
+      optionalTextOf(`ticketReviews.${r.name}.checklist`, r.checklist),
+      Promise.all((r.types ?? []).map((t, i) => optionalTextOf(`ticketReviews.${r.name}.types.${i}.checklist`, t.checklist))),
+    ]))),
   ]);
   entries.forEach(([kind], i) => {
     const got = /** @type {{ text: string } | { fault: string }} */ (texts[i]);
@@ -661,10 +716,28 @@ export const resolveFiles = async (config, read) => {
     if ('fault' in got) faults.push(got.fault);
     else hooks.push({ ...h, prompt: got.text });
   });
+  /** @type {TicketReview[]} */
+  const ticketReviews = [];
+  (config.ticketReviews ?? []).forEach((r, i) => {
+    const [base, typeTexts] = /** @type {[{ text?: string } | { fault: string }, Array<{ text?: string } | { fault: string }>]} */ (ticketTexts[i]);
+    /** @type {(got: { text?: string } | { fault: string }) => string | undefined} */
+    const read = (got) => {
+      if ('fault' in got) { faults.push(got.fault); return undefined; }
+      return got.text;
+    };
+    const { checklist: _base, types, ...kept } = r;
+    const text = read(base);
+    const typed = types?.map((t, j) => {
+      const { checklist: _entry, ...entry } = t;
+      const entryText = read(/** @type {{ text?: string } | { fault: string }} */ (typeTexts[j]));
+      return entryText === undefined ? entry : { ...entry, checklist: entryText };
+    });
+    ticketReviews.push({ ...kept, ...(text === undefined ? {} : { checklist: text }), ...(typed === undefined ? {} : { types: typed }) });
+  });
   if (faults.length > 0) return { ok: false, fault: faults.join('; ') };
   const review = config.review === undefined || checklist === null || 'fault' in checklist ? undefined : { ...config.review, checklist: checklist.text };
-  const { review: _file, ...rest } = config;
-  return { ok: true, config: { ...rest, prompts, periodics, hooks, ...(review === undefined ? {} : { review }) } };
+  const { review: _file, ticketReviews: _reviews, ...rest } = config;
+  return { ok: true, config: { ...rest, prompts, periodics, hooks, ...(review === undefined ? {} : { review }), ...(config.ticketReviews === undefined ? {} : { ticketReviews }) } };
 };
 
 /** A cloud environment ID: anything else in `environment` is a name. */
