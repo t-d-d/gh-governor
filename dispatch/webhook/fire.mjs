@@ -592,13 +592,16 @@ const trustValue = (v, field = 'author') => {
   return v;
 };
 
+/** A GitHub login, a bot's `[bot]` suffix included: one word. */
+export const LOGIN = /^[\w.[\]-]+$/;
+
 /**
- * A dispatch fire's `assigner`: a login, one word.
+ * A dispatch fire's `assigner`: a login ({@link LOGIN}).
  *
  * @param {unknown} v
  */
 const login = (v) => {
-  if (typeof v !== 'string' || !/^[\w.[\]-]+$/.test(v)) throw new Error(`a dispatch invocation's assigner is a login, got: ${JSON.stringify(v)}`);
+  if (typeof v !== 'string' || !LOGIN.test(v)) throw new Error(`a dispatch invocation's assigner is a login, got: ${JSON.stringify(v)}`);
   return v;
 };
 

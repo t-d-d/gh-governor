@@ -220,5 +220,5 @@ export const reportUnstarted = async ({ reader, unstarted, what, event, log }) =
  * @param {{ unlooked: import('./start.mjs').Unlooked, event: string, log: (event: string, context?: Record<string, unknown>) => void }} args
  */
 export const reportUnlooked = ({ unlooked: { repo, issue, logins, error }, event, log }) => {
-  log(event, { level: 'warn', repo, issue, outcome: 'skipped', logins, reason: `governor could not look up whether trust.start lets in ${logins.join(', ')}, so their act counts for nothing this turn: ${error}` });
+  log(event, { level: 'warn', repo, issue, outcome: 'skipped', logins, reason: logins.length === 0 ? `a ready label counts for nothing this turn: ${error}` : `governor could not look up whether trust.start lets in ${logins.join(', ')}, so their act counts for nothing this turn: ${error}` });
 };

@@ -18,8 +18,9 @@
  * looked up the same way (dispatch/dispatch-fire.mjs).
  */
 
-import { addedBy, readsAdders, startRefused } from '../scripts/lib/ready-work.mjs';
+import { addedBy, authorHasSay, readsAdders, startRefused } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
+import { narrows } from './trust.mjs';
 
 /**
  * The two reads a lookup needs: whether the repo's owner is a `User` or an
@@ -107,7 +108,7 @@ export const startKinds = async ({ reader, repo, logins }) => {
 export const judgeReady = async ({ reader, repo, ticket, ready, start }) => {
   if (!readsAdders(ticket, start)) return { counts: true };
   const adds = await reader.labelAdds(ticket.number);
-  const narrowed = readsAdders({ association: 'OWNER' }, start);
+  const narrowed = narrows(start);
   /** @type {((login: string) => string | null) | undefined} */
   let kindOf;
   /** @type {string | undefined} */
@@ -127,9 +128,16 @@ export const judgeReady = async ({ reader, repo, ticket, ready, start }) => {
   }
   const refused = startRefused(ticket, adds, ready, start, kindOf);
   if (refused.length === 0) return { counts: true };
-  const faults = refused.filter((r) => r.why === 'template' || r.why === 'bot' || r.why === 'unknown').map((r) => r.label);
+  // A label no event names yet, on a ticket whose author has a say, is
+  // most likely one whose event lags the label: the next turn reads again,
+  // and nothing is said on the ticket in the meantime.
+  const lagging = authorHasSay(ticket) ? refused.filter((r) => r.why === 'unknown') : [];
+  const faults = refused.filter((r) => r.why === 'template' || r.why === 'bot' || (r.why === 'unknown' && lagging.length === 0)).map((r) => r.label);
   if (faults.length > 0) {
     return { counts: false, outsider: { repo, issue: ticket.number, labels: faults, author: ticket.author ?? '', association: ticket.association ?? 'NONE', addedBy: addedBy(adds, faults) } };
+  }
+  if (lagging.length > 0) {
+    return { counts: false, unread: { repo, issue: ticket.number, logins: [], error: `no labeled event names ${lagging.map((r) => r.label).join(', ')} yet` } };
   }
   const unread = refused.filter((r) => r.why === 'unread');
   if (unread.length > 0) {

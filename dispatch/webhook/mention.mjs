@@ -72,7 +72,7 @@
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
-import { DISPATCH_MARKER, FIRE_BUDGET, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
+import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
 import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
 
@@ -703,7 +703,7 @@ export const mentionFires = ({ event, payload, appId, relay = RELAY }) => {
     if (assignedToClaude) {
       if (payload?.sender?.type === 'Bot') return { fires: [], reason: `a bot (${payload.sender.login ?? 'unnamed'}) cannot summon a session` };
       const reason = `issue #${issue?.number} assigned to claude`;
-      const assigner = typeof payload?.sender?.login === 'string' && /^[\w.[\]-]+$/.test(payload.sender.login) ? payload.sender.login : undefined;
+      const assigner = typeof payload?.sender?.login === 'string' && LOGIN.test(payload.sender.login) ? payload.sender.login : undefined;
       return { fires: [summons(issuePrompt(payload), issue, reason, appId, { assigner })], reason };
     }
     if (action !== 'opened' || !mentions(issue?.body)) return null;

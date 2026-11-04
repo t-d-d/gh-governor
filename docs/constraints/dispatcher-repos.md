@@ -161,7 +161,10 @@ spends the one claude.ai login.
   default `start` the events are read only where the ticket's author is
   not an owner, member or collaborator (`readsAdders`), and there a label
   the author added counts for nothing, as before `trust.start`. Once
-  a repo narrows `start`, the events are read on every ready ticket.
+  a repo narrows `start`, the events are read on every ready ticket, and
+  a label no event names yet on a ticket whose author has a say counts
+  for nothing that turn, logged at warn with no comment, since its event
+  most likely lags the label.
   The rule sits beside `trust.task` and does not replace it: under the
   default `task` it decides only whether a stranger's ticket gets the
   refusal comment, and once a repo widens `task` it is what keeps

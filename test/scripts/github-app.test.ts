@@ -840,6 +840,31 @@ describe('githubReader', () => {
     assert.equal(calls.length, 2);
   });
 
+  // A narrowed trust.start looks up every ready ticket's adder, so a turn
+  // reads the owner type and the list once, not once a ticket.
+  test('repoOwnerType and outsideCollaborators read the repo once a reader', async () => {
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory': { full_name: 'acme/factory', owner: { login: 'acme', type: 'Organization' } },
+      'https://api.github.com/repos/acme/factory/collaborators': [{ login: 'pat' }],
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    for (let i = 0; i < 3; i += 1) {
+      assert.equal(await reader.repoOwnerType(), 'Organization');
+      assert.deepEqual(await reader.outsideCollaborators(), ['pat']);
+    }
+    assert.equal(calls.length, 2);
+  });
+
+  // An outside collaborator cut off past the last page would read as a
+  // member, a failed lookup taken for someone in trust.start.
+  test('outsideCollaborators throws where the list fills every page it reads', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/collaborators': (_init: RequestInit | undefined, url: string) =>
+        Array.from({ length: 100 }, (_, i) => ({ login: `p${new URL(url).searchParams.get('page')}-${i}` })),
+    });
+    await assert.rejects(githubReader({ token: 't', repo: 'acme/factory', fetch }).outsideCollaborators(), /outside collaborators/);
+  });
+
   // A fire naming issues reads each on its own and orders them oldest first.
   test('ticket carries its creation time, where the issue has one', async () => {
     const { fetch } = fakeFetch({

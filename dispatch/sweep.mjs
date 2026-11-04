@@ -27,9 +27,8 @@ import { dispatchMarker } from './webhook/fire.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
 import { byOf, sweepDue, sweepHoursOf } from './pickup.mjs';
-import { autoOf, relayOf } from './trust.mjs';
+import { autoOf, relayOf, startOf } from './trust.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
-import { startOf } from './trust.mjs';
 
 /** A fallback outcome that started the spec session, or handed the message on. */
 const WENT = new Set(['dispatched', 'unconfirmed', 'forwarded']);

@@ -79,13 +79,20 @@ const within = (list, above) => list.filter((a) => above.every((outer) => outer.
 export const startOf = (config) => config.trust?.start ?? START;
 
 /**
- * Whether a repo's `trust.start` leaves out any of the authors with a say.
+ * Whether a `trust.start` list leaves out any of the authors with a say.
  * Only then is a ready label's adder looked up: at the default, anyone who
  * can add a label but the author has triage access, and so is in it.
  *
+ * @param {readonly string[]} start
+ */
+export const narrows = (start) => START.some((a) => !start.includes(a));
+
+/**
+ * Whether a repo's `trust.start` is narrowed ({@link narrows}).
+ *
  * @param {TrustConfig} config
  */
-export const startNarrowed = (config) => START.some((a) => !startOf(config).includes(a));
+export const startNarrowed = (config) => narrows(startOf(config));
 
 /**
  * A repo's `trust.relay`: whose text may reach a session that is already

@@ -157,6 +157,14 @@ describe('judgeReady: whether a ticket\'s ready labels count, read once for the 
     assert.deepEqual(r.asked, []);
   });
 
+  test('narrowed, a label no event names yet on a ticket whose author has a say is unread, not a fault: the events can lag the label', async () => {
+    const judged = await judgeReady({ reader: reader([]).reader, repo: 'acme/factory', ticket: ticket(owners), ready: READY, start: OWNER_ONLY });
+    assert.ok('unread' in judged, JSON.stringify(judged));
+    assert.match(judged.unread.error, /no labeled event/);
+    const stranger = await judgeReady({ reader: reader([]).reader, repo: 'acme/factory', ticket: ticket(strangers), ready: READY, start: OWNER_ONLY });
+    assert.ok('outsider' in stranger, 'on a stranger\'s ticket it stays a fault, as before');
+  });
+
   test('narrowed, a lookup that fails counts the label for nothing, and says why', async () => {
     const judged = await judgeReady({ reader: reader(by('pat'), new Error('HTTP 502')).reader, repo: 'acme/factory', ticket: ticket(owners), ready: READY, start: OWNER_ONLY });
     assert.ok('unread' in judged, JSON.stringify(judged));
