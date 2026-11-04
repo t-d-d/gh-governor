@@ -214,7 +214,7 @@ Each conflicted PR's owner session is told the PR, the merge that moved the base
 
 ## The PR review
 
-The review runs in each served repo whose file turns `prReview` on, from that repo's `review` section ([constraints/dispatcher-review.md](constraints/dispatcher-review.md)). The image carries no repo's checklist: each review reads the repo's own, from its default branch. The review turn (`dispatch/review.mjs`) reads the PR, the tickets its body closes and the last review marker, then runs `claude -p` under the stored login with the checklist appended to the system prompt, the PR's facts on stdin, no tools, and the answer held to a JSON schema. The review starts no session.
+The review runs in each served repo whose file turns `prReview` on, from that repo's `review` section ([constraints/dispatcher-review.md](constraints/dispatcher-review.md)). The image carries no repo's checklist: each review reads the repo's own, from its default branch. The review turn (`dispatch/review.mjs`) reads the PR, the tickets its body closes and the last review marker, then runs `claude -p` under the stored login with governor's fixed frame, the repo's checklist and a suffix naming what the code decided in place of Claude Code's system prompt (`--system-prompt-file`), the PR's facts on stdin, no tools, and the answer held to a JSON schema. The review starts no session.
 
 **Decided in code.** Three tests are decided before the model is asked, and a PR failing one is commented on without a model run:
 

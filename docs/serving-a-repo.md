@@ -155,7 +155,7 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 
 `review`:
 
-- `checklist` (required): what is appended to the model's system prompt, as text or `{ "file": "<path>" }`.
+- `checklist` (required): the model's system prompt, after governor's fixed frame and before a suffix naming what the code decided, as text or `{ "file": "<path>" }`.
 - `humanOnly`: `{ "glob", "reason", "unless" }` entries. A PR changing a matching path waits for a person, unless every ticket it closes carries one of the `unless` labels.
 - `tickets`: `require` and `forbid` lists of `{ "labels", "unless" }` rules that every ticket the PR closes must meet.
 - `quote`: globs of changed files the model reads whole. A `!` entry takes a path back out.

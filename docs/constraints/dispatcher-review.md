@@ -69,10 +69,10 @@ served repos have their owner merge, so a pass there must not merge.
   naming what the code decided.
 - Where the model was asked, the review comment's marker carries a digest
   of everything it read, the commits left out (`readDigest`,
-  dispatch/checklist.mjs): the frame, the checklist with its suffix, the answer's
-  schema, the PR's title and body, the
-  closing tickets' text and labels, the changed-file lines, and the quoted
-  files' text at the merge base and the head. At a new head whose digest
+  dispatch/checklist.mjs): the frame, the checklist with its suffix, the
+  answer's schema, the PR's title and body, the closing tickets' text and
+  labels, the changed-file lines, and the quoted files' text at the merge
+  base and the head. At a new head whose digest
   matches the last review's, and where that review was the model's pass,
   the pass is posted again with no model call, naming the head it was given
   at. The settings checks and test 8 run first, as for any review. A fail is
