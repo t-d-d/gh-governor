@@ -18,10 +18,11 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 import { pinnedInputProblems } from './helpers/pinned-workflow.ts';
 import { REPO_ROOT } from './helpers/repo-model.ts';
@@ -255,4 +256,43 @@ describe('the gate\'s checkout', () => {
     const checkout = gate.jobs.gate.steps.find((s) => s.uses?.startsWith('actions/checkout@'));
     assert.equal(checkout?.with?.['fetch-depth'], 0);
   });
+});
+
+// The commit both config files' `$schema` names, which the config check is
+// pinned to. test/starter-kit.test.ts checks the kit's pins agree.
+const schemaPin = (file: string) => {
+  const { $schema } = JSON.parse(readFileSync(join(REPO_ROOT, 'examples/starter/.github', file), 'utf8')) as { $schema?: unknown };
+  const sha = /^https:\/\/raw\.githubusercontent\.com\/t-d-d\/gh-governor\/([0-9a-f]{40})\/schema\/dispatch\.schema\.json$/.exec(String($schema))?.[1];
+  assert.ok(sha !== undefined, String($schema));
+  return sha;
+};
+
+describe('the starter kit\'s config files at their pinned commit', () => {
+  // The pinned commit's tree, read from git history into a temporary folder,
+  // with this checkout's modules beside it, so its readConfig can be imported.
+  let dir: string | undefined;
+  let readConfigAt: ((text: string) => { ok: boolean }) | undefined;
+  const sha = schemaPin('dispatch.json');
+  before(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'starter-pin-config-'));
+    const tar = execFileSync('git', ['archive', sha, 'dispatch', 'scripts', 'checker', 'package.json'], { cwd: REPO_ROOT, maxBuffer: 1 << 28 });
+    execFileSync('tar', ['-x', '-C', dir], { input: tar });
+    symlinkSync(join(REPO_ROOT, 'node_modules'), join(dir, 'node_modules'));
+    ({ readConfig: readConfigAt } = await import(pathToFileURL(join(dir, 'dispatch/repo-config.mjs')).href) as { readConfig: (text: string) => { ok: boolean } });
+  });
+  after(() => { if (dir !== undefined) rmSync(dir, { recursive: true, force: true }); });
+
+  test('both files name the same commit, and it is on main', () => {
+    assert.equal(schemaPin('dispatch.dark-factory.json'), sha);
+    const onMain = spawnSync('git', ['merge-base', '--is-ancestor', sha, 'origin/main'], { cwd: REPO_ROOT });
+    assert.equal(onMain.status, 0, `${sha} is not on origin/main`);
+  });
+
+  for (const file of ['dispatch.json', 'dispatch.dark-factory.json']) {
+    test(`governor's readConfig at the pin accepts ${file}`, () => {
+      assert.ok(readConfigAt !== undefined);
+      const got = readConfigAt(readFileSync(join(REPO_ROOT, 'examples/starter/.github', file), 'utf8'));
+      assert.ok(got.ok, JSON.stringify(got));
+    });
+  }
 });

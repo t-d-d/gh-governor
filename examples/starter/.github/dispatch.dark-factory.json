@@ -1,7 +1,12 @@
 {
-  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/030ec89fd7f1a2ec6c80e37fc199256aa0dde358/schema/dispatch.schema.json",
+  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/9c5c1ca576777b6c8a3e4d26e96cb534c7dfca1c/schema/dispatch.schema.json",
   "environment": "my-env",
-  "labels": { "ready": ["mode: afk"], "claim": "claimed", "claimRemoves": [] },
+  "labels": {
+    "ready": ["mode: afk", "triaged"],
+    "claim": "claimed",
+    "claimRemoves": [],
+    "exclude": ["type: prd", "mode: human"]
+  },
   "features": {
     "pickup": true,
     "summons": true,
@@ -33,8 +38,8 @@
       "gapHours": 4
     },
     {
-      "name": "Ticket review",
-      "prompt": "Review the issues opened that governor lists below, which are the ones opened since the time it gives. Where it says there are more than it lists, find the rest yourself. For each one still open, check it against the code: whether it says what done looks like, whether the code already does it, and whether another open issue already covers it. Comment on one that needs work, saying what it lacks. Close a duplicate, or one the code already settles, with a comment saying why. Leave alone the issues the heartbeat check opens, which close themselves. Change no code yourself. When you are done, make `Signing off.` the last line of your reply.",
+      "name": "Backlog review",
+      "prompt": "Review the issues opened that governor lists below, which are the ones opened since the time it gives. Where it says there are more than it lists, find the rest yourself. For each one still open, check it against the code: whether it says what done looks like, whether the code already does it, and whether another open issue already covers it. Comment on one that needs work, saying what it lacks. Close a duplicate, or one the code already settles, with a comment saying why. Leave alone the issues the heartbeat check opens, which close themselves. Then list the open tickets left stuck, whenever they were opened, reading the labels from .github/dispatch.json: open ones no ticket review ran on, ones still carrying the labels a ticket review's `failure` or `neutral` conclusion adds, and claimed ones, carrying the claim label, with no open pull request. Post the list as one comment on the heartbeat issue, each ticket with a line on why it is stuck, and change none of them. Change no code yourself. When you are done, make `Signing off.` the last line of your reply.",
       "days": 7,
       "counts": { "issuesOpened": 5 }
     },
@@ -58,6 +63,29 @@
     "merge": true
   },
   "ticketReviews": [
-    { "name": "triage", "when": { "on": "opened", "exclude": ["claimed"] } }
+    {
+      "name": "triage",
+      "when": { "on": "opened", "exclude": ["claimed"] },
+      "types": [
+        {
+          "labels": ["type: prd"],
+          "checklist": "A PRD states the problem, who has it, the solution in outline, and its non-goals. It is many pull requests' work, which its tickets split up, so it is not judged as one."
+        },
+        {
+          "labels": ["type: bug", "bug"],
+          "checklist": "A bug says how to reproduce it, what happened, and what should have happened. It is one pull request's work.",
+          "conclusions": { "success": ["triaged", "mode: afk"] }
+        },
+        {
+          "labels": ["type: enhancement"],
+          "checklist": "An enhancement is one pull request's work, and says how a reviewer checks it is done."
+        }
+      ],
+      "conclusions": {
+        "success": ["triaged"],
+        "failure": ["triage: needs edit"],
+        "neutral": ["mode: human"]
+      }
+    }
   ]
 }
