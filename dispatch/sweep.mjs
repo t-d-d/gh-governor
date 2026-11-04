@@ -198,7 +198,7 @@ export const planSweep = async (invocation, ctx) => {
       }
       swept.set(repo, new Date(now).toISOString());
     }
-    sources.push({ repo, reader: await ctx.readerFor(repo), labels: config.labels, by: byOf(config), prompts: config.prompts });
+    sources.push({ repo, reader: await ctx.readerFor(repo), labels: config.labels, by: byOf(config), prompts: config.prompts, signOff: turnsOn(config, 'signOff') });
   }
   // A fire naming its issue plans it alone, through the selection's own
   // checks, from a read of that issue rather than the ready list; the sweep

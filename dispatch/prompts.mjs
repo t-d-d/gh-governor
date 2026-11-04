@@ -30,10 +30,14 @@ const LOGS = "Read the failed jobs' logs and find the cause.";
 /** Every message kind, its default and the facts it may name. @type {Readonly<Record<string, Kind>>} */
 export const PROMPTS = Object.freeze({
   // A pickup session's opening prompt, after the line naming its issue (scripts/lib/dispatch-prompt.mjs).
+  // The check comes first: a ticket the code already settles, or one far
+  // larger than it reads, gets a comment and no build. It keeps its claim, so
+  // pickup does not start it again, and a person decides.
   pickup: {
     text: [
       'Implement GitHub issue #{issue} in {repo} through to a reviewable PR.',
       'The dispatcher claimed #{issue} for this session: it is `{claim}` for you, so proceed on it.',
+      'Before you build, read #{issue} against the code. If the code already does what it asks, or the work is far larger than the ticket reads, comment on #{issue} saying which and what you found, and stop without building. Leave `{claim}` on #{issue}, so pickup does not start it again and a person decides.',
       'Unattended session: push and raise the PR without asking, `Closes #{issue}`.',
     ].join('\n'),
     fills: ['issue', 'repo', 'claim'],
