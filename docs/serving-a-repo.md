@@ -398,7 +398,7 @@ A review's `checklist` replaces governor's default checklist, after governor's f
 - An entry matches a ticket carrying any of its `labels`, in any case.
 - A ticket gets the base checklist, then each matching entry's `checklist`, in file order. A ticket matching no entry gets the base alone, and is not failed for lacking a type label.
 - An entry's `conclusions` names only the conclusions it overrides. For each conclusion, the labels come from the first matching entry that names it, and otherwise from the review's `conclusions`. Here a bug that passes is readied with no person, and an enhancement that passes waits for one.
-- With `types`, a ticket is reviewed again when a label an entry names is added or removed.
+- With `types`, the key a review's marker carries covers the labels the entries name. A label change alone queues no review: the ticket is reviewed again at its next body edit or reopen, under its labels then.
 
 ### The heartbeat checker
 

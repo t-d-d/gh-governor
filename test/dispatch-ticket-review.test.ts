@@ -31,7 +31,6 @@ const REPO = 'acme/factory';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BODY = '## Problem\n\nThe retry budget is spent twice.\n\n## Done when\n\n- The budget is spent once.\n\nParent PRD: #390';
 const KEY = bodyDigest(BODY);
-const BODY_KEY_OF = bodyDigest;
 
 type Ticket = { number: number, title: string, body: string, state: string, labels: string[], pull: boolean, author: string, association: string };
 type Thread = { id: number, body: string, created_at: string, ours: boolean };
@@ -372,7 +371,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   });
 
   test('a review whose by reaches beyond trust.auto and whose bug entry names a ready label is refused', async () => {
-    await refused({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['community: reviewed'] }, types: [{ labels: ['type: bug'], conclusions: { success: ['mode: afk'] } }] }] }, /community/, /"mode: afk"/, /NONE/, /trust\.auto/);
+    await refused({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['community: reviewed'] }, types: [{ labels: ['type: bug'], conclusions: { success: ['mode: afk'] } }] }] }, /community/, /"mode: afk"/, /NONE/, /trust\.auto/, /ticketReviews\.0\.types\.0\.conclusions: the community review names the ready label/);
   });
 
   test('a conclusion that names a label a types entry matches on is refused, in the default or in an entry', async () => {
@@ -445,7 +444,7 @@ describe('fitness: dispatcher-review.md, a ticket review\'s checklists and label
     const r = review({ types: [BUG, SMALL] }) as never;
     const key = keyFor(r, asTicket(['type: bug']));
     assert.match(key, /^[0-9a-f]{64}$/);
-    assert.notEqual(key, BODY_KEY_OF(BODY));
+    assert.notEqual(key, KEY);
     assert.equal(keyFor(r, asTicket(['Type: Bug', 'anything'])), key, 'a label no entry names, and case, leave it');
     assert.notEqual(keyFor(r, asTicket(['type: bug', 'size: tiny'])), key);
     assert.notEqual(keyFor(r, asTicket([])), key);

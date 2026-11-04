@@ -500,8 +500,8 @@ export const configSchema = z.strictObject({
       ];
       /** @type {Map<string, string>} Each label, lower-cased as GitHub matches it, and the conclusion of this review that names it. */
       const under = new Map();
-      /** @type {string[]} */
-      const ready = [];
+      /** @type {Map<string, Array<string | number>>} Each ready label this review names, as written, and where it is first named. */
+      const ready = new Map();
       for (const { path: at, sets } of places) {
         for (const conclusion of CONCLUSION_NAMES) {
           for (const l of sets[conclusion] ?? []) {
@@ -515,14 +515,14 @@ export const configSchema = z.strictObject({
             else if (other === undefined) owner.set(key, name);
             const typed = typeKeys.get(key);
             if (typed !== undefined) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and a types entry of the ${typed} review matches on it: applying it would change the ticket's type. Give the conclusion a label no types entry matches on` });
-            if (readyKeys.has(key) && !ready.includes(l)) ready.push(l);
+            if (readyKeys.has(key) && !ready.has(l)) ready.set(l, at);
           }
         }
       }
       const beyond = (when.by ?? TICKET_REVIEW_BY).filter((a) => !auto.includes(a));
       if (beyond.length === 0) return;
-      for (const l of ready) {
-        ctx.addIssue({ code: 'custom', path: ['ticketReviews', i, 'conclusions'], message: `the ${name} review names the ready label "${l}", and its by lets in ${beyond.join(', ')}, which trust.auto does not: a ticket from them could be readied with no person choosing it. Narrow the review's by to trust.auto, or give it labels that ready nothing` });
+      for (const [l, path] of ready) {
+        ctx.addIssue({ code: 'custom', path, message: `the ${name} review names the ready label "${l}", and its by lets in ${beyond.join(', ')}, which trust.auto does not: a ticket from them could be readied with no person choosing it. Narrow the review's by to trust.auto, or give it labels that ready nothing` });
       }
     });
   })
@@ -721,15 +721,15 @@ export const resolveFiles = async (config, read) => {
   (config.ticketReviews ?? []).forEach((r, i) => {
     const [base, typeTexts] = /** @type {[{ text?: string } | { fault: string }, Array<{ text?: string } | { fault: string }>]} */ (ticketTexts[i]);
     /** @type {(got: { text?: string } | { fault: string }) => string | undefined} */
-    const read = (got) => {
+    const textIn = (got) => {
       if ('fault' in got) { faults.push(got.fault); return undefined; }
       return got.text;
     };
     const { checklist: _base, types, ...kept } = r;
-    const text = read(base);
+    const text = textIn(base);
     const typed = types?.map((t, j) => {
       const { checklist: _entry, ...entry } = t;
-      const entryText = read(/** @type {{ text?: string } | { fault: string }} */ (typeTexts[j]));
+      const entryText = textIn(/** @type {{ text?: string } | { fault: string }} */ (typeTexts[j]));
       return entryText === undefined ? entry : { ...entry, checklist: entryText };
     });
     ticketReviews.push({ ...kept, ...(text === undefined ? {} : { checklist: text }), ...(typed === undefined ? {} : { types: typed }) });
