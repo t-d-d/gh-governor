@@ -426,23 +426,3 @@ export const subscribersFor = (body, event, { issue = false } = {}) => {
  */
 export const unsubscribe = (body, session) =>
   String(body ?? '').replace(LINE, (line, named) => (WHOLE_LINK.test(named) && sameSession(named, session) ? '' : line));
-
-/** What stands in an issue's footer for the link of a filer that refused. */
-const DISOWNED = '(its session refused a message and is unsubscribed)';
-
-/**
- * The body with the owner link struck, where it names `session`: nothing
- * reads an owner off it, and the standing search ({@link sessionsNamedIn}) no
- * longer counts it.
- * For an issue only: a PR's owner is the one a remark's fallback
- * takes over from.
- *
- * @param {unknown} body
- * @param {string} session
- * @returns {string}
- */
-export const disown = (body, session) => {
-  let text = String(body ?? '');
-  for (let named = sessionNamedIn(text); named !== null && sameSession(named, session); named = sessionNamedIn(text)) text = relinkSession(text, DISOWNED);
-  return text;
-};
