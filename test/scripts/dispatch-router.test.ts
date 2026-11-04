@@ -320,7 +320,7 @@ describe('planSchedule: who opened the ticket', () => {
     const strangers: Strangers = [];
     const plan = await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 3, now: NOW, strangers });
     assert.deepEqual(plan.map((d) => d.issue), [3, 4, 5]);
-    assert.deepEqual(strangers, [{ repo: REPO, issue: 1, association: 'NONE' }, { repo: REPO, issue: 2, association: 'CONTRIBUTOR' }]);
+    assert.deepEqual(strangers, [{ repo: REPO, issue: 1, association: 'NONE', author: 'someone' }, { repo: REPO, issue: 2, association: 'CONTRIBUTOR', author: 'someone' }]);
     assert.ok(!asked.some((a) => / [12]$/.test(a)), JSON.stringify(asked));
   });
 
@@ -334,7 +334,7 @@ describe('planSchedule: who opened the ticket', () => {
     const { reader } = fakeReader({ issues: [issue(1, READY, by('NONE'))] });
     const strangers: Strangers = [];
     assert.deepEqual(await planSchedule({ sources: [{ reader, repo: REPO, labels: FACTORY_LABELS }], cap: 2, now: NOW, only: [1], strangers }), []);
-    assert.deepEqual(strangers, [{ repo: REPO, issue: 1, association: 'NONE' }]);
+    assert.deepEqual(strangers, [{ repo: REPO, issue: 1, association: 'NONE', author: 'someone' }]);
   });
 });
 

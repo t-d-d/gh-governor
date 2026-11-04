@@ -11,14 +11,20 @@
  * fallback session (dispatch/conflicts.mjs). It defaults to the authors with
  * a say, and may never hold `BOT` (dispatch/repo-config.mjs).
  *
+ * `task` is whose issue or PR may become work when a person sets it going:
+ * pickup starts a ready ticket (`byOf`, dispatch/pickup.mjs), and a summons
+ * starts a session (dispatch/dispatch-fire.mjs), only where its author is in
+ * it ({@link taskOf}). It defaults to the authors with a say, and may never
+ * hold `BOT`. The older `pickup.by` is read as it, and a file may not set
+ * both (dispatch/repo-config.mjs).
+ *
  * `relay` is whose text may reach a session that is already running: a
  * comment or review, and a session link or `governor:subscribe` line in the
  * body of an issue or PR they opened ({@link relayOf}). It defaults to the
  * authors with a say and any bot ({@link RELAY}). The receiver judges it from
  * the repo's hook-table item, and the task again from the file.
  *
- * The lists form a chain, `auto` within `task` within `relay`. Until `trust.task` exists,
- * `pickup.by` is the task list (`byOf`, dispatch/pickup.mjs). A list the
+ * The lists form a chain, `auto` within `task` within `relay`. A list the
  * file leaves unset is narrowed to fit the lists it sets, never widened
  * ({@link autoOf}); two lists the file sets that break the chain are a
  * schema fault.
@@ -37,7 +43,7 @@ export { BOT, RELAY, TRUST_VALUES, authorKind, lets };
 export const AUTO = Object.freeze([...SUMMONERS]);
 
 /**
- * @typedef {{ trust?: { auto?: readonly string[], relay?: readonly string[] }, pickup?: { by?: readonly string[] } }} TrustConfig
+ * @typedef {{ trust?: { auto?: readonly string[], task?: readonly string[], relay?: readonly string[] }, pickup?: { by?: readonly string[] } }} TrustConfig
  */
 
 /**
@@ -60,15 +66,33 @@ const within = (list, above) => list.filter((a) => above.every((outer) => outer.
 export const relayOf = (config) => config.trust?.relay ?? RELAY;
 
 /**
- * A repo's task list: whose tickets pickup may start. Until `trust.task`
- * exists it is `pickup.by` where the file sets it, else the default
- * narrowed to fit a `trust.relay` the file sets.
+ * The task list as the file sets it: `trust.task`, or the older `pickup.by`
+ * read as it. The schema refuses a file that sets both.
+ *
+ * @param {TrustConfig} config
+ * @returns {readonly string[] | undefined}
+ */
+const taskSet = (config) => config.trust?.task ?? config.pickup?.by;
+
+/**
+ * The name a file gives its task list, where it sets one.
+ *
+ * @param {TrustConfig} config
+ */
+const taskKey = (config) => (config.trust?.task === undefined ? 'pickup.by' : 'trust.task');
+
+/**
+ * A repo's `trust.task`: whose issue or PR may become work when a person
+ * sets it going, by readying it or by a summons on it. The list the file
+ * sets, as `trust.task` or the older `pickup.by`, else the default narrowed
+ * to fit a `trust.relay` the file sets.
  *
  * @param {TrustConfig} config
  * @returns {readonly string[]}
  */
 export const taskOf = (config) => {
-  if (config.pickup?.by !== undefined) return config.pickup.by;
+  const set = taskSet(config);
+  if (set !== undefined) return set;
   return config.trust?.relay === undefined ? PICKUP_BY : within(PICKUP_BY, [config.trust.relay]);
 };
 
@@ -82,7 +106,7 @@ export const taskOf = (config) => {
  * @returns {string[]}
  */
 export const fitsInside = (config, list) => [
-  ...(list === 'auto' && config.pickup?.by !== undefined ? ['pickup.by'] : []),
+  ...(list === 'auto' && taskSet(config) !== undefined ? [taskKey(config)] : []),
   ...(config.trust?.relay === undefined ? [] : ['trust.relay']),
 ];
 
@@ -110,13 +134,14 @@ export const narrowedLists = (config) => {
   const task = taskOf(config);
   return [
     ...(config.trust?.auto === undefined && auto.length < AUTO.length ? [{ list: /** @type {const} */ ('auto'), to: auto }] : []),
-    ...(config.pickup?.by === undefined && task.length < PICKUP_BY.length ? [{ list: /** @type {const} */ ('task'), to: task }] : []),
+    ...(taskSet(config) === undefined && task.length < PICKUP_BY.length ? [{ list: /** @type {const} */ ('task'), to: task }] : []),
   ];
 };
 
 /** What each list opens, as the config check says it. */
 const OPENS = Object.freeze({
   auto: 'governor sets work going by itself, with no person choosing the ticket, on their issues and PRs: a spec session or a message to the ticket\'s owner session when its wait ends or its blocker closes, a place in a periodic\'s counts and in the list its prompt carries, and the conflicts check\'s message and fallback session',
+  task: 'their issues and PRs can become work: a ready label a person adds to their ticket starts pickup on it, and an @claude summons on their issue or PR starts a session there, with the issue or PR as its task',
   relay: 'their text reaches a running session: their comments and reviews on a PR or issue a session owns or subscribes to are relayed into it, and a session link or a governor:subscribe line in the body of an issue or PR they open routes everyone\'s comments and events there into that session',
 });
 
@@ -139,6 +164,10 @@ export const trustExposures = (config) => {
   const lines = [];
   const auto = (config.trust?.auto ?? []).filter((a) => !SUMMONERS.has(a));
   if (auto.length > 0) lines.push(`trust.auto: lets in ${named(auto)} authors, beyond owners, members and collaborators: ${OPENS.auto}`);
+  // Only the list under its own name: the retired pickup.by, which the
+  // check never warned of, is left as it was.
+  const task = (config.trust?.task ?? []).filter((a) => !SUMMONERS.has(a));
+  if (task.length > 0) lines.push(`trust.task: lets in ${named(task)} authors, beyond owners, members and collaborators: ${OPENS.task}`);
   const relay = (config.trust?.relay ?? []).filter((a) => !SUMMONERS.has(a));
   const people = relay.filter((a) => a !== BOT);
   if (relay.length > 0) {

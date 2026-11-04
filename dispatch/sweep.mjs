@@ -28,7 +28,7 @@ import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
 import { byOf, sweepDue, sweepHoursOf } from './pickup.mjs';
 import { autoOf, relayOf } from './trust.mjs';
-import { reportUncounted } from './uncounted.mjs';
+import { reportUncounted, reportUntasked } from './uncounted.mjs';
 
 /** A fallback outcome that started the spec session, or handed the message on. */
 const WENT = new Set(['dispatched', 'unconfirmed', 'forwarded']);
@@ -243,11 +243,14 @@ export const planSweep = async (invocation, ctx) => {
       ctx.log(WAIT_RELATIVE, { level: 'error', repo, issue, after, error: messageOf(error), reason: 'the ticket stays held, and the next sweep tries again' });
     }
   }));
-  // A ticket whose author the repo's `pickup.by` does not list is not
-  // started, and is said at info: it is the repo's own choice.
+  // A ticket whose author the repo's `trust.task` does not list is not
+  // started, and is said at info: it is the repo's own choice. Where a
+  // person readied it, it gets governor's one refusal comment, whatever the
+  // switches say. Each report catches its own failure.
   for (const stranger of strangers) {
     ctx.log('dispatch-pickup', { level: 'info', repo: stranger.repo, issue: stranger.issue, outcome: 'skipped', reason: strangerReason(stranger) });
   }
+  await Promise.all(strangers.map(async (stranger) => reportUntasked({ reader: await ctx.readerFor(stranger.repo), stranger, what: 'readied', ready: ctx.configOf(stranger.repo).labels.ready, event: 'dispatch-pickup', log: ctx.log })));
   // Ready labels no person with a say added start nothing, and are said at
   // warn, never error: anyone can open an issue, so it must not page
   // anyone. Each ticket gets one comment, whatever the switches say, since

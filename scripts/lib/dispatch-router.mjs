@@ -55,9 +55,10 @@ import { addedBy, authorHasSay, authorPicked, byAge, mayPickUp, selectReadyWork,
  *   author, or only a bot, added (`uncountedReady`), so the selection skips
  *   it, with who added each.
  *
- * @typedef {{ repo: string, issue: number, association: string }} Stranger
- *   A ready ticket whose author's association the repo's `pickup.by` does
- *   not list (`authorPicked`), so the selection skips it.
+ * @typedef {{ repo: string, issue: number, association: string, author?: string }} Stranger
+ *   A ready ticket whose author's association the repo's `trust.task` does
+ *   not list (`authorPicked`), so the selection skips it, with the author's
+ *   login where it was read.
  *
  * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, by?: readonly string[], prompts?: Record<string, string | undefined> }} Source
  *   A served repo's tickets: its reader, its config file's ready, claim and
@@ -76,13 +77,13 @@ export const outsiderReason = ({ labels, author, association }) =>
   `ready labels ${JSON.stringify(labels)} were added last by its ${association} author ${JSON.stringify(author)}, by a bot, or by no one the events name: someone with triage access takes them off and puts them back to pick it up, since adding a label the ticket already carries records no event`;
 
 /**
- * Why a ticket whose author `pickup.by` does not list is skipped, for its
- * info line.
+ * Why work may not be about a ticket whose author `trust.task` does not
+ * list, for its info line.
  *
  * @param {{ association: string }} stranger
  */
 export const strangerReason = ({ association }) =>
-  `opened by a ${association} author, and the repo's pickup.by, or where it sets none the default narrowed to fit its trust.relay, does not list ${association}, so pickup does not start it`;
+  `opened by a ${association} author, and the repo's trust.task (or the older pickup.by it reads as it), or where it sets neither the default narrowed to fit its trust.relay, does not list ${association}, so no work is started on it`;
 
 /**
  * The schedule's plan: eligible issues oldest first, up to the cap,
@@ -210,7 +211,7 @@ export const planSchedule = async ({ sources, cap, now, windowMs = DISPATCH_WIND
     // ticket is judged on its row alone, so it reads nothing more.
     for (const row of ready) {
       if (authorPicked(row, source.by)) tagged.push({ ...row, source });
-      else strangers?.push({ repo: source.repo, issue: row.number, association: row.association ?? 'NONE' });
+      else strangers?.push({ repo: source.repo, issue: row.number, association: row.association ?? 'NONE', ...(row.author === undefined ? {} : { author: row.author }) });
     }
   }
   const candidates = tagged.sort(byAge);

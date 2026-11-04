@@ -245,7 +245,7 @@ export const check = async (reads) => {
   const shared = { ...reads, paths: () => (tree ??= reads.paths()) };
   const [resolved, warnings, found] = await Promise.all([resolveFiles(parsed.config, shared.read), warningsOf(parsed.config, shared), templateFaults(parsed.config.labels.ready, shared)]);
   const exposures = trustExposures(parsed.config);
-  const narrowed = narrowedLists(parsed.config).map(({ list, to }) => `${list === 'task' ? 'pickup.by' : `trust.${list}`}: the file leaves it unset, so governor narrows it to ${to.length === 0 ? 'nobody' : to.join(', ')} to fit inside ${fitsInside(parsed.config, list).join(' and ')}`);
+  const narrowed = narrowedLists(parsed.config).map(({ list, to }) => `trust.${list}: the file leaves it unset, so governor narrows it to ${to.length === 0 ? 'nobody' : to.join(', ')} to fit inside ${fitsInside(parsed.config, list).join(' and ')}`);
   return {
     errors: resolved.ok ? [] : [resolved.fault],
     templates: found.templates,
