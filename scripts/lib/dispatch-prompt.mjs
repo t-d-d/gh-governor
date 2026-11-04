@@ -50,7 +50,7 @@ export const sessionName = (number, title) => {
  * first, and to comment and stop where the code already settles it or the
  * work is far larger than it reads. No PR's merge or close will come to ask
  * such a session to sign off, so where the repo turns `signOff` on, the
- * default ends by asking it, in the repo's `signOff` prompt where it sets
+ * default goes on to ask it, in the repo's `signOff` prompt where it sets
  * one. With the switch off it carries no ask, as the standing line does not
  * (docs/constraints/session-signoff.md). A repo's own `pickup` prompt is
  * sent as it is.

@@ -2054,7 +2054,7 @@ describe('run — an unblocked fire', () => {
     assert.equal((result as unknown as Record<string, unknown>).row, 'ready');
     assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
     const prompt = h.launches[0]!.prompt;
-    assert.ok(prompt.startsWith(promptFor(7, 'Issue 7', REPO, CLAIM, FACTORY_PROMPTS)), prompt);
+    assert.ok(prompt.startsWith(promptFor(7, 'Issue 7', REPO, CLAIM, FACTORY_PROMPTS, { signOff: true })), prompt);
     assert.match(prompt, /acme\/tools#41 \(The parser\) closed as completed, by PR acme\/tools#52 \(Parse it, https:\/\/github\.com\/acme\/tools\/pull\/52\)/);
     assert.match(prompt, /Before you build, check the spec against what merged/);
     assert.ok(h.calls.includes(`label #7 +${CLAIM}`), h.calls.join('; '));

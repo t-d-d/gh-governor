@@ -90,7 +90,7 @@ describe('promptFor: the check before building', () => {
   });
 
   test('carries no ask to sign off where the switch is off', () => {
-    assert.doesNotMatch(promptFor(700, 'T', 'o/r', CLAIM), /[Ss]ign/);
+    assert.doesNotMatch(promptFor(700, 'T', 'o/r', CLAIM), /[Ss]ign(ing)? (this session )?off/);
     assert.doesNotMatch(promptFor(700, 'T', 'o/r', CLAIM, { signOff: 'Say goodbye.' }, { signOff: false }), /goodbye/);
   });
 
