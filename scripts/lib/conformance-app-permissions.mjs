@@ -15,8 +15,8 @@
 // never printed (docs/constraints/public-repo.md).
 
 import { APP_PERMISSIONS } from '../../dispatch/webhook/route.mjs';
-import { ownersOf } from '../../dispatch/webhook/fire.mjs';
-import { APP_SLUG_VAR } from './conformance-app-events.mjs';
+import { ownerListed, ownersOf } from '../../dispatch/webhook/fire.mjs';
+import { APP_SLUG_VAR, readApp } from './conformance-app-events.mjs';
 import { appJwt, githubApi } from './github-app.mjs';
 
 /** What the installations check reads; the deploy's read-back step sets each. */
@@ -91,10 +91,7 @@ export function installationPermissionFindings({ owners, installations, needed =
  * @param {readonly string[]} owners
  * @param {readonly Installation[]} installations
  */
-const listedOnly = (owners, installations) => {
-  const listed = owners.map((o) => o.toLowerCase());
-  return installations.filter((i) => listed.includes(i.account.toLowerCase()));
-};
+const listedOnly = (owners, installations) => installations.filter((i) => ownerListed(owners, i.account));
 
 /** @param {Permissions} permissions */
 const said = (permissions) => Object.entries(permissions).map(([k, v]) => `${k} ${v}`).sort().join(', ') || '(none)';
@@ -106,14 +103,8 @@ const said = (permissions) => Object.entries(permissions).map(([k, v]) => `${k} 
  * @returns {Promise<Permissions | undefined>}
  */
 async function readAppPermissions(slug) {
-  const response = await fetch(`https://api.github.com/apps/${encodeURIComponent(slug)}`, {
-    headers: { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' },
-    signal: AbortSignal.timeout(READ_TIMEOUT_MS),
-  });
-  if (response.status === 404) return undefined;
-  if (!response.ok) throw new Error(`GET /apps/${slug} failed: ${response.status} ${response.statusText}`);
-  const body = /** @type {{ permissions?: unknown }} */ (await response.json());
-  return permissionsOf(body.permissions);
+  const app = await readApp(slug);
+  return app === undefined ? undefined : permissionsOf(app.permissions);
 }
 
 /**
@@ -126,13 +117,18 @@ const permissionsOf = (raw) => (raw && typeof raw === 'object'
 
 /**
  * Every installation of the App, as the App. A failed read throws with its
- * path, which carries no installation id.
+ * path, which carries no installation id. Each page read is under a timeout,
+ * so a stalled connection fails the check rather than holding the deploy.
  *
  * @param {{ appId: string, privateKeyPem: string }} key
  * @returns {Promise<Installation[]>}
  */
 async function readInstallations({ appId, privateKeyPem }) {
-  const app = githubApi({ token: appJwt({ appId, privateKeyPem }) });
+  const app = githubApi({
+    token: appJwt({ appId, privateKeyPem }),
+    // globalThis.fetch read at each send, not here.
+    fetch: (url, init) => globalThis.fetch(url, { ...init, signal: AbortSignal.timeout(READ_TIMEOUT_MS) }),
+  });
   /** @type {Installation[]} */
   const out = [];
   for (let page = 1; ; page += 1) {
@@ -182,11 +178,14 @@ export async function checkInstallationPermissions({ env, ...io }) {
     privateKeyPem: String(env.APP_PRIVATE_KEY),
   });
   const listed = listedOnly(owners, installations);
+  const uninstalled = owners.filter((o) => !ownerListed(listed.map((i) => i.account), o));
   return {
     findings: installationPermissionFindings({ owners, installations }),
     // Each listed installation by its account, never its id: the log is public.
-    notes: listed.length === 0
-      ? [`no installation on ${owners.join(', ')}`]
-      : listed.map((i) => `${i.account} accepted: ${said(i.permissions)}`),
+    // A listed owner with none is named too, so a misspelt owner shows.
+    notes: [
+      ...listed.map((i) => `${i.account} accepted: ${said(i.permissions)}`),
+      ...(uninstalled.length === 0 ? [] : [`no installation on ${uninstalled.join(', ')}`]),
+    ],
   };
 }

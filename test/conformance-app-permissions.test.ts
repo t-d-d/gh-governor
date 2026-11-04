@@ -174,10 +174,10 @@ describe('app-permissions — the run', () => {
     const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
     const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
     const realFetch = globalThis.fetch;
-    const seen: Array<{ url: string; auth: string }> = [];
+    const seen: Array<{ url: string; auth: string; signal: unknown }> = [];
     const page = (n: number) => Array.from({ length: n }, (_, i) => ({ id: ID + i, account: { login: i === 0 ? 'acme' : `other${i}` }, permissions: exact() }));
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
-      seen.push({ url, auth: String((init?.headers as Record<string, string>)?.authorization ?? '') });
+      seen.push({ url, auth: String((init?.headers as Record<string, string>)?.authorization ?? ''), signal: init?.signal });
       return new Response(JSON.stringify(url.endsWith('&page=1') ? page(100) : page(1)), { status: 200 });
     }) as typeof fetch;
     try {
@@ -192,6 +192,17 @@ describe('app-permissions — the run', () => {
       'https://api.github.com/app/installations?per_page=100&page=2',
     ]);
     for (const s of seen) assert.match(s.auth, /^Bearer [\w-]+\.[\w-]+\.[\w-]+$/, 'the read is the App\'s own JWT');
+    for (const s of seen) assert.ok(s.signal instanceof AbortSignal, 'each page read carries a timeout');
+  });
+
+  test('a listed owner with no installation is said out loud, and fails nothing', async () => {
+    const outcome = await checkInstallationPermissions({
+      env: { ...env, GOVERNOR_OWNERS: 'acme, Widgets' },
+      readInstallations: async () => [{ id: ID, account: 'acme', permissions: exact() }],
+    });
+    assert.deepEqual(outcome.findings, []);
+    assert.ok((outcome.notes ?? []).some((l) => /acme accepted/.test(l)));
+    assert.ok((outcome.notes ?? []).some((l) => /no installation on Widgets/.test(l)), 'the owner with no installation is named');
   });
 });
 
