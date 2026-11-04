@@ -249,8 +249,8 @@ const labelNames = (row) =>
  * @typedef {RunRow & { path: string, run_attempt: number }} RunDetail One run read by id: a RunRow and its workflow file.
  * @typedef {{ sha: string, message: string }} CommitRow
  * @typedef {{ number: number, title: string, html_url: string, pull: boolean }} OpenRow
- * @typedef {{ number: number, title: string, body: string, state: string, draft: boolean, base: string, headSha: string, mergeable: boolean | null, html_url: string, association: string, author: string }} PullRequestRow
- *   `author`: the login that opened it.
+ * @typedef {{ number: number, title: string, body: string, state: string, draft: boolean, base: string, headSha: string, mergeable: boolean | null, html_url: string, association: string, author: string, bot?: boolean }} PullRequestRow
+ *   `author`: the login that opened it; `bot`: whether GitHub marks its account as a bot, which `trust.review` judges as `BOT`.
  * @typedef {{ filename: string, status: string, previous?: string }} FileRow `previous`: the path a rename left.
  * @typedef {{ sha: string, author: string | null, committer: string | null, verified: boolean }} PullCommitRow
  *   `author`, `committer`: the logins GitHub ties them to, null for none; `verified`: GitHub verified its signature.
@@ -842,6 +842,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         html_url: row.html_url ?? '',
         association: String(row.author_association ?? 'NONE'),
         author: String(row.user?.login ?? ''),
+        bot: row.user?.type === 'Bot',
       };
     },
 

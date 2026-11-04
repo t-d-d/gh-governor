@@ -21,8 +21,8 @@
  *   `failure` for a conflict and for any fail the author session meets,
  *   `neutral` where only a person can act. GitHub counts `neutral` as
  *   passing, so a fail the session owes is never `neutral`. A required
- *   check not finished is the check in progress, an author who may not
- *   summon governor is `neutral`, and a review that does not finish is
+ *   check not finished is the check in progress, an author the repo's
+ *   `trust.review` leaves out is `neutral`, and a review that does not finish is
  *   `failure`, and so is a PR a review of every open PR ran out of time
  *   before it reached (`outOfTime`). Every other skip posts no check. The
  *   check goes first: a pass's before its merge, which a ruleset requiring
@@ -30,8 +30,8 @@
  *   write GitHub refuses leaves no marker either. An installation that has not
  *   granted the Checks write refuses it with a 403, which the review
  *   records and passes over.
- * - A PR whose author may not summon the dispatcher (fire.mjs's
- *   SUMMONERS) is not read: a person merges it. Nor is a PR into any base
+ * - A PR whose author the repo's `trust.review` does not let in
+ *   (dispatch/trust.mjs) is not read: a person merges it. Nor is a PR into any base
  *   but the repo's default branch: a stacked PR's pass would merge it into
  *   the branch below.
  * - A required status check red on the head fails in code (test 8): a
@@ -70,7 +70,7 @@
  * `reviewPull` reads and writes through the injected reader.
  */
 
-import { DEPENDABOT, SUMMONERS } from './webhook/fire.mjs';
+import { DEPENDABOT, authorKind, lets } from './webhook/fire.mjs';
 import { commentKey, commentText, heldPassReason, ownerActs, passOf, sentence } from './webhook/review-comment.mjs';
 import { checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
 import { bodyDigest, closedBy, closingTickets, foreignClosings, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
@@ -313,19 +313,20 @@ const bumpAnswer = async (reader, pull, list, red, redCi) => {
  *   labels: import('./checklist.mjs').Rules['labels'],
  *   base: string,
  *   started: (session: string) => Promise<boolean>,
+ *   trusted: readonly string[],
  *   ci?: string,
  *   outOfTime?: boolean,
  *   byCommit?: boolean,
- * }} args `review.checklist`: the checklist the model reads, part of the digest a pass is reused by. `started`: whether governor started a session, from its state table. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads.
+ * }} args `review.checklist`: the checklist the model reads, part of the digest a pass is reused by. `started`: whether governor started a session, from its state table. `trusted`: the repo's `trust.review`, whose authors' PRs it reads. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads.
  *   `outOfTime`: the turn ran out of time for this PR. It goes through the
  *   usual skips, then posts a `failure` check in place of reading the facts
  *   and asking the model. `byCommit`: the fire carried the commit and not
- *   the PR, a check's end at that head. A PR whose author may not summon
- *   governor got its `neutral` check at that head from the push's own fire,
+ *   the PR, a check's end at that head. A PR whose author `trusted` leaves
+ *   out got its `neutral` check at that head from the push's own fire,
  *   so it is skipped without another.
  * @returns {Promise<Reviewed>}
  */
-export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, ci, outOfTime = false, byCommit = false }) => {
+export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, trusted, ci, outOfTime = false, byCommit = false }) => {
   /** @type {import('./checklist.mjs').Rules} */
   const rules = { humanOnly: review.humanOnly, tickets: review.tickets, quote: review.quote, decides: review.decides, labels };
   /** @type {Reviewed} */
@@ -361,10 +362,11 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // A stacked PR's pass would merge it into the branch below, not the default branch.
     if (pull.base !== base) return skip(`#${number} is into ${pull.base}, not ${base}: its retarget to ${base} reviews it`);
     const bump = pull.author === DEPENDABOT;
-    if (!bump && !SUMMONERS.has(pull.association)) {
-      if (byCommit) return skip(`#${number} is by a ${pull.association} author, whose PR has its neutral check from the push: a check's end at ${pull.headSha.slice(0, 12)} adds none`);
-      await check('neutral', 'Not reviewed: a person merges it.', `The PR review reads no pull request by a ${pull.association} author: only an owner, member or collaborator may summon governor. A person merges it.`);
-      return skip(`#${number} is by a ${pull.association} author, who may not summon the dispatcher: a person merges it`);
+    if (!bump && !lets(trusted, pull)) {
+      const kind = authorKind(pull);
+      if (byCommit) return skip(`#${number} is by a ${kind} author, whose PR has its neutral check from the push: a check's end at ${pull.headSha.slice(0, 12)} adds none`);
+      await check('neutral', 'Not reviewed: a person merges it.', `The PR review reads no pull request by a ${kind} author: this repo's trust.review lets in only ${trusted.join(', ') || 'nobody'}. A person merges it.`);
+      return skip(`#${number} is by a ${kind} author, whom the repo's trust.review does not let in: a person merges it`);
     }
     if (headSha !== undefined && headSha !== pull.headSha) return skip(`#${number} has moved past ${headSha.slice(0, 12)} to ${pull.headSha.slice(0, 12)}: that push's fire reviews it`);
     const bodySha = bodyDigest(pull.body);

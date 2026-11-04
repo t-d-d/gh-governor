@@ -636,12 +636,12 @@ describe('githubReader', () => {
   });
 
   // The PR review's reads and writes.
-  test('pullRequest reads what the review needs: title, body, state, draft, base, head and mergeable', async () => {
+  test('pullRequest reads what the review needs: title, body, state, draft, base, head, mergeable, and whether GitHub marks its author a bot', async () => {
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/pulls/10': { number: 10, title: 'T', body: null, state: 'open', draft: true, base: { ref: 'main' }, head: { sha: 'h', ref: 'b' }, mergeable: null, html_url: 'u', author_association: 'MEMBER', user: { login: 'dependabot[bot]', type: 'Bot' } },
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    assert.deepEqual(await reader.pullRequest(10), { number: 10, title: 'T', body: '', state: 'open', draft: true, base: 'main', headSha: 'h', mergeable: null, html_url: 'u', association: 'MEMBER', author: 'dependabot[bot]' });
+    assert.deepEqual(await reader.pullRequest(10), { number: 10, title: 'T', body: '', state: 'open', draft: true, base: 'main', headSha: 'h', mergeable: null, html_url: 'u', association: 'MEMBER', author: 'dependabot[bot]', bot: true });
   });
 
   test('pullCommits pages through a PR\'s commits, each with its author\'s and committer\'s logins, null for none, and whether GitHub verified it', async () => {

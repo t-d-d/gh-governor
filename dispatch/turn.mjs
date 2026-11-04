@@ -130,7 +130,7 @@ import { HOOK_PER_HOUR, LANE, LANE_COUNTS, laneCount, ownerListed, ownersOf, par
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, writeHeartbeatIssue } from './heartbeat.mjs';
 import { launcher, routineLaunch } from './launcher.mjs';
-import { RELAY, autoOf, relayOf } from './trust.mjs';
+import { RELAY, autoOf, relayOf, reviewOf } from './trust.mjs';
 import { CAP_ZERO_REASON, REPO_SKIPPED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan, routineFault } from './launch-plan.mjs';
 
 export { CLAIM_STRANDED, CONNECTOR_MISSING, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, ticketOf } from './launch-plan.mjs';
@@ -1406,7 +1406,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         return checks;
       };
       const github = { ...reader, requiredChecks };
-      const { review, labels, workflows } = configOf(fireRepo());
+      const config = configOf(fireRepo());
+      const { review, labels, workflows } = config;
+      const trusted = reviewOf(config);
       // The schema holds a section wherever prReview is on, and the switch was checked.
       if (review === undefined) throw new Error(`${fireRepo()}'s ${CONFIG_PATH} has no review section`);
       const base = await github.defaultBranch();
@@ -1441,7 +1443,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           break;
         }
         const outOfTime = spentMs > REVIEW_WINDOW_MS;
-        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, outOfTime, ...(workflows.ci === undefined ? {} : { ci: workflows.ci }) });
+        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, trusted, outOfTime, ...(workflows.ci === undefined ? {} : { ci: workflows.ci }) });
         const usage = spent.get(reviewed.pr);
         deps.log('dispatch-review', { ...reviewed, ...(usage === undefined ? {} : { usage }) });
         reviews.push(reviewed);

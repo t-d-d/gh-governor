@@ -25,6 +25,8 @@ import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { APP_ID, BODY, DEPENDABOT_COMMIT, FILES, HEAD, IAM, MERGE_BASE, PASS, REPO, SKILL, cliOutput, dependabotRow, pullRow } from './helpers/dispatch-review-fixtures.ts';
 import type { Answer, FileRow, Pull, PullCommit, TicketRow } from './helpers/dispatch-review-fixtures.ts';
 import { factoryFile } from './helpers/factory.ts';
+import { githubReader } from '../scripts/lib/github-app.mjs';
+import { BOT, REVIEW, authorKind, lets } from '../dispatch/trust.mjs';
 
 const NOW = Date.parse('2026-09-26T12:00:00Z');
 const MOVED = 'ffffffffffffffffffffffffffffffffffffffff';
@@ -555,6 +557,31 @@ describe('run — what a review skips, saying nothing', () => {
       assert.deepEqual(h.judged, [], association);
       assert.deepEqual(h.merges, [], association);
     }
+  });
+
+  test('a PR by an author the repo\'s trust.review lists is reviewed, whoever they are; one it leaves out gets the neutral check naming the list', async () => {
+    const opened = JSON.parse(factoryFile(CONFIG_PATH));
+    const config = JSON.stringify({ ...opened, trust: { ...opened.trust, review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] } });
+    const stranger = harness({ config, pulls: { 767: pullRow({ association: 'NONE' }) } });
+    await review({ kind: 'review', pr: 767 }, stranger);
+    assert.equal(stranger.judged.length, 1, 'the model reads a NONE author\'s PR where review lists NONE');
+    const owners = JSON.stringify({ ...opened, pickup: { ...opened.pickup, by: ['OWNER'] }, trust: { ...opened.trust, review: ['OWNER'] } });
+    const member = harness({ config: owners, pulls: { 767: pullRow({ association: 'MEMBER' }) } });
+    const result = await review({ kind: 'review', pr: 767 }, member);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['skipped']);
+    assert.deepEqual(member.judged, []);
+    assert.deepEqual(member.checkRuns.map((c) => c.state), ['neutral']);
+    assert.match(member.checkRuns[0]!.summary, /trust\.review/);
+    assert.match(member.checkRuns[0]!.summary, /A person merges it\./);
+  });
+
+  test('a PR GitHub marks as a bot\'s is judged as BOT by trust.review, whatever its login', async () => {
+    const row = { number: 767, title: 't', body: '', state: 'open', draft: false, base: { ref: 'main' }, head: { sha: HEAD }, html_url: '', user: { login: 'Copilot', type: 'Bot' }, author_association: 'COLLABORATOR' };
+    const fetch = (async () => new Response(JSON.stringify(row), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof globalThis.fetch;
+    const pull = await githubReader({ token: 't', repo: REPO, fetch, sleep: async () => {} }).pullRequest(767);
+    assert.equal(authorKind(pull), BOT);
+    assert.ok(lets([BOT], pull), 'a review listing BOT reads it');
+    assert.ok(!lets(REVIEW, pull), 'the default review, which leaves BOT out, does not');
   });
 });
 
@@ -1477,6 +1504,15 @@ describe('fitness: the review posts its verdict as the `governor` check (dispatc
     assert.deepEqual(h.checkRuns.map((c) => [c.name, c.sha, c.state]), [['governor', HEAD, 'in_progress']]);
     assert.match(h.checkRuns[0]!.summary, /`gate`/);
     assert.deepEqual(h.writes, ['check in_progress']);
+  });
+
+  test('a bump is read by the Dependabot list whatever trust.review says', async () => {
+    const opened = JSON.parse(factoryFile(CONFIG_PATH));
+    const config = JSON.stringify({ ...opened, pickup: { ...opened.pickup, by: ['OWNER'] }, trust: { ...opened.trust, review: ['OWNER'] } });
+    const h = harness({ config, pulls: { 767: dependabotRow() }, files: [{ filename: 'normalize-lambda/requirements.txt', status: 'modified' }] });
+    const result = await review({ kind: 'review', pr: 767 }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
+    assert.deepEqual(h.merges, [{ pr: 767, sha: HEAD }]);
   });
 
   test('an author who may not summon governor gets a neutral check saying a person merges it', async () => {

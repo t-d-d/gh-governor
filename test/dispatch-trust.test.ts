@@ -10,7 +10,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
-import { AUTO, BOT, RELAY, START, autoOf, fitsInside, lets, narrowedLists, relayOf, startNarrowed, startOf, taskOf, trustExposures } from '../dispatch/trust.mjs';
+import { AUTO, BOT, RELAY, REVIEW, START, autoOf, fitsInside, lets, narrowedLists, relayOf, reviewOf, startNarrowed, startOf, taskOf, trustExposures } from '../dispatch/trust.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 const BASE = { environment: 'my-env', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { pickup: true } };
@@ -298,5 +298,84 @@ describe('trust.start in the config file', () => {
     assert.deepEqual([autoOf(narrowed), taskOf(narrowed), relayOf(narrowed)], [['OWNER', 'MEMBER', 'COLLABORATOR'], ['OWNER', 'MEMBER', 'COLLABORATOR'], [...RELAY]]);
     assert.deepEqual(narrowedLists(narrowed), []);
     assert.deepEqual(trustExposures(narrowed), []);
+  });
+});
+
+describe('trust.review in the config file', () => {
+  test('unset, it is OWNER, MEMBER and COLLABORATOR, whatever the other lists say', () => {
+    assert.deepEqual([...REVIEW], ['OWNER', 'MEMBER', 'COLLABORATOR']);
+    for (const over of [{}, { trust: {} }, { trust: { relay: ['OWNER'] } }, { trust: { relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT', 'NONE'] } }, { pickup: { by: ['OWNER', 'NONE'] } }]) {
+      assert.deepEqual(reviewOf(config(over)), ['OWNER', 'MEMBER', 'COLLABORATOR'], JSON.stringify(over));
+    }
+  });
+
+  test('a file may set it, narrower or wider, BOT included or not', () => {
+    assert.deepEqual(reviewOf(config({ trust: { review: ['OWNER'] } })), ['OWNER']);
+    assert.deepEqual(reviewOf(config({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE', 'BOT'] } })), ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE', 'BOT']);
+    for (const review of [['owner'], ['ANYONE'], 'OWNER', [1]]) assert.ok(!readConfig(file({ trust: { review } })).ok, JSON.stringify(review));
+  });
+
+  test('relay and review both set, relay wider, is refused, saying why', () => {
+    const read = readConfig(file({ trust: { relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT', 'NONE'], review: ['OWNER', 'MEMBER', 'COLLABORATOR'] } }));
+    assert.ok(!read.ok);
+    assert.match(read.fault, /trust\.relay/);
+    assert.match(read.fault, /trust\.review/);
+    assert.match(read.fault, /NONE/);
+  });
+
+  test('task or auto set wider than a set review is refused too: the chain runs to review', () => {
+    for (const over of [{ trust: { task: ['OWNER', 'NONE'], review: ['OWNER'] } }, { pickup: { by: ['OWNER', 'NONE'] }, trust: { review: ['OWNER'] } }, { trust: { auto: ['OWNER', 'MEMBER'], review: ['OWNER'] } }]) {
+      const read = readConfig(file(over));
+      assert.ok(!read.ok, JSON.stringify(over));
+      assert.match(read.fault, /trust\.review/, JSON.stringify(over));
+    }
+  });
+
+  test('BOT in relay breaks no chain with review: it is left aside', () => {
+    assert.ok(readConfig(file({ trust: { relay: ['OWNER', 'BOT'], review: ['OWNER'] } })).ok);
+  });
+
+  test('a review the file sets narrows an unset relay, task and auto, keeping BOT in relay, and never widens them', () => {
+    const narrow = config({ trust: { review: ['OWNER'] } });
+    assert.deepEqual(relayOf(narrow), ['OWNER', 'BOT']);
+    assert.deepEqual(taskOf(narrow), ['OWNER']);
+    assert.deepEqual(autoOf(narrow), ['OWNER']);
+    assert.deepEqual(narrowedLists(narrow), [{ list: 'auto', to: ['OWNER'] }, { list: 'task', to: ['OWNER'] }, { list: 'relay', to: ['OWNER', 'BOT'] }]);
+    assert.deepEqual(fitsInside(narrow, 'relay'), ['trust.review']);
+    assert.deepEqual(fitsInside(narrow, 'task'), ['trust.review']);
+    assert.deepEqual(fitsInside(narrow, 'auto'), ['trust.review']);
+    const wide = config({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] } });
+    assert.deepEqual(relayOf(wide), [...RELAY]);
+    assert.deepEqual(taskOf(wide), ['OWNER', 'MEMBER', 'COLLABORATOR']);
+    assert.deepEqual(autoOf(wide), [...AUTO]);
+    assert.deepEqual(narrowedLists(wide), []);
+  });
+
+  test('a relay set wider than an unset review narrows nothing and is valid', () => {
+    const wide = config({ trust: { relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT', 'NONE'] } });
+    assert.deepEqual(reviewOf(wide), [...REVIEW]);
+    assert.deepEqual(narrowedLists(wide), []);
+  });
+
+  test('a file valid before review stays valid', () => {
+    for (const over of [{}, { pickup: { by: ['NONE'] } }, { trust: { auto: ['OWNER'], task: ['OWNER', 'CONTRIBUTOR'], relay: ['OWNER', 'CONTRIBUTOR', 'NONE', 'BOT'] } }, { trust: { start: ['OWNER'] } }]) {
+      assert.ok(readConfig(file(over)).ok, JSON.stringify(over));
+    }
+  });
+});
+
+describe('what a review the file widens exposes', () => {
+  test('nothing for the default nor a narrower list', () => {
+    assert.deepEqual(trustExposures(config({ trust: { review: ['OWNER'] } })), []);
+    assert.deepEqual(trustExposures(config({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR'] } })), []);
+  });
+
+  test('review beyond the three says whose pull requests the PR review reads, and that a pass may merge them', () => {
+    const [said, ...rest] = trustExposures(config({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] } }));
+    assert.deepEqual(rest, []);
+    assert.match(String(said), /^trust\.review: lets in NONE authors/);
+    assert.match(String(said), /PR review/);
+    assert.match(String(said), /merge/);
+    assert.doesNotMatch(String(said), /cannot work/);
   });
 });

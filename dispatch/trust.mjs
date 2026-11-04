@@ -30,10 +30,16 @@
  * repo may narrow it, never widen it ({@link startOf}). It sits outside the
  * chain below: it is about who acts, not whose text the work is about.
  *
- * The lists form a chain, `auto` within `task` within `relay`. A list the
- * file leaves unset is narrowed to fit the lists it sets, never widened
- * ({@link autoOf}); two lists the file sets that break the chain are a
- * schema fault.
+ * `review` is whose PRs governor's PR review reads (dispatch/review.mjs):
+ * a PR by an author it leaves out gets a `neutral` check, and a person
+ * merges it ({@link reviewOf}). It defaults to the authors with a say
+ * ({@link REVIEW}). Dependabot's bumps are read by the Dependabot list
+ * whatever it says. Ticket reviews will read it too, once they are built.
+ *
+ * The lists form a chain, `auto` within `task` within `relay` within
+ * `review`, `BOT` left aside. A list the file leaves unset is narrowed to
+ * fit the lists it sets, never widened ({@link autoOf}); two lists the file
+ * sets that break the chain are a schema fault.
  */
 
 import { BOT, PICKUP_BY, RELAY, SUMMONERS, TRUST_VALUES, authorKind, lets } from './webhook/fire.mjs';
@@ -49,6 +55,14 @@ export { BOT, RELAY, TRUST_VALUES, authorKind, lets };
 export const AUTO = Object.freeze([...SUMMONERS]);
 
 /**
+ * Whose PRs the PR review reads where the file sets no `trust.review`: the
+ * authors with a say.
+ *
+ * @type {readonly string[]}
+ */
+export const REVIEW = Object.freeze([...SUMMONERS]);
+
+/**
  * Who may set work going where the file sets no `trust.start`: the authors
  * with a say. It is also the most a file may set.
  *
@@ -57,7 +71,7 @@ export const AUTO = Object.freeze([...SUMMONERS]);
 export const START = Object.freeze([...SUMMONERS]);
 
 /**
- * @typedef {{ trust?: { start?: readonly string[] | undefined, auto?: readonly string[] | undefined, task?: readonly string[] | undefined, relay?: readonly string[] | undefined } | undefined, pickup?: { by?: readonly string[] | undefined } | undefined }} TrustConfig
+ * @typedef {{ trust?: { start?: readonly string[] | undefined, auto?: readonly string[] | undefined, task?: readonly string[] | undefined, relay?: readonly string[] | undefined, review?: readonly string[] | undefined } | undefined, pickup?: { by?: readonly string[] | undefined } | undefined }} TrustConfig
  */
 
 /**
@@ -95,14 +109,29 @@ export const narrows = (start) => START.some((a) => !start.includes(a));
 export const startNarrowed = (config) => narrows(startOf(config));
 
 /**
- * A repo's `trust.relay`: whose text may reach a session that is already
- * running. The list the file sets, or {@link RELAY}. Nothing sits above it
- * yet, so an unset relay is never narrowed.
+ * A repo's `trust.review`: whose PRs the PR review reads. The list the file
+ * sets, or {@link REVIEW}. Nothing sits above it, so an unset review is
+ * never narrowed.
  *
  * @param {TrustConfig} config
  * @returns {readonly string[]}
  */
-export const relayOf = (config) => config.trust?.relay ?? RELAY;
+export const reviewOf = (config) => config.trust?.review ?? REVIEW;
+
+/**
+ * A repo's `trust.relay`: whose text may reach a session that is already
+ * running. The list the file sets, else {@link RELAY} narrowed to fit a
+ * `trust.review` the file sets. `BOT` is left aside, as the chain leaves
+ * it: an unset relay keeps it whatever review says.
+ *
+ * @param {TrustConfig} config
+ * @returns {readonly string[]}
+ */
+export const relayOf = (config) => {
+  if (config.trust?.relay !== undefined) return config.trust.relay;
+  const review = config.trust?.review;
+  return review === undefined ? RELAY : RELAY.filter((a) => a === BOT || review.includes(a));
+};
 
 /**
  * The task list as the file sets it: `trust.task`, or the older `pickup.by`
@@ -124,56 +153,53 @@ export const taskKey = (config) => (config.trust?.task === undefined ? 'pickup.b
  * A repo's `trust.task`: whose issue or PR may become work when a person
  * sets it going, by readying it or by a summons on it. The list the file
  * sets, as `trust.task` or the older `pickup.by`, else the default narrowed
- * to fit a `trust.relay` the file sets.
+ * to fit the relay list, which a `trust.relay` or `trust.review` the file
+ * sets narrows.
  *
  * @param {TrustConfig} config
  * @returns {readonly string[]}
  */
-export const taskOf = (config) => {
-  const set = taskSet(config);
-  if (set !== undefined) return set;
-  return config.trust?.relay === undefined ? PICKUP_BY : within(PICKUP_BY, [config.trust.relay]);
-};
+export const taskOf = (config) => taskSet(config) ?? within(PICKUP_BY, [relayOf(config)]);
 
 /**
  * The lists the file sets above `list` in the chain `auto` ⊆ `task` ⊆
- * `relay`, by the names the file gives them: what an unset `list` is
- * narrowed to fit.
+ * `relay` ⊆ `review`, by the names the file gives them: what an unset
+ * `list` is narrowed to fit.
  *
  * @param {TrustConfig} config
- * @param {'auto' | 'task'} list
+ * @param {'auto' | 'task' | 'relay'} list
  * @returns {string[]}
  */
 export const fitsInside = (config, list) => [
   ...(list === 'auto' && taskSet(config) !== undefined ? [taskKey(config)] : []),
-  ...(config.trust?.relay === undefined ? [] : ['trust.relay']),
+  ...(list !== 'relay' && config.trust?.relay !== undefined ? ['trust.relay'] : []),
+  ...(config.trust?.review === undefined ? [] : ['trust.review']),
 ];
 
 /**
  * A repo's `trust.auto`: the list the file sets, or the default narrowed to
- * fit the task list and a `trust.relay` the file sets.
+ * fit the task list and the relay list.
  *
  * @param {TrustConfig} config
  * @returns {readonly string[]}
  */
-export const autoOf = (config) => {
-  if (config.trust?.auto !== undefined) return config.trust.auto;
-  return within(AUTO, [taskOf(config), ...(config.trust?.relay === undefined ? [] : [config.trust.relay])]);
-};
+export const autoOf = (config) => config.trust?.auto ?? within(AUTO, [taskOf(config), relayOf(config)]);
 
 /**
  * The lists the file leaves unset that governor narrowed to fit the chain,
  * each with what it now holds.
  *
  * @param {TrustConfig} config
- * @returns {Array<{ list: 'auto' | 'task', to: readonly string[] }>}
+ * @returns {Array<{ list: 'auto' | 'task' | 'relay', to: readonly string[] }>}
  */
 export const narrowedLists = (config) => {
   const auto = autoOf(config);
   const task = taskOf(config);
+  const relay = relayOf(config);
   return [
     ...(config.trust?.auto === undefined && auto.length < AUTO.length ? [{ list: /** @type {const} */ ('auto'), to: auto }] : []),
     ...(taskSet(config) === undefined && task.length < PICKUP_BY.length ? [{ list: /** @type {const} */ ('task'), to: task }] : []),
+    ...(config.trust?.relay === undefined && relay.length < RELAY.length ? [{ list: /** @type {const} */ ('relay'), to: relay }] : []),
   ];
 };
 
@@ -181,6 +207,7 @@ export const narrowedLists = (config) => {
 const OPENS = Object.freeze({
   auto: 'governor sets work going by itself, with no person choosing the ticket, on their issues and PRs: a spec session or a message to the ticket\'s owner session when its wait ends or its blocker closes, a place in a periodic\'s counts and in the list its prompt carries, and the conflicts check\'s message and fallback session',
   task: 'their issues and PRs can become work: a ready label a person adds to their ticket starts pickup on it, and an @claude summons on their issue or PR starts a session there, with the issue or PR as its task',
+  review: 'governor\'s PR review reads their pull requests: the model reads the title, the body and the changed lines, and a pass merges the pull request where review.merge is on, so their code can reach the default branch with no person reading it',
   relay: 'their text reaches a running session: their comments and reviews on a PR or issue a session owns or subscribes to are relayed into it, and a session link or a governor:subscribe line in the body of an issue or PR they open routes everyone\'s comments and events there into that session',
 });
 
@@ -215,5 +242,7 @@ export const trustExposures = (config) => {
       ...(relay.includes(BOT) ? [BOT_RELAY] : []),
     ].join('; and ')}`);
   }
+  const review = (config.trust?.review ?? []).filter((a) => !SUMMONERS.has(a));
+  if (review.length > 0) lines.push(`trust.review: lets in ${named(review)} authors, beyond owners, members and collaborators: ${OPENS.review}`);
   return lines;
 };
