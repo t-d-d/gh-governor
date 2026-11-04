@@ -24,10 +24,10 @@
  *   check not finished is the check in progress, an author who may not
  *   summon governor is `neutral`, and a review that does not finish is
  *   `failure`, and so is a PR a review of every open PR ran out of time
- *   before it reached (`outOfTime`). Every other skip posts no check. The check goes first: a
- *   pass's before its merge, which a ruleset requiring it would refuse
- *   otherwise, and a fail's before its comment, so a check write GitHub
- *   refuses leaves no marker either. An installation that has not
+ *   before it reached (`outOfTime`). Every other skip posts no check. The
+ *   check goes first: a pass's before its merge, which a ruleset requiring
+ *   it would refuse otherwise, and a fail's before its comment, so a check
+ *   write GitHub refuses leaves no marker either. An installation that has not
  *   granted the Checks write refuses it with a 403, which the review
  *   records and passes over.
  * - A PR whose author may not summon the dispatcher (fire.mjs's
@@ -115,6 +115,12 @@ const TITLE_CHARS = 200;
 
 /** How much of an error a check that did not finish quotes: a check run on a public repo is public. */
 const ERROR_CHARS = 300;
+
+/** The `governor` check's title for a review that did not finish or start. */
+const DID_NOT_RUN = 'The PR review did not run.';
+
+/** What a review that did not finish or start tells the reader to do. */
+const RUNS_AGAIN = 'A push or an edit to the description runs it again.';
 
 /**
  * A check's title: the first sentence of `text`, cut at {@link TITLE_CHARS}.
@@ -330,8 +336,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // A pass whose merge an earlier review held, from before no run held a
     // merge: merged on that pass without judging it again.
     const heldReason = reviewedAlready ? heldPassReason(last.text) : null;
-    // Out of time, a held pass waits for its next review too: its check stands.
-    if (reviewedAlready && (heldReason === null || outOfTime)) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
+    if (reviewedAlready && heldReason === null) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
 
     // A required check not yet finished: its run's end queues the review
     // again (dispatch/webhook/route.mjs), so this one says nothing.
@@ -344,9 +349,10 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
 
     // A required check would wait on a PR that gets no check at all, so it
     // fails out loud, and the owner can bypass it.
+    // A held pass carries no check, so it gets this one too.
     if (outOfTime) {
-      const why = 'The review turn ran out of time before it reached this pull request. A push or an edit to the description runs it again.';
-      await check('failure', 'The PR review did not run.', why);
+      const why = `The review turn ran out of time before it reached this pull request. ${RUNS_AGAIN}`;
+      await check('failure', DID_NOT_RUN, why);
       return { ...reviewed, outcome: /** @type {Outcome} */ ('out-of-time'), reason: why };
     }
 
@@ -408,7 +414,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
       // that fails here too leaves the review's own error as the one told.
       const quoted = message.length <= ERROR_CHARS ? message : `${message.slice(0, ERROR_CHARS - 1).trimEnd()}…`;
       const why = limited ? `The claude.ai login's usage limit stopped it: ${quoted}` : `It failed: ${quoted}`;
-      await check('failure', 'The PR review did not run.', `${sentence(why)} A push or an edit to the description runs it again.`).catch(() => {});
+      await check('failure', DID_NOT_RUN, `${sentence(why)} ${RUNS_AGAIN}`).catch(() => {});
     }
     return { ...reviewed, outcome: limited ? 'limited' : 'failed', error: message };
   }

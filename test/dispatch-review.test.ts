@@ -691,6 +691,10 @@ describe('run — a conflict said already', () => {
   });
 });
 
+const RUN_URL = `https://github.com/${REPO}/actions/runs/900`;
+/** The held pass as the earlier review wrote it, still on PRs reviewed before the change. It carries no `governor` check. */
+const HELD = `Passes the PR review: ${PASS.reason}. The merge waits for Deploy Prod run [900](${RUN_URL}) (in_progress) to end, and the review after it merges.`;
+
 /**
  * A merge is never held. An earlier review held every pass while a Deploy
  * Prod run was unfinished; the one delivery workflow needs no hold, so the
@@ -699,9 +703,6 @@ describe('run — a conflict said already', () => {
  * judgement kept, so no PR waits on a sweep that no longer comes.
  */
 describe('fitness: run — no run holds a merge (dispatcher-workflows.md)', () => {
-  const RUN_URL = `https://github.com/${REPO}/actions/runs/900`;
-  /** The held pass as the earlier review wrote it, still on PRs reviewed before the change. */
-  const HELD = `Passes the PR review: ${PASS.reason}. The merge waits for Deploy Prod run [900](${RUN_URL}) (in_progress) to end, and the review after it merges.`;
 
   test('no code path holds a merge for a run of any workflow: the review takes no promotion, and the turn reads no deploy runs', () => {
     const review = readFileSync(new URL('../dispatch/review.mjs', import.meta.url), 'utf8');
@@ -999,87 +1000,97 @@ describe('run — a review of every open PR', () => {
   // A PR the window kept the turn from reaching would otherwise wait, with
   // no check, on a ruleset that requires `governor`: it fails loudly
   // instead, through the review's usual skips.
-  const OTHER_HEAD = 'cccccccccccccccccccccccccccccccccccccccc';
-  const PENDING_HEAD = 'dddddddddddddddddddddddddddddddddddddddd';
-  const late = (over: Parameters<typeof harness>[0] = {}) => {
-    let t = NOW;
-    const h = harness({
-      open: [767, 780, 781, 782, 783, 784, 785, 786].map((number) => ({ number, draft: false })),
-      pulls: {
-        767: pullRow(),
-        780: pullRow({ number: 780, headSha: OTHER_HEAD }),
-        781: pullRow({ number: 781 }),
-        782: pullRow({ number: 782, headSha: OTHER_HEAD, draft: true }),
-        783: pullRow({ number: 783, headSha: OTHER_HEAD, base: 'trunk' }),
-        784: pullRow({ number: 784, headSha: PENDING_HEAD }),
-        785: pullRow({ number: 785, headSha: OTHER_HEAD, association: 'NONE' }),
-        786: pullRow({ number: 786, headSha: OTHER_HEAD, state: 'closed' }),
-      },
-      // #781 was reviewed at its head with its body, and passed.
-      threads: { 781: [{ id: 9, body: marked(textOf(PASS)), created_at: 't', ours: true }] },
-      required: ['gate'],
-      checksAt: (sha) => [{ name: 'gate', state: sha === PENDING_HEAD ? 'pending' : 'green' }],
-      // The one review the window let start runs past it.
-      answers: () => { t += REVIEW_WINDOW_MS + 1; return cliOutput(IAM); },
-      now: () => t,
-      ...over,
+  describe('fitness: a PR the review turn ran out of time for fails the `governor` check (dispatcher-review.md)', () => {
+    const OTHER_HEAD = 'cccccccccccccccccccccccccccccccccccccccc';
+    const PENDING_HEAD = 'dddddddddddddddddddddddddddddddddddddddd';
+    const late = (over: Parameters<typeof harness>[0] = {}) => {
+      let t = NOW;
+      const h = harness({
+        open: [767, 780, 781, 782, 783, 784, 785, 786].map((number) => ({ number, draft: false })),
+        pulls: {
+          767: pullRow(),
+          780: pullRow({ number: 780, headSha: OTHER_HEAD }),
+          781: pullRow({ number: 781 }),
+          782: pullRow({ number: 782, headSha: OTHER_HEAD, draft: true }),
+          783: pullRow({ number: 783, headSha: OTHER_HEAD, base: 'trunk' }),
+          784: pullRow({ number: 784, headSha: PENDING_HEAD }),
+          785: pullRow({ number: 785, headSha: OTHER_HEAD, association: 'NONE' }),
+          786: pullRow({ number: 786, headSha: OTHER_HEAD, state: 'closed' }),
+        },
+        // #781 was reviewed at its head with its body, and passed.
+        threads: { 781: [{ id: 9, body: marked(textOf(PASS)), created_at: 't', ours: true }] },
+        required: ['gate'],
+        checksAt: (sha) => [{ name: 'gate', state: sha === PENDING_HEAD ? 'pending' : 'green' }],
+        // The one review the window let start runs past it.
+        answers: () => { t += REVIEW_WINDOW_MS + 1; return cliOutput(IAM); },
+        now: () => t,
+        ...over,
+      });
+      return { h, at: (ms: number) => { t = ms; }, now: () => t };
+    };
+
+    test('past its window, each PR the turn did not reach fails the governor check, through the review\'s usual skips', async () => {
+      const { h } = late();
+      const result = await review({ kind: 'review' }, h);
+      assert.equal(h.judged.length, 1, 'no review starts past the window');
+      assert.deepEqual(h.checkRuns.map((c) => [c.sha, c.state]), [
+        [HEAD, 'neutral'],
+        [OTHER_HEAD, 'failure'],
+        [PENDING_HEAD, 'in_progress'],
+        [OTHER_HEAD, 'neutral'],
+      ]);
+      const failed = h.checkRuns[1]!;
+      assert.equal(failed.title, 'The PR review did not run.');
+      assert.match(failed.summary, /ran out of time before it reached this pull request/);
+      assert.match(failed.summary, /A push or an edit to the description runs it again\./);
+      assert.deepEqual(result.reviews.map((r) => [r.pr, r.outcome]), [
+        [767, 'commented'], [780, 'out-of-time'], [781, 'skipped'], [782, 'skipped'], [783, 'skipped'], [784, 'skipped'], [785, 'skipped'], [786, 'skipped'],
+      ]);
+      assert.deepEqual(h.comments.map((c) => c.issue), [767], 'a PR not reached gets the check, no comment');
+      assert.deepEqual(h.merges, []);
+      assert.equal(exitCodeFor(result as never), 0);
     });
-    return { h, at: (ms: number) => { t = ms; }, now: () => t };
-  };
 
-  test('past its window, each PR the turn did not reach fails the governor check, through the review\'s usual skips', async () => {
-    const { h } = late();
-    const result = await review({ kind: 'review' }, h);
-    assert.equal(h.judged.length, 1, 'no review starts past the window');
-    assert.deepEqual(h.checkRuns.map((c) => [c.sha, c.state]), [
-      [HEAD, 'neutral'],
-      [OTHER_HEAD, 'failure'],
-      [PENDING_HEAD, 'in_progress'],
-      [OTHER_HEAD, 'neutral'],
-    ]);
-    const failed = h.checkRuns[1]!;
-    assert.equal(failed.title, 'The PR review did not run.');
-    assert.match(failed.summary, /ran out of time before it reached this pull request/);
-    assert.match(failed.summary, /A push or an edit to the description runs it again\./);
-    assert.deepEqual(result.reviews.map((r) => [r.pr, r.outcome]), [
-      [767, 'commented'], [780, 'out-of-time'], [781, 'skipped'], [782, 'skipped'], [783, 'skipped'], [784, 'skipped'], [785, 'skipped'], [786, 'skipped'],
-    ]);
-    assert.deepEqual(h.comments.map((c) => c.issue), [767], 'a PR not reached gets the check, no comment');
-    assert.deepEqual(h.merges, []);
-    assert.equal(exitCodeFor(result as never), 0);
-  });
-
-  test('a 403 on the out-of-time check is logged and passed over, and the turn\'s outcome is as it was', async () => {
-    const { h } = late({
-      checkRun: async (run) => {
-        if (run.state === 'failure') throw Object.assign(new Error('POST /check-runs failed: 403 Resource not accessible by integration'), { status: 403 });
-      },
+    test('a 403 on the out-of-time check is logged and passed over, and the turn\'s outcome is as it was', async () => {
+      const { h } = late({
+        checkRun: async (run) => {
+          if (run.state === 'failure') throw Object.assign(new Error('POST /check-runs failed: 403 Resource not accessible by integration'), { status: 403 });
+        },
+      });
+      const result = await review({ kind: 'review' }, h);
+      const refused = result.reviews.find((r) => r.pr === 780) as Review & { check?: string };
+      assert.equal(refused.outcome, 'out-of-time');
+      assert.match(String(refused.check), /^refused: .*403/);
+      assert.equal(exitCodeFor(result as never), 0);
     });
-    const result = await review({ kind: 'review' }, h);
-    const refused = result.reviews.find((r) => r.pr === 780) as Review & { check?: string };
-    assert.equal(refused.outcome, 'out-of-time');
-    assert.match(String(refused.check), /^refused: .*403/);
-    assert.equal(exitCodeFor(result as never), 0);
-  });
 
-  test('past the second limit nothing more is written, and the rest are logged', async () => {
-    const holder: { at?: (ms: number) => void } = {};
-    const { h, at } = late({
-      // The first out-of-time check lands past the second limit.
-      checkRun: async (run) => { if (run.state === 'failure') holder.at!(NOW + REVIEW_MARK_WINDOW_MS + 1); },
+    test('past the second limit nothing more is written, and the rest are logged', async () => {
+      const holder: { at?: (ms: number) => void } = {};
+      const { h, at } = late({
+        // The first out-of-time check lands past the second limit.
+        checkRun: async (run) => { if (run.state === 'failure') holder.at!(NOW + REVIEW_MARK_WINDOW_MS + 1); },
+      });
+      holder.at = at;
+      const result = await review({ kind: 'review' }, h);
+      assert.deepEqual(h.checkRuns.map((c) => c.state), ['neutral', 'failure']);
+      assert.deepEqual(result.reviews.map((r) => r.pr), [767, 780]);
+      const line = h.logged.find((l) => l.event === 'dispatch-review' && Array.isArray(l.unreviewed));
+      assert.deepEqual(line?.unreviewed, [781, 782, 783, 784, 785, 786]);
+      assert.match(String(line?.reason), /out of time/);
     });
-    holder.at = at;
-    const result = await review({ kind: 'review' }, h);
-    assert.deepEqual(h.checkRuns.map((c) => c.state), ['neutral', 'failure']);
-    assert.deepEqual(result.reviews.map((r) => r.pr), [767, 780]);
-    const line = h.logged.find((l) => l.event === 'dispatch-review' && Array.isArray(l.unreviewed));
-    assert.deepEqual(line?.unreviewed, [781, 782, 783, 784, 785, 786]);
-    assert.match(String(line?.reason), /out of time/);
-  });
 
-  test('a review let start runs out its budget and the checks still fit inside the deadline', () => {
-    assert.ok(REVIEW_WINDOW_MS + LAUNCH_TIMEOUT_MS < REVIEW_MARK_WINDOW_MS, 'the second limit falls after the last review the window let start can end');
-    assert.ok(REVIEW_MARK_WINDOW_MS + 2 * 60_000 <= DEADLINE_MS, 'a check started before the second limit ends inside the deadline');
+    test('a review let start runs out its budget and the checks still fit inside the deadline', () => {
+      assert.ok(REVIEW_WINDOW_MS + LAUNCH_TIMEOUT_MS < REVIEW_MARK_WINDOW_MS, 'the second limit falls after the last review the window let start can end');
+      assert.ok(REVIEW_MARK_WINDOW_MS + 5 * 60_000 <= DEADLINE_MS, 'a check started before the second limit, its unbudgeted reads and the store-back end inside the deadline');
+    });
+
+    test('a held pass the turn ran out of time for gets the out-of-time check: it carries no check of its own', async () => {
+      const { h } = late({ threads: { 781: [{ id: 9, body: marked(HELD), created_at: 't', ours: true }] } });
+      const result = await review({ kind: 'review' }, h);
+      assert.deepEqual(result.reviews.find((r) => r.pr === 781)?.outcome, 'out-of-time');
+      assert.deepEqual(h.checkRuns.filter((c) => c.sha === HEAD).map((c) => c.state), ['neutral', 'failure']);
+      assert.deepEqual(h.merges, []);
+    });
   });
 
   // The account's session limit resets by itself, and a limited PR is

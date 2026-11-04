@@ -1657,10 +1657,12 @@ export const REVIEW_WINDOW_MS = 5 * 60 * 1000;
 /**
  * How long into a review turn the `governor` check may still go on a PR the
  * window kept the turn from reaching. A review the window let start can run
- * its whole launch budget past it, so the checks start late, and each is a
- * few reads and one write: the last one still ends inside the deadline.
+ * its whole launch budget past it, so the checks start late. Each is a few
+ * reads and one write with no budget of its own, so the limit leaves the
+ * deadline (dispatch/cli.mjs) six minutes for a slow one and the login's
+ * store-back.
  */
-export const REVIEW_MARK_WINDOW_MS = 14 * 60 * 1000;
+export const REVIEW_MARK_WINDOW_MS = 12 * 60 * 1000;
 
 /**
  * What a transcript carries that the drop box must not: tokens and keys of
