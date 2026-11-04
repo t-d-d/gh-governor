@@ -1729,7 +1729,7 @@ describe('run — an unblocked fire', () => {
   const OLD_MARKER = dispatchMarker({ at: new Date(NOW - 3 * 24 * 60 * 60 * 1000).toISOString(), sessionUrl: 'https://claude.ai/code/session_01WORK' });
   const blocker = { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' };
   const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' }, ...over });
-  const ticketTurn = ({ unlabelFails = [] as string[], labels = READY, state = 'open', blockers = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, features = {} as Record<string, boolean>, openBlockers = undefined as number | undefined, wait = undefined as Record<string, string> | undefined, body = '', over = {} as Record<string, unknown> } = {}) => {
+  const ticketTurn = ({ unlabelFails = [] as string[], labels = READY, state = 'open', blockers = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, features = {} as Record<string, boolean>, openBlockers = undefined as number | undefined, wait = undefined as Record<string, string> | undefined, body = '', association = 'MEMBER', over = {} as Record<string, unknown> } = {}) => {
     const asked: string[] = [];
     const file = JSON.parse(FACTORY_FILE);
     file.features = { ...file.features, ...features };
@@ -1740,7 +1740,7 @@ describe('run — an unblocked fire', () => {
         ticket: async (n: number) => {
           asked.push(`${repo} ticket ${n}`);
           // A claim re-reads the ticket; once claimed, it reads claimed.
-          return { number: n, title: `Issue ${n}`, body, state, labels, pull: false, association: 'MEMBER', ...(openBlockers === undefined ? {} : { openBlockers }), ...(wait === undefined ? {} : { wait }) };
+          return { number: n, title: `Issue ${n}`, body, state, labels, pull: false, association, ...(openBlockers === undefined ? {} : { openBlockers }), ...(wait === undefined ? {} : { wait }) };
         },
         blockers: async (n: number) => {
           asked.push(`${repo} blockers ${n}`);
@@ -2189,6 +2189,41 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual([unreadied.launches, unreadied.messages], [[], []]);
   });
 
+  // trust.auto: a blocker's close sets work going with no person choosing
+  // the ticket, so only for an author the list lets in.
+  test('not ready, opened by a NONE author: no spec session and no owner message, logged at info', async () => {
+    for (const body of ['', OWNED]) {
+      const h = ticketTurn({ labels: ['enhancement'], body, association: 'NONE' });
+      const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+      assert.equal(result.row, 'not-ready');
+      assert.deepEqual([h.launches, h.messages, h.comments], [[], [], []], body);
+      const said = h.logged.find((l) => l.event === 'dispatch-unblocked' && /trust\.auto/.test(String(l.outcome)));
+      assert.ok(said !== undefined, JSON.stringify(h.logged));
+      assert.equal(said.level ?? 'info', 'info');
+      assert.match(String(said.outcome), /NONE/);
+      assert.equal(exitCodeFor(result as never), 0);
+    }
+  });
+
+  test('not ready, opened by an OWNER: the spec session or the owner message, as for a member', async () => {
+    const plain = ticketTurn({ labels: ['enhancement'], association: 'OWNER' });
+    await run(fire(), plain.deps as never);
+    assert.deepEqual(plain.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
+    const owned = ticketTurn({ labels: ['enhancement'], body: OWNED, association: 'OWNER' });
+    await run(fire(), owned.deps as never);
+    assert.deepEqual(owned.messages.map((m) => m.session), [OWNER]);
+  });
+
+  test('not ready, with trust.auto set to OWNER: a member\'s ticket gets nothing', async () => {
+    const h = ticketTurn({ labels: ['enhancement'] });
+    const file = JSON.parse(FACTORY_FILE);
+    file.trust = { auto: ['OWNER'] };
+    file.pickup = { ...file.pickup, by: ['OWNER', 'MEMBER', 'COLLABORATOR'] };
+    h.deps.configFile = async (repo: string) => (repo === REPO ? JSON.stringify(file) : null);
+    await run(fire(), h.deps as never);
+    assert.deepEqual([h.launches, h.messages], [[], []]);
+  });
+
   test('not ready and owned, with unblocked off: the owner is not asked', async () => {
     const h = ticketTurn({ labels: ['enhancement'], body: OWNED, features: { unblocked: false } });
     await run(fire(), h.deps as never);
@@ -2477,7 +2512,7 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
   const NOT_READY = ['enhancement'];
   const READY = ['workflow: ready for development', 'mode: afk'];
   type Thread = Array<{ id: number; body: string; created_at: string; ours: boolean }>;
-  const ticketWith = ({ wait, labels = NOT_READY, state = 'open', body = '' }: { wait?: Record<string, string>; labels?: string[]; state?: string; body?: string }) => ({ number: 7, title: 'Issue 7', body, state, labels, pull: false, association: 'MEMBER', openBlockers: 0, ...(wait === undefined ? {} : { wait }) });
+  const ticketWith = ({ wait, labels = NOT_READY, state = 'open', body = '', association = 'MEMBER' }: { wait?: Record<string, string>; labels?: string[]; state?: string; body?: string; association?: string }) => ({ number: 7, title: 'Issue 7', body, state, labels, pull: false, association, openBlockers: 0, ...(wait === undefined ? {} : { wait }) });
 
   /** A harness whose ticket #7 is `ticket`, with nothing else ready, its thread `thread`, and its wait item `item`. */
   const waitsTurn = ({ ticket = ticketWith({ wait: { until: PAST } }) as Record<string, unknown>, thread = [] as Thread, item = PAST as string | null, file = FACTORY_FILE, over = {} as Record<string, unknown> } = {}) => {
@@ -2613,6 +2648,25 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       assert.deepEqual(h.comments.filter((c) => c.body.includes('governor:dispatched')).map((c) => c.body), [dispatchMarker({ at: new Date(NOW).toISOString(), sessionUrl: OWNER })], 'a marker naming the owner');
       assert.deepEqual([...h.waitItems], []);
       assert.equal(result.unread, undefined, JSON.stringify(result));
+    });
+
+    test('a ticket opened by a NONE author gets its comment, but no spec session and no owner message, and its item goes', async () => {
+      for (const body of ['', `Blocked until: ${PAST}\n\nThe spec.\n\n${OWNER}\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_`]) {
+        const h = waitsTurn({ ticket: ticketWith({ wait: { until: PAST }, body, association: 'NONE' }) });
+        await run({ source: 'aws.events' }, h.deps as never);
+        assert.equal(endedComments(h).length, 1, 'the wait-ended comment still goes');
+        assert.deepEqual([specOf(h), h.messages], [[], []], body);
+        assert.deepEqual([...h.waitItems], []);
+        const said = h.logged.find((l) => l.event === 'dispatch-wait' && l.issue === 7 && /trust\.auto/.test(String(l.outcome)));
+        assert.ok(said !== undefined, JSON.stringify(h.logged));
+        assert.equal(said.level ?? 'info', 'info');
+      }
+    });
+
+    test('a ticket opened by an OWNER gets its spec session as a member\'s does', async () => {
+      const h = waitsTurn({ ticket: ticketWith({ wait: { until: PAST }, association: 'OWNER' }) });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.equal(specOf(h).length, 1);
     });
 
     test('a ticket whose owner is archived gets the spec session as one with no owner does, and its item goes', async () => {
@@ -3446,20 +3500,33 @@ describe('run — periodics an event brings due', () => {
   /** A harness whose reader answers the windows given, and records each window read. */
   const counting = (windows: { merges?: unknown[]; issuesOpened?: unknown[]; issuesClosed?: unknown[] }, over: Record<string, unknown> = {}) => {
     const reads: string[] = [];
+    // The trust list each issue read was given.
+    const lists: unknown[] = [];
     const base = harness().deps.reader('');
     const reader = () => ({
       ...base,
       openPulls: async () => [],
       branchHead: async () => SHA,
       mergedSince: async (branch: string, since: string) => { reads.push(`merges ${branch} ${since}`); return windows.merges ?? []; },
-      issuesOpenedSince: async (since: string) => { reads.push(`issuesOpened ${since}`); return windows.issuesOpened ?? []; },
-      issuesClosedSince: async (since: string) => { reads.push(`issuesClosed ${since}`); return windows.issuesClosed ?? []; },
+      issuesOpenedSince: async (since: string, by?: unknown) => { reads.push(`issuesOpened ${since}`); lists.push(by); return windows.issuesOpened ?? []; },
+      issuesClosedSince: async (since: string, by?: unknown) => { reads.push(`issuesClosed ${since}`); lists.push(by); return windows.issuesClosed ?? []; },
     });
     const h = harness({ reader, sleep: async () => {}, ...over });
     h.periodics.set(key(RETRO.name), fired(DAY));
     h.periodics.set(key(REVIEW.name), fired(DAY));
-    return { ...h, reads };
+    return { ...h, reads, lists };
   };
+
+  test('the issue reads take the repo\'s trust.auto, the authors whose issues count: the defaults, or what the file sets', async () => {
+    for (const [trust, want] of [[undefined, ['OWNER', 'MEMBER', 'COLLABORATOR']], [{ auto: ['OWNER'] }, ['OWNER']]] as const) {
+      const triage = { name: 'Ticket triage', prompt: 'Triage the new issues.', days: 7, counts: { issuesOpened: 2 } };
+      const h = counting({}, { configFile: async (repo: string) => (repo === REPO ? fileWith({}, { periodics: [triage], ...(trust === undefined ? {} : { trust }) }) : null) });
+      h.periodics.set(key(triage.name), fired(DAY));
+      await run({ kind: 'periodics', counted: 'issuesOpened' }, h.deps as never);
+      assert.ok(h.lists.length > 0, 'the window was read');
+      for (const by of h.lists) assert.deepEqual(by, want, JSON.stringify(trust));
+    }
+  });
 
   test('a merge rides the conflicts turn, and starts a periodic whose merges since its last fire reached its number, its prompt listing them', async () => {
     const h = counting({ merges: merged(20) });
@@ -5094,6 +5161,18 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     assert.match(String(r.checks[0]!.error), /502/);
     assert.equal(messages.length, 1);
     assert.equal(exitCodeFor(r as never), 1);
+  });
+
+  test('with trust.auto set to OWNER, a COLLABORATOR\'s conflicted PR is skipped, and an OWNER\'s is told', async () => {
+    const r0 = conflictReader({ pulls: [open(804), open(810)], reads: { 804: [false], 810: [false] }, rows: { 804: { association: 'COLLABORATOR' } } });
+    const file = JSON.parse(FACTORY_FILE);
+    file.trust = { auto: ['OWNER'] };
+    const { deps, messages } = harness({ reader: r0.reader, sleep, configFile: async (repo: string) => (repo === REPO ? JSON.stringify(file) : null) });
+    const r = await run(fire, deps as never) as Result;
+    assert.deepEqual(r.checks.map((c) => [c.pr, c.outcome]), [[804, 'skipped'], [810, 'told']]);
+    assert.match(String(r.checks[0]!.reason), /trust\.auto/);
+    assert.equal(messages.length, 1);
+    assert.match(messages[0]!.text, /PR #810\b/);
   });
 
   test('a PR by an author who may not summon the dispatcher is not told', async () => {
@@ -8285,7 +8364,7 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
         ticket: async (n: number) => {
           if (row.late === 'read') late();
           if (n === WAIT_TICKET) return WAIT_BOARD;
-          if (waits.includes(n)) return { number: n, id: 9000 + n, title: `Issue ${n}`, body: '', state: 'open', labels: ['enhancement'], pull: false, openBlockers: 0, wait: { until: PAST } };
+          if (waits.includes(n)) return { number: n, id: 9000 + n, title: `Issue ${n}`, body: '', state: 'open', labels: ['enhancement'], pull: false, association: 'MEMBER', openBlockers: 0, wait: { until: PAST } };
           return { number: n, id: 9000 + n, title: `Issue ${n}`, body: '', state: 'open', labels: ticketLabels, pull: false, association: 'MEMBER', openBlockers: 0 };
         },
         workflowRuns: async () => {

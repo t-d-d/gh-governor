@@ -733,6 +733,21 @@ describe('githubReader', () => {
     assert.deepEqual([query.get('state'), query.get('since')], ['closed', SINCE]);
   });
 
+  test('given a trust list, issuesOpenedSince and issuesClosedSince keep only the issues whose author it lets in, a bot\'s judged as BOT', async () => {
+    const rows = [
+      { number: 9, title: 'A stranger\'s', created_at: '2026-10-22T00:00:00Z', closed_at: '2026-10-22T00:00:00Z', author_association: 'NONE', user: { login: 'passer-by', type: 'User' } },
+      { number: 8, title: 'No association read', created_at: '2026-10-21T12:00:00Z', closed_at: '2026-10-21T12:00:00Z', user: { login: 'someone', type: 'User' } },
+      { number: 7, title: 'The owner\'s', created_at: '2026-10-21T00:00:00Z', closed_at: '2026-10-21T00:00:00Z', author_association: 'OWNER', user: { login: 't-d-d', type: 'User' } },
+      { number: 6, title: 'A bot\'s', created_at: '2026-10-20T12:00:00Z', closed_at: '2026-10-20T12:00:00Z', author_association: 'COLLABORATOR', user: { login: 'helper[bot]', type: 'Bot' } },
+    ];
+    const { fetch } = fakeFetch({ 'https://api.github.com/repos/acme/factory/issues': rows });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    const by = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+    assert.deepEqual((await reader.issuesOpenedSince(SINCE, by)).map((i) => i.number), [7]);
+    assert.deepEqual((await reader.issuesClosedSince(SINCE, by)).map((i) => i.number), [7]);
+    assert.deepEqual((await reader.issuesOpenedSince(SINCE)).map((i) => i.number), [6, 7, 8, 9], 'with no list, every issue');
+  });
+
   test('branchHead reads the commit a branch is at', async () => {
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/git/ref/heads/main': { ref: 'refs/heads/main', object: { sha: 'a'.repeat(40), type: 'commit' } },

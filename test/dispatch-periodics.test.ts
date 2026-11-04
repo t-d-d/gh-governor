@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { CONFIG_PATH, GENERIC_SWITCHES, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
 import { DAY_MS, HOUR_MS, LISTED_MAX, SWEEP_GRACE_MS, duePeriodics, logNotStarted, periodicPrompt, windowOf } from '../dispatch/periodics.mjs';
 import { factoryFile } from './helpers/factory.ts';
+import { githubReader } from '../scripts/lib/github-app.mjs';
 
 const BASE = { environment: 'env_01ASK', labels: { ready: ['mode: afk'], claim: 'claimed' } };
 const RETRO = { name: 'Weekly retro', prompt: 'Run a retro over the week.', days: 7 };
@@ -512,6 +513,47 @@ describe('windowOf', () => {
     await window('issuesOpened', 'T1');
     await window('issuesClosed', 'T1');
     assert.deepEqual(calls, ['defaultBranch', 'merged trunk T1', 'merged trunk T2', 'opened T1', 'closed T1']);
+  });
+
+  test('given trust.auto, the issue reads keep only the issues its authors opened; merges are not judged', async () => {
+    const asked: string[] = [];
+    const r = {
+      defaultBranch: async () => 'trunk',
+      mergedSince: async (_base: string, _since: string, ...rest: unknown[]) => { asked.push(`merged ${JSON.stringify(rest)}`); return []; },
+      issuesOpenedSince: async (_since: string, by?: readonly string[]) => { asked.push(`opened ${JSON.stringify(by)}`); return []; },
+      issuesClosedSince: async (_since: string, by?: readonly string[]) => { asked.push(`closed ${JSON.stringify(by)}`); return []; },
+    };
+    const window = windowOf(r, 'main', ['OWNER']);
+    await window('merges', 'T1');
+    await window('issuesOpened', 'T1');
+    await window('issuesClosed', 'T1');
+    assert.deepEqual(asked, ['merged []', 'opened ["OWNER"]', 'closed ["OWNER"]']);
+  });
+
+  test('an issue a NONE author opened neither brings a periodic due nor appears in its prompt; merges count as before', async () => {
+    const SINCE = new Date(NOW - DAY_MS).toISOString();
+    const at = new Date(NOW - HOUR_MS).toISOString();
+    const issues = [
+      { number: 31, title: 'A stranger\'s', created_at: at, author_association: 'NONE', user: { login: 'passer-by', type: 'User' } },
+      { number: 30, title: 'A member\'s', created_at: at, author_association: 'MEMBER', user: { login: 'colleague', type: 'User' } },
+    ];
+    const pulls = [{ number: 40, title: 'A stranger\'s merged PR', merged_at: at, updated_at: at, author_association: 'NONE' }];
+    const fetch = (async (url: string) => {
+      const path = new URL(url).pathname;
+      const body = path.endsWith('/issues') ? issues : path.endsWith('/pulls') ? pulls : null;
+      return body === null ? new Response('not found', { status: 404 }) : new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof globalThis.fetch;
+    const reader = githubReader({ token: 't', repo: REPO, fetch });
+    const TRIAGE = { name: 'Ticket review', prompt: 'Review the new tickets.', days: 7, counts: { issuesOpened: 2, merges: 1 } };
+    const state = store({ 'Ticket review': { at: SINCE, session: null, baseline: false } });
+    const opened = await duePeriodics({ repo: REPO, open: finished, periodics: [TRIAGE], state, now: NOW, log: () => {}, window: windowOf(reader, 'main', ['OWNER', 'MEMBER', 'COLLABORATOR']), event: 'issuesOpened' });
+    assert.deepEqual(opened.due, [], 'one issue counted, of two needed');
+    const merged = await duePeriodics({ repo: REPO, open: finished, periodics: [TRIAGE], state, now: NOW, log: () => {}, window: windowOf(reader, 'main', ['OWNER', 'MEMBER', 'COLLABORATOR']), event: 'merges' });
+    assert.equal(merged.due.length, 1, 'a stranger\'s merge still counts');
+    const prompt = periodicPrompt(TRIAGE.prompt, merged.due[0]!.read, merged.due[0]!.windows);
+    assert.match(prompt, /#30 A member's/);
+    assert.doesNotMatch(prompt, /#31/);
+    assert.match(prompt, /#40 A stranger's merged PR/);
   });
 
   test('a fire that names the default branch saves the read', async () => {

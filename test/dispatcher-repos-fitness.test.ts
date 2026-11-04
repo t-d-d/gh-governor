@@ -15,6 +15,7 @@
  */
 
 import { test, describe } from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { CONFIG_PATH, GENERIC_SWITCHES, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
 import { repoServed, servedRepos } from '../dispatch/repos.mjs';
@@ -414,5 +415,17 @@ describe('fitness: a repo\'s prompts reach its messages word for word (dispatche
   });
   for (const [kind, [fills, want]] of Object.entries(FACTORY_TEXTS)) {
     test(kind, () => assert.equal(instruction(read.config.prompts, kind as never, fills), want));
+  }
+});
+
+describe('fitness: governor\'s own routes answer to trust.auto, and no route keeps its own rule (dispatcher-repos.md)', () => {
+  const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+
+  for (const path of ['dispatch/conflicts.mjs', 'dispatch/waits.mjs', 'dispatch/unblocked-fire.mjs', 'dispatch/periodics.mjs', 'dispatch/sweep.mjs']) {
+    test(`${path} reads its list from dispatch/trust.mjs, not the fixed set`, () => {
+      const text = source(path);
+      assert.match(text, /from '\.\/trust\.mjs'/);
+      assert.doesNotMatch(text, /\bSUMMONERS\b/);
+    });
   }
 });

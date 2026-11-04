@@ -10,6 +10,7 @@ How a repo puts governor to work: what each feature does, how to opt in, what `.
   - [Editing the file with its JSON Schema](#editing-the-file-with-its-json-schema)
   - [Pickup's sweep interval](#pickups-sweep-interval)
   - [Whose tickets pickup starts](#whose-tickets-pickup-starts)
+  - [Whose issues governor sets going by itself](#whose-issues-governor-sets-going-by-itself)
   - [The heartbeat checker](#the-heartbeat-checker)
   - [The config check](#the-config-check)
 
@@ -114,6 +115,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](../dispatch/repo-conf
 | `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the hourly sweep updates. Needed when `heartbeat` is on. |
 | `waits` | no | `{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing. |
 | `pickup` | no | `{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one, default one; and whose tickets pickup may start, by `author_association`, default `OWNER`, `MEMBER` and `COLLABORATOR`. |
+| `trust` | no | `{ "auto": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. |
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on. |
 | `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on. |
@@ -271,6 +273,22 @@ Pickup starts a ticket only where the person who opened it has one of the GitHub
 
 On such a ticket, a ready label counts only when a person other than its author, or governor's own App, added it last. A label the author added, as an issue template does, or that a labelling workflow or another App added, does not count. Governor logs `dispatch-pickup` at warn and comments once on the ticket, naming the labels and who added each. Someone with triage access who takes the labels off and adds them again starts the ticket. The [config check](#the-config-check) fails an issue template that names a ready label, whatever `pickup.by` says.
 
+### Whose issues governor sets going by itself
+
+Some of governor's work starts with nobody choosing the ticket. `trust.auto` lists, by GitHub `author_association`, whose issues and pull requests that work may act on:
+
+- a spec session, or a message to the ticket's owner session, when a not-ready ticket's blocker closes or its wait ends;
+- a periodic's counts of issues opened and closed, and the issues its prompt lists. Merges count whoever opened them;
+- the conflicts check's message to a PR's session, and the fresh session that takes the PR over when that one is archived.
+
+The default is `OWNER`, `MEMBER` and `COLLABORATOR`. So a stranger's issue linked as blocked by a real ticket gets no spec session when that ticket closes, a stranger's `Blocked until:` line starts nothing when its date passes, and a stranger's issue neither brings a periodic due nor appears in its prompt. Each of these is logged at info, and nothing pages the operator. A repo can narrow the list:
+
+```json
+"trust": { "auto": ["OWNER"] }
+```
+
+Or widen it, with the same values pickup reads. Governor refuses `BOT` in it, since no person read a bot's issue. Where the file sets `pickup.by` too, every value `auto` names must be in `pickup.by`, or governor refuses the file: it would set going a ticket that pickup may not start. Where the file leaves `auto` unset and sets a narrower `pickup.by`, `auto` is narrowed to fit, never widened. The [config check](#the-config-check) warns where `auto` reaches beyond owners, members and collaborators, saying what that opens, and notes where it narrowed an unset `auto`.
+
 ### The heartbeat checker
 
 Governor cannot report that it has stopped, so the check runs in the served repo, on GitHub Actions. The repo calls the reusable workflow [.github/workflows/heartbeat-check.yml](../.github/workflows/heartbeat-check.yml) on a schedule of its own, pinned to a commit of this repo:
@@ -354,6 +372,8 @@ It warns, without failing, on a file governor reads but that cannot work:
 - a heartbeat issue that does not exist or lacks its marker, `<!-- governor:heartbeat -->`, or the repo's own in the older shape;
 - a `review.humanOnly` or `review.quote` glob that matches no path;
 - an issue template it cannot parse, or a template folder in a tree too large for GitHub to list whole, so its labels went unchecked.
+
+It warns too, under a title of its own, where a `trust` list the file sets reaches beyond `OWNER`, `MEMBER` and `COLLABORATOR`, and says what that list opens. Such a file works, so this is not a "cannot work" warning. It adds a notice for each `trust` list the file leaves unset that governor narrowed to fit the lists it sets ([Whose issues governor sets going by itself](#whose-issues-governor-sets-going-by-itself)).
 
 A pull request that deletes the file gets a warning that governor will stop serving the repo.
 

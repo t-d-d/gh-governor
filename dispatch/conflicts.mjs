@@ -25,7 +25,8 @@
  * injected delivery.
  */
 
-import { SUMMONERS, UNATTENDED } from './webhook/fire.mjs';
+import { UNATTENDED } from './webhook/fire.mjs';
+import { AUTO, authorKind, lets } from './trust.mjs';
 import { HANDOFF, oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
@@ -155,13 +156,16 @@ const tell = async ({ pr, text, fallback, record, deliver }) => {
  *   deliver: import('./deliveries.mjs').Deliveries['deliver'],
  *   inTime: () => boolean,
  *   prompts?: Readonly<Record<string, string | undefined>>,
+ *   auto?: readonly string[],
  * }} args
  *   `record`: the PR told of this merge, false where a record stood.
  *   `prompts`: the repo's config file's.
+ *   `auto`: the repo's `trust.auto` (`autoOf`, dispatch/trust.mjs): only a
+ *   PR whose author it lets in is told, or gets the fallback session.
  *   `inTime`: whether another send fits before the deadline.
  * @returns {Promise<{ head: string, checks: Checked[] }>}
  */
-export const checkConflicts = async ({ invocation: merged, reader, sleep, record, deliver, inTime, prompts = {} }) => {
+export const checkConflicts = async ({ invocation: merged, reader, sleep, record, deliver, inTime, prompts = {}, auto = AUTO }) => {
   const { base } = merged;
   const head = await reader.branchHead(base);
   const candidates = (await reader.openPulls()).filter((p) => !p.draft && p.base === base);
@@ -173,8 +177,8 @@ export const checkConflicts = async ({ invocation: merged, reader, sleep, record
   ];
   for (const pr of settled) {
     if (pr.mergeable) continue;
-    if (!SUMMONERS.has(pr.association)) {
-      checks.push({ pr: pr.number, outcome: 'skipped', reason: `#${pr.number} conflicts, but is by a ${pr.association} author, for whom the dispatcher does not act: a person tells it`, error: null });
+    if (!lets(auto, pr)) {
+      checks.push({ pr: pr.number, outcome: 'skipped', reason: `#${pr.number} conflicts, but is by a ${authorKind(pr)} author, whom trust.auto (${auto.join(', ') || 'empty'}) does not let in, so the dispatcher does not act: a person tells it`, error: null });
       continue;
     }
     // Unrecorded, so the PR is owed: the exit code says so.

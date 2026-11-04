@@ -51,6 +51,7 @@
  */
 
 import { COUNTS } from './webhook/fire.mjs';
+import { AUTO } from './trust.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** An hour, in milliseconds. */
@@ -127,18 +128,21 @@ const COUNTED_AS = /** @type {Record<Count, string>} */ ({
  * @param {{
  *   defaultBranch: () => Promise<string>,
  *   mergedSince: (base: string, since: string) => Promise<Counted[]>,
- *   issuesOpenedSince: (since: string) => Promise<Counted[]>,
- *   issuesClosedSince: (since: string) => Promise<Counted[]>,
+ *   issuesOpenedSince: (since: string, by?: readonly string[]) => Promise<Counted[]>,
+ *   issuesClosedSince: (since: string, by?: readonly string[]) => Promise<Counted[]>,
  * }} reader
  * @param {string} [base]
+ * @param {readonly string[]} [auto] The repo's `trust.auto` (dispatch/trust.mjs):
+ *   an issue is counted and listed only where it lets its author in. A
+ *   merge is not judged.
  * @returns {Window}
  */
-export const windowOf = (reader, base) => {
+export const windowOf = (reader, base, auto = AUTO) => {
   /** @type {Promise<string> | null} */
   let branch = base === undefined ? null : Promise.resolve(base);
   return async (kind, since) => {
     if (kind === 'merges') return reader.mergedSince(await (branch ??= reader.defaultBranch()), since);
-    return kind === 'issuesOpened' ? reader.issuesOpenedSince(since) : reader.issuesClosedSince(since);
+    return kind === 'issuesOpened' ? reader.issuesOpenedSince(since, auto) : reader.issuesClosedSince(since, auto);
   };
 };
 
