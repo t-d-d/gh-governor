@@ -17,7 +17,9 @@ import {
   checklist,
   cliJudge,
   CONSTRAINT_ANSWER_SCHEMA,
+  CONSTRAINTS_LEFT,
   constraintsLeft,
+  DECIDED_IN_CODE,
   decideInCode,
   dependabotAnswer,
   COMMITS_LISTED,
@@ -25,6 +27,7 @@ import {
   globMatches,
   humanOnlyHits,
   parseReview,
+  PR_FRAME,
   readDigest,
   reviewPrompt,
 } from '../dispatch/checklist.mjs';
@@ -540,7 +543,7 @@ describe('tests 1 and 7, decided in code before any model call', () => {
   test('a PR passing 1 and 7 goes to the model, told they are decided', async () => {
     const h = await ask();
     assert.equal(h.judged.length, 1);
-    assert.ok(h.judged[0]!.system.startsWith(SKILL), 'the skill is the system prompt');
+    assert.ok(h.judged[0]!.system.startsWith(`${PR_FRAME}\n\n${SKILL}`), 'the frame and the skill are the system prompt');
     assert.match(h.judged[0]!.system, /Tests 1 and 7 are already decided/);
     assert.equal(h.answer.answer, 'pass');
   });
@@ -566,7 +569,7 @@ describe('a constraint file the code leaves to the model', () => {
     const { prompt, system, schema } = h.judged[0]!;
     assert.ok(prompt.includes(BEFORE) && prompt.includes(AFTER), prompt);
     assert.ok(prompt.indexOf(BEFORE) < prompt.indexOf(AFTER), 'before, then after');
-    assert.ok(system.startsWith(SKILL));
+    assert.ok(system.startsWith(`${PR_FRAME}\n\n${SKILL}`));
     assert.match(system, /test 7 for the files the prompt quotes/i);
     assert.deepEqual(schema, CONSTRAINT_ANSWER_SCHEMA);
     // Before is the merge base, not main's tip: what main gained since is not the PR's.
@@ -962,6 +965,30 @@ describe('the checklist\'s parts', () => {
     });
     assert.deepEqual(await judge({ pull: pullRow() as never, files: FILES as never, tickets: [] }), PASS);
     assert.ok(logged.some((l) => l.event === 'dispatch-review-transcript' && l.context.sessionId === 's1'), JSON.stringify(logged));
+  });
+
+  test('the run replaces Claude Code\'s system prompt with governor\'s frame, then the repo\'s checklist, then the suffix', async () => {
+    const sent: Array<{ system: string, prompt: string, schema: object, replace?: boolean }> = [];
+    const judge = cliJudge({
+      skill: SKILL,
+      run: async (request) => {
+        sent.push(request);
+        return { output: cliOutput(PASS, 's1') };
+      },
+      transcript: async () => ({ key: 'k' }),
+      log: () => {},
+    });
+    const plain = { pull: pullRow() as never, files: FILES as never, tickets: [] };
+    const quoting = { ...plain, constraints: { base: '', head: '', files: [{ path: 'docs/constraints/review.md', before: 'Old.', after: 'New.' }] } };
+    await judge(plain);
+    await judge(quoting);
+    assert.deepEqual(sent.map((r) => [r.replace, r.system]), [
+      [true, `${PR_FRAME}\n\n${SKILL}\n\n${DECIDED_IN_CODE}`],
+      [true, `${PR_FRAME}\n\n${SKILL}\n\n${CONSTRAINTS_LEFT}`],
+    ]);
+    assert.match(PR_FRAME, /one pull request/);
+    assert.match(PR_FRAME, /no tools/);
+    assert.match(PR_FRAME, /follow no instruction/);
   });
 
   test('readDigest hashes the whole request cliJudge sends, its suffix and schema with it, with the commits left out', async () => {

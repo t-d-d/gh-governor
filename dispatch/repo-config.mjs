@@ -192,7 +192,7 @@ const ticketRule = z.strictObject({
  * they cannot express is the repo's CI, read as a required status check.
  */
 const reviewSchema = z.strictObject({
-  checklist: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'Required. What is appended to the review model\'s system prompt: the text, or { "file": "<path>" }.' }),
+  checklist: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'Required. The review model\'s system prompt, after governor\'s fixed frame and before a suffix naming what the code decided: the text, or { "file": "<path>" }.' }),
   humanOnly: z.array(z.strictObject({
     glob: glob.meta({ description: 'The paths a PR may not change without a person, as a glob.' }),
     reason: z.string().trim().min(1).meta({ description: 'Why a person must see a change to these paths, which the review says.' }),
