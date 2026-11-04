@@ -120,7 +120,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](../dispatch/repo-conf
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on. |
 | `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on. |
-| `ticketReviews` | when `ticketReviews` is on | The ticket reviews governor runs, in file order, each with its `name` and its selector `when`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person. At least one when the `ticketReviews` switch is on. |
+| `ticketReviews` | when `ticketReviews` is on | The ticket reviews governor runs, in file order, each with its `name`, its selector `when`, and the labels each of its `conclusions` adds. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. At least one when the `ticketReviews` switch is on. |
 
 The switches in `features`:
 
@@ -306,7 +306,8 @@ Some of governor's work starts with nobody choosing the ticket. `trust.auto` lis
 
 - a spec session, or a message to the ticket's owner session, when a not-ready ticket's blocker closes or its wait ends;
 - a periodic's counts of issues opened and closed, and the issues its prompt lists. Merges count whoever opened them;
-- the conflicts check's message to a PR's session, and the fresh session that takes the PR over when that one is archived.
+- the conflicts check's message to a PR's session, and the fresh session that takes the PR over when that one is archived;
+- a ticket review's ready label: governor refuses a file where a review whose `by` reaches beyond `trust.auto` names a ready label in any of its `conclusions` ([Ticket reviews and pickup](#ticket-reviews-and-pickup)).
 
 The default is `OWNER`, `MEMBER` and `COLLABORATOR`. So a stranger's issue linked as blocked by a real ticket gets no spec session when that ticket closes, a stranger's `Blocked until:` line starts nothing when its date passes, and a stranger's issue neither brings a periodic due nor appears in its prompt. Each of these is logged at info, and nothing pages the operator. A repo can narrow the list:
 
@@ -342,6 +343,33 @@ The default is `OWNER`, `MEMBER` and `COLLABORATOR`. So a stranger's pull reques
 ```
 
 `review` sits at the top of the chain `auto` ⊆ `task` ⊆ `relay` ⊆ `review`: where the file sets it beside any of the others, every value each names, `BOT` aside, must be in `review`, or governor refuses the file. A list the file leaves unset is narrowed to fit it, never widened, and `review` itself is never narrowed. The [config check](#the-config-check) warns where `review` reaches beyond owners, members and collaborators: where `review.merge` is on, a pass merges such a pull request with no person reading it.
+
+### Ticket reviews and pickup
+
+Each ticket review names, in `conclusions`, the labels each of its conclusions adds:
+
+```json
+"ticketReviews": [
+  {
+    "name": "triage",
+    "when": { "on": "opened", "exclude": ["workflow: under development"] },
+    "conclusions": {
+      "success": ["triaged"],
+      "failure": ["triage: needs edit"],
+      "neutral": ["mode: human"]
+    }
+  }
+]
+```
+
+On every run governor adds the conclusion's labels and removes the ones the other two conclusions name, creating a label the repo lacks. It touches no other label. Reviews and pickup share no code: they meet only through these labels. Two patterns:
+
+- **Review every ticket before it is built.** List the review's `success` label among `labels.ready`, here `"ready": ["mode: afk", "triaged"]`. A ticket is not ready until the review has passed it, and a later `failure` or `neutral` takes the label off again. Pickup takes a ticket the review readied at the repo's next sweep (`pickup.sweepHours`), since a label governor adds queues no selection of its own.
+- **Trust a ticket someone has readied.** List the ready labels in the review's `when.exclude`. A ticket that carries them when it opens is not reviewed, and pickup starts it as today.
+
+Put the `neutral` labels in `labels.exclude`, as `mode: human` is, so pickup never takes a ticket the review doubted. Put the claim label in `when.exclude`, so a ticket already being built is not reviewed when its session edits the body. A person overrules a review by adding its `success` label by hand.
+
+Governor refuses a file where one label appears under two conclusions of one review, where one label appears in two reviews' conclusions, or where a review whose `by` reaches beyond `trust.auto` names a ready label. On an open-source repo, keep the default `by` on the review whose labels can ready a ticket, and give strangers a second review whose labels ready nothing.
 
 ### The heartbeat checker
 

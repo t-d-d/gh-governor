@@ -1216,7 +1216,7 @@
       }
     },
     "ticketReviews": {
-      "description": "The ticket reviews governor runs, in file order, each with its `name` and its selector `when`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person. At least one when the `ticketReviews` switch is on.",
+      "description": "The ticket reviews governor runs, in file order, each with its `name`, its selector `when`, and the labels each of its `conclusions` adds. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. At least one when the `ticketReviews` switch is on.",
       "type": "array",
       "items": {
         "type": "object",
@@ -1278,6 +1278,51 @@
             ],
             "additionalProperties": false,
             "description": "The review's selector: `on`, the event, and the labels and authors a ticket must meet."
+          },
+          "conclusions": {
+            "default": {
+              "success": [],
+              "failure": [],
+              "neutral": []
+            },
+            "description": "The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion's labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by` reaches beyond `trust.auto` names no ready label.",
+            "type": "object",
+            "properties": {
+              "success": {
+                "default": [],
+                "description": "The labels a `success` adds: the ticket passes. Default none.",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 50,
+                  "pattern": "^[^,]*$"
+                }
+              },
+              "failure": {
+                "default": [],
+                "description": "The labels a `failure` adds: the ticket waits for an edit by whoever filed it. Default none.",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 50,
+                  "pattern": "^[^,]*$"
+                }
+              },
+              "neutral": {
+                "default": [],
+                "description": "The labels a `neutral` adds: the ticket waits for a person. Default none.",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 50,
+                  "pattern": "^[^,]*$"
+                }
+              }
+            },
+            "additionalProperties": false
           }
         },
         "required": [

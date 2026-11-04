@@ -23,9 +23,15 @@
  * comment ending in `<!-- governor:ticket-review <name> <conclusion> <key> -->`.
  * Only a comment governor's App posted is read as a review's.
  *
- * A run that fails, or answers outside the schema, and a comment GitHub
- * refuses, post no marker: the review is `failed`, the turn's other
- * reviews still run, and the turn exits 1. A run the login's session limit
+ * Before its comment, a run applies the labels the review's `conclusions`
+ * names ({@link applyLabels}): it removes each label the other two
+ * conclusions name that the ticket carries, then creates and adds each of
+ * its own conclusion's labels the ticket lacks. It touches no other label,
+ * and reads no other part of the config to decide. The model applies none.
+ *
+ * A run that fails, or answers outside the schema, a label write GitHub
+ * refuses, and a comment GitHub refuses, post no marker: the review is
+ * `failed`, the turn's other reviews still run, and the turn exits 1. A run the login's session limit
  * stops is `limited`, and no later review in the turn runs. With no
  * marker, the ticket is reviewed again at its next edit.
  *
@@ -133,12 +139,17 @@ Rules on the conclusion:
  *   openIssues: (max: number) => Promise<Array<{ number: number, title: string }>>,
  *   allComments: (n: number) => Promise<ThreadRow[]>,
  *   comment: (n: number, body: string) => Promise<void>,
+ *   ensureLabel: (name: string, description?: string) => Promise<void>,
+ *   addLabels: (n: number, labels: string[]) => Promise<void>,
+ *   removeLabel: (n: number, label: string) => Promise<void>,
  * }} TicketReader
  *   `ticket`: an issue or PR, throwing with `status` 404 for one that does
  *   not exist. `parentIssue`: the issue's sub-issue parent and its repo, or
  *   null. `openIssues`: the repo's open issues, pull requests left out, up
  *   to one more than `max` so a cut can be told. `allComments`: the thread,
  *   oldest first, each marked with whether governor's App posted it.
+ *   `ensureLabel`: creates a label the repo lacks. `removeLabel`: a label
+ *   the issue lacks counts as removed.
  * @typedef {{ ticketReviews?: TicketReview[] | undefined, heartbeat?: { issue: number } | undefined, waits?: { issue: number } | undefined } & import('./trust.mjs').TrustConfig} ReviewConfig
  * @typedef {{ name: string, outcome: 'commented' | 'skipped' | 'failed' | 'limited', conclusion?: string, reason?: string, error?: string, loop?: { count: number, error?: string } }} Reviewed
  *   `loop`: where the run met the loop guard, the failures in a row, and
@@ -372,6 +383,52 @@ export const parseConclusion = (output) => {
   return { sessionId: read.sessionId, ...(read.usage === undefined ? {} : { usage: read.usage }), conclusion: a.conclusion, text: a.text.trim() };
 };
 
+/** The description a label governor creates for a review's conclusion carries. @param {string} name @param {string} conclusion */
+const labelDescription = (name, conclusion) => `Added by governor's ${name} ticket review on a ${conclusion}`;
+
+/**
+ * Apply a conclusion's labels to the ticket: remove each label the other
+ * two conclusions name that it carries, then create and add each of the
+ * conclusion's own labels it lacks. A write GitHub refuses throws, naming
+ * the label, so the review posts no comment and runs again at the next
+ * edit: a ticket must not keep an earlier `success` label under a later
+ * `failure` with nobody told.
+ *
+ * @param {{ reader: TicketReader, ticket: Ticket, name: string, conclusions: import('./repo-config.mjs').Conclusions | undefined, conclusion: string }} args
+ * @returns {Promise<{ removed: string[], added: string[] }>}
+ */
+export const applyLabels = async ({ reader, ticket, name, conclusions, conclusion }) => {
+  const named = (/** @type {string} */ c) => conclusions?.[/** @type {keyof import('./repo-config.mjs').Conclusions} */ (c)] ?? [];
+  const own = named(conclusion);
+  const others = CONCLUSIONS.filter((c) => c !== conclusion).flatMap(named).filter((l) => !own.includes(l));
+  const removed = others.filter((l) => ticket.labels.includes(l));
+  const added = own.filter((l) => !ticket.labels.includes(l));
+  const refused = (/** @type {string} */ what, /** @type {unknown} */ error) => Object.assign(new Error(`${what}, so no comment posted: ${messageOf(error)}`), { status: /** @type {{ status?: number }} */ (error)?.status });
+  for (const l of removed) {
+    try {
+      await reader.removeLabel(ticket.number, l);
+    } catch (error) {
+      // A label already gone is the state removing it asked for.
+      if (/** @type {{ status?: number }} */ (error)?.status !== 404) throw refused(`GitHub refused to remove "${l}" for the ${conclusion}`, error);
+    }
+  }
+  for (const l of added) {
+    try {
+      await reader.ensureLabel(l, labelDescription(name, conclusion));
+    } catch (error) {
+      throw refused(`GitHub refused to create "${l}" for the ${conclusion}`, error);
+    }
+  }
+  if (added.length > 0) {
+    try {
+      await reader.addLabels(ticket.number, added);
+    } catch (error) {
+      throw refused(`GitHub refused to add ${added.map((l) => `"${l}"`).join(', ')} for the ${conclusion}`, error);
+    }
+  }
+  return { removed, added };
+};
+
 /**
  * Run the repo's ticket reviews on one issue.
  *
@@ -416,7 +473,7 @@ export const reviewTicket = async ({ repo, issue, reader, config, run, transcrip
   let stopped = null;
   /** @type {Reviewed[]} */
   const out = [];
-  for (const { name } of reviews) {
+  for (const { name, conclusions } of reviews) {
     const about = { repo, issue, review: name };
     const why = unmet.get(name) ?? null;
     const markers = markersOf(thread, name);
@@ -453,6 +510,8 @@ export const reviewTicket = async ({ repo, issue, reader, config, run, transcrip
         throw error;
       }
       ({ sessionId, usage } = answer);
+      const labelled = await applyLabels({ reader, ticket, name, conclusions, conclusion: answer.conclusion });
+      if (labelled.removed.length + labelled.added.length > 0) log('dispatch-ticket-review-labels', { level: 'info', ...about, conclusion: answer.conclusion, ...labelled });
       await reader.comment(issue, ticketComment({ name, conclusion: answer.conclusion, text: answer.text, key }));
       log('dispatch-ticket-review', { ...about, outcome: 'commented', conclusion: answer.conclusion, round, ...(usage === undefined ? {} : { usage }) });
       /** @type {Reviewed} */

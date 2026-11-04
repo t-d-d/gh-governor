@@ -76,7 +76,12 @@
   "ticketReviews": [
     {
       "name": "triage",
-      "when": { "on": "opened", "exclude": ["workflow: under development"] }
+      "when": { "on": "opened", "exclude": ["workflow: under development"] },
+      "conclusions": {
+        "success": ["triaged"],
+        "failure": ["triage: needs edit"],
+        "neutral": ["triage: needs a person"]
+      }
     }
   ],
   "workflows": {
