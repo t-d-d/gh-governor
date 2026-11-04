@@ -8,7 +8,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DISPATCH_WINDOW_MS,
   dispatchMarker,
   lastDispatch,
   parseFire as parseNamed,
@@ -57,7 +56,7 @@ describe('dispatch marker', () => {
     const body = dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_abc' });
     assert.match(body, /<!-- governor:dispatched 2026-09-25T12:00:00\.000Z -->/);
     assert.match(body, /https:\/\/claude\.ai\/code\/session_abc/);
-    assert.notEqual(lastDispatch([{ id: 1, body, created_at: at }], NOW + 60_000), null);
+    assert.notEqual(lastDispatch([{ id: 1, body, created_at: at }]), null);
   });
 
   test('without a URL it still records the dispatch', () => {
@@ -66,19 +65,21 @@ describe('dispatch marker', () => {
     assert.doesNotMatch(body, /undefined|null/);
   });
 
-  test('a marker older than the window no longer counts', () => {
-    const at = new Date(NOW - DISPATCH_WINDOW_MS - 1).toISOString();
-    const body = dispatchMarker({ at, sessionUrl: null });
-    assert.equal(lastDispatch([{ id: 1, body, created_at: at }], NOW), null);
+  // A marker names a claimed ticket's builder for as long as the ticket is
+  // claimed: nothing reads a marker's age, so no window ends it.
+  test('a marker of any age still names its session, and no window is exported', async () => {
+    const at = new Date(NOW - 30 * 24 * 60 * 60_000).toISOString();
+    const body = dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_01OLD' });
+    assert.deepEqual(lastDispatch([{ id: 1, body, created_at: at }]), { at, sessionUrl: 'https://claude.ai/code/session_01OLD' });
+    assert.equal('DISPATCH_WINDOW_MS' in await import('../dispatch/webhook/fire.mjs'), false);
   });
 
   test('an ordinary comment is not a dispatch', () => {
-    assert.equal(lastDispatch([{ id: 1, body: 'dispatched yesterday', created_at: '2026-09-25T11:59:00Z' }], NOW), null);
+    assert.equal(lastDispatch([{ id: 1, body: 'dispatched yesterday', created_at: '2026-09-25T11:59:00Z' }]), null);
   });
 
-  // The marker is the forwarding address: a message the PR's session refuses
-  // goes to the session the newest marker inside the window names.
-  test('the newest marker inside the window says where the last dispatch went', () => {
+  // The newest marker on a claimed ticket names its builder.
+  test('the newest marker says where the last dispatch went', () => {
     const earlier = new Date(NOW - 3_600_000).toISOString();
     const later = new Date(NOW - 60_000).toISOString();
     const comments = [
@@ -86,11 +87,11 @@ describe('dispatch marker', () => {
       { id: 2, body: 'a remark', created_at: later },
       { id: 3, body: dispatchMarker({ at: later, sessionUrl: 'https://claude.ai/code/session_01LATER' }), created_at: later },
     ];
-    assert.deepEqual(lastDispatch(comments, NOW), { at: later, sessionUrl: 'https://claude.ai/code/session_01LATER' });
-    assert.deepEqual(lastDispatch([comments[0]!], NOW), { at: earlier, sessionUrl: 'https://claude.ai/code/session_01EARLIER' });
-    assert.deepEqual(lastDispatch([{ id: 4, body: dispatchMarker({ at: later, sessionUrl: null }), created_at: later }], NOW), { at: later, sessionUrl: null });
-    assert.equal(lastDispatch(comments, NOW + DISPATCH_WINDOW_MS + 1), null);
-    assert.equal(lastDispatch([comments[1]!], NOW), null);
+    assert.deepEqual(lastDispatch(comments), { at: later, sessionUrl: 'https://claude.ai/code/session_01LATER' });
+    assert.deepEqual(lastDispatch([comments[2]!, comments[0]!]), { at: later, sessionUrl: 'https://claude.ai/code/session_01LATER' }, 'newest by its time, not its place');
+    assert.deepEqual(lastDispatch([comments[0]!]), { at: earlier, sessionUrl: 'https://claude.ai/code/session_01EARLIER' });
+    assert.deepEqual(lastDispatch([{ id: 4, body: dispatchMarker({ at: later, sessionUrl: null }), created_at: later }]), { at: later, sessionUrl: null });
+    assert.equal(lastDispatch([comments[1]!]), null);
   });
 
   // The marker reads a session link the way every other reader does: an id
@@ -98,7 +99,7 @@ describe('dispatch marker', () => {
   test('a marker whose session id is outside the grammar names no session', () => {
     const at = new Date(NOW - 60_000).toISOString();
     const long = `https://claude.ai/code/session_${'A'.repeat(200)}`;
-    assert.deepEqual(lastDispatch([{ id: 1, body: dispatchMarker({ at, sessionUrl: long }), created_at: at }], NOW), { at, sessionUrl: null });
+    assert.deepEqual(lastDispatch([{ id: 1, body: dispatchMarker({ at, sessionUrl: long }), created_at: at }]), { at, sessionUrl: null });
   });
 });
 
@@ -449,7 +450,7 @@ describe('the vocabulary', () => {
       router: await import('../scripts/lib/dispatch-router.mjs'),
       coverage: await import('../dispatch/coverage.mjs'),
     };
-    const vocabulary = ['SUBSCRIPTION_EVENTS', 'RED', 'FAILED', 'WORKFLOW_PATH', 'MESSAGE_SESSION', 'SESSION_LINK', 'LABEL_PREFIX', 'deployedTarget', 'UNATTENDED', 'SUMMONERS', 'DISPATCH_MARKER', 'dispatchMarker', 'lastDispatch', 'DISPATCH_WINDOW_MS', 'parseFire', 'parseInvocation'];
+    const vocabulary = ['SUBSCRIPTION_EVENTS', 'RED', 'FAILED', 'WORKFLOW_PATH', 'MESSAGE_SESSION', 'SESSION_LINK', 'LABEL_PREFIX', 'deployedTarget', 'UNATTENDED', 'SUMMONERS', 'DISPATCH_MARKER', 'dispatchMarker', 'lastDispatch', 'parseFire', 'parseInvocation'];
     for (const name of vocabulary.filter((n) => n !== 'parseInvocation')) assert.ok(name in fire, `fire.mjs exports ${name}`);
     for (const [module, exports] of Object.entries(others)) {
       for (const name of vocabulary) assert.equal(name in exports, false, `${module} spells ${name} again`);

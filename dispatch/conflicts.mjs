@@ -43,7 +43,9 @@ import { GITHUB_SOURCE } from './deliveries.mjs';
  * }} ConflictsReader
  * @typedef {{ pr: number, outcome: 'told' | 'fallback' | 'already-told' | 'no-owner' | 'skipped' | 'failed', reason: string | null, error: string | null }} Checked
  *   `told`: the owner took the message. `fallback`: it was archived, and a
- *   fresh session started or the message was forwarded. `already-told`: a
+ *   fresh session started and took the PR over, the session the PR body
+ *   names now took the message, or the PR had closed and nothing started.
+ *   `already-told`: a
  *   turn recorded this PR and merge before. `no-owner`: no session to tell.
  */
 
@@ -139,6 +141,9 @@ const tell = async ({ pr, text, fallback, record, deliver }) => {
     return { ...checked, outcome: 'failed', error: `recorded #${pr.number} told, but the send threw: ${messageOf(error)}` };
   }
   if (sent.skipped !== null) return { ...checked, outcome: 'no-owner', reason: sent.skipped };
+  // The session took the PR over, but its body still names the archived
+  // owner: the operator is told, and the next remark takes it over again.
+  if (sent.relinked === false) return { ...checked, outcome: 'failed', error: `the owner was archived and ${sent.fallback?.sessionUrl ?? 'a fresh session'} took the PR over, but PR #${pr.number}'s body could not be relinked to it` };
   if (sent.ok) return { ...checked, outcome: 'told' };
   if (sent.refused && sent.fallback !== null && sent.fallback.outcome !== 'failed') return { ...checked, outcome: 'fallback', reason: `the owner was archived: ${sent.fallback.outcome}` };
   return { ...checked, outcome: 'failed', error: sent.error ?? `the owner was archived, and its fallback ${sent.fallback?.outcome ?? 'never ran'}` };

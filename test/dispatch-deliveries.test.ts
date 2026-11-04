@@ -2,7 +2,7 @@
  * Delivering a message to a session: `deliveries` in
  * dispatch/deliveries.mjs decides whom a message reaches and sends it. One
  * verb, `deliver`, to a session or to the owner of a PR, and a record of what
- * came of it: sent, refused, forwarded, a fallback launched, a subscriber
+ * came of it: sent, refused, a fallback launched and the PR relinked, a subscriber
  * dropped, skipped, or an error.
  *
  * Its four adapters are recording fakes here: the GitHub reader, the send
@@ -43,6 +43,7 @@ type Told = {
   fallback: { outcome: string; sessionUrl: string | null } | null;
   dropped: boolean | null;
   skipped: string | null;
+  relinked: boolean | null;
 };
 
 const accepted = (session = 'session_01ABC'): Answer => ({ status: 0, output: JSON.stringify({ ok: true, session_id: session, url: `https://claude.ai/code/${session}` }) });
@@ -121,7 +122,7 @@ describe('deliver — a message into a session', () => {
     const f = fakes();
     const told = await f.deliver({ session: 'session_01ABC' }, 'the reviewer asked for a test');
     assert.deepEqual(f.sent, [{ session: 'session_01ABC', text: fromDispatcher(`the reviewer asked for a test\n\n${standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })}`, GITHUB_SOURCE) }]);
-    assert.deepEqual(told, { ok: true, answered: true, refused: false, sessionUrl: FRESH, error: null, fallback: null, dropped: null, skipped: null });
+    assert.deepEqual(told, { ok: true, answered: true, refused: false, sessionUrl: FRESH, error: null, fallback: null, dropped: null, skipped: null, relinked: null });
     assert.deepEqual(f.launches, []);
     assert.deepEqual(f.comments, []);
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message' && l.ok === true && l.session === 'session_01ABC'));
@@ -349,31 +350,17 @@ describe('deliver — with a fallback', () => {
   });
 
   /**
-   * A fallback on a PR leaves the dispatch marker on it, and the next
-   * refusal inside the window reads the marker as a forwarding address: a
-   * review with six inline comments on a PR whose session is archived is
-   * one fresh session and five forwards, not six sessions pushing to one
-   * branch.
+   * A PR's body link is the one record of its session. A takeover rewrites
+   * it to the session it started and posts no comment on the PR: the next
+   * remark queues a message straight to the new session.
    */
-  test('a fallback on a PR leaves the marker on it, naming the session it started', async () => {
+  test('a takeover points the PR body at the session it started and posts no comment, so the next remark is a message into it', async () => {
     const f = fakes({ send: archived });
-    const told = await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
-    assert.equal(f.launches.length, 1);
-    assert.deepEqual(f.comments, [{ issue: 724, body: dispatchMarker({ at: new Date(NOW).toISOString(), sessionUrl: FRESH }) }]);
-    assert.deepEqual(told.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
-  });
-
-  /**
-   * The marker forwards for two hours; the PR body names the PR's session
-   * for as long as the PR is open. So a takeover's fallback also rewrites
-   * the body's session link: the next remark queues a message
-   * straight to it.
-   */
-  test('a takeover points the PR body at the session it started, so the next remark is a message into it', async () => {
-    const f = fakes({ send: archived });
-    await f.deliver({ session: 'https://claude.ai/code/session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    const told = await f.deliver({ session: 'https://claude.ai/code/session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
     assert.deepEqual(f.edits, [{ pr: 724, body: PR_BODY.replace('session_01OLD', 'session_01ABC') }]);
-    assert.equal(f.comments.length, 1, 'the marker stays, for a remark that raced the rewrite');
+    assert.deepEqual(f.comments, [], 'no dispatch comment: the body names the new owner');
+    assert.deepEqual(told.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
+    assert.equal(told.relinked, true);
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.relinked === true), JSON.stringify(f.logged));
 
     const remark = {
@@ -387,93 +374,98 @@ describe('deliver — with a fallback', () => {
     assert.equal((fires[0]!.fire as { session: string }).session, FRESH);
   });
 
-  test('a fallback that is not a takeover leaves the marker and keeps the PR body\'s author', async () => {
+  // A red run's fix session starts a branch and a PR of its own. The suspect
+  // PR's owner does not change, so nothing is written on it.
+  test('a fallback that is not a takeover posts no comment and keeps the PR body\'s author', async () => {
     const f = fakes({ send: archived });
-    await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: false });
-    assert.equal(f.comments.length, 1);
+    const told = await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: false });
+    assert.equal(f.launches.length, 1);
+    assert.deepEqual(f.comments, []);
     assert.deepEqual(f.edits, []);
+    assert.equal(told.relinked, null, 'no relink was tried');
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.relinked === null), `its log line says no relink was tried, not that one failed: ${JSON.stringify(f.logged)}`);
   });
 
-  test('a launch that printed no session URL leaves the PR body as it is, and the marker forwards', async () => {
+  test('a takeover whose launch printed no session URL posts nothing, and the relink fails at error', async () => {
     const f = fakes({ send: archived, launch: async () => ({ outcome: 'unconfirmed', sessionUrl: null }) });
     const told = await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
     assert.deepEqual(told.fallback, { outcome: 'unconfirmed', sessionUrl: null });
     assert.deepEqual(f.edits, []);
-    assert.deepEqual(f.comments, [{ issue: 724, body: dispatchMarker({ at: new Date(NOW).toISOString(), sessionUrl: null }) }]);
+    assert.deepEqual(f.comments, []);
+    assert.equal(told.relinked, false);
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-relink' && l.level === 'error'), JSON.stringify(f.logged));
   });
 
-  test('a rewrite GitHub refuses is logged, and the fallback it started is still reported, marker left', async () => {
+  test('a rewrite GitHub refuses logs at error and reports the relink failed; the fallback it started still stands', async () => {
     const f = fakes({ send: archived, reader: { updatePull: async () => { throw new Error('PATCH /repos/acme/factory/pulls/724 failed: 403 Forbidden: Resource not accessible by integration'); } } });
     const told = await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
     assert.deepEqual(told.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
-    assert.equal(f.comments.length, 1);
-    assert.ok(f.logged.some((l) => l.event === 'dispatch-relink' && /403/.test(String(l.error))), JSON.stringify(f.logged));
+    assert.equal(told.relinked, false);
+    assert.deepEqual(f.comments, []);
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-relink' && l.level === 'error' && /403/.test(String(l.error))), JSON.stringify(f.logged));
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.relinked === false), JSON.stringify(f.logged));
   });
 
-  test('a refusal on a PR marked inside the window forwards the text to the marked session instead of starting another', async () => {
-    const seen: Array<{ issue: number; since: string }> = [];
+  // The next remark finds the archived owner in the body and takes the PR
+  // over again: no dispatch comment is read as a forwarding address.
+  test('a refusal on a PR with a dispatch comment reads no comment and starts a fresh session', async () => {
+    let read = 0;
     const f = fakes({
       send: async (m) => (m.session === 'session_01OLD' ? archived(m) : accepted('session_01NEW')),
-      reader: { comments: async (issue: number, { since }: { since: string }) => { seen.push({ issue, since }); return markedBy('https://claude.ai/code/session_01NEW').comments(); } },
+      reader: { comments: async () => { read += 1; return markedBy('https://claude.ai/code/session_01NEW').comments(); } },
     });
     const told = await f.deliver({ session: 'session_01OLD' }, 'a second inline comment', { fallback: onPr, takeover: true });
-    assert.deepEqual(f.launches, []);
-    assert.deepEqual(f.comments, []);
-    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD', 'https://claude.ai/code/session_01NEW']);
-    assert.equal(f.sent[1]?.text, fromDispatcher(`a second inline comment\n\n${standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })}`, GITHUB_SOURCE));
-    assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: 'https://claude.ai/code/session_01NEW' });
-    assert.deepEqual(seen, [{ issue: 724, since: new Date(NOW - 2 * 60 * 60_000).toISOString() }], 'the marker is read over the window');
-    assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.outcome === 'forwarded'), JSON.stringify(f.logged));
-  });
-
-  test('a forward failing for any reason but an archived session starts nothing beside the marked session', async () => {
-    for (const forwardAnswer of [
-      { status: 1, output: JSON.stringify({ ok: false, session_id: 'session_01NEW', error: 'Unable to get organization UUID' }) },
-      { status: 1, output: 'Error: network' },
-    ]) {
-      const f = fakes({ send: async (m) => (m.session === 'session_01OLD' ? archived(m) : forwardAnswer), reader: markedBy('https://claude.ai/code/session_01NEW') });
-      const told = await f.deliver({ session: 'session_01OLD' }, 'a second inline comment', { fallback: onPr, takeover: true });
-      assert.deepEqual(f.launches, [], forwardAnswer.output);
-      assert.deepEqual(f.comments, []);
-      assert.deepEqual(f.edits, [], 'the PR body keeps pointing at the marked session');
-      assert.deepEqual(told.fallback, { outcome: 'failed', sessionUrl: null });
-    }
-  });
-
-  test('a marked session that refuses too gets a fresh one; a marker naming no session skips', async () => {
-    const both = fakes({ send: archived, reader: markedBy('https://claude.ai/code/session_01NEW') });
-    const fresh = await both.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
-    assert.equal(both.launches.length, 1);
-    assert.deepEqual(fresh.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
-    const none = fakes({ send: archived, reader: markedBy(null) });
-    const skipped = await none.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
-    assert.deepEqual(none.launches, []);
-    assert.deepEqual(skipped.fallback, { outcome: 'skipped', sessionUrl: null });
-  });
-
-  // After a handoff the PR body names the session the marker names. When that
-  // session refuses, the marker is not a second address.
-  test('a marker naming the session that just refused is not sent to again', async () => {
-    for (const session of ['https://claude.ai/code/session_01NEW', 'session_01NEW']) {
-      const f = fakes({ send: archived, reader: markedBy('https://claude.ai/code/session_01NEW') });
-      const told = await f.deliver({ session }, 'hi', { fallback: onPr, takeover: true });
-      assert.deepEqual(f.sent.map((m) => m.session), [session], session);
-      assert.equal(f.launches.length, 1, session);
-      assert.equal(told.fallback?.outcome, 'dispatched', session);
-    }
+    assert.equal(read, 0, 'no comment is read');
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD']);
+    assert.equal(f.launches.length, 1);
+    assert.deepEqual(told.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
   });
 
   /**
-   * A send, a forward and a fallback launch share one budget: each
-   * is handed the same end, DELIVER_LAUNCHES launch budgets from the
-   * delivery's start, so a launch after two slow sends gets what they left.
+   * Remarks queued before a takeover rewrote the body still name the
+   * archived owner. A review with six inline comments is six fires: the
+   * first takes the PR over, and each later one finds the new session in
+   * the body and goes to it, so six sessions do not push to one branch.
    */
-  test('a send, a forward and a fallback launch share one end', async () => {
+  test('a takeover whose PR body already names another session sends to it instead of starting one', async () => {
+    const moved = PR_BODY.replace('session_01OLD', 'session_01NEW');
+    const f = fakes({
+      send: async (m) => (m.session === 'session_01OLD' ? archived(m) : accepted('session_01NEW')),
+      reader: { pull: async (n: number) => ({ number: n, body: moved, head: 'claude/branch-724', open: true, association: 'OWNER' }) },
+    });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'a second inline comment', { fallback: onPr, takeover: true });
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD', 'https://claude.ai/code/session_01NEW']);
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(f.edits, []);
+    assert.deepEqual(f.comments, []);
+    assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: 'https://claude.ai/code/session_01NEW' });
+    assert.equal(told.relinked, null);
+  });
+
+  test('a session the body names that refuses too is taken over; one that fails otherwise starts nothing beside it', async () => {
+    const moved = PR_BODY.replace('session_01OLD', 'session_01NEW');
+    const pull = async (n: number) => ({ number: n, body: moved, head: 'claude/branch-724', open: true, association: 'OWNER' });
+    const both = fakes({ send: archived, reader: { pull } });
+    const fresh = await both.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.equal(both.launches.length, 1);
+    assert.deepEqual(fresh.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
+    assert.equal(fresh.relinked, true);
+    const live = fakes({ send: async (m) => (m.session === 'session_01OLD' ? archived(m) : orgLookup(m)), reader: { pull } });
+    const failed = await live.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.deepEqual(live.launches, []);
+    assert.deepEqual(failed.fallback, { outcome: 'failed', sessionUrl: null });
+  });
+
+  /**
+   * A send and a fallback launch share one budget: each is handed the same
+   * end, DELIVER_LAUNCHES launch budgets from the delivery's start, so a
+   * launch after a slow send gets what it left.
+   */
+  test('a send and a fallback launch share one end', async () => {
     let clock = NOW;
-    const f = fakes({ now: () => clock, launchTimeoutMs: 100, send: async (m) => { clock += 80; return archived(m); }, reader: markedBy('https://claude.ai/code/session_01NEW') });
+    const f = fakes({ now: () => clock, launchTimeoutMs: 100, send: async (m) => { clock += 80; return archived(m); } });
     await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
-    assert.deepEqual(f.untils, [NOW + DELIVER_LAUNCHES * 100, NOW + DELIVER_LAUNCHES * 100, NOW + DELIVER_LAUNCHES * 100]);
+    assert.deepEqual(f.untils, [NOW + DELIVER_LAUNCHES * 100, NOW + DELIVER_LAUNCHES * 100]);
     const unbounded = fakes({ send: archived });
     await unbounded.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr });
     assert.deepEqual(unbounded.untils, [Infinity, Infinity], 'no launch budget: no end');
@@ -697,7 +689,7 @@ describe('deliver — a push by the session itself', () => {
     const f = fakes({ reader: { commit: async (sha: string) => ({ sha, message: `Fix the thing\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: ${SESSION}` }) } });
     const told = await f.deliver({ session: SESSION }, 'A push to your pull request.', { on: [724], commit: SHA });
     assert.deepEqual(f.sent, []);
-    assert.deepEqual(told, { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: `its own push, ${SHA.slice(0, 12)}` });
+    assert.deepEqual(told, { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: `its own push, ${SHA.slice(0, 12)}`, relinked: null });
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message' && /own push/.test(String(l.skipped))), JSON.stringify(f.logged));
   });
 
