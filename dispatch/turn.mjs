@@ -573,6 +573,7 @@ const turnOf = async (event, deps, built) => {
     }
     served = [one];
     const name = switchOf(invocation, one.config.workflows);
+    const unheard = invocation.kind === 'message' ? unrelayed(invocation, relayOf(one.config)) : null;
     // An unblocked fire's switch is its ticket's state's (dispatch/unblocked.mjs):
     // with both off, no row acts. Its turn still reads the ticket once, for a
     // relative `Blocked until:` line on the close, and refuses after
@@ -582,11 +583,11 @@ const turnOf = async (event, deps, built) => {
       // A hook fired into a repo that turned hooks off is a caller someone
       // forgot: worth a look, not a page.
       deps.log('dispatch-refused', { level: invocation.kind === 'hook' ? 'warn' : 'info', repo, kind: invocation.kind, reason: refusal });
-    } else if (invocation.kind === 'message' && unrelayed(invocation, relayOf(one.config)) !== null) {
+    } else if (invocation.kind === 'message' && unheard !== null) {
       // The receiver judged the fire by the repo's hook-table item, which
       // may lag the file, and dropped only an author outside the three. A
       // refusal here is as silent: no comment, no page.
-      refusal = /** @type {string} */ (unrelayed(invocation, relayOf(one.config)));
+      refusal = unheard;
       deps.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, session: 'session' in invocation ? invocation.session : null, on: invocation.on ?? null, reason: refusal });
     } else if (invocation.kind === 'hook') {
       // The receiver read no file: a hook it lists no more, or a key version
@@ -1224,7 +1225,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       /** @type {import('./coverage.mjs').Coverage} */
       let coverage;
       try {
-        coverage = await coverageOf({ invocation, reader, repo: fireRepo(), workflows, relay: relayOf(configOf(fireRepo())), sleep: deps.sleep, cursor: (file, label) => deps.state.cursor(fireRepo(), file, label), onBranch: delivery().onBranch });
+        coverage = await coverageOf({ invocation, reader, repo: fireRepo(), workflows, relay: relayOf(config), sleep: deps.sleep, cursor: (file, label) => deps.state.cursor(fireRepo(), file, label), onBranch: delivery().onBranch });
       } catch (error) {
         if (invocation.kind === 'job') deps.log('dispatch-labels', { ...about, error: messageOf(error) });
         throw error;
