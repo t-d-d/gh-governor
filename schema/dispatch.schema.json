@@ -935,7 +935,7 @@
       "additionalProperties": false
     },
     "pickup": {
-      "description": "`{ \"sweepHours\": <number>, \"by\": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one, default one; and whose tickets pickup may start, by `author_association`, default `OWNER`, `MEMBER` and `COLLABORATOR`.",
+      "description": "`{ \"sweepHours\": <number>, \"by\": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one, default one; and `by`, the retired name of `trust.task`, which governor reads as it.",
       "type": "object",
       "properties": {
         "sweepHours": {

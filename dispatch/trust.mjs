@@ -43,7 +43,7 @@ export { BOT, RELAY, TRUST_VALUES, authorKind, lets };
 export const AUTO = Object.freeze([...SUMMONERS]);
 
 /**
- * @typedef {{ trust?: { auto?: readonly string[], task?: readonly string[], relay?: readonly string[] }, pickup?: { by?: readonly string[] } }} TrustConfig
+ * @typedef {{ trust?: { auto?: readonly string[] | undefined, task?: readonly string[] | undefined, relay?: readonly string[] | undefined } | undefined, pickup?: { by?: readonly string[] | undefined } | undefined }} TrustConfig
  */
 
 /**
@@ -72,14 +72,14 @@ export const relayOf = (config) => config.trust?.relay ?? RELAY;
  * @param {TrustConfig} config
  * @returns {readonly string[] | undefined}
  */
-const taskSet = (config) => config.trust?.task ?? config.pickup?.by;
+export const taskSet = (config) => config.trust?.task ?? config.pickup?.by;
 
 /**
  * The name a file gives its task list, where it sets one.
  *
  * @param {TrustConfig} config
  */
-const taskKey = (config) => (config.trust?.task === undefined ? 'pickup.by' : 'trust.task');
+export const taskKey = (config) => (config.trust?.task === undefined ? 'pickup.by' : 'trust.task');
 
 /**
  * A repo's `trust.task`: whose issue or PR may become work when a person

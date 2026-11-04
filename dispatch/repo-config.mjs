@@ -32,7 +32,7 @@
 import { z } from 'zod';
 import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
-import { BOT, TRUST_VALUES } from './trust.mjs';
+import { BOT, TRUST_VALUES, taskKey as taskKeyOf, taskSet } from './trust.mjs';
 
 /** Where the file lives, on the repo's default branch. */
 export const CONFIG_PATH = '.github/dispatch.json';
@@ -378,7 +378,7 @@ export const configSchema = z.strictObject({
   review: reviewSchema.optional().meta({ description: 'The PR review\'s settings: its checklist, and the lists it checks a PR against. Needed when `prReview` is on.' }),
   heartbeat: heartbeatSchema.optional().meta({ description: '`{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo\'s own marker, which the hourly sweep updates. Needed when `heartbeat` is on.' }),
   waits: waitsSchema.optional().meta({ description: '`{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing.' }),
-  pickup: pickupSchema.optional().meta({ description: '`{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one, default one; and whose tickets pickup may start, by `author_association`, default `OWNER`, `MEMBER` and `COLLABORATOR`.' }),
+  pickup: pickupSchema.optional().meta({ description: '`{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one, default one; and `by`, the retired name of `trust.task`, which governor reads as it.' }),
   trust: trustSchema.optional().meta({ description: '`{ "auto": [ … ], "task": [ … ], "relay": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`.' }),
   periodics: z.array(periodicSchema).default([])
     .superRefine((list, ctx) => {
@@ -409,9 +409,9 @@ export const configSchema = z.strictObject({
   // the file leaves unset is narrowed instead (dispatch/trust.mjs).
   .superRefine((c, ctx) => {
     const auto = c.trust?.auto;
-    const task = c.trust?.task ?? c.pickup?.by;
-    const taskKey = c.trust?.task === undefined ? 'pickup.by' : 'trust.task';
-    const taskPath = c.trust?.task === undefined ? ['pickup', 'by'] : ['trust', 'task'];
+    const task = taskSet(c);
+    const taskKey = taskKeyOf(c);
+    const taskPath = taskKey.split('.');
     const relay = c.trust?.relay;
     /** @param {readonly string[] | undefined} inner @param {readonly string[] | undefined} outer */
     const outside = (inner, outer) => (inner === undefined || outer === undefined ? [] : inner.filter((a) => a !== BOT && !outer.includes(a)));

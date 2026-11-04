@@ -12,7 +12,7 @@
  *
  * Two, what pickup says about a ready ticket whose ready labels do not count
  * (`uncountedReady`, scripts/lib/ready-work.mjs): its author has no say in
- * the repo, the repo's `pickup.by` builds such tickets, and no person but
+ * the repo, the repo's `trust.task` builds such tickets, and no person but
  * the author, or only a bot, added a ready label last. Most often an issue
  * template names the label, or a labelling workflow adds it.
  *
@@ -28,6 +28,7 @@ import { outsiderReason, strangerReason } from '../scripts/lib/dispatch-router.m
 import { authorHasSay, uncountedReady } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { CONFIG_PATH } from './repo-config.mjs';
+import { BOT } from './webhook/fire.mjs';
 import { sayOnce } from './waits.mjs';
 
 /** The marker on governor's one refusal comment on a ticket: its uncounted ready labels, or an author `trust.task` leaves out. */
@@ -94,12 +95,16 @@ export const reportUncounted = async ({ reader, outsider, log }) => {
  * @param {{ author: string, association: string, what: 'readied' | 'summoned' }} args
  */
 export const untaskedComment = ({ author, association, what }) => [
-  `Governor has not ${what === 'readied' ? 'started this ticket' : 'started a session on this'}. Work is about an issue or pull request only when the repo's ${code('trust.task')} lets its author in, and its author, ${author === '' ? 'whose login was not read' : code(author)}, is ${code(association)}, which ${code('trust.task')} leaves out.`,
+  `Governor has not ${what === 'readied' ? 'started this ticket' : 'started a session on this'}. Work is about an issue or pull request only when the repo's ${code('trust.task')} lets its author in, and its author${author === '' ? '' : `, ${code(author)},`} is ${code(association)}, which ${code('trust.task')} leaves out.`,
   '',
-  'To have this built, either:',
-  '',
-  `- restate the work in a ticket of your own, in your own words, linking this one, and ${what === 'readied' ? 'ready' : 'summon a session on'} that; or`,
-  `- widen ${code('trust.task')} in ${code(CONFIG_PATH)}, if the repo means to build such authors' issues and pull requests as they stand.`,
+  ...(association === BOT
+    ? [`A bot opened it, and ${code('trust.task')} never lets a bot in: no person has read what a bot writes. To have this built, restate the work in a ticket of your own, in your own words, linking this one, and ${what === 'readied' ? 'ready' : 'summon a session on'} that.`]
+    : [
+      'To have this built, either:',
+      '',
+      `- restate the work in a ticket of your own, in your own words, linking this one, and ${what === 'readied' ? 'ready' : 'summon a session on'} that; or`,
+      `- widen ${code('trust.task')} in ${code(CONFIG_PATH)}, if the repo means to build such authors' issues and pull requests as they stand.`,
+    ]),
   '',
   UNCOUNTED_READY_MARKER,
 ].join('\n');

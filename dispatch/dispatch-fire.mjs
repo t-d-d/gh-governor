@@ -1,11 +1,11 @@
 /**
  * A dispatch fire: a session started by hand or by a summons, on the fire's
- * own prompt, a summons only where the repo's `trust.task` lets in the
- * author of the issue or PR it is on, or one for a scheduled run on the default branch gone red,
+ * own prompt, or one for a scheduled run on the default branch gone red,
  * on the run's facts the fire carries and the repo's instruction
- * (`redRunPrompt`, dispatch/workflow.mjs). A red scheduled run whose run
- * before went red too starts nothing: the session the red before started is
- * on the failure.
+ * (`redRunPrompt`, dispatch/workflow.mjs). A summons starts one only where
+ * the repo's `trust.task` lets in the author of the issue or PR it is on.
+ * A red scheduled run whose run before went red too starts nothing: the
+ * session the red before started is on the failure.
  */
 
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';

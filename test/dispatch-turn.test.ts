@@ -7013,9 +7013,24 @@ describe('run — every served repo', () => {
       assert.ok(told[0]!.body.includes(UNCOUNTED_READY_MARKER));
       assert.match(told[0]!.body, /`trust\.task`/);
       assert.match(told[0]!.body, /ticket of your own/);
+      // A summons fire carries the author's kind, never a login, so the
+      // comment names the kind alone and does not say a login went unread.
+      assert.match(told[0]!.body, /its author is `NONE`/);
+      assert.doesNotMatch(told[0]!.body, /login was not read/);
       const line = h.logged.find((l) => l.event === 'dispatch-launch' && l.outcome === 'refused');
       assert.ok(line !== undefined, JSON.stringify(h.logged));
       assert.ok(line.level === undefined || line.level === 'info', String(line.level));
+    });
+
+    test('a summons on a bot\'s PR is refused, and the comment does not offer to widen trust.task, which never holds BOT', async () => {
+      const h = withThread([]);
+      await run({ ...on, author: 'BOT' }, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      const told = h.comments.filter((c) => c.issue === 3);
+      assert.equal(told.length, 1);
+      assert.match(told[0]!.body, /ticket of your own/);
+      assert.doesNotMatch(told[0]!.body, /widen/);
+      assert.match(told[0]!.body, /bot/);
     });
 
     test('a second summons finds the marker on the thread and comments no more', async () => {
