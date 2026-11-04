@@ -43,7 +43,9 @@ import { GITHUB_SOURCE } from './deliveries.mjs';
  * }} ConflictsReader
  * @typedef {{ pr: number, outcome: 'told' | 'fallback' | 'already-told' | 'no-owner' | 'skipped' | 'failed', reason: string | null, error: string | null }} Checked
  *   `told`: the owner took the message. `fallback`: it was archived, and a
- *   fresh session started and took the PR over. `already-told`: a
+ *   fresh session started and took the PR over, the session the PR body
+ *   names now took the message, or the PR had closed and nothing started.
+ *   `already-told`: a
  *   turn recorded this PR and merge before. `no-owner`: no session to tell.
  */
 

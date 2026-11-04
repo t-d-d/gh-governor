@@ -314,15 +314,16 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   refused: boolean,
  *   sessionUrl: string | null,
  *   error: string | null,
- *   fallback: { outcome: LaunchOutcome | 'skipped', sessionUrl: string | null } | null,
+ *   fallback: { outcome: LaunchOutcome | 'forwarded' | 'skipped', sessionUrl: string | null } | null,
  *   dropped: boolean | null,
  *   skipped: string | null,
  *   relinked: boolean | null,
  * }} Delivery
  *   What came of it. `ok`: the session took it. `answered`: the CLI
  *   answered at all, null when nothing was sent. `refused`: it answered the
- *   session archived. `fallback`: what a refusal with one did: skipped for
- *   a takeover of a PR that has closed, or launched (dispatched,
+ *   session archived. `fallback`: what a refusal with one did: forwarded to
+ *   the session a takeover's PR body names now, skipped for a takeover of
+ *   a PR that has closed, or launched (dispatched,
  *   unconfirmed, failed). `relinked`: whether a takeover's session was
  *   written into the PR body's link, null where none was tried; false
  *   fails the turn, since the body still names the archived owner. `dropped`: whether a refusal with no
@@ -588,27 +589,37 @@ export const deliveries = (deps) => {
     if (refused && withFallback) {
       const { issue, prompt } = withFallback;
       const sessionName = withFallback.sessionName ?? DEFAULT_SESSION_NAME;
-      let named = false;
+      /** Whether the session was written into the body as its owner, null where none was tried. @type {boolean | null} */
+      let named = null;
       /** Why nothing started, when the fallback was skipped for it. @type {string | null} */
       let reason = null;
       /** The PR's head branch a takeover's session starts on and pushes to, or '' for none. */
       let branch = '';
-      // A takeover of a PR that has closed or merged since the remark was
-      // posted has nothing to take over. It is read now, not when the remark
-      // arrived: a remark posted while the PR was open can be delivered after
-      // it merged. An open one's session starts on its head branch: from the
-      // default branch it would be given a new branch and open a second PR.
-      // A fork's head is '' here, so none is named. A fallback that is not a
-      // takeover (a red run on a merge) is meant for a closed PR, and starts
-      // a branch of its own.
+      // A takeover reads the PR now, not when the remark arrived. One that
+      // has closed or merged since has nothing to take over: a remark posted
+      // while the PR was open can be delivered after it merged. A remark
+      // queued before an earlier takeover rewrote the body names the archived
+      // owner still; the body names the PR's session now, so the remark goes
+      // there rather than starting another session on the same branch. One
+      // that refuses too is taken over, and one that fails any other way may
+      // be live, so nothing starts beside it. Otherwise the session starts on
+      // the PR's head branch: from the default branch it would be given a new
+      // branch and open a second PR. A fork's head is '' here, so none is
+      // named. A fallback that is not a takeover (a red run on a merge) is
+      // meant for a closed PR, and starts a branch of its own.
       if (takeover && issue !== undefined) {
         const pr = await (await deps.reader()).pull(issue);
-        if (pr.open) {
-          branch = pr.head;
-        } else {
+        const owner = pr.open ? sessionNamedIn(relayedBody(pr, deps.relay)) : null;
+        if (!pr.open) {
           fallback = { outcome: 'skipped', sessionUrl: null };
           reason = `PR #${issue} has closed`;
+        } else if (owner !== null && !sameSession(owner, session)) {
+          const handed = await send(owner, text, about, until);
+          deps.log('dispatch-message', { session: owner, fromBody: true, ok: handed.ok, sessionUrl: handed.sessionUrl, error: handed.error, status: handed.status });
+          if (handed.ok) fallback = { outcome: 'forwarded', sessionUrl: owner };
+          else if (!refusedBy(handed)) fallback = { outcome: 'failed', sessionUrl: null };
         }
+        if (fallback === null) branch = pr.head;
       }
       if (fallback === null) {
         const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL, ...(branch === '' ? {} : { branch }) }, until);

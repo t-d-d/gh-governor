@@ -39,8 +39,8 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * What the process exits with, 0 when:
  * - a probe: it proved the runtime;
  * - a message: the session took it; or, refusing, its fallback started,
- *   and for a takeover the PR body's link now names it, or the PR had
- *   closed so nothing started; or a
+ *   and for a takeover the PR body's link now names it; or the session the
+ *   PR body names now took it; or the PR had closed so nothing started; or a
  *   refusing subscriber's line was dropped (`dropped` is set
  *   whenever that was tried); or the push was the session's own;
  * - a workflow, job or branch run: no send faulted (taken, or refused by a

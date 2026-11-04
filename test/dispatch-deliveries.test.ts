@@ -383,6 +383,7 @@ describe('deliver — with a fallback', () => {
     assert.deepEqual(f.comments, []);
     assert.deepEqual(f.edits, []);
     assert.equal(told.relinked, null, 'no relink was tried');
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.relinked === null), `its log line says no relink was tried, not that one failed: ${JSON.stringify(f.logged)}`);
   });
 
   test('a takeover whose launch printed no session URL posts nothing, and the relink fails at error', async () => {
@@ -418,6 +419,41 @@ describe('deliver — with a fallback', () => {
     assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD']);
     assert.equal(f.launches.length, 1);
     assert.deepEqual(told.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
+  });
+
+  /**
+   * Remarks queued before a takeover rewrote the body still name the
+   * archived owner. A review with six inline comments is six fires: the
+   * first takes the PR over, and each later one finds the new session in
+   * the body and goes to it, so six sessions do not push to one branch.
+   */
+  test('a takeover whose PR body already names another session sends to it instead of starting one', async () => {
+    const moved = PR_BODY.replace('session_01OLD', 'session_01NEW');
+    const f = fakes({
+      send: async (m) => (m.session === 'session_01OLD' ? archived(m) : accepted('session_01NEW')),
+      reader: { pull: async (n: number) => ({ number: n, body: moved, head: 'claude/branch-724', open: true, association: 'OWNER' }) },
+    });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'a second inline comment', { fallback: onPr, takeover: true });
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD', 'https://claude.ai/code/session_01NEW']);
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(f.edits, []);
+    assert.deepEqual(f.comments, []);
+    assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: 'https://claude.ai/code/session_01NEW' });
+    assert.equal(told.relinked, null);
+  });
+
+  test('a session the body names that refuses too is taken over; one that fails otherwise starts nothing beside it', async () => {
+    const moved = PR_BODY.replace('session_01OLD', 'session_01NEW');
+    const pull = async (n: number) => ({ number: n, body: moved, head: 'claude/branch-724', open: true, association: 'OWNER' });
+    const both = fakes({ send: archived, reader: { pull } });
+    const fresh = await both.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.equal(both.launches.length, 1);
+    assert.deepEqual(fresh.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
+    assert.equal(fresh.relinked, true);
+    const live = fakes({ send: async (m) => (m.session === 'session_01OLD' ? archived(m) : orgLookup(m)), reader: { pull } });
+    const failed = await live.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.deepEqual(live.launches, []);
+    assert.deepEqual(failed.fallback, { outcome: 'failed', sessionUrl: null });
   });
 
   /**
