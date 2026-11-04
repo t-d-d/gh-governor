@@ -11,10 +11,14 @@
  * Run by .github/workflows/deploy.yml after the App's webhook is pointed:
  *
  *   GOVERNOR_STACK=governor GOVERNOR_APP_SLUG=governor-app node scripts/conformance.mjs
+ *
+ * The installations check also reads APP_ID, APP_PRIVATE_KEY and
+ * GOVERNOR_OWNERS from the environment, never an argument list.
  */
 
 import { isCliEntry } from './lib/cli-entry.mjs';
 import { APP_SLUG_VAR, checkDispatchAppEvents } from './lib/conformance-app-events.mjs';
+import { INSTALLATION_VARS, checkAppPermissions, checkInstallationPermissions } from './lib/conformance-app-permissions.mjs';
 import { STACK_VAR, checkDispatchWebhookUrl, checkHookUrl } from './lib/conformance-webhook-url.mjs';
 
 /**
@@ -35,6 +39,8 @@ import { STACK_VAR, checkDispatchWebhookUrl, checkHookUrl } from './lib/conforma
 /** @type {readonly Check[]} */
 export const CHECKS = Object.freeze([
   { id: 'app-events', env: [APP_SLUG_VAR], run: checkDispatchAppEvents },
+  { id: 'app-permissions', env: [APP_SLUG_VAR], run: checkAppPermissions },
+  { id: 'installation-permissions', env: [...INSTALLATION_VARS], run: checkInstallationPermissions },
   { id: 'webhook-url', env: [STACK_VAR], run: checkDispatchWebhookUrl },
   { id: 'hook-url', env: [STACK_VAR], run: checkHookUrl },
 ]);

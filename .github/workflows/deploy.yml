@@ -312,14 +312,25 @@ jobs:
           node scripts/point-app-webhook.mjs
 
       # What GitHub and AWS now hold, read back: the App delivers every event
-      # the receiver routes, and AWS lets an unsigned caller reach the
-      # receiver, which refuses it.
-      - name: Read back the App's events and the webhook URL
+      # the receiver routes, the App and each installation on a listed owner
+      # hold every permission governor uses, and AWS lets an unsigned caller
+      # reach the receiver, which refuses it. The installations are read as
+      # the App, with the key the webhook was pointed with, which reaches the
+      # script through the environment.
+      - name: Read back the App's events and permissions, and the webhook URL
         if: ${{ !inputs.probe_only }}
         env:
           GOVERNOR_STACK: governor
           GOVERNOR_APP_SLUG: ${{ vars.APP_SLUG }}
-        run: node scripts/conformance.mjs
+          GOVERNOR_OWNERS: ${{ vars.GOVERNOR_OWNERS }}
+        run: |
+          APP=$(aws secretsmanager get-secret-value --secret-id governor/github-app \
+            --query SecretString --output text)
+          APP_ID=$(jq -r '.appId // empty' <<<"$APP")
+          APP_PRIVATE_KEY=$(jq -r '.privateKey // empty' <<<"$APP")
+          while IFS= read -r line; do [[ -n "$line" ]] && echo "::add-mask::${line}"; done <<<"$APP_PRIVATE_KEY"
+          export APP_ID APP_PRIVATE_KEY
+          node scripts/conformance.mjs
 
       # The same script an operator runs; it exits with the task's exit code,
       # 1 when the runtime cannot hold a pseudo-terminal or find the CLI, and
