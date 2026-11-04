@@ -261,9 +261,9 @@ export const waitLine = (body) => {
 // ── The dispatch marker ──────────────────────────────────────────────────
 
 /**
- * How long after a dispatch an issue stays out of selection: the schedule's
- * cadence. A fire can follow another within minutes, before the worker of
- * the first has claimed its ticket.
+ * How long a dispatch marker on a PR stays its forwarding address: a remark
+ * the PR's own session refuses goes to the session a marker inside it names
+ * (dispatch/deliveries.mjs). Nothing else reads a marker's age.
  */
 export const DISPATCH_WINDOW_MS = 2 * 60 * 60 * 1000;
 
@@ -317,17 +317,6 @@ export const lastDispatch = (comments, now, windowMs = DISPATCH_WINDOW_MS) => {
   }
   return newest && { at: newest.at, sessionUrl: newest.sessionUrl };
 };
-
-/**
- * Whether any comment records a dispatch inside the window.
- *
- * @param {Array<{ body: string } & Record<string, unknown>>} comments
- * @param {number} now
- * @param {number} [windowMs]
- * @returns {boolean}
- */
-export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS) =>
-  lastDispatch(comments, now, windowMs) !== null;
 
 // ── The shape ────────────────────────────────────────────────────────────
 

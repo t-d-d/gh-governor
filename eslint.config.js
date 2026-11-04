@@ -26,7 +26,7 @@ const PLANNER_HELPERS = [
   { module: "waits", importNames: ["endedWaits", "waitSpecPrompt"] },
   { module: "unblocked", importNames: ["ticketRow", "rowOf", "readyPrompt", "specPrompt"] },
   { module: "hooks", importNames: ["hookPrompt"] },
-  { module: "ready-work", importNames: ["ticketStatus", "mayPickUp", "mayStartSpec", "specHold"] },
+  { module: "ready-work", importNames: ["ticketStatus", "mayPickUp", "mayStartSpec"] },
 ];
 const refusePlannerHelpers = [
   "error",

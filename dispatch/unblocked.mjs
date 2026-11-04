@@ -39,8 +39,10 @@
  * person has answered it (`heldUnreadied`, scripts/lib/ready-work.mjs).
  *
  * The last row is pickup's reverse: the prompt tells the session to add the
- * claim label itself before it builds. The marker keeps the sweep off the
- * ticket inside the dispatch window, and the claim keeps it off after.
+ * claim label itself before it builds. The ticket is not ready, so the
+ * sweep leaves it, and the claim keeps it off once the session builds. The
+ * session is written into the ticket's body as its owner, so the ticket's
+ * next spec work reaches it.
  *
  * A ticket's owner is the session whose link ends its body (`sessionNamedIn`,
  * dispatch/webhook/subscribe.mjs), and Claude Code ends any body a session
@@ -389,5 +391,5 @@ export const notPlannedComment = (fire, prompts, { blocked = false, unreadied } 
   return `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}${still}${ready}${marker}`;
 };
 
-/** Why a ticket governor's not-planned close still holds (`specHold`, scripts/lib/ready-work.mjs) starts no spec session, as both a close and an ended wait log it. */
+/** Why a ticket governor's not-planned close still holds (`mayStartSpec`, scripts/lib/ready-work.mjs) starts no spec session, as both a close and an ended wait log it. */
 export const UNREADIED_HELD = 'its ready labels came off on a not-planned close, and nobody has answered governor\'s comment since';

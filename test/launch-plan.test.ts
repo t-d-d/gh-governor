@@ -13,6 +13,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { CAP_ZERO_REASON, CLAIM_STRANDED, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan } from '../dispatch/launch-plan.mjs';
 import { readConfig } from '../dispatch/repo-config.mjs';
+import { SPEC_OWNER } from '../dispatch/deliveries.mjs';
+import { relinkSession } from '../dispatch/webhook/subscribe.mjs';
 import { factoryFile } from './helpers/factory.ts';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -53,6 +55,8 @@ const context = (over: {
       addLabels: (issue: number, labels: string[]) => write({ repo, op: 'add', issue, labels }),
       removeLabel: (issue: number, label: string) => write({ repo, op: 'remove', issue, label }),
       comment: (issue: number, text: string) => write({ repo, op: 'comment', issue, text }),
+      issue: async (issue: number) => ({ number: issue, body: 'The spec.', pull: false }),
+      updateIssue: (issue: number, { body }: { body: string }) => write({ repo, op: 'body', issue, text: body }),
     }),
     configOf: () => CONFIG,
     start: async (a: Record<string, unknown>) => {
@@ -98,10 +102,20 @@ describe('launchPlan starts every launch a plan holds', () => {
     assert.ok(!logged.some((l) => l.event === CLAIM_STRANDED));
   });
 
-  test('a spec session is not claimed, and its ticket is still marked', async () => {
+  test('a spec session is not claimed and leaves no dispatch comment: its ticket\'s body names it as the owner', async () => {
     const { ctx, writes } = context();
     await launchPlan(plan([ticket(6, REPO, { claim: false, holdsRepo: false })]), ctx, NOW);
-    assert.deepEqual(writes.map((w) => w.op), ['comment']);
+    assert.deepEqual(writes.map((w) => w.op), ['body']);
+    assert.equal(writes[0]!.text, relinkSession('The spec.', URL_OF(6)));
+  });
+
+  test('a spec session whose body write is refused is logged at error, and the plan goes on', async () => {
+    const { ctx, logged } = context({ failWrite: (w) => w.op === 'body' });
+    const ran = await launchPlan(plan([ticket(6, REPO, { claim: false, holdsRepo: false }), ticket(7)]), ctx, NOW);
+    assert.deepEqual(ran.map((r) => r.issue), [6, 7]);
+    const said = logged.find((l) => l.event === SPEC_OWNER);
+    assert.equal(said?.level, 'error', JSON.stringify(logged));
+    assert.equal(said?.issue, 6);
   });
 
   test('a ticket no longer ready is skipped untouched: no launch, and nothing in what ran', async () => {

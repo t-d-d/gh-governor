@@ -302,7 +302,7 @@ const rowOf = (s: State) => {
  * and unblocked on. A ready row starts as pickup does. A not-ready row
  * starts a spec session unless governor's unreadied comment has no answer
  * (`heldUnreadied`). A claimed row messages the session its dispatch marker
- * names.
+ * names, or with none, the session its body's owner link names.
  */
 const unblockedDoes = (s: State): Does => {
   const row = rowOf(s);

@@ -10,7 +10,9 @@
  * session a dispatch marker inside the window names, or launches the
  * fallback, leaving the marker and, for a takeover, starting it on the
  * PR's head branch and relinking the PR body to it, unless the takeover's
- * PR has closed since; with no fallback it
+ * PR has closed since. A ticket's spec work (`spec`) neither reads nor
+ * leaves a marker: its fallback is written into the ticket's body as its
+ * owner link ({@link nameSpecSession}). With no fallback it
  * drops the refusing subscriber, or disowns an issue's filer. A session's
  * own push, or a branch owner's own post, is skipped. The owner of a PR whose body names no session is the live local
  * session on its head branch.
@@ -27,6 +29,41 @@ import { DISPATCH_WINDOW_MS, dispatchMarker, lastDispatch } from './webhook/fire
 import { commitSession } from './branch-run.mjs';
 import { disown, relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
+
+/**
+ * The event a spec session logs when its link could not be written into its
+ * ticket's body, at error: the body names no session, or an archived one,
+ * so the ticket's next spec work starts another.
+ */
+export const SPEC_OWNER = 'dispatch-spec-owner';
+
+/**
+ * Write a spec session's link into its ticket's body as the owner link, in
+ * place of the one there (`relinkSession`, dispatch/webhook/subscribe.mjs):
+ * the body names the ticket's spec session, and its next spec work reaches
+ * this one. A session the launcher printed no link for, or a write that
+ * fails, is logged at error ({@link SPEC_OWNER}) and changes nothing else.
+ *
+ * @param {{ issue: (n: number) => Promise<{ body: string }>, updateIssue: (n: number, change: { body: string }) => Promise<unknown> }} github
+ * @param {{ repo: string, issue: number, sessionUrl: string | null, log: (event: string, context: Record<string, unknown>) => void }} args
+ * @returns {Promise<boolean>} Whether the body names it now.
+ */
+export const nameSpecSession = async (github, { repo, issue, sessionUrl, log }) => {
+  const at = { repo, issue };
+  if (sessionUrl === null) {
+    log(SPEC_OWNER, { level: 'error', ...at, error: 'the launcher printed no session link, so the body names none', reason: 'the ticket\'s next spec work starts another spec session' });
+    return false;
+  }
+  try {
+    const { body } = await github.issue(issue);
+    await github.updateIssue(issue, { body: relinkSession(body, sessionUrl) });
+    log(SPEC_OWNER, { ...at, sessionUrl, outcome: 'named in the body as its owner' });
+    return true;
+  } catch (error) {
+    log(SPEC_OWNER, { level: 'error', ...at, sessionUrl, error: messageOf(error), reason: 'the ticket\'s body does not name its spec session, so its next spec work starts another' });
+    return false;
+  }
+};
 
 /**
  * Where a message's text comes from, which names the line it opens with:
@@ -252,6 +289,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   source: MessageSource,
  *   fallback?: import('./webhook/fire.mjs').Fallback | undefined,
  *   takeover?: boolean,
+ *   spec?: boolean,
  *   on?: number[],
  *   closing?: boolean,
  *   dropFrom?: number[],
@@ -261,7 +299,10 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   with; a fallback's prompt opens with the same line. `fallback`: what a
  *   refusal starts. A `takeover`'s fallback owns the PR, so it starts on
  *   the PR's head branch and the body is relinked to it; a red CI's fix session did not write the merged PR it
- *   is told of, so that body keeps its author. `on`: the PRs or
+ *   is told of, so that body keeps its author. `spec`: the message is a
+ *   ticket's spec work to its owner, and its fallback the ticket's new
+ *   spec session, which reads no marker and leaves none, and is written
+ *   into the ticket's body as its owner ({@link nameSpecSession}). `on`: the PRs or
  *   issue the message is about, left out of the standing. `closing`: a close
  *   or a change deployed. `dropFrom`: those of `on` the session subscribes
  *   to, which a refusal with no fallback drops it from. `commit`: the push
@@ -511,10 +552,10 @@ export const deliveries = (deps) => {
    * @param {string} session
    * @param {string} text
    * @param {import('./webhook/fire.mjs').Fallback | undefined} withFallback
-   * @param {{ source: MessageSource, takeover: boolean, on: number[], closing: boolean, dropFrom: number[] }} how
+   * @param {{ source: MessageSource, takeover: boolean, spec: boolean, on: number[], closing: boolean, dropFrom: number[] }} how
    * @returns {Promise<Omit<Delivery, 'skipped'> & { answered: boolean }>}
    */
-  const toSession = async (session, text, withFallback, { source, takeover, on, closing, dropFrom }) => {
+  const toSession = async (session, text, withFallback, { source, takeover, spec, on, closing, dropFrom }) => {
     const about = { exclude: on, closing, source };
     const until = deps.now() + DELIVER_LAUNCHES * (deps.launchTimeoutMs ?? Infinity);
     const sent = await send(session, text, about, until);
@@ -531,12 +572,14 @@ export const deliveries = (deps) => {
     // session's link in the body); a marker naming none means a session
     // exists that cannot be reached, so nothing starts beside it. Otherwise
     // a fresh session starts on the fallback's prompt, and on a PR leaves
-    // the marker and, for a takeover, is written into the body's link.
+    // the marker and, for a takeover, is written into the body's link. A
+    // ticket's spec work reads no marker and leaves none: its new spec
+    // session is written into the ticket's body as its owner.
     if (refused && withFallback) {
       const { issue, prompt } = withFallback;
       const sessionName = withFallback.sessionName ?? DEFAULT_SESSION_NAME;
       const now = deps.now();
-      const marked = issue === undefined
+      const marked = issue === undefined || spec
         ? null
         : lastDispatch(await (await deps.reader()).comments(issue, { since: new Date(now - DISPATCH_WINDOW_MS).toISOString() }), now);
       if (marked?.sessionUrl && sessionId(marked.sessionUrl) !== sessionId(session)) {
@@ -575,8 +618,12 @@ export const deliveries = (deps) => {
         const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL, ...(branch === '' ? {} : { branch }) }, until);
         fallback = { outcome: started.outcome, sessionUrl: started.sessionUrl };
         if (issue !== undefined && started.outcome !== 'failed') {
-          await (await deps.reader()).comment(issue, dispatchMarker({ at: new Date(now).toISOString(), sessionUrl: started.sessionUrl }));
-          if (takeover && started.sessionUrl !== null) relinked = await relink(issue, started.sessionUrl);
+          if (spec) {
+            relinked = await nameSpecSession(await deps.reader(), { repo: deps.repo, issue, sessionUrl: started.sessionUrl, log: deps.log });
+          } else {
+            await (await deps.reader()).comment(issue, dispatchMarker({ at: new Date(now).toISOString(), sessionUrl: started.sessionUrl }));
+            if (takeover && started.sessionUrl !== null) relinked = await relink(issue, started.sessionUrl);
+          }
         }
       }
       deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, branch: branch === '' ? null : branch, ...fallback, relinked, ...(reason === null ? {} : { reason }) });
@@ -593,7 +640,7 @@ export const deliveries = (deps) => {
   };
 
   /** @type {Deliveries['deliver']} */
-  const deliver = async (to, text, { source, fallback, takeover = false, on = [], closing = false, dropFrom = [], commit }) => {
+  const deliver = async (to, text, { source, fallback, takeover = false, spec = false, on = [], closing = false, dropFrom = [], commit }) => {
     // Before anything is read or sent: a message with no source is refused.
     relayLabel(source);
     /** @type {Delivery} */
@@ -629,7 +676,7 @@ export const deliveries = (deps) => {
       deps.log('dispatch-message', { session, skipped });
       return { ...nobody, skipped };
     }
-    return { ...await toSession(session, text, fallback, { source, takeover, on, closing, dropFrom }), skipped: null };
+    return { ...await toSession(session, text, fallback, { source, takeover, spec, on, closing, dropFrom }), skipped: null };
   };
 
   return { deliver, onBranch };
