@@ -45,11 +45,11 @@ export const SPEC_OWNER = 'dispatch-spec-owner';
  * fails, is logged at error ({@link SPEC_OWNER}) and changes nothing else.
  *
  * @param {{ issue: (n: number) => Promise<{ body: string }>, updateIssue: (n: number, change: { body: string }) => Promise<unknown> }} github
- * @param {{ repo?: string, issue: number, sessionUrl: string | null, log: (event: string, context: Record<string, unknown>) => void }} args
+ * @param {{ repo: string, issue: number, sessionUrl: string | null, log: (event: string, context: Record<string, unknown>) => void }} args
  * @returns {Promise<boolean>} Whether the body names it now.
  */
 export const nameSpecSession = async (github, { repo, issue, sessionUrl, log }) => {
-  const at = { ...(repo === undefined ? {} : { repo }), issue };
+  const at = { repo, issue };
   if (sessionUrl === null) {
     log(SPEC_OWNER, { level: 'error', ...at, error: 'the launcher printed no session link, so the body names none', reason: 'the ticket\'s next spec work starts another spec session' });
     return false;
@@ -619,7 +619,7 @@ export const deliveries = (deps) => {
         fallback = { outcome: started.outcome, sessionUrl: started.sessionUrl };
         if (issue !== undefined && started.outcome !== 'failed') {
           if (spec) {
-            relinked = await nameSpecSession(await deps.reader(), { issue, sessionUrl: started.sessionUrl, log: deps.log });
+            relinked = await nameSpecSession(await deps.reader(), { repo: deps.repo, issue, sessionUrl: started.sessionUrl, log: deps.log });
           } else {
             await (await deps.reader()).comment(issue, dispatchMarker({ at: new Date(now).toISOString(), sessionUrl: started.sessionUrl }));
             if (takeover && started.sessionUrl !== null) relinked = await relink(issue, started.sessionUrl);

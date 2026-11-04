@@ -496,8 +496,7 @@ describe('mayStartSpec', () => {
   // The ticket's body names its spec session, and delivery knows whether
   // that session is still there, so no timer holds spec work.
   test('a dispatch comment, however recent, does not stop it', () => {
-    const now = Date.now();
-    assert.equal(mayStartSpec([{ body: dispatchMarker({ at: new Date(now - 60_000).toISOString(), sessionUrl: null }), ours: true }]), true);
+    assert.equal(mayStartSpec([{ body: dispatchMarker({ at: '2026-11-04T11:59:00.000Z', sessionUrl: null }), ours: true }]), true);
   });
 });
 

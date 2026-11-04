@@ -43,9 +43,10 @@ const LAUNCHED = new Set(['dispatched', 'unconfirmed', 'failed']);
  * and a repo skip hold it as they hold a launch (dispatch/launch-plan.mjs).
  *
  * The item goes once the spec session started, the owner took the message,
- * or the message was forwarded. An owner that took it gets a dispatch marker
- * naming it, as a spec session's launch leaves one, so the claimed row finds
- * the session that builds and the sweep stays off the ticket. A send that
+ * or the message was forwarded. Nothing is posted on the ticket: an owner
+ * that took it is already named in the body, and a spec session started as
+ * its fallback is written there in its place (`nameSpecSession`,
+ * dispatch/deliveries.mjs). A send that
  * failed, not refused, keeps the item and fails the turn through `unread`;
  * a refusal with no fallback, or a fallback that started nothing, keeps
  * the item for the next fire.

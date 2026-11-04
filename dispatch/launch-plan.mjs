@@ -312,9 +312,10 @@ export const launchPlan = async (plan, ctx, started) => {
         const at = new Date(now()).toISOString();
         await (await readerFor(ticket.repo)).comment(ticket.issue, dispatchMarker({ at, sessionUrl }));
         if (sessionUrl !== null) claims.delete(keyOf(ticket));
-      } else if (ticket !== null) {
+      } else if (ticket !== null && outcome !== 'failed') {
         // A spec session is the ticket's owner, named in its body, where its
-        // next spec work finds it. It leaves no dispatch comment.
+        // next spec work finds it. It leaves no dispatch comment. A launch
+        // that started nothing names nobody.
         await nameSpecSession(await readerFor(ticket.repo), { repo: ticket.repo, issue: ticket.issue, sessionUrl, log });
       }
       ran.push({ repo: entry.repo, issue: entry.issue, outcome, sessionUrl, planned: entry });

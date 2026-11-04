@@ -2363,7 +2363,10 @@ describe('run — an unblocked fire', () => {
     await run(fire(), h.deps as never);
     assert.equal(h.launches.length, 1);
     assert.deepEqual(h.comments, []);
-    assert.equal(h.logged.find((l) => l.event === 'dispatch-spec-owner')?.level, 'error', JSON.stringify(h.logged));
+    const said = h.logged.find((l) => l.event === 'dispatch-spec-owner');
+    assert.equal(said?.level, 'error', JSON.stringify(h.logged));
+    // The line names the repo and the ticket, as the operator's table says.
+    assert.deepEqual([said?.repo, said?.issue], [REPO, 7], JSON.stringify(said));
   });
 
   // A second close soon after reaches the session the body now names.
