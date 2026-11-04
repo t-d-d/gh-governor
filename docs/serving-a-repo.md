@@ -87,7 +87,7 @@ To use it:
    - `workflows.ci` to the repo's own CI workflow, in place of `.github/workflows/ci.yml`.
    - The human-only globs to the repo's own paths: `infra/**` stands for wherever the repo keeps its infrastructure. Add any other path a person should see change, such as billing or auth code.
    - The checklist, if the repo has its own rules for a pull request.
-   - Nothing more for CI. The review waits for the latest run of `workflows.ci` at a PR's head to end green, whether or not the plan lets the default branch require it. A CI workflow with a `paths` filter skips some PRs, and those wait for a push or an edit, as they would for a required check. The review needs the App's Actions read to see the run.
+   - Nothing more for CI. The review waits for the latest run of `workflows.ci` at a PR's head to end green, whether or not the plan lets the default branch require it. A CI workflow with a `paths` filter has no run at the head of a PR it skips, so that PR waits until a push starts one, or a person merges it, as it would on a required check. The review needs the App's Actions read to see the run.
    - Each shipping job's name, ending `· deployed: <target>`, and the deploy workflow's top-level `TICKET_LABEL_PATHS`, which deploy messages and `deployed:` labels read ([Deploy messages and labels](#deploy-messages-and-labels)).
    - `merge` to false, if a person should merge each pass after all. A pass then posts its comment and check, and merges nothing. Require the `governor` check in a ruleset on the default branch, with governor's App as its source, so a pull request cannot merge while its session still owes a fix.
 6. Merge them into the default branch through a pull request. The config check runs on it.

@@ -370,7 +370,7 @@ const reviewFire = (payload) => {
 
 /**
  * A run that finished on a PR's head, off the default branch: a `review`
- * fire for each PR the payload lists, at the head the run ran on. The review skips a PR whose required checks have not finished,
+ * fire for each PR the payload lists, at the head the run ran on. The review skips a PR whose required checks, or CI run at the head, have not finished,
  * so a run's end is when it is read again; a re-run that turns a red check
  * green is read the same way. A fork's PRs the payload does not list.
  *

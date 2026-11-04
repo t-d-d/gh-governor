@@ -261,6 +261,23 @@ const labelNames = (row) =>
 /** How a check run, or a workflow run, ends that blocks a merge on a check it is. */
 export const RED_CONCLUSIONS = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure']);
 
+/**
+ * A row of a workflow's runs list, as a RunRow.
+ *
+ * @param {any} row
+ * @returns {RunRow}
+ */
+const runRow = (row) => ({
+  id: row.id,
+  status: row.status,
+  conclusion: row.conclusion ?? null,
+  event: row.event,
+  head_branch: row.head_branch,
+  head_sha: row.head_sha,
+  html_url: row.html_url,
+  created_at: row.created_at,
+});
+
 /** The runs a page of a workflow's runs list holds. */
 export const RUNS_PER_PAGE = 50;
 
@@ -747,16 +764,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         page: String(page),
       });
       const answer = await call('GET', `/repos/${repo}/actions/workflows/${file}/runs?${query}`);
-      return (answer?.workflow_runs ?? []).map((/** @type {any} */ row) => ({
-        id: row.id,
-        status: row.status,
-        conclusion: row.conclusion ?? null,
-        event: row.event,
-        head_branch: row.head_branch,
-        head_sha: row.head_sha,
-        html_url: row.html_url,
-        created_at: row.created_at,
-      }));
+      return (answer?.workflow_runs ?? []).map(runRow);
     },
 
     /**
@@ -773,17 +781,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       const file = encodeURIComponent(path.slice(path.lastIndexOf('/') + 1));
       const query = new URLSearchParams({ head_sha: sha, per_page: '100' });
       const answer = await call('GET', `/repos/${repo}/actions/workflows/${file}/runs?${query}`);
-      return (answer?.workflow_runs ?? []).map((/** @type {any} */ row) => ({
-        id: row.id,
-        path: String(row.path ?? ''),
-        status: row.status,
-        conclusion: row.conclusion ?? null,
-        event: row.event,
-        head_branch: row.head_branch,
-        head_sha: row.head_sha,
-        html_url: row.html_url,
-        created_at: row.created_at,
-      }));
+      return (answer?.workflow_runs ?? []).map((/** @type {any} */ row) => ({ ...runRow(row), path: String(row.path ?? '') }));
     },
 
     /**

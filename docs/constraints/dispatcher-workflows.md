@@ -69,8 +69,7 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   `switchOf`, called by `handle` in dispatch/webhook/route.mjs.
 - test/dispatch-review.test.ts pins that the review reads only the CI
   workflow's runs at the PR's head, and none where the file names no `ci`,
-  in `fitness: run — no run but the CI workflow's at the head holds a merge
-  (dispatcher-workflows.md)`.
+  in the `fitness:` block that names this file.
 
 ## Do not
 
