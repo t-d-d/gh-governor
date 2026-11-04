@@ -650,20 +650,39 @@ export const reviewPrompt = ({ pull, files, tickets, constraints }) => [
 ].join('\n');
 
 /**
- * The digest of everything the model reads for a PR: the checklist, and
- * the prompt (`reviewPrompt`) with the commits it names left out. The
- * prompt holds the PR's title and body, the tickets it closes with their
- * text and labels, one line per changed file, and each quoted file's text
- * at the merge base and the head; a merge from the base branch changes
- * none of them, unless it changes what the PR touches. Two heads with the
- * same digest put the same question to the model.
+ * What the model is sent for a PR: the repo's checklist with the suffix
+ * saying what the code decided as its system prompt, the PR's facts as its
+ * prompt (`reviewPrompt`), and the schema its answer is held to. A prompt
+ * quoting files leaves test 7 for them to the model.
+ *
+ * @param {string} skill The repo's checklist.
+ * @param {Question} question
+ */
+const judgeRequest = (skill, question) => {
+  const constraints = question.constraints !== undefined;
+  return {
+    system: `${skill}\n\n${constraints ? CONSTRAINTS_LEFT : DECIDED_IN_CODE}`,
+    prompt: reviewPrompt(question),
+    schema: constraints ? CONSTRAINT_ANSWER_SCHEMA : ANSWER_SCHEMA,
+  };
+};
+
+/**
+ * The digest of everything the model reads for a PR: the request
+ * `judgeRequest` builds, with the commits the prompt names left out. That
+ * is the checklist, its suffix and the answer's schema, and a prompt
+ * holding the PR's title and body, the tickets it closes with their text
+ * and labels, one line per changed file, and each quoted file's text at
+ * the merge base and the head; a merge from the base branch changes none
+ * of them, unless it changes what the PR touches. Two heads with the same
+ * digest put the same question to the model.
  *
  * @param {Question} question
- * @param {string} system The repo's checklist.
+ * @param {string} skill The repo's checklist.
  */
-export const readDigest = ({ pull, files, tickets, constraints }, system) => {
-  const prompt = reviewPrompt({ pull, files, tickets, ...(constraints === undefined ? {} : { constraints: { ...constraints, base: '', head: '' } }) });
-  return createHash('sha256').update(JSON.stringify([system, prompt])).digest('hex');
+export const readDigest = ({ pull, files, tickets, constraints }, skill) => {
+  const request = judgeRequest(skill, { pull, files, tickets, ...(constraints === undefined ? {} : { constraints: { ...constraints, base: '', head: '' } }) });
+  return createHash('sha256').update(JSON.stringify(request)).digest('hex');
 };
 
 /**
@@ -869,10 +888,9 @@ export const cliJudge = ({ skill, run, transcript, log, spent = () => {} }) => {
       const { error, pr: met } = limited;
       throw Object.assign(new Error(`no run started for #${pr}: #${met}'s run met the account's limit: ${messageOf(error)}`), { limit: /** @type {{ limit?: string }} */ (error).limit });
     }
-    const constraints = question.constraints !== undefined;
-    const system = `${skill}\n\n${constraints ? CONSTRAINTS_LEFT : DECIDED_IN_CODE}`;
-    const schema = constraints ? CONSTRAINT_ANSWER_SCHEMA : ANSWER_SCHEMA;
-    const ran = await run({ system, prompt: reviewPrompt(question), schema }, pr);
+    const request = judgeRequest(skill, question);
+    const { schema } = request;
+    const ran = await run(request, pr);
     /** @type {string | null} */
     let sessionId = null;
     /** @type {Usage | undefined} */

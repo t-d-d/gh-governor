@@ -65,7 +65,8 @@ served repos have their owner merge, so a pass there must not merge.
   `checklist` plus a suffix naming what the code decided.
 - Where the model was asked, the review comment's marker carries a digest
   of everything it read, the commits left out (`readDigest`,
-  dispatch/checklist.mjs): the checklist, the PR's title and body, the
+  dispatch/checklist.mjs): the checklist with its suffix, the answer's
+  schema, the PR's title and body, the
   closing tickets' text and labels, the changed-file lines, and the quoted
   files' text at the merge base and the head. At a new head whose digest
   matches the last review's, and where that review was the model's pass,

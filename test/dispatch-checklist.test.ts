@@ -11,6 +11,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   ANSWER_SCHEMA,
   checklist,
@@ -24,6 +25,7 @@ import {
   globMatches,
   humanOnlyHits,
   parseReview,
+  readDigest,
   reviewPrompt,
 } from '../dispatch/checklist.mjs';
 import { bodyDigest, reviewMarker } from '../dispatch/pr-body.mjs';
@@ -960,6 +962,27 @@ describe('the checklist\'s parts', () => {
     });
     assert.deepEqual(await judge({ pull: pullRow() as never, files: FILES as never, tickets: [] }), PASS);
     assert.ok(logged.some((l) => l.event === 'dispatch-review-transcript' && l.context.sessionId === 's1'), JSON.stringify(logged));
+  });
+
+  test('readDigest hashes the whole request cliJudge sends, its suffix and schema with it, with the commits left out', async () => {
+    const sent: Array<{ system: string, prompt: string, schema: object }> = [];
+    const judge = cliJudge({
+      skill: SKILL,
+      run: async (request) => {
+        sent.push(request);
+        return { output: cliOutput(PASS, 's1') };
+      },
+      transcript: async () => ({ key: 'k' }),
+      log: () => {},
+    });
+    const plain = { pull: pullRow() as never, files: FILES as never, tickets: [] };
+    const quoting = { ...plain, constraints: { base: '', head: '', files: [{ path: 'docs/constraints/review.md', before: 'Old.', after: 'New.' }] } };
+    for (const question of [plain, quoting]) {
+      await judge(question);
+      const request = sent.at(-1)!;
+      assert.equal(readDigest(question, SKILL), createHash('sha256').update(JSON.stringify(request)).digest('hex'), request.system);
+    }
+    assert.equal(readDigest({ ...quoting, constraints: { ...quoting.constraints, base: MERGE_BASE, head: HEAD } }, SKILL), readDigest(quoting, SKILL), 'the commits are left out');
   });
 
   test('parseReview takes test 7 only under the schema that leaves constraint files to the model', () => {

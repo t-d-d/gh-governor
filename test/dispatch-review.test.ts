@@ -763,7 +763,7 @@ describe('run — a conflict said already', () => {
  * the same, the pass is posted again at the new head with no model call.
  * Every test decided in code still runs first, and a fail is never reused.
  */
-describe('run — a pass reused at a new head', () => {
+describe('run: a pass reused at a new head', () => {
   const EARLIER = 'e'.repeat(40);
   const LATER = '9'.repeat(40);
   const QUOTED = 'docs/constraints/review.md';

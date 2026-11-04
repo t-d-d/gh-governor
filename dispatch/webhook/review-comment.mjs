@@ -69,13 +69,17 @@ const OWNER_MERGES = 'The repo\'s owner merges it.';
 /** A pass's fixed opening. */
 const PASSES = 'Passes the PR review: ';
 
+/** The words around the head a reused pass names, which `passOf` reads back. */
+const REUSES = 'Reuses the answer given at ';
+const REUSED_SINCE = ': nothing the model reads has changed since.';
+
 /**
  * What a pass reused at a new head says after its reason: the head the
  * model gave the answer at.
  *
  * @param {string} sha
  */
-const reusedText = (sha) => `Reuses the answer given at ${sha}: nothing the model reads has changed since.`;
+const reusedText = (sha) => `${REUSES}${sha}${REUSED_SINCE}`;
 
 /** The openings of a fail whose first test the author session meets and a later one only a person does. */
 const CLAIM_THEN = 'Waits for its ticket to be claimed, then a person: ';
@@ -125,7 +129,7 @@ const HELD_PASS = /^Passes the PR review: ([\s\S]*?) The merge waits for Deploy 
 export const heldPassReason = (text) => HELD_PASS.exec(text.trim())?.[1] ?? null;
 
 const escaped = (/** @type {string} */ text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const PASSED = new RegExp(`^(?:${escaped(PASSES)}|${escaped(CONFLICT)} )([\\s\\S]+?)(?: Reuses the answer given at ([0-9a-f]{40}): nothing the model reads has changed since\\.)?(?: ${escaped(OWNER_MERGES)})?$`);
+const PASSED = new RegExp(`^(?:${escaped(PASSES)}|${escaped(CONFLICT)} )([\\s\\S]+?)(?: ${escaped(REUSES)}([0-9a-f]{40})${escaped(REUSED_SINCE)})?(?: ${escaped(OWNER_MERGES)})?$`);
 
 /**
  * The model's pass a comment carries, or null for any other text: a pass,
