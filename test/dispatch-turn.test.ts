@@ -879,7 +879,7 @@ describe('run — schedule', () => {
     const { deps, launches } = harness();
     const result = turn(await run({ source: 'aws.events' }, deps as never));
     assert.deepEqual(launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7'), sessionName(9, 'Issue 9')]);
-    assert.equal(launches[0]?.prompt, signed(promptFor(7, 'Issue 7', REPO, FACTORY_CONFIG_LABELS.claim)));
+    assert.equal(launches[0]?.prompt, signed(promptFor(7, 'Issue 7', REPO, FACTORY_CONFIG_LABELS.claim, FACTORY_PROMPTS, { signOff: true })));
     assert.deepEqual(result.dispatched.map((d) => d.issue), [7, 9]);
   });
 
@@ -2079,7 +2079,7 @@ describe('run — an unblocked fire', () => {
     assert.equal((result as unknown as Record<string, unknown>).row, 'ready');
     assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
     const prompt = h.launches[0]!.prompt;
-    assert.ok(prompt.startsWith(promptFor(7, 'Issue 7', REPO, CLAIM, FACTORY_PROMPTS)), prompt);
+    assert.ok(prompt.startsWith(promptFor(7, 'Issue 7', REPO, CLAIM, FACTORY_PROMPTS, { signOff: true })), prompt);
     assert.match(prompt, /acme\/tools#41 \(The parser\) closed as completed, by PR acme\/tools#52 \(Parse it, https:\/\/github\.com\/acme\/tools\/pull\/52\)/);
     assert.match(prompt, /Before you build, check the spec against what merged/);
     assert.ok(h.calls.includes(`label #7 +${CLAIM}`), h.calls.join('; '));
@@ -6647,6 +6647,18 @@ describe('run — every served repo', () => {
     assert.match(h.launches[0]!.prompt, new RegExp(`in ${ASKME}`));
     assert.deepEqual(result.dispatched.map((d) => d.issue), [2, 7, 9]);
     assert.ok(h.read.includes(`${ASKME} ready mode: afk as ghs_${ASKME}`), h.read.join('; '));
+  });
+
+  // A pickup session that stops at its check has no PR to close, so the
+  // prompt asks it to sign off where its repo turns `signOff` on, and only there.
+  test("a pickup prompt asks a session that stops at its check to sign off only where its repo turns signOff on", async () => {
+    for (const signOff of [true, false]) {
+      const h = twoRepos({ cap: 1, askmeFile: JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { pickup: true, signOff } }) });
+      await run({ source: 'aws.events' }, h.deps as never);
+      const prompt = h.launches[0]!.prompt;
+      assert.ok(prompt.startsWith(promptFor(2, 'Issue 2', ASKME, 'claimed', {}, { signOff })), prompt);
+      assert.equal(/If you stopped at the check/.test(prompt), signOff, prompt);
+    }
   });
 
   /**
