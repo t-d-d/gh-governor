@@ -258,6 +258,7 @@ describe('switchOf', () => {
   test('pickup for a schedule fire; each kind its own switch; summons, PR messages and subscribe messages for the rest', () => {
     assert.equal(switchOf({ kind: 'schedule' }), 'pickup');
     assert.equal(switchOf({ kind: 'review' }), 'prReview');
+    assert.equal(switchOf({ kind: 'ticketReview', issue: 3 }), 'ticketReviews');
     assert.equal(switchOf({ kind: 'conflicts', pr: 1, sha: 'a'.repeat(40), base: 'main' }), 'conflicts');
     assert.equal(switchOf({ kind: 'dispatch', prompt: 'p', scheduled: { workflowId: 1, runId: 2, branch: 'main' } }), 'redScheduledRun');
     assert.equal(switchOf({ kind: 'dispatch', prompt: 'p' }), 'summons');

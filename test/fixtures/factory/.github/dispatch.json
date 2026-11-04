@@ -27,7 +27,8 @@
     "periodics": true,
     "hooks": true,
     "waits": true,
-    "signOff": true
+    "signOff": true,
+    "ticketReviews": true
   },
   "heartbeat": {
     "issue": 412,
@@ -70,6 +71,12 @@
       "name": "operator-prod",
       "prompt": "A prod alarm fired. Read the alarm's text below, find the cause in the logs, and fix it or raise an issue saying what broke.",
       "keyVersion": 1
+    }
+  ],
+  "ticketReviews": [
+    {
+      "name": "triage",
+      "when": { "on": "opened", "exclude": ["workflow: under development"] }
     }
   ],
   "workflows": {

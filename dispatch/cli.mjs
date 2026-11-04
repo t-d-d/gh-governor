@@ -48,6 +48,9 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * - a review: every PR came to an outcome (a merge GitHub refused, an
  *   answer outside the checklist or a failed read is a fault; a run the
  *   login's session limit refused is not);
+ * - a ticket review: every review that ran posted its comment (a failed
+ *   run, an answer outside the schema or a refused comment is a fault; a
+ *   run the login's session limit refused is not);
  * - a conflicts check: every PR was checked;
  * - an unblocked fire for a claimed ticket: its session took the message,
  *   or is gone; for a not-ready ticket's owner, the same, unless the spec
@@ -89,8 +92,8 @@ export const exitCodeFor = (result) => {
       || (result.cursor != null && 'error' in result.cursor);
     return faulted ? 1 : 0;
   }
-  if (result.kind === 'review' || result.kind === 'conflicts') {
-    const outcomes = result.kind === 'review' ? result.reviews ?? [] : result.checks ?? [];
+  if (result.kind === 'review' || result.kind === 'ticketReview' || result.kind === 'conflicts') {
+    const outcomes = result.kind === 'conflicts' ? result.checks ?? [] : result.reviews ?? [];
     return outcomes.some((r) => r.outcome === 'failed') ? 1 : 0;
   }
   // A hook fire sent into its open session: the send is the turn.

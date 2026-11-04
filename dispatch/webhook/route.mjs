@@ -54,6 +54,9 @@
  * An issue opened, reopened or edited, whose new or old body opens with a `Blocked
  * until:` line queues a `wait` fire naming it, whose turn keeps the
  * ticket's wait item to match its line (dispatch/waits.mjs).
+ * An issue opened, reopened, or edited with its body changed by anyone but
+ * a bot, queues a `ticketReview` fire naming it, whose turn runs the
+ * repo's ticket reviews on it (dispatch/ticket-review.mjs).
  * An issue closed queues a `schedule` fire naming it as `freed`. Its turn
  * starts nothing: it queues one `unblocked` fire for each open ticket the
  * issue directly blocked, in whichever listed owner's repo the ticket is,
@@ -524,6 +527,30 @@ const waitFire = (payload) => {
 };
 
 /**
+ * An issue opened, reopened, or edited with its body changed: a
+ * `ticketReview` fire naming it, so its turn runs each of the repo's ticket
+ * reviews the issue calls for (dispatch/ticket-review.mjs). A title-only
+ * edit changes nothing a review reads. A body edit a bot made is governor's
+ * own (a disowned session link, a relative wait line rewritten), and must
+ * not spend a review's round; a session edits as the owner's account, so
+ * its edits still run one. Judged from the payload alone; the fire needs
+ * `ticketReviews`, so {@link handle} drops it where the repo's item says
+ * that switch is off, and the task judges the author by `trust.review`.
+ *
+ * @param {any} payload
+ * @returns {Decision}
+ */
+const ticketReviewFire = (payload) => {
+  const number = payload?.issue?.number;
+  const action = payload?.action;
+  if (!Number.isInteger(number) || number <= 0) return nothing('');
+  if (action === 'edited' && payload?.changes?.body === undefined) return nothing('');
+  if (action === 'edited' && payload?.sender?.type === 'Bot') return nothing('');
+  if (action !== 'opened' && action !== 'reopened' && action !== 'edited') return nothing('');
+  return one({ fire: build.ticketReview({ issue: number }), reason: `issue #${number} ${action}: run its ticket reviews`, key: 'ticketReview' });
+};
+
+/**
  * A PR merged into the default branch `main`: a `conflicts` fire naming
  * it, its merge commit and the branch, so every open PR the merge left
  * conflicted is told, carrying the merge for the periodics' count. Keyed
@@ -612,12 +639,12 @@ const routeFor = ({ event, payload, appId, relay }) => {
     }
     // The selection's fire, where there is one, beside each subscriber's.
     if (selection !== null) return both(selection, issueEventFires(payload, trust));
-    if (action === 'reopened') return both(issueEventFires(payload, trust), waitFire(payload));
+    if (action === 'reopened') return both(both(issueEventFires(payload, trust), waitFire(payload)), ticketReviewFire(payload));
     if (action === 'labeled' || action === 'unlabeled') return issueEventFires(payload, trust);
     const mentioned = mentionFires({ event, payload, ...trust }) ?? nothing(`issues ${action}: nothing to select from`);
     // An issue opened is counted on its summons, or on a fire of its own.
     const counted = action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened', 'dispatch') : mentioned;
-    return both(counted, waitFire(payload));
+    return both(both(counted, waitFire(payload)), ticketReviewFire(payload));
   }
   if (event === 'pull_request') {
     const reviewed = both(pullRequestFires(payload, trust), reviewFire(payload));

@@ -30,9 +30,13 @@ const APP_ID = 5075844;
 /**
  * The one fire a delivery queues, or none: most deliveries queue at most one,
  * and those that fan out to subscribers are read with `routeEvent` itself.
+ * The ticket review's fire, which an issue opened, reopened or with its body
+ * edited queues beside the rest, is set aside: its own describe pins it.
  */
 const route = (args: Parameters<typeof routeEvent>[0]) => {
-  const { fires, reason } = routeEvent(args);
+  const routed = routeEvent(args);
+  const fires = routed.fires.filter((f) => f.fire.kind !== 'ticketReview');
+  const reason = routed.reason;
   assert.ok(fires.length <= 1, `expected at most one fire, got ${fires.length}: ${reason}`);
   return { fire: fires[0]?.fire, reason: fires[0]?.reason ?? reason };
 };
@@ -223,15 +227,15 @@ describe('routeEvent — what a periodic counts', () => {
     assert.deepEqual(counted('issues', issuesEvent('closed')), [['schedule', 'issuesClosed', undefined]]);
   });
 
-  test('an issue opened, which queues nothing today, gets a fire of its own', () => {
+  test('an issue opened, which queues no summons, gets a fire of its own beside its ticket review\'s', () => {
     const { fires } = routeEvent({ event: 'issues', payload: issuesEvent('opened'), owners: OWNERS });
-    assert.deepEqual(fires.map((f) => [f.fire, f.key]), [[{ kind: 'periodics', counted: 'issuesOpened', repo: REPO }, 'periodics']]);
+    assert.deepEqual(fires.map((f) => [f.fire, f.key]), [[{ kind: 'periodics', counted: 'issuesOpened', repo: REPO }, 'periodics'], [{ kind: 'ticketReview', issue: 717, repo: REPO }, 'ticketReview']]);
   });
 
   test('an issue opened summoning a session rides the summons', () => {
     const payload = issuesEvent('opened', { issue: { ...issuesEvent('opened').issue, body: '@claude what does the retry budget do?' } });
     const { fires } = routeEvent({ event: 'issues', payload, owners: OWNERS });
-    assert.deepEqual(fires.map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted]), [['dispatch', 'issuesOpened']]);
+    assert.deepEqual(fires.map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted]), [['dispatch', 'issuesOpened'], ['ticketReview', undefined]]);
   });
 
   test('a PR opened, an issue reopened or labelled counts nothing', () => {
@@ -567,7 +571,7 @@ describe('routeEvent — a mention', () => {
   test('an issue a session opened, its footer stripped to its link on the last line, summons nothing by naming @claude', () => {
     const body = 'A comment mentioning @claude on a PR a session owns should message the owner.\nhttps://claude.ai/code/session_01FILERBBB';
     const { fires, reason } = routeEvent({ event: 'issues', payload: issuesEvent('opened', { issue: { ...issuesEvent('opened').issue, body } }), owners: OWNERS });
-    assert.deepEqual(fires.map((f) => f.fire.kind), ['periodics'], 'counted, and no summons');
+    assert.deepEqual(fires.map((f) => f.fire.kind), ['periodics', 'ticketReview'], 'counted, and no summons');
     assert.match(reason, /a session cannot summon another/);
     const comment = route({ event: 'issue_comment', payload: commentEvent({}, { body: '@claude this one stalled:\nhttps://claude.ai/code/session_01FILERBBB' }), owners: OWNERS });
     assert.equal(comment.fire?.kind, 'dispatch', 'a person\'s comment ending in a session link is still a summons');
@@ -1622,7 +1626,7 @@ describe('handle', () => {
 
   test('an event that routes nowhere is acknowledged and queues nothing', async () => {
     const { deps, queued } = harness();
-    const response = await handle(delivery('issues', issuesEvent('reopened')), deps);
+    const response = await handle(delivery('issues', issuesEvent('labeled', { label: { name: 'type: bug' }, sender: { login: 'bot[bot]', type: 'Bot' } })), deps);
     assert.equal(response.statusCode, 200);
     assert.deepEqual(queued, []);
   });
@@ -2182,6 +2186,12 @@ describe('fitness: the receiver drops a fire only where the repo\'s hook-table i
     assert.deepEqual(kinds(queued), ['schedule']);
   });
 
+  test('an issue opened in a repo with ticketReviews off queues no ticketReview fire; with it on, it does', async () => {
+    const off = await handled('issues', opened('A ticket.'), item(ALL.filter((n) => n !== 'ticketReviews')));
+    assert.ok(!kinds(off.queued).includes('ticketReview'), JSON.stringify(kinds(off.queued)));
+    assert.deepEqual(kinds((await handled('issues', opened('A ticket.'), item(['ticketReviews']))).queued), ['ticketReview']);
+  });
+
   test('a hook request does not read the switches', async () => {
     let reads = 0;
     const h = harness({ repoItem: async () => { reads += 1; return null; } });
@@ -2394,5 +2404,52 @@ describe('fitness: only text from an author trust.relay lets in reaches a runnin
       await handled({ ...remark(owner), action: 'edited' }, async () => { reads += 1; return null; });
       assert.equal(reads, 0);
     });
+  });
+});
+
+/**
+ * A ticket review (dispatch/ticket-review.mjs) runs on an issue opened,
+ * reopened or with its body edited: the receiver queues one `ticketReview`
+ * fire naming the issue, from the payload alone, and the task decides which
+ * reviews run.
+ */
+describe('routeEvent: the ticket review\'s fire', () => {
+  const ticketFires = (payload: unknown) => routeEvent({ event: 'issues', payload, owners: OWNERS }).fires
+    .filter((f) => f.fire.kind === 'ticketReview');
+
+  test('an issue opened, reopened, or edited with a body change queues one ticketReview fire naming it', () => {
+    for (const payload of [
+      issuesEvent('opened'),
+      issuesEvent('reopened'),
+      issuesEvent('edited', { changes: { body: { from: 'The old body.' } } }),
+      issuesEvent('edited', { changes: { title: { from: 'Old' }, body: { from: 'The old body.' } } }),
+    ]) {
+      const fires = ticketFires(payload);
+      assert.deepEqual(fires.map((f) => [f.fire, f.key]), [[{ kind: 'ticketReview', issue: 717, repo: REPO }, 'ticketReview']], payload.action);
+    }
+  });
+
+  test('a title-only edit, a bot\'s body edit, a label and a close queue none', () => {
+    for (const payload of [
+      issuesEvent('edited', { changes: { title: { from: 'Old' } } }),
+      issuesEvent('edited'),
+      issuesEvent('edited', { changes: { body: { from: 'The old body.' } }, sender: { login: 'governor-app[bot]', type: 'Bot' } }),
+      issuesEvent('labeled', { label: { name: 'type: bug' } }),
+      issuesEvent('closed'),
+    ]) {
+      assert.deepEqual(ticketFires(payload), [], `${payload.action} ${JSON.stringify((payload as { changes?: unknown }).changes ?? null)}`);
+    }
+  });
+
+  test('an issue naming no number queues none', () => {
+    assert.deepEqual(ticketFires(issuesEvent('opened', { issue: { title: 'No number', body: 'x' } })), []);
+  });
+
+  test('the fire needs ticketReviews, and parses back as it was built', () => {
+    const [queued] = ticketFires(issuesEvent('opened'));
+    assert.ok(queued);
+    assert.deepEqual(parseFire(queued.fire), queued.fire);
+    assert.throws(() => parseFire({ kind: 'ticketReview', repo: REPO }), /issue/);
+    assert.throws(() => parseFire({ kind: 'ticketReview', issue: 717 }), /repo/);
   });
 });

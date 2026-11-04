@@ -30,7 +30,7 @@
  */
 
 import { z } from 'zod';
-import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, WORKFLOW_PATH } from './webhook/fire.mjs';
+import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, SUMMONERS, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
 import { BOT, START, TRUST_VALUES, taskKey as taskKeyOf, taskSet } from './trust.mjs';
 
@@ -45,13 +45,14 @@ export const CONFIG_PATH = '.github/dispatch.json';
  * deployed-label job fires, the PR review, the heartbeat, periodics,
  * hooks, what governor does when a ticket's wait ends (`waits`,
  * dispatch/waits.mjs), and the sign-off sweep's archive and the standing
- * line's ask to sign off (`signOff`, scripts/lib/session-signoff.mjs).
+ * line's ask to sign off (`signOff`, scripts/lib/session-signoff.mjs), and
+ * the ticket reviews (`ticketReviews`, dispatch/ticket-review.mjs).
  * Every switch there is.
  */
 export const GENERIC_SWITCHES = Object.freeze([
   'pickup', 'summons', 'prMessages', 'subscribeMessages', 'redScheduledRun', 'unblocked',
   'ciMessages', 'deployMessages', 'branchRunMessages', 'conflicts', 'deployedLabels', 'prReview',
-  'heartbeat', 'periodics', 'hooks', 'waits', 'signOff',
+  'heartbeat', 'periodics', 'hooks', 'waits', 'signOff', 'ticketReviews',
 ]);
 
 /**
@@ -86,6 +87,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   periodics: 'A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached.',
   hooks: 'A session on a hook\'s prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook\'s last session is open goes into that session as a message.',
   waits: 'When a ticket\'s `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker\'s close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.',
+  ticketReviews: 'Each review the `ticketReviews` list holds comments on a ticket it selects, when the ticket is opened, reopened or has its body edited: whether it passes, waits for an edit, or waits for a person.',
   signOff: 'Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off.',
 });
 
@@ -355,6 +357,29 @@ const hookSchema = z.strictObject({
 });
 
 /**
+ * Who a ticket review reads where its `when.by` is unset: the authors with a
+ * say (dispatch/ticket-review.mjs).
+ */
+export const TICKET_REVIEW_BY = Object.freeze([...SUMMONERS]);
+
+/**
+ * One ticket review (dispatch/ticket-review.mjs): its `name`, which goes
+ * into every comment and marker it writes, and its selector, `when`. Only
+ * `on: "opened"` is built; any other event fails loudly rather than be
+ * read as something else. No other key yet: a file written for a later
+ * governor fails here.
+ */
+const ticketReviewSchema = z.strictObject({
+  name: z.string().regex(HOOK_NAME, 'lower-case letters, digits and hyphens: it goes into a marker that can never be migrated').meta({ description: 'The review\'s name: lower-case letters, digits and hyphens, unique in the list. It goes into every comment and marker the review writes, so renaming a review starts its rounds afresh.' }),
+  when: z.strictObject({
+    on: z.literal('opened').meta({ description: 'The event that runs the review. Only `"opened"`: an open issue opened, reopened or with its body edited.' }),
+    labels: z.array(label).optional().meta({ description: 'Labels the ticket must carry, every one of them. Default none.' }),
+    exclude: z.array(label).optional().meta({ description: 'Labels the ticket must not carry, any of them. Default none.' }),
+    by: z.array(z.enum(ASSOCIATIONS)).min(1).optional().meta({ description: 'Who may have opened the ticket, as GitHub\'s `author_association` values. Default `OWNER`, `MEMBER` and `COLLABORATOR`. The repo\'s `trust.review` bounds every review.' }),
+  }).meta({ description: 'The review\'s selector: `on`, the event, and the labels and authors a ticket must meet.' }),
+});
+
+/**
  * The file's schema. It is the same in every repo: no switch is any one
  * repo's. Each key's description is what the exported JSON Schema shows on
  * hover, and the key table in docs/serving-a-repo.md says the same
@@ -408,10 +433,20 @@ export const configSchema = z.strictObject({
       }
     })
     .meta({ description: 'The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on.' }),
+  ticketReviews: z.array(ticketReviewSchema).optional()
+    .superRefine((list, ctx) => {
+      const seen = new Set();
+      for (const { name } of list ?? []) {
+        if (seen.has(name)) ctx.addIssue({ code: 'custom', message: `two ticket reviews are named "${name}": a name is unique in the list` });
+        seen.add(name);
+      }
+    })
+    .meta({ description: 'The ticket reviews governor runs, in file order, each with its `name` and its selector `when`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person. At least one when the `ticketReviews` switch is on.' }),
 }).refine((c) => c.features.prReview !== true || c.review !== undefined, { message: 'prReview is on, so the file needs a review section with its checklist', path: ['review'] })
   .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue', path: ['heartbeat'] })
   .refine((c) => c.features.periodics !== true || c.periodics.length > 0, { message: 'periodics is on, so the file lists at least one periodic', path: ['periodics'] })
   .refine((c) => c.features.hooks !== true || c.hooks.length > 0, { message: 'hooks is on, so the file lists at least one hook', path: ['hooks'] })
+  .refine((c) => c.features.ticketReviews !== true || (c.ticketReviews?.length ?? 0) > 0, { message: 'ticketReviews is on, so the file lists at least one ticket review', path: ['ticketReviews'] })
   // pickup.by is retired and read as trust.task, so a file may set one.
   .refine((c) => c.pickup?.by === undefined || c.trust?.task === undefined, { message: 'sets both pickup.by and trust.task: pickup.by is the older name of trust.task, so keep trust.task and remove pickup.by', path: ['pickup', 'by'] })
   // The chain auto ⊆ task ⊆ relay ⊆ review, for each two lists the file sets, BOT
@@ -462,7 +497,8 @@ export const configSchema = z.strictObject({
  * @typedef {{ start?: string[], auto?: string[], task?: string[], relay?: string[], review?: string[] }} Trust
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
- * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, periodics: Periodic[], hooks: Hook[] }} RepoConfig
+ * @typedef {{ name: string, when: { on: 'opened', labels?: string[], exclude?: string[], by?: string[] } }} TicketReview One ticket review and its selector.
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, periodics: Periodic[], hooks: Hook[], ticketReviews?: TicketReview[] }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
  *   ready labels the claim takes off, and a failed launch puts back.
@@ -480,6 +516,7 @@ export const configSchema = z.strictObject({
  *   `trust`: whose GitHub text governor acts on, where the file sets it.
  *   `periodics`: the recurring sessions the schedule fire starts.
  *   `hooks`: the hooks an outside system fires.
+ *   `ticketReviews`: the ticket reviews, where the file lists them.
  * @typedef {Omit<RepoConfig, 'prompts' | 'review' | 'periodics' | 'hooks'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile }, periodics: Array<Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }>, hooks: Array<Omit<Hook, 'prompt'> & { prompt: string | PromptFile }> }} FileConfig
  *   The file as read, before {@link resolveFiles} reads the prompt files it names.
  */

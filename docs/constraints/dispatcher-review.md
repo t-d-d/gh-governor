@@ -1,6 +1,6 @@
 # Dispatcher review
-Relevance: The PR review governor runs over a served repo's PR: dispatch/{review,checklist}.mjs, the config file's `review` section, dispatch/Dockerfile
-Decision: Governor reviews a served repo's PRs from that repo's own `review` settings, runs none of its code, and merges a pass only where `merge` is on.
+Relevance: The PR review governor runs over a served repo's PR, and the ticket reviews it runs over a served repo's issues: dispatch/{review,checklist,cli-answer,ticket-review}.mjs, the config file's `review` and `ticketReviews` sections, dispatch/Dockerfile
+Decision: Governor reviews a served repo's PRs from that repo's own `review` settings, and its tickets from its own `ticketReviews` settings, gives the model no tools, runs none of the repo's code, starts no session, and merges a pass only where `merge` is on.
 
 Why: A review whose labels, globs and checklist sat in governor's code and
 image would speak for one repo, and a change to it would need a deploy. Most
@@ -103,6 +103,28 @@ served repos have their owner merge, so a pass there must not merge.
   express belongs in the repo's own CI, which the review reads as a required
   status check, and as its `workflows.ci` run at the head.
 
+- The ticket reviews (dispatch/ticket-review.mjs) run where the repo's
+  file turns `ticketReviews` on, from its `ticketReviews` list. An issue
+  opened, reopened, or with its body edited by anyone but a bot, queues a
+  `ticketReview` fire; the receiver drops it where the repo's hook-table
+  item says the switch is off, and the task refuses it where the file
+  does. The task reads the issue and reviews nothing for a closed issue, a
+  pull request, the heartbeat issue or the wait ticket, nor for a ticket
+  whose author `trust.review` leaves out (`reviewOf`, dispatch/trust.mjs;
+  dispatcher-repos.md). It runs, in file order, each review whose selector
+  (`when`: `on`, `labels`, `exclude`, `by`) the ticket meets now and whose
+  newest marker, read only from comments governor's App posted, does not
+  carry the ticket's key, the body's digest (`bodyDigest`).
+- A ticket review is one `claude -p` with no tools, its system prompt
+  replaced by governor's fixed frame and default checklist, the answer
+  held to a schema: `success`, `failure` or `neutral`, and its text. The
+  model reads the ticket, its same-repo parent and links, the repo's open
+  issues and its round, one more than the review's own markers. Each run
+  posts a new comment ending `<!-- governor:ticket-review <name>
+  <conclusion> <key> -->`. A run that fails or answers outside the schema,
+  and a refused comment, post no marker and fail the turn; the session
+  limit is `limited`, and stops the turn's later reviews.
+
 ## Examples
 
 - A full section: test/fixtures/factory/.github/dispatch.json, with its
@@ -137,6 +159,13 @@ served repos have their owner merge, so a pass there must not merge.
   it waits for could then not merge it without a bypass.
 - Do not post `neutral`, or no check, where the review does not finish: a
   gate fails loudly, and the owner can bypass it.
+- Do not give a ticket review tools or a checkout: a ticket's text is
+  where a prompt injection comes in, and the review's answer is a
+  judgement over that text.
+- Do not let a ticket review read pickup's labels or checks
+  (scripts/lib/ready-work.mjs), nor pickup read a review's markers:
+  reviews and pickup meet only through labels a repo's config names, and
+  each works with the other off.
 
 Judgment: that a repo's checklist numbers its model tests 2 to 6, and that a `quote` glob reaches only rule files, no check sees: both are the repo's prose.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. A closing ticket carrying an excluded label passes test 1 unclaimed in #145: it is not pickup's, so nobody claims it, and a repo that forbids closing one says so in its ticket rules. The receiver drops the review fire where the repo's hook-table item says `prReview` is off since #147. A pass posts the `governor` check and no approval, and every review comment reaches the session the PR names, since #388. Test 8 reads the `workflows.ci` run at the head beside the required checks since #398: a private repo on a free plan has no required checks, and merged a pass on red CI. A PR a review turn ran out of time before it reached gets a `failure` check since #403. A required check's end queues the review again, by a `check_run` completed or a final `status` at the head beside `workflow_run` completed, with the fire carrying the commit so a fork's PR is read too, since #406. The check updates governor's own `governor` run at the head while it is in progress, rather than leaving a waiting run in progress under the verdict, since #407. A repo's `review.requireChecks` names checks test 8 reads as required, beside those GitHub requires, since #399: a plan that cannot require a check otherwise left only the CI workflow gating the review. A pass is reused at a new head where nothing the model reads has changed since #415: a push that only merges the base branch asked the model the question it had answered. The review reads a PR whose author `trust.review` lets in, in place of the fixed owners, members and collaborators, since #422, under PRD #396: an open-source repo could not have strangers' PRs reviewed.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. An `unless` label stopped waiving a path for a session governor started in #13. A PR closing another repo's issue fails test 1 in #73: a PR closes tickets in its own repo only, and work spanning repos uses `blocked by`. A closing ticket carrying an excluded label passes test 1 unclaimed in #145: it is not pickup's, so nobody claims it, and a repo that forbids closing one says so in its ticket rules. The receiver drops the review fire where the repo's hook-table item says `prReview` is off since #147. A pass posts the `governor` check and no approval, and every review comment reaches the session the PR names, since #388. Test 8 reads the `workflows.ci` run at the head beside the required checks since #398: a private repo on a free plan has no required checks, and merged a pass on red CI. A PR a review turn ran out of time before it reached gets a `failure` check since #403. A required check's end queues the review again, by a `check_run` completed or a final `status` at the head beside `workflow_run` completed, with the fire carrying the commit so a fork's PR is read too, since #406. The check updates governor's own `governor` run at the head while it is in progress, rather than leaving a waiting run in progress under the verdict, since #407. A repo's `review.requireChecks` names checks test 8 reads as required, beside those GitHub requires, since #399: a plan that cannot require a check otherwise left only the CI workflow gating the review. A pass is reused at a new head where nothing the model reads has changed since #415: a push that only merges the base branch asked the model the question it had answered. The review reads a PR whose author `trust.review` lets in, in place of the fixed owners, members and collaborators, since #422, under PRD #396: an open-source repo could not have strangers' PRs reviewed. Governor runs ticket reviews, each a named review with its selector, posting one comment with its conclusion under the default checklist, for authors `trust.review` lets in, since #426, under PRD #390.
