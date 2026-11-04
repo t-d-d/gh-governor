@@ -22,7 +22,7 @@ import { fireRepoOf } from './repos.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { ROW_SWITCH, UNREADIED_HELD, mayBeUnreadied, notPlannedComment, ownerOutcome, ownerSpecMessage, readyPrompt, readyToTakeOff, rowOf, specPrompt, unblockedMessage, unreadiedSince } from './unblocked.mjs';
 import { relativeAtClose, reportUnreadable } from './waits.mjs';
-import { reportUncounted } from './uncounted.mjs';
+import { reportUncounted, reportUntasked } from './uncounted.mjs';
 import { byOf } from './pickup.mjs';
 import { authorKind, autoOf, lets, relayOf } from './trust.mjs';
 import { dispatchMarker, lastDispatch } from './webhook/fire.mjs';
@@ -267,6 +267,7 @@ export const planUnblocked = async (invocation, ctx) => {
         ? { outcome: 'skipped', reason: strangerReason(stranger) }
         : { outcome: planned.length === 0 ? 'not selectable: dispatched inside the window, blocked, or no longer ready' : 'picking up' }) });
     if (outsider !== undefined) await reportUncounted({ reader, outsider, log: ctx.log });
+    if (stranger !== undefined) await reportUntasked({ reader, stranger, what: 'readied', ready: config.labels.ready, event: 'dispatch-unblocked', log: ctx.log });
   } else {
     // The spec session is not claimed: its marker keeps the sweep off the
     // ticket inside the window, and the claim it adds before it builds

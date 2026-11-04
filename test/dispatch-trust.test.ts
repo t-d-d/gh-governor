@@ -192,3 +192,75 @@ describe('what a relay the file widens exposes', () => {
     assert.match(String(said), /quotes? .*strangers?'? issues/i);
   });
 });
+
+describe('trust.task in the config file', () => {
+  test('unset, it is OWNER, MEMBER and COLLABORATOR', () => {
+    for (const over of [{}, { trust: {} }, { trust: { auto: ['OWNER'] } }]) assert.deepEqual(taskOf(config(over)), ['OWNER', 'MEMBER', 'COLLABORATOR'], JSON.stringify(over));
+  });
+
+  test('a file may set it, narrower or wider', () => {
+    assert.deepEqual(taskOf(config({ trust: { task: ['OWNER'] } })), ['OWNER']);
+    assert.deepEqual(taskOf(config({ trust: { task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'] } })), ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR']);
+    for (const task of [['owner'], ['ANYONE'], 'OWNER', [1]]) assert.ok(!readConfig(file({ trust: { task } })).ok, JSON.stringify(task));
+  });
+
+  test('BOT in it is refused, saying why', () => {
+    const read = readConfig(file({ trust: { task: ['OWNER', 'BOT'] } }));
+    assert.ok(!read.ok);
+    assert.match(read.fault, /trust\.task/);
+    assert.match(read.fault, /BOT/);
+  });
+
+  test('pickup.by and trust.task both set is refused, saying why', () => {
+    const read = readConfig(file({ trust: { task: ['OWNER'] }, pickup: { by: ['OWNER'] } }));
+    assert.ok(!read.ok);
+    assert.match(read.fault, /pickup\.by/);
+    assert.match(read.fault, /trust\.task/);
+  });
+
+  test('a pickup.by the file sets, wider or narrower, stays valid and is read as trust.task', () => {
+    for (const by of [['OWNER', 'CONTRIBUTOR', 'NONE'], ['OWNER']]) {
+      const read = config({ pickup: { by } });
+      assert.deepEqual(taskOf(read), by);
+      assert.deepEqual(fitsInside(read, 'auto'), ['pickup.by']);
+    }
+  });
+
+  test('set beside auto and relay, it holds the chain auto ⊆ task ⊆ relay', () => {
+    const wideAuto = readConfig(file({ trust: { auto: ['OWNER', 'MEMBER'], task: ['OWNER'] } }));
+    assert.ok(!wideAuto.ok);
+    assert.match(wideAuto.fault, /trust\.auto/);
+    assert.match(wideAuto.fault, /trust\.task/);
+    const wideTask = readConfig(file({ trust: { task: ['OWNER', 'NONE'], relay: ['OWNER', 'BOT'] } }));
+    assert.ok(!wideTask.ok);
+    assert.match(wideTask.fault, /trust\.task/);
+    assert.match(wideTask.fault, /trust\.relay/);
+    assert.match(wideTask.fault, /NONE/);
+    assert.ok(readConfig(file({ trust: { auto: ['OWNER'], task: ['OWNER', 'MEMBER'], relay: ['OWNER', 'MEMBER', 'BOT'] } })).ok);
+  });
+
+  test('a task the file sets narrows an unset auto, and an unset task is narrowed to fit a set relay', () => {
+    const narrow = config({ trust: { task: ['OWNER'] } });
+    assert.deepEqual(autoOf(narrow), ['OWNER']);
+    assert.deepEqual(fitsInside(narrow, 'auto'), ['trust.task']);
+    assert.deepEqual(narrowedLists(narrow), [{ list: 'auto', to: ['OWNER'] }]);
+    assert.deepEqual(narrowedLists(config({ trust: { task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] } })), [], 'a wider task widens nothing');
+    assert.deepEqual(narrowedLists(config({ trust: { relay: ['OWNER'] } })).find((n) => n.list === 'task'), { list: 'task', to: ['OWNER'] });
+  });
+});
+
+describe('what a task the file widens exposes', () => {
+  test('nothing for the default nor a narrower list', () => {
+    assert.deepEqual(trustExposures(config({ trust: { task: ['OWNER'] } })), []);
+    assert.deepEqual(trustExposures(config({ trust: { task: ['OWNER', 'MEMBER', 'COLLABORATOR'] } })), []);
+  });
+
+  test('task beyond the three says whose issues and PRs work may be about', () => {
+    const [said, ...rest] = trustExposures(config({ trust: { task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'] } }));
+    assert.deepEqual(rest, []);
+    assert.match(String(said), /^trust\.task: lets in CONTRIBUTOR authors/);
+    assert.match(String(said), /ready/);
+    assert.match(String(said), /@claude/);
+    assert.doesNotMatch(String(said), /cannot work/);
+  });
+});

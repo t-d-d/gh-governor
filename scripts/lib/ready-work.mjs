@@ -297,7 +297,7 @@ export const authorHasSay = (ticket) => SUMMONERS.has(String(ticket.association 
 
 /**
  * Whether pickup may start a ticket by who opened it: its author's
- * association is one `by` lists, the repo's `pickup.by` (`byOf`,
+ * association is one `by` lists, the repo's `trust.task` (`byOf`,
  * dispatch/pickup.mjs), `PICKUP_BY` where unset. An association not read is
  * `NONE`. The selection (`planSchedule`, scripts/lib/dispatch-router.mjs)
  * and the claim's second read (dispatch/launch-plan.mjs) ask this, before
@@ -338,7 +338,7 @@ const botAdd = (add) => add.bot === true || /\[bot\]$/i.test(add.actor);
  * unknown, and the events can lag the label. Any label on a ticket whose
  * author has a say counts.
  *
- * Pickup reads it only for a ticket whose author `pickup.by` lists
+ * Pickup reads it only for a ticket whose author `trust.task` lists
  * ({@link authorPicked}), so under the default `by` it never decides. The
  * selection and the claim's second read (dispatch/launch-plan.mjs) ask
  * this, after `mayPickUp`, so the label webhook, the sweep and a blocker's

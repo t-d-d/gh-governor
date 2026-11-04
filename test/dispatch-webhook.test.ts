@@ -277,6 +277,36 @@ describe('routeEvent — a mention', () => {
   });
 
   /**
+   * A summons names the issue or PR it is on, and that author's kind, so the
+   * task judges it by the repo's `trust.task` and says why on a refusal.
+   * The receiver drops only what needs no comment: a writer outside the
+   * three, as before.
+   */
+  test('a summons carries the issue or PR it is on and its author\'s kind for trust.task', () => {
+    const on = (association: string | undefined, user: Record<string, unknown> = { login: 'stranger', type: 'User' }) => dispatchOf('issue_comment', commentEvent({ issue: { number: 717, title: 'An issue', html_url: 'https://github.com/acme/factory/issues/717', user, ...(association === undefined ? {} : { author_association: association }) } })) as unknown as { on?: number, author?: string };
+    assert.deepEqual([on('NONE').on, on('NONE').author], [717, 'NONE']);
+    assert.equal(on('OWNER').author, 'OWNER');
+    assert.equal(on(undefined).author, 'NONE', 'an association not read is NONE');
+    assert.equal(on('NONE', { login: 'labeller[bot]', type: 'Bot' }).author, 'BOT');
+    const review = dispatchOf('pull_request_review_comment', { action: 'created', pull_request: { ...pullRequest, author_association: 'CONTRIBUTOR', user: { login: 'stranger', type: 'User' } }, comment: { id: 5, body: '@claude fix this', html_url: 'https://github.com/acme/factory/pull/724#discussion_r5', path: 'a.ts', line: 3, user: member, author_association: 'MEMBER' }, repository: { full_name: REPO } }) as unknown as { on?: number, author?: string };
+    assert.deepEqual([review.on, review.author], [724, 'CONTRIBUTOR']);
+  });
+
+  test('a summons on an issue governor\'s own App opened carries no author: every list lets it in', () => {
+    const decision = route({ event: 'issue_comment', payload: commentEvent({ issue: { number: 717, title: 'An issue', html_url: 'https://github.com/acme/factory/issues/717', user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE', performed_via_github_app: { id: APP_ID } } }), owners: OWNERS, appId: APP_ID });
+    const fire = decision.fire as unknown as { kind: string, on?: number, author?: string };
+    assert.equal(fire.kind, 'dispatch', decision.reason);
+    assert.equal(fire.on, 717);
+    assert.equal(fire.author, undefined);
+  });
+
+  test('a stranger\'s summons on a stranger\'s issue is still dropped here, with nothing queued to comment', () => {
+    const decision = route({ event: 'issue_comment', payload: commentEvent({ issue: { number: 717, title: 'An issue', html_url: 'https://github.com/acme/factory/issues/717', user: { login: 'stranger', type: 'User' }, author_association: 'NONE' } }, { user: { login: 'stranger', type: 'User' }, author_association: 'NONE' }), owners: OWNERS });
+    assert.equal(decision.fire, undefined);
+    assert.match(decision.reason, /no say/);
+  });
+
+  /**
    * A PR a session wrote carries that session's link in its footer, and a
    * message wakes the session whether its container is warm or gone.
    * So a remark on such a PR goes to the session that has the

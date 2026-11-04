@@ -335,8 +335,14 @@ export const recentlyDispatched = (comments, now, windowMs = DISPATCH_WINDOW_MS)
  *   the receiver does not know; the turn ends before the login unless it is
  *   one of them.
  * @typedef {{ kind: 'probe' }} ProbeFire
- * @typedef {{ kind: 'dispatch', prompt: string, sessionName?: string, model?: string, scheduled?: ScheduledRun }} DispatchFire
+ * @typedef {{ kind: 'dispatch', prompt: string, sessionName?: string, model?: string, scheduled?: ScheduledRun, on?: number, author?: string }} DispatchFire
  *   `scheduled`: the scheduled run gone red the session is for (route.mjs).
+ *   `on`: the issue or PR a summons is on (mention.mjs). `author`: who opened
+ *   it, as a trust value ({@link authorKind}), which the task judges by the
+ *   repo's `trust.task` and refuses, with one comment on `on`, where it is
+ *   left out (dispatch/dispatch-fire.mjs). A summons on what governor's own
+ *   App opened carries none, as every list lets it in; so does a fire queued
+ *   before the receiver named it.
  * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[] }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
@@ -414,10 +420,10 @@ export const build = Object.freeze({
   schedule: ({ issue, freed, label }) => ({ kind: 'schedule', ...present({ issue, freed, label }) }),
 
   /**
-   * @param {{ prompt: string, sessionName?: string | undefined, model?: string | undefined, scheduled?: ScheduledRun | undefined }} args
+   * @param {{ prompt: string, sessionName?: string | undefined, model?: string | undefined, scheduled?: ScheduledRun | undefined, on?: number | undefined, author?: string | undefined }} args
    * @returns {DispatchFire}
    */
-  dispatch: ({ prompt, sessionName, model, scheduled }) => ({ kind: 'dispatch', prompt, ...present({ sessionName, model, scheduled }) }),
+  dispatch: ({ prompt, sessionName, model, scheduled, on, author }) => ({ kind: 'dispatch', prompt, ...present({ sessionName, model, scheduled, on, author }) }),
 
   /**
    * @param {({ session: string, byBranch?: undefined, poster?: undefined } | { session?: undefined, byBranch: true, poster?: string | undefined }) & {
@@ -560,6 +566,26 @@ export const containerOverride = (containerName, fire) => ({
 /** A fire's numbers (issue, PR, run) are positive integers. @param {unknown} v */
 const isPositiveInt = (v) => Number.isInteger(v) && Number(v) > 0;
 
+/**
+ * A dispatch fire's `on`: the issue or PR a summons is on.
+ *
+ * @param {unknown} v
+ */
+const positiveOn = (v) => {
+  if (!isPositiveInt(v)) throw new Error(`a dispatch invocation's on must be a positive integer, got: ${JSON.stringify(v)}`);
+  return Number(v);
+};
+
+/**
+ * A dispatch fire's `author`: one trust value.
+ *
+ * @param {unknown} v
+ */
+const trustValue = (v) => {
+  if (typeof v !== 'string' || !TRUST_SET.has(v)) throw new Error(`a dispatch invocation's author is a trust value, got: ${JSON.stringify(v)}`);
+  return v;
+};
+
 /** A full commit id. @param {unknown} v @returns {v is string} */
 export const isCommit = (v) => typeof v === 'string' && /^[0-9a-f]{40}$/.test(v);
 
@@ -689,6 +715,8 @@ const parseKind = (event) => {
       ...(typeof e.sessionName === 'string' ? { sessionName: e.sessionName } : {}),
       ...(typeof e.model === 'string' ? { model: e.model } : {}),
       ...(e.scheduled === undefined ? {} : { scheduled: parseScheduled(e.scheduled) }),
+      ...(e.on === undefined ? {} : { on: positiveOn(e.on) }),
+      ...(e.author === undefined ? {} : { author: trustValue(e.author) }),
     };
   }
   if (kind === 'message') return parseMessage(e, event);

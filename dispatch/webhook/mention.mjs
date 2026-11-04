@@ -292,17 +292,29 @@ const sessionName = (number, title) => oneLine(`${MENTION} #${number} ${title}`)
 /**
  * The fire a summons queues: a `dispatch` with the prompt for what `on`
  * (an issue or a pull request) received, ending in the Unattended line,
- * since it starts a session.
+ * since it starts a session. It names `on` and the kind of its author, for
+ * the task to judge by the repo's `trust.task` and say why on `on` if it
+ * refuses: the writer has a say, so a refusal is worth a comment. An `on`
+ * governor's own App opened names no author, since every list lets it in.
  *
  * @param {string} prompt
  * @param {any} on
  * @param {string} reason
+ * @param {number | undefined} appId
  * @returns {Queued}
  */
-const summons = (prompt, on, reason) => ({
-  fire: build.dispatch({ prompt: `${prompt}\n${UNATTENDED}`, sessionName: sessionName(on?.number, on?.title) }),
-  reason,
-});
+const summons = (prompt, on, reason, appId) => {
+  const author = authorOf(on, appId);
+  return {
+    fire: build.dispatch({
+      prompt: `${prompt}\n${UNATTENDED}`,
+      sessionName: sessionName(on?.number, on?.title),
+      on: Number.isInteger(on?.number) && on.number > 0 ? on.number : undefined,
+      author: author.own === true ? undefined : authorKind(author),
+    }),
+    reason,
+  };
+};
 
 /**
  * One subscriber's fire: a `message` of the prompt into its session, keyed
@@ -609,7 +621,7 @@ const writtenFires = (written, event, payload, appId, relay) => {
       const refused = notASummons({ body, user: by?.user, association: by?.author_association });
       const reason = `${what} ${by?.id} on #${on?.number} mentioned ${MENTION}`;
       summoned = refused === null;
-      parts.push(refused ? { fires: [], reason: refused } : { fires: [summons(prompt(payload), on, reason)], reason });
+      parts.push(refused ? { fires: [], reason: refused } : { fires: [summons(prompt(payload), on, reason, appId)], reason });
     }
   }
   // A PR naming no session is its head branch's session's, unless a mention summoned one.
@@ -684,7 +696,7 @@ export const mentionFires = ({ event, payload, appId, relay = RELAY }) => {
     if (assignedToClaude) {
       if (payload?.sender?.type === 'Bot') return { fires: [], reason: `a bot (${payload.sender.login ?? 'unnamed'}) cannot summon a session` };
       const reason = `issue #${issue?.number} assigned to claude`;
-      return { fires: [summons(issuePrompt(payload), issue, reason)], reason };
+      return { fires: [summons(issuePrompt(payload), issue, reason, appId)], reason };
     }
     if (action !== 'opened' || !mentions(issue?.body)) return null;
     // Opened already assigned to claude: GitHub sends the assignment too,
@@ -695,7 +707,7 @@ export const mentionFires = ({ event, payload, appId, relay = RELAY }) => {
     const refused = notASummons({ body: issue?.body, user: issue?.user, association: issue?.author_association, issue: true });
     if (refused) return { fires: [], reason: refused };
     const reason = `issue #${issue?.number} opened mentioning ${MENTION}`;
-    return { fires: [summons(issuePrompt(payload), issue, reason)], reason };
+    return { fires: [summons(issuePrompt(payload), issue, reason, appId)], reason };
   }
   return null;
 };

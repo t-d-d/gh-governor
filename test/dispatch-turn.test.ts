@@ -1208,14 +1208,19 @@ describe('run: pickup selects tickets by who opened them', () => {
   })();
 
   for (const [path, fire] of Object.entries(FIRES)) {
-    test(`${path}: by default a stranger's ticket is not started, though someone with a say added its ready labels`, async () => {
+    test(`${path}: by default a stranger's ticket is not started, though someone with a say added its ready labels, and says why once`, async () => {
       for (const association of ['NONE', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'MANNEQUIN']) {
         const h = opened(association);
         await run(fire, h.deps as never);
         assert.deepEqual(h.launches, [], association);
         assert.deepEqual(labelCalls(h.calls), [], association);
-        assert.deepEqual(h.comments.filter((c) => c.issue === 9), [], association);
-        assert.equal(h.eventReads(), 0, association);
+        const told = h.comments.filter((c) => c.issue === 9);
+        assert.equal(told.length, 1, association);
+        assert.ok(told[0]!.body.includes(UNCOUNTED_READY_MARKER), association);
+        assert.match(told[0]!.body, /`trust\.task`/, association);
+        assert.match(told[0]!.body, new RegExp(`\`${association}\``), association);
+        assert.match(told[0]!.body, /ticket of your own/, association);
+        assert.equal(h.eventReads(), 1, `${association}: its label events say whether a person readied it`);
         const skipped = h.logged.find((l) => ['dispatch-pickup', 'dispatch-unblocked'].includes(l.event) && l.issue === 9 && l.outcome === 'skipped');
         assert.ok(skipped !== undefined, JSON.stringify(h.logged));
         assert.match(String(skipped.reason), new RegExp(`${association} author.*pickup\\.by`));
@@ -1228,6 +1233,26 @@ describe('run: pickup selects tickets by who opened them', () => {
       await run(fire, h.deps as never);
       const lines = h.logged.filter((l) => ['dispatch-pickup', 'dispatch-unblocked'].includes(l.event) && l.issue === 9);
       assert.deepEqual(lines.map((l) => l.outcome), ['skipped'], JSON.stringify(lines));
+    });
+
+    test(`${path}: a stranger's ticket gets no second comment once its thread carries the marker`, async () => {
+      const h = opened('NONE');
+      const reader = h.deps.reader;
+      h.deps.reader = ((...a: unknown[]) => ({ ...(reader as (...b: unknown[]) => Record<string, unknown>)(...a), allComments: async () => [{ body: `Earlier.\n\n${UNCOUNTED_READY_MARKER}` }] })) as never;
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 9), []);
+    });
+
+    test(`${path}: a stranger's ticket readied by its own template or a bot is skipped with no comment`, async () => {
+      for (const adds of [READY_LABELS.map((label) => ({ label, actor: 'someone', bot: false, ours: false })), READY_LABELS.map((label) => ({ label, actor: 'labeller[bot]', bot: true, ours: false })), []]) {
+        const h = opened('NONE');
+        const reader = h.deps.reader;
+        h.deps.reader = ((...a: unknown[]) => ({ ...(reader as (...b: unknown[]) => Record<string, unknown>)(...a), labelAdds: async () => adds })) as never;
+        await run(fire, h.deps as never);
+        assert.deepEqual(h.launches, []);
+        assert.deepEqual(h.comments.filter((c) => c.issue === 9), [], JSON.stringify(adds));
+      }
     });
 
     test(`${path}: a repo whose by lists only OWNER does not start a member's ticket`, async () => {
@@ -6974,6 +6999,82 @@ describe('run — every served repo', () => {
       await run(fire, on.deps as never);
       assert.equal(on.launches.length + on.messages.length, 1, `${needs} on: ${on.calls.join('; ')}`);
     }
+  });
+
+  /**
+   * A summons starts a session only where the author of the issue or PR it
+   * is on is in the repo's `trust.task`. A refused one starts nothing and
+   * gets governor's one refusal comment, under the marker the uncounted
+   * ready label uses, so a second summons gets no second comment.
+   */
+  describe('a summons on an issue whose author trust.task leaves out', () => {
+    const on = { ...summons, on: 3 };
+    const withThread = (thread: Array<{ body: string }>, file = askmeWith({ summons: true })) => {
+      const h = twoRepos({ askmeFile: file });
+      const reader = h.deps.reader;
+      h.deps.reader = ((...a: unknown[]) => ({ ...(reader as (...b: unknown[]) => Record<string, unknown>)(...a), allComments: async () => thread })) as never;
+      return h;
+    };
+
+    test('an owner\'s summons on a NONE author\'s issue starts nothing, and comments once naming trust.task', async () => {
+      const h = withThread([]);
+      await run({ ...on, author: 'NONE' }, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      const told = h.comments.filter((c) => c.issue === 3);
+      assert.equal(told.length, 1, JSON.stringify(h.comments));
+      assert.ok(told[0]!.body.includes(UNCOUNTED_READY_MARKER));
+      assert.match(told[0]!.body, /`trust\.task`/);
+      assert.match(told[0]!.body, /ticket of your own/);
+      // A summons fire carries the author's kind, never a login, so the
+      // comment names the kind alone and does not say a login went unread.
+      assert.match(told[0]!.body, /its author is `NONE`/);
+      assert.doesNotMatch(told[0]!.body, /login was not read/);
+      const line = h.logged.find((l) => l.event === 'dispatch-launch' && l.outcome === 'refused');
+      assert.ok(line !== undefined, JSON.stringify(h.logged));
+      assert.ok(line.level === undefined || line.level === 'info', String(line.level));
+    });
+
+    test('a summons on a bot\'s PR is refused, and the comment does not offer to widen trust.task, which never holds BOT', async () => {
+      const h = withThread([]);
+      await run({ ...on, author: 'BOT' }, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      const told = h.comments.filter((c) => c.issue === 3);
+      assert.equal(told.length, 1);
+      assert.match(told[0]!.body, /ticket of your own/);
+      assert.doesNotMatch(told[0]!.body, /widen/);
+      assert.match(told[0]!.body, /bot/);
+    });
+
+    test('a second summons finds the marker on the thread and comments no more', async () => {
+      const h = withThread([{ body: `Earlier.\n\n${UNCOUNTED_READY_MARKER}` }]);
+      await run({ ...on, author: 'NONE' }, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 3), []);
+    });
+
+    test('an author trust.task lets in starts a session, as does a fire that names none', async () => {
+      for (const fire of [{ ...on, author: 'MEMBER' }, summons]) {
+        const h = withThread([]);
+        await run(fire, h.deps as never);
+        assert.equal(h.launches.length, 1, JSON.stringify(fire));
+        assert.deepEqual(h.comments.filter((c) => c.issue === 3), []);
+      }
+    });
+
+    test('a task the file widens, by trust.task or by pickup.by, lets the author in', async () => {
+      for (const extra of [{ trust: { task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] } }, { pickup: { by: ['OWNER', 'CONTRIBUTOR', 'NONE'] } }]) {
+        const h = withThread([], JSON.stringify({ ...JSON.parse(askmeWith({ summons: true })), ...extra }));
+        await run({ ...on, author: 'NONE' }, h.deps as never);
+        assert.equal(h.launches.length, 1, JSON.stringify(extra));
+      }
+    });
+
+    test('a task the file narrows to OWNER refuses a member\'s issue too', async () => {
+      const h = withThread([], JSON.stringify({ ...JSON.parse(askmeWith({ summons: true })), pickup: { by: ['OWNER'] } }));
+      await run({ ...on, author: 'MEMBER' }, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.equal(h.comments.filter((c) => c.issue === 3).length, 1);
+    });
   });
 
   // A repo's CLAUDE.md may have no § Lessons: the default ask names none,

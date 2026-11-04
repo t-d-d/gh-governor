@@ -32,7 +32,7 @@
 import { z } from 'zod';
 import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
-import { BOT, TRUST_VALUES } from './trust.mjs';
+import { BOT, TRUST_VALUES, taskKey as taskKeyOf, taskSet } from './trust.mjs';
 
 /** Where the file lives, on the repo's default branch. */
 export const CONFIG_PATH = '.github/dispatch.json';
@@ -260,21 +260,26 @@ const waitsSchema = z.strictObject({
  */
 const pickupSchema = z.strictObject({
   sweepHours: z.number().int().min(1).optional().meta({ description: 'How many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one. Default one, which sweeps at every fire.' }),
-  by: z.array(z.enum(ASSOCIATIONS)).min(1).optional().meta({ description: 'Whose tickets pickup may start: the `author_association` values GitHub gives the person who opened the ticket. Default `OWNER`, `MEMBER` and `COLLABORATOR`, so a stranger\'s ticket is not started even once it is ready. Where a repo lists any other value, a ready label on such a ticket counts only when a person other than its author, or governor\'s own App, added it last.' }),
+  by: z.array(z.enum(ASSOCIATIONS)).min(1).optional().meta({ description: 'Retired: read as `trust.task`, and refused beside it. Whose tickets pickup may start, and whose issue or PR a summons may start a session on: the `author_association` values GitHub gives the person who opened it. Default `OWNER`, `MEMBER` and `COLLABORATOR`. Where a repo lists any other value, a ready label on such a ticket counts only when a person other than its author, or governor\'s own App, added it last.' }),
 });
 
 /**
  * Whose GitHub text governor acts on (dispatch/trust.mjs). `auto`: whose
  * issues and PRs governor sets going by itself, with no person choosing the
  * ticket. It may never hold `BOT`: a bot's issue is a rule firing, and no
- * one read it. `relay`: whose text may reach a session that is already
- * running.
+ * one read it. `task`: whose issue or PR may become work when a person sets
+ * it going, by readying it or by a summons on it; nor may it hold `BOT`.
+ * `relay`: whose text may reach a session that is already running.
  */
 const trustSchema = z.strictObject({
   auto: z.array(z.enum(TRUST_VALUES))
     .refine((list) => !list.includes(BOT), 'BOT is refused here: governor sets nothing going by itself on a bot\'s issue or PR, which no person has read')
     .optional()
-    .meta({ description: 'Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket\'s wait ends or its blocker closes, a periodic\'s issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `pickup.by` and `relay` where the file sets them. `BOT` is refused.' }),
+    .meta({ description: 'Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket\'s wait ends or its blocker closes, a periodic\'s issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `task` (or `pickup.by`) and `relay` where the file sets them. `BOT` is refused.' }),
+  task: z.array(z.enum(TRUST_VALUES))
+    .refine((list) => !list.includes(BOT), 'BOT is refused here: a bot\'s issue or PR is a rule firing, which no person has read, so no work may be about it')
+    .optional()
+    .meta({ description: 'Whose issue or PR may become work when a person sets it going, by `author_association`: pickup starts a ready ticket, and a summons starts a session, only where its author is listed. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `relay` where the file sets it. `BOT` is refused. The older `pickup.by` is read as this list, and a file may not set both.' }),
   relay: z.array(z.enum(TRUST_VALUES))
     .optional()
     .meta({ description: 'Whose text may reach a session that is already running, by `author_association`, with `BOT` for any account GitHub marks as a bot: their comments and reviews, and a session link or `governor:subscribe` line in the body of an issue or PR they open. An event such as a label, a close or a push is judged by the author of the issue or PR it is on. Default `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`. Governor\'s own App is never judged.' }),
@@ -373,8 +378,8 @@ export const configSchema = z.strictObject({
   review: reviewSchema.optional().meta({ description: 'The PR review\'s settings: its checklist, and the lists it checks a PR against. Needed when `prReview` is on.' }),
   heartbeat: heartbeatSchema.optional().meta({ description: '`{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo\'s own marker, which the hourly sweep updates. Needed when `heartbeat` is on.' }),
   waits: waitsSchema.optional().meta({ description: '`{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing.' }),
-  pickup: pickupSchema.optional().meta({ description: '`{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one, default one; and whose tickets pickup may start, by `author_association`, default `OWNER`, `MEMBER` and `COLLABORATOR`.' }),
-  trust: trustSchema.optional().meta({ description: '`{ "auto": [ … ], "relay": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `relay` is whose text may reach a running session, default those three and `BOT`.' }),
+  pickup: pickupSchema.optional().meta({ description: '`{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one, default one; and `by`, the retired name of `trust.task`, which governor reads as it.' }),
+  trust: trustSchema.optional().meta({ description: '`{ "auto": [ … ], "task": [ … ], "relay": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`.' }),
   periodics: z.array(periodicSchema).default([])
     .superRefine((list, ctx) => {
       const seen = new Set();
@@ -397,21 +402,25 @@ export const configSchema = z.strictObject({
   .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue', path: ['heartbeat'] })
   .refine((c) => c.features.periodics !== true || c.periodics.length > 0, { message: 'periodics is on, so the file lists at least one periodic', path: ['periodics'] })
   .refine((c) => c.features.hooks !== true || c.hooks.length > 0, { message: 'hooks is on, so the file lists at least one hook', path: ['hooks'] })
+  // pickup.by is retired and read as trust.task, so a file may set one.
+  .refine((c) => c.pickup?.by === undefined || c.trust?.task === undefined, { message: 'sets both pickup.by and trust.task: pickup.by is the older name of trust.task, so keep trust.task and remove pickup.by', path: ['pickup', 'by'] })
   // The chain auto ⊆ task ⊆ relay, for each two lists the file sets, BOT
-  // left aside. Until trust.task exists, pickup.by is the task list. A list
+  // left aside. pickup.by, where the file sets it, is the task list. A list
   // the file leaves unset is narrowed instead (dispatch/trust.mjs).
   .superRefine((c, ctx) => {
     const auto = c.trust?.auto;
-    const task = c.pickup?.by;
+    const task = taskSet(c);
+    const taskKey = taskKeyOf(c);
+    const taskPath = taskKey.split('.');
     const relay = c.trust?.relay;
     /** @param {readonly string[] | undefined} inner @param {readonly string[] | undefined} outer */
     const outside = (inner, outer) => (inner === undefined || outer === undefined ? [] : inner.filter((a) => a !== BOT && !outer.includes(a)));
     const autoTask = outside(auto, task);
-    if (autoTask.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoTask.join(', ')}, which pickup.by does not: governor would set going by itself a ticket pickup may not start. Narrow trust.auto, or widen pickup.by` });
+    if (autoTask.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoTask.join(', ')}, which ${taskKey} does not: governor would set going by itself a ticket pickup may not start. Narrow trust.auto, or widen ${taskKey}` });
     const autoRelay = outside(auto, relay);
     if (autoRelay.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoRelay.join(', ')}, which trust.relay does not: governor would set work going on a ticket whose comments could not reach its session. Narrow trust.auto, or widen trust.relay` });
     const taskRelay = outside(task, relay);
-    if (taskRelay.length > 0) ctx.addIssue({ code: 'custom', path: ['pickup', 'by'], message: `names ${taskRelay.join(', ')}, which trust.relay does not: pickup would start a ticket whose author's comments could not reach its session. Narrow pickup.by, or widen trust.relay` });
+    if (taskRelay.length > 0) ctx.addIssue({ code: 'custom', path: taskPath, message: `names ${taskRelay.join(', ')}, which trust.relay does not: pickup would start a ticket whose author's comments could not reach its session. Narrow ${taskKey}, or widen trust.relay` });
   });
 
 /**
@@ -433,7 +442,7 @@ export const configSchema = z.strictObject({
  * @typedef {{ file: string }} PromptFile
  * @typedef {{ issue: number, marker?: string }} Heartbeat
  * @typedef {{ sweepHours?: number, by?: string[] }} Pickup
- * @typedef {{ auto?: string[], relay?: string[] }} Trust
+ * @typedef {{ auto?: string[], task?: string[], relay?: string[] }} Trust
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
  * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, periodics: Periodic[], hooks: Hook[] }} RepoConfig

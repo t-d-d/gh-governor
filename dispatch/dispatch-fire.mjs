@@ -2,16 +2,20 @@
  * A dispatch fire: a session started by hand or by a summons, on the fire's
  * own prompt, or one for a scheduled run on the default branch gone red,
  * on the run's facts the fire carries and the repo's instruction
- * (`redRunPrompt`, dispatch/workflow.mjs). A red scheduled run whose run
- * before went red too starts nothing: the session the red before started is
- * on the failure.
+ * (`redRunPrompt`, dispatch/workflow.mjs). A summons starts one only where
+ * the repo's `trust.task` lets in the author of the issue or PR it is on.
+ * A red scheduled run whose run before went red too starts nothing: the
+ * session the red before started is on the failure.
  */
 
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
+import { strangerReason } from '../scripts/lib/dispatch-router.mjs';
 import { DEFAULT_SESSION_NAME } from './deliveries.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { STALE_RUNS_PAUSES_MS, baselineIn, freshRuns } from './runs.mjs';
+import { taskOf } from './trust.mjs';
+import { reportUntasked } from './uncounted.mjs';
 import { RED } from './webhook/fire.mjs';
 import { redRunPrompt } from './workflow.mjs';
 
@@ -65,7 +69,16 @@ const redBefore = async ({ workflowId, runId, branch }, getReader, { log, sleep 
  */
 export const planDispatch = async (invocation, ctx) => {
   const repo = fireRepoOf(invocation);
-  const { scheduled } = invocation;
+  const { scheduled, on, author } = invocation;
+  // A summons names the issue or PR it is on and who opened it: work is
+  // about it only where the repo's trust.task lets that author in. A
+  // refusal starts nothing and is said once on it, at info.
+  if (on !== undefined && author !== undefined && !taskOf(ctx.configOf(repo)).includes(author)) {
+    const stranger = { repo, issue: on, association: author };
+    ctx.log('dispatch-launch', { level: 'info', repo, issue: on, outcome: 'refused', reason: `a summons: ${strangerReason(stranger)}` });
+    await reportUntasked({ reader: await ctx.readerFor(repo), stranger, what: 'summoned', event: 'dispatch-launch', log: ctx.log });
+    return { launches: [], unread: [] };
+  }
   if (scheduled !== undefined && await redBefore(scheduled, () => ctx.readerFor(repo), ctx)) return { launches: [], unread: [] };
   return {
     launches: [{

@@ -511,13 +511,21 @@ describe('the check says what a trust list exposes, and which unset list it narr
     assert.match(String(said), /quotes strangers' issues/);
   });
 
-  test('a relay the file narrows lists the unset auto and pickup.by it narrowed', async () => {
+  test('a relay the file narrows lists the unset auto and task it narrowed', async () => {
     const got = await check(reads({ '.github/dispatch.json': file({ ...base(), trust: { relay: ['OWNER'] } }) }, { labels: ['mode: afk'] }));
     assert.deepEqual(got.exposures, undefined);
     assert.deepEqual(got.narrowed, [
       'trust.auto: the file leaves it unset, so governor narrows it to OWNER to fit inside trust.relay',
-      'pickup.by: the file leaves it unset, so governor narrows it to OWNER to fit inside trust.relay',
+      'trust.task: the file leaves it unset, so governor narrows it to OWNER to fit inside trust.relay',
     ]);
+  });
+
+  test('trust.task beyond the three is an exposure that says whose issues and PRs work may be about', async () => {
+    const got = await check(reads({ '.github/dispatch.json': file({ ...base(), trust: { task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] } }) }, { labels: ['mode: afk'] }));
+    assert.deepEqual(got.warnings, []);
+    const [said, ...rest] = got.exposures ?? [];
+    assert.deepEqual(rest, []);
+    assert.match(String(said), /^trust\.task: lets in NONE authors/);
   });
 
   test('at the defaults the verdict carries neither', async () => {
