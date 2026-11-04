@@ -488,6 +488,7 @@ describe('the check says what a trust list exposes, and which unset list it narr
     assert.ok(line !== undefined, lines.join('\n'));
     assert.match(line, /^::warning file=\.github\/dispatch\.json,title=this file lets more authors' text set governor going::/);
     assert.doesNotMatch(line, /cannot work/);
+    assert.ok(lines.some((l) => /governor reads it, with 1 warning\.$/.test(l)), 'the summary counts the exposure');
   });
 
   test('an unset trust.auto narrowed to fit pickup.by is listed as a notice', async () => {

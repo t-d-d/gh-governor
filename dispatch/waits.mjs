@@ -587,14 +587,14 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       const marker = waitEndedMarker(wait.until);
       const told = thread.some((c) => String(c.body ?? '').includes(marker));
       if (!told) await reader.comment(issue, waitEndedComment(wait.until));
-      // A ticket governor unreadied on a not-planned close waits for a
-      // person's answer first, as a later blocker's close does.
       // The spec work starts with no person choosing the ticket, so only
       // for an author the repo's trust.auto lets in.
       if (spec && !lets(auto, ticket)) {
         await drop(item, { until: wait.until, level: 'info', outcome: `${told ? 'ended: already told' : 'ended: commented'}; nothing starts and nothing is sent: opened by a ${authorKind(ticket)} author, whom trust.auto (${auto.join(', ') || 'empty'}) does not let in` });
         continue;
       }
+      // A ticket governor unreadied on a not-planned close waits for a
+      // person's answer first, as a later blocker's close does.
       if (spec && mayStartSpec(thread, now)) {
         const owner = sessionNamedIn(ticket.body);
         specs.push({ issue, title: ticket.title, until: wait.until, read: item.until, owner });

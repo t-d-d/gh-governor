@@ -167,8 +167,8 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   ensureLabel: (name: string) => Promise<void>,
  *   defaultBranch: () => Promise<string>,
  *   mergedSince: (base: string, since: string) => Promise<import('./periodics.mjs').Counted[]>,
- *   issuesOpenedSince: (since: string) => Promise<import('./periodics.mjs').Counted[]>,
- *   issuesClosedSince: (since: string) => Promise<import('./periodics.mjs').Counted[]>,
+ *   issuesOpenedSince: (since: string, by?: readonly string[]) => Promise<import('./periodics.mjs').Counted[]>,
+ *   issuesClosedSince: (since: string, by?: readonly string[]) => Promise<import('./periodics.mjs').Counted[]>,
  * } & import('./review.mjs').ReviewReader & import('./waits.mjs').RelativeReader} Reader
  *
  * @typedef {{

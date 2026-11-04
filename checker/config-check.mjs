@@ -334,9 +334,11 @@ export const run = async ({ env, reads, log }) => {
   for (const w of warnings) log(`::warning file=${CONFIG_PATH},title=governor reads this file but it cannot work::${escaped(w)}`);
   for (const x of exposures) log(`::warning file=${CONFIG_PATH},title=this file lets more authors' text set governor going::${escaped(x)}`);
   for (const n of narrowed) log(`::notice file=${CONFIG_PATH},title=governor narrowed a trust list this file leaves unset::${escaped(n)}`);
+  // The exposures are warning annotations too, so the count holds them.
+  const said = warnings.length + exposures.length;
   log(errors.length > 0
     ? `${CONFIG_PATH} at ${ref}: governor would refuse it, and the repo would go unserved.`
-    : `${CONFIG_PATH} at ${ref}: governor reads it${warnings.length > 0 ? `, with ${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : ''}.`);
+    : `${CONFIG_PATH} at ${ref}: governor reads it${said > 0 ? `, with ${said} warning${said === 1 ? '' : 's'}` : ''}.`);
   if (templates.length > 0) log(`${templates.length} issue template${templates.length === 1 ? ' names' : 's name'} a ready label: ${templates.map((t) => t.file).join(', ')}.`);
   return errors.length > 0 || templates.length > 0 ? 1 : 0;
 };
