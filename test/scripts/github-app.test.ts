@@ -1137,23 +1137,21 @@ describe('a served repo\'s reads', () => {
     assert.equal(new URL(calls[0]!.url).searchParams.get('filter'), 'latest');
   });
 
-  test('pullReviews lists each review with whether a bot wrote it; dismissReview dismisses one with a message', async () => {
-    const dismissed: unknown[] = [];
-    const { fetch } = fakeFetch({
-      'https://api.github.com/repos/t-d-d/askme-mcp/pulls/7/reviews': [{ id: 1, state: 'APPROVED', body: 'ok', user: { type: 'Bot' } }, { id: 2, state: 'COMMENTED', body: null, user: { type: 'User' } }],
-      'https://api.github.com/repos/t-d-d/askme-mcp/pulls/7/reviews/1/dismissals': (init: RequestInit | undefined) => { dismissed.push({ method: init?.method, body: JSON.parse(String(init?.body)) }); return {}; },
-    });
+  test('checkRun posts a run of its name at the head reviewed: completed with its conclusion, or in progress with none', async () => {
+    const posted: unknown[] = [];
+    const { fetch } = fakeFetch({ 'https://api.github.com/repos/t-d-d/askme-mcp/check-runs': (init: RequestInit | undefined) => { posted.push({ method: init?.method, body: JSON.parse(String(init?.body)) }); return { id: 1 }; } });
     const reader = githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch });
-    assert.deepEqual(await reader.pullReviews(7), [{ id: 1, state: 'APPROVED', body: 'ok', bot: true }, { id: 2, state: 'COMMENTED', body: '', bot: false }]);
-    await reader.dismissReview(7, 1, 'A later head fails.');
-    assert.deepEqual(dismissed, [{ method: 'PUT', body: { message: 'A later head fails.', event: 'DISMISS' } }]);
+    await reader.checkRun({ name: 'governor', sha: 'b'.repeat(40), state: 'neutral', title: 'Waits for a person.', summary: 'Waits for a person. A person merges it.' });
+    await reader.checkRun({ name: 'governor', sha: 'b'.repeat(40), state: 'in_progress', title: 'Waits for gate.', summary: 'The review runs when gate ends.' });
+    assert.deepEqual(posted, [
+      { method: 'POST', body: { name: 'governor', head_sha: 'b'.repeat(40), status: 'completed', conclusion: 'neutral', output: { title: 'Waits for a person.', summary: 'Waits for a person. A person merges it.' } } },
+      { method: 'POST', body: { name: 'governor', head_sha: 'b'.repeat(40), status: 'in_progress', output: { title: 'Waits for gate.', summary: 'The review runs when gate ends.' } } },
+    ]);
   });
 
-  test('approve posts an approving review pinned to the head reviewed', async () => {
-    const posted: unknown[] = [];
-    const { fetch } = fakeFetch({ 'https://api.github.com/repos/t-d-d/askme-mcp/pulls/7/reviews': (init: RequestInit | undefined) => { posted.push({ method: init?.method, body: JSON.parse(String(init?.body)) }); return { id: 1 }; } });
-    await githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch }).approve(7, { sha: 'b'.repeat(40), body: 'Passes.' });
-    assert.deepEqual(posted, [{ method: 'POST', body: { commit_id: 'b'.repeat(40), event: 'APPROVE', body: 'Passes.' } }]);
+  test('checkRun\'s refusal throws with its status: an installation without the Checks write answers 403', async () => {
+    const { fetch } = fakeFetch({ 'https://api.github.com/repos/t-d-d/askme-mcp/check-runs': () => new Response('{"message":"Resource not accessible by integration"}', { status: 403, statusText: 'Forbidden' }) });
+    await assert.rejects(githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch }).checkRun({ name: 'governor', sha: 'b'.repeat(40), state: 'success', title: 'Passes.', summary: 'Passes.' }), (error: { status?: number }) => error.status === 403);
   });
 
   test('ensureLabel creates a label the repo lacks, and leaves one it has', async () => {

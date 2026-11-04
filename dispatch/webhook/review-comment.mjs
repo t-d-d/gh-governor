@@ -63,16 +63,16 @@ const CLAIM = 'Waits for its ticket to be claimed: ';
 /** A red required check's fixed opening (test 8). */
 const PUSH = 'Waits for a push: ';
 
-/** What a pass says where the repo's `review.merge` is false: the review approved it, and nothing merged. */
-const APPROVED = 'Approved: the repo\'s owner merges it.';
+/** What a pass says where the repo's `review.merge` is false: nothing merged, and the owner merges it. */
+const OWNER_MERGES = 'The repo\'s owner merges it.';
 
 /** The openings of a fail whose first test the author session meets and a later one only a person does. */
 const CLAIM_THEN = 'Waits for its ticket to be claimed, then a person: ';
 const EDIT_THEN = 'Waits for a description edit, then a person: ';
 
 /**
- * What the comment says: a pass, a pass the review approved and left for
- * the owner to merge (`merge` false), a pass that conflicts, a fail an
+ * What the comment says: a pass, a pass left for the owner to merge
+ * (`merge` false), a pass that conflicts, a fail an
  * edit can meet, a ticket the author session claims, a red required check
  * its push meets, a fail only a person can. A fail with `person` says the
  * session's part (the edit or the claim) first, then the later test that
@@ -84,7 +84,7 @@ const EDIT_THEN = 'Waits for a description edit, then a person: ';
 export const commentText = (answer, { conflict, merge = true }) => {
   if (answer.answer === 'pass') {
     if (conflict) return `${CONFLICT} ${sentence(answer.reason)}`;
-    return merge ? `Passes the PR review: ${sentence(answer.reason)}` : `Passes the PR review: ${sentence(answer.reason)} ${APPROVED}`;
+    return merge ? `Passes the PR review: ${sentence(answer.reason)}` : `Passes the PR review: ${sentence(answer.reason)} ${OWNER_MERGES}`;
   }
   const reason = answer.reason.trim().replace(/[.!?]$/, '');
   const { person } = answer;
@@ -142,9 +142,11 @@ export const commentKey = (text) => {
  * Whether the owner session can act on the comment: a fail an edit
  * meets, a ticket to claim, either of those beside a later test
  * only a person meets, a red required check its push meets, or
- * a conflict, the review's or a merge to main's. A
- * pass is followed by the merge's own message, and a fail with nothing
- * but a person's part waits for the person.
+ * a conflict, the review's or a merge to main's. A pass, and a fail
+ * with nothing but a person's part, ask nothing of it. Only a comment it
+ * can act on carries the fallback that takes a gone session's PR over,
+ * and only such a fail is the `governor` check's `failure` rather than
+ * `neutral` (dispatch/review.mjs).
  *
  * @param {string} text
  */

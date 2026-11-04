@@ -21,7 +21,7 @@ Each served repo turns on the features it wants, one switch each:
 - **PR messages.** A PR a session wrote names that session. Every comment, review, push, merge and close on it is sent into that session, and a fresh session takes the PR over if the first one is archived.
 - **Subscriptions.** Any other session hears a PR or issue it is party to by adding a `<!-- governor:subscribe <session URL> events=… -->` line to its body.
 - **CI and deploys.** A red CI run on the default branch tells the sessions whose merges may have broken it. A shipping job tells the sessions of the merges it shipped, and can label their tickets `deployed: <target>`.
-- **The PR review.** A model reviews each PR against the repo's checklist. Paths on the repo's human-only list wait for a person, unless an entry's `unless` labels waive it. A PR closes tickets in its own repo only; work spanning repos marks the other repo's ticket as blocked by an issue here. A pass merges the PR, or, with `merge` off, approves it for the owner to merge.
+- **The PR review.** A model reviews each PR against the repo's checklist. Paths on the repo's human-only list wait for a person, unless an entry's `unless` labels waive it. A PR closes tickets in its own repo only; work spanning repos marks the other repo's ticket as blocked by an issue here. A pass merges the PR, or, with `merge` off, leaves it for the owner to merge. Each review also posts its verdict as a `governor` check, which a ruleset can require.
 - **Sign-off.** A session whose last reply ends `Signing off.` is archived by the next turn, and a message about a close or a deploy, with nothing else open, asks the session to sign off. No session writes anything for this.
 
 How dark the factory runs is the repo's choice: with pickup and the review on and `merge` true, a ticket can go from label to merged commit with no person, except where its PR touches a human-only path.
@@ -88,7 +88,7 @@ To use it:
    - The checklist, if the repo has its own rules for a pull request.
    - CI as a required status check on the default branch. The review waits only for required checks, so without one it merges a pass while CI still runs.
    - Each shipping job's name, ending `· deployed: <target>`, and the deploy workflow's top-level `TICKET_LABEL_PATHS`, which deploy messages and `deployed:` labels read ([Deploy messages and labels](#deploy-messages-and-labels)).
-   - `merge` to false, if a person should merge each pass after all. The review then approves instead.
+   - `merge` to false, if a person should merge each pass after all. A pass then posts its comment and check, and merges nothing. Require the `governor` check in a ruleset on the default branch, with governor's App as its source, so a pull request cannot merge while its session still owes a fix.
 6. Merge them into the default branch through a pull request. The config check runs on it.
 
 The dark factory keeps `hooks` off, since a hook needs a key the owner mints after the file merges. To add one, merge a `hooks` entry with `hooks` turned on, then mint its key as [Hooks](hooks.md) says.
@@ -155,7 +155,7 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 - `quote`: globs of changed files the model reads whole. A `!` entry takes a path back out.
 - `decides`: labels of a ticket that may decide a quoted file's change.
 - `dependabot`: the manifests a Dependabot PR may change and pass with no model.
-- `merge`: whether a pass merges. Default `true`. With `false`, a pass approves and the owner merges.
+- `merge`: whether a pass merges. Default `true`. With `false`, a pass posts its comment and a `success` check, and the owner merges.
 
 `periodics`: a list of recurring sessions, each `{ "name", "prompt", "days" }`, with `counts`, `gapHours` and `connectors` if wanted.
 

@@ -51,12 +51,13 @@
  * or a session to rewrite its spec (dispatch/unblocked.mjs).
  * A `review` turn runs the repo's checklist (its file's `review.checklist`)
  * over a PR into its default branch, or every open one, as the
- * system prompt of a `claude -p` run under the same login, and merges,
- * approves or comments on its answer as the repo's `review` settings say
- * (dispatch/review.mjs, the checklist in dispatch/checklist.mjs); the
- * comment is the record, and the receiver turns a fail an edit meets and a
- * conflict into a message fire for the session the PR names, with its
- * fallback. No run holds a merge. Each run's
+ * system prompt of a `claude -p` run under the same login, posts its answer
+ * as the `governor` check, and merges or comments as the repo's `review`
+ * settings say (dispatch/review.mjs, the checklist in
+ * dispatch/checklist.mjs); the comment is the record, and the receiver
+ * turns each new one into a message fire for the session the PR names,
+ * with the fallback only where the session can act on it. No run holds a
+ * merge. Each run's
  * transcript goes to the drop box the stack names, if any.
  * Every fire but the bare schedule fire names its repo: the turn
  * mints its GitHub token for that repo, reads its config file

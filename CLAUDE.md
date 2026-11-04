@@ -35,7 +35,7 @@ Governor starts Claude Code cloud sessions for GitHub repos that install its App
 - The pull request body follows the `pr-description` skill.
 - Nothing deploys except a green merge to main. Never deploy by hand.
 - The owner merges. Do not merge your own pull request.
-- Governor reviews this repo's pull requests against `.claude/skills/pr-review/SKILL.md`, with merge off. A pass posts a comment and an approving review, and the owner still merges, so governor never passes a change to its own code with nobody looking. The review runs the image deployed from main and reads its checklist from main, so a pull request cannot review itself. When the review fails, fix the description or the ticket it names.
+- Governor reviews this repo's pull requests against `.claude/skills/pr-review/SKILL.md`, with merge off. A pass posts a comment and a `governor` check, and the owner still merges, so governor never passes a change to its own code with nobody looking. The review runs the image deployed from main and reads its checklist from main, so a pull request cannot review itself. When the review fails, fix the description or the ticket it names.
 
 ## Issues
 

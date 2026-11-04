@@ -573,7 +573,7 @@ describe('a constraint file the code leaves to the model', () => {
     assert.equal(h.answer.answer, 'pass');
   });
 
-  test('a change the model finds alters a rule waits for a person on test 7, whatever it said of an edit, and wakes no session', async () => {
+  test('a change the model finds alters a rule waits for a person on test 7, whatever it said of an edit, and the owner hears it with no fallback', async () => {
     const h = await ask({ files: [EDIT], texts, answers: [MEANING] });
     assert.equal(h.answer.answer, 'fail');
     assert.equal(h.answer.answer, 'fail');
@@ -581,7 +581,7 @@ describe('a constraint file the code leaves to the model', () => {
     assert.match(text, person);
     assert.match(text, /\(test 7\)/);
     assert.ok(text.includes(PATH), text);
-    assert.deepEqual(receiverFires(text), []);
+    assert.deepEqual(receiverFires(text).map((f) => [f.kind, (f as { fallback?: unknown }).fallback]), [['message', undefined]]);
   });
 
   test('the code still decides test 7 before any model call: a constraint file added, removed or renamed, the README, or another human-only path beside it', async () => {
@@ -670,10 +670,10 @@ describe('a model-judged edit beside a later test no edit meets', () => {
     assert.deepEqual(receiverFires(text).map((f) => [f.kind, f.session]), [['message', OWNER]]);
   });
 
-  test('a later test only a person meets and no edit owed is a person\'s alone: nobody is woken', async () => {
+  test('a later test only a person meets and no edit owed is a person\'s alone: the owner hears it, and no fallback takes the PR over', async () => {
     const h = await ask({ answers: [{ ...IAM, reason: `${IAM.reason}, and test 5 names no owner a person has not decided` }] });
     assert.match(h.text, /^Waits for a person: /);
-    assert.deepEqual(receiverFires(h.text), []);
+    assert.deepEqual(receiverFires(h.text).map((f) => [f.kind, (f as { fallback?: unknown }).fallback]), [['message', undefined]]);
   });
 });
 

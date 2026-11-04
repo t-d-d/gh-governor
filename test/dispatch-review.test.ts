@@ -71,13 +71,14 @@ const harness = (over: {
   /** The checks the base requires, and the checks at the head. */
   required?: string[],
   checks?: Array<{ name: string, state: 'red' | 'green' | 'pending' }>,
-  /** The PR's submitted reviews. */
-  reviews?: Array<{ id: number, state: string, body: string, bot: boolean }>,
+  /** The check write: GitHub's refusal, for one that throws. */
+  checkRun?: () => Promise<void>,
   /** The sessions the state table says governor started; a string is the error its read fails with. */
   started?: string[] | string,
 } = {}) => {
-  const dismissals: Array<{ pr: number, id: number }> = [];
-  const approvals: Array<{ pr: number, sha: string, body: string }> = [];
+  const checkRuns: Array<{ name: string, sha: string, state: string, title: string, summary: string }> = [];
+  /** The review's writes in the order made: each check by its state, the merge, the comment. */
+  const writes: string[] = [];
   const comments: Array<{ issue: number, body: string }> = [];
   const commentEdits: Array<{ id: number, body: string }> = [];
   const merges: Array<{ pr: number, sha: string }> = [];
@@ -112,9 +113,11 @@ const harness = (over: {
       defaultBranch: async () => over.base ?? 'main',
       requiredChecks: async (branch: string) => { requiredReads.push(branch); return over.required ?? []; },
       checksAt: async () => over.checks ?? [],
-      approve: async (pr: number, { sha, body }: { sha: string, body: string }) => { approvals.push({ pr, sha, body }); },
-      pullReviews: async () => over.reviews ?? [],
-      dismissReview: async (pr: number, id: number) => { dismissals.push({ pr, id }); },
+      checkRun: async (run: { name: string, sha: string, state: string, title: string, summary: string }) => {
+        if (over.checkRun) await over.checkRun();
+        checkRuns.push(run);
+        writes.push(`check ${run.state}`);
+      },
       pullRequest: async (n: number) => {
         reads.push(n);
         const rows = pulls[n];
@@ -142,7 +145,7 @@ const harness = (over: {
         return { number: n, title: `Ticket ${n}`, body: '## Acceptance criteria\n\n- It reviews.', state: 'open', labels: ['mode: afk', 'type: nfr', 'workflow: under development'], pull: false, association: 'MEMBER', ...row };
       },
       allComments: async () => over.thread ?? [],
-      comment: async (issue: number, body: string) => { comments.push({ issue, body }); },
+      comment: async (issue: number, body: string) => { comments.push({ issue, body }); writes.push('comment'); },
       updateComment: async (id: number, body: string) => { commentEdits.push({ id, body }); },
       // The send path's reads: the standing line, a fallback's marker and relink.
       openNaming: async () => [],
@@ -151,6 +154,7 @@ const harness = (over: {
       updatePull: async () => {},
       merge: async (pr: number, { sha }: { sha: string }) => {
         merges.push({ pr, sha });
+        writes.push('merge');
         return over.merge ? over.merge() : { merged: true, sha: 'm' };
       },
     }; },
@@ -178,7 +182,7 @@ const harness = (over: {
       },
     },
   };
-  return { deps, sessionsRead, approvals, dismissals, comments, commentEdits, merges, judged, transcripts, messages, launches, logged, reads, requiredReads, baseReads, fileReads, readerApps };
+  return { deps, sessionsRead, checkRuns, writes, comments, commentEdits, merges, judged, transcripts, messages, launches, logged, reads, requiredReads, baseReads, fileReads, readerApps };
 };
 
 type Review = { pr: number, outcome: string, reason?: string | null, error?: string | null, test?: number };
@@ -197,13 +201,13 @@ const marked = (text: string, head = HEAD, body = BODY) => `${text}\n\n${reviewM
 
 type Fire = { kind: string, session?: string, text?: string, on?: number, fallback?: { prompt: string, sessionName: string, issue?: number } };
 
-/** What the receiver queues for a comment the review posted on #767. */
-const receiverFires = (comment: string, body = BODY) => routeEvent({
+/** What the receiver queues for a comment the review posted on #767, or edited with `action` `edited`. */
+const receiverFires = (comment: string, body = BODY, action = 'created') => routeEvent({
   event: 'issue_comment',
   owners: ['acme'],
   appId: APP_ID,
   payload: {
-    action: 'created',
+    action,
     issue: { number: 767, title: 'Run the PR review from the dispatcher', html_url: `https://github.com/${REPO}/pull/767`, body, pull_request: { url: 'p' } },
     comment: { id: 1, body: comment, html_url: 'c', user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE', performed_via_github_app: { id: APP_ID } },
     repository: { full_name: REPO },
@@ -322,18 +326,37 @@ describe('run — what reaches the owner session', () => {
     }
   });
 
-  test('a pass: the comment and the merge, and the receiver queues nothing for it', async () => {
-    const h = harness({ answers: [PASS] });
-    const result = await review({ kind: 'review', pr: 767 }, h);
-    assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
-    assert.equal(h.merges.length, 1);
-    assert.deepEqual(receiverFires(h.comments[0]!.body), []);
+  test('every review comment reaches the session the PR names, without its marker, and no other subscriber', async () => {
+    const body = `${BODY}\n\n${subscribeLine(REVIEWER, ['comments'])}`;
+    const at = (over: Parameters<typeof harness>[0]) => ({ ...over, pulls: { 767: pullRow({ body, ...(over?.pulls?.[767] as Partial<Pull> | undefined) }) } });
+    for (const [name, h, go] of [
+      ['a pass that merges', harness(at({ answers: [PASS] })), (h: ReturnType<typeof harness>) => review({ kind: 'review', pr: 767 }, h)],
+      ['a pass the owner merges', tagalong(at({})), reviewTagalong],
+      ['a conflict', harness(at({ pulls: { 767: pullRow({ mergeable: false }) } })), (h: ReturnType<typeof harness>) => review({ kind: 'review', pr: 767 }, h)],
+      ['an edit', harness(at({ answers: [COSTS] })), (h: ReturnType<typeof harness>) => review({ kind: 'review', pr: 767 }, h)],
+      ['a person', harness(at({ answers: [IAM] })), (h: ReturnType<typeof harness>) => review({ kind: 'review', pr: 767 }, h)],
+    ] as const) {
+      await go(h);
+      const fires = receiverFires(h.comments[0]!.body, body);
+      assert.deepEqual(fires.map((f) => [f.kind, f.session, f.on]), [['message', OWNER, 767]], name);
+      assert.ok(fires[0]!.text!.includes(withoutMarker(h.comments[0]!.body)), `${name}: the comment's text`);
+      assert.doesNotMatch(fires[0]!.text!, /governor:pr-review/, `${name}: the marker is the receiver's to read`);
+    }
   });
 
-  test('a fail no edit meets: the comment, and the receiver queues nothing for it', async () => {
-    const h = harness({ answers: [IAM] });
-    await review({ kind: 'review', pr: 767 }, h);
-    assert.deepEqual(receiverFires(h.comments[0]!.body), []);
+  test('a pass, or a fail only a person meets: the owner hears it with no fallback, since a fresh session would have nothing to do', async () => {
+    const merged = harness({ answers: [PASS] });
+    const result = await review({ kind: 'review', pr: 767 }, merged);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
+    const passed = tagalong();
+    await reviewTagalong(passed);
+    const person = harness({ answers: [IAM] });
+    await review({ kind: 'review', pr: 767 }, person);
+    for (const h of [merged, passed, person]) {
+      const fires = receiverFires(h.comments[0]!.body);
+      assert.deepEqual(fires.map((f) => [f.kind, f.session]), [['message', OWNER]], h.comments[0]!.body);
+      assert.equal(fires[0]!.fallback, undefined, h.comments[0]!.body);
+    }
   });
 
   test('a fail an edit meets: one message fire into the session the PR names, carrying the comment\'s text and the fallback', async () => {
@@ -486,7 +509,7 @@ describe('run — a Dependabot PR', () => {
     assert.match(h.comments[0]!.body, /Dependabot/);
     assert.ok(h.comments[0]!.body.includes('normalize-lambda/requirements.txt'), h.comments[0]!.body);
     assert.ok(h.comments[0]!.body.endsWith(reviewMarker(HEAD, bodyDigest(dependabotRow().body))));
-    assert.deepEqual(receiverFires(h.comments[0]!.body, dependabotRow().body), [], 'nobody is woken by a pass');
+    assert.deepEqual(receiverFires(h.comments[0]!.body, dependabotRow().body).map((f) => [f.kind, (f as { byBranch?: true }).byBranch, f.fallback]), [['message', true, undefined]], 'a pass reaches whichever session holds its branch, if one does, and takes nothing over');
     assert.equal(exitCodeFor(result as never), 0);
   });
 
@@ -506,7 +529,7 @@ describe('run — a Dependabot PR', () => {
     }
   });
 
-  test('a file off the Dependabot list waits for a person, naming it, and wakes nobody', async () => {
+  test('a file off the Dependabot list waits for a person, naming it, and starts no session to take it over', async () => {
     for (const filename of ['dispatch/package-lock.json', '.github/workflows/ci.yml', 'kokoro-lambda/Dockerfile', 'src/voices.ts']) {
       const h = harness({ pulls: { 767: dependabotRow() }, files: [...PIP, { filename, status: 'modified' }] });
       const result = await review({ kind: 'review', pr: 767 }, h);
@@ -516,7 +539,7 @@ describe('run — a Dependabot PR', () => {
       assert.match(h.comments[0]!.body, /^Waits for a person: /, filename);
       assert.ok(h.comments[0]!.body.includes(filename), h.comments[0]!.body);
       assert.match(h.comments[0]!.body, /A person merges it\./);
-      assert.deepEqual(receiverFires(h.comments[0]!.body, dependabotRow().body), [], filename);
+      assert.deepEqual(receiverFires(h.comments[0]!.body, dependabotRow().body).map((f) => f.fallback), [undefined], filename);
     }
   });
 
@@ -701,7 +724,7 @@ describe('fitness: run — no run holds a merge (dispatcher-workflows.md)', () =
     assert.deepEqual(h.merges, [{ pr: 767, sha: HEAD }]);
     assert.deepEqual(h.comments, []);
     assert.deepEqual(h.commentEdits, [{ id: 41, body: marked(`${textOf(PASS)} Merged once the promotion ended.`) }]);
-    assert.deepEqual(receiverFires(h.commentEdits[0]!.body), []);
+    assert.deepEqual(receiverFires(h.commentEdits[0]!.body, BODY, 'edited'), [], 'an edit is no new delivery');
   });
 
   test('a held pass is held to the facts again when it merges: a ticket closed since fails in code, unjudged and unmerged', async () => {
@@ -873,15 +896,15 @@ describe('run — the author session\'s part of a PR a person merges', () => {
     assert.deepEqual(receiverFires(text).map((f) => [f.kind, f.session]), [['message', OWNER]]);
   });
 
-  test('a test-1 fail no edit meets, beside a human-only path, is a person\'s alone: nobody is woken', async () => {
+  test('a test-1 fail no edit meets, beside a human-only path, is a person\'s alone: the owner hears it, and no fallback takes the PR over', async () => {
     const h = harness({ tickets: { 748: { state: 'closed' } }, files: [HOOK] });
     await review({ kind: 'review', pr: 767 }, h);
     const text = h.comments[0]!.body;
     assert.match(text, person, text);
-    assert.deepEqual(receiverFires(text), []);
+    assert.deepEqual(receiverFires(text).map((f) => [f.session, f.fallback]), [[OWNER, undefined]]);
   });
 
-  test('the session\'s edit made, the next review says the person\'s part alone, in a new comment that wakes nobody', async () => {
+  test('the session\'s edit made, the next review says the person\'s part alone, in a new comment the owner hears with no fallback', async () => {
     const before = harness({ pulls: { 767: pullRow({ body: PROSE }) }, files: [HOOK] });
     await review({ kind: 'review', pr: 767 }, before);
     const fixed = PROSE.replace('`Closes #12 and #13`', 'a closing keyword in code');
@@ -891,7 +914,7 @@ describe('run — the author session\'s part of a PR a person merges', () => {
     assert.deepEqual(h.commentEdits, []);
     const text = h.comments[0]!.body;
     assert.match(text, person, text);
-    assert.deepEqual(receiverFires(text, fixed), []);
+    assert.deepEqual(receiverFires(text, fixed).map((f) => [f.session, f.fallback]), [[OWNER, undefined]]);
   });
 
   test('a person\'s fail said already, then an edit the session owes: a new comment the owner session hears, not an edit in place', async () => {
@@ -1061,18 +1084,15 @@ const tagalong = (over: Parameters<typeof harness>[0] = {}, review: Record<strin
 };
 const reviewTagalong = (h: ReturnType<typeof harness>) => review({ kind: 'review', pr: 767, repo: TAGALONG }, h);
 
-describe('fitness: a pass merges only where merge is on (dispatcher-review.md)', () => {
-  test('a pass in a repo whose file sets merge false is an approving review pinned to the head, and no merge call', async () => {
+describe('fitness: a pass merges only where merge is on, and approves nothing (dispatcher-review.md)', () => {
+  test('a pass in a repo whose file sets merge false is the comment and the check, with no merge call and no approval', async () => {
     const h = tagalong();
     const turn = await reviewTagalong(h);
-    assert.deepEqual(turn.reviews.map((r) => r.outcome), ['approved']);
+    assert.deepEqual(turn.reviews.map((r) => r.outcome), ['passed']);
     assert.deepEqual(h.merges, []);
-    assert.equal(h.approvals.length, 1);
-    assert.equal(h.approvals[0]!.sha, HEAD);
-    assert.equal(h.approvals[0]!.body, h.comments[0]!.body, 'the approval says what the comment says, marker and all');
-    assert.match(h.approvals[0]!.body, /^Passes the PR review: .* Approved: the repo's owner merges it\.\n\n<!-- governor:pr-review /);
-    assert.match(h.comments[0]!.body, /Approved: the repo's owner merges it\.[\s\S]*governor:pr-review/, 'the comment keeps the marker, so the same head and body are not read twice');
-    assert.ok(!ownerActs(withoutMarkerText(h.comments[0]!.body)), 'an approval asks nothing of the author session');
+    assert.deepEqual(h.writes, ['check success', 'comment']);
+    assert.match(h.comments[0]!.body, /^Passes the PR review: .* The repo's owner merges it\.\n\n<!-- governor:pr-review /, 'the comment keeps the marker, so the same head and body are not read twice');
+    assert.doesNotMatch(h.comments[0]!.body, /Approved/);
   });
 
   test('the repo\'s own checklist is the model\'s prompt, not the factory\'s', async () => {
@@ -1082,28 +1102,152 @@ describe('fitness: a pass merges only where merge is on (dispatcher-review.md)',
     assert.ok(!h.judged[0]!.system.includes(SKILL));
   });
 
-  test('a pass where merge is on, set or left out, merges and approves nothing', async () => {
+  test('a pass where merge is on, set or left out, completes its check as success before the merge call', async () => {
     for (const merge of [true, undefined]) {
       const h = tagalong({}, { merge });
       await reviewTagalong(h);
       assert.deepEqual(h.merges, [{ pr: 767, sha: HEAD }], String(merge));
-      assert.deepEqual(h.approvals, [], String(merge));
+      assert.deepEqual(h.writes, ['check success', 'merge', 'comment'], String(merge));
     }
     const factory = harness();
     await review({ kind: 'review', pr: 767 }, factory);
-    assert.equal(factory.merges.length, 1);
-    assert.deepEqual(factory.approvals, []);
+    assert.deepEqual(factory.writes, ['check success', 'merge', 'comment']);
   });
 
-  test('a fail or a conflict where merge is off approves nothing', async () => {
+  test('a fail or a conflict where merge is off is the comment and the check, and nothing else: no dismissal to make', async () => {
     const failed = tagalong({ answers: [COSTS] });
-    await reviewTagalong(failed);
     const conflicted = tagalong({ pulls: { 767: pullRow({ mergeable: false }) } });
-    await reviewTagalong(conflicted);
+    assert.deepEqual((await reviewTagalong(failed)).reviews.map((r) => r.outcome), ['commented']);
+    assert.deepEqual((await reviewTagalong(conflicted)).reviews.map((r) => r.outcome), ['conflict']);
     for (const h of [failed, conflicted]) {
-      assert.deepEqual(h.approvals, []);
       assert.deepEqual(h.merges, []);
+      assert.deepEqual(h.writes, ['check failure', 'comment']);
     }
+  });
+});
+
+/**
+ * The `governor` check: the review's verdict where a ruleset can require
+ * it. `neutral` passes a required check, so only a pull request handed to
+ * a person gets it.
+ */
+describe('fitness: the review posts its verdict as the `governor` check (dispatcher-review.md)', () => {
+  const HOOK: FileRow = { filename: '.claude/skills/pii-tokenise/hooks/register.js', status: 'modified' };
+  const PROSE = 'Closes #748\n\n## Left for later\n\n- Dismissed: `Closes #12 and #13` read as prose.\n\nhttps://claude.ai/code/session_01OWNER';
+
+  test('each verdict posts one check at the head reviewed, its first sentence the title and the comment\'s words the summary; a fail the author session meets is never neutral', async () => {
+    const cases: Array<[string, ReturnType<typeof harness>, string, () => Promise<unknown>]> = [];
+    const add = (name: string, h: ReturnType<typeof harness>, state: string, repo = REPO) => {
+      cases.push([name, h, state, () => (repo === TAGALONG ? reviewTagalong(h) : review({ kind: 'review', pr: 767 }, h))]);
+    };
+    add('a pass that merges', harness(), 'success');
+    add('a pass the owner merges', tagalong(), 'success', TAGALONG);
+    add('a pass that conflicts', harness({ pulls: { 767: pullRow({ mergeable: false }) } }), 'failure');
+    add('an edit', harness({ answers: [COSTS] }), 'failure');
+    add('a claim', tagalong({ tickets: { 748: { labels: ['ready'] } } }), 'failure', TAGALONG);
+    add('a push', tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }] }), 'failure', TAGALONG);
+    add('an edit, then a person', harness({ pulls: { 767: pullRow({ body: PROSE }) }, files: [...FILES, HOOK] }), 'failure');
+    add('a claim, then a person', harness({ tickets: { 748: { labels: ['mode: afk', 'type: nfr', 'workflow: ready for development'] } }, files: [HOOK] }), 'failure');
+    add('a person', harness({ answers: [IAM] }), 'neutral');
+    for (const [name, h, state, go] of cases) {
+      await go();
+      const said = withoutMarkerText(h.comments[0]!.body);
+      assert.deepEqual(h.checkRuns.map((c) => [c.name, c.sha, c.state]), [['governor', HEAD, state]], name);
+      assert.equal(h.checkRuns[0]!.summary, said, name);
+      // A first sentence past 200 characters is cut, and says so.
+      const title = h.checkRuns[0]!.title;
+      assert.ok(said.startsWith(title.replace(/…$/, '')), `${name}: ${title}`);
+      assert.ok(title.length <= 200, `${name}: ${title.length}`);
+      assert.match(title, /[.!?…]$/, name);
+      if (ownerActs(said)) assert.equal(state, 'failure', `${name}: neutral would pass a required check the session still owes`);
+    }
+    assert.equal(cases[3]![1].checkRuns[0]!.title, 'Waits for a description edit: the description names no cost for the new module (test 3).');
+  });
+
+  test('a required check not finished posts the check in progress, and nothing else', async () => {
+    const h = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'pending' }] });
+    const turn = await reviewTagalong(h);
+    assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped']);
+    assert.deepEqual(h.checkRuns.map((c) => [c.name, c.sha, c.state]), [['governor', HEAD, 'in_progress']]);
+    assert.match(h.checkRuns[0]!.summary, /`gate`/);
+    assert.deepEqual(h.writes, ['check in_progress']);
+  });
+
+  test('an author who may not summon governor gets a neutral check saying a person merges it', async () => {
+    const h = harness({ pulls: { 767: pullRow({ association: 'CONTRIBUTOR' }) } });
+    const turn = await review({ kind: 'review', pr: 767 }, h);
+    assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped']);
+    assert.deepEqual(h.checkRuns.map((c) => [c.sha, c.state]), [[HEAD, 'neutral']]);
+    assert.match(h.checkRuns[0]!.summary, /A person merges it\./);
+    assert.deepEqual(h.writes, ['check neutral']);
+  });
+
+  test('a review that does not finish posts failure, saying it did not run, why, and that a push or an edit runs it again', async () => {
+    const refusal = JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'You\'ve hit your session limit · resets 12:40am (UTC)', session_id: 's' });
+    const limited = harness({ answers: () => refusal });
+    const refused = harness({ merge: async () => { throw Object.assign(new Error('PUT /repos/acme/factory/pulls/767/merge failed: 405 Method Not Allowed'), { status: 405 }); } });
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, limited)).reviews.map((r) => r.outcome), ['limited']);
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, refused)).reviews.map((r) => r.outcome), ['failed']);
+    for (const [h, why] of [[limited, /session limit/], [refused, /405/]] as const) {
+      const last = h.checkRuns.at(-1)!;
+      assert.deepEqual([last.name, last.sha, last.state], ['governor', HEAD, 'failure']);
+      assert.match(last.title, /did not run/);
+      assert.match(last.summary, why);
+      assert.match(last.summary, /A push or an edit to the description runs it again\./);
+      assert.deepEqual(h.comments, [], 'no marker, so the next fire reads it again');
+    }
+    assert.deepEqual(refused.writes, ['check success', 'merge', 'check failure'], 'the refused merge\'s success is overwritten');
+  });
+
+  test('every other skip posts nothing: a closed PR, a draft, another base, a head and body reviewed already, a moved head, a Dependabot conflict', async () => {
+    const reviewed = [{ id: 5, body: marked('Waits for a person: x (test 3).'), created_at: 't', ours: true }];
+    for (const [name, h, fire] of [
+      ['closed', harness({ pulls: { 767: pullRow({ state: 'closed' }) } }), { pr: 767 }],
+      ['draft', harness({ pulls: { 767: pullRow({ draft: true }) } }), { pr: 767 }],
+      ['base', harness({ pulls: { 767: pullRow({ base: 'claude/below' }) } }), { pr: 767 }],
+      ['reviewed', harness({ thread: reviewed }), { pr: 767 }],
+      ['moved', harness({ pulls: { 767: pullRow({ headSha: MOVED }) } }), { pr: 767, headSha: HEAD }],
+      ['dependabot', tagalong({ pulls: { 767: dependabotRow({ mergeable: false }) }, files: [{ filename: 'package-lock.json', status: 'modified' }] }, { dependabot: ['/package-lock.json'] }), { pr: 767, repo: TAGALONG }],
+    ] as const) {
+      const turn = await review({ kind: 'review', ...fire }, h);
+      assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped'], name);
+      assert.deepEqual(h.checkRuns, [], name);
+    }
+  });
+
+  test('a required `governor` in progress or red does not stop the review: test 8 leaves out the review\'s own check', async () => {
+    for (const state of ['pending', 'red'] as const) {
+      const h = tagalong({ required: ['governor', 'gate'], checks: [{ name: 'governor', state }, { name: 'gate', state: 'green' }] });
+      const turn = await reviewTagalong(h);
+      assert.deepEqual(turn.reviews.map((r) => r.outcome), ['passed'], state);
+      assert.equal(h.judged.length, 1, state);
+    }
+    const bodyEdited = tagalong({ required: ['governor'], checks: [{ name: 'governor', state: 'red' }], thread: [{ id: 7, body: marked(textOf(COSTS), HEAD, 'an older body'), created_at: 'a', ours: true }] });
+    assert.deepEqual((await reviewTagalong(bodyEdited)).reviews.map((r) => r.outcome), ['passed'], 'its own earlier failure is no red required check');
+  });
+
+  test('a 403 on the check write leaves the review\'s outcome as it was, and the review says it was refused', async () => {
+    const forbidden = async () => { throw Object.assign(new Error('POST /repos/acme/factory/check-runs failed: 403 Forbidden: Resource not accessible by integration'), { status: 403 }); };
+    for (const [h, go, outcome] of [
+      [harness({ checkRun: forbidden }), (h: ReturnType<typeof harness>) => review({ kind: 'review', pr: 767 }, h), 'merged'],
+      [tagalong({ checkRun: forbidden }), reviewTagalong, 'passed'],
+      [harness({ checkRun: forbidden, answers: [COSTS] }), (h: ReturnType<typeof harness>) => review({ kind: 'review', pr: 767 }, h), 'commented'],
+      [tagalong({ checkRun: forbidden, required: ['gate'], checks: [{ name: 'gate', state: 'pending' }] }), reviewTagalong, 'skipped'],
+    ] as const) {
+      const turn = await go(h);
+      assert.deepEqual(turn.reviews.map((r) => r.outcome), [outcome]);
+      assert.match(String((turn.reviews[0] as { check?: unknown }).check), /403/, outcome);
+      assert.equal(exitCodeFor(turn as never), 0, outcome);
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-review' && /403/.test(String(l.check))), outcome);
+    }
+  });
+
+  test('any other refusal of the check write fails the review before its comment: no marker, so the next fire reads it again', async () => {
+    const h = harness({ checkRun: async () => { throw Object.assign(new Error('POST /repos/acme/factory/check-runs failed: 502 Bad Gateway'), { status: 502 }); } });
+    const turn = await review({ kind: 'review', pr: 767 }, h);
+    assert.deepEqual(turn.reviews.map((r) => r.outcome), ['failed']);
+    assert.match(String(turn.reviews[0]!.error), /502/);
+    assert.deepEqual([h.merges, h.comments], [[], []]);
   });
 });
 
@@ -1148,7 +1292,6 @@ describe('fitness: the settings checks decide before the model (dispatcher-revie
     const text = red.comments[0]!.body;
     assert.match(text, /^Waits for a push: the required check `gate` is red on its head \(test 8\)\. A push that turns it green meets it, and the review runs again on the push\./);
     assert.ok(ownerActs(withoutMarkerText(text)), 'the author session hears it: the push is its');
-    assert.deepEqual(red.approvals, []);
     for (const over of [{ required: ['gate'], checks: [{ name: 'gate', state: 'green' }, { name: 'lint', state: 'red' }] }, { required: [], checks: [{ name: 'gate', state: 'red' }] }] as const) {
       const h = tagalong({ required: [...over.required], checks: [...over.checks] });
       await reviewTagalong(h);
@@ -1171,7 +1314,8 @@ describe('run — required checks still running, or run again', () => {
       const turn = await reviewTagalong(h);
       assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped'], JSON.stringify(checks));
       assert.match(String(turn.reviews[0]!.reason), /`gate`.*not finished/);
-      assert.deepEqual([h.judged.length, h.comments.length, h.approvals.length, h.merges.length], [0, 0, 0, 0]);
+      assert.deepEqual([h.judged.length, h.comments.length, h.merges.length], [0, 0, 0]);
+      assert.deepEqual(h.checkRuns.map((c) => c.state), ['in_progress']);
     }
   });
 
@@ -1185,7 +1329,8 @@ describe('run — required checks still running, or run again', () => {
       const turn = await reviewTagalong(h);
       assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped'], JSON.stringify(checks));
       assert.match(String(turn.reviews[0]!.reason), /`gate`.*not finished/);
-      assert.deepEqual([h.judged.length, h.comments.length, h.approvals.length, h.merges.length], [0, 0, 0, 0]);
+      assert.deepEqual([h.judged.length, h.comments.length, h.merges.length], [0, 0, 0]);
+      assert.deepEqual(h.checkRuns.map((c) => c.state), ['in_progress']);
     }
   });
 
@@ -1196,7 +1341,7 @@ describe('run — required checks still running, or run again', () => {
     assert.match(red.comments[0]!.body, /^Waits for a push: the required check `gate` is red on its head \(test 8\)/);
     // `checksAt` reads a skipped run as green, so a lone green is a lone skipped run here.
     const skipped = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'green' }] });
-    assert.deepEqual((await reviewTagalong(skipped)).reviews.map((r) => r.outcome), ['approved']);
+    assert.deepEqual((await reviewTagalong(skipped)).reviews.map((r) => r.outcome), ['passed']);
     assert.equal(skipped.judged.length, 1);
   });
 
@@ -1205,35 +1350,17 @@ describe('run — required checks still running, or run again', () => {
     await reviewTagalong(red);
     const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
     const green = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'green' }], thread });
-    assert.deepEqual((await reviewTagalong(green)).reviews.map((r) => r.outcome), ['approved']);
+    assert.deepEqual((await reviewTagalong(green)).reviews.map((r) => r.outcome), ['passed']);
     assert.equal(green.judged.length, 1);
     const still = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }], thread });
     assert.deepEqual((await reviewTagalong(still)).reviews.map((r) => r.outcome), ['marker-moved'], 'still red: the comment stands, edited in place');
-  });
-
-  test('where merge is off, a head that no longer passes dismisses the dispatcher\'s approval of an earlier one; a person\'s stands', async () => {
-    const reviews = [
-      { id: 1, state: 'APPROVED', body: `Passes the PR review: fine. Approved: the repo's owner merges it.\n\n${reviewMarker(MOVED, bodyDigest(BODY))}`, bot: true },
-      { id: 2, state: 'APPROVED', body: 'LGTM', bot: false },
-      { id: 3, state: 'DISMISSED', body: `x\n\n${reviewMarker(MOVED, bodyDigest(BODY))}`, bot: true },
-    ];
-    const failed = tagalong({ answers: [COSTS], reviews });
-    await reviewTagalong(failed);
-    assert.deepEqual(failed.dismissals, [{ pr: 767, id: 1 }]);
-    const passed = tagalong({ reviews });
-    await reviewTagalong(passed);
-    assert.deepEqual(passed.dismissals, [], 'a pass approves the new head; the old approval does no harm');
-    assert.match(passed.approvals[0]!.body, /governor:pr-review/, 'the approval carries the marker, so a later fail finds it');
-    const merging = harness({ answers: [COSTS], reviews });
-    await review({ kind: 'review', pr: 767 }, merging);
-    assert.deepEqual(merging.dismissals, [], 'a repo that merges approves nothing to dismiss');
   });
 });
 
 describe('run — any served repo\'s review', () => {
   test('reads PRs into the repo\'s default branch: a `trunk` repo reviews a PR into trunk and skips one into main', async () => {
     const into = tagalong({ base: 'trunk', pulls: { 767: pullRow({ base: 'trunk' }) } });
-    assert.deepEqual((await reviewTagalong(into)).reviews.map((r) => r.outcome), ['approved']);
+    assert.deepEqual((await reviewTagalong(into)).reviews.map((r) => r.outcome), ['passed']);
     const stacked = tagalong({ base: 'trunk' });
     const turn = await reviewTagalong(stacked);
     assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped']);

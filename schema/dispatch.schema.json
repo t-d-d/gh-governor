@@ -879,7 +879,7 @@
         },
         "merge": {
           "default": true,
-          "description": "Whether a pass merges the PR. With false, a pass approves and the owner merges. Default true.",
+          "description": "Whether a pass merges the PR. With false, a pass posts its comment and a success check, and the owner merges. Default true.",
           "type": "boolean"
         }
       },

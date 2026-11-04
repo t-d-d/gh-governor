@@ -212,21 +212,35 @@ The review runs in each served repo whose file turns `prReview` on, from that re
 
 - Test 1, the tickets: each ticket the PR closes is open, meets `review.tickets`, and carries the claim label. A ticket not yet claimed gets a comment the author session hears. A PR closes tickets in its own repo only: a body that closes another repo's issue, by `owner/repo#N` or by its URL, fails for an edit, as does a closing reference below the body's top `Closes #N` lines. Work spanning repos links the tickets with `blocked by`: the other repo's ticket is blocked by an issue here, a PR here closes that issue, and its close unblocks the other ticket.
 - Test 7, the human-only list: no changed path, or path a rename left, matches `review.humanOnly`, unless every ticket carries one of the entry's `unless` labels. A modified file matching `review.quote` goes to the model instead, quoted whole at the merge base and at the head. A `decides` ticket's first line, `Constraint now lives at <path>, …`, passes the quoted files it names.
-- Test 8, required checks: no status check the default branch requires is red on the head. A check still running skips the review; the run finishing queues a new one.
+- Test 8, required checks: no status check the default branch requires is red on the head. A check still running skips the review; the run finishing queues a new one. The review's own `governor` check is left out, so a repo that requires it never waits on it.
 
 So a checklist numbers its own tests 2 to 6. Code also fails tests 5 and 6 when the PR body's Verification table or Left for later names a ticket that is closed or does not exist; the rest of those tests are the model's.
 
-**Pass.** Governor waits for GitHub to compute the PR's mergeable state, merges with a merge commit pinned to the head it reviewed, and comments `Passes the PR review: <reason>.` With `review.merge` false, it merges nothing: it posts an approving review pinned to that head as well as the comment, and the owner merges. A later head that does not pass dismisses that approval. A conflict is a comment telling the author session to merge the base in.
+**Pass.** Governor waits for GitHub to compute the PR's mergeable state, merges with a merge commit pinned to the head it reviewed, and comments `Passes the PR review: <reason>.` With `review.merge` false, it merges nothing, and the comment ends `The repo's owner merges it.` Governor approves nothing. A conflict is a comment telling the author session to merge the base in.
 
 **Fail.** A comment naming the first failed test: `Waits for a description edit: …` where an edit to the PR body would pass it, or `Waits for a person: …` where none can. A fail on the same test as the last review edits that comment in place rather than posting again.
 
-**Who hears it.** Every comment ends with `<!-- governor:pr-review <head sha> <body sha256> -->`. The receiver takes a comment for the review's only when it carries that marker and the stack's own App posted it. The owner session is messaged only when the review asks something of it: an edit, a ticket to claim, a red required check, or a conflict. A pass queues nothing, since the merge's own message follows. A fail only a person can clear queues nothing. Subscribers are not messaged.
+**The check.** Each review that answers also posts a check run named `governor` on the head it read, titled with the comment's first sentence and carrying the comment as its summary. A ruleset can require it, with governor's App as its source, so a PR cannot merge while its session still owes a fix.
+
+| The review | Check |
+|---|---|
+| A required check has not finished | `in_progress` |
+| Passes | `success` |
+| Passes, but conflicts with the base | `failure` |
+| Waits for a description edit, a claim or a push, with or without a person after it | `failure` |
+| Waits for a person | `neutral` |
+| Skips a PR by an author who may not summon governor | `neutral`, saying a person merges it |
+| Does not finish: the login's usage limit stops it, or it fails | `failure`, saying it did not run and why, and that a push or an edit runs it again |
+
+GitHub counts `neutral` as passing a required check, so only a PR handed to a person gets it. Every other skip posts no check. A pass's check goes before its merge, and a fail's before its comment. The check needs the App's Checks write. An installation that has not accepted it answers 403, which the review logs as `check` on its `dispatch-review` line and passes over. Governor takes no `check_run` event, so the check's Re-run button does nothing. A push or an edit to the description reviews again.
+
+**Who hears it.** Every comment ends with `<!-- governor:pr-review <head sha> <body sha256> -->`. The receiver takes a comment for the review's only when it carries that marker and the stack's own App posted it. The owner session is messaged with every new comment, the marker taken out. Only a comment that asks something of it carries the fallback that hands a gone session's PR to a fresh one: an edit, a ticket to claim, a red required check or a conflict. A pass, or a fail only a person can clear, would give a fresh session nothing to do. Subscribers are not messaged.
 
 **Skipped.** A PR whose head and body the last marker names, a draft, a closed PR, a PR into any branch but the default, and a PR by someone not an owner, member or collaborator.
 
-**Dependabot.** A PR `dependabot[bot]` opened is held to tests 7 and 8 alone, with no model run, using `review.dependabot` in place of the human-only list. It passes when every changed file is on that list and modified, and every commit's author is `dependabot[bot]` and was committed and signed by GitHub. Anything else waits for a person. A pass merges, or with `merge` false is approved. A conflict posts nothing: Dependabot rebases its own PRs.
+**Dependabot.** A PR `dependabot[bot]` opened is held to tests 7 and 8 alone, with no model run, using `review.dependabot` in place of the human-only list. It passes when every changed file is on that list and modified, and every commit's author is `dependabot[bot]` and was committed and signed by GitHub. Anything else waits for a person. A pass merges, or with `merge` false waits for the owner. A conflict posts nothing: Dependabot rebases its own PRs.
 
-**Limits.** A review of every open PR starts no review past five minutes into the turn; the rest are reviewed on their next push or edit. A model run refused by the login's session limit is `limited`, not a failure. A failed review (a merge GitHub refused, an answer outside the schema) exits 1.
+**Limits.** A review of every open PR starts no review past five minutes into the turn; the rest are reviewed on their next push or edit, and get no check until then. A model run refused by the login's session limit is `limited`, not a failure. A failed review (a merge GitHub refused, an answer outside the schema) exits 1.
 
 **Transcripts.** With `DropBoxUrl` set and the writer saved, each review's transcript is redacted, gzipped and PUT to `<DropBoxUrl>/<date>/pr-review-<PR>-<session>.jsonl.gz` (`dispatch-review-transcript`).
 
