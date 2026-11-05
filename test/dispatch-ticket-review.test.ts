@@ -82,7 +82,7 @@ const harness = (over: {
   live?: boolean,
 } = {}) => {
   const comments: Array<{ issue: number, body: string }> = [];
-  const runs: Array<{ system: string, prompt: string, schema: unknown, replace?: boolean }> = [];
+  const runs: Array<{ system: string, prompt: string, schema: unknown }> = [];
   const transcripts: Array<{ sessionId: string, key: string }> = [];
   const logged: Array<{ event: string, [key: string]: unknown }> = [];
   const openReads: number[] = [];
@@ -137,7 +137,7 @@ const harness = (over: {
     ...(over.heartbeat === undefined ? {} : { heartbeat: { issue: over.heartbeat } }),
     ...(over.waits === undefined ? {} : { waits: { issue: over.waits } }),
   };
-  const run = async (request: { system: string, prompt: string, schema: unknown, replace?: boolean }) => {
+  const run = async (request: { system: string, prompt: string, schema: unknown }) => {
     runs.push(request);
     const answer = answers[Math.min(runs.length - 1, answers.length - 1)]!;
     return { status: 0, output: typeof answer === 'string' ? answer : cliOutput(answer, `sess-${runs.length}`) };
@@ -620,10 +620,9 @@ describe('reviewTicket: which reviews run', () => {
 });
 
 describe('reviewTicket: what the model reads', () => {
-  test('governor\'s frame and the default checklist replace the system prompt, with no tools, the answer held to the schema', async () => {
+  test('governor\'s frame and the default checklist are the system prompt, the answer held to the schema', async () => {
     const h = harness();
     await h.review();
-    assert.equal(h.runs[0]!.replace, true);
     assert.equal(h.runs[0]!.system, `${TICKET_FRAME}\n\n${DEFAULT_TICKET_CHECKLIST}`);
     assert.deepEqual(h.runs[0]!.schema, TICKET_ANSWER_SCHEMA);
   });

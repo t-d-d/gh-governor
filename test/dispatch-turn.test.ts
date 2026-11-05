@@ -4179,6 +4179,31 @@ describe('run — the merge message', () => {
 });
 
 /**
+ * Runs `body` with a fake `claude` on PATH, whose script is `lines`, the
+ * home and the working directory in a fresh temporary folder, and puts the
+ * environment back after.
+ */
+const withFakeClaude = async (lines: string[], body: () => Promise<void>) => {
+  const dir = mkdtempSync(join(tmpdir(), 'governor-test-'));
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
+  mkdirSync(join(dir, 'repo'));
+  writeFileSync(join(bin, 'claude'), ['#!/usr/bin/env node', ...lines].join('\n'), { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, HOME: process.env.HOME, DISPATCH_WORKDIR: process.env.DISPATCH_WORKDIR };
+  process.env.PATH = `${bin}:${saved.PATH ?? ''}`;
+  process.env.HOME = dir;
+  process.env.DISPATCH_WORKDIR = join(dir, 'repo');
+  try {
+    await body();
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+/**
  * The real message dependency hands the CLI the text on stdin, never as an
  * argument: the CLI's option parser reads a text that begins with `-` (a
  * markdown list, most review comments) as an option and refuses it
@@ -4187,37 +4212,51 @@ describe('run — the merge message', () => {
  */
 describe('realDeps().message', () => {
   test('sends the text on stdin, with --cloud <session> and the JSON answer asked for', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'governor-test-'));
-    const bin = join(dir, 'bin');
-    mkdirSync(bin);
-    mkdirSync(join(dir, 'repo'));
-    writeFileSync(
-      join(bin, 'claude'),
-      [
-        '#!/usr/bin/env node',
-        "let stdin = '';",
-        "process.stdin.setEncoding('utf8');",
-        "process.stdin.on('data', (chunk) => { stdin += chunk; });",
-        "process.stdin.on('end', () => { process.stdout.write(`${JSON.stringify({ ok: true, argv: process.argv.slice(2), stdin })}\\n`); });",
-      ].join('\n'),
-      { mode: 0o755 },
-    );
-    const saved = { PATH: process.env.PATH, HOME: process.env.HOME, DISPATCH_WORKDIR: process.env.DISPATCH_WORKDIR };
-    process.env.PATH = `${bin}:${saved.PATH ?? ''}`;
-    process.env.HOME = dir;
-    process.env.DISPATCH_WORKDIR = join(dir, 'repo');
-    try {
+    await withFakeClaude([
+      "let stdin = '';",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+      "process.stdin.on('end', () => { process.stdout.write(`${JSON.stringify({ ok: true, argv: process.argv.slice(2), stdin })}\\n`); });",
+    ], async () => {
       const { status, output } = await realDeps().message({ session: 'session_01ABC', text: '- add a test\n- run it\n' });
       assert.equal(status, 0, output);
       const answer = JSON.parse(output.trim().split('\n').pop() ?? '');
       assert.deepEqual(answer.argv, ['-p', '--cloud', 'session_01ABC', '--output-format', 'json']);
       assert.equal(answer.stdin, '- add a test\n- run it\n');
-    } finally {
-      process.env.PATH = saved.PATH;
-      if (saved.HOME === undefined) delete process.env.HOME; else process.env.HOME = saved.HOME;
-      if (saved.DISPATCH_WORKDIR === undefined) delete process.env.DISPATCH_WORKDIR; else process.env.DISPATCH_WORKDIR = saved.DISPATCH_WORKDIR;
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
+  });
+});
+
+/**
+ * The real review runner puts governor's system prompt in place of Claude
+ * Code's own, for the PR review and the ticket reviews alike: the default
+ * prompt is written for a coding agent with tools, and a review has none. A
+ * fake `claude` on PATH answers with its arguments and the text of the
+ * file it was given as the system prompt, read before the runner removes it.
+ */
+describe('fitness: dispatcher-review.md, the review runner replaces Claude Code\'s system prompt', () => {
+  test('passes --system-prompt-file with the system prompt\'s text, never --append-system-prompt-file', async () => {
+    await withFakeClaude([
+      "const { readFileSync } = require('node:fs');",
+      'const argv = process.argv.slice(2);',
+      "const at = argv.indexOf('--system-prompt-file');",
+      "const system = at === -1 ? null : readFileSync(argv[at + 1], 'utf8');",
+      "let stdin = '';",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+      "process.stdin.on('end', () => { process.stdout.write(`${JSON.stringify({ argv, system, stdin })}\\n`); });",
+    ], async () => {
+      const schema = { type: 'object' };
+      const { status, output } = await realDeps().review({ system: 'You review pull requests.\n', prompt: 'PR #7', schema });
+      assert.equal(status, 0, output);
+      const answer = JSON.parse(output.trim().split('\n').pop() ?? '');
+      assert.ok(!answer.argv.includes('--append-system-prompt-file'), `appended to Claude Code's prompt: ${answer.argv.join(' ')}`);
+      assert.ok(answer.argv.includes('--system-prompt-file'), `no --system-prompt-file: ${answer.argv.join(' ')}`);
+      assert.equal(answer.system, 'You review pull requests.\n');
+      assert.equal(answer.stdin, 'PR #7');
+      assert.equal(answer.argv[answer.argv.indexOf('--json-schema') + 1], JSON.stringify(schema));
+      assert.equal(answer.argv[answer.argv.indexOf('--tools') + 1], '');
+    });
   });
 });
 
