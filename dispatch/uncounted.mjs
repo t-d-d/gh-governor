@@ -29,6 +29,8 @@ import { authorHasSay, uncountedReady } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { CONFIG_PATH } from './repo-config.mjs';
 import { BOT, SUMMONERS } from './webhook/fire.mjs';
+import { judgeReady } from './start.mjs';
+import { narrows, START } from './trust.mjs';
 import { sayOnce } from './waits.mjs';
 
 /** The marker on governor's one refusal comment on a ticket: its uncounted ready labels, or an author `trust.task` leaves out. */
@@ -123,23 +125,42 @@ export const untaskedComment = ({ author, association, what }) => [
  * applies to ready labels: where its author has no say, its label events
  * are read, and a label the author, a bot or no event added
  * (`uncountedReady`) leaves it silent, as a stranger's own template must not
- * make governor write. A read or a comment that fails is logged at error
- * and skipped: nothing starts either way, and the next sweep tries again.
+ * make governor write. Where the repo narrows `trust.start`, a readied
+ * ticket is judged by it first, as a summons is: a person it leaves out
+ * gets the `start` comment ({@link unstartedComment}) in place of this one,
+ * and an adder governor could not look up gets no comment that turn. A
+ * read or a comment that fails is logged at error and skipped: nothing
+ * starts either way, and the next sweep tries again.
  *
  * @param {{
- *   reader: { allComments: (n: number) => Promise<Array<{ body: string }>>, comment: (n: number, body: string) => Promise<void>, labelAdds?: (n: number) => Promise<import('../scripts/lib/ready-work.mjs').LabelAdd[]> },
+ *   reader: { allComments: (n: number) => Promise<Array<{ body: string }>>, comment: (n: number, body: string) => Promise<void>, labelAdds?: (n: number) => Promise<import('../scripts/lib/ready-work.mjs').LabelAdd[]> } & Partial<import('./start.mjs').StartLookups>,
  *   stranger: import('../scripts/lib/dispatch-router.mjs').Stranger,
  *   what: 'readied' | 'summoned',
  *   ready?: readonly string[],
+ *   start?: readonly string[],
  *   event: string,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  * }} args `ready`: the repo's ready labels, for a ticket `what` readied.
+ *   `start`: the repo's `trust.start`, judged first on a readied ticket.
  * @returns {Promise<'commented' | 'already told' | 'silent' | 'failed'>}
  */
-export const reportUntasked = async ({ reader, stranger, what, ready = [], event, log }) => {
+export const reportUntasked = async ({ reader, stranger, what, ready = [], start = START, event, log }) => {
   const { repo, issue, association, author = '' } = stranger;
   try {
-    if (what === 'readied' && !authorHasSay(stranger)) {
+    if (what === 'readied' && narrows(start)) {
+      // `start` is judged first, as a summons is: where the person who
+      // readied the ticket is outside it too, the comment names `start`,
+      // since restating the work in a ticket of their own would be refused
+      // for the same act.
+      if (reader.labelAdds === undefined) return 'silent';
+      const judged = await judgeReady({ reader: /** @type {Parameters<typeof judgeReady>[0]['reader']} */ (reader), repo, ticket: { number: issue, author, association }, ready, start });
+      if ('outsider' in judged) return 'silent';
+      if ('unread' in judged) {
+        reportUnlooked({ unlooked: judged.unread, event, log });
+        return 'silent';
+      }
+      if ('unstarted' in judged) return await sayOnce(reader, issue, UNCOUNTED_READY_MARKER, unstartedComment({ ...judged.unstarted, what }));
+    } else if (what === 'readied' && !authorHasSay(stranger)) {
       if (reader.labelAdds === undefined) return 'silent';
       const adds = await reader.labelAdds(issue);
       if (uncountedReady(stranger, adds, ready).length > 0) return 'silent';
