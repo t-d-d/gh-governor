@@ -33,7 +33,7 @@
 import { z } from 'zod';
 import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, SUMMONERS, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
-import { BOT, START, TRUST_VALUES, autoOf, taskKey as taskKeyOf, taskSet } from './trust.mjs';
+import { BOT, START, TRUST_VALUES, autoOf, reviewOf, taskKey as taskKeyOf, taskSet } from './trust.mjs';
 
 /** Where the file lives, on the repo's default branch. */
 export const CONFIG_PATH = '.github/dispatch.json';
@@ -189,7 +189,7 @@ const ticketRule = z.strictObject({
  * first line, `Constraint now lives at <path>, …`, decides the quoted files
  * it names, so they pass unread; `dependabot`, the manifests a Dependabot PR may
  * change; `requireChecks`, the checks the review requires beside those
- * GitHub requires; `waitForCi`, whether test 8 reads the `workflows.ci`
+ * GitHub requires, each a name or a name and the App that must post it; `waitForCi`, whether test 8 reads the `workflows.ci`
  * run at the head; `merge`, whether a pass merges. Settings, never code: a check
  * they cannot express is the repo's CI, read as a required status check.
  */
@@ -207,7 +207,13 @@ const reviewSchema = z.strictObject({
   quote: z.array(z.string().trim().regex(/^!?[^!\s]/, 'a glob, or `!` and a glob')).default([]).meta({ description: 'Globs of changed files the review model reads whole, at the merge base and at the head. Only a modified file is quoted: one added, removed or renamed waits for a person. A `!` entry takes a path back out. Default none.' }),
   decides: z.array(label).default([]).meta({ description: 'Labels of a ticket that may decide a quoted file\'s change: its body\'s first line, `Constraint now lives at <path>, …`, names the files it decides, which then pass unread. Default none.' }),
   dependabot: z.array(glob).default([]).meta({ description: 'Globs of the manifests a Dependabot PR may change and pass with no model. Default none.' }),
-  requireChecks: z.array(z.string().trim().min(1)).default([]).meta({ description: 'Names of check runs and commit status contexts the review treats as required, beside any the default branch requires on GitHub. One red on the PR\'s head fails the review for a push; one not finished, or not posted, holds the review with `governor` in progress until it ends. A name GitHub also requires counts once, and the review\'s own `governor` check is left out. Default none.' }),
+  requireChecks: z.array(z.union([
+    z.string().trim().min(1),
+    z.strictObject({
+      name: z.string().trim().min(1).meta({ description: 'The check run\'s name.' }),
+      app: z.string().trim().regex(/^[a-z0-9][a-z0-9-]*$/, 'an App slug: lowercase letters, digits and hyphens, the last part of its github.com/apps/<slug> page').meta({ description: 'The slug of the GitHub App that must post it, such as `github-actions` or `github-code-scanning`: lowercase letters, digits and hyphens, the last part of its `github.com/apps/<slug>` page. A run of the name from any other App, and a commit status of the name, does not count.' }),
+    }),
+  ])).default([]).meta({ description: 'Checks the review treats as required, beside any the default branch requires on GitHub: a name, which a check run from any App or a commit status context meets, or `{ "name", "app" }`, which only that App\'s check run of the name meets. One red on the PR\'s head fails the review for a push; one not finished, or not posted, holds the review with `governor` in progress until it ends. A name GitHub also requires counts once, and the review\'s own `governor` check is left out. Default none.' }),
   waitForCi: z.boolean().default(true).meta({ description: 'Whether the review waits for the `workflows.ci` run at the PR\'s head: one red fails it for a push, one not finished, or none at the head, holds it with `governor` in progress. Set it false where the CI workflow does not run on pull requests, such as one that runs only on a push to the default branch; the review then reads no workflow runs, and still reads the required checks and `requireChecks`. A red CI run on the default branch still drives `ciMessages`. Default true.' }),
   merge: z.boolean().default(true).meta({ description: 'Whether a pass merges the PR. With false, a pass posts its comment and a success check, and the owner merges. Default true.' }),
 });
@@ -405,7 +411,7 @@ const ticketReviewSchema = z.strictObject({
     success: z.array(label).default([]).meta({ description: 'The labels a `success` adds: the ticket passes. Default none.' }),
     failure: z.array(label).default([]).meta({ description: 'The labels a `failure` adds: the ticket waits for an edit by whoever filed it. Default none.' }),
     neutral: z.array(label).default([]).meta({ description: 'The labels a `neutral` adds: the ticket waits for a person. Default none.' }),
-  }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by` reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on.' }),
+  }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on, a label the review\'s own `when.labels` or `when.exclude` names, or `labels.claim`.' }),
   checklist: z.union([z.string().trim().min(1), promptFile]).optional().meta({ description: 'The review\'s base checklist, after governor\'s fixed frame: the text, or { "file": "<path>" }. Default governor\'s own checklist.' }),
   types: z.array(ticketTypeSchema).min(1).optional().meta({ description: 'Checks and labels per ticket type, each entry matched by label. A ticket gets the base checklist and then each matching entry\'s, in file order; one matching none gets the base alone. For each conclusion, the labels come from the first matching entry that names it, and otherwise from `conclusions`.' }),
 });
@@ -483,11 +489,17 @@ export const configSchema = z.strictObject({
   // removes a label another conclusion or review just added; none that a
   // `types` entry matches on, so no run changes a ticket's type; and none
   // that readies a ticket on a review governor runs for an author outside
-  // trust.auto: a stranger's text would set work going by itself.
+  // trust.auto: a stranger's text would set work going by itself. The
+  // authors a review runs for are its `by` narrowed by trust.review, since
+  // it reads no other ticket. None that the review's own `when` selects
+  // on: a failure label it excludes stops it reading the filer's fix. And
+  // never the claim label, which would come off a ticket being built.
   .superRefine((c, ctx) => {
     /** @type {Map<string, string>} Each label, lower-cased as GitHub matches it, and the review that names it. */
     const owner = new Map();
     const auto = autoOf(c);
+    const review = reviewOf(c);
+    const claimKey = c.labels.claim.toLowerCase();
     const readyKeys = new Set(c.labels.ready.map((l) => l.toLowerCase()));
     /** @type {Map<string, string>} Each label a `types` entry matches on, lower-cased, and the review whose entry names it. */
     const typeKeys = new Map();
@@ -504,6 +516,10 @@ export const configSchema = z.strictObject({
       const under = new Map();
       /** @type {Map<string, Array<string | number>>} Each ready label this review names, as written, and where it is first named. */
       const ready = new Map();
+      /** @type {Map<string, string>} Each label the review's `when` names, lower-cased, and the key that names it. */
+      const selects = new Map();
+      for (const l of when.exclude ?? []) selects.set(l.toLowerCase(), 'when.exclude');
+      for (const l of when.labels ?? []) selects.set(l.toLowerCase(), 'when.labels');
       for (const { path: at, sets } of places) {
         for (const conclusion of CONCLUSION_NAMES) {
           for (const l of sets[conclusion] ?? []) {
@@ -517,14 +533,18 @@ export const configSchema = z.strictObject({
             else if (other === undefined) owner.set(key, name);
             const typed = typeKeys.get(key);
             if (typed !== undefined) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and a types entry of the ${typed} review matches on it: applying it would change the ticket's type. Give the conclusion a label no types entry matches on` });
+            // The claim label belongs in when.exclude, so the claim fault stands alone.
+            const selector = selects.get(key);
+            if (key === claimKey) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and it is labels.claim: a run would add or take the claim off a ticket. Give the conclusion a label of its own` });
+            else if (selector !== undefined) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and its own ${selector} names it too: applying it would change whether the review runs on the ticket again. Give the conclusion a label the review does not select on` });
             if (readyKeys.has(key) && !ready.has(l)) ready.set(l, at);
           }
         }
       }
-      const beyond = (when.by ?? TICKET_REVIEW_BY).filter((a) => !auto.includes(a));
+      const beyond = (when.by ?? TICKET_REVIEW_BY).filter((a) => review.includes(a) && !auto.includes(a));
       if (beyond.length === 0) return;
       for (const [l, path] of ready) {
-        ctx.addIssue({ code: 'custom', path, message: `the ${name} review names the ready label "${l}", and its by lets in ${beyond.join(', ')}, which trust.auto does not: a ticket from them could be readied with no person choosing it. Narrow the review's by to trust.auto, or give it labels that ready nothing` });
+        ctx.addIssue({ code: 'custom', path, message: `the ${name} review names the ready label "${l}", and its by, within trust.review, lets in ${beyond.join(', ')}, which trust.auto does not: a ticket from them could be readied with no person choosing it. Narrow the review's by to trust.auto, or give it labels that ready nothing` });
       }
     });
   })
@@ -562,6 +582,7 @@ export const configSchema = z.strictObject({
  *   targets whose failure gets one fresh session. `tags`: each target's tag.
  * @typedef {{ labels: string[], unless: string[] }} TicketRule
  * @typedef {{ glob: string, reason: string, unless: string[] }} HumanOnly
+ * @typedef {string | { name: string, app: string }} RequiredCheck A required check: a name any App or status may post, or a name and the slug of the App that must post it.
  * @typedef {{
  *   checklist: string,
  *   humanOnly: HumanOnly[],
@@ -569,7 +590,7 @@ export const configSchema = z.strictObject({
  *   quote: string[],
  *   decides: string[],
  *   dependabot: string[],
- *   requireChecks: string[],
+ *   requireChecks: RequiredCheck[],
  *   waitForCi: boolean,
  *   merge: boolean,
  * }} Review The PR review's settings, its checklist read.

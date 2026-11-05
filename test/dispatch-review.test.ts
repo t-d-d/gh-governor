@@ -97,9 +97,9 @@ const harness = (over: {
   base?: string,
   /** The checks the base requires, and the checks at the head. */
   required?: string[],
-  checks?: Array<{ name: string, state: 'red' | 'green' | 'pending' }>,
+  checks?: Array<{ name: string, state: 'red' | 'green' | 'pending', app?: string }>,
   /** The checks at each head, over `checks`. */
-  checksAt?: (sha: string) => Array<{ name: string, state: 'red' | 'green' | 'pending' }>,
+  checksAt?: (sha: string) => Array<{ name: string, state: 'red' | 'green' | 'pending', app?: string }>,
   /** The runs the CI workflow's list answers at the head: one green run of the factory's `ci.yml` at HEAD by default. */
   ciRuns?: CiRun[],
   /** The check write: GitHub's refusal, for one that throws. */
@@ -2014,6 +2014,39 @@ describe('run, the checks the review section lists (test 8)', () => {
     await reviewTagalong(pending);
     assert.equal(pending.checkRuns[0]!.title, 'Waits for its required checks to finish.');
     assert.equal(pending.checkRuns[0]!.summary, `The PR review runs when the required check \`gate\` has finished on ${HEAD.slice(0, 12)}.`);
+  });
+
+  test('an entry naming its App is met only by that App\'s run of the name: another App\'s, or a status, holds the review', async () => {
+    const scan = { name: 'codeql', app: 'github-code-scanning' };
+    for (const checks of [
+      [{ name: 'codeql', state: 'green' as const, app: 'github-actions' }],
+      [{ name: 'codeql', state: 'green' as const }],
+      [{ name: 'codeql', state: 'red' as const, app: 'github-actions' }],
+    ]) {
+      const h = tagalong({ checks }, { requireChecks: [scan] });
+      const turn = await reviewTagalong(h);
+      assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped'], JSON.stringify(checks));
+      assert.match(String(turn.reviews[0]!.reason), /`codeql` from `github-code-scanning`.*not finished/);
+      assert.deepEqual([h.judged.length, h.comments.length], [0, 0]);
+      assert.deepEqual(h.checkRuns.map((c) => c.state), ['in_progress']);
+    }
+  });
+
+  test('an entry naming its App reads that App\'s run: green passes beside another App\'s red, and red fails', async () => {
+    const scan = { name: 'codeql', app: 'github-code-scanning' };
+    const green = tagalong({ checks: [{ name: 'codeql', state: 'green', app: 'github-code-scanning' }, { name: 'codeql', state: 'red', app: 'github-actions' }] }, { requireChecks: [scan] });
+    assert.deepEqual((await reviewTagalong(green)).reviews.map((r) => r.outcome), ['passed']);
+    const red = tagalong({ checks: [{ name: 'codeql', state: 'red', app: 'github-code-scanning' }, { name: 'codeql', state: 'green', app: 'github-actions' }] }, { requireChecks: [scan] });
+    await reviewTagalong(red);
+    assert.equal(red.judged.length, 0);
+    assert.match(red.comments[0]!.body, /^Waits for a push: the required check `codeql` from `github-code-scanning` is red on its head \(test 8\)\./);
+  });
+
+  test('a name GitHub requires is still read from any App beside an entry naming one', async () => {
+    const h = tagalong({ required: ['codeql'], checks: [{ name: 'codeql', state: 'green', app: 'github-code-scanning' }, { name: 'codeql', state: 'red', app: 'github-actions' }] }, { requireChecks: [{ name: 'codeql', app: 'github-code-scanning' }] });
+    await reviewTagalong(h);
+    assert.equal(h.judged.length, 0);
+    assert.match(h.comments[0]!.body, /^Waits for a push: the required check `codeql` is red on its head \(test 8\)\./);
   });
 
   test('a listed `governor` is left out, as a required one is', async () => {
