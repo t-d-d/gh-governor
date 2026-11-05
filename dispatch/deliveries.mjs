@@ -559,7 +559,7 @@ export const deliveries = (deps) => {
   const relink = async (pr, sessionUrl) => {
     const reason = 'the PR body still names the archived owner, so its next remark starts another session';
     if (sessionUrl === null) {
-      deps.log('dispatch-relink', { level: 'error', pr, sessionUrl, error: 'the launcher printed no session link', reason });
+      deps.log('dispatch-relink', { level: 'error', pr, sessionUrl, error: 'the launcher printed no session link', reason: 'the PR body still names the archived owner, so its next remark after the takeover record expires starts another session' });
       return false;
     }
     try {

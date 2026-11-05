@@ -464,6 +464,14 @@ describe('deliver — with a fallback', () => {
     const closed = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: false }) } });
     await closed.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
     assert.deepEqual(closed.takeoverReads, []);
+    const moved = PR_BODY.replace('session_01OLD', 'session_01NEW');
+    const forwarded = fakes({
+      send: async (m) => (m.session === 'session_01OLD' ? archived(m) : accepted('session_01NEW')),
+      reader: { pull: async (n: number) => ({ number: n, body: moved, head: 'claude/branch-724', open: true, association: 'OWNER' }) },
+    });
+    const told = await forwarded.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: 'https://claude.ai/code/session_01NEW' });
+    assert.deepEqual(forwarded.takeoverReads, []);
   });
 
   test('a record that cannot be written is logged at error; the turn already fails on the relink', async () => {
