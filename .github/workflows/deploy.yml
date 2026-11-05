@@ -334,9 +334,9 @@ jobs:
 
       # The same script an operator runs; it exits with the task's exit code,
       # 1 when the runtime cannot hold a pseudo-terminal or find the CLI, and
-      # prints the task's log first. It runs on every invocation, and once
-      # the apply has put the new image in it runs whatever the steps
-      # between did: they touch the App, not the image, and a red one must
+      # prints the task's log first. It runs on a probe-only run and a full
+      # one alike, and once the apply has put the new image in it runs
+      # whatever the steps between did: they touch the App, not the image, and a red one must
       # not leave an image running that no probe has checked. The job stays
       # red for that step.
       - name: Probe the task
