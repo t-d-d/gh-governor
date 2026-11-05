@@ -12,6 +12,8 @@ import {
   isSessionPost,
   ownSessionPost,
   postedBy,
+  markOwnerUnknown,
+  ownerUnknownSince,
   relinkSession,
   sameSession,
   sessionNamedIn,
@@ -34,6 +36,70 @@ const FILER = 'https://claude.ai/code/session_01FILERBBB';
 const footer = `\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${OWNER}`;
 /** What an issue's footer subscribes its filer to with no line. */
 const FILER_EVENTS = SUBSCRIPTION_EVENTS.filter((event) => event !== 'labels' && event !== 'deploys');
+
+/**
+ * A takeover whose launch printed no session link leaves the archived
+ * owner's link in place, so routing is unchanged, and adds one line saying
+ * the PR's session is not known since when. The next relink removes it.
+ */
+describe('owner unknown', () => {
+  const AT = '2026-11-05T09:12:00.000Z';
+  const LATER = '2026-11-05T11:30:00.000Z';
+  const body = `The change.${footer}`;
+
+  test('the marker keeps the owner link, and is read back with its time', () => {
+    const marked = markOwnerUnknown(body, AT);
+    assert.equal(sessionNamedIn(marked), OWNER, 'routing still reaches the archived owner');
+    assert.equal(ownerUnknownSince(marked), AT);
+    assert.match(marked, /<!-- governor:owner-unknown 2026-11-05T09:12:00\.000Z -->$/m);
+    assert.match(marked, /no session link/, 'a person reading the PR sees why');
+    assert.equal(ownerUnknownSince(body), null);
+  });
+
+  test('marking again replaces the time; a relink removes the marker and names the new session', () => {
+    const twice = markOwnerUnknown(markOwnerUnknown(body, AT), LATER);
+    assert.equal(ownerUnknownSince(twice), LATER);
+    assert.equal(twice.match(/governor:owner-unknown/g)?.length, 1);
+    const relinked = relinkSession(twice, FILER);
+    assert.equal(relinked, body.replace(OWNER, FILER));
+    assert.equal(ownerUnknownSince(relinked), null);
+  });
+
+  test('an issue body ending in its link alone keeps that link its owner when marked', () => {
+    const issue = `Filed.\n${FILER}`;
+    const marked = markOwnerUnknown(issue, AT);
+    assert.equal(sessionNamedIn(marked), FILER);
+    assert.equal(ownerUnknownSince(marked), AT);
+  });
+
+  test('a marker above an owner link on the first line goes cleanly; the sentence comes before the comment, so GitHub renders it', () => {
+    const marked = markOwnerUnknown(OWNER, AT);
+    assert.equal(sessionNamedIn(marked), OWNER);
+    assert.equal(relinkSession(marked, FILER), FILER);
+    assert.match(marked, /^_Governor took this PR over/);
+    const types: string[] = [];
+    const walker = new commonmark.Parser().parse(marked).walker();
+    for (let step = walker.next(); step !== null; step = walker.next()) if (step.entering) types.push(step.node.type);
+    assert.ok(types.includes('emph') && !types.includes('html_block'), `the sentence renders as emphasis, not as a raw HTML block: ${types.join(' ')}`);
+  });
+
+  test('a body too long to read is not marked: nothing would read the line', () => {
+    assert.throws(() => markOwnerUnknown(`${'x'.repeat(2 * BODY_READ_LIMIT + 1)}${footer}`, AT), /too long/);
+  });
+
+  test('a body naming no owner is marked at its end', () => {
+    const marked = markOwnerUnknown('A person\'s PR.', AT);
+    assert.equal(ownerUnknownSince(marked), AT);
+    assert.equal(sessionNamedIn(marked), null);
+  });
+
+  test('a marker inside a quote, or one whose time does not parse, is not read', () => {
+    const marked = markOwnerUnknown(body, AT);
+    const quoted = `${marked.split('\n').map((l) => `> ${l}`).join('\n')}\n\nA reply.`;
+    assert.equal(ownerUnknownSince(quoted), null);
+    assert.equal(ownerUnknownSince(`${body}\n<!-- governor:owner-unknown yesterday -->`), null);
+  });
+});
 
 describe('subscribersFor', () => {
   test('a PR\'s footer is its owner, subscribed to every event; a line adds a subscriber to the events it names', () => {
