@@ -1969,7 +1969,10 @@ export const cliEnv = (env, home, account) => ({
  * `review#<repo>` / `<pr>`, put only over the item the review read, and
  * expired three months after its write: the review reads it back in place
  * of its comment's text, which a person can edit, and a lost one costs a
- * model call.
+ * model call. A ticket whose launch started nothing is the item
+ * `pickup-failed#<repo>` / `<issue>`, holding the time pickup holds it
+ * until, put after the launch over any earlier one, and expired at that
+ * time: a lost one lets one more launch go.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -1981,6 +1984,7 @@ export const dynamoState = (client, table) => {
   const periodicKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `periodic#${repo}` }, sk: { S: name } });
   const hookKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `hook#${repo}` }, sk: { S: name } });
   const sweepKey = (/** @type {string} */ repo) => ({ pk: { S: `pickup#${repo}` }, sk: { S: 'sweep' } });
+  const failedPk = (/** @type {string} */ repo) => ({ S: `pickup-failed#${repo}` });
   const waitPk = (/** @type {string} */ repo) => ({ S: `wait#${repo.toLowerCase()}` });
   const waitKey = (/** @type {string} */ repo, /** @type {number} */ issue) => ({ pk: waitPk(repo), sk: { S: String(issue) } });
   const unlinedPk = (/** @type {string} */ repo) => ({ S: `unlined#${repo.toLowerCase()}` });
@@ -2250,6 +2254,39 @@ export const dynamoState = (client, table) => {
         if (error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException') return false;
         throw error;
       }
+    },
+    failedLaunches: async (repo) => {
+      /** @type {Array<{ issue: number, until: string }>} */
+      const found = [];
+      /** @type {Record<string, any> | undefined} */
+      let after;
+      do {
+        const page = await client.send(new QueryCommand({
+          TableName: table,
+          KeyConditionExpression: 'pk = :pk',
+          ExpressionAttributeValues: { ':pk': failedPk(repo) },
+          ConsistentRead: true,
+          ...(after === undefined ? {} : { ExclusiveStartKey: after }),
+        }));
+        for (const item of page.Items ?? []) {
+          const issue = Number(item.sk?.S);
+          const until = item.until?.S;
+          // A malformed item is a failed read, never a missing one.
+          if (!Number.isSafeInteger(issue) || issue <= 0 || typeof until !== 'string' || Number.isNaN(Date.parse(until))) {
+            throw new Error(`the failed-launch item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
+          }
+          found.push({ issue, until });
+        }
+        after = page.LastEvaluatedKey;
+      } while (after !== undefined);
+      return found;
+    },
+    // A later failure moves the record on: the same put again, nothing to race.
+    recordFailedLaunch: async (repo, issue, until) => {
+      await client.send(new PutItemCommand({
+        TableName: table,
+        Item: { pk: failedPk(repo), sk: { S: String(issue) }, until: { S: until }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.ceil(Date.parse(until) / 1000)) } },
+      }));
     },
     advance: async (repo, workflow, label, { runId, commit, created }) => {
       try {
@@ -2528,6 +2565,8 @@ export const realDeps = () => {
         recordPeriodic: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         sweep: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordSweep: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        failedLaunches: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordFailedLaunch: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         hookSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordHookSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         record: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },

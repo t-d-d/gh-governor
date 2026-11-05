@@ -66,6 +66,7 @@ const context = (over: Record<string, unknown> = {}) => {
       return true;
     },
     state: {
+      failedLaunches: async () => [],
       hookSession: async (repo: string, name: string) => records.get(`${repo}#${name}`) ?? null,
       recordHookSession: async (repo: string, name: string, read: HookRecord | null, record: HookRecord) => {
         writes.push({ repo, name, read, record });
@@ -281,6 +282,28 @@ describe('planUnblocked: an unblocked fire\'s plan', () => {
     assert.deepEqual(sent, []);
   });
 
+  test('a ready ticket whose launch failed inside the hour plans nothing, and says why', async () => {
+    const until = new Date(NOW + 30 * 60 * 1000).toISOString();
+    const { ctx, logged } = ticketContext();
+    (ctx as any).state.failedLaunches = async () => [{ issue: 7, until }];
+    const plan = await planUnblocked(fire(), ctx) as any;
+    assert.deepEqual(plan.launches, []);
+    const said = logged.find((l: any) => l.event === 'dispatch-pickup' && l.issue === 7);
+    assert.equal(said?.outcome, 'skipped', JSON.stringify(logged));
+    assert.match(String(said?.reason), new RegExp(until));
+  });
+
+  test('a ready ticket held by its failed-launch record is said as held on the unblocked line, not as unselectable', async () => {
+    const until = new Date(NOW + 30 * 60 * 1000).toISOString();
+    const { ctx, logged } = ticketContext();
+    (ctx as any).state.failedLaunches = async () => [{ issue: 7, until }];
+    await planUnblocked(fire(), ctx);
+    const said = logged.filter((l: any) => l.event === 'dispatch-unblocked' && l.issue === 7);
+    assert.equal(said.length, 1, JSON.stringify(logged));
+    assert.equal(said[0]?.outcome, 'skipped');
+    assert.match(String(said[0]?.reason), new RegExp(until));
+  });
+
   test('a ticket not ready plans a spec session that claims nothing but holds its repo', async () => {
     const { ctx } = ticketContext({ labels: ['type: bug'] });
     const plan = await planUnblocked(fire(), ctx) as any;
@@ -355,7 +378,7 @@ describe('planSweep: the bare schedule fire\'s plan', () => {
   const WAITING = { number: 9, title: 'Issue 9', body: 'Blocked until: 2026-09-20', state: 'open', labels: ['type: bug'], wait: { until: '2026-09-20' }, openBlockers: 0, pull: false, association: 'MEMBER' };
 
   /** A bare fire's context over one served repo, its reader and its state, each overridable. */
-  const sweepContext = ({ waits = [] as Array<{ issue: number, until: string }>, over = {} as Record<string, unknown> } = {}) => {
+  const sweepContext = ({ waits = [] as Array<{ issue: number, until: string }>, failed = async () => [] as Array<{ issue: number, until: string }>, over = {} as Record<string, unknown> } = {}) => {
     const swept: Array<{ repo: string, at: string }> = [];
     const fired: Array<{ repo: string, name: string, read: unknown, record: unknown }> = [];
     const dropped: Array<{ repo: string, issue: number, until: string }> = [];
@@ -383,6 +406,7 @@ describe('planSweep: the bare schedule fire\'s plan', () => {
         recordPeriodic: async (repo: string, name: string, read: unknown, record: unknown) => { fired.push({ repo, name, read, record }); return true; },
         waits: async () => waits,
         dropWait: async (repo: string, issue: number, until: string) => { dropped.push({ repo, issue, until }); return true; },
+        failedLaunches: failed,
       },
       ...over,
     });
@@ -416,6 +440,48 @@ describe('planSweep: the bare schedule fire\'s plan', () => {
       started: undefined,
     });
     assert.deepEqual(plan.unread, []);
+  });
+
+  // A launch that started nothing puts the ticket's failed-launch record
+  // (dispatch/launch-plan.mjs). While it stands, pickup skips the ticket
+  // however its ready labels came back; a missing or lapsed one picks up.
+  test('a ticket whose failed-launch record stands is not planned, and the skip names the record', async () => {
+    const until = new Date(NOW + 30 * 60 * 1000).toISOString();
+    const { ctx, logged } = sweepContext({ failed: async () => [{ issue: 5, until }] });
+    const plan = await planSweep(fire, ctx) as any;
+    assert.deepEqual(plan.launches.filter((l: any) => l.issue === 5), []);
+    const said = logged.find((l: any) => l.event === 'dispatch-pickup' && l.issue === 5);
+    assert.equal(said?.outcome, 'skipped', JSON.stringify(logged));
+    assert.match(String(said?.reason), /started nothing/);
+    assert.match(String(said?.reason), new RegExp(until));
+  });
+
+  test('a lapsed failed-launch record holds nothing: the ticket is planned', async () => {
+    const { ctx } = sweepContext({ failed: async () => [{ issue: 5, until: new Date(NOW - 1).toISOString() }] });
+    const plan = await planSweep(fire, ctx) as any;
+    assert.deepEqual(plan.launches.filter((l: any) => l.issue === 5).map((l: any) => l.claim), [true]);
+  });
+
+  test('a label fire for a ticket whose failed-launch record stands starts nothing', async () => {
+    const { ctx, logged } = sweepContext({ failed: async () => [{ issue: 5, until: new Date(NOW + 60 * 1000).toISOString() }], over: { bare: false } });
+    const plan = await planSweep({ kind: 'schedule', issue: 5, label: SWEPT.labels.ready[0], repo: REPO } as never, ctx) as any;
+    assert.deepEqual(plan.launches, []);
+    assert.ok(logged.some((l: any) => l.event === 'dispatch-pickup' && l.issue === 5 && l.outcome === 'skipped'), JSON.stringify(logged));
+  });
+
+  test('failed-launch records that cannot be read refuse the repo\'s pickup in the bare fire, and fail the turn', async () => {
+    const { ctx, logged } = sweepContext({ failed: async () => { throw new Error('AccessDeniedException'); } });
+    const plan = await planSweep(fire, ctx) as any;
+    assert.deepEqual(plan.launches.filter((l: any) => l.claim), []);
+    const said = logged.find((l: any) => l.event === 'dispatch-pickup-unread');
+    assert.equal(said?.level, 'error', JSON.stringify(logged));
+    await plan.done({ dispatched: plan.launches.map((l: any) => ran(l, 'dispatched')), left: [] });
+    assert.ok(plan.unread.some((u: any) => u.repo === REPO && /AccessDeniedException/.test(u.error)), JSON.stringify(plan.unread));
+  });
+
+  test('a label fire whose failed-launch records cannot be read throws', async () => {
+    const { ctx } = sweepContext({ failed: async () => { throw new Error('AccessDeniedException'); }, over: { bare: false } });
+    await assert.rejects(planSweep({ kind: 'schedule', issue: 5, label: SWEPT.labels.ready[0], repo: REPO } as never, ctx), /AccessDeniedException/);
   });
 
   test('a periodic\'s started records the fire over the record read and adds its heartbeat line, and a failed launch writes neither', async () => {
