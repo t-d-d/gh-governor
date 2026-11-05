@@ -178,6 +178,22 @@ describe('at the close', () => {
     assert.match(said, /Blocked until: YYYY-MM-DD[\s\S]*delete/);
   });
 
+  test('a ticket another open issue still blocks is told so, and is not told the line alone frees it', async () => {
+    const f = fakeReader();
+    await relativeAtClose({ reader: f.reader, repo: REPO, ticket: ticketOf(f.state.body), fire: { ...fire, blocker: { ...blocker, reason: 'not_planned' } }, prompts: {}, now: NOW, log: logs().log, blocked: true });
+    assert.equal(f.comments.length, 1);
+    const said = f.comments[0]!.body;
+    assert.match(said, /#7 is still blocked by another open issue/);
+    assert.doesNotMatch(said, /to free it/);
+    assert.ok(said.includes(waitNotPlannedMarker('#143')), said);
+  });
+
+  test('a ticket no other open issue blocks is not told it is still blocked', async () => {
+    const f = fakeReader();
+    await relativeAtClose({ reader: f.reader, repo: REPO, ticket: ticketOf(f.state.body), fire: { ...fire, blocker: { ...blocker, reason: 'not_planned' } }, prompts: {}, now: NOW, log: logs().log });
+    assert.doesNotMatch(f.comments[0]!.body, /still blocked/);
+  });
+
   test('a second not-completed close finds the marker and says nothing', async () => {
     const f = fakeReader({ thread: [{ body: `Earlier.\n${waitNotPlannedMarker('#143')}` }] });
     const done = await relativeAtClose({ reader: f.reader, repo: REPO, ticket: ticketOf(f.state.body), fire: { ...fire, blocker: { ...blocker, reason: 'not_planned' } }, prompts: {}, now: NOW, log: logs().log });

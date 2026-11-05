@@ -88,14 +88,20 @@ export const planUnblocked = async (invocation, ctx) => {
     const status = statusOf(read);
     return status.open && status.holds.includes('line');
   };
+  /** Whether another open issue still blocks the ticket. @param {Parameters<typeof ticketStatus>[0]} read @param {Parameters<typeof ticketStatus>[1]['blockers']} [blockers] */
+  const stillBlocked = (read, blockers) => {
+    const status = statusOf(read, blockers);
+    return status.open && status.holds.includes('blocker');
+  };
   // A relative `Blocked until:` line on this close is settled first,
   // whatever the switches say: rewritten into its date, or, on a close
   // that was not completed, left with one comment that replaces the
   // not-planned row's (dispatch/waits.mjs). Only a ticket ready or not
   // ready by its labels is then held; a claimed or excluded one takes its
   // own row, so a claimed ticket's session still hears the close.
-  const settleRelative = (/** @type {{ state: string, labels: readonly string[], wait?: import('../scripts/lib/ready-work.mjs').Wait }} */ read) =>
-    relativeAtClose({ reader, repo, ticket: read, fire: invocation, prompts: ctx.prompts, now: ctx.now(), log: ctx.log, holds: lineHolds(read) });
+  /** @param {Parameters<typeof ticketStatus>[0]} read @param {Parameters<typeof ticketStatus>[1]['blockers']} [blockers] */
+  const settleRelative = (read, blockers) =>
+    relativeAtClose({ reader, repo, ticket: read, fire: invocation, prompts: ctx.prompts, now: ctx.now(), log: ctx.log, holds: lineHolds(read), blocked: stillBlocked(read, blockers) });
   if (!turnsOn(config, 'pickup') && !turnsOn(config, 'unblocked')) {
     const settled = await settleRelative(await reader.ticket(issue));
     const why = `${repo}'s ${CONFIG_PATH} turns neither pickup nor unblocked on`;
@@ -105,7 +111,7 @@ export const planUnblocked = async (invocation, ctx) => {
   const read = await readUnblocked(reader, issue, ctx.sleep, statusOf);
   const { blockers, reads } = read;
   let { ticket } = read;
-  const settled = await settleRelative(ticket);
+  const settled = await settleRelative(ticket, blockers);
   // A line changed since the ticket's read is no longer this close's: the
   // ticket is read again and takes its row as it now stands.
   const changed = settled?.outcome === 'line changed';

@@ -8456,7 +8456,7 @@ describe('run: a relative wait on a declared blocker', () => {
   const UNTIL = new Date(Date.parse(CLOSED_AT) + 4 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const blocker = { repo: REPO, number: 41, title: 'The parser', reason: 'completed', closedAt: CLOSED_AT };
   const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, ...over });
-  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>>, thread = [] as Array<{ body: string }> } = {}) => {
+  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, openBlockers = 0, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>>, thread = [] as Array<{ body: string }> } = {}) => {
     const asked: string[] = [];
     const file = JSON.parse(FACTORY_FILE);
     file.features = { ...file.features, ...features };
@@ -8469,7 +8469,7 @@ describe('run: a relative wait on a declared blocker', () => {
         readyIssues: async () => rows,
         ticket: async (n: number) => {
           asked.push(`ticket ${n}`);
-          return { number: n, title: `Issue ${n}`, body: state.body, state: 'open', labels, pull: false, association: 'MEMBER', openBlockers: 0, ...waitOf(state.body) };
+          return { number: n, title: `Issue ${n}`, body: state.body, state: 'open', labels, pull: false, association: 'MEMBER', openBlockers, ...waitOf(state.body) };
         },
         issue: async (n: number) => ({ number: n, body: state.body, pull: false }),
         updateIssue: async (n: number, { body: next }: { body: string }) => { h.issueEdits.push({ issue: n, body: next }); state.body = next; },
@@ -8501,6 +8501,16 @@ describe('run: a relative wait on a declared blocker', () => {
     assert.deepEqual(h.calls.filter((c) => c.startsWith('label ')), []);
     assert.deepEqual([h.launches, h.messages], [[], []]);
     assert.notEqual(result.row, 'not-planned');
+  });
+
+  test('a close that is not completed, on a ticket another open issue still blocks: the line\'s comment says so', async () => {
+    for (const labels of [READY, ['workflow: under development']]) {
+      const h = relativeTurn({ labels, openBlockers: 1 });
+      await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never);
+      assert.equal(h.comments.length, 1, JSON.stringify(h.comments));
+      assert.ok(h.comments[0]!.body.includes(waitNotPlannedMarker('#41')));
+      assert.match(h.comments[0]!.body, /#7 is still blocked by another open issue/, labels.join());
+    }
   });
 
   // The line holds only a ticket ready or not ready by its labels. A claimed
