@@ -53,15 +53,14 @@ served repos have their owner merge, so a pass there must not merge.
   status check red on the head is test 8, for the author session's push. A
   check `requireChecks` lists is read as a required one.
   Where the file names `workflows.ci` and `review.waitForCi` is not
-  `false`, test 8 also reads the latest run of
-  that workflow at the head, from the Actions API: one ended red, by the
-  conclusions a red check has, fails it the same way, naming the file; one
-  not finished, or none at the head, skips the review as an unfinished
-  required check does; one ended green or skipped passes. No other
-  workflow's run, and no CI run at another commit, counts. Where `waitForCi` is `false`, the
-  review reads no workflow runs: the repo's CI runs only after the merge,
-  and has no run at a PR's head. A required check
-  not finished skips the review with no comment, and the check's end queues
+  `false`, test 8 also reads the latest run of that workflow at the head,
+  from the Actions API: one ended red, by the conclusions a red check has,
+  fails it the same way, naming the file; one not finished, or none at the
+  head, skips the review as an unfinished required check does; one ended
+  green or skipped passes. No other workflow's run, and no CI run at
+  another commit, counts. Where `waitForCi` is `false`, the review reads no
+  workflow runs: the repo's CI runs only after the merge, and has no run at
+  a PR's head. A required check not finished skips the review with no comment, and the check's end queues
   it again: a `check_run` completed, not from governor's own App, or a
   `status` that ended, at the head, or a `workflow_run` completed for the CI
   run. Each queues a fire carrying the commit and no PR, and the task
@@ -89,7 +88,7 @@ served repos have their owner merge, so a pass there must not merge.
   it read: `success` for a pass, `failure` for a conflict and for any fail
   the author session meets by an edit, a claim or a push, and `neutral`
   where only a person can act. A required check, or the CI run at the
-  head, not finished posts it `in_progress`, an author `trust.review`
+  head where test 8 reads it, not finished posts it `in_progress`, an author `trust.review`
   leaves out gets `neutral`, and a review that does not finish gets
   `failure`, saying why. So does a PR a review of every open PR ran out of
   time before it reached, after the same skips as a review: past the
@@ -108,7 +107,8 @@ served repos have their owner merge, so a pass there must not merge.
   carries the fallback that hands a gone session's PR to a fresh one.
 - The review never runs code from the served repo. A check settings cannot
   express belongs in the repo's own CI, which the review reads as a required
-  status check, and as its `workflows.ci` run at the head.
+  status check, and, unless `review.waitForCi` is `false`, as its
+  `workflows.ci` run at the head.
 
 - The ticket reviews (dispatch/ticket-review.mjs) run where the repo's
   file turns `ticketReviews` on, from its `ticketReviews` list. An issue

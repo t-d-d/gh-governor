@@ -31,8 +31,8 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   merge.
 - **No run but the PR's own CI run at its head holds a merge.** Where the
   file names `ci`, turns `prReview` on and does not set `review.waitForCi`
-  to `false`, the latest run of that workflow at the PR's head is test 8's, as a required check is
-  (dispatcher-review.md). A deploy, or any other run, holds no merge: the
+  to `false`, the latest run of that workflow at the PR's head is test 8's,
+  as a required check is (dispatcher-review.md). A deploy, or any other run, holds no merge: the
   review merges a pass whatever else is running.
 - **The receiver forwards, from every served repo:**
   - a completed red run on the default branch;

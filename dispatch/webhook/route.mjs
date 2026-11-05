@@ -424,8 +424,9 @@ const headReview = (sha, reason) => one({ fire: build.review({ headSha: sha }), 
 /**
  * A run that finished off the default branch: a review of the commit it ran
  * on ({@link headReview}), whether or not its payload lists a PR. Where the
- * file names `workflows.ci`, the review waits for that run itself to be
- * marked complete, which only this event reports.
+ * file names `workflows.ci` and `review.waitForCi` is not false, the review
+ * waits for that run itself to be marked complete, which only this event
+ * reports.
  *
  * @param {any} payload
  * @param {string} main The repo's default branch.

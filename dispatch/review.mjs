@@ -319,7 +319,7 @@ const bumpAnswer = async (reader, pull, list, red, redCi) => {
  *   ci?: string,
  *   outOfTime?: boolean,
  *   byCommit?: boolean,
- * }} args `review.checklist`: the checklist the model reads, part of the digest a pass is reused by. `started`: whether governor started a session, from its state table. `trusted`: the repo's `trust.review`, whose authors' PRs it reads. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads.
+ * }} args `review.checklist`: the checklist the model reads, part of the digest a pass is reused by. `started`: whether governor started a session, from its state table. `trusted`: the repo's `trust.review`, whose authors' PRs it reads. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads, left out where `review.waitForCi` is false.
  *   `outOfTime`: the turn ran out of time for this PR. It goes through the
  *   usual skips, then posts a `failure` check in place of reading the facts
  *   and asking the model. `byCommit`: the fire carried the commit and not
