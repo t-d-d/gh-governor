@@ -6789,6 +6789,17 @@ describe('run — a PR whose body names no session', () => {
       assert.equal(exitCodeFor(result as never), 1);
     });
 
+    test('a branch lookup that fails after the linked owner answers archived starts nothing and fails the turn', async () => {
+      const LINKED = `${UNNAMED}\n\nhttps://claude.ai/code/session_01OLD`;
+      const failing = { list: async () => { throw new Error('GET /v1/code/sessions: 503'); }, get: async () => null };
+      const h = withFile(FACTORY_FILE, failing, { pull: async (n: number) => ({ number: n, body: LINKED, head: BRANCH, defaultBranch: 'main', open: true, association: 'OWNER' }) }, {
+        message: async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }),
+      });
+      const result = await run(summonsOn('COLLABORATOR'), h.deps as never);
+      assert.deepEqual(h.launches, [], 'nothing starts beside a session on the branch that may be live');
+      assert.equal(exitCodeFor(result as never), 1);
+    });
+
     test('with no live session on its head branch, the remark gets the trust.task refusal comment', async () => {
       const h = withFile(ownerTask, sessionsApi([]).sessions);
       await run(summonsOn(), h.deps as never);

@@ -161,7 +161,10 @@ const toOwner = async ({ repo, on, writer, prompt }, ctx) => {
   /** @type {import('./deliveries.mjs').Delivery} */
   let told;
   try {
-    told = await ctx.delivery().deliver({ pr: on }, ownerText(prompt), { source: GITHUB_SOURCE, on: [on] });
+    // Strict: a branch lookup that fails after a linked owner answers
+    // archived fails the delivery, so no fresh session starts beside a
+    // session that may be live.
+    told = await ctx.delivery().deliver({ pr: on }, ownerText(prompt), { source: GITHUB_SOURCE, on: [on], strict: true });
   } catch (error) {
     await ctx.storeLogin();
     throw error;
@@ -203,7 +206,11 @@ export const planDispatch = async (invocation, ctx) => {
     }
     if (owned.kind === 'told') {
       const { told } = owned;
-      ctx.log('dispatch-launch', { ...(told.error === null ? { level: 'info' } : {}), repo, issue: on, outcome: told.ok || told.fallback?.outcome === 'forwarded' ? 'forwarded' : 'not forwarded', sessionUrl: told.sessionUrl, ...(told.error === null ? {} : { error: told.error }), reason: 'a summons on a PR a live session owns: it went to that session, and no fresh session starts' });
+      // A linked owner that answered archived and handed it on: the session
+      // on the branch took it, and the refusal is no error.
+      const handed = !told.ok && told.fallback?.outcome === 'forwarded';
+      const error = told.ok || handed ? null : told.error;
+      ctx.log('dispatch-launch', { ...(error === null ? { level: 'info' } : {}), repo, issue: on, outcome: told.ok || handed ? 'forwarded' : 'not forwarded', sessionUrl: handed ? told.fallback?.sessionUrl : told.sessionUrl, ...(error === null ? {} : { error }), reason: 'a summons on a PR a live session owns: it went to that session, and no fresh session starts' });
       return { launches: [], unread: [], result: { messaged: told } };
     }
   }

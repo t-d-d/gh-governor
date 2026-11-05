@@ -805,7 +805,7 @@ describe('deliver — to the owner of a PR', () => {
   });
 
   test('a link write GitHub refuses is logged, and the message still counts as delivered', async () => {
-    const f = fakes({ reader: unnamed({ updatePull: async () => { throw new Error('PATCH /pulls/4492 failed: 422'); } }), sessions: holding({ [BRANCH]: LOCAL }) });
+    const f = fakes({ reader: unnamed({ updatePull: async () => { throw new Error(`PATCH /pulls/${PR} failed: 422`); } }), sessions: holding({ [BRANCH]: LOCAL }) });
     const told = await f.deliver({ pr: PR }, 'Why?', { on: [PR] });
     assert.equal(told.ok, true);
     assert.ok(f.logged.some((l) => l.event === 'dispatch-relink' && /422/.test(String(l.error))), JSON.stringify(f.logged));
@@ -935,7 +935,7 @@ describe('deliver — to the owner of a PR', () => {
  * archived hands the message to the branch's session, which the body is
  * relinked to, and nothing fresh starts.
  */
-describe('deliver — a PR whose body links an archived session', () => {
+describe('deliver: a PR whose body links an archived session', () => {
   const BRANCH = 'claude/branch-724';
   const OLD = 'https://claude.ai/code/session_01OLD';
   const LIVE = 'https://claude.ai/code/session_01LIVE';
@@ -980,6 +980,20 @@ describe('deliver — a PR whose body links an archived session', () => {
     assert.equal(f.launches.length, 1);
     assert.equal(f.launches[0]!.branch, BRANCH);
     assert.deepEqual(told.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
+  });
+
+  test('a push the branch\'s session wrote is not handed to it when the linked owner answers archived', async () => {
+    const SHA = 'c'.repeat(40);
+    const f = fakes({ send: goneOld, reader: reader({ commit: async (sha: string) => ({ sha, message: `Fix\n\nClaude-Session: ${LIVE}` }) }), sessions: onBranch({ [BRANCH]: LIVE }) });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'A push.', { owns: [PR], on: [PR], commit: SHA });
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD']);
+    assert.equal(told.fallback, null);
+  });
+
+  test('with strict, a branch lookup that fails after the owner answers archived fails the delivery', async () => {
+    const f = fakes({ send: archived, reader: reader(), sessions: () => async () => { throw new Error('GET /v1/code/sessions: 503'); } });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'Why?', { owns: [PR], on: [PR], strict: true });
+    assert.deepEqual(told.fallback, { outcome: 'failed', sessionUrl: null });
   });
 
   test('with no live session on the branch, an event with no fallback reaches nobody', async () => {

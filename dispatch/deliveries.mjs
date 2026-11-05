@@ -303,6 +303,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   dropFrom?: number[],
  *   commit?: string | undefined,
  *   owns?: number[],
+ *   strict?: boolean,
  * }} DeliverOptions
  *   `source`: where the text comes from, which names the line it opens
  *   with; a fallback's prompt opens with the same line. `fallback`: what a
@@ -322,7 +323,10 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   PRs the session is told of as their owner. Should it answer archived,
  *   the live session on each one's head branch is sent the message instead
  *   and named in its body, before any fallback starts; a takeover's PR and
- *   a recipient's PR count without being named here.
+ *   a recipient's PR count without being named here. `strict`: with no
+ *   fallback, a lookup of that branch session that fails fails the
+ *   delivery rather than reaching nobody, for a caller that would start a
+ *   session of its own where nobody took the message.
  *
  * @typedef {{
  *   ok: boolean,
@@ -520,24 +524,25 @@ export const deliveries = (deps) => {
   };
 
   /**
-   * After `refused` (and any of `also`) answered archived, the live
-   * session on each of `owns`' head branches, sent `text`: step 2 of the
-   * owner lookup. Each session found that took it is written into its PRs'
-   * bodies. Null where no PR's branch holds a live session, or every one
-   * found refused too. A send that failed any other way is `failed`. A
-   * lookup that fails is `failed` too where a fallback would start beside
-   * a session that may be live (`strict`), and otherwise reaches nobody;
-   * either way it is logged with the error.
+   * After each of `refused` answered archived, the live session on each of
+   * `owns`' head branches, sent `text`: step 2 of the owner lookup. Each
+   * session found that took it is written into its PRs' bodies. A session
+   * whose own push `commit` is is not told it. Null where no PR's branch
+   * holds a live session, or every one found refused too or wrote the push.
+   * A send that failed any other way is `failed`. A lookup that fails is
+   * `failed` too where something would start beside a session that may be
+   * live (`strict`), and otherwise reaches nobody; either way it is logged
+   * with the error.
    *
    * @param {number[]} owns
    * @param {string[]} refused
    * @param {string} text
    * @param {{ exclude: number[], closing: boolean, source: MessageSource }} about
    * @param {number} until
-   * @param {boolean} strict
+   * @param {{ strict: boolean, commit?: string | undefined }} how
    * @returns {Promise<{ outcome: 'forwarded' | 'failed', sessionUrl: string | null, error?: string } | null>}
    */
-  const toBranchOwners = async (owns, refused, text, about, until, strict) => {
+  const toBranchOwners = async (owns, refused, text, about, until, { strict, commit }) => {
     /** @type {Map<string, { session: string, prs: number[] }>} */
     const found = new Map();
     try {
@@ -556,16 +561,20 @@ export const deliveries = (deps) => {
       deps.log('dispatch-message', { level: strict ? 'error' : 'warn', session: refused[0], owns, error: why });
       return strict ? { outcome: 'failed', sessionUrl: null, error: why } : null;
     }
-    /** @type {{ outcome: 'forwarded' | 'failed', sessionUrl: string | null } | null} */
+    /** @type {{ outcome: 'forwarded' | 'failed', sessionUrl: string | null, error?: string } | null} */
     let passed = null;
     for (const { session, prs } of found.values()) {
+      if (commit !== undefined && await ownCommit(session, commit)) {
+        deps.log('dispatch-message', { session, onBranch: true, owns: prs, skipped: `its own push, ${commit.slice(0, 12)}` });
+        continue;
+      }
       const handed = await send(session, text, about, until);
       deps.log('dispatch-message', { ...(refusedBy(handed) ? { level: 'info' } : {}), session, onBranch: true, owns: prs, ok: handed.ok, sessionUrl: handed.sessionUrl, error: handed.error, status: handed.status });
       if (handed.ok) {
         for (const n of prs) await nameOwner(n, session);
         passed ??= { outcome: 'forwarded', sessionUrl: session };
       } else if (!refusedBy(handed)) {
-        passed = { outcome: 'failed', sessionUrl: null };
+        passed = { outcome: 'failed', sessionUrl: null, error: `the live session ${session} on the head branch did not take it: ${handed.error ?? 'no answer'}` };
       }
     }
     return passed;
@@ -654,10 +663,10 @@ export const deliveries = (deps) => {
    * @param {string} session
    * @param {string} text
    * @param {import('./webhook/fire.mjs').Fallback | undefined} withFallback
-   * @param {{ source: MessageSource, takeover: boolean, spec: boolean, on: number[], closing: boolean, dropFrom: number[], owns: number[] }} how
+   * @param {{ source: MessageSource, takeover: boolean, spec: boolean, on: number[], closing: boolean, dropFrom: number[], owns: number[], strict: boolean, commit: string | undefined }} how
    * @returns {Promise<Omit<Delivery, 'skipped'> & { answered: boolean }>}
    */
-  const toSession = async (session, text, withFallback, { source, takeover, spec, on, closing, dropFrom, owns }) => {
+  const toSession = async (session, text, withFallback, { source, takeover, spec, on, closing, dropFrom, owns, strict, commit }) => {
     const about = { exclude: on, closing, source };
     const until = deps.now() + DELIVER_LAUNCHES * (deps.launchTimeoutMs ?? Infinity);
     const sent = await send(session, text, about, until);
@@ -682,8 +691,11 @@ export const deliveries = (deps) => {
     // session on each one's head branch before anything starts.
     const owned = [...new Set([...owns, ...(takeover && withFallback?.issue !== undefined ? [withFallback.issue] : [])])];
     if (refused && !withFallback && owned.length > 0) {
-      fallback = await toBranchOwners(owned, [session], text, about, until, false);
-      if (fallback !== null) deps.log('dispatch-message-fallback', { session, owns: owned, ...fallback });
+      const passed = await toBranchOwners(owned, [session], text, about, until, { strict, commit });
+      if (passed !== null) {
+        fallback = { outcome: passed.outcome, sessionUrl: passed.sessionUrl };
+        deps.log('dispatch-message-fallback', { session, owns: owned, ...passed });
+      }
     }
     if (refused && withFallback) {
       const { issue, prompt } = withFallback;
@@ -733,7 +745,7 @@ export const deliveries = (deps) => {
       // branch takes it, and nothing fresh starts. A lookup that fails
       // starts nothing beside a session that may be live.
       if (fallback === null && !closed && owned.length > 0) {
-        const passed = await toBranchOwners(owned, gone, text, about, until, true);
+        const passed = await toBranchOwners(owned, gone, text, about, until, { strict: true, commit });
         if (passed !== null) {
           fallback = { outcome: passed.outcome, sessionUrl: passed.sessionUrl };
           if (passed.error !== undefined) reason = passed.error;
@@ -764,7 +776,7 @@ export const deliveries = (deps) => {
   };
 
   /** @type {Deliveries['deliver']} */
-  const deliver = async (to, text, { source, fallback, takeover = false, spec = false, on = [], closing = false, dropFrom = [], commit, owns = [] }) => {
+  const deliver = async (to, text, { source, fallback, takeover = false, spec = false, on = [], closing = false, dropFrom = [], commit, owns = [], strict = false }) => {
     // Before anything is read or sent: a message with no source is refused.
     relayLabel(source);
     /** @type {Delivery} */
@@ -806,7 +818,7 @@ export const deliveries = (deps) => {
       deps.log('dispatch-message', { session, skipped });
       return { ...nobody, skipped };
     }
-    const told = await toSession(session, text, fallback, { source, takeover, spec, on, closing, dropFrom, owns: owning });
+    const told = await toSession(session, text, fallback, { source, takeover, spec, on, closing, dropFrom, owns: owning, strict, commit });
     if (told.ok && toName !== null) await nameOwner(toName, session);
     return { ...told, skipped: null };
   };
