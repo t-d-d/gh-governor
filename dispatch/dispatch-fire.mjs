@@ -101,8 +101,8 @@ const unstartedSummons = async ({ repo, on, writer, assigner }, ctx) => {
  *
  * @param {string} prompt
  */
-export const branchOwnerText = (prompt) => [
-  'This remark summoned a fresh session on your pull request, but the repo\'s trust.task does not let its author\'s work start one, so it comes to you, the live session on its head branch.',
+const branchOwnerText = (prompt) => [
+  'This remark summoned a fresh session on your pull request, but the repo\'s trust.task leaves out the pull request\'s author, so no fresh session starts and the remark comes to you, the live session on its head branch.',
   '',
   prompt.endsWith(`\n${UNATTENDED}`) ? prompt.slice(0, -UNATTENDED.length - 1) : prompt,
 ].join('\n');
@@ -115,7 +115,9 @@ export const branchOwnerText = (prompt) => [
  * receiver queues a summons on a PR only where the PR's body names no
  * session, and the delivery reads the body again. A writer the fire does not
  * name is let in nowhere. A read that fails reaches nobody, and the
- * refusal is posted as ever.
+ * refusal is posted as ever. A send that throws stores a login the CLI
+ * refreshed before the turn fails, as a hook's or an unblocked fire's
+ * send does: the turn's own store-back runs only after the plan.
  *
  * @param {{ repo: string, on: number, writer?: string | undefined, prompt: string }} summons
  * @param {import('./turn.mjs').TurnContext} ctx
@@ -130,7 +132,12 @@ const toBranchOwner = async ({ repo, on, writer, prompt }, ctx) => {
     ctx.log('dispatch-launch', { level: 'warn', repo, issue: on, error: `could not read whether #${on} is a PR, so its head branch's session is not told: ${messageOf(error)}` });
     return null;
   }
-  return ctx.delivery().deliver({ pr: on }, branchOwnerText(prompt), { source: GITHUB_SOURCE, on: [on] });
+  try {
+    return await ctx.delivery().deliver({ pr: on }, branchOwnerText(prompt), { source: GITHUB_SOURCE, on: [on] });
+  } catch (error) {
+    await ctx.storeLogin();
+    throw error;
+  }
 };
 
 /**

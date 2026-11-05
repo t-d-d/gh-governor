@@ -6365,8 +6365,8 @@ describe('run — a PR whose body names no session', () => {
       return found[0]!;
     };
     /** A harness whose reader reads the PR as unnamedReader does, and records its comments in the harness. */
-    const withFile = (file: string, sessions: unknown, over: Record<string, unknown> = {}) => {
-      const h = harness({ sessions, configFile: async (repo: string) => (repo === REPO ? file : null) });
+    const withFile = (file: string, sessions: unknown, over: Record<string, unknown> = {}, deps: Record<string, unknown> = {}) => {
+      const h = harness({ ...deps, sessions, configFile: async (repo: string) => (repo === REPO ? file : null) });
       const reader = h.deps.reader as (...a: unknown[]) => Record<string, unknown>;
       const unnamed = unnamedReader(over)();
       h.deps.reader = ((...a: unknown[]) => ({ ...reader(...a), pull: unnamed.pull, issue: unnamed.issue, openPulls: unnamed.openPulls })) as never;
@@ -6410,6 +6410,19 @@ describe('run — a PR whose body names no session', () => {
       await run(summonsOn(), h.deps as never);
       assert.deepEqual(h.messages, []);
       assert.equal(h.comments.filter((c) => c.issue === PR).length, 1, JSON.stringify(h.comments));
+    });
+
+    test('a send to the session on its head branch that throws after the CLI refreshed the login fails the turn with the login stored', async () => {
+      let refresh = (_t: string) => {};
+      const h = withFile(ownerTask, sessionsApi([local], onBranch).sessions, {}, {
+        message: async () => {
+          refresh(REFRESHED);
+          throw new Error('the message CLI could not be spawned');
+        },
+      });
+      refresh = h.setLoginOnDisk;
+      await assert.rejects(run(summonsOn(), h.deps as never), /could not be spawned/);
+      assert.deepEqual(h.stored, [SECRET_REFRESHED]);
     });
 
     test('on an issue, the refusal is posted and no head branch is looked for', async () => {
