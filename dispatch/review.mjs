@@ -38,7 +38,9 @@
  *   check the settings cannot express is the repo's CI, never its code run
  *   here. Where the repo's file names `workflows.ci`, the latest run of that
  *   workflow at the head counts too, as a required check does: a repo whose
- *   plan cannot require a check still holds a pass for its CI.
+ *   plan cannot require a check still holds a pass for its CI. A repo whose
+ *   CI runs only after the merge sets `review.waitForCi` false, and the
+ *   turn then passes no `ci`.
  * - A Dependabot PR is answered in code by the repo's Dependabot list
  *   (`dependabotAnswer`), not the checklist, and passes like any.
  *   Its conflict is no comment: Dependabot rebases its own PRs, and the
@@ -317,7 +319,7 @@ const bumpAnswer = async (reader, pull, list, red, redCi) => {
  *   ci?: string,
  *   outOfTime?: boolean,
  *   byCommit?: boolean,
- * }} args `review.checklist`: the checklist the model reads, part of the digest a pass is reused by. `started`: whether governor started a session, from its state table. `trusted`: the repo's `trust.review`, whose authors' PRs it reads. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads.
+ * }} args `review.checklist`: the checklist the model reads, part of the digest a pass is reused by. `started`: whether governor started a session, from its state table. `trusted`: the repo's `trust.review`, whose authors' PRs it reads. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads, left out where `review.waitForCi` is false.
  *   `outOfTime`: the turn ran out of time for this PR. It goes through the
  *   usual skips, then posts a `failure` check in place of reading the facts
  *   and asking the model. `byCommit`: the fire carried the commit and not

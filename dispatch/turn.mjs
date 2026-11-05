@@ -1445,7 +1445,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           break;
         }
         const outOfTime = spentMs > REVIEW_WINDOW_MS;
-        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, trusted, outOfTime, ...(workflows.ci === undefined ? {} : { ci: workflows.ci }) });
+        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, trusted, outOfTime, ...(workflows.ci === undefined || !review.waitForCi ? {} : { ci: workflows.ci }) });
         const usage = spent.get(reviewed.pr);
         deps.log('dispatch-review', { ...reviewed, ...(usage === undefined ? {} : { usage }) });
         reviews.push(reviewed);

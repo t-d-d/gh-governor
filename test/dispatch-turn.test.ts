@@ -8038,6 +8038,16 @@ describe('fitness: a served repo\'s red CI reaches its merges\' sessions (dispat
     assert.ok(h.cursors.has(cursorKey('gate.yml', null, TDD)), `the cursor carries the repo: ${[...h.cursors.keys()].join(', ')}`);
   });
 
+  test('a repo whose review does not wait for CI still tells the merge\'s session of a red CI run', async () => {
+    const fire = parseFire(routeEvent({ event: 'workflow_run', payload, owners: ['acme', 't-d-d'] }).fires[0]!.fire);
+    const opened = JSON.parse(fileWith({ ci: GATE }));
+    const file = JSON.stringify({ ...opened, features: { ...opened.features, prReview: true }, review: { checklist: 'Pass it.', merge: false, waitForCi: false } });
+    const h = turnFor(file);
+    const r = await run(fire, h.deps as never) as { reason: string | null };
+    assert.equal(h.messages.length, 1, `${r.reason}: ${JSON.stringify(h.logged)}`);
+    assert.match(h.messages[0]!.text, /Gate on trunk failed after your pull request merged/);
+  });
+
   test('with no `ci` in its file, no run is CI: the task refuses the run, and tells nobody', async () => {
     const fire = parseFire(routeEvent({ event: 'workflow_run', payload, owners: ['acme', 't-d-d'] }).fires[0]!.fire);
     const h = turnFor(fileWith());

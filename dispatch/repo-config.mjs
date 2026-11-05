@@ -189,7 +189,8 @@ const ticketRule = z.strictObject({
  * first line, `Constraint now lives at <path>, …`, decides the quoted files
  * it names, so they pass unread; `dependabot`, the manifests a Dependabot PR may
  * change; `requireChecks`, the checks the review requires beside those
- * GitHub requires; `merge`, whether a pass merges. Settings, never code: a check
+ * GitHub requires; `waitForCi`, whether test 8 reads the `workflows.ci`
+ * run at the head; `merge`, whether a pass merges. Settings, never code: a check
  * they cannot express is the repo's CI, read as a required status check.
  */
 const reviewSchema = z.strictObject({
@@ -207,6 +208,7 @@ const reviewSchema = z.strictObject({
   decides: z.array(label).default([]).meta({ description: 'Labels of a ticket that may decide a quoted file\'s change: its body\'s first line, `Constraint now lives at <path>, …`, names the files it decides, which then pass unread. Default none.' }),
   dependabot: z.array(glob).default([]).meta({ description: 'Globs of the manifests a Dependabot PR may change and pass with no model. Default none.' }),
   requireChecks: z.array(z.string().trim().min(1)).default([]).meta({ description: 'Names of check runs and commit status contexts the review treats as required, beside any the default branch requires on GitHub. One red on the PR\'s head fails the review for a push; one not finished, or not posted, holds the review with `governor` in progress until it ends. A name GitHub also requires counts once, and the review\'s own `governor` check is left out. Default none.' }),
+  waitForCi: z.boolean().default(true).meta({ description: 'Whether the review waits for the `workflows.ci` run at the PR\'s head: one red fails it for a push, one not finished, or none at the head, holds it with `governor` in progress. Set it false where the CI workflow does not run on pull requests, such as one that runs only on a push to the default branch; the review then reads no workflow runs, and still reads the required checks and `requireChecks`. A red CI run on the default branch still drives `ciMessages`. Default true.' }),
   merge: z.boolean().default(true).meta({ description: 'Whether a pass merges the PR. With false, a pass posts its comment and a success check, and the owner merges. Default true.' }),
 });
 
@@ -568,6 +570,7 @@ export const configSchema = z.strictObject({
  *   decides: string[],
  *   dependabot: string[],
  *   requireChecks: string[],
+ *   waitForCi: boolean,
  *   merge: boolean,
  * }} Review The PR review's settings, its checklist read.
  * @typedef {{ file: string }} PromptFile
