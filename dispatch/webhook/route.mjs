@@ -803,8 +803,9 @@ export const receiverRelay = (relay) => [...new Set([...SUMMONERS, ...(relay ?? 
 
 /**
  * A delivery routed under the repo's item in the hook table, less the fires
- * the item drops. It is first routed under every trust value: a delivery
- * that queues nothing then queues nothing under any list, short of a
+ * the item drops. It is first routed under every trust value, reading
+ * every body, and where that queues nothing, reading none: a delivery
+ * that queues nothing both ways queues nothing under any list, short of a
  * session's own post on a stranger's PR naming that session, and reads no
  * item. Otherwise the item is read once, the delivery routed again under
  * the item's `trust.relay` ({@link receiverRelay}), a body read under that
@@ -822,7 +823,10 @@ export const receiverRelay = (relay) => [...new Set([...SUMMONERS, ...(relay ?? 
  */
 const judged = async (route, delivery, deps) => {
   const widest = route({ relay: TRUST_VALUES, bodies: TRUST_VALUES });
-  const repo = widest.fires[0]?.fire.repo;
+  // A body read under every list can turn a summons into a message the
+  // receiver refuses, so a delivery goes unread only where reading no body
+  // queues nothing either.
+  const repo = (widest.fires[0] ?? route({ relay: TRUST_VALUES, bodies: [] }).fires[0])?.fire.repo;
   if (repo === undefined) return widest;
   /** @type {import('./hook-table.mjs').Known | null} */
   let item;

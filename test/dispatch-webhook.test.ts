@@ -2409,6 +2409,25 @@ describe('fitness: only text from an author trust.relay lets in reaches a runnin
       assert.deepEqual(defaults.queued.map((q) => [(q.message.fire as Message).kind, (q.message.fire as Message).session]), [['message', OWNER]], 'at the defaults the member\'s body names its session');
     });
 
+    test('a mention the member\'s body would turn into a refused message still summons under an item whose relay is OWNER', async () => {
+      const memberPr = { ...sessionPr, number: 736, user: member, author_association: 'MEMBER' };
+      const quoting = commentEvent({ issue: memberPr }, { body: `@claude fix what this asks\n\n> ${reviewMarker('a'.repeat(40), 'b'.repeat(64))}`, ...owner });
+      const narrowed = await handled(quoting, item(['OWNER']));
+      assert.deepEqual(narrowed.queued.map((q) => (q.message.fire as Message).kind), ['dispatch'], narrowed.response.body);
+    });
+
+    test('a push to a member\'s PR whose body names a session reaches it at the defaults, and not under an item whose relay is OWNER', async () => {
+      const memberPr = { ...pullRequest, number: 737, user: member, author_association: 'MEMBER', body: `The change.${footer}`, head: { ref: 'claude/change', sha: 'c'.repeat(40) } };
+      const pushed = { action: 'synchronize', pull_request: memberPr, sender: member, before: 'a'.repeat(40), after: 'c'.repeat(40), repository: { full_name: REPO } };
+      const pushedTo = async (repoItem: () => Promise<unknown>) => {
+        const h = harness({ repoItem });
+        await handle(delivery('pull_request', pushed), h.deps as never);
+        return h.queued.map((q) => q.message.fire as Message).filter((f) => f.kind === 'message').map((f) => f.session);
+      };
+      assert.deepEqual(await pushedTo(item()), [OWNER]);
+      assert.deepEqual(await pushedTo(item(['OWNER'])), []);
+    });
+
     test('a delivery that queues nothing under any list reads no item', async () => {
       let reads = 0;
       await handled({ ...remark(owner), action: 'edited' }, async () => { reads += 1; return null; });
