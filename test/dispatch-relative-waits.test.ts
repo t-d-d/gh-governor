@@ -231,8 +231,6 @@ describe('the wait turn, under `waits`', () => {
     wait: async (_r: string, n: number) => (items.has(`${REPO}#${n}`) ? { until: items.get(`${REPO}#${n}`)! } : null),
     recordWait: async (_r: string, n: number, _read: string | null, until: string) => { items.set(`${REPO}#${n}`, until); return true; },
     dropWait: async (_r: string, n: number) => items.delete(`${REPO}#${n}`),
-    toldUnlined: async () => [],
-    recordUnlined: async () => {},
   });
 
   test('a relative line is not reported unreadable, keeps no item, and links a same-repo issue that is not linked', async () => {

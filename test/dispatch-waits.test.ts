@@ -18,7 +18,7 @@ import { waitOf } from '../scripts/lib/ready-work.mjs';
 import { dynamoState } from '../dispatch/turn.mjs';
 import { githubReader } from '../scripts/lib/github-app.mjs';
 import { PROMPTS } from '../dispatch/prompts.mjs';
-import { WAIT_ENDED_MARKER, WAIT_PROMPT, endedWaits, holdWait, waitEndedComment, waitEndedMarker, waitLinks, waitSpecPrompt } from '../dispatch/waits.mjs';
+import { WAIT_ENDED_MARKER, WAIT_PROMPT, endedWaits, holdWait, waitEndedComment, waitEndedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
 import { UNREADIED_MARKER } from '../scripts/lib/ready-work.mjs';
 
 const REPO = 'acme/factory';
@@ -211,34 +211,6 @@ describe('realDeps: a ticket\'s wait item', () => {
     const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
     await assert.rejects(failing.dropWait(REPO, 7, '2026-11-05'), /AccessDeniedException/);
   });
-
-  test('a told hand-linked ticket is put once under its own key, expires a month on, and is read back in one query', async () => {
-    const sent: Sent[] = [];
-    let refuse = false;
-    const client = { send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
-      sent.push({ name: command.constructor.name, input: command.input });
-      if (command.constructor.name === 'QueryCommand') return { Items: [{ pk: { S: 'unlined#acme/factory' }, sk: { S: '7' } }] };
-      if (refuse) throw conditional();
-      return {};
-    } };
-    const state = dynamoState(client as never, 'T');
-    const before = Math.floor(Date.now() / 1000);
-    await state.recordUnlined('Acme/Factory', 7);
-    assert.equal(sent[0]?.name, 'PutItemCommand');
-    assert.deepEqual([sent[0]?.input.Item.pk, sent[0]?.input.Item.sk], [{ S: 'unlined#acme/factory' }, { S: '7' }]);
-    assert.match(String(sent[0]?.input.ConditionExpression), /attribute_not_exists/);
-    const ttl = Number(sent[0]?.input.Item.ttl.N);
-    assert.ok(ttl >= before + 30 * 24 * 60 * 60 && ttl <= Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60, String(ttl));
-    refuse = true;
-    await state.recordUnlined(REPO, 7);
-    assert.deepEqual(await state.toldUnlined(REPO), [7]);
-    assert.equal(sent[2]?.input.ConsistentRead, true);
-    assert.deepEqual(sent[2]?.input.ExpressionAttributeValues, { ':pk': { S: 'unlined#acme/factory' } });
-    const malformed = dynamoState({ send: async () => ({ Items: [{ pk: { S: 'unlined#acme/factory' }, sk: { S: 'x' } }] }) } as never, 'T');
-    await assert.rejects(malformed.toldUnlined(REPO), /malformed/);
-    const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
-    await assert.rejects(failing.recordUnlined(REPO, 7), /AccessDeniedException/);
-  });
 });
 
 describe('a waiting ticket that is gone or moved', () => {
@@ -255,8 +227,6 @@ describe('a waiting ticket that is gone or moved', () => {
         wait: async () => ({ until: '2026-11-05' }),
         recordWait: async () => true,
         dropWait: async (repo: string, issue: number, read: string) => { dropped.push([repo, issue, read]); return true; },
-        toldUnlined: async () => [],
-        recordUnlined: async () => {},
       },
     };
   };
@@ -317,8 +287,6 @@ describe('a waiting ticket that is gone or moved', () => {
       wait: async () => ({ until: '2026-11-05' }),
       recordWait: async () => true,
       dropWait: async () => true,
-      toldUnlined: async () => [],
-      recordUnlined: async () => {},
     };
     const reader = {
       ticket: async (n: number) => {
@@ -344,45 +312,6 @@ describe('a waiting ticket that is gone or moved', () => {
     const { reader } = readerWith(async () => { throw gone(410); });
     assert.equal(await holdWait({ reader: reader as never, state, repo: REPO, issue: 7, labels: LABELS, now: NOW, log: () => {} }), 'dropped');
     assert.deepEqual(dropped, [[REPO, 7, '2026-11-05']]);
-  });
-});
-
-describe('the schedule fire: the tickets the wait ticket blocks', () => {
-  const LABELS = { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [], exclude: [] };
-  const NOW = Date.parse('2026-11-06T01:00:00Z');
-  const BOARD = 413;
-  const BOARD_ID = 9413;
-
-  test('a failed read of the told tickets refuses only the hand-linked ones: a stale link with a passed line still comes off', async () => {
-    const calls: string[] = [];
-    const tickets: Record<number, Record<string, unknown>> = {
-      [BOARD]: { number: BOARD, id: BOARD_ID, title: 'Waits', state: 'open', labels: [] },
-      7: { number: 7, title: 'Issue 7', state: 'open', labels: [] },
-      8: { number: 8, title: 'Issue 8', state: 'open', labels: [], wait: { until: '2026-11-01' } },
-    };
-    const reader = {
-      ticket: async (n: number) => { calls.push(`ticket #${n}`); return tickets[n]; },
-      blockers: async () => [{ number: BOARD, id: BOARD_ID, state: 'open', title: 'Waits' }],
-      blocking: async () => [{ number: 7, state: 'open', repo: REPO }, { number: 8, state: 'open', repo: REPO, wait: { until: '2026-11-01' } }],
-      addBlocker: async () => {},
-      removeBlocker: async (n: number, id: number) => { calls.push(`unblock #${n} from ${id}`); },
-      allComments: async (n: number) => { calls.push(`thread #${n}`); return []; },
-      comment: async (n: number) => { calls.push(`comment #${n}`); },
-    };
-    const state = {
-      waits: async () => [],
-      wait: async () => null,
-      recordWait: async () => true,
-      dropWait: async () => true,
-      toldUnlined: async () => { throw new Error('AccessDeniedException: dynamodb:Query'); },
-      recordUnlined: async () => {},
-    };
-    const links = waitLinks({ reader: reader as never, repo: REPO, board: BOARD, log: () => {}, state });
-    const ended = await endedWaits({ reader: reader as never, state, repo: REPO, labels: LABELS, spec: true, now: NOW, log: () => {}, links: links!, blocking: reader.blocking as never });
-    assert.ok(calls.includes(`unblock #8 from ${BOARD_ID}`), JSON.stringify(calls));
-    assert.deepEqual(calls.filter((c) => c.endsWith('#7')), [], 'the hand-linked ticket is neither read nor told');
-    assert.equal(ended.unread.length, 1, JSON.stringify(ended));
-    assert.match(ended.unread[0]!.error, /dynamodb:Query/);
   });
 });
 

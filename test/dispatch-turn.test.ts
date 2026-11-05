@@ -33,7 +33,7 @@ import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, readLastRun } from '../
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
-import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitNotPlannedMarker, waitOwnerMessage, waitSpecPrompt } from '../dispatch/waits.mjs';
+import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, handLinkedUntil, waitEndedMarker, waitNotPlannedMarker, waitOwnerMessage, waitSpecPrompt } from '../dispatch/waits.mjs';
 import { waitOf } from '../scripts/lib/ready-work.mjs';
 import { UNREADIED_MARKER } from '../scripts/lib/ready-work.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
@@ -154,7 +154,6 @@ const harness = (over: Record<string, unknown> = {}) => {
   const waitItems = new Map<string, string>();
   const failedLaunches = new Map<string, string>();
   const waitWrites: Array<{ repo: string; issue: number; until: string | null }> = [];
-  const unlinedItems = new Set<string>();
   // The login's sessions, as the sessions list answers them, and each one's
   // events page, by `cse_` id; and every events read, with its token.
   const rows: Array<Record<string, unknown>> = [];
@@ -396,12 +395,10 @@ const harness = (over: Record<string, unknown> = {}) => {
         waitWrites.push({ repo, issue, until: null });
         return true;
       },
-      toldUnlined: async (repo: string) => [...unlinedItems].filter((k) => k.startsWith(`${repo}#`)).map((k) => Number(k.slice(repo.length + 1))),
-      recordUnlined: async (repo: string, issue: number) => { unlinedItems.add(`${repo}#${issue}`); },
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, failedLaunches, waitItems, waitWrites, unlinedItems, routineCalls, routinesHeld, recorded, published, publishedTrust, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, failedLaunches, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -3340,15 +3337,16 @@ describe('run: a waiting ticket linked to the wait ticket', () => {
     assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNLINED_MARKER)).length, 1, JSON.stringify(h.comments));
   });
 
-  test('a fire after the one that told a hand-linked ticket reads neither its thread nor the ticket', async () => {
+  test('the bare fire parks a hand-linked ticket under an item twenty years out, and a later fire reads neither the ticket nor its thread', async () => {
     const row = { number: 7, state: 'open', title: 'Issue 7', repo: REPO };
     const h = linksTurn({ ticket: ticketWith({}), linked: true, blocking: [row] });
     await run({ source: 'aws.events' }, h.deps as never);
     assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNLINED_MARKER)).length, 1, JSON.stringify(h.comments));
-    assert.deepEqual([...h.unlinedItems], [`${REPO}#7`]);
+    assert.equal(handLinkedUntil(NOW), '2046-09-25');
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, '2046-09-25']]);
+    assert.deepEqual(linkCalls(h), [], 'the person\'s link stays');
     const thread = h.comments.map((c, i) => ({ id: i + 1, body: c.body, created_at: new Date(NOW).toISOString(), ours: true }));
-    const next = linksTurn({ ticket: ticketWith({}), linked: true, blocking: [row], thread });
-    for (const k of h.unlinedItems) next.unlinedItems.add(k);
+    const next = linksTurn({ ticket: ticketWith({}), linked: true, blocking: [row], thread, item: '2046-09-25' });
     const reads: string[] = [];
     const reader = next.deps.reader;
     next.deps.reader = ((...a: unknown[]) => {
@@ -3361,32 +3359,15 @@ describe('run: a waiting ticket linked to the wait ticket', () => {
     }) as never;
     await run({ source: 'aws.events' }, next.deps as never);
     assert.deepEqual(reads.filter((r) => r.endsWith('#7')), []);
-    assert.deepEqual(next.comments, []);
+    assert.deepEqual([next.comments, linkCalls(next)], [[], []]);
+    assert.deepEqual([...next.waitItems], [[`${REPO}#7`, '2046-09-25']]);
   });
 
-  test('a failed read of the told tickets leaves the hand-linked ones for the next fire, and a failed put still tells', async () => {
-    const row = { number: 7, state: 'open', title: 'Issue 7', repo: REPO };
-    const h = linksTurn({ ticket: ticketWith({}), linked: true, blocking: [row] });
-    h.deps.state.toldUnlined = async () => { throw new Error('AccessDeniedException: dynamodb:Query'); };
-    const result = await run({ source: 'aws.events' }, h.deps as never) as Record<string, unknown>;
-    assert.deepEqual(h.comments, []);
-    assert.ok(JSON.stringify(result.unread).includes('dynamodb:Query'), JSON.stringify(result));
-    const put = linksTurn({ ticket: ticketWith({}), linked: true, blocking: [row] });
-    put.deps.state.recordUnlined = async () => { throw new Error('AccessDeniedException: dynamodb:PutItem'); };
-    const told = await run({ source: 'aws.events' }, put.deps as never) as Record<string, unknown>;
-    assert.equal(put.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNLINED_MARKER)).length, 1, JSON.stringify(put.comments));
-    assert.ok(!JSON.stringify(told.unread ?? []).includes('PutItem'), JSON.stringify(told));
-  });
-
-  test('the wait fire that tells a hand-linked ticket records it, and a row whose body has a line is still read', async () => {
-    const h = linksTurn({ ticket: ticketWith({}), linked: true });
+  test('a line written later on a parked hand-linked ticket takes its item over', async () => {
+    const h = linksTurn({ ticket: ticketWith({ wait: { until: LATER } }), linked: true, item: '2046-09-25' });
     await run(fire, h.deps as never);
-    assert.deepEqual([...h.unlinedItems], [`${REPO}#7`]);
-    // The person has since written a line that has passed: its link comes off.
-    const lined = linksTurn({ ticket: ticketWith({ wait: { until: PAST } }), linked: true, blocking: [{ number: 7, state: 'open', title: 'Issue 7', repo: REPO, wait: { until: PAST } }] });
-    lined.unlinedItems.add(`${REPO}#7`);
-    await run({ source: 'aws.events' }, lined.deps as never);
-    assert.deepEqual(linkCalls(lined), [`unblock #7 from ${BOARD_ID}`]);
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
+    assert.deepEqual(linkCalls(h), []);
   });
 
   test('the bare fire removes the link of a wait that ended before it reads the backlog, and a ticket not ready still gets its comment and spec session', async () => {

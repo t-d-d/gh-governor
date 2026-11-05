@@ -188,17 +188,12 @@ export const waitOwnerMessage = ({ issue, until, labels, prompts }) => ownerMess
  *   wait: (repo: string, issue: number) => Promise<{ until: string } | null>,
  *   recordWait: (repo: string, issue: number, read: string | null, until: string) => Promise<boolean>,
  *   dropWait: (repo: string, issue: number, read: string) => Promise<boolean>,
- *   toldUnlined: (repo: string) => Promise<number[]>,
- *   recordUnlined: (repo: string, issue: number) => Promise<void>,
  * }} WaitState
  *   A repo's wait items, each its ticket and date; one ticket's (null for
  *   none). A put goes only where none stands (`read` null) or over the date
  *   the turn read, and a delete only over that date: false where another
  *   turn changed it since. A read that fails throws, and is never taken
- *   for no item. `toldUnlined` reads the repo's tickets linked to the wait
- *   ticket by hand that governor has told, and `recordUnlined` puts one
- *   where none stands, so the bare schedule fire need not read their
- *   threads again.
+ *   for no item.
  *
  * @typedef {{
  *   ticket: (n: number) => Promise<{ number: number, id?: number, title: string, body?: string, state: string, labels: string[], pull?: boolean, openBlockers?: number, author?: string, association?: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
@@ -210,7 +205,7 @@ export const waitOwnerMessage = ({ issue, until, labels, prompts }) => ownerMess
  * @typedef {WaitReader & {
  *   addBlocker: (n: number, blockerId: number) => Promise<void>,
  *   removeBlocker: (n: number, blockerId: number) => Promise<void>,
- *   blocking: (n: number) => Promise<Array<{ number: number, state: string, repo?: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }>>,
+ *   blocking: (n: number) => Promise<Array<{ number: number, state: string, repo?: string }>>,
  * }} LinkReader
  *
  * @typedef {(event: string, context?: Record<string, unknown>) => void} Log
@@ -248,6 +243,22 @@ export const WAIT_UNLINED_MARKER = '<!-- governor:wait-unlined -->';
 
 /** The marker on governor's one comment on a ticket the wait ticket had no room for. */
 export const WAIT_FULL_MARKER = '<!-- governor:wait-full -->';
+
+/** How far ahead governor parks a hand-linked ticket's item: past any wait a person means. */
+export const HAND_LINKED_YEARS = 20;
+
+/**
+ * The date of a hand-linked ticket's item: the same day, `HAND_LINKED_YEARS`
+ * on. The item only keeps the schedule fire from reading the ticket again:
+ * the person's link still holds it.
+ *
+ * @param {number} now
+ */
+export const handLinkedUntil = (now) => {
+  const at = new Date(now);
+  at.setUTCFullYear(at.getUTCFullYear() + HAND_LINKED_YEARS);
+  return at.toISOString().slice(0, 10);
+};
 
 /**
  * The comment a ticket linked to the wait ticket with no line gets.
@@ -306,14 +317,10 @@ const atCap = (error) => /** @type {{ status?: number }} */ (error)?.status === 
  * The wait ticket's links for one repo's turn, or undefined where its file
  * names no wait ticket: then governor links nothing.
  *
- * With `state`, `unlined` records the ticket it told, or found told, so a
- * later bare fire skips it. A put that fails is logged and costs one more
- * read of the thread at the next fire.
- *
- * @param {{ reader: LinkReader, repo: string, board: number | undefined, log: Log, state?: Pick<WaitState, 'recordUnlined'> }} args
+ * @param {{ reader: LinkReader, repo: string, board: number | undefined, log: Log }} args
  * @returns {WaitLinks | undefined}
  */
-export const waitLinks = ({ reader, repo, board, log, state }) => {
+export const waitLinks = ({ reader, repo, board, log }) => {
   if (board === undefined) return undefined;
   /** @type {Promise<{ id: number, state: string }> | undefined} */
   let read;
@@ -364,9 +371,6 @@ export const waitLinks = ({ reader, repo, board, log, state }) => {
     unlined: async (issue) => {
       const told = await sayOnce(reader, issue, WAIT_UNLINED_MARKER, waitUnlinedComment(board));
       log(WAIT_LINK, { repo, issue, board, outcome: `linked with no line: ${told}` });
-      await state?.recordUnlined(repo, issue).catch((error) => {
-        log(WAIT_LINK, { level: 'warn', repo, issue, board, error: messageOf(error), reason: 'governor could not record that it told the ticket, so the next fire reads its thread again' });
-      });
       return told;
     },
   };
@@ -526,10 +530,11 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  * fire. A link just removed is not counted as an open blocker, though the
  * ticket's dependency summary may still count it. Then each open ticket in
  * this repo the wait ticket blocks with no item: with no line, it was linked
- * by hand, and is told once and keeps its link; with a line that has passed
- * or cannot be read, its link comes off, as a turn that failed to take it
- * off left it. A ticket whose row shows no line and that governor recorded
- * as told is skipped with no read, so later fires spend nothing on it.
+ * by hand, and is told once and keeps its link, and an item dated
+ * {@link handLinkedUntil} is put for it, so later fires skip it unread. A
+ * line written later takes that item over, as any edit does. With a line
+ * that has passed or cannot be read, its link comes off, as a turn that
+ * failed to take it off left it.
  *
  * With `auto`, the repo's `trust.auto` (dispatch/trust.mjs): a ticket whose
  * author it does not let in gets its comment, but no spec work, and its
@@ -639,24 +644,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
   if (links !== undefined && blocking !== undefined) {
     const waiting = new Set(items.map((i) => i.issue));
     try {
-      // A failed read of the told tickets refuses only the rows with no
-      // line, the hand-linked ones: a stale link of governor's still comes
-      // off, since pickup counts it as an open blocker.
-      /** @type {string | null} */
-      let untold = null;
-      const [all, told] = await Promise.all([blocking(links.board), state.toldUnlined(repo).catch((error) => {
-        untold = messageOf(error);
-        return null;
-      })]);
-      if (untold !== null) {
-        log(WAIT_UNHANDLED, { level: 'error', repo, board: links.board, error: untold, reason: 'the tickets governor told could not be read, so the hand-linked ones wait for the next fire' });
-        unread.push({ repo, error: `wait ticket #${links.board}: ${untold}` });
-      }
-      const toldSet = new Set(told ?? []);
-      // A row carries its body's line, so one with none that was told
-      // needs no read. A row with a line is read, so a line added later is
-      // never missed.
-      const rows = all.filter((r) => r.state === 'open' && (r.repo ?? repo).toLowerCase() === repo.toLowerCase() && !waiting.has(r.number) && !(r.wait === undefined && (told === null || toldSet.has(r.number))));
+      const rows = (await blocking(links.board)).filter((r) => r.state === 'open' && (r.repo ?? repo).toLowerCase() === repo.toLowerCase() && !waiting.has(r.number));
       for (const { number } of rows) {
         const ticket = await ticketOf(reader, number);
         if (ticket === null || ticket.state !== 'open') continue;
@@ -664,7 +652,13 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
         // has passed, a line that cannot be read, or a relative line:
         // governor's link, which a turn could not take off, so it comes off
         // now, before the sweep.
-        if (ticket.wait === undefined) await links.unlined(number);
+        if (ticket.wait === undefined) {
+          await links.unlined(number);
+          // The link holds the ticket; the item only spares later fires a read.
+          const until = handLinkedUntil(now);
+          const written = await state.recordWait(repo, number, null, until);
+          log(WAIT, { repo, issue: number, until, outcome: written ? 'linked by hand: parked' : 'linked by hand: an item stood already' });
+        }
         else if (!('until' in ticket.wait) || !isWaiting({ wait: ticket.wait }, now)) await links.hide(number);
       }
     } catch (error) {

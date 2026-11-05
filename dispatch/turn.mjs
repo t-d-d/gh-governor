@@ -1489,7 +1489,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // With the file's `waits.issue`, the ticket's link to the wait ticket
     // follows its line too, for its sidebar.
     const reader = await getReader();
-    const links = waitLinks({ reader, repo: fireRepo(), board: configOf(fireRepo()).waits?.issue, log: deps.log, state: deps.state });
+    const links = waitLinks({ reader, repo: fireRepo(), board: configOf(fireRepo()).waits?.issue, log: deps.log });
     const outcome = await holdWait({ reader, state: deps.state, repo: fireRepo(), issue: invocation.issue, labels: configOf(fireRepo()).labels, prompts, now: deps.now(), log: deps.log, ...(links === undefined ? {} : { links }) });
     return { kind: invocation.kind, issue: invocation.issue, outcome };
   }
@@ -1710,9 +1710,6 @@ const CONFLICT_TTL_S = 30 * 24 * 60 * 60;
 
 /** How long past its date a wait item stays, should no fire delete it: a month. */
 const WAIT_TTL_S = 30 * 24 * 60 * 60;
-
-/** How long a told hand-linked ticket's item stays: a month, then one more read of its thread puts it again. */
-const UNLINED_TTL_S = 30 * 24 * 60 * 60;
 
 /** The attribute the state table's TTL expires on (infra/governor.cfn.yml). */
 export const STATE_TTL_ATTRIBUTE = 'ttl';
@@ -1961,11 +1958,7 @@ export const cliEnv = (env, home, account) => ({
  * waiting ticket's item is `wait#<repo>` / `<issue>`, holding its date, put
  * only where none or the date the turn read stands, deleted only over that
  * date, and expired a month after its date: a lost one costs that ticket's
- * wait-ended comment and spec session. A ticket linked to the wait ticket by
- * hand that governor has told is the item `unlined#<repo>` / `<issue>`, put
- * only where none stands and expired a month after it is put: a lost one
- * costs one more read of that ticket and its thread.
- * A PR review's verdict is the item
+ * wait-ended comment and spec session. A PR review's verdict is the item
  * `review#<repo>` / `<pr>`, put only over the item the review read, and
  * expired three months after its write: the review reads it back in place
  * of its comment's text, which a person can edit, and a lost one costs a
@@ -1987,43 +1980,11 @@ export const dynamoState = (client, table) => {
   const failedPk = (/** @type {string} */ repo) => ({ S: `pickup-failed#${repo}` });
   const waitPk = (/** @type {string} */ repo) => ({ S: `wait#${repo.toLowerCase()}` });
   const waitKey = (/** @type {string} */ repo, /** @type {number} */ issue) => ({ pk: waitPk(repo), sk: { S: String(issue) } });
-  const unlinedPk = (/** @type {string} */ repo) => ({ S: `unlined#${repo.toLowerCase()}` });
   /** An item's date, or a throw: a malformed item is a failed read, never a missing one. @param {Record<string, any>} item */
   const untilOf = (item) => {
     const until = item.until?.S;
     if (typeof until !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(until) || Number.isNaN(Date.parse(`${until}T00:00:00Z`))) throw new Error(`the wait item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
     return until;
-  };
-  /**
-   * Every item under one partition key, each with its issue number from its
-   * sort key, read page by page. A sort key that is not an issue is a
-   * failed read, never a missing item.
-   *
-   * @param {{ S: string }} key
-   * @param {string} what
-   * @returns {Promise<Array<{ issue: number, item: Record<string, any> }>>}
-   */
-  const issueItems = async (key, what) => {
-    /** @type {Array<{ issue: number, item: Record<string, any> }>} */
-    const found = [];
-    /** @type {Record<string, any> | undefined} */
-    let after;
-    do {
-      const page = await client.send(new QueryCommand({
-        TableName: table,
-        KeyConditionExpression: 'pk = :pk',
-        ExpressionAttributeValues: { ':pk': key },
-        ConsistentRead: true,
-        ...(after === undefined ? {} : { ExclusiveStartKey: after }),
-      }));
-      for (const item of page.Items ?? []) {
-        const issue = Number(item.sk?.S);
-        if (!Number.isSafeInteger(issue) || issue <= 0) throw new Error(`the ${what} item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
-        found.push({ issue, item });
-      }
-      after = page.LastEvaluatedKey;
-    } while (after !== undefined);
-    return found;
   };
   /** @param {unknown} error */
   const refused = (error) => error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException';
@@ -2184,7 +2145,28 @@ export const dynamoState = (client, table) => {
         throw error;
       }
     },
-    waits: async (repo) => (await issueItems(waitPk(repo), 'wait')).map(({ issue, item }) => ({ issue, until: untilOf(item) })),
+    waits: async (repo) => {
+      /** @type {Array<{ issue: number, until: string }>} */
+      const found = [];
+      /** @type {Record<string, any> | undefined} */
+      let after;
+      do {
+        const page = await client.send(new QueryCommand({
+          TableName: table,
+          KeyConditionExpression: 'pk = :pk',
+          ExpressionAttributeValues: { ':pk': waitPk(repo) },
+          ConsistentRead: true,
+          ...(after === undefined ? {} : { ExclusiveStartKey: after }),
+        }));
+        for (const item of page.Items ?? []) {
+          const issue = Number(item.sk?.S);
+          if (!Number.isSafeInteger(issue) || issue <= 0) throw new Error(`the wait item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
+          found.push({ issue, until: untilOf(item) });
+        }
+        after = page.LastEvaluatedKey;
+      } while (after !== undefined);
+      return found;
+    },
     wait: async (repo, issue) => {
       const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: waitKey(repo, issue), ConsistentRead: true }));
       return item === undefined ? null : { until: untilOf(item) };
@@ -2217,19 +2199,6 @@ export const dynamoState = (client, table) => {
       } catch (error) {
         if (refused(error)) return false;
         throw error;
-      }
-    },
-    toldUnlined: async (repo) => (await issueItems(unlinedPk(repo), 'told')).map(({ issue }) => issue),
-    recordUnlined: async (repo, issue) => {
-      try {
-        await client.send(new PutItemCommand({
-          TableName: table,
-          Item: { pk: unlinedPk(repo), sk: { S: String(issue) }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.now() / 1000) + UNLINED_TTL_S) } },
-          ConditionExpression: 'attribute_not_exists(pk)',
-        }));
-      } catch (error) {
-        // One stands already: another turn told the same ticket.
-        if (!refused(error)) throw error;
       }
     },
     sweep: async (repo) => {
@@ -2577,8 +2546,6 @@ export const realDeps = () => {
         wait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordWait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         dropWait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
-        toldUnlined: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
-        recordUnlined: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
       },
     // No table named: every write fails and is logged at error, and the
     // turn goes on, its own checks on a hook fire unchanged.
