@@ -1519,8 +1519,11 @@ describe('run: ready labels under a narrowed trust.start', () => {
       assert.ok(told[0]!.body.includes(UNCOUNTED_READY_MARKER));
       assert.match(told[0]!.body, /`trust\.start`/);
       assert.match(told[0]!.body, /`pat`, who counts as `COLLABORATOR`/);
-      assert.doesNotMatch(told[0]!.body, /`trust\.task`/);
-      assert.doesNotMatch(told[0]!.body, /restate the work/);
+      assert.match(told[0]!.body.split('\n')[0]!, /`trust\.start`/, 'the comment opens on trust.start');
+      assert.doesNotMatch(told[0]!.body.split('\n')[0]!, /`trust\.task`/);
+      assert.doesNotMatch(told[0]!.body, /adds them again starts the ticket/, 'readying it again would still be refused for trust.task');
+      assert.match(told[0]!.body, /`NONE`, which the repo's `trust\.task` leaves out as well/);
+      assert.match(told[0]!.body, /someone `trust\.start` lets in can restate the work/);
     });
 
     test(`${path}: with start set to OWNER, a NONE author's ticket whose adder cannot be looked up gets no comment that turn`, async () => {

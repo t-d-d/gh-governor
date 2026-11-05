@@ -126,8 +126,8 @@ export const untaskedComment = ({ author, association, what }) => [
  * are read, and a label the author, a bot or no event added
  * (`uncountedReady`) leaves it silent, as a stranger's own template must not
  * make governor write. Where the repo narrows `trust.start`, a readied
- * ticket is judged by it first, as a summons is: a person it leaves out
- * gets the `start` comment ({@link unstartedComment}) in place of this one,
+ * ticket is judged by it first, as a summons is: one a person outside it
+ * readied gets the `start` line and comment ({@link reportUnstarted}) instead,
  * and an adder governor could not look up gets no comment that turn. A
  * read or a comment that fails is logged at error and skipped: nothing
  * starts either way, and the next sweep tries again.
@@ -147,23 +147,25 @@ export const untaskedComment = ({ author, association, what }) => [
 export const reportUntasked = async ({ reader, stranger, what, ready = [], start = START, event, log }) => {
   const { repo, issue, association, author = '' } = stranger;
   try {
-    if (what === 'readied' && narrows(start)) {
-      // `start` is judged first, as a summons is: where the person who
-      // readied the ticket is outside it too, the comment names `start`,
-      // since restating the work in a ticket of their own would be refused
-      // for the same act.
+    const narrowed = narrows(start);
+    if (what === 'readied' && (narrowed || !authorHasSay(stranger))) {
       if (reader.labelAdds === undefined) return 'silent';
-      const judged = await judgeReady({ reader: /** @type {Parameters<typeof judgeReady>[0]['reader']} */ (reader), repo, ticket: { number: issue, author, association }, ready, start });
-      if ('outsider' in judged) return 'silent';
-      if ('unread' in judged) {
-        reportUnlooked({ unlooked: judged.unread, event, log });
-        return 'silent';
+      if (narrowed) {
+        // `start` is judged first, as a summons is: where the person who
+        // readied the ticket is outside it too, the comment names `start`,
+        // since restating the work in a ticket of their own would be
+        // refused for the same act.
+        const judged = await judgeReady({ reader: /** @type {Parameters<typeof judgeReady>[0]['reader']} */ (reader), repo, ticket: { number: issue, author, association }, ready, start });
+        if ('outsider' in judged) return 'silent';
+        if ('unread' in judged) {
+          reportUnlooked({ unlooked: judged.unread, event, log });
+          return 'silent';
+        }
+        if ('unstarted' in judged) return await reportUnstarted({ reader, unstarted: { ...judged.unstarted, untasked: association }, what, event, log });
+      } else {
+        const adds = await reader.labelAdds(issue);
+        if (uncountedReady(stranger, adds, ready).length > 0) return 'silent';
       }
-      if ('unstarted' in judged) return await sayOnce(reader, issue, UNCOUNTED_READY_MARKER, unstartedComment({ ...judged.unstarted, what }));
-    } else if (what === 'readied' && !authorHasSay(stranger)) {
-      if (reader.labelAdds === undefined) return 'silent';
-      const adds = await reader.labelAdds(issue);
-      if (uncountedReady(stranger, adds, ready).length > 0) return 'silent';
     }
     return await sayOnce(reader, issue, UNCOUNTED_READY_MARKER, untaskedComment({ author, association, what }));
   } catch (error) {
@@ -189,9 +191,12 @@ export const unstartedReason = ({ start, by }) =>
  * `trust.start` leaves out: who did, what they count as, who may, and how
  * to go on.
  *
- * @param {{ start: readonly string[], by: ReadonlyArray<{ label?: string, actor: string, kind: string }>, what: 'readied' | 'summoned' }} args
+ * @param {{ start: readonly string[], by: ReadonlyArray<{ label?: string, actor: string, kind: string }>, what: 'readied' | 'summoned', untasked?: string }} args
+ *   `untasked`: on a readied ticket whose author the repo's `trust.task`
+ *   leaves out as well, the author's association. Readying it again then
+ *   starts nothing, and the comment says what would.
  */
-export const unstartedComment = ({ start, by, what }) => [
+export const unstartedComment = ({ start, by, what, untasked }) => [
   `Governor has not ${what === 'readied' ? 'started this ticket' : 'started a session on this'}. In this repo only ${listed(start)} may set work going, by the repo's ${code('trust.start')}, and ${what === 'readied' ? 'these ready labels were added last by someone it leaves out' : 'the summons came from someone it leaves out'}:`,
   '',
   ...by.map(({ label, actor, kind }) => {
@@ -199,7 +204,9 @@ export const unstartedComment = ({ start, by, what }) => [
     return label === undefined ? `- ${who.charAt(0).toUpperCase()}${who.slice(1)}.` : `- ${code(label)}, added by ${who}.`;
   }),
   '',
-  what === 'readied'
+  untasked !== undefined
+    ? `Its author is ${code(untasked)}, which the repo's ${code('trust.task')} leaves out as well, so readying it again starts nothing. To have this built, someone ${code('trust.start')} lets in can restate the work in a ticket of their own, linking this one, and ready that${untasked === BOT ? '' : `, or the repo can widen ${code('trust.task')} in ${code(CONFIG_PATH)}`}.`
+    : what === 'readied'
     ? `Someone ${code('trust.start')} lets in who takes the labels off and adds them again starts the ticket.`
     : `Someone ${code('trust.start')} lets in can summon a session here.`,
   '',
@@ -215,7 +222,7 @@ export const unstartedComment = ({ start, by, what }) => [
  *
  * @param {{
  *   reader: { allComments: (n: number) => Promise<Array<{ body: string }>>, comment: (n: number, body: string) => Promise<void> },
- *   unstarted: import('./start.mjs').Unstarted,
+ *   unstarted: import('./start.mjs').Unstarted & { untasked?: string },
  *   what: 'readied' | 'summoned',
  *   event: string,
  *   log: (event: string, context?: Record<string, unknown>) => void,
