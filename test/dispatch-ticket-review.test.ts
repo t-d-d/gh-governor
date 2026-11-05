@@ -507,6 +507,17 @@ describe('reviewTicket: which reviews run', () => {
     assert.equal((await none.review()).reviews[0]!.outcome, 'commented');
   });
 
+  test('labels and exclude match the ticket\'s labels in any case, as GitHub does', async () => {
+    const excluded = harness({ ticket: { labels: ['workflow: under development'] }, reviews: [{ name: 'exclude', when: { on: 'opened', exclude: ['Workflow: Under Development'] } }] });
+    const skipped = (await excluded.review()).reviews[0]!;
+    assert.equal(skipped.outcome, 'skipped');
+    assert.deepEqual(excluded.comments, []);
+    assert.deepEqual(excluded.runs, []);
+    const required = harness({ ticket: { labels: ['Type: Bug'] }, reviews: [{ name: 'labels', when: { on: 'opened', labels: ['type: bug'] } }] });
+    assert.equal((await required.review()).reviews[0]!.outcome, 'commented');
+    assert.equal(required.comments.length, 1);
+  });
+
   test('by defaults to owners, members and collaborators', async () => {
     const h = harness({ ticket: { association: 'CONTRIBUTOR' }, trusted: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'] });
     assert.equal((await h.review()).reviews[0]!.outcome, 'skipped');

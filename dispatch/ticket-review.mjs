@@ -299,17 +299,19 @@ export const markersOf = (thread, name) => thread.flatMap((row) => {
 
 /**
  * Whether a ticket meets a review's selector: every label in `labels`,
- * none in `exclude`, and an author `by` lets in (default owners, members
- * and collaborators), a missing association read as `NONE`.
+ * none in `exclude`, each matched in any case as GitHub matches labels,
+ * and an author `by` lets in (default owners, members and collaborators),
+ * a missing association read as `NONE`.
  *
  * @param {TicketReview['when']} when
  * @param {Ticket} ticket
  * @returns {string | null} Why it does not, or null where it does.
  */
 export const selects = (when, ticket) => {
-  const missing = (when.labels ?? []).filter((l) => !ticket.labels.includes(l));
+  const carried = new Set(ticket.labels.map(keyOf));
+  const missing = (when.labels ?? []).filter((l) => !carried.has(keyOf(l)));
   if (missing.length > 0) return `it lacks ${missing.join(', ')}`;
-  const excluded = (when.exclude ?? []).filter((l) => ticket.labels.includes(l));
+  const excluded = (when.exclude ?? []).filter((l) => carried.has(keyOf(l)));
   if (excluded.length > 0) return `it carries ${excluded.join(', ')}`;
   const by = when.by ?? TICKET_REVIEW_BY;
   if (!lets(by, ticket)) return `its author is ${authorKind(ticket)}, and the review reads only ${by.join(', ')}`;
