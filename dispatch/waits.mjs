@@ -546,35 +546,40 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
     const dropped = await state.dropWait(repo, issue, until);
     log(WAIT, { repo, issue, read: until, ...context, item: dropped ? 'dropped' : 'not dropped: it changed since it was read' });
   };
-  for (const item of items) {
-    if (now < endOf(item.until)) continue;
+  // Each ended item is read and acted on side by side, as the turn's other
+  // reports are, so a day when many waits end does not use up the launch
+  // window. Each item catches its own failure.
+  /** @type {Array<{ issue: number, error: string }>} */
+  const failed = [];
+  /** @param {{ issue: number, until: string }} item */
+  const one = async (item) => {
     const { issue } = item;
     try {
       const ticket = await ticketOf(reader, issue);
       if (ticket === null) {
         await drop(item, { outcome: 'its ticket is gone or moved' });
-        continue;
+        return;
       }
       const wait = ticket.state === 'open' ? ticket.wait : undefined;
       const moved = wait !== undefined && 'until' in wait && isWaiting({ wait }, now);
       const removed = links !== undefined && !moved ? await links.hide(issue) === 'removed' : false;
       if (wait === undefined) {
         await drop(item, { outcome: ticket.state === 'open' ? 'its line is gone' : `its ticket is ${ticket.state}` });
-        continue;
+        return;
       }
       if ('unreadable' in wait) {
         if (holdsBy(ticket, labels, now, 'unreadable')) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
         await drop(item, { outcome: 'its line cannot be read' });
-        continue;
+        return;
       }
       if ('after' in wait) {
         await drop(item, { outcome: 'its line now waits on an issue\'s close' });
-        continue;
+        return;
       }
       if (isWaiting({ wait }, now)) {
         const written = await state.recordWait(repo, issue, item.until, wait.until);
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: written ? 'moved later: not released' : 'moved later, and the item changed since it was read' });
-        continue;
+        return;
       }
       // A link just removed may still be in the dependency summary, which
       // counts it only while the wait ticket is open.
@@ -584,7 +589,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       const row = !status.open || status.holds.length > 0 ? 'blocked' : status.labels;
       if (row !== 'not-ready') {
         await drop(item, { until: wait.until, outcome: `ended on a ticket ${row}: nothing to say` });
-        continue;
+        return;
       }
       const thread = await reader.allComments(issue);
       const marker = waitEndedMarker(wait.until);
@@ -594,7 +599,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       // for an author the repo's trust.auto lets in.
       if (spec && !lets(auto, ticket)) {
         await drop(item, { until: wait.until, level: 'info', outcome: `${told ? 'ended: already told' : 'ended: commented'}; nothing starts and nothing is sent: opened by a ${authorKind(ticket)} author, whom trust.auto (${auto.join(', ') || 'empty'}) does not let in` });
-        continue;
+        return;
       }
       // A ticket governor unreadied on a not-planned close waits for a
       // person's answer first, as a later blocker's close does.
@@ -604,15 +609,20 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
         specs.push({ issue, title: ticket.title, until: wait.until, read: item.until, owner });
         const work = owner === null ? 'starting a spec session' : `asking its owner, ${owner}, to rewrite its spec`;
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: told ? `ended: already told, ${work}` : `ended: commented, ${work}` });
-        continue;
+        return;
       }
       await drop(item, { until: wait.until, outcome: told ? 'ended: already told' : 'ended: commented', ...(spec ? { spec: `held: ${UNREADIED_HELD}` } : {}) });
     } catch (error) {
       const message = messageOf(error);
       log(WAIT_UNHANDLED, { level: 'error', repo, issue, read: item.until, error: message, reason: 'its item stays, so the next fire tries again' });
-      unread.push({ repo, error: `wait #${issue}: ${message}` });
+      failed.push({ issue, error: `wait #${issue}: ${message}` });
     }
-  }
+  };
+  await Promise.all(items.filter((item) => now >= endOf(item.until)).map(one));
+  // DispatchCap takes the first spec sessions, so they go in issue order,
+  // whichever read answered first.
+  specs.sort((a, b) => a.issue - b.issue);
+  unread.push(...failed.sort((a, b) => a.issue - b.issue).map(({ error }) => ({ repo, error })));
   if (links !== undefined && blocking !== undefined) {
     const waiting = new Set(items.map((i) => i.issue));
     try {

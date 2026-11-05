@@ -82,7 +82,7 @@ const harness = (over: {
   live?: boolean,
 } = {}) => {
   const comments: Array<{ issue: number, body: string }> = [];
-  const runs: Array<{ system: string, prompt: string, schema: unknown, replace?: boolean }> = [];
+  const runs: Array<{ system: string, prompt: string, schema: unknown }> = [];
   const transcripts: Array<{ sessionId: string, key: string }> = [];
   const logged: Array<{ event: string, [key: string]: unknown }> = [];
   const openReads: number[] = [];
@@ -137,7 +137,7 @@ const harness = (over: {
     ...(over.heartbeat === undefined ? {} : { heartbeat: { issue: over.heartbeat } }),
     ...(over.waits === undefined ? {} : { waits: { issue: over.waits } }),
   };
-  const run = async (request: { system: string, prompt: string, schema: unknown, replace?: boolean }) => {
+  const run = async (request: { system: string, prompt: string, schema: unknown }) => {
     runs.push(request);
     const answer = answers[Math.min(runs.length - 1, answers.length - 1)]!;
     return { status: 0, output: typeof answer === 'string' ? answer : cliOutput(answer, `sess-${runs.length}`) };
@@ -218,6 +218,41 @@ describe('the ticketReviews config', () => {
     const bare = file([{ name: 'triage', when: { on: 'opened' } }]);
     assert.ok(bare.ok);
     assert.deepEqual(bare.config.ticketReviews?.[0]?.conclusions, { success: [], failure: [], neutral: [] });
+  });
+});
+
+describe('fitness: dispatcher-review.md, the config check warns of a ticket review trust.review never lets in', () => {
+  const outsiders = ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'NONE'];
+  const checkOf = async (over: Record<string, unknown>) => {
+    const text = JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { ticketReviews: true }, ...over });
+    assert.ok(readConfig(text).ok, 'governor reads the file');
+    return check({ read: async (path: string) => (path === CONFIG_PATH ? text : null), paths: async () => ({ paths: [], truncated: false }), labels: async () => ['mode: afk', 'claimed'], issueBody: async () => null } as never);
+  };
+  const deadOnes = (warnings: string[]) => warnings.filter((w) => /trust\.review/.test(w));
+
+  test('a review whose by shares nothing with the default trust.review warns, naming the review, its by and trust.review', async () => {
+    const checked = await checkOf({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: outsiders } }] });
+    assert.deepEqual(checked.errors, []);
+    const [warning, ...rest] = deadOnes(checked.warnings);
+    assert.deepEqual(rest, []);
+    assert.match(warning ?? '', /^ticketReviews\.community: /);
+    assert.match(warning ?? '', /CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, NONE/);
+    assert.match(warning ?? '', /trust\.review lets in OWNER, MEMBER, COLLABORATOR/);
+  });
+
+  test('a review left at its default by warns where trust.review lets in none of it', async () => {
+    const checked = await checkOf({ trust: { review: ['CONTRIBUTOR'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' } }] });
+    const [warning, ...rest] = deadOnes(checked.warnings);
+    assert.deepEqual(rest, []);
+    assert.match(warning ?? '', /^ticketReviews\.triage: /);
+    assert.match(warning ?? '', /OWNER, MEMBER, COLLABORATOR/);
+    assert.match(warning ?? '', /trust\.review lets in CONTRIBUTOR/);
+  });
+
+  test('a review sharing one value with trust.review, or one trust.review lets outsiders into, does not warn', async () => {
+    assert.deepEqual(deadOnes((await checkOf({ ticketReviews: [{ name: 'triage', when: { on: 'opened' } }, { name: 'mixed', when: { on: 'opened', by: ['OWNER', ...outsiders] } }] })).warnings), []);
+    const open = await checkOf({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', ...outsiders] }, ticketReviews: [{ name: 'community', when: { on: 'opened', by: outsiders } }] });
+    assert.deepEqual(deadOnes(open.warnings), []);
   });
 });
 
@@ -507,6 +542,17 @@ describe('reviewTicket: which reviews run', () => {
     assert.equal((await none.review()).reviews[0]!.outcome, 'commented');
   });
 
+  test('labels and exclude match the ticket\'s labels in any case, as GitHub does', async () => {
+    const excluded = harness({ ticket: { labels: ['workflow: under development'] }, reviews: [{ name: 'exclude', when: { on: 'opened', exclude: ['Workflow: Under Development'] } }] });
+    const skipped = (await excluded.review()).reviews[0]!;
+    assert.equal(skipped.outcome, 'skipped');
+    assert.deepEqual(excluded.comments, []);
+    assert.deepEqual(excluded.runs, []);
+    const required = harness({ ticket: { labels: ['Type: Bug'] }, reviews: [{ name: 'labels', when: { on: 'opened', labels: ['type: bug'] } }] });
+    assert.equal((await required.review()).reviews[0]!.outcome, 'commented');
+    assert.equal(required.comments.length, 1);
+  });
+
   test('by defaults to owners, members and collaborators', async () => {
     const h = harness({ ticket: { association: 'CONTRIBUTOR' }, trusted: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'] });
     assert.equal((await h.review()).reviews[0]!.outcome, 'skipped');
@@ -609,10 +655,9 @@ describe('reviewTicket: which reviews run', () => {
 });
 
 describe('reviewTicket: what the model reads', () => {
-  test('governor\'s frame and the default checklist replace the system prompt, with no tools, the answer held to the schema', async () => {
+  test('governor\'s frame and the default checklist are the system prompt, the answer held to the schema', async () => {
     const h = harness();
     await h.review();
-    assert.equal(h.runs[0]!.replace, true);
     assert.equal(h.runs[0]!.system, `${TICKET_FRAME}\n\n${DEFAULT_TICKET_CHECKLIST}`);
     assert.deepEqual(h.runs[0]!.schema, TICKET_ANSWER_SCHEMA);
   });

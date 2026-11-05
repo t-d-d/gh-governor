@@ -156,15 +156,17 @@ export const planSweep = async (invocation, ctx) => {
   // the repo's wait ticket loses the link here, and pickup holds a ticket
   // while its dependency summary counts an open blocker. The comments go
   // now; the spec sessions join the plan after the tickets, below.
+  // The repos are read side by side, and kept in the served order, since
+  // DispatchCap takes the first spec sessions.
   if (ctx.bare) {
-    for (const { repo, config } of ctx.served) {
-      if (!turnsOn(config, 'waits')) continue;
+    const byRepo = await Promise.all(ctx.served.filter(({ config }) => turnsOn(config, 'waits')).map(async ({ repo, config }) => {
       const reader = await ctx.readerFor(repo);
       const links = waitLinks({ reader, repo, board: config.waits?.issue, log: ctx.log });
       const ended = await endedWaits({ reader, state: ctx.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), auto: autoOf(config), relay: relayOf(config), now: ctx.now(), log: ctx.log, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
-      waitsUnread.push(...ended.unread);
-      endedByRepo.push({ repo, config, ended });
-    }
+      return { repo, config, ended };
+    }));
+    endedByRepo.push(...byRepo);
+    waitsUnread.push(...byRepo.flatMap(({ ended }) => ended.unread));
   }
   // Every served repo's ready tickets in one queue; a repo
   // whose file turns pickup off is still swept, and its backlog unread.
