@@ -386,7 +386,7 @@ const ticketTypeSchema = z.strictObject({
     success: z.array(label).optional().meta({ description: 'The labels a `success` adds on a matching ticket, in place of the review\'s.' }),
     failure: z.array(label).optional().meta({ description: 'The labels a `failure` adds on a matching ticket, in place of the review\'s.' }),
     neutral: z.array(label).optional().meta({ description: 'The labels a `neutral` adds on a matching ticket, in place of the review\'s.' }),
-  }).optional().meta({ description: 'The conclusions whose labels this entry overrides, each a list. A conclusion it leaves out takes its labels from an entry later in the file that matches, or from the review\'s `conclusions`.' }),
+  }).optional().meta({ description: 'The conclusions whose labels this entry overrides, each a list, each label starting with the review\'s name, a colon and a space. A conclusion it leaves out takes its labels from an entry later in the file that matches, or from the review\'s `conclusions`.' }),
 });
 
 /**
@@ -411,7 +411,7 @@ const ticketReviewSchema = z.strictObject({
     success: z.array(label).default([]).meta({ description: 'The labels a `success` adds: the ticket passes. Default none.' }),
     failure: z.array(label).default([]).meta({ description: 'The labels a `failure` adds: the ticket waits for an edit by whoever filed it. Default none.' }),
     neutral: z.array(label).default([]).meta({ description: 'The labels a `neutral` adds: the ticket waits for a person. Default none.' }),
-  }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on, a label the review\'s own `when.labels` or `when.exclude` names, or `labels.claim`.' }),
+  }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. Each label starts with the review\'s name, a colon and a space, such as `triage: build` for a review named `triage`, in any case, so a review never adds or removes a label a person uses. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on, a label the review\'s own `when.labels` or `when.exclude` names, or `labels.claim`.' }),
   checklist: z.union([z.string().trim().min(1), promptFile]).optional().meta({ description: 'The review\'s base checklist, after governor\'s fixed frame: the text, or { "file": "<path>" }. Default governor\'s own checklist.' }),
   types: z.array(ticketTypeSchema).min(1).optional().meta({ description: 'Checks and labels per ticket type, each entry matched by label. A ticket gets the base checklist and then each matching entry\'s, in file order; one matching none gets the base alone. For each conclusion, the labels come from the first matching entry that names it, and otherwise from `conclusions`.' }),
 });
@@ -494,6 +494,8 @@ export const configSchema = z.strictObject({
   // it reads no other ticket. None that the review's own `when` selects
   // on: a failure label it excludes stops it reading the filer's fix. And
   // never the claim label, which would come off a ticket being built.
+  // Each starts with the review's name, a colon and a space, so a run never adds or
+  // removes a label a person also uses, such as a mode: human hold.
   .superRefine((c, ctx) => {
     /** @type {Map<string, string>} Each label, lower-cased as GitHub matches it, and the review that names it. */
     const owner = new Map();
@@ -512,6 +514,8 @@ export const configSchema = z.strictObject({
         { path: ['ticketReviews', i, 'conclusions'], sets: conclusions },
         ...(types ?? []).map((entry, j) => ({ path: ['ticketReviews', i, 'types', j, 'conclusions'], sets: entry.conclusions ?? {} })),
       ];
+      /** Every conclusion label starts with this, in any case. Names are lower-case, so one review's prefix is never another's. */
+      const prefix = `${name}: `;
       /** @type {Map<string, string>} Each label, lower-cased as GitHub matches it, and the conclusion of this review that names it. */
       const under = new Map();
       /** @type {Map<string, Array<string | number>>} Each ready label this review names, as written, and where it is first named. */
@@ -525,6 +529,7 @@ export const configSchema = z.strictObject({
           for (const l of sets[conclusion] ?? []) {
             const path = [...at, conclusion];
             const key = l.toLowerCase();
+            if (!key.startsWith(prefix)) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, which does not start with "${prefix}": a review adds and removes only labels of its own, so it never changes a label a person steers work with. Give the conclusion a label starting "${prefix}"` });
             const first = under.get(key);
             if (first !== undefined && first !== conclusion) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under both ${first} and ${conclusion}: each run would add it and take it off. Name it under one conclusion` });
             else if (first === undefined) under.set(key, conclusion);
