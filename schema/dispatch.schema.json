@@ -1240,7 +1240,7 @@
                 "description": "The event that runs the review. Only `\"opened\"`: an open issue opened, reopened or with its body edited."
               },
               "labels": {
-                "description": "Labels the ticket must carry, every one of them. Default none.",
+                "description": "Labels the ticket must carry, every one of them, in any case. Default none.",
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -1250,7 +1250,7 @@
                 }
               },
               "exclude": {
-                "description": "Labels the ticket must not carry, any of them. Default none.",
+                "description": "Labels the ticket must not carry, any of them, in any case. Default none.",
                 "type": "array",
                 "items": {
                   "type": "string",
