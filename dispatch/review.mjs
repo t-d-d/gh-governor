@@ -38,7 +38,9 @@
  *   check the settings cannot express is the repo's CI, never its code run
  *   here. Where the repo's file names `workflows.ci`, the latest run of that
  *   workflow at the head counts too, as a required check does: a repo whose
- *   plan cannot require a check still holds a pass for its CI.
+ *   plan cannot require a check still holds a pass for its CI. A repo whose
+ *   CI runs only after the merge sets `review.waitForCi` false, and the
+ *   turn then passes no `ci`.
  * - A Dependabot PR is answered in code by the repo's Dependabot list
  *   (`dependabotAnswer`), not the checklist, and passes like any.
  *   Its conflict is no comment: Dependabot rebases its own PRs, and the

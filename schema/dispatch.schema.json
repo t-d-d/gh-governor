@@ -890,6 +890,11 @@
             "minLength": 1
           }
         },
+        "waitForCi": {
+          "default": true,
+          "description": "Whether the review waits for the `workflows.ci` run at the PR's head: one red fails it for a push, one not finished, or none at the head, holds it with `governor` in progress. Set it false where the CI workflow does not run on pull requests, such as one that runs only on a push to the default branch; the review then reads no workflow runs, and still reads the required checks and `requireChecks`. A red CI run on the default branch still drives `ciMessages`. Default true.",
+          "type": "boolean"
+        },
         "merge": {
           "default": true,
           "description": "Whether a pass merges the PR. With false, a pass posts its comment and a success check, and the owner merges. Default true.",

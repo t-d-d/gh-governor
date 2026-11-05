@@ -951,6 +951,37 @@ describe('fitness: run — no run but the CI workflow\'s at the head holds a mer
     assert.deepEqual(h.ciReads, []);
   });
 
+  test('a repo whose CI runs only after the merge sets `review.waitForCi` false: the review reads no workflow runs', async () => {
+    const opened = JSON.parse(factoryFile(CONFIG_PATH));
+    const config = JSON.stringify({ ...opened, review: { ...opened.review, waitForCi: false } });
+    for (const runs of [[], [ciRun({ conclusion: 'failure' })], [ciRun({ status: 'in_progress', conclusion: null })]]) {
+      const h = harness({ config, ciRuns: runs });
+      const turn = await review({ kind: 'review', pr: 767 }, h);
+      assert.deepEqual(turn.reviews.map((r) => r.outcome), ['merged'], JSON.stringify(runs));
+      assert.equal(h.judged.length, 1, 'the review reaches the model');
+      assert.deepEqual(h.ciReads, [], 'no workflow runs are read');
+      assert.deepEqual(h.checkRuns.map((c) => c.state), ['success']);
+    }
+  });
+
+  test('with `review.waitForCi` false, a required check or a `requireChecks` entry still fails or holds test 8', async () => {
+    const opened = JSON.parse(factoryFile(CONFIG_PATH));
+    const config = (review: Record<string, unknown> = {}) => JSON.stringify({ ...opened, review: { ...opened.review, waitForCi: false, ...review } });
+    const red = harness({ config: config(), required: ['gate'], checks: [{ name: 'gate', state: 'red' }], ciRuns: [] });
+    await review({ kind: 'review', pr: 767 }, red);
+    assert.equal(red.judged.length, 0);
+    assert.match(red.comments[0]!.body, /^Waits for a push: the required check `gate` is red on its head \(test 8\)\./);
+    const pending = harness({ config: config(), required: ['gate'], checks: [{ name: 'gate', state: 'pending' }], ciRuns: [] });
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, pending)).reviews.map((r) => r.outcome), ['skipped']);
+    assert.equal(pending.checkRuns[0]!.title, 'Waits for its required checks to finish.');
+    const listed = harness({ config: config({ requireChecks: ['codeql'] }), checks: [{ name: 'codeql', state: 'red' }], ciRuns: [] });
+    await review({ kind: 'review', pr: 767 }, listed);
+    assert.match(listed.comments[0]!.body, /^Waits for a push: the required check `codeql` is red on its head \(test 8\)\./);
+    const unposted = harness({ config: config({ requireChecks: ['codeql'] }), ciRuns: [] });
+    assert.deepEqual((await review({ kind: 'review', pr: 767 }, unposted)).reviews.map((r) => r.outcome), ['skipped']);
+    for (const h of [red, pending, listed, unposted]) assert.deepEqual(h.ciReads, []);
+  });
+
   test('a PR whose newest review is a held pass from before the change is merged on its next review without judging, and its comment edited to say so', async () => {
     const h = harness({ thread: [{ id: 41, body: marked(HELD), created_at: 't', ours: true }] });
     const result = await review({ kind: 'review', pr: 767 }, h);

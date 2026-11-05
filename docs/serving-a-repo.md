@@ -89,7 +89,7 @@ To use it:
    - `workflows.ci` to the repo's own CI workflow, in place of `.github/workflows/ci.yml`.
    - The human-only globs to the repo's own paths: `infra/**` stands for wherever the repo keeps its infrastructure. Add any other path a person should see change, such as billing or auth code.
    - The checklist, if the repo has its own rules for a pull request.
-   - Nothing more for CI. The review waits for the latest run of `workflows.ci` at a PR's head to end green, whether or not the plan lets the default branch require it. A CI workflow with a `paths` filter has no run at the head of a PR it skips, so that PR waits until a push starts one, or a person merges it, as it would on a required check. The review needs the App's Actions read to see the run. For any other check the review should wait for, list its name in `review.requireChecks`.
+   - Nothing more for CI. The review waits for the latest run of `workflows.ci` at a PR's head to end green, whether or not the plan lets the default branch require it. A CI workflow with a `paths` filter has no run at the head of a PR it skips, so that PR waits until a push starts one, or a person merges it, as it would on a required check. A CI workflow that runs only after the merge has no run at any PR's head: set `review.waitForCi` to `false`. The review needs the App's Actions read to see the run. For any other check the review should wait for, list its name in `review.requireChecks`.
    - Each shipping job's name, ending `· deployed: <target>`, and the deploy workflow's top-level `TICKET_LABEL_PATHS`, which deploy messages and `deployed:` labels read ([Deploy messages and labels](#deploy-messages-and-labels)).
    - `merge` to false, if a person should merge each pass after all. A pass then posts its comment and check, and merges nothing. Require the `governor` check in a ruleset on the default branch, with governor's App as its source, so a pull request cannot merge while its session still owes a fix.
 6. Merge them into the default branch through a pull request. The config check runs on it.
@@ -147,7 +147,7 @@ The switches in `features`:
 
 `workflows`:
 
-- `ci`: the CI workflow's file, under `.github/workflows/`. Without it, no run is CI. With `prReview` on, the review also waits for this workflow's latest run at a PR's head and fails test 8 where it ended red.
+- `ci`: the CI workflow's file, under `.github/workflows/`. Without it, no run is CI. With `prReview` on, the review also waits for this workflow's latest run at a PR's head and fails test 8 where it ended red, unless `review.waitForCi` is `false`. A red run on the default branch drives `ciMessages` either way.
 - `triage`: the deploy targets whose failure starts one fresh session, rather than messages to the sessions of the merges it shipped.
 - `tags`: the tag each target's deploy moves, which messages name.
 
@@ -162,6 +162,7 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 - `decides`: labels of a ticket that may decide a quoted file's change.
 - `dependabot`: the manifests a Dependabot PR may change and pass with no model.
 - `requireChecks`: names of check runs and commit status contexts the review treats as required, beside any the default branch requires on GitHub. Use it where the plan cannot require a check, for checks other than `workflows.ci`: static analysis from another App, a status from an outside service, another workflow's job. One red on a PR's head fails the review for a push. One not finished, or not posted at all, holds the review with `governor` in progress until it ends. A name GitHub also requires counts once. Default none.
+- `waitForCi`: whether the review waits for the `workflows.ci` run at a PR's head. Default `true`. Set it `false` where the CI workflow does not run on pull requests, such as one with only `on: push` to the default branch and `workflow_dispatch`: its PRs have no CI run at their head and would otherwise wait forever. With `false`, the review reads no workflow runs, and still reads the required checks and `requireChecks`. A PR already waiting is reviewed on its next push or body edit.
 - `merge`: whether a pass merges. Default `true`. With `false`, a pass posts its comment and a `success` check, and the owner merges.
 
 `periodics`: a list of recurring sessions, each `{ "name", "prompt", "days" }`, with `counts`, `gapHours` and `connectors` if wanted.

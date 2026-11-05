@@ -30,8 +30,8 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   runs and PRs on that branch. A delivery naming none routes no run and no
   merge.
 - **No run but the PR's own CI run at its head holds a merge.** Where the
-  file names `ci` and turns `prReview` on, the latest run of that workflow
-  at the PR's head is test 8's, as a required check is
+  file names `ci`, turns `prReview` on and does not set `review.waitForCi`
+  to `false`, the latest run of that workflow at the PR's head is test 8's, as a required check is
   (dispatcher-review.md). A deploy, or any other run, holds no merge: the
   review merges a pass whatever else is running.
 - **The receiver forwards, from every served repo:**
@@ -68,7 +68,8 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
 - The drop: `droppedBy` in dispatch/webhook/switches.mjs, which also holds
   `switchOf`, called by `handle` in dispatch/webhook/route.mjs.
 - test/dispatch-review.test.ts pins that the review reads only the CI
-  workflow's runs at the PR's head, and none where the file names no `ci`,
+  workflow's runs at the PR's head, and none where the file names no `ci`
+  or sets `review.waitForCi` to `false`,
   in the `fitness:` block that names this file.
 
 ## Do not
@@ -95,4 +96,4 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   the head is the one exception, because its end queues the review again.
 
 Judgment: that a served repo's workflows write the job-name suffix and `TICKET_LABEL_PATHS`, no check here sees: governor cannot read another repo's files at that repo's merge time.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The receiver drops a fire whose switch the repo's hook-table item says is off, the conflicts check never, since #147. The PR's own CI run at its head holds its merge, as test 8, since #398: a repo whose plan cannot require a check would otherwise merge a pass on red CI.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The receiver drops a fire whose switch the repo's hook-table item says is off, the conflicts check never, since #147. The PR's own CI run at its head holds its merge, as test 8, since #398: a repo whose plan cannot require a check would otherwise merge a pass on red CI. The CI run at the head holds a merge only where `review.waitForCi` is not `false` since #459: a repo whose CI runs only after the merge has no run at a PR's head, so every PR waited forever.
