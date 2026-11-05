@@ -43,6 +43,14 @@ describe('scanText', () => {
     assert.deepEqual(kinds(`the old-${OLD_HOME} setup`, 'README.md'), ['name']);
   });
 
+  test('refuses the old home\'s name in a doc when a path follows it, and still passes the bare name and its site', () => {
+    assert.deepEqual(kinds(`see ${OLD_HOME}/infra/stack.yml`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}/infra/stack.yml`, 'docs/how-it-works.md'), ['name']);
+    assert.deepEqual(kinds(`made while building ${OLD_HOME}/`, 'docs/how-it-works.md'), ['name']);
+    assert.deepEqual(kinds(`made while building ${OLD_HOME}.`, 'docs/how-it-works.md'), []);
+    assert.deepEqual(kinds(`see <https://${OLD_HOME}.com/about>`, 'README.md'), []);
+  });
+
   test('refuses the private repo\'s owner/name path and its GitHub URL, in any case, in every file', () => {
     for (const path of ['README.md', 'docs/how-it-works.md', 'scripts/x.mjs']) {
       assert.deepEqual(kinds(`see owner/${OLD_HOME}`, path).filter((k) => k !== 'name'), ['repo'], path);
