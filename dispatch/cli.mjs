@@ -58,8 +58,9 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  *   or is gone; for a not-ready ticket's owner, the same, unless the spec
  *   session that replaced a gone owner started nothing;
  * - a fire: not every launch failed, and every served repo's config file
- *   was read. A fire with nothing to start is a success, as the heartbeat
- *   rule says;
+ *   was read; a summons trust.task refused and sent to the live session on
+ *   its PR's head branch, that the send did not fault. A fire with nothing
+ *   to start is a success, as the heartbeat rule says;
  * - a turn its repo's config file refused: not served, or a switch turned
  *   off, is as designed;
  * and in any of them, when the fire counted an event for the periodics,
@@ -69,7 +70,7 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * written (`heartbeatUnwritten`), and no repo's part of the turn failed
  * (`unread`), refusal or not.
  *
- * @param {{ kind: string, ok?: boolean, answered?: boolean | null, archived?: boolean, event?: string, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string } }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, fallback?: { outcome: string } | null } | null }} result
+ * @param {{ kind: string, ok?: boolean, answered?: boolean | null, archived?: boolean, event?: string, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string } }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, skipped?: string | null, fallback?: { outcome: string } | null } | null }} result
  * @returns {0 | 1}
  */
 export const exitCodeFor = (result) => {
@@ -106,6 +107,10 @@ export const exitCodeFor = (result) => {
   // not-ready ticket's owner: a gone session is told enough, unless the spec
   // session in its place started nothing.
   if (result.kind === 'unblocked' && result.messaged != null) return faultedSend(result.messaged) ? 1 : 0;
+  // A summons trust.task refused, sent to the live session on its PR's head
+  // branch: a send that faulted fails the turn, as a message's does. No
+  // live session on the branch is no fault: the refusal comment went.
+  if (result.kind === 'dispatch' && result.messaged != null && result.messaged.skipped == null && faultedSend(result.messaged)) return 1;
   if (result.kind === 'message') {
     // A takeover's session whose link the PR body did not take: the body
     // still names the archived owner, so the operator is told.

@@ -100,6 +100,7 @@ import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_HEAD
 import { errorText } from './error-text.mjs';
 import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
 import { droppedBy } from './switches.mjs';
+import { pastReadingBound } from './subscribe.mjs';
 
 /**
  * The events the receiver acts on, which the App's webhook subscribes to:
@@ -729,6 +730,27 @@ const queueFire = async (message, dedupId, deps) => {
   }
 };
 
+/** The payload's objects whose body the receiver reads for quotes. */
+const BODIES = /** @type {const} */ (['comment', 'review', 'issue', 'pull_request']);
+
+/**
+ * Each body in `payload` the receiver reads as quoted whole, being too long
+ * or too deeply nested to read in time (`pastReadingBound`, subscribe.mjs),
+ * logged at info: such a body is built to be slow, and pages nobody.
+ *
+ * @param {unknown} payload
+ * @param {string | undefined} event
+ * @param {string | undefined} delivery
+ * @param {Deps} deps
+ */
+const logUnreadBodies = (payload, event, delivery, deps) => {
+  for (const name of BODIES) {
+    const body = /** @type {any} */ (payload)?.[name]?.body;
+    if (typeof body !== 'string' || !pastReadingBound(body)) continue;
+    deps.log('body-read-as-quoted', { level: 'info', delivery: delivery ?? null, github: event ?? null, body: name, length: body.length });
+  }
+};
+
 /**
  * One request: a hook's, on a `/hooks/` path ({@link handleHook}; 404 for
  * one under it that names no repo and hook), or else one delivery. A
@@ -762,6 +784,7 @@ export const handle = async (request, deps) => {
   }
   const event = headers['x-github-event'];
   const delivery = headers['x-github-delivery'];
+  logUnreadBodies(payload, event, delivery, deps);
   const decision = await judged(({ relay, bodies }) => routeEvent({ event, payload, owners: deps.owners, appId: deps.appId, relay, bodies }), delivery, deps);
   if (decision.fires.length === 0) {
     // Never an error: an outsider who installed the App must not page anyone.
