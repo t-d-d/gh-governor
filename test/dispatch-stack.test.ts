@@ -1148,10 +1148,18 @@ describe('.github/workflows/deploy.yml', () => {
 
   // Every step after the probe is the rollback, so a green probe is the end
   // of a green deploy.
+  // The page alone also runs on a cancel, and only once the rollback started.
   test('runs nothing after a green probe', () => {
     const after = steps.slice(steps.findIndex(withId('probe')) + 1);
     assert.ok(after.length > 0, 'nothing follows the probe');
-    for (const step of after) assert.match(step.if ?? '', /^\$\{\{ failure\(\) && /, `'${step.name}' can run after a green probe`);
+    for (const step of after) {
+      const condition = step.if ?? '';
+      if (step.id === 'page') {
+        assert.match(condition, /^\$\{\{ \(failure\(\) && \(.*\)\) \|\| \(cancelled\(\) && steps\.rollback\.outcome != '' && steps\.rollback\.outcome != 'skipped' && [^|]*\) \}\}$/, `'${step.name}' can run after a green probe`);
+      } else {
+        assert.match(condition, /^\$\{\{ failure\(\) && /, `'${step.name}' can run after a green probe`);
+      }
+    }
   });
 
   test('secrets reach the scripts through env, never inline', () => {
@@ -1274,6 +1282,33 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
   test('a rollback that cannot apply pages the operator, and probes nothing', () => {
     const { ran } = runDeploy({ outcomes: { probe: 'failure', rollback: 'failure' } });
     assert.deepEqual(after(ran, 'probe'), ['rollback', 'page']);
+  });
+
+  // A job cancelled by hand or by its timeout runs no `failure()` step, so
+  // the page asks for `cancelled()` too: governor may be down until the
+  // rollback's probe passes.
+  test('pages the operator when the run is cancelled after the rollback started and before its probe passed', () => {
+    const page = steps.find(withId('page'));
+    assert.equal(page?.if, "${{ (failure() && (steps.rollback.outcome == 'failure' || steps.reprobe.outcome == 'failure')) || (cancelled() && steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && steps.reprobe.outcome != 'success') }}");
+    assert.deepEqual(after(runDeploy({ outcomes: { probe: 'failure', rollback: 'cancelled' } }).ran, 'probe'), ['rollback', 'page'], 'a run cancelled during the rollback\'s apply pages no one');
+    assert.deepEqual(after(runDeploy({ outcomes: { probe: 'failure', reprobe: 'cancelled' } }).ran, 'probe'), ['rollback', 'reprobe', 'page'], 'a run cancelled during the rollback\'s probe pages no one');
+    assert.deepEqual(after(runDeploy({ outcomes: { probe: 'failure', rollback: 'failure', page: 'cancelled' } }).ran, 'probe'), ['rollback', 'page']);
+  });
+
+  test('a run cancelled before the rollback started pages no one', () => {
+    assert.equal(runDeploy({ outcomes: { probe: 'cancelled' } }).ran.at(-1), 'probe');
+    assert.equal(runDeploy({ outcomes: { apply: 'cancelled' } }).ran.at(-1), 'apply');
+    assert.equal(runDeploy({ outcomes: { previous: 'cancelled' } }).ran.at(-1), 'previous');
+  });
+
+  test('the page says when the run was cancelled mid-rollback', () => {
+    const page = steps.find(withId('page'));
+    assert.equal(page?.env?.JOB_STATUS, '${{ job.status }}');
+    const run = page?.run ?? '';
+    assert.match(run, /if \[ "\$JOB_STATUS" = cancelled \]/);
+    assert.match(run, /cancelled[^\n]*mid-rollback/i);
+    assert.match(run, /--subject "\$SUBJECT"/);
+    assert.match(run, /--message "\$MESSAGE"/);
   });
 
   test('a probe-only run rolls nothing back', () => {

@@ -40,7 +40,9 @@
 # the image before it, changing nothing else, and probes again.
 # The deploy stays red either way. A rollback that does not bring the task
 # back, because its apply or its probe failed, pages the operator through the
-# stack's alerts topic: governor is then down. The rest of a template change,
+# stack's alerts topic: governor is then down. So does a run cancelled, by
+# hand or by its timeout, after the rollback started and before its probe
+# passed. The rest of a template change,
 # such as a new alarm or role, stays: that applies or fails with
 # CloudFormation's own rollback. A probe-only run applies nothing, so it rolls
 # nothing back.
@@ -373,16 +375,31 @@ jobs:
           echo "::notice::rolled the stack back to ${PREVIOUS_IMAGE_URI}, and its probe passed. The deploy stays red: this commit's image failed its probe."
 
       # The deploy's red run reaches whoever watches Actions; governor down
-      # reaches the operator, through the topic every alarm publishes to.
+      # reaches the operator, through the topic every alarm publishes to. A
+      # run cancelled by hand or by the job's timeout runs no `failure()`
+      # step, so the page also asks for `cancelled()`: once the rollback has
+      # started and until its probe passes, governor may be down. The job's
+      # timeout ends it a few minutes inside the deploy role's one-hour
+      # session, which leaves the page time to publish.
       - name: Page the operator, since the rollback did not bring the task back
         id: page
-        if: ${{ failure() && (steps.rollback.outcome == 'failure' || steps.reprobe.outcome == 'failure') }}
+        if: ${{ (failure() && (steps.rollback.outcome == 'failure' || steps.reprobe.outcome == 'failure')) || (cancelled() && steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && steps.reprobe.outcome != 'success') }}
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: |
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          echo "::error::the rollback did not bring the task back; governor is down. Paging the operator."
+          if [ "$JOB_STATUS" = cancelled ]; then
+            echo "::error::the run was cancelled mid-rollback, before the rollback's probe passed; governor may be down. Paging the operator."
+            SUBJECT="[governor] A deploy's probe failed, and the run was cancelled mid-rollback"
+            MESSAGE="Governor may be down. The deploy at ${GITHUB_SHA} failed its probe, and the run was cancelled mid-rollback, by hand or by the job's timeout, before the probe of the image it rolled back to passed. Check the task, and read the run: ${RUN_URL}"
+          else
+            echo "::error::the rollback did not bring the task back; governor is down. Paging the operator."
+            SUBJECT="[governor] A deploy's probe failed, and so did its rollback"
+            MESSAGE="Governor is down. The deploy at ${GITHUB_SHA} failed its probe, and rolling the stack back to the image it ran before did not bring the task back: the rollback's apply or its probe failed. Read the run: ${RUN_URL}"
+          fi
           TOPIC_ARN=$(aws cloudformation describe-stack-resource --stack-name governor --logical-resource-id AlertsTopic \
             --query StackResourceDetail.PhysicalResourceId --output text)
           aws sns publish --topic-arn "$TOPIC_ARN" \
-            --subject "[governor] A deploy's probe failed, and so did its rollback" \
-            --message "Governor is down. The deploy at ${GITHUB_SHA} failed its probe, and rolling the stack back to the image it ran before did not bring the task back: the rollback's apply or its probe failed. Read the run: ${RUN_URL}" \
+            --subject "$SUBJECT" \
+            --message "$MESSAGE" \
             > /dev/null
