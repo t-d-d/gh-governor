@@ -299,17 +299,19 @@ export const markersOf = (thread, name) => thread.flatMap((row) => {
 
 /**
  * Whether a ticket meets a review's selector: every label in `labels`,
- * none in `exclude`, and an author `by` lets in (default owners, members
- * and collaborators), a missing association read as `NONE`.
+ * none in `exclude`, each matched in any case as GitHub matches labels,
+ * and an author `by` lets in (default owners, members and collaborators),
+ * a missing association read as `NONE`.
  *
  * @param {TicketReview['when']} when
  * @param {Ticket} ticket
  * @returns {string | null} Why it does not, or null where it does.
  */
 export const selects = (when, ticket) => {
-  const missing = (when.labels ?? []).filter((l) => !ticket.labels.includes(l));
+  const carried = new Set(ticket.labels.map(keyOf));
+  const missing = (when.labels ?? []).filter((l) => !carried.has(keyOf(l)));
   if (missing.length > 0) return `it lacks ${missing.join(', ')}`;
-  const excluded = (when.exclude ?? []).filter((l) => ticket.labels.includes(l));
+  const excluded = (when.exclude ?? []).filter((l) => carried.has(keyOf(l)));
   if (excluded.length > 0) return `it carries ${excluded.join(', ')}`;
   const by = when.by ?? TICKET_REVIEW_BY;
   if (!lets(by, ticket)) return `its author is ${authorKind(ticket)}, and the review reads only ${by.join(', ')}`;
@@ -525,7 +527,7 @@ export const applyLabels = async ({ reader, ticket, name, conclusions, every = [
  *   issue: number,
  *   reader: TicketReader,
  *   config: ReviewConfig,
- *   run: (request: { system: string, prompt: string, schema: object, replace: true }, label: string) => Promise<{ output: string }>,
+ *   run: (request: { system: string, prompt: string, schema: object }, label: string) => Promise<{ output: string }>,
  *   transcript: (t: { sessionId: string, key: string }) => Promise<object>,
  *   log: (event: string, context: Record<string, unknown>) => void,
  * }} args
@@ -589,7 +591,7 @@ export const reviewTicket = async ({ repo, issue, reader, config, run, transcrip
     try {
       context ??= contextOf({ repo, ticket, reader, log });
       const prompt = `${await context}\n\n# Round\n\nThis is round ${round} of this review.\n`;
-      const ran = await run({ system: `${TICKET_FRAME}\n\n${checklistFor(review, ticket)}`, prompt, schema: TICKET_ANSWER_SCHEMA, replace: true }, `${name} review of #${issue}`);
+      const ran = await run({ system: `${TICKET_FRAME}\n\n${checklistFor(review, ticket)}`, prompt, schema: TICKET_ANSWER_SCHEMA }, `${name} review of #${issue}`);
       let answer;
       try {
         answer = parseConclusion(ran.output);

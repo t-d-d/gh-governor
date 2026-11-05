@@ -309,20 +309,21 @@ const lastMerged = (rows, mergedAt) => rows.reduce((/** @type {T | undefined} */
 
 /**
  * Every page of a list endpoint that pages a hundred at a time, up to
- * `pages` of them.
+ * `pages` of them. `rowsOf` takes a page's rows from its answer, for an
+ * endpoint that wraps its list in an object.
  *
  * @param {(method: string, path: string, body?: unknown) => Promise<any>} call
  * @param {string} path Without a query string of its own.
  * @param {Record<string, string>} query
  * @param {number} [pages]
+ * @param {(answer: any) => any[]} [rowsOf]
  * @returns {Promise<any[]>}
  */
-const allPages = async (call, path, query, pages = 30) => {
+const allPages = async (call, path, query, pages = 30, rowsOf = (answer) => answer) => {
   /** @type {any[]} */
   const rows = [];
   for (let page = 1; page <= pages; page += 1) {
-    /** @type {any[]} */
-    const batch = await call('GET', `${path}?${new URLSearchParams({ ...query, per_page: '100', page: String(page) })}`);
+    const batch = rowsOf(await call('GET', `${path}?${new URLSearchParams({ ...query, per_page: '100', page: String(page) })}`));
     rows.push(...batch);
     if (batch.length < 100) break;
   }
@@ -656,10 +657,10 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       await call('POST', `/repos/${repo}/issues/${number}/comments`, { body });
     },
 
-    /** A pull request's body, a null one as '', its head branch ({@link headOf}), whether it is open, neither closed nor merged, and its author ({@link authorOf}). @param {number} number @returns {Promise<{ number: number, body: string, head: string, open: boolean } & Required<import('../../dispatch/webhook/fire.mjs').Author>>} */
+    /** A pull request's body, a null one as '', its head branch ({@link headOf}), the repo's default branch from its base, '' where none is read, whether it is open, neither closed nor merged, and its author ({@link authorOf}). @param {number} number @returns {Promise<{ number: number, body: string, head: string, defaultBranch: string, open: boolean } & Required<import('../../dispatch/webhook/fire.mjs').Author>>} */
     pull: async (number) => {
       const row = await call('GET', `/repos/${repo}/pulls/${number}`);
-      return { number: row.number, body: row.body ?? '', head: headOf(row), open: row.state === 'open', ...authorOf(row) };
+      return { number: row.number, body: row.body ?? '', head: headOf(row), defaultBranch: String(row?.base?.repo?.default_branch ?? ''), open: row.state === 'open', ...authorOf(row) };
     },
 
     /** Rewrite a pull request's body. @param {number} number @param {{ body: string }} change */
@@ -959,20 +960,15 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      * @returns {Promise<Array<{ name: string, state: 'red' | 'green' | 'pending' }>>}
      */
     checksAt: async (sha) => {
-      /** @type {any[]} */
-      const runs = [];
-      for (let page = 1; page <= 30; page += 1) {
-        const answer = await call('GET', `/repos/${repo}/commits/${sha}/check-runs?${new URLSearchParams({ filter: 'latest', per_page: '100', page: String(page) })}`);
-        const batch = answer?.check_runs ?? [];
-        runs.push(...batch);
-        if (batch.length < 100) break;
-      }
-      const status = await call('GET', `/repos/${repo}/commits/${sha}/status?per_page=100`);
+      const [runs, statuses] = await Promise.all([
+        allPages(call, `/repos/${repo}/commits/${sha}/check-runs`, { filter: 'latest' }, undefined, (answer) => answer?.check_runs ?? []),
+        allPages(call, `/repos/${repo}/commits/${sha}/status`, {}, undefined, (answer) => answer?.statuses ?? []),
+      ]);
       /** @type {(red: boolean, pending: boolean) => 'red' | 'green' | 'pending'} */
       const stateOf = (red, pending) => (red ? 'red' : pending ? 'pending' : 'green');
       return [
         ...runs.map((r) => ({ name: String(r?.name ?? ''), state: stateOf(RED_CONCLUSIONS.has(String(r?.conclusion)), typeof r?.conclusion !== 'string') })),
-        ...(status?.statuses ?? []).map((/** @type {any} */ st) => ({ name: String(st?.context ?? ''), state: stateOf(st?.state === 'failure' || st?.state === 'error', st?.state === 'pending') })),
+        ...statuses.map((/** @type {any} */ st) => ({ name: String(st?.context ?? ''), state: stateOf(st?.state === 'failure' || st?.state === 'error', st?.state === 'pending') })),
       ];
     },
 
