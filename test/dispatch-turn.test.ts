@@ -1509,6 +1509,47 @@ describe('run: ready labels under a narrowed trust.start', () => {
       assert.match(String(line.reason), /HTTP 502/);
     });
 
+    test(`${path}: with start set to OWNER, a collaborator's ready label on a NONE author's ticket gets the trust.start comment, not the trust.task one`, async () => {
+      const h = readied(by('pat'), { author: 'stranger', association: 'NONE' });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(labelCalls(h.calls), []);
+      const told = h.comments.filter((c) => c.issue === 9);
+      assert.equal(told.length, 1, JSON.stringify(h.comments));
+      assert.ok(told[0]!.body.includes(UNCOUNTED_READY_MARKER));
+      assert.match(told[0]!.body, /`trust\.start`/);
+      assert.match(told[0]!.body, /`pat`, who counts as `COLLABORATOR`/);
+      assert.match(told[0]!.body.split('\n')[0]!, /`trust\.start`/, 'the comment opens on trust.start');
+      assert.doesNotMatch(told[0]!.body.split('\n')[0]!, /`trust\.task`/);
+      assert.doesNotMatch(told[0]!.body, /adds them again starts the ticket/, 'readying it again would still be refused for trust.task');
+      assert.match(told[0]!.body, /`NONE`, which the repo's `trust\.task` leaves out as well/);
+      assert.match(told[0]!.body, /someone `trust\.start` lets in can restate the work/);
+    });
+
+    test(`${path}: with start set to OWNER, a NONE author's ticket whose adder cannot be looked up gets no comment that turn`, async () => {
+      const h = readied(by('pat'), { author: 'stranger', association: 'NONE', ownerType: new Error('HTTP 502') });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 9), []);
+      assert.ok(h.logged.some((l) => l.issue === 9 && l.level === 'warn' && /HTTP 502/.test(String(l.reason))), JSON.stringify(h.logged));
+    });
+
+    test(`${path}: with start set to OWNER, the owner's ready label on a NONE author's ticket still gets the trust.task comment`, async () => {
+      const h = readied(by('acme'), { author: 'stranger', association: 'NONE' });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      const told = h.comments.filter((c) => c.issue === 9);
+      assert.equal(told.length, 1, JSON.stringify(h.comments));
+      assert.match(told[0]!.body, /`trust\.task`/);
+    });
+
+    test(`${path}: with start set to OWNER, a NONE author's own template readying stays silent`, async () => {
+      const h = readied(by('stranger'), { author: 'stranger', association: 'NONE' });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 9), []);
+    });
+
     test(`${path}: at the default start, no adder is looked up`, async () => {
       for (const [association, author] of [['OWNER', 'acme'], ['MEMBER', 'mel']]) {
         const h = readied(by('pat'), { file: withStart(undefined), author, association });

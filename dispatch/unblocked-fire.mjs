@@ -285,7 +285,7 @@ export const planUnblocked = async (invocation, ctx) => {
         ? { outcome: 'skipped', reason: strangerReason(stranger) }
         : { outcome: planned.length === 0 ? 'not selectable: blocked, or no longer ready' : 'picking up' }) });
     if (outsider !== undefined) await reportUncounted({ reader, outsider, log: ctx.log });
-    if (stranger !== undefined) await reportUntasked({ reader, stranger, what: 'readied', ready: config.labels.ready, event: 'dispatch-unblocked', log: ctx.log });
+    if (stranger !== undefined) await reportUntasked({ reader, stranger, what: 'readied', ready: config.labels.ready, start: startOf(config), event: 'dispatch-unblocked', log: (event, context) => ctx.log(event, { ...about, ...context }) });
   } else {
     // The spec session is not claimed: the ticket is not ready, so the
     // sweep leaves it, and the claim it adds before it builds keeps it off
