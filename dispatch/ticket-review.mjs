@@ -555,7 +555,7 @@ export const applyLabels = async ({ reader, ticket, name, conclusions, every = [
  *   issue: number,
  *   reader: TicketReader,
  *   config: ReviewConfig,
- *   run: (request: { system: string, prompt: string, schema: object, replace: true }, label: string) => Promise<{ output: string }>,
+ *   run: (request: { system: string, prompt: string, schema: object }, label: string) => Promise<{ output: string }>,
  *   transcript: (t: { sessionId: string, key: string }) => Promise<object>,
  *   log: (event: string, context: Record<string, unknown>) => void,
  * }} args
@@ -619,7 +619,7 @@ export const reviewTicket = async ({ repo, issue, reader, config, run, transcrip
     try {
       context ??= contextOf({ repo, ticket, reader, log });
       const prompt = `${await context}\n\n# Round\n\nThis is round ${round} of this review.\n`;
-      const ran = await run({ system: `${TICKET_FRAME}\n\n${checklistFor(review, ticket)}`, prompt, schema: TICKET_ANSWER_SCHEMA, replace: true }, `${name} review of #${issue}`);
+      const ran = await run({ system: `${TICKET_FRAME}\n\n${checklistFor(review, ticket)}`, prompt, schema: TICKET_ANSWER_SCHEMA }, `${name} review of #${issue}`);
       let answer;
       try {
         answer = parseConclusion(ran.output);

@@ -12,7 +12,8 @@
  * in step, and fails with governor's fault text. It then warns, without
  * failing, on a file that is valid but cannot work: a ready label the repo
  * lacks, a `workflows.ci` file that is not there, a heartbeat issue without
- * its marker, or a review glob that matches no path. Only governor can check
+ * its marker, a review glob that matches no path, or a ticket review whose
+ * `by` the repo's `trust.review` lets none of in. Only governor can check
  * that `environment` resolves, because that needs the claude.ai login. It
  * warns too, in wording of its own, where a `trust` list reaches beyond
  * owners, members and collaborators, and notes each unset list governor
@@ -33,8 +34,8 @@ import { pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 import { globMatches } from '../dispatch/checklist.mjs';
 import { HEARTBEAT_MARKER } from '../dispatch/heartbeat.mjs';
-import { CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
-import { fitsInside, narrowedLists, trustExposures } from '../dispatch/trust.mjs';
+import { CONFIG_PATH, TICKET_REVIEW_BY, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
+import { fitsInside, narrowedLists, reviewOf, trustExposures } from '../dispatch/trust.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /**
@@ -113,7 +114,26 @@ const warningsOf = async (config, reads) => {
     ];
   };
   // Independent reads, run together; the warnings keep this order.
-  return (await Promise.all([labels(), ci(), heartbeat(), globs()])).flat();
+  return [...(await Promise.all([labels(), ci(), heartbeat(), globs()])).flat(), ...unreviewable(config)];
+};
+
+/**
+ * A warning for each ticket review whose `by`, or its default, shares no
+ * value with the repo's `trust.review` as governor reads it. Governor
+ * refuses a ticket whose author `trust.review` leaves out before it reads
+ * any selector (dispatch/ticket-review.mjs), so such a review never runs.
+ * It is dead but harmless, so the file is not refused for it.
+ *
+ * @param {import('../dispatch/repo-config.mjs').FileConfig} config
+ * @returns {string[]}
+ */
+const unreviewable = (config) => {
+  const trusted = reviewOf(config);
+  return (config.ticketReviews ?? []).flatMap(({ name, when }) => {
+    const by = when.by ?? TICKET_REVIEW_BY;
+    if (by.some((a) => trusted.includes(a))) return [];
+    return [`ticketReviews.${name}: its by${when.by === undefined ? ', left at its default,' : ''} is ${by.join(', ')}, and trust.review lets in ${trusted.length === 0 ? 'nobody' : trusted.join(', ')}, so governor refuses every ticket this review selects before it runs, and it never comments`];
+  });
 };
 
 /** An issue template in the template folder GitHub reads: an issue form or a Markdown template, at its top level. */
