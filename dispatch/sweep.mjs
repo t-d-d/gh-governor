@@ -161,7 +161,7 @@ export const planSweep = async (invocation, ctx) => {
   if (ctx.bare) {
     const byRepo = await Promise.all(ctx.served.filter(({ config }) => turnsOn(config, 'waits')).map(async ({ repo, config }) => {
       const reader = await ctx.readerFor(repo);
-      const links = waitLinks({ reader, repo, board: config.waits?.issue, log: ctx.log });
+      const links = waitLinks({ reader, repo, board: config.waits?.issue, log: ctx.log, state: ctx.state });
       const ended = await endedWaits({ reader, state: ctx.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), auto: autoOf(config), relay: relayOf(config), now: ctx.now(), log: ctx.log, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
       return { repo, config, ended };
     }));

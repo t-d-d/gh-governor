@@ -211,6 +211,34 @@ describe('realDeps: a ticket\'s wait item', () => {
     const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
     await assert.rejects(failing.dropWait(REPO, 7, '2026-11-05'), /AccessDeniedException/);
   });
+
+  test('a told hand-linked ticket is put once under its own key, expires a month on, and is read back in one query', async () => {
+    const sent: Sent[] = [];
+    let refuse = false;
+    const client = { send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
+      sent.push({ name: command.constructor.name, input: command.input });
+      if (command.constructor.name === 'QueryCommand') return { Items: [{ pk: { S: 'unlined#acme/factory' }, sk: { S: '7' } }] };
+      if (refuse) throw conditional();
+      return {};
+    } };
+    const state = dynamoState(client as never, 'T');
+    const before = Math.floor(Date.now() / 1000);
+    await state.recordUnlined('Acme/Factory', 7);
+    assert.equal(sent[0]?.name, 'PutItemCommand');
+    assert.deepEqual([sent[0]?.input.Item.pk, sent[0]?.input.Item.sk], [{ S: 'unlined#acme/factory' }, { S: '7' }]);
+    assert.match(String(sent[0]?.input.ConditionExpression), /attribute_not_exists/);
+    const ttl = Number(sent[0]?.input.Item.ttl.N);
+    assert.ok(ttl >= before + 30 * 24 * 60 * 60 && ttl <= Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60, String(ttl));
+    refuse = true;
+    await state.recordUnlined(REPO, 7);
+    assert.deepEqual(await state.toldUnlined(REPO), [7]);
+    assert.equal(sent[2]?.input.ConsistentRead, true);
+    assert.deepEqual(sent[2]?.input.ExpressionAttributeValues, { ':pk': { S: 'unlined#acme/factory' } });
+    const malformed = dynamoState({ send: async () => ({ Items: [{ pk: { S: 'unlined#acme/factory' }, sk: { S: 'x' } }] }) } as never, 'T');
+    await assert.rejects(malformed.toldUnlined(REPO), /malformed/);
+    const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
+    await assert.rejects(failing.recordUnlined(REPO, 7), /AccessDeniedException/);
+  });
 });
 
 describe('a waiting ticket that is gone or moved', () => {

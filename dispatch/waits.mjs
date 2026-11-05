@@ -188,12 +188,17 @@ export const waitOwnerMessage = ({ issue, until, labels, prompts }) => ownerMess
  *   wait: (repo: string, issue: number) => Promise<{ until: string } | null>,
  *   recordWait: (repo: string, issue: number, read: string | null, until: string) => Promise<boolean>,
  *   dropWait: (repo: string, issue: number, read: string) => Promise<boolean>,
+ *   toldUnlined: (repo: string) => Promise<number[]>,
+ *   recordUnlined: (repo: string, issue: number) => Promise<void>,
  * }} WaitState
  *   A repo's wait items, each its ticket and date; one ticket's (null for
  *   none). A put goes only where none stands (`read` null) or over the date
  *   the turn read, and a delete only over that date: false where another
  *   turn changed it since. A read that fails throws, and is never taken
- *   for no item.
+ *   for no item. `toldUnlined` reads the repo's tickets linked to the wait
+ *   ticket by hand that governor has told, and `recordUnlined` puts one
+ *   where none stands, so the bare schedule fire need not read their
+ *   threads again.
  *
  * @typedef {{
  *   ticket: (n: number) => Promise<{ number: number, id?: number, title: string, body?: string, state: string, labels: string[], pull?: boolean, openBlockers?: number, author?: string, association?: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }>,
@@ -205,7 +210,7 @@ export const waitOwnerMessage = ({ issue, until, labels, prompts }) => ownerMess
  * @typedef {WaitReader & {
  *   addBlocker: (n: number, blockerId: number) => Promise<void>,
  *   removeBlocker: (n: number, blockerId: number) => Promise<void>,
- *   blocking: (n: number) => Promise<Array<{ number: number, state: string, repo?: string }>>,
+ *   blocking: (n: number) => Promise<Array<{ number: number, state: string, repo?: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }>>,
  * }} LinkReader
  *
  * @typedef {(event: string, context?: Record<string, unknown>) => void} Log
@@ -301,10 +306,14 @@ const atCap = (error) => /** @type {{ status?: number }} */ (error)?.status === 
  * The wait ticket's links for one repo's turn, or undefined where its file
  * names no wait ticket: then governor links nothing.
  *
- * @param {{ reader: LinkReader, repo: string, board: number | undefined, log: Log }} args
+ * With `state`, `unlined` records the ticket it told, or found told, so a
+ * later bare fire skips it. A put that fails is logged and costs one more
+ * read of the thread at the next fire.
+ *
+ * @param {{ reader: LinkReader, repo: string, board: number | undefined, log: Log, state?: Pick<WaitState, 'recordUnlined'> }} args
  * @returns {WaitLinks | undefined}
  */
-export const waitLinks = ({ reader, repo, board, log }) => {
+export const waitLinks = ({ reader, repo, board, log, state }) => {
   if (board === undefined) return undefined;
   /** @type {Promise<{ id: number, state: string }> | undefined} */
   let read;
@@ -355,6 +364,9 @@ export const waitLinks = ({ reader, repo, board, log }) => {
     unlined: async (issue) => {
       const told = await sayOnce(reader, issue, WAIT_UNLINED_MARKER, waitUnlinedComment(board));
       log(WAIT_LINK, { repo, issue, board, outcome: `linked with no line: ${told}` });
+      await state?.recordUnlined(repo, issue).catch((error) => {
+        log(WAIT_LINK, { level: 'warn', repo, issue, board, error: messageOf(error), reason: 'governor could not record that it told the ticket, so the next fire reads its thread again' });
+      });
       return told;
     },
   };
@@ -516,7 +528,8 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  * this repo the wait ticket blocks with no item: with no line, it was linked
  * by hand, and is told once and keeps its link; with a line that has passed
  * or cannot be read, its link comes off, as a turn that failed to take it
- * off left it.
+ * off left it. A ticket whose row shows no line and that governor recorded
+ * as told is skipped with no read, so later fires spend nothing on it.
  *
  * With `auto`, the repo's `trust.auto` (dispatch/trust.mjs): a ticket whose
  * author it does not let in gets its comment, but no spec work, and its
@@ -626,7 +639,12 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
   if (links !== undefined && blocking !== undefined) {
     const waiting = new Set(items.map((i) => i.issue));
     try {
-      const rows = (await blocking(links.board)).filter((r) => r.state === 'open' && (r.repo ?? repo).toLowerCase() === repo.toLowerCase() && !waiting.has(r.number));
+      const [all, told] = await Promise.all([blocking(links.board), state.toldUnlined(repo)]);
+      const toldSet = new Set(told);
+      // A row carries its body's line, so one with none that was told
+      // needs no read. A row with a line is read, so a line added later is
+      // never missed.
+      const rows = all.filter((r) => r.state === 'open' && (r.repo ?? repo).toLowerCase() === repo.toLowerCase() && !waiting.has(r.number) && !(r.wait === undefined && toldSet.has(r.number)));
       for (const { number } of rows) {
         const ticket = await ticketOf(reader, number);
         if (ticket === null || ticket.state !== 'open') continue;
