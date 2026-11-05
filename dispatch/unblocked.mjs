@@ -371,6 +371,15 @@ const readySentence = (issue, { removed, failed }) => {
 };
 
 /**
+ * The sentence a close that was not completed says where another open issue
+ * still blocks the ticket, in the not-planned row's comment and in a
+ * relative line's (`waitNotPlannedComment`, dispatch/waits.mjs).
+ *
+ * @param {number} issue
+ */
+export const stillBlockedSentence = (issue) => `#${issue} is still blocked by another open issue, so this close does not free it.`;
+
+/**
  * The comment a ticket gets when its blocker closed as not planned, and its
  * session's message if it is claimed. `blocked`: another open issue still
  * blocks the ticket, which the text says, so nobody reads it as free. That
@@ -385,7 +394,7 @@ const readySentence = (issue, { removed, failed }) => {
  * @param {{ blocked?: boolean, unreadied?: { removed: readonly string[], failed: readonly string[] } }} [options]
  */
 export const notPlannedComment = (fire, prompts, { blocked = false, unreadied } = {}) => {
-  const still = blocked ? `\n\n#${fire.issue} is still blocked by another open issue, so this close does not free it.` : '';
+  const still = blocked ? `\n\n${stillBlockedSentence(fire.issue)}` : '';
   const ready = unreadied === undefined ? '' : `\n\n${readySentence(fire.issue, unreadied)}`;
   const marker = unreadied !== undefined && unreadied.removed.length > 0 ? `\n\n${UNREADIED_MARKER}` : '';
   return `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}${still}${ready}${marker}`;
