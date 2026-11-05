@@ -66,8 +66,9 @@ served repos have their owner merge, so a pass there must not merge.
   run. Each queues a fire carrying the commit and no PR, and the task
   reviews each open PR at that head. A test-8 fail is read again at the
   same head, except by a check's end where the last review there, with the
-  same body, failed test 8 on the same red checks: that fire posts no
-  comment and no check. Test 8 leaves out the review's own `governor`
+  same body, failed test 8 on the same red checks and governor's own
+  `governor` check there is not in progress: that fire posts no comment
+  and no check. Test 8 leaves out the review's own `governor`
   check.
 - The model answers under a fixed pass/fail schema. Its system prompt
   replaces Claude Code's own: governor's fixed frame (`PR_FRAME`,

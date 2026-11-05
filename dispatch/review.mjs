@@ -376,7 +376,8 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     const bodySha = bodyDigest(pull.body);
     const last = lastReview(await reader.allComments(number));
     // A red required check's or CI run's fail is read again: a re-run can turn it green on the same head.
-    const reviewedAlready = last !== null && last.headSha === pull.headSha && last.bodySha === bodySha && commentKey(last.text) !== 'push';
+    const sameHead = last !== null && last.headSha === pull.headSha && last.bodySha === bodySha;
+    const reviewedAlready = sameHead && commentKey(last.text) !== 'push';
     // A pass whose merge an earlier review held, from before no run held a
     // merge: merged on that pass without judging it again.
     const heldReason = reviewedAlready ? heldPassReason(last.text) : null;
@@ -413,10 +414,13 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // A check's end at a head whose last review failed test 8 on these same
     // red checks says nothing again: another App answering the `governor`
     // check with a check of its own would otherwise loop. A re-run that
-    // changes which checks are red, or turns them green, is still read.
+    // changes which checks are red, or turns them green, is still read, and
+    // so is one where governor's own check there is in progress: a review
+    // that waited on the re-run would otherwise leave it waiting.
     const sameRed = checksFailure(checks.red, redCi);
-    if (byCommit && sameRed !== null && last !== null && last.headSha === pull.headSha && last.bodySha === bodySha && last.text === commentText(sameRed, { conflict: false })) {
-      return skip(`#${number} failed test 8 at ${pull.headSha.slice(0, 12)} on the same red checks: a check's end there changes nothing`);
+    if (byCommit && sameRed !== null && sameHead && last.text === commentText(sameRed, { conflict: false })) {
+      const waiting = (await reader.checksAt(pull.headSha)).some((c) => c.name === CHECK && c.state === 'pending');
+      if (!waiting) return skip(`#${number} failed test 8 at ${pull.headSha.slice(0, 12)} on the same red checks: a check's end there changes nothing`);
     }
 
     // A required check would wait on a PR that gets no check at all, so it
