@@ -961,6 +961,19 @@ describe('fitness: dispatcher-review.md, a conclusion applies the labels the rep
     });
   }
 
+  test('an add GitHub refuses after a removal went through does not say no label changed', async () => {
+    const h = harness({
+      reviews: [triage()], answers: [PASSES], live: true,
+      ticket: { labels: ['type: bug', 'triage: needs edit'] },
+      labelWrite: (op) => { if (op === 'add') throw Object.assign(new Error('add failed: 403'), { status: 403 }); },
+    });
+    const result = await h.review();
+    assert.equal(result.reviews[0]!.outcome, 'failed');
+    assert.ok(!h.live.labels.includes('triage: needs edit'), 'the removal went through');
+    assert.match(String(result.reviews[0]!.error), /refused to add "triaged"/);
+    assert.doesNotMatch(String(result.reviews[0]!.error), /no label changed/);
+  });
+
   test('a refused write never leaves an earlier success label under a later failure unsaid', async () => {
     const h = harness({ reviews: [triage()], answers: [GAPS], ticket: { labels: ['type: bug', 'triaged'] }, labelWrite: (op) => { if (op === 'remove') throw Object.assign(new Error('DELETE failed: 403'), { status: 403 }); } });
     const result = await h.review();
@@ -1028,9 +1041,12 @@ describe('fitness: dispatcher-review.md, a conclusion applies the labels the rep
 
   test('a label governor added and a person added again after is the person\'s, and stays; one only a person added stays in any case', async () => {
     const h = harness({ reviews: [triage()], answers: [PASSES], ticket: { labels: ['type: bug', 'triage: needs edit', 'Triage: Needs A Person'] }, adders: { 'Triage: Needs A Person': 'a-member' } });
+    // GitHub records no `labeled` event for a label the ticket still
+    // carries, so the person takes it off before adding it again.
+    h.edit({ labels: ['type: bug', 'Triage: Needs A Person'] });
     h.label('triage: needs edit');
     await h.review();
-    assert.deepEqual(h.live.labels, ['type: bug', 'triage: needs edit', 'Triage: Needs A Person', 'triaged']);
+    assert.deepEqual(h.live.labels, ['type: bug', 'Triage: Needs A Person', 'triage: needs edit', 'triaged']);
   });
 
   test('a label no labeled event names is not governor\'s, and stays', async () => {

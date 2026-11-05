@@ -467,10 +467,10 @@ const labelDescription = (name, conclusion) => `Added by governor's ${name} tick
 /**
  * Apply a conclusion's labels to the ticket: remove each label the other
  * two conclusions name that it carries and governor's App added last, then
- * create and add each of the conclusion's own labels it lacks. A write GitHub refuses throws, naming
- * the label, so the review posts no comment and runs again at the next
- * edit: a ticket must not keep an earlier `success` label under a later
- * `failure` with nobody told.
+ * create and add each of the conclusion's own labels it lacks. A write
+ * GitHub refuses throws, naming the label, so the review posts no comment
+ * and runs again at the next edit: a ticket must not keep an earlier
+ * `success` label under a later `failure` with nobody told.
  *
  * `conclusions` is the labels each conclusion adds on this ticket
  * ({@link conclusionsFor}). `every` is each set the review names, its own
@@ -503,23 +503,23 @@ export const applyLabels = async ({ reader, ticket, name, conclusions, every = [
   const carried = keyed(ticket.labels);
   const candidates = ticket.labels.filter((l) => otherKeys.has(l.toLowerCase()));
   const added = own.filter((l) => !carried.has(l.toLowerCase()));
-  const refused = (/** @type {string} */ what, /** @type {unknown} */ error) => Object.assign(new Error(`${what}, so no label changed and no comment posted: ${messageOf(error)}`), { status: /** @type {{ status?: number }} */ (error)?.status });
-  /** @type {Set<string>} */
-  const ours = new Set();
+  const refused = (/** @type {string} */ what, /** @type {unknown} */ error) => Object.assign(new Error(`${what}, so no comment posted: ${messageOf(error)}`), { status: /** @type {{ status?: number }} */ (error)?.status });
+  // Whether governor's App added each label last, keyed in lower case: a
+  // later event for the same label overwrites an earlier one.
+  /** @type {Map<string, boolean>} */
+  const oursLast = new Map();
   if (candidates.length > 0) {
     let adds;
     try {
       adds = await reader.labelAdds(ticket.number);
     } catch (error) {
-      throw refused(`GitHub refused to read who added ${candidates.map((l) => `"${l}"`).join(', ')}`, error);
+      // The read comes before any write, so here, and only here, no label changed.
+      throw refused(`GitHub refused to read who added ${candidates.map((l) => `"${l}"`).join(', ')}, so no label changed`, error);
     }
-    /** @type {Map<string, boolean>} */
-    const last = new Map();
-    for (const add of adds) last.set(add.label.toLowerCase(), add.ours === true);
-    for (const [label, by] of last) if (by) ours.add(label);
+    for (const add of adds) oursLast.set(add.label.toLowerCase(), add.ours === true);
   }
-  const removed = candidates.filter((l) => ours.has(l.toLowerCase()));
-  const kept = candidates.filter((l) => !ours.has(l.toLowerCase()));
+  const removed = candidates.filter((l) => oursLast.get(l.toLowerCase()) === true);
+  const kept = candidates.filter((l) => oursLast.get(l.toLowerCase()) !== true);
   for (const l of removed) {
     try {
       await reader.removeLabel(ticket.number, l);
