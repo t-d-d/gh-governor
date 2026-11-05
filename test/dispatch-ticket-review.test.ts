@@ -270,7 +270,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   };
 
   test('one label under two conclusions of one review is refused, naming the review and the label', async () => {
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build', 'seen'], neutral: ['seen'] } }] }, /triage/, /"seen"/);
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build', 'triage: seen'], neutral: ['triage: seen'] } }] }, /triage/, /"triage: seen"/, /under both success and neutral/);
   });
 
   test('one label in the conclusions of two reviews is refused, naming both reviews and the label', async () => {
@@ -283,7 +283,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   test('a review whose by reaches beyond trust.auto and names a ready label in any conclusion is refused', async () => {
     const trust = { auto: ['OWNER'], task: ['OWNER', 'MEMBER', 'COLLABORATOR'] };
     await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'COLLABORATOR'] }, conclusions: { success: ['triage: build'] } }] }, /triage/, /"triage: build"/, /COLLABORATOR/, /trust\.auto/);
-    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'COLLABORATOR'] }, conclusions: { neutral: ['mode: afk'] } }] }, /"mode: afk"/);
+    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'COLLABORATOR'] }, conclusions: { neutral: ['triage: build'] } }] }, /"triage: build"/, /trust\.auto/);
     // The default by is owners, members and collaborators, past an auto of the owner alone.
     await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'] } }] }, /triage/, /MEMBER/);
   });
@@ -291,7 +291,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   test('a review open to outsiders reads trust.auto as narrowed, and an unset auto is the three with a say', async () => {
     // trust.review lets outsiders in, or the review could read none of their tickets.
     const outsiders = { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'NONE'] };
-    await refused({ trust: outsiders, ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE', 'CONTRIBUTOR'] }, conclusions: { success: ['triage: build'] } }] }, /community/, /NONE, CONTRIBUTOR/);
+    await refused({ labels: { ready: ['community: build'], claim: 'claimed' }, trust: outsiders, ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE', 'CONTRIBUTOR'] }, conclusions: { success: ['community: build'] } }] }, /community/, /NONE, CONTRIBUTOR/);
     // trust.relay narrows an unset auto as autoOf does.
     await refused({ trust: { relay: ['OWNER', 'BOT'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'MEMBER'] }, conclusions: { success: ['triage: build'] } }] }, /MEMBER/);
   });
@@ -343,7 +343,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
     assert.ok(read.ok, JSON.stringify(read));
   });
 
-  test('a conclusion label without the review\'s name and a colon is refused, in its conclusions or a types entry\'s, naming the review and the label', async () => {
+  test('a conclusion label without the review\'s name, a colon and a space is refused, in its conclusions or a types entry\'s, naming the review and the label', async () => {
     // A label people also steer work with, such as mode: human, would come off when another conclusion ran.
     await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'], neutral: ['mode: human'] } }] }, /triage/, /"mode: human"/, /"triage: "/);
     await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], conclusions: { success: ['triaged'] } }] }] }, /triage/, /"triaged"/, /ticketReviews\.0\.types\.0\.conclusions\.success/);
@@ -427,8 +427,8 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   const ok = (over: Record<string, unknown>) => { const read = readConfig(text(over)); assert.ok(read.ok, JSON.stringify(read)); };
 
   test('one label under two conclusions of one review, across its default and its entries, is refused', async () => {
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['seen'] }, types: [{ labels: ['type: bug'], conclusions: { failure: ['Seen'] } }] }] }, /triage/, /"Seen"/);
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], conclusions: { success: ['seen'] } }, { labels: ['type: chore'], conclusions: { neutral: ['seen'] } }] }] }, /triage/, /"seen"/);
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: seen'] }, types: [{ labels: ['type: bug'], conclusions: { failure: ['Triage: Seen'] } }] }] }, /triage/, /"Triage: Seen"/, /under both success and failure/);
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], conclusions: { success: ['triage: seen'] } }, { labels: ['type: chore'], conclusions: { neutral: ['triage: seen'] } }] }] }, /triage/, /"triage: seen"/, /under both success and neutral/);
   });
 
   test('the same label under the same conclusion in the default and an entry is allowed', () => {
@@ -458,7 +458,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
 });
 
 describe('fitness: dispatcher-review.md, a ticket review\'s checklists and labels per ticket type', () => {
-  const BUG: TypeEntry = { labels: ['type: bug'], checklist: 'Bugs name their repro.', conclusions: { success: ['triaged', 'mode: afk'] } };
+  const BUG: TypeEntry = { labels: ['type: bug'], checklist: 'Bugs name their repro.', conclusions: { success: ['triaged', 'triage: build'] } };
   const SMALL: TypeEntry = { labels: ['size: small', 'size: tiny'], checklist: 'Small tickets name one file.', conclusions: { neutral: ['small: needs a person'], success: ['small: passed'] } };
   const review = (over: Partial<Review> = {}): Review => ({ name: 'triage', when: { on: 'opened' }, conclusions: TRIAGE, ...over });
   const asTicket = (labels: string[]) => ticketRow({ labels });
@@ -491,25 +491,25 @@ describe('fitness: dispatcher-review.md, a ticket review\'s checklists and label
   test('for each conclusion, the labels come from the first matching entry that names it, and otherwise from the default', () => {
     const r = review({ types: [SMALL, BUG, { labels: ['type: bug'], conclusions: { success: ['never'], failure: ['bug: needs repro'] } }] }) as never;
     assert.deepEqual(conclusionsFor(r, asTicket(['type: bug', 'size: small'])), { success: ['small: passed'], failure: ['bug: needs repro'], neutral: ['small: needs a person'] });
-    assert.deepEqual(conclusionsFor(r, asTicket(['type: bug'])), { success: ['triaged', 'mode: afk'], failure: ['bug: needs repro'], neutral: TRIAGE.neutral });
+    assert.deepEqual(conclusionsFor(r, asTicket(['type: bug'])), { success: ['triaged', 'triage: build'], failure: ['bug: needs repro'], neutral: TRIAGE.neutral });
     assert.deepEqual(conclusionsFor(r, asTicket([])), { success: TRIAGE.success, failure: TRIAGE.failure, neutral: TRIAGE.neutral });
   });
 
-  test('a bug\'s success adds mode: afk, and a success on an enhancement never removes it', async () => {
-    const repoLabels = ['type: bug', 'type: enhancement', 'mode: afk', 'triaged', 'triage: needs edit'];
+  test('a bug\'s success adds triage: build, and a success on an enhancement never removes it', async () => {
+    const repoLabels = ['type: bug', 'type: enhancement', 'triage: build', 'triaged', 'triage: needs edit'];
     const bug = harness({ reviews: [review({ types: [BUG] })], ticket: { labels: ['type: bug'] }, repoLabels });
     await bug.review();
-    assert.deepEqual(bug.live.labels, ['type: bug', 'triaged', 'mode: afk']);
-    const enhancement = harness({ reviews: [review({ types: [BUG] })], ticket: { labels: ['type: enhancement', 'mode: afk'] }, repoLabels });
+    assert.deepEqual(bug.live.labels, ['type: bug', 'triaged', 'triage: build']);
+    const enhancement = harness({ reviews: [review({ types: [BUG] })], ticket: { labels: ['type: enhancement', 'triage: build'] }, repoLabels });
     await enhancement.review();
     assert.deepEqual(enhancement.ops, ['add triaged', 'comment passes']);
-    assert.deepEqual(enhancement.live.labels, ['type: enhancement', 'mode: afk', 'triaged']);
+    assert.deepEqual(enhancement.live.labels, ['type: enhancement', 'triage: build', 'triaged']);
   });
 
   test('a failure takes off a label an entry\'s success named, even where the ticket\'s type has changed since', async () => {
-    const h = harness({ reviews: [review({ types: [BUG] })], answers: [GAPS], ticket: { labels: ['type: enhancement', 'triaged', 'mode: afk'] }, repoLabels: ['type: enhancement', 'triaged', 'mode: afk', 'triage: needs edit'] });
+    const h = harness({ reviews: [review({ types: [BUG] })], answers: [GAPS], ticket: { labels: ['type: enhancement', 'triaged', 'triage: build'] }, repoLabels: ['type: enhancement', 'triaged', 'triage: build', 'triage: needs edit'] });
     await h.review();
-    assert.deepEqual(h.ops, ['remove triaged', 'remove mode: afk', 'add triage: needs edit', 'comment waits for an edit']);
+    assert.deepEqual(h.ops, ['remove triaged', 'remove triage: build', 'add triage: needs edit', 'comment waits for an edit']);
   });
 
   test('with types, adding or removing a label an entry names changes the key; with no types the key is the body\'s digest', () => {
