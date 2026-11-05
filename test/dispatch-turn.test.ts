@@ -3010,6 +3010,30 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       assert.deepEqual(h.comments.filter((c) => c.body.includes(waitEndedMarker(PAST))).map((c) => c.issue), [7, 8]);
     });
 
+    test('the spec sessions past DispatchCap are the later issues, whichever ticket read answers first', async () => {
+      const base = harness();
+      const h = harness({
+        cap: 1,
+        reader: () => ({
+          ...base.deps.reader(''),
+          readyIssues: async () => [],
+          // The lowest issue answers last.
+          ticket: async (n: number) => {
+            if (n === 7) await new Promise((resolve) => setTimeout(resolve, 5));
+            return { ...ticketWith({ wait: { until: PAST } }), number: n, title: `Issue ${n}` };
+          },
+          allComments: async () => [],
+          comment: async (n: number, body: string) => { h.comments.push({ issue: n, body }); },
+        }),
+      });
+      h.waitItems.set(`${REPO}#12`, PAST);
+      h.waitItems.set(`${REPO}#7`, PAST);
+      h.waitItems.set(`${REPO}#8`, PAST);
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(h.launches.filter((l) => l.sessionName.startsWith('#')).map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
+      assert.deepEqual([...h.waitItems].sort(), [[`${REPO}#12`, PAST], [`${REPO}#8`, PAST]]);
+    });
+
     test('a spec session is not counted as a ticket pickup started', async () => {
       const h = waitsTurn();
       await run({ source: 'aws.events' }, h.deps as never);
