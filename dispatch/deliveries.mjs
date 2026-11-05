@@ -26,7 +26,7 @@
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { instruction } from './prompts.mjs';
 import { commitSession } from './branch-run.mjs';
-import { relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
+import { markOwnerUnknown, ownerUnknownSince, relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /**
@@ -179,9 +179,10 @@ export const OUTPUT_TAIL = 2000;
 export const DEFAULT_SESSION_NAME = 'dispatch';
 
 /**
- * How long a takeover whose launch printed no session link holds its PR: a
- * later remark's takeover starts nothing while it stands, since the session
- * may be running on the PR's branch though the body names no session.
+ * How long a takeover whose launch printed no session link holds its PR,
+ * from the time its owner-unknown line gives: a later remark's takeover
+ * starts nothing while it stands, since the session may be running on the
+ * PR's branch though the body names no new session.
  */
 export const TAKEOVER_HOLD_MS = 2 * 60 * 60 * 1000;
 
@@ -268,10 +269,6 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   now: () => number,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  *   sleep: (ms: number) => Promise<void>,
- *   takeovers: {
- *     standing: (pr: number) => Promise<{ until: string } | null>,
- *     record: (pr: number, record: { at: string, until: string }) => Promise<boolean>,
- *   },
  *   launchTimeoutMs?: number | undefined,
  * }} DeliveryDeps
  *   `prompts`: the turn's repo's config file's prompts. `signOff`: whether
@@ -288,11 +285,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   finder by branch, under the turn's login; a login it cannot use throws,
  *   saying what it was `asking`. `launchTimeoutMs`: one launch budget; a
  *   delivery's send and fallback share {@link DELIVER_LAUNCHES} of
- *   them, and with none, no end. `takeovers`: the repo's record of each
- *   PR whose takeover launch printed no session link, in the state table
- *   (`takeover#<repo>` / `<pr>`, dispatch/turn.mjs): read, null where none
- *   stands, and put with the time it holds the PR until, false where one
- *   held. A read that fails throws.
+ *   them, and with none, no end.
  *
  * @typedef {{ session: string } | { pr: number, poster?: string }} Recipient
  *   A session, or the owner of PR `pr` whose body named no session when the
@@ -550,8 +543,10 @@ export const deliveries = (deps) => {
    * one record of a PR's session. A launch that printed no link, or a
    * rewrite GitHub refuses, logs at error and the caller fails the turn;
    * the next remark finds the archived owner in the body and takes the PR
-   * over again, unless the launch printed no link: then the PR's takeover
-   * record holds it for two hours ({@link holdTakeover}).
+   * over again, unless the launch printed no link: then the body gets a
+   * line saying so ({@link markOwnerUnknown}), and that holds the PR for
+   * {@link TAKEOVER_HOLD_MS}. A line that cannot be written is logged at
+   * error, as the failed relink is.
    *
    * @param {number} pr
    * @param {string | null} sessionUrl
@@ -560,7 +555,16 @@ export const deliveries = (deps) => {
   const relink = async (pr, sessionUrl) => {
     const reason = 'the PR body still names the archived owner, so its next remark starts another session';
     if (sessionUrl === null) {
-      deps.log('dispatch-relink', { level: 'error', pr, sessionUrl, error: 'the launcher printed no session link', reason: 'the PR body still names the archived owner, so its next remark after the takeover record expires starts another session' });
+      deps.log('dispatch-relink', { level: 'error', pr, sessionUrl, error: 'the launcher printed no session link', reason: 'the PR body still names the archived owner, so its next remark after the owner-unknown line expires starts another session' });
+      const at = new Date(deps.now()).toISOString();
+      try {
+        const github = await deps.reader();
+        const { body } = await github.pull(pr);
+        await github.updatePull(pr, { body: markOwnerUnknown(body, at) });
+        deps.log('dispatch-owner-unknown', { pr, at });
+      } catch (error) {
+        deps.log('dispatch-owner-unknown', { level: 'error', pr, at, error: messageOf(error), reason });
+      }
       return false;
     }
     try {
@@ -571,25 +575,6 @@ export const deliveries = (deps) => {
     } catch (error) {
       deps.log('dispatch-relink', { level: 'error', pr, sessionUrl, error: messageOf(error), reason });
       return false;
-    }
-  };
-
-  /**
-   * Hold PR `pr` for {@link TAKEOVER_HOLD_MS} after a takeover whose launch
-   * printed no session link, so the next remark starts no second session
-   * beside it. A record already standing holds it already. A write that
-   * fails is logged at error: the failed relink already fails the turn.
-   *
-   * @param {number} pr
-   */
-  const holdTakeover = async (pr) => {
-    const at = deps.now();
-    const record = { at: new Date(at).toISOString(), until: new Date(at + TAKEOVER_HOLD_MS).toISOString() };
-    try {
-      const put = await deps.takeovers.record(pr, record);
-      deps.log('dispatch-takeover-record', { pr, ...record, put });
-    } catch (error) {
-      deps.log('dispatch-takeover-record', { level: 'error', pr, ...record, error: messageOf(error), reason: 'the next remark on the PR may start a second session beside this one' });
     }
   };
 
@@ -663,13 +648,15 @@ export const deliveries = (deps) => {
         }
         // A takeover before this one launched and printed no link: its
         // session may be running on the head branch, and the body still
-        // names the archived owner. While its record stands nothing starts
-        // beside it. A missing record launches; a failed read throws.
+        // names the archived owner, with a line saying when. For two hours
+        // from then nothing starts beside it. A line with a time still to
+        // come is none governor wrote, and holds nothing.
         if (fallback === null) {
-          const held = await deps.takeovers.standing(issue);
-          if (held !== null && Date.parse(held.until) > deps.now()) {
+          const since = ownerUnknownSince(relayedBody(pr, deps.relay));
+          const at = since === null ? Number.NaN : Date.parse(since);
+          if (at <= deps.now() && deps.now() < at + TAKEOVER_HOLD_MS) {
             fallback = { outcome: 'skipped', sessionUrl: null };
-            reason = `a takeover of PR #${issue} launched and printed no session link, so its session may be running; nothing starts beside it until ${held.until}`;
+            reason = `PR #${issue}'s body says a takeover at ${since} launched and printed no session link, so its session may be running; nothing starts beside it until ${new Date(at + TAKEOVER_HOLD_MS).toISOString()}`;
           }
         }
         if (fallback === null && pr.defaultBranch !== '' && pr.head !== pr.defaultBranch) branch = pr.head;
@@ -681,7 +668,6 @@ export const deliveries = (deps) => {
           if (spec) {
             named = await nameSpecSession(await deps.reader(), { repo: deps.repo, issue, sessionUrl: started.sessionUrl, log: deps.log });
           } else if (takeover) {
-            if (started.sessionUrl === null) await holdTakeover(issue);
             named = relinked = await relink(issue, started.sessionUrl);
           }
         }

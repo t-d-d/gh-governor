@@ -22,7 +22,7 @@ import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, cliEnv,
 import { DEFAULT_SESSION_NAME, DISPATCHER_LABEL, GITHUB_SOURCE, fromDispatcher, hookLabel, standingLine } from '../dispatch/deliveries.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { ownerSpecMessage, specPrompt } from '../dispatch/unblocked.mjs';
-import { sessionNamedIn, subscribeLine } from '../dispatch/webhook/subscribe.mjs';
+import { ownerUnknownSince, sessionNamedIn, subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { promptFor, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { SIGN_POSTS, UNATTENDED, dispatchMarker, parseFire } from '../dispatch/webhook/fire.mjs';
@@ -154,9 +154,6 @@ const harness = (over: Record<string, unknown> = {}) => {
   const waitItems = new Map<string, string>();
   const failedLaunches = new Map<string, string>();
   const waitWrites: Array<{ repo: string; issue: number; until: string | null }> = [];
-  // Each PR's unconfirmed takeover, keyed `<repo>#<pr>`, and every write to one.
-  const takeovers = new Map<string, { at: string; until: string }>();
-  const takeoverWrites: Array<{ repo: string; pr: number; at: string; until: string }> = [];
   // The login's sessions, as the sessions list answers them, and each one's
   // events page, by `cse_` id; and every events read, with its token.
   const rows: Array<Record<string, unknown>> = [];
@@ -398,19 +395,10 @@ const harness = (over: Record<string, unknown> = {}) => {
         waitWrites.push({ repo, issue, until: null });
         return true;
       },
-      takeover: async (repo: string, pr: number) => (takeovers.has(`${repo}#${pr}`) ? { until: takeovers.get(`${repo}#${pr}`)!.until } : null),
-      // A conditional write, as the table's: only where none or an expired record stands.
-      recordTakeover: async (repo: string, pr: number, record: { at: string; until: string }) => {
-        const held = takeovers.get(`${repo}#${pr}`);
-        if (held !== undefined && held.until > record.at) return false;
-        takeovers.set(`${repo}#${pr}`, record);
-        takeoverWrites.push({ repo, pr, ...record });
-        return true;
-      },
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, failedLaunches, takeovers, takeoverWrites, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, failedLaunches, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -4438,21 +4426,28 @@ describe('run — a message with a fallback', () => {
   });
 
   // A takeover whose launch printed no link leaves the body naming the
-  // archived owner. Its record in the state table holds the PR, so the next
+  // archived owner. The line it adds to the body holds the PR, so the next
   // remark inside two hours starts no second session beside the first.
   test('a remark that follows an unconfirmed takeover with no link starts no second session, and the turn exits 0', async () => {
+    const base = harness();
+    let body = PR_BODY;
     const launches: unknown[] = [];
-    const { deps, takeoverWrites, logged } = harness({
+    const { deps, logged } = harness({
       message: async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }),
       launch: async (launch: unknown) => { launches.push(launch); return { status: 3, output: 'timed out' }; },
+      reader: () => ({
+        ...base.deps.reader(''),
+        pull: async (n: number) => ({ number: n, body, head: 'claude/branch-724', defaultBranch: 'main', open: true, association: 'OWNER' }),
+        updatePull: async (_n: number, change: { body: string }) => { body = change.body; },
+      }),
     });
     const fire = { kind: 'message', session: 'https://claude.ai/code/session_01OLD', text: 'hi', fallback: { ...fallback, issue: 724 } };
     const first = await run(fire, deps as never);
     assert.equal(launches.length, 1);
     assert.deepEqual((first as { fallback: unknown }).fallback, { outcome: 'unconfirmed', sessionUrl: null });
     assert.equal(exitCodeFor(first as never), 1, 'the operator is told by the exit code');
-    assert.deepEqual(takeoverWrites.map((w) => [w.repo, w.pr]), [['acme/factory', 724]]);
-    assert.equal(Date.parse(takeoverWrites[0]!.until) - Date.parse(takeoverWrites[0]!.at), 2 * 60 * 60 * 1000);
+    assert.equal(ownerUnknownSince(body), new Date(NOW).toISOString());
+    assert.equal(sessionNamedIn(body), 'https://claude.ai/code/session_01OLD', 'the body still routes to the archived owner');
     const second = await run(fire, deps as never);
     assert.equal(launches.length, 1, 'no second session');
     assert.deepEqual((second as { fallback: unknown }).fallback, { outcome: 'skipped', sessionUrl: null });
@@ -6178,44 +6173,6 @@ describe('realDeps: the state table', () => {
     await assert.rejects(halfPass.verdict(REPO, 12), /malformed/);
   });
 
-  // A takeover whose launch printed no session link holds its PR for two hours.
-  test('an unconfirmed takeover is one item per repo and PR, read consistently, put only where none or an expired one stands, and expires', async () => {
-    const sent: Array<{ name: string; input: Record<string, any> }> = [];
-    let refuse = false;
-    const AT = '2026-11-05T12:00:00.000Z';
-    const UNTIL = '2026-11-05T14:00:00.000Z';
-    let item: Record<string, any> | undefined;
-    const client = {
-      send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
-        sent.push({ name: command.constructor.name, input: command.input });
-        if (command.constructor.name === 'GetItemCommand') return item === undefined ? {} : { Item: item };
-        if (refuse) throw Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' });
-        return {};
-      },
-    };
-    const state = dynamoState(client as never, 'T');
-    assert.equal(await state.takeover('acme/factory', 724), null, 'a missing item launches as before');
-    const read = sent[0]!;
-    assert.deepEqual(read.input.Key, { pk: { S: 'takeover#acme/factory' }, sk: { S: '724' } });
-    assert.equal(read.input.ConsistentRead, true);
-    assert.equal(await state.recordTakeover('acme/factory', 724, { at: AT, until: UNTIL }), true);
-    const put = sent[1]!;
-    assert.equal(put.name, 'PutItemCommand', 'one conditional put, never a read then a write');
-    assert.deepEqual({ pk: put.input.Item.pk, sk: put.input.Item.sk }, { pk: { S: 'takeover#acme/factory' }, sk: { S: '724' } });
-    assert.deepEqual(put.input.Item.until, { S: UNTIL });
-    assert.equal(Number(put.input.Item.ttl.N), Date.parse(UNTIL) / 1000);
-    assert.match(String(put.input.ConditionExpression), /attribute_not_exists\(pk\) OR #until <= :at/);
-    assert.deepEqual(put.input.ExpressionAttributeValues[':at'], { S: AT });
-    refuse = true;
-    assert.equal(await state.recordTakeover('acme/factory', 724, { at: AT, until: UNTIL }), false, 'a record standing is no fault');
-    item = { pk: { S: 'takeover#acme/factory' }, sk: { S: '724' }, until: { S: UNTIL } };
-    assert.deepEqual(await state.takeover('acme/factory', 724), { until: UNTIL });
-    item = { pk: { S: 'takeover#acme/factory' }, sk: { S: '724' } };
-    await assert.rejects(state.takeover('acme/factory', 724), /malformed/);
-    const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
-    await assert.rejects(failing.takeover('acme/factory', 724), /AccessDeniedException/);
-    await assert.rejects(failing.recordTakeover('acme/factory', 724, { at: AT, until: UNTIL }), /AccessDeniedException/);
-  });
   // A periodic's last fire, per repo and name, survives a lost item: no record is the baseline.
   test('a periodic\'s record is one item per repo and name, read consistently, written only over the record the turn read, and never expires', async () => {
     const sent: Array<{ name: string; input: Record<string, any> }> = [];

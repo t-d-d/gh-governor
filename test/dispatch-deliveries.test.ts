@@ -14,7 +14,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { DELIVER_LAUNCHES, DISPATCHER_LABEL, TAKEOVER_HOLD_MS, GITHUB_SOURCE, deliveries, fromDispatcher, hookLabel, hookSource, standingLine } from '../dispatch/deliveries.mjs';
-import { sessionNamedIn, subscribeLine, subscribersFor } from '../dispatch/webhook/subscribe.mjs';
+import { markOwnerUnknown, sessionNamedIn, subscribeLine, subscribersFor } from '../dispatch/webhook/subscribe.mjs';
 import { RELAY, dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { SIGN_OFF } from '../scripts/lib/session-signoff.mjs';
@@ -65,7 +65,6 @@ const fakes = (over: {
   repo?: string;
   signOff?: boolean;
   relay?: readonly string[];
-  takeovers?: { standing?: (pr: number) => Promise<{ until: string } | null>; record?: (pr: number, record: { at: string; until: string }) => Promise<boolean> };
 } = {}) => {
   const sent: Message[] = [];
   const untils: number[] = [];
@@ -77,8 +76,6 @@ const fakes = (over: {
   const asked: string[] = [];
   const logged: Array<{ event: string; [key: string]: unknown }> = [];
   const slept: number[] = [];
-  const takeoverReads: number[] = [];
-  const takeoverRecords: Array<{ pr: number; at: string; until: string }> = [];
   let readers = 0;
   const reader = {
     comments: async () => [],
@@ -112,16 +109,12 @@ const fakes = (over: {
     now: over.now ?? (() => NOW),
     log: (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); },
     sleep: async (ms: number) => { slept.push(ms); },
-    takeovers: {
-      standing: async (pr: number) => { takeoverReads.push(pr); return over.takeovers?.standing ? over.takeovers.standing(pr) : null; },
-      record: async (pr: number, record: { at: string; until: string }) => { takeoverRecords.push({ pr, ...record }); return over.takeovers?.record ? over.takeovers.record(pr, record) : true; },
-    },
     ...(over.launchTimeoutMs === undefined ? {} : { launchTimeoutMs: over.launchTimeoutMs }),
   });
   // Every send names its source; these tests relay GitHub activity unless one says otherwise.
   const deliver = (to: { session: string } | { pr: number; poster?: string }, text: string, options: Record<string, unknown> = {}) =>
     delivery.deliver(to, text, { source: GITHUB_SOURCE, ...options } as never) as Promise<Told>;
-  return { delivery, deliver, sent, untils, launches, comments, edits, issueEdits, searches, asked, logged, slept, takeoverReads, takeoverRecords, readers: () => readers };
+  return { delivery, deliver, sent, untils, launches, comments, edits, issueEdits, searches, asked, logged, slept, readers: () => readers };
 };
 
 describe('deliver — a message into a session', () => {
@@ -413,11 +406,11 @@ describe('deliver — with a fallback', () => {
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.relinked === null), `its log line says no relink was tried, not that one failed: ${JSON.stringify(f.logged)}`);
   });
 
-  test('a takeover whose launch printed no session URL posts nothing, and the relink fails at error', async () => {
+  test('a takeover whose launch printed no session URL posts no comment, names no session in the body, and the relink fails at error', async () => {
     const f = fakes({ send: archived, launch: async () => ({ outcome: 'unconfirmed', sessionUrl: null }) });
     const told = await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
     assert.deepEqual(told.fallback, { outcome: 'unconfirmed', sessionUrl: null });
-    assert.deepEqual(f.edits, []);
+    assert.deepEqual(f.edits.map((e) => sessionNamedIn(e.body)), ['https://claude.ai/code/session_01OLD'], 'the one edit is the marker: the body still names the archived owner');
     assert.deepEqual(f.comments, []);
     assert.equal(told.relinked, false);
     assert.ok(f.logged.some((l) => l.event === 'dispatch-relink' && l.level === 'error'), JSON.stringify(f.logged));
@@ -425,80 +418,74 @@ describe('deliver — with a fallback', () => {
 
   /**
    * A takeover whose launch printed no link may still be running, and the
-   * body still names the archived owner. The record it leaves holds the PR
-   * for two hours: a remark inside them starts no second session on the
-   * same branch.
+   * body still names the archived owner. The line it adds to the body holds
+   * the PR for two hours: a remark inside them starts no second session on
+   * the same branch.
    */
-  test('a takeover whose launch printed no session link records the PR, held for two hours', async () => {
+  test('a takeover whose launch printed no session link marks the PR body owner unknown, keeping the archived link', async () => {
     const f = fakes({ send: archived, launch: async () => ({ outcome: 'unconfirmed', sessionUrl: null }) });
-    await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
-    assert.deepEqual(f.takeoverRecords, [{ pr: 724, at: new Date(NOW).toISOString(), until: new Date(NOW + TAKEOVER_HOLD_MS).toISOString() }]);
+    const told = await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.equal(told.relinked, false, 'the body still names the archived owner, so the turn fails');
+    assert.deepEqual(f.edits, [{ pr: 724, body: markOwnerUnknown(PR_BODY, new Date(NOW).toISOString()) }]);
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-owner-unknown' && l.pr === 724 && l.at === new Date(NOW).toISOString()), JSON.stringify(f.logged));
     assert.equal(TAKEOVER_HOLD_MS, 2 * 60 * 60 * 1000);
   });
 
-  test('a takeover whose launch printed a link, or failed, or a fallback that is no takeover, records nothing', async () => {
+  test('a takeover whose launch printed a link, or failed, or a fallback that is no takeover, marks nothing', async () => {
     const linked = fakes({ send: archived });
     await linked.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.deepEqual(linked.edits, [{ pr: 724, body: PR_BODY.replace('session_01OLD', 'session_01ABC') }]);
     const failed = fakes({ send: archived, launch: async () => ({ outcome: 'failed', sessionUrl: null }) });
     await failed.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
     const red = fakes({ send: archived, launch: async () => ({ outcome: 'unconfirmed', sessionUrl: null }) });
     await red.deliver({ session: 'session_01OLD' }, 'CI is red', { fallback: onPr });
-    assert.deepEqual([...linked.takeoverRecords, ...failed.takeoverRecords, ...red.takeoverRecords], []);
-    assert.deepEqual(red.takeoverReads, [], 'a fallback that is no takeover reads no record');
+    assert.deepEqual([...failed.edits, ...red.edits], []);
   });
 
+  const markedAt = (at: number) => async (n: number) => ({ number: n, body: markOwnerUnknown(PR_BODY, new Date(at).toISOString()), head: 'claude/branch-724', defaultBranch: 'main', open: true, association: 'OWNER' });
+
   test('a remark that follows an unconfirmed takeover with no link, inside its two hours, starts no second session', async () => {
-    const until = new Date(NOW + 60 * 60_000).toISOString();
-    const f = fakes({ send: archived, takeovers: { standing: async () => ({ until }) } });
+    const at = NOW - 60 * 60_000;
+    const f = fakes({ send: archived, reader: { pull: markedAt(at) } });
     const told = await f.deliver({ session: 'session_01OLD' }, 'a later remark', { fallback: onPr, takeover: true });
-    assert.deepEqual(f.takeoverReads, [724]);
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD'], 'the archived owner is tried, as before');
     assert.deepEqual(f.launches, []);
     assert.deepEqual(f.edits, []);
     assert.deepEqual(f.comments, []);
     assert.equal(told.refused, true);
     assert.deepEqual(told.fallback, { outcome: 'skipped', sessionUrl: null });
     assert.equal(told.relinked, null);
+    const until = new Date(at + TAKEOVER_HOLD_MS).toISOString();
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.outcome === 'skipped' && String(l.reason).includes(until) && /no session link/.test(String(l.reason))), JSON.stringify(f.logged));
   });
 
-  test('a record whose two hours have passed, or none, launches the takeover as before', async () => {
-    const past = fakes({ send: archived, takeovers: { standing: async () => ({ until: new Date(NOW).toISOString() }) } });
-    const late = await past.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
-    assert.equal(past.launches.length, 1);
-    assert.deepEqual(late.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
-    const none = fakes({ send: archived });
-    await none.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
-    assert.equal(none.launches.length, 1);
-    assert.deepEqual(none.takeoverReads, [724]);
+  test('a marker whose two hours have passed launches the takeover, and its relink removes the marker', async () => {
+    const f = fakes({ send: archived, reader: { pull: markedAt(NOW - TAKEOVER_HOLD_MS) } });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.equal(f.launches.length, 1);
+    assert.deepEqual(told.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
+    assert.deepEqual(f.edits, [{ pr: 724, body: PR_BODY.replace('session_01OLD', 'session_01ABC') }]);
   });
 
-  // A failed read is never a missing record (dispatcher-state.md).
-  test('a record that cannot be read refuses the delivery and starts nothing', async () => {
-    const f = fakes({ send: archived, takeovers: { standing: async () => { throw new Error('AccessDeniedException'); } } });
-    await assert.rejects(f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true }), /AccessDeniedException/);
-    assert.deepEqual(f.launches, []);
+  // A time to come is no record governor wrote: it would hold the PR for good.
+  test('a marker dated in the future holds nothing', async () => {
+    const f = fakes({ send: archived, reader: { pull: markedAt(NOW + 60_000) } });
+    await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.equal(f.launches.length, 1);
   });
 
-  // The PR is read first: a closed PR, or a body naming the session now, needs no record read.
-  test('a takeover of a closed PR, or one the body forwards, reads no record', async () => {
-    const closed = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: false }) } });
-    await closed.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
-    assert.deepEqual(closed.takeoverReads, []);
-    const moved = PR_BODY.replace('session_01OLD', 'session_01NEW');
-    const forwarded = fakes({
-      send: async (m) => (m.session === 'session_01OLD' ? archived(m) : accepted('session_01NEW')),
-      reader: { pull: async (n: number) => ({ number: n, body: moved, head: 'claude/branch-724', open: true, association: 'OWNER' }) },
-    });
-    const told = await forwarded.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
-    assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: 'https://claude.ai/code/session_01NEW' });
-    assert.deepEqual(forwarded.takeoverReads, []);
+  // Whose body may name a session decides whose marker counts (trust.relay).
+  test('a marker in a body trust.relay does not read holds nothing', async () => {
+    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ ...(await markedAt(NOW - 60_000)(n)), association: 'NONE' }) } });
+    await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.equal(f.launches.length, 1);
   });
 
-  test('a record that cannot be written is logged at error; the turn already fails on the relink', async () => {
-    const f = fakes({ send: archived, launch: async () => ({ outcome: 'unconfirmed', sessionUrl: null }), takeovers: { record: async () => { throw new Error('AccessDeniedException'); } } });
+  test('a marker that cannot be written is logged at error; the turn already fails on the relink', async () => {
+    const f = fakes({ send: archived, launch: async () => ({ outcome: 'unconfirmed', sessionUrl: null }), reader: { updatePull: async () => { throw new Error('PATCH /repos/acme/factory/pulls/724 failed: 403 Forbidden'); } } });
     const told = await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
     assert.equal(told.relinked, false);
-    assert.ok(f.logged.some((l) => l.event === 'dispatch-takeover-record' && l.level === 'error' && /AccessDeniedException/.test(String(l.error))), JSON.stringify(f.logged));
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-owner-unknown' && l.level === 'error' && /403/.test(String(l.error))), JSON.stringify(f.logged));
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.outcome === 'unconfirmed'), JSON.stringify(f.logged));
   });
 

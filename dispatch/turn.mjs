@@ -258,8 +258,6 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   startedSession: (session: string) => Promise<boolean>,
  *   verdict: (repo: string, pr: number) => Promise<(import('./review.mjs').Verdict & { at: string }) | null>,
  *   recordVerdict: (repo: string, pr: number, read: (import('./review.mjs').Verdict & { at: string }) | null, verdict: import('./review.mjs').Verdict) => Promise<boolean>,
- *   takeover: (repo: string, pr: number) => Promise<{ until: string } | null>,
- *   recordTakeover: (repo: string, pr: number, record: { at: string, until: string }) => Promise<boolean>,
  * } & import('./periodics.mjs').PeriodicState & import('./pickup.mjs').PickupState & import('./hooks.mjs').HookState & import('./waits.mjs').WaitState} DispatchState
  *   Each label's cursor, by its repo, its workflow's file name and the
  *   label (null for CI's, which earns none): read (null when it has none),
@@ -278,10 +276,6 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   the PR review (dispatch/review.mjs), whichever repo its PR is in.
  *   A PR review's verdict (dispatch/review.mjs): read, and written over
  *   the item the review read, false where another stood.
- *   A PR's takeover whose launch printed no session link
- *   (dispatch/deliveries.mjs): read (null when none stands), and put with
- *   the time it holds the PR `until`, only where none or one expired by
- *   `at` stands, false where one held.
  *   A read or write that fails throws.
  *
  * @typedef {{ told: string[], failed: string[] }} Delivered
@@ -1136,10 +1130,6 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    */
   const deliveriesOf = (own) => turnDeliveries({
     ...own,
-    takeovers: {
-      standing: (pr) => deps.state.takeover(own.repo, pr),
-      record: (pr, record) => deps.state.recordTakeover(own.repo, pr, record),
-    },
     send: (message, until) => budgeted(() => deps.message(message), message.session, until),
     sessions: sessionsFinder,
     now: deps.now,
@@ -1975,11 +1965,7 @@ export const cliEnv = (env, home, account) => ({
  * model call. A ticket whose launch started nothing is the item
  * `pickup-failed#<repo>` / `<issue>`, holding the time pickup holds it
  * until, put after the launch over any earlier one, and expired at that
- * time: a lost one lets one more launch go. A PR's takeover whose launch
- * printed no session link is the item `takeover#<repo>` / `<pr>`, holding
- * the time it stands until, put only where none or an expired one stands,
- * and expired by `ttl` at that time: a lost one costs at most a second
- * session on the PR's branch.
+ * time: a lost one lets one more launch go.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -1990,7 +1976,6 @@ export const dynamoState = (client, table) => {
   const key = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label) => ({ pk: pk(repo, workflow), sk: { S: label === null ? 'cursor' : `cursor#${label}` } });
   const periodicKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `periodic#${repo}` }, sk: { S: name } });
   const hookKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `hook#${repo}` }, sk: { S: name } });
-  const takeoverKey = (/** @type {string} */ repo, /** @type {number} */ pr) => ({ pk: { S: `takeover#${repo}` }, sk: { S: String(pr) } });
   const sweepKey = (/** @type {string} */ repo) => ({ pk: { S: `pickup#${repo}` }, sk: { S: 'sweep' } });
   const failedPk = (/** @type {string} */ repo) => ({ S: `pickup-failed#${repo}` });
   const waitPk = (/** @type {string} */ repo) => ({ S: `wait#${repo.toLowerCase()}` });
@@ -2096,29 +2081,6 @@ export const dynamoState = (client, table) => {
           ...(read === null
             ? { ConditionExpression: 'attribute_not_exists(pk)' }
             : { ConditionExpression: '#at = :read', ExpressionAttributeNames: { '#at': 'at' }, ExpressionAttributeValues: { ':read': { S: read.at } } }),
-        }));
-        return true;
-      } catch (error) {
-        if (refused(error)) return false;
-        throw error;
-      }
-    },
-    takeover: async (repo, pr) => {
-      const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: takeoverKey(repo, pr), ConsistentRead: true }));
-      if (item === undefined) return null;
-      const until = item.until?.S;
-      // A malformed item is a failed read, never a missing one.
-      if (until === undefined || Number.isNaN(Date.parse(until))) throw new Error(`the takeover item for ${repo} #${pr} is malformed: ${JSON.stringify(item)}`);
-      return { until };
-    },
-    recordTakeover: async (repo, pr, { at, until }) => {
-      try {
-        await client.send(new PutItemCommand({
-          TableName: table,
-          Item: { ...takeoverKey(repo, pr), at: { S: at }, until: { S: until }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.parse(until) / 1000)) } },
-          ConditionExpression: 'attribute_not_exists(pk) OR #until <= :at',
-          ExpressionAttributeNames: { '#until': 'until' },
-          ExpressionAttributeValues: { ':at': { S: at } },
         }));
         return true;
       } catch (error) {
@@ -2559,7 +2521,7 @@ export const realDeps = () => {
     sleep: (ms) => new Promise((resolveSleep) => { setTimeout(resolveSleep, ms); }),
     fires: env.DISPATCH_FIRES_QUEUE_URL ? sqsFires(sqs, env.DISPATCH_FIRES_QUEUE_URL) : undefined,
     enqueue: env.DISPATCH_FIRES_QUEUE_URL ? sqsEnqueue(sqs, env.DISPATCH_FIRES_QUEUE_URL) : undefined,
-    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, no periodic starts, no repo is swept, no PR is taken over, and every PR review fails, rather than guess.
+    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, no periodic starts, no repo is swept, and every PR review fails, rather than guess.
     state: env.DISPATCH_STATE_TABLE
       ? dynamoState(new DynamoDBClient({}), env.DISPATCH_STATE_TABLE)
       : {
@@ -2584,8 +2546,6 @@ export const realDeps = () => {
         wait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordWait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         dropWait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
-        takeover: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
-        recordTakeover: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
       },
     // No table named: every write fails and is logged at error, and the
     // turn goes on, its own checks on a hook fire unchanged.

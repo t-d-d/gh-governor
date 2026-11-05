@@ -163,7 +163,6 @@ const depsOf = (reader: unknown, launches: string[], messages: string[], errors:
     failedLaunches: async () => [], recordFailedLaunch: async () => {},
     recordSession: async () => {}, startedSession: async () => false, verdict: async () => null, recordVerdict: async () => true,
     waits: async () => [], wait: async () => null, recordWait: async () => true, dropWait: async () => true,
-    takeover: async () => null, recordTakeover: async () => true,
   },
 });
 

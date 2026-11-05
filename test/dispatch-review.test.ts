@@ -235,9 +235,6 @@ const harness = (over: {
         verdictWrites.push({ repo, pr, read, verdict });
         return true;
       },
-      // No PR here has an unconfirmed takeover standing.
-      takeover: async () => null,
-      recordTakeover: async () => true,
     },
   };
   return { deps, sessionsRead, threadReads, verdictWrites, ciReads, checkRuns, writes, comments, commentEdits, merges, judged, transcripts, messages, launches, logged, reads, requiredReads, baseReads, fileReads, readerApps };
