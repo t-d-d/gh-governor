@@ -1157,17 +1157,15 @@ describe('routeEvent — owners', () => {
     assert.match(closed.sent[0]!.text, /closed/);
   });
 
-  // The dispatcher puts the ready label back when a launch it claimed for
-  // fails. A fire for that label would claim and launch the same
-  // ticket again inside the turn's lane, so a ready label a bot added queues
-  // no selection: the payload names no App behind a bot sender, and the
-  // dispatcher's is the only bot that adds the label.
-  test('a ready label the dispatcher\'s App added queues no selection, and reaches nobody', () => {
+  // Who added a ready label does not decide whether governor acts on it: a
+  // label governor's App puts back, or a ticket review adds, queues the
+  // selection as a person's does. A launch that started nothing is kept from
+  // starting again at once by the state table's record, not by the sender.
+  test('a ready label the dispatcher\'s App added queues a selection, and reaches no session', () => {
     const app = { login: 'governor-app[bot]', type: 'Bot' };
     const ready = messages('issues', { action: 'labeled', label: { name: 'workflow: ready for development' }, issue: issue(), sender: app, repository: { full_name: REPO } });
-    assert.deepEqual(ready.all, [], 'no selection fire, and the filer hears no label');
-    const bare = route({ event: 'issues', payload: issuesEvent('labeled', { label: { name: 'workflow: ready for development' }, sender: app }), owners: OWNERS });
-    assert.equal(bare.fire, undefined);
+    assert.deepEqual(ready.all.filter((f) => f.fire.kind === 'schedule').map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: 'workflow: ready for development', repo: REPO }], 'a selection fire');
+    assert.deepEqual(ready.sent, [], 'the filer hears no label, and a leftover line names nobody');
   });
 
   test('an owner\'s fire fits on the lane too, whatever the remark holds', () => {
@@ -1624,7 +1622,7 @@ describe('handle', () => {
 
   test('an event that routes nowhere is acknowledged and queues nothing', async () => {
     const { deps, queued } = harness();
-    const response = await handle(delivery('issues', issuesEvent('labeled', { label: { name: 'type: bug' }, sender: { login: 'bot[bot]', type: 'Bot' } })), deps);
+    const response = await handle(delivery('issues', issuesEvent('unlabeled', { label: { name: 'type: bug' }, sender: { login: 'bot[bot]', type: 'Bot' } })), deps);
     assert.equal(response.statusCode, 200);
     assert.deepEqual(queued, []);
   });
@@ -1828,10 +1826,10 @@ describe('routeEvent — every served repo', () => {
     assert.deepEqual(decision.fires.filter((f) => f.fire.kind === 'schedule').map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: 'mode: afk', repo: ASKME }]);
   });
 
-  test('a label a bot added queues no selection there: the dispatcher\'s own claim or release', () => {
+  test('a label a bot added is a schedule fire naming the issue and the label, as a person\'s is', () => {
     for (const name of ['mode: afk', 'claimed']) {
       const decision = firesOf('issues', issuesEvent('labeled', { label: { name }, sender: { login: 'governor-app[bot]', type: 'Bot' } }));
-      assert.deepEqual(decision.fires.filter((f) => f.fire.kind === 'schedule'), [], name);
+      assert.deepEqual(decision.fires.filter((f) => f.fire.kind === 'schedule').map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: name, repo: ASKME }], name);
     }
   });
 
@@ -1850,10 +1848,10 @@ describe('routeEvent — every served repo', () => {
     assert.deepEqual(labelled('type: bug').fires.filter((f) => f.fire.kind === 'message'), [], 'no owner hears a label, and a line names nobody');
   });
 
-  test('a ready label a bot added queues no selection in any repo', () => {
+  test('a ready label a bot added queues a selection in any repo', () => {
     for (const repo of [REPO, ASKME]) {
       const decision = routeEvent({ event: 'issues', payload: { ...issuesEvent('labeled', { label: { name: READY[0] }, sender: { login: 'governor-app[bot]', type: 'Bot' } }), repository: at(repo) }, owners: OWNERS, appId: APP_ID });
-      assert.deepEqual(decision.fires.filter((f) => f.fire.kind === 'schedule'), [], repo);
+      assert.deepEqual(decision.fires.filter((f) => f.fire.kind === 'schedule').map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: READY[0], repo }], repo);
     }
   });
 
@@ -2259,11 +2257,13 @@ describe('fitness: a label queues a selection fire only where the repo\'s hook-t
     }
   });
 
-  test('a label a bot adds queues no selection fire, even a ready one', async () => {
+  test('a ready label a bot adds queues a selection fire, as a person\'s does; any other it drops', async () => {
     for (const read of [listed, async () => null]) {
       const { selections } = await handled(labelled(READY[0]!, { login: 'governor-app[bot]', type: 'Bot' }), read);
-      assert.deepEqual(selections, []);
+      assert.deepEqual(selections.map((f) => f.label), [READY[0]]);
     }
+    const { selections } = await handled(labelled('claimed', { login: 'governor-app[bot]', type: 'Bot' }), listed);
+    assert.deepEqual(selections, [], 'the claim label is not a ready label');
   });
 
   test('a ready label in a repo whose pickup is off is dropped by the switch, and the reason names it', async () => {
