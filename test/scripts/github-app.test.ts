@@ -390,10 +390,22 @@ describe('githubReader', () => {
       'https://api.github.com/repos/acme/factory/pulls/13': { number: 13, title: 'G', body: 'B', state: 'closed', head: { ref: 'main', sha: 'fed', repo: null } },
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    assert.deepEqual(await reader.pull(10), { number: 10, body: 'B', head: 'claude/x', open: true, ...UNREAD });
-    assert.deepEqual(await reader.pull(11), { number: 11, body: '', head: '', open: true, ...UNREAD });
-    assert.deepEqual(await reader.pull(12), { number: 12, body: 'B', head: '', open: true, ...UNREAD }, 'a fork\'s branch');
-    assert.deepEqual(await reader.pull(13), { number: 13, body: 'B', head: '', open: false, ...UNREAD }, 'a deleted fork\'s branch, on a closed PR');
+    assert.deepEqual(await reader.pull(10), { number: 10, body: 'B', head: 'claude/x', defaultBranch: '', open: true, ...UNREAD });
+    assert.deepEqual(await reader.pull(11), { number: 11, body: '', head: '', defaultBranch: '', open: true, ...UNREAD });
+    assert.deepEqual(await reader.pull(12), { number: 12, body: 'B', head: '', defaultBranch: '', open: true, ...UNREAD }, 'a fork\'s branch');
+    assert.deepEqual(await reader.pull(13), { number: 13, body: 'B', head: '', defaultBranch: '', open: false, ...UNREAD }, 'a deleted fork\'s branch, on a closed PR');
+  });
+
+  // A takeover names no branch when the PR's head is the default branch, so
+  // the reader gives the repo's default branch, from the PR's base repo.
+  test('pull reads the repo\'s default branch from the PR\'s base, one naming none as empty', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/pulls/20': { number: 20, body: 'B', state: 'open', head: { ref: 'trunk', sha: 'abc', repo: { full_name: 'acme/factory' } }, base: { ref: 'release', repo: { full_name: 'acme/factory', default_branch: 'trunk' } } },
+      'https://api.github.com/repos/acme/factory/pulls/21': { number: 21, body: 'B', state: 'open', head: { ref: 'main', sha: 'abc', repo: { full_name: 'acme/factory' } } },
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual(await reader.pull(20), { number: 20, body: 'B', head: 'trunk', defaultBranch: 'trunk', open: true, ...UNREAD });
+    assert.equal((await reader.pull(21)).defaultBranch, '');
   });
 
   test('updatePull patches the pull request\'s body and nothing else', async () => {
@@ -1229,6 +1241,22 @@ describe('a served repo\'s reads', () => {
     assert.deepEqual(checks.filter((c) => c.state === 'red').map((c) => c.name), ['gate', 'timed', 'ci/legacy']);
     assert.deepEqual(checks.filter((c) => c.state === 'pending').map((c) => c.name), ['slow', 'ci/wait']);
     assert.equal(new URL(calls[0]!.url).searchParams.get('filter'), 'latest');
+  });
+
+  test('checksAt reads every page of the commit\'s statuses: a status past the first page still counts', async () => {
+    const sha = 'a'.repeat(40);
+    const { fetch } = fakeFetch({
+      [`https://api.github.com/repos/t-d-d/askme-mcp/commits/${sha}/check-runs`]: { check_runs: [] },
+      [`https://api.github.com/repos/t-d-d/askme-mcp/commits/${sha}/status`]: (_init: RequestInit | undefined, url: string) => {
+        const page = Number(new URL(url).searchParams.get('page') ?? '1');
+        const size = Number(new URL(url).searchParams.get('per_page') ?? '30');
+        const statuses = [...Array.from({ length: 150 }, (_, i) => ({ context: `ci/other-${i}`, state: 'success' })), { context: 'ci/required', state: 'failure' }];
+        return { total_count: statuses.length, statuses: statuses.slice((page - 1) * size, page * size) };
+      },
+    });
+    const checks = await githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch }).checksAt(sha);
+    assert.equal(checks.length, 151);
+    assert.deepEqual(checks.filter((c) => c.state === 'red').map((c) => c.name), ['ci/required']);
   });
 
   test('checkRun posts a run of its name at the head reviewed: completed with its conclusion, or in progress with none', async () => {
