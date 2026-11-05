@@ -2399,6 +2399,16 @@ describe('fitness: only text from an author trust.relay lets in reaches a runnin
       assert.deepEqual((await handled(remark({ user: { login: 'coderabbitai[bot]', type: 'Bot' }, author_association: 'NONE' }), item(['OWNER']))).queued, [], 'a bot is outside the three');
     });
 
+    test('an item whose relay is OWNER reads no session from a member\'s PR body: an owner\'s mention there summons a fresh session', async () => {
+      const memberPr = { ...sessionPr, number: 735, user: member, author_association: 'MEMBER' };
+      const mention = commentEvent({ issue: memberPr }, { body: '@claude fix this', ...owner });
+      const narrowed = await handled(mention, item(['OWNER']));
+      assert.equal(narrowed.response.statusCode, 202, narrowed.response.body);
+      assert.deepEqual(narrowed.queued.map((q) => (q.message.fire as Message).kind), ['dispatch'], narrowed.response.body);
+      const defaults = await handled(mention, item());
+      assert.deepEqual(defaults.queued.map((q) => [(q.message.fire as Message).kind, (q.message.fire as Message).session]), [['message', OWNER]], 'at the defaults the member\'s body names its session');
+    });
+
     test('a delivery that queues nothing under any list reads no item', async () => {
       let reads = 0;
       await handled({ ...remark(owner), action: 'edited' }, async () => { reads += 1; return null; });

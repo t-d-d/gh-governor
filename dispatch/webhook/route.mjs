@@ -587,31 +587,32 @@ const mergedFire = (payload, main) => {
  * table says the repo's file leaves `prReview` off, and the task refuses it
  * where the file does.
  *
- * @param {{ event: string | undefined, payload: any, owners: readonly string[], appId?: number | undefined, relay?: readonly string[] }} args
+ * @param {{ event: string | undefined, payload: any, owners: readonly string[], appId?: number | undefined, relay?: readonly string[], bodies?: readonly string[] }} args
  * `owners`: the stack's owner list. `appId`: the dispatcher's own App,
  * whose comment alone is the PR review's, and which every trust list lets
  * in; without it, no comment is. `relay`: whose text may reach a running
  * session ({@link receiverRelay}), the defaults where the receiver knows
- * no other (mention.mjs).
+ * no other (mention.mjs). `bodies`: whose body may name a session, `relay`
+ * where unset.
  * @returns {Decision}
  */
-export const routeEvent = ({ event, payload, owners, appId, relay }) => {
+export const routeEvent = ({ event, payload, owners, appId, relay, bodies }) => {
   const repo = payload?.repository?.full_name;
   if (typeof repo !== 'string' || !REPO_NAME.test(repo)) return nothing(`${event ?? 'unnamed'} delivery names no repository`);
   const owner = repo.slice(0, repo.indexOf('/'));
   if (!ownerListed(owners, owner)) return nothing(`delivery is for ${repo}, whose owner ${owner} is not on the owner list`);
-  const decision = routeFor({ event, payload, appId, relay });
+  const decision = routeFor({ event, payload, appId, relay, bodies });
   return { ...decision, fires: decision.fires.map((queued) => ({ ...queued, fire: { ...queued.fire, repo } })) };
 };
 
 /**
  * A listed repo's delivery, routed.
  *
- * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[] | undefined }} args
+ * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[] | undefined, bodies?: readonly string[] | undefined }} args
  * @returns {Decision}
  */
-const routeFor = ({ event, payload, appId, relay }) => {
-  const trust = { appId, ...(relay === undefined ? {} : { relay }) };
+const routeFor = ({ event, payload, appId, relay, bodies }) => {
+  const trust = { appId, ...(relay === undefined ? {} : { relay }), ...(bodies === undefined ? {} : { bodies }) };
   const main = defaultBranch(payload);
   const unbranched = nothing(`${event} delivery names no default branch: no run or merge on it to read`);
   if (event === 'issues') {
@@ -763,7 +764,7 @@ export const handle = async (request, deps) => {
   }
   const event = headers['x-github-event'];
   const delivery = headers['x-github-delivery'];
-  const decision = await judged(({ relay }) => routeEvent({ event, payload, owners: deps.owners, appId: deps.appId, relay }), delivery, deps);
+  const decision = await judged(({ relay, bodies }) => routeEvent({ event, payload, owners: deps.owners, appId: deps.appId, relay, bodies }), delivery, deps);
   if (decision.fires.length === 0) {
     // Never an error: an outsider who installed the App must not page anyone.
     deps.log('webhook-ignored', { level: 'info', delivery: delivery ?? null, github: event, reason: decision.reason });
@@ -790,7 +791,10 @@ export const handle = async (request, deps) => {
  * default where it names none. The receiver drops only an author outside
  * the three, whose refusal is silent; the task judges every fire again
  * from the file (dispatch/turn.mjs), so an item a file has since narrowed
- * past lets nothing through.
+ * past lets nothing through. It widens only whose comment is dropped: a
+ * body names a session under the item's list alone ({@link judged}), or a
+ * mention under a narrow list would message a session the file ignores in
+ * place of summoning one.
  *
  * @param {readonly string[] | null | undefined} relay
  * @returns {readonly string[]}
@@ -803,20 +807,21 @@ export const receiverRelay = (relay) => [...new Set([...SUMMONERS, ...(relay ?? 
  * that queues nothing then queues nothing under any list, short of a
  * session's own post on a stranger's PR naming that session, and reads no
  * item. Otherwise the item is read once, the delivery routed again under
- * the item's `trust.relay` ({@link receiverRelay}), and each fire the
+ * the item's `trust.relay` ({@link receiverRelay}), a body read under that
+ * list alone (the default where it names none), and each fire the
  * item's ready labels or switches drop is dropped ({@link switchedOn}). A
  * read that fails, or an item that is malformed, is logged at error and
  * routes under the defaults and drops nothing by switch or label: the task
  * still refuses a fire its repo's file does not allow, and a 503 would
  * lose the delivery, which GitHub does not send again by itself.
  *
- * @param {(trust: { relay: readonly string[] }) => Decision} route
+ * @param {(trust: { relay: readonly string[], bodies: readonly string[] }) => Decision} route
  * @param {string | undefined} delivery
  * @param {Deps} deps
  * @returns {Promise<Decision>}
  */
 const judged = async (route, delivery, deps) => {
-  const widest = route({ relay: TRUST_VALUES });
+  const widest = route({ relay: TRUST_VALUES, bodies: TRUST_VALUES });
   const repo = widest.fires[0]?.fire.repo;
   if (repo === undefined) return widest;
   /** @type {import('./hook-table.mjs').Known | null} */
@@ -825,9 +830,9 @@ const judged = async (route, delivery, deps) => {
     item = await deps.repoItem(repo);
   } catch (error) {
     deps.log('webhook-switches-unread', { level: 'error', delivery: delivery ?? null, repo, error: String(/** @type {any} */ (error)?.message ?? error) });
-    return route({ relay: receiverRelay(null) });
+    return route({ relay: receiverRelay(null), bodies: RELAY });
   }
-  return switchedOn(route({ relay: receiverRelay(item?.relay) }), item, delivery, deps);
+  return switchedOn(route({ relay: receiverRelay(item?.relay), bodies: item?.relay ?? RELAY }), item, delivery, deps);
 };
 
 /**
