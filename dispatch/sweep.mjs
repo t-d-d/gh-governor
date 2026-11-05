@@ -25,7 +25,7 @@ import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, 
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
-import { byOf, sweepDue, sweepHoursOf } from './pickup.mjs';
+import { byOf, failedLaunchesOf, failedReason, sweepDue, sweepHoursOf } from './pickup.mjs';
 import { autoOf, relayOf, startOf } from './trust.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 
@@ -197,7 +197,23 @@ export const planSweep = async (invocation, ctx) => {
       }
       swept.set(repo, new Date(now).toISOString());
     }
-    sources.push({ repo, reader: await ctx.readerFor(repo), labels: config.labels, by: byOf(config), start: startOf(config), prompts: config.prompts, signOff: turnsOn(config, 'signOff') });
+    // The tickets whose last launch started nothing inside the hour, held
+    // however their ready labels came back. A read that fails refuses the
+    // repo's pickup: in the bare fire the other repos go on, and a fire
+    // naming its repo throws.
+    /** @type {Map<number, string>} */
+    let failed;
+    try {
+      failed = await failedLaunchesOf(ctx.state, repo, ctx.now());
+    } catch (error) {
+      if (!ctx.bare) throw error;
+      ctx.log('dispatch-pickup-unread', { level: 'error', repo, error: messageOf(error), reason: 'its failed-launch records could not be read, so it is not swept this turn' });
+      sweepsUnread.push({ repo, error: `pickup failed-launch records: ${messageOf(error)}` });
+      swept.delete(repo);
+      held += 1;
+      continue;
+    }
+    sources.push({ repo, reader: await ctx.readerFor(repo), labels: config.labels, by: byOf(config), start: startOf(config), prompts: config.prompts, signOff: turnsOn(config, 'signOff'), failed });
   }
   // A fire naming its issue plans it alone, through the selection's own
   // checks, from a read of that issue rather than the ready list; the sweep
@@ -217,6 +233,8 @@ export const planSweep = async (invocation, ctx) => {
   const unstarted = [];
   /** @type {import('./start.mjs').Unlooked[]} */
   const unlooked = [];
+  /** @type {import('../scripts/lib/dispatch-router.mjs').HeldFailed[]} */
+  const heldFailed = [];
   // In the bare fire one repo's refusal leaves the others to go; a fire
   // naming its repo throws on its own.
   const planned = await planSchedule({
@@ -228,6 +246,7 @@ export const planSweep = async (invocation, ctx) => {
     strangers,
     unstarted,
     unlooked,
+    heldFailed,
     ...(only === undefined ? {} : { only, seen }),
     ...(ctx.bare ? { unread, cut, relative } : {}),
   });
@@ -266,10 +285,12 @@ export const planSweep = async (invocation, ctx) => {
   // could not look up counts for nothing this turn, said at warn.
   await Promise.all(unstarted.map(async (u) => reportUnstarted({ reader: await ctx.readerFor(u.repo), unstarted: u, what: 'readied', event: 'dispatch-pickup', log: ctx.log })));
   for (const u of unlooked) reportUnlooked({ unlooked: u, event: 'dispatch-pickup', log: ctx.log });
+  // A ticket whose last launch started nothing waits out its hold.
+  for (const { repo, issue, until } of heldFailed) ctx.log('dispatch-pickup', { level: 'info', repo, issue, outcome: 'skipped', reason: failedReason(until) });
   if (only !== undefined && planned.length === 0) {
     const why = ctx.cap === 0 ? { outcome: 'not started', reason: CAP_ZERO_REASON } : { outcome: 'not started: not ready, blocked, or held by its Blocked until: line' };
-    // A ticket skipped for its author, or for its ready labels, has its own line above.
-    const said = new Set([...strangers, ...outsiders, ...unstarted, ...unlooked].map((t) => `${t.repo}#${t.issue}`));
+    // A ticket skipped for its author, its ready labels or its failed launch has its own line above.
+    const said = new Set([...strangers, ...outsiders, ...unstarted, ...unlooked, ...heldFailed].map((t) => `${t.repo}#${t.issue}`));
     for (const { repo, issue, ...read } of seen) {
       if (said.has(`${repo}#${issue}`)) continue;
       ctx.log('dispatch-pickup', { level: 'info', repo, issue, ...why, reads: [read] });

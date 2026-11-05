@@ -13,6 +13,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { CAP_ZERO_REASON, CLAIM_STRANDED, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan } from '../dispatch/launch-plan.mjs';
 import { readConfig } from '../dispatch/repo-config.mjs';
+import { PICKUP_FAILED_HOLD_MS, PICKUP_FAILED_UNRECORDED } from '../dispatch/pickup.mjs';
 import { SPEC_OWNER } from '../dispatch/deliveries.mjs';
 import { relinkSession } from '../dispatch/webhook/subscribe.mjs';
 import { factoryFile } from './helpers/factory.ts';
@@ -39,8 +40,11 @@ const context = (over: {
   labels?: (repo: string, issue: number) => string[],
   launched?: (asked: Record<string, unknown>) => Started,
   failWrite?: (write: Write) => boolean,
+  failRecord?: boolean,
 } = {}) => {
   const logged: Logged[] = [];
+  /** The failed-launch records put, each with what the ticket's labels had been written by then. */
+  const held: Array<{ repo: string, issue: number, until: string, writesBefore: number }> = [];
   const writes: Write[] = [];
   const asked: Array<Record<string, unknown>> = [];
   const write = async (w: Write) => {
@@ -66,8 +70,14 @@ const context = (over: {
     claims: new Set<string>(),
     now: () => NOW,
     log: (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); },
+    state: {
+      recordFailedLaunch: async (repo: string, issue: number, until: string) => {
+        if (over.failRecord === true) throw new Error('ProvisionedThroughputExceededException');
+        held.push({ repo, issue, until, writesBefore: writes.length });
+      },
+    },
   };
-  return { ctx: ctx as unknown as Parameters<typeof launchPlan>[1], logged, writes, asked };
+  return { ctx: ctx as unknown as Parameters<typeof launchPlan>[1], logged, writes, asked, held };
 };
 
 /** A planned launch of a picked-up ticket. */
@@ -148,6 +158,36 @@ describe('launchPlan starts every launch a plan holds', () => {
     assert.ok(logged.some((l) => l.event === REPO_SKIPPED && l.repo === REPO && l.issue === 9 && l.level === 'error'));
     assert.deepEqual(ran.map((r) => [r.issue, r.outcome]), [[9, 'failed'], [11, 'dispatched']]);
     assert.deepEqual(heard?.left.map((l) => l.issue), [10]);
+  });
+
+  // A ready label put back after a launch that started nothing queues a
+  // selection fire like any other. The record keeps that fire from launching
+  // the ticket again inside the hour, whoever's label it was, so it is put
+  // before the labels go back.
+  test('a failed launch puts the ticket\'s failed-launch record, an hour long, before its ready labels go back', async () => {
+    const { ctx, writes, held } = context({ launched: () => ({ outcome: 'failed', sessionUrl: null, status: 1, output: 'no' }) });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.deepEqual(held.map(({ repo, issue, until }) => ({ repo, issue, until })), [{ repo: REPO, issue: 9, until: new Date(NOW + PICKUP_FAILED_HOLD_MS).toISOString() }]);
+    assert.equal(PICKUP_FAILED_HOLD_MS, 60 * 60 * 1000, 'an hour');
+    const putBack = writes.findIndex((w) => w.issue === 9 && w.op === 'add' && JSON.stringify(w.labels) === JSON.stringify(CONFIG.labels.claimRemoves));
+    assert.ok(putBack >= held[0]!.writesBefore, 'the record stands before the labels go back');
+  });
+
+  test('a launch that started, or a ticket not claimed, puts no failed-launch record', async () => {
+    const { ctx, held } = context();
+    await launchPlan(plan([ticket(5)]), ctx, NOW);
+    const failing = context({ launched: () => ({ outcome: 'failed', sessionUrl: null, status: 1, output: 'no' }) });
+    await launchPlan(plan([ticket(6, REPO, { claim: false })]), failing.ctx, NOW);
+    assert.deepEqual([...held, ...failing.held], []);
+  });
+
+  test('a failed-launch record that cannot be put is logged at error, and the ticket is still released', async () => {
+    const { ctx, writes, logged } = context({ failRecord: true, launched: () => ({ outcome: 'failed', sessionUrl: null, status: 1, output: 'no' }) });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.ok(writes.some((w) => w.issue === 9 && w.op === 'remove' && w.label === CLAIM), 'released');
+    const said = logged.find((l) => l.event === PICKUP_FAILED_UNRECORDED);
+    assert.equal(said?.level, 'error', JSON.stringify(logged));
+    assert.equal(said?.issue, 9);
   });
 
   test('past the launch window, nothing starts and every launch reaches done as left', async () => {

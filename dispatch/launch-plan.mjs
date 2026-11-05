@@ -10,7 +10,7 @@
 
 import { authorPicked, mayPickUp, ticketStatus, unreadableOf } from '../scripts/lib/ready-work.mjs';
 import { outsiderReason, strangerReason } from '../scripts/lib/dispatch-router.mjs';
-import { byOf } from './pickup.mjs';
+import { byOf, PICKUP_FAILED_HOLD_MS, PICKUP_FAILED_UNRECORDED } from './pickup.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted } from './uncounted.mjs';
 import { judgeReady } from './start.mjs';
 import { startOf } from './trust.mjs';
@@ -121,7 +121,8 @@ export const routineFault = (deps, repo, periodic, launched) => {
 
 /**
  * Start a plan's launches in turn. A picked-up ticket is claimed first and
- * released where its launch started nothing. A launch the routines API
+ * released where its launch started nothing, after its failed-launch record
+ * is put (dispatch/pickup.mjs). A launch the routines API
  * refused moves no record. A failed launch that holds its repo skips the
  * repo's later launches. Past the launch window, counted from `started`,
  * nothing more starts. The plan's `done` hears what ran and what was left.
@@ -129,12 +130,12 @@ export const routineFault = (deps, repo, periodic, launched) => {
  * and `claims` is cleared.
  *
  * @param {Pick<LaunchablePlan, 'launches' | 'done'>} plan
- * @param {Pick<TurnContext, 'readerFor' | 'configOf' | 'start' | 'claims' | 'now' | 'log'>} ctx
+ * @param {Pick<TurnContext, 'readerFor' | 'configOf' | 'start' | 'claims' | 'now' | 'log'> & { state: Pick<TurnContext['state'], 'recordFailedLaunch'> }} ctx
  * @param {number} started When the turn started, before its planner ran.
  * @returns {Promise<Array<Dispatched & { planned: PlannedLaunch }>>} The launches that ran, a failed claim's included.
  */
 export const launchPlan = async (plan, ctx, started) => {
-  const { readerFor, configOf, start, claims, now, log } = ctx;
+  const { readerFor, configOf, start, claims, now, log, state } = ctx;
   const { launches } = plan;
   // The dispatcher claims a ticket before its launch: a session that
   // never claims, or dies first, would leave it ready for the next fire. A
@@ -301,7 +302,18 @@ export const launchPlan = async (plan, ctx, started) => {
       // The record the launch moves: a periodic's, a wait item, a hook's.
       if (entry.started !== undefined) await entry.started(launched, firedAt);
       if (entry.holdsRepo && outcome === 'failed') {
-        if (ticket !== null && entry.claim) await release(ticket);
+        if (ticket !== null && entry.claim) {
+          // The ready labels go back on, and a ready label queues a
+          // selection fire whoever added it, so the record that holds the
+          // ticket from pickup for the hour is put first.
+          const until = new Date(now() + PICKUP_FAILED_HOLD_MS).toISOString();
+          try {
+            await state.recordFailedLaunch(ticket.repo, ticket.issue, until);
+          } catch (error) {
+            log(PICKUP_FAILED_UNRECORDED, { level: 'error', repo: ticket.repo, issue: ticket.issue, until, error: messageOf(error), reason: 'its ready labels go back with nothing to hold it, so its label\'s fire may launch it again at once' });
+          }
+          await release(ticket);
+        }
         // A launch that started nothing is the repo's environment or the
         // login: the repo's next ticket or periodic would fail the same way.
         // A routine the routines API refused is not (`routineFault`).

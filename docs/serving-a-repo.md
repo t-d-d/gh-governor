@@ -259,7 +259,7 @@ The JSON Schema covers the file's shape only. It leaves out the rules across key
 
 ### Pickup's sweep interval
 
-A ready label a person adds, and the close of a ready ticket's last open blocker, pick a ticket up at once. A new ready label in the file is picked up at once from the repo's next turn after the merge, which reads the file; no deploy is needed. The sweep catches what those miss: a lost event, or a new ready label added to a ticket before that turn. It runs at the hourly fire, once `pickup.sweepHours` have passed since the repo's last sweep, and every hour when the file sets none. A repo that trusts its events can sweep less often:
+A ready label, whoever adds it, and the close of a ready ticket's last open blocker, pick a ticket up at once. A new ready label in the file is picked up at once from the repo's next turn after the merge, which reads the file; no deploy is needed. The sweep catches what those miss: a lost event, or a new ready label added to a ticket before that turn. It runs at the hourly fire, once `pickup.sweepHours` have passed since the repo's last sweep, and every hour when the file sets none. A repo that trusts its events can sweep less often:
 
 ```json
 "pickup": { "sweepHours": 6 }
