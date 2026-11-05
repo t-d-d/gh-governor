@@ -549,8 +549,6 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
   // Each ended item is read and acted on side by side, as the turn's other
   // reports are, so a day when many waits end does not use up the launch
   // window. Each item catches its own failure.
-  /** @type {WaitSpec[]} */
-  const found = [];
   /** @type {Array<{ issue: number, error: string }>} */
   const failed = [];
   /** @param {{ issue: number, until: string }} item */
@@ -608,7 +606,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       if (spec && mayStartSpec(thread)) {
         // A session link counts only where trust.relay lets the body's author in.
         const owner = sessionNamedIn(relayedBody(ticket, relay));
-        found.push({ issue, title: ticket.title, until: wait.until, read: item.until, owner });
+        specs.push({ issue, title: ticket.title, until: wait.until, read: item.until, owner });
         const work = owner === null ? 'starting a spec session' : `asking its owner, ${owner}, to rewrite its spec`;
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: told ? `ended: already told, ${work}` : `ended: commented, ${work}` });
         return;
@@ -623,7 +621,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
   await Promise.all(items.filter((item) => now >= endOf(item.until)).map(one));
   // DispatchCap takes the first spec sessions, so they go in issue order,
   // whichever read answered first.
-  specs.push(...found.sort((a, b) => a.issue - b.issue));
+  specs.sort((a, b) => a.issue - b.issue);
   unread.push(...failed.sort((a, b) => a.issue - b.issue).map(({ error }) => ({ repo, error })));
   if (links !== undefined && blocking !== undefined) {
     const waiting = new Set(items.map((i) => i.issue));

@@ -165,10 +165,8 @@ export const planSweep = async (invocation, ctx) => {
       const ended = await endedWaits({ reader, state: ctx.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), auto: autoOf(config), relay: relayOf(config), now: ctx.now(), log: ctx.log, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
       return { repo, config, ended };
     }));
-    for (const read of byRepo) {
-      waitsUnread.push(...read.ended.unread);
-      endedByRepo.push(read);
-    }
+    endedByRepo.push(...byRepo);
+    waitsUnread.push(...byRepo.flatMap(({ ended }) => ended.unread));
   }
   // Every served repo's ready tickets in one queue; a repo
   // whose file turns pickup off is still swept, and its backlog unread.
