@@ -950,13 +950,14 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
-     * The latest check run of each name, and the latest status of each
-     * context, at a commit: red when it ended in a way that blocks a merge,
-     * pending while it has not ended, green otherwise. Needs the App's
-     * Checks and Commit statuses read.
+     * The latest check runs at a commit, as the API's `latest` filter
+     * answers them, and the latest status of each context: red when it ended in a way that blocks a merge,
+     * pending while it has not ended, green otherwise. A check run carries
+     * the slug of the App that posted it; a status has none. Needs the
+     * App's Checks and Commit statuses read.
      *
      * @param {string} sha
-     * @returns {Promise<Array<{ name: string, state: 'red' | 'green' | 'pending' }>>}
+     * @returns {Promise<Array<{ name: string, state: 'red' | 'green' | 'pending', app?: string }>>}
      */
     checksAt: async (sha) => {
       const [runs, statuses] = await Promise.all([
@@ -966,7 +967,11 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       /** @type {(red: boolean, pending: boolean) => 'red' | 'green' | 'pending'} */
       const stateOf = (red, pending) => (red ? 'red' : pending ? 'pending' : 'green');
       return [
-        ...runs.map((r) => ({ name: String(r?.name ?? ''), state: stateOf(RED_CONCLUSIONS.has(String(r?.conclusion)), typeof r?.conclusion !== 'string') })),
+        ...runs.map((r) => ({
+          name: String(r?.name ?? ''),
+          state: stateOf(RED_CONCLUSIONS.has(String(r?.conclusion)), typeof r?.conclusion !== 'string'),
+          ...(typeof r?.app?.slug === 'string' && r.app.slug !== '' ? { app: r.app.slug } : {}),
+        })),
         ...statuses.map((/** @type {any} */ st) => ({ name: String(st?.context ?? ''), state: stateOf(st?.state === 'failure' || st?.state === 'error', st?.state === 'pending') })),
       ];
     },

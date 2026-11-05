@@ -622,6 +622,23 @@ describe('githubReader', () => {
     assert.equal(calls.length, 2);
   });
 
+  test('checksAt names the App that posted each check run, and none for a status', async () => {
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/commits/abc/check-runs': { check_runs: [
+        { name: 'codeql', conclusion: 'success', app: { id: 57789, slug: 'github-code-scanning' } },
+        { name: 'codeql', conclusion: 'failure', app: { id: 15368, slug: 'github-actions' } },
+        { name: 'gate', conclusion: null },
+      ] },
+      'https://api.github.com/repos/acme/factory/commits/abc/status': { statuses: [{ context: 'ci/circleci', state: 'pending' }] },
+    });
+    assert.deepEqual(await githubReader({ token: 't', repo: 'acme/factory', fetch }).checksAt('abc'), [
+      { name: 'codeql', state: 'green', app: 'github-code-scanning' },
+      { name: 'codeql', state: 'red', app: 'github-actions' },
+      { name: 'gate', state: 'pending' },
+      { name: 'ci/circleci', state: 'pending' },
+    ]);
+  });
+
   test('commit reads a commit\'s message and its parents', async () => {
     const { fetch } = fakeFetch({ 'https://api.github.com/repos/acme/factory/commits/abc': { sha: 'abc', commit: { message: 'M\n\nClaude-Session: s' }, parents: [{ sha: 'p1' }, { sha: 'p2' }] } });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
