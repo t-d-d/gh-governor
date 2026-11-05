@@ -352,10 +352,62 @@ const ownerLink = (masked) => {
 export const sessionNamedIn = (body) => ownerLink(ownerText(String(body ?? '')))?.link ?? null;
 
 /**
+ * A takeover's line that its launch printed no session link: a sentence a
+ * person reads, then the time in a comment the takeover reads back. The
+ * sentence comes first: a line that opens with a comment is an HTML block,
+ * and GitHub would show the sentence after it raw. The whole line is
+ * governor's, and goes with the marker, newline and all.
+ */
+const OWNER_UNKNOWN = /[^\n]*<!--[ \t]*governor:owner-unknown[ \t]+(\S+)[ \t]*-->[^\n]*(?:\n|$)/g;
+
+/**
+ * The body with every owner-unknown line removed.
+ *
+ * @param {unknown} body
+ */
+const withoutOwnerUnknown = (body) => String(body ?? '').replace(OWNER_UNKNOWN, '');
+
+/**
+ * When a takeover's launch last printed no session link, as the body's
+ * owner-unknown line says, or null. A line inside a quote is not read, nor
+ * one whose time does not parse.
+ *
+ * @param {unknown} body
+ * @returns {string | null}
+ */
+export const ownerUnknownSince = (body) => {
+  const at = [...withoutQuotes(String(body ?? '')).matchAll(OWNER_UNKNOWN)].at(-1)?.[1];
+  return at === undefined || Number.isNaN(Date.parse(at)) ? null : at;
+};
+
+/**
+ * The body with one line saying a takeover at `at` printed no session link,
+ * in place of any earlier one. The owner link stays where it is, so the
+ * body routes to the same session as before: the line goes just above the
+ * line that holds the owner link, or at the end where there is none.
+ * {@link relinkSession} removes it. Throws for a body
+ * {@link pastReadingBound}, where no line written would be read.
+ *
+ * @param {unknown} body
+ * @param {string} at an ISO time
+ * @returns {string}
+ */
+export const markOwnerUnknown = (body, at) => {
+  const text = withoutOwnerUnknown(body);
+  if (pastReadingBound(text)) throw new Error('the body is too long or too deeply nested to read, so no owner-unknown line written into it would be read');
+  const line = `_Governor took this PR over at ${at}, but the launch printed no session link, so this PR's session is not known._ <!-- governor:owner-unknown ${at} -->`;
+  const owner = ownerLink(ownerText(text));
+  if (!owner) return `${text.trimEnd()}${text.trim() ? '\n\n' : ''}${line}`;
+  const start = text.lastIndexOf('\n', owner.at) + 1;
+  return `${text.slice(0, start)}${line}\n${text.slice(start)}`;
+};
+
+/**
  * The body with `sessionUrl` where {@link sessionNamedIn} reads it: in place
  * of the last session link under the Claude Code footer; under a footer
- * naming none, appended; with no footer, in one appended. A fallback's
- * handoff (dispatch/deliveries.mjs). Throws for a body {@link pastReadingBound},
+ * naming none, appended; with no footer, in one appended. Any owner-unknown
+ * line goes ({@link markOwnerUnknown}). A fallback's handoff
+ * (dispatch/deliveries.mjs). Throws for a body {@link pastReadingBound},
  * which names no session whatever is written into it.
  *
  * @param {unknown} body
@@ -363,7 +415,7 @@ export const sessionNamedIn = (body) => ownerLink(ownerText(String(body ?? '')))
  * @returns {string}
  */
 export const relinkSession = (body, sessionUrl) => {
-  const text = String(body ?? '');
+  const text = withoutOwnerUnknown(body);
   // Such a body reads as quoted whole, so no link written into it would name a session.
   if (pastReadingBound(text)) throw new Error('the body is too long or too deeply nested to read for its session link, so no link written into it would name a session');
   const masked = ownerText(text);
