@@ -12,13 +12,12 @@
  * where the repo's hook-table item lists the label as ready or cannot say
  * ({@link handle}), which the task dispatches if the label is one of the
  * repo's ready labels and the selection would, and no other; a `dispatch` fire with a prompt of its
- * own, for a mention of @claude (mention.mjs); and a `message` fire per
- * session subscribed to what happened (subscribe.mjs): a comment or review
+ * own, for a mention of @claude (mention.mjs); and a `message` fire to the
+ * session that owns what happened (subscribe.mjs): a comment or review
  * on a PR whose body names the session that wrote it, carrying the prompt
  * into that session and the dispatch as its fallback, and any other
- * comment, review, push, close or label on a PR or issue that its footer
- * or a `governor:subscribe` line in its body subscribes a session to, with
- * none. The task decides, so the receiver never reads the backlog. A
+ * comment, review, push or close on a PR or issue whose footer names its
+ * owner, with none. The task decides, so the receiver never reads the backlog. A
  * fourth, `workflow`, names a run on the default branch that went red, of
  * any workflow, and its file: a PR's sessions hear of a red CI (the file
  * the repo's config names) and of a red run of any workflow
@@ -80,8 +79,8 @@
  * a time the task's: a dispatcher turn refreshes
  * the stored login, and two turns refreshing one login leave one of them
  * dead. The receiver only queues, so a burst of deliveries costs nothing
- * more than a queue of fires, each started in turn: a delivery with three
- * subscribers is three fires, one after another. The schedule fire itself
+ * more than a queue of fires, each started in turn: a delivery that queues
+ * three fires runs them one after another. The schedule fire itself
  * comes through here too ({@link handleSchedule}) and joins the same lane.
  *
  * A hook is the one request not GitHub's: an outside system posts signed
@@ -106,7 +105,7 @@ import { droppedBy } from './switches.mjs';
  * The events the receiver acts on, which the App's webhook subscribes to:
  * check runs and statuses, for a check that ended on a PR's head, issues
  * for the selection, the three a mention of @claude can arrive in
- * (mention.mjs), pull requests, for a push or a close a subscriber hears
+ * (mention.mjs), pull requests, for a push or a close an owner hears
  * of, workflow jobs, for a shipping job that succeeded on main,
  * and workflow runs, for a red main, a red deploy and a run that ended on
  * a PR's head. Alphabetical, as
@@ -385,7 +384,7 @@ const REVIEWED = new Set(['opened', 'ready_for_review', 'synchronize', 'edited']
 
 /**
  * A PR the review should read again: a `review` fire naming it and the head
- * it was queued for, keyed apart from the subscribers' fires on the same
+ * it was queued for, keyed apart from the owner's fire on the same
  * delivery. A draft is the task's to skip: it reads the PR anyway.
  *
  * @param {any} payload
@@ -555,7 +554,7 @@ const ticketReviewFire = (payload) => {
  * A PR merged into the default branch `main`: a `conflicts` fire naming
  * it, its merge commit and the branch, so every open PR the merge left
  * conflicted is told, carrying the merge for the periodics' count. Keyed
- * apart from the subscribers' fires on the same delivery.
+ * apart from the owner's fire on the same delivery.
  *
  * @param {any} payload
  * @param {string} main The repo's default branch.
@@ -623,7 +622,7 @@ const routeFor = ({ event, payload, appId, relay }) => {
     // A label a bot added is the dispatcher's own: a ready label put back on
     // a launch that failed, or a claim. A fire for it would launch
     // the ticket again, and the payload names no App behind a bot sender,
-    // so no label a bot adds selects. Subscribers still hear it below.
+    // so no label a bot adds selects.
     if (action === 'labeled' && payload?.sender?.type === 'Bot') {
       selection = nothing(`issue #${number} labelled ${label} by ${payload.sender.login ?? 'a bot'}: the dispatcher's own, no selection`);
     } else if (action === 'labeled' && typeof label === 'string' && label !== '' && typeof number === 'number') {
@@ -638,7 +637,7 @@ const routeFor = ({ event, payload, appId, relay }) => {
         ? counting(one({ fire: build.schedule({ freed: number }), reason: `issue #${number} closed: queue what it blocked` }), 'issuesClosed', 'schedule')
         : nothing('issue closed with no number: nothing to free');
     }
-    // The selection's fire, where there is one, beside each subscriber's.
+    // The selection's fire, where there is one, beside the owner's.
     if (selection !== null) return both(selection, issueEventFires(payload, trust));
     if (action === 'reopened') return both(both(issueEventFires(payload, trust), waitFire(payload)), ticketReviewFire(payload));
     if (action === 'labeled' || action === 'unlabeled') return issueEventFires(payload, trust);
@@ -662,7 +661,7 @@ const routeFor = ({ event, payload, appId, relay }) => {
     return event === 'check_run' ? finishedCheckReview(payload, main, appId) : finalStatusReview(payload, main);
   }
   if (MENTION_EVENTS.has(String(event))) {
-    return mentionFires({ event, payload, ...trust }) ?? nothing(`${event} ${payload?.action}: no ${MENTION} mention and no subscriber`);
+    return mentionFires({ event, payload, ...trust }) ?? nothing(`${event} ${payload?.action}: no ${MENTION} mention and no owner`);
   }
   return nothing(`${event ?? 'unnamed'} event: not one the dispatcher acts on`);
 };
@@ -696,7 +695,7 @@ const routeFor = ({ event, payload, appId, relay }) => {
 
 /**
  * A fire's deduplication id: the delivery's, so a redelivery is not a second
- * fire, and the session's beside it for a subscriber's, so a delivery's
+ * fire, and the session's beside it for a message's, so a delivery's
  * fires are not one another's duplicates. SQS takes 128 characters; a
  * longer one is hashed.
  *

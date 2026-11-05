@@ -234,9 +234,8 @@ describe('coverageOf — a shipping job that succeeded', () => {
       pullsForCommit: async (sha: string) => (sha === merge(1) ? [pull(1, sha, `Closes #11\n\n${SESSION}`)] : sha === merge(2) ? [pull(2, sha, 'Closes #21', 'feature/b')] : []),
     });
     const c = await cover(r, {}, async () => null, async (branch) => (branch === 'feature/b' ? 'https://claude.ai/code/session_01LOCAL' : null));
-    const { sessions, owned, unnamed } = await c.sessions(c.picked, 'deploys');
+    const { sessions, unnamed } = await c.sessions(c.picked, 'deploys');
     assert.deepEqual([...sessions.values()].map((s) => [s.session, s.own.map((p) => p.number)]), [[SESSION, [1]], ['https://claude.ai/code/session_01LOCAL', [2]]]);
-    assert.deepEqual([...owned], [1, 2]);
     assert.deepEqual(unnamed, []);
     const none = await cover(r, {}, async () => null, async () => null);
     assert.match(String((await none.sessions(none.picked, 'deploys')).unnamed[0]?.reason), /no live session holds its head branch feature\/b/);
@@ -250,14 +249,28 @@ describe('coverageOf — a shipping job that succeeded', () => {
     const branches: string[] = [];
     const c = await cover(r, {}, async () => null, async (branch) => { branches.push(branch); return 'https://claude.ai/code/session_01LOCAL'; });
     for (const event of ['deploys', 'ci'] as const) {
-      const { sessions, owned, unnamed } = await c.sessions(c.picked, event);
+      const { sessions, unnamed } = await c.sessions(c.picked, event);
       assert.deepEqual([...sessions.keys()], [], event);
-      assert.deepEqual([...owned], []);
       assert.match(String(unnamed[0]?.reason), /PR #1 .*NONE.*trust\.relay/);
     }
     assert.deepEqual(branches, [], 'its head branch is not looked up: an event is judged by the PR\'s author');
     const open = await cover(r, {}, async () => null, async () => null, [...RELAY, 'NONE']);
-    assert.deepEqual([...(await open.sessions(open.picked, 'deploys')).sessions.values()].map((s) => s.session), [SESSION, 'https://claude.ai/code/session_01WATCHES']);
+    assert.deepEqual([...(await open.sessions(open.picked, 'deploys')).sessions.values()].map((s) => s.session), [SESSION], 'let in, the owner hears it, and the line names nobody');
+  });
+
+  test('a CI or deploy notice reaches only the session that owns each PR: a subscribe line names nobody', async () => {
+    const WATCHER = 'https://claude.ai/code/session_01WATCHES';
+    const line = `<!-- governor:subscribe ${WATCHER} events=ci,deploys -->`;
+    const r = reader({
+      fileAt: async () => file('env:\n  TICKET_LABEL_PATHS: all\n'),
+      pullsForCommit: async (sha: string) => (sha === merge(1) ? [pull(1, sha, `Closes #11\n\n${line}\n\n${SESSION}`)] : sha === merge(2) ? [pull(2, sha, `Closes #21\n\n${line}`)] : []),
+    });
+    const c = await cover(r, {}, async () => null, async () => null);
+    for (const event of ['deploys', 'ci'] as const) {
+      const { sessions, unnamed } = await c.sessions(c.picked, event);
+      assert.deepEqual([...sessions.values()].map((s) => [s.session, s.own.map((p) => p.number)]), [[SESSION, [1]]], event);
+      assert.deepEqual(unnamed.map((u) => u.pr), [2], `${event}: a PR naming no session, with only a line, is unnamed`);
+    }
   });
 });
 

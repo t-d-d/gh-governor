@@ -22,7 +22,7 @@ Each served repo turns on the features it wants, one switch each:
 - **Pickup.** A ticket carrying the repo's ready labels, with no open blocker, gets a cloud session of its own. Governor claims the ticket with the repo's claim label first, and comments the session's link on it. Only the ticket's own labels and blockers count, never its parent issue's, so a repo pauses work by taking the ready labels off the tickets that should wait. Governor does the same itself when a ready, unclaimed ticket's blocker closes as not planned: it takes the ready labels off and says so in a comment, so nothing starts before a person decides the ticket still stands. Putting them back readies it again. This is pickup's work, whatever `unblocked` says. Until a person puts them back or answers the comment, a later blocker's close starts no spec session for the ticket either.
 - **Summons.** `@claude` in an issue, a comment or a review, from someone with a say in the repo, starts a session on that remark.
 - **PR messages.** A PR a session wrote names that session. Every comment, review, push, merge and close on it is sent into that session, and a fresh session takes the PR over if the first one is archived.
-- **Subscriptions.** Any other session hears a PR or issue it is party to by adding a `<!-- governor:subscribe <session URL> events=… -->` line to its body.
+- **Issue messages.** An issue a session filed names that session. Each comment on it, and its close or reopen, is sent into that session. No other session hears of a PR or an issue.
 - **CI and deploys.** A red CI run on the default branch tells the sessions whose merges may have broken it. A shipping job tells the sessions of the merges it shipped, and can label their tickets `deployed: <target>`.
 - **The PR review.** A model reviews each PR against the repo's checklist. Paths on the repo's human-only list wait for a person, unless an entry's `unless` labels waive it. A PR closes tickets in its own repo only; work spanning repos marks the other repo's ticket as blocked by an issue here. A pass merges the PR, or, with `merge` off, leaves it for the owner to merge. Each review also posts its verdict as a `governor` check, which a ruleset can require.
 - **Sign-off.** A session whose last reply ends `Signing off.` is archived by the next turn, and a message about a close or a deploy, with nothing else open, asks the session to sign off. No session writes anything for this.
@@ -129,7 +129,7 @@ The switches in `features`:
 | `pickup` | A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `pickup.sweepHours` sets. |
 | `summons` | A session per `@claude` remark, and a dispatch started by hand. |
 | `prMessages` | Messages into the session a PR names, or the local session holding its branch. |
-| `subscribeMessages` | Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. A filer hears a `deployed:` label on its issue only through a subscribe line for `deploys`. |
+| `subscribeMessages` | Messages to an issue's filer, the session its body names: a comment on the issue, and its close or reopen. A filer hears no label, a `deployed:` label included. |
 | `redScheduledRun` | A fresh session on a scheduled run on the default branch that went red. |
 | `unblocked` | What a blocker's close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket's session, and the spec work on a not-ready ticket. The session whose link ends the ticket's body owns it and is asked to rewrite its own spec; a fresh session rewrites it only where the body names no session or that session is archived, so nobody takes a ticket from its owner. A file that still sets the older `mergeHandoff` reads as this. |
 | `ciMessages` | A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`. |
@@ -210,7 +210,7 @@ What to expect once it is set up:
 - **The tag is named when the job ends.** A message says "the <tag> tag is on <sha>" as soon as the shipping job succeeds. If a later job moves the tag, the message runs ahead of it, and is wrong if that job fails. Mark the job that moves the tag, or a job after it.
 - **The first marked deploy tells nobody.** A shipping job covers the merges since the last green run that shipped the same label. The first run with the marker has none, so it only sets the baseline. Messages and labels start with the next one.
 - **A deploy workflow that is also `workflows.ci`.** Many small repos run the gate inside the deploy. A red run of that workflow is then CI: it goes to `ciMessages` (the one suspect's session, or one fresh session for several), never to the red-deploy message (the `deployRed` prompt). A green shipping job in it still uses `deployMessages`. A deploy runs only after the merge, so it has no run at a PR's head: with `prReview` on, set `review.waitForCi` to `false`, or every PR's review waits for a CI run that never comes.
-- **An issue's filer does not hear the label by default.** A filer is subscribed to everything on its issue but `labels` and `deploys`. To hear a `deployed:` label, the issue body needs `<!-- governor:subscribe <session link> events=deploys -->` naming the filer, and the repo needs `subscribeMessages` and `deployedLabels` on. A filer that has signed off by then refuses the message, and governor drops its line.
+- **An issue's filer does not hear the label.** A filer hears every comment on its issue and its close, but no label, a `deployed:` label included. The label is still set. The session that wrote the PR hears the deploy itself.
 
 A minimal deploy workflow, `.github/workflows/deploy.yml`, with both marks:
 
@@ -322,8 +322,8 @@ Or widen it, with the same values pickup reads. Governor refuses `BOT` in it, si
 
 `trust.relay` lists, by GitHub `author_association`, whose text may reach a session that is already working:
 
-- their comments, review comments and reviews on a PR or issue a session owns or subscribes to;
-- a session link, or a `governor:subscribe` line, in the body of an issue or PR they opened. Only then does it name a session, for the receiver's messages, a message to a PR's owner, CI and deploy messages, and a session's standing line.
+- their comments, review comments and reviews on a PR or issue a session owns;
+- a session link in the body of an issue or PR they opened. Only then does it name a session, for the receiver's messages, a message to a PR's owner, CI and deploy messages, and a session's standing line.
 
 An event with no text, a label, a close, a reopen or a push, is judged by the author of the issue or PR it is on. The default is `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`, where `BOT` is any account GitHub marks as a bot, so a review bot's findings reach the session waiting for them. Governor's own App is never judged, so the PR review's comment reaches its PR's owner whatever the list says. So a stranger who copies a session link from a merged PR into a new issue routes nothing to that session, and a stranger's comment on a session's PR is not relayed. Each refusal is logged at info, and nothing pages the operator. A repo can drop bots:
 

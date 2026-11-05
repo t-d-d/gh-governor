@@ -166,7 +166,7 @@ Most of what keeps the agents on track here is plain files that work in any repo
 Each deployment is one person's factory: it serves the GitHub accounts on its owner list, on one Claude subscription. To try it, you deploy your own. You need an AWS account you can administer, the AWS CLI, Node 22.18 or later, the Claude Code CLI, and a Claude Pro or Max subscription.
 
 1. **Deploy governor.** Create a GitHub App, apply two CloudFormation stacks, and save a claude.ai login. [Running your own governor](docs/self-hosting.md) has every step.
-2. **Opt a repo in.** Install the App, and copy the [starter kit](examples/starter/) into the repo's `.github/`. It turns on pickup, summons, PR and subscription messages, sign-off, a heartbeat and three recurring reviews. The smallest working config is:
+2. **Opt a repo in.** Install the App, and copy the [starter kit](examples/starter/) into the repo's `.github/`. It turns on pickup, summons, PR and issue messages, sign-off, a heartbeat and three recurring reviews. The smallest working config is:
 
    ```json
    {

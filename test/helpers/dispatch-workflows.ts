@@ -18,15 +18,15 @@ export const mergedPull = (number: number, author = 'someone') => ({
 
 /**
  * What coverage read of run 500: `shipped` merged, every one picked, each its
- * own session's or subscribed to, and one failed job. Built by hand, so a
+ * own session's, and one failed job. Built by hand, so a
  * message's text is read without a reader (test/dispatcher-*-fitness.test.ts).
  */
-export const coverageOver = (shipped: ReturnType<typeof mergedPull>[], { label = null as string | null, subscribed = false } = {}) => ({
+export const coverageOver = (shipped: ReturnType<typeof mergedPull>[], { label = null as string | null } = {}) => ({
   reason: null, stale: null, workflow: 'deliver.yml', label, declared: label === null ? null : {}, jobs: [{ name: 'backend', conclusion: 'failure', html_url: `${MESSAGE_RUN_URL}/job/1` }],
   from: null, at: null, baseline: { id: 498, commit: 'b', created: '', conclusion: 'success', url: 'u' },
   range: { baseline: { id: 498, commit: 'b', created: '' }, end: MESSAGE_SHA, merges: shipped.length }, merges: [],
   shipped, picked: shipped, closes: new Map(),
-  sessions: async (prs: unknown[]) => ({ sessions: new Map([['S', { session: 'S', own: subscribed ? [] : prs, subscribed: subscribed ? prs : [] }]]), owned: new Set(), unnamed: [] }),
+  sessions: async (prs: unknown[]) => ({ sessions: new Map([['S', { session: 'S', own: prs }]]), unnamed: [] }),
 });
 
 /** Each workflow a run is fired for, by name, and its file: what the receiver names in the fire. */

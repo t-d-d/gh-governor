@@ -9,12 +9,12 @@
  * <target>`, and its file `TICKET_LABEL_PATHS`) and for a red
  * run of a workflow whose jobs earn one, from what dispatch/coverage.mjs
  * read of the fire: the
- * merges it covers, the PRs its paths pick, and each PR's sessions, the one
+ * merges it covers, the PRs its paths pick, and each PR's owner, the session
  * its body's Claude Code footer names (the owner a remark on the PR
- * reaches) and each subscribed to `ci` or to `deploys` (webhook/subscribe.mjs). A PR whose body names none was raised from a local session, and
- * its owner is the live session holding its head branch. The turn
- * labels tickets from the same reading. A subscriber is told the PR is not
- * its own, and gets no fallback.
+ * reaches, webhook/subscribe.mjs). A PR whose body names none was raised
+ * from a local session, and its owner is the live session holding its head
+ * branch. Nobody else hears of a PR's CI or deploys. The turn labels
+ * tickets from the same reading.
  *
  * - A red CI run (the repo's `workflows.ci`) is its merges' to
  *   fix only when the CI run before it on the default branch was green.
@@ -41,8 +41,7 @@
  *   is watching it.
  *
  * A session hears of a run once: one message naming every PR of its
- * in the run's range, those it wrote apart from those it subscribes to, and
- * asking for one report, on the newest it wrote. One message is one
+ * in the run's range, and asking for one report, on the newest. One message is one
  * standing-line search, so a busy range does not spend the App's search
  * limit a PR at a time.
  *
@@ -91,9 +90,8 @@ import { instruction } from './prompts.mjs';
  *   fileAt: (path: string, ref: string) => Promise<string>,
  *   pullFiles: (n: number) => Promise<import('../scripts/lib/github-app.mjs').FileRow[]>,
  * }} WorkflowReader
- * @typedef {{ prs: number[], subscribed: number[], session: string, closing: boolean, text: string, fallback?: { prompt: string, sessionName: string, issue: number } }} Note
- *   `prs`: every PR the message is about, oldest merge first; `subscribed`:
- *   those of them the session did not write, which a refusal drops it from.
+ * @typedef {{ prs: number[], session: string, closing: boolean, text: string, fallback?: { prompt: string, sessionName: string, issue: number } }} Note
+ *   `prs`: every PR the message is about, oldest merge first.
  * @typedef {import('./coverage.mjs').Range} Range
  * @typedef {import('./coverage.mjs').Coverage} Coverage
  * @typedef {{ newest: { id: number, created: string } | null }} Stale
@@ -114,38 +112,6 @@ export const jobList = (failed) =>
 /** @param {PullRow} pr */
 const prLine = (pr) => `PR #${pr.number}: ${oneLine(pr.title)} (${pr.html_url})`;
 
-
-/**
- * What a subscriber to a merged PR hears instead of its owner's text: the
- * same facts, with a heading and a close that say the PR is not its own.
- * `told`: whose own session has been told too, where a session wrote one.
- *
- * @param {string} heading
- * @param {string[]} facts
- * @param {string | null} told
- * @param {Prompts} prompts
- */
-const subscriberText = (heading, facts, told, prompts) => [
-  heading,
-  '',
-  ...facts,
-  '',
-  `${told === null ? '' : `${told} has been told too. `}${instruction(prompts, 'subscribed')}`,
-].join('\n');
-
-/**
- * @param {WorkflowFire} run
- * @param {PullRow} pr
- * @param {JobRow[]} failed
- * @param {boolean} owned
- * @param {Prompts} prompts
- */
-const breakerSubscriberText = (run, pr, failed, owned, prompts) => subscriberText(
-  `${run.name} on ${run.branch} failed after PR #${pr.number}, which you subscribe to, merged, and the ${run.name} run before it was green.`,
-  [prLine(pr), `Run: ${run.url}, commit ${short(run.headSha)}`, 'Failed jobs:', ...jobList(failed)],
-  owned ? "The PR's own session" : null,
-  prompts,
-);
 
 /**
  * @param {WorkflowFire} run
@@ -247,42 +213,6 @@ const newest = (prs) => /** @type {PullRow} */ (prs[prs.length - 1]);
 /** @param {PullRow[]} prs */
 const prList = (prs) => (prs.length === 1 ? [prLine(newest(prs))] : prs.map((p) => `- ${prLine(p)}`));
 
-/** @param {PullRow[]} prs */
-const numbers = (prs) => prs.map((p) => `#${p.number}`).join(', ');
-
-/**
- * Whose own session, of the `prs` a subscriber hears of, has been told too:
- * `told`, those of them a session wrote. Null when none.
- *
- * @param {PullRow[]} prs
- * @param {PullRow[]} told
- */
-const toldToo = (prs, told) => {
-  if (told.length === 0) return null;
-  if (prs.length === 1) return "The PR's own session";
-  if (told.length === prs.length) return "Each PR's own session";
-  return told.length === 1 ? `PR #${told[0]?.number}'s own session` : `The own session of each of PRs ${numbers(told)}`;
-};
-
-/**
- * What a deploy tells a session that wrote some of the PRs it shipped and
- * subscribes to others: the ones it subscribes to, apart from its own.
- * `told`: those of them whose own session has been told too.
- *
- * @param {PullRow[]} subscribed
- * @param {PullRow[]} told
- */
-const alsoSubscribed = (subscribed, told) => {
-  if (subscribed.length === 0) return [];
-  const whose = toldToo(subscribed, told);
-  return [
-    '',
-    `It also covers ${subscribed.length === 1 ? 'a PR' : 'PRs'} you subscribe to, not your own; act on ${subscribed.length === 1 ? 'it' : 'them'} only for a check you promised:`,
-    ...subscribed.map((p) => `- ${prLine(p)}`),
-    ...(whose === null ? [] : [`${whose} has been told too.`]),
-  ];
-};
-
 /**
  * Where a PR's change is: a tagged target bare (`dev`), any other with its
  * article (`the dispatcher`).
@@ -310,27 +240,6 @@ const shippedAt = (target, sha, tags) => (Object.hasOwn(tags, target) ? `, and t
 const notShipped = (target, sha, tags) => (Object.hasOwn(tags, target) ? `; ${tags[target]} did not move to ${short(sha)}.` : `; ${short(sha)} did not reach ${onTarget(target, tags)}.`);
 
 /**
- * A deploy's message to a session that subscribes to every PR it names and
- * wrote none. `told`: the PRs whose own session has been told too.
- *
- * @param {RunView} run
- * @param {{ target: string, end: string, tags: Tags }} at
- * @param {PullRow[]} prs
- * @param {JobRow[]} failed
- * @param {PullRow[]} told
- * @param {Prompts} prompts
- */
-const deploySubscriberText = (run, { target, end, tags }, prs, failed, told, prompts) => {
-  const one = prs.length === 1;
-  const which = one ? `PR #${prs[0]?.number}, which you subscribe to,` : `PRs ${numbers(prs)}, which you subscribe to,`;
-  const heading = run.conclusion === 'success'
-    ? `${which} ${one ? 'is' : 'are'} on ${onTarget(target, tags)}: ${run.name} published ${one ? 'it' : 'them'} (${run.job ?? run.url})${shippedAt(target, end, tags)}`
-    : `The ${bare(target)} deploy after ${which} merged failed (${run.name})${notShipped(target, end, tags)}`;
-  const facts = [...prList(prs), ...pageOf(run), ...(run.conclusion === 'success' ? [] : ['Failed jobs:', ...jobList(failed)])];
-  return subscriberText(heading, facts, toldToo(prs, told), prompts);
-};
-
-/**
  * A deploy's message to a session that wrote `own`, oldest merge first: one
  * report asked for, on the newest. A green one names the job that
  * published the change: the news is the job's, not a run's.
@@ -338,12 +247,10 @@ const deploySubscriberText = (run, { target, end, tags }, prs, failed, told, pro
  * @param {RunView} run
  * @param {{ target: string, end: string, tags: Tags }} at
  * @param {PullRow[]} own
- * @param {PullRow[]} subscribed
  * @param {JobRow[]} failed
- * @param {PullRow[]} told Those of `subscribed` whose own session has been told too.
  * @param {Prompts} prompts
  */
-const deployText = (run, { target, end, tags }, own, subscribed, failed, told, prompts) => {
+const deployText = (run, { target, end, tags }, own, failed, prompts) => {
   const one = own.length === 1;
   const last = newest(own).number;
   if (run.conclusion === 'success') {
@@ -354,7 +261,6 @@ const deployText = (run, { target, end, tags }, own, subscribed, failed, told, p
       '',
       ...prList(own),
       ...pageOf(run),
-      ...alsoSubscribed(subscribed, told),
       '',
       instruction(prompts, one ? 'deployGreen' : 'deployGreenMany', { pr: last, target: bare(target) }),
     ].join('\n');
@@ -368,7 +274,6 @@ const deployText = (run, { target, end, tags }, own, subscribed, failed, told, p
     `Run: ${run.url}`,
     'Failed jobs:',
     ...jobList(failed),
-    ...alsoSubscribed(subscribed, told),
     '',
     instruction(prompts, one ? 'deployRed' : 'deployRedMany', { pr: last }),
   ].join('\n');
@@ -454,27 +359,24 @@ const planCi = async (run, coverage, prompts) => {
       advance,
     };
   }
-  const { sessions, owned, unnamed } = await coverage.sessions(pulls, 'ci');
+  const { sessions, unnamed } = await coverage.sessions(pulls, 'ci');
   /** @type {Plan} */
   const plan = { reason: null, notes: [], unnamed, triage: null, range, stale: null, advance };
-  // A red CI run tells only a run of one merge, so each session has the one PR.
-  for (const { session, own, subscribed } of sessions.values()) {
-    const note = { prs: [...own, ...subscribed].map((p) => p.number), subscribed: subscribed.map((p) => p.number), session, closing: false };
-    const pr = newest([...own, ...subscribed]);
-    if (own.length === 0) {
-      plan.notes.push({ ...note, text: breakerSubscriberText(run, pr, failed, owned.has(pr.number), prompts) });
-    } else {
-      const text = breakerText(run, pr, failed, prompts);
-      plan.notes.push({
-        ...note,
-        text,
-        fallback: {
-          prompt: `${text}\nThe session that wrote PR #${pr.number} is gone; this fix is yours.\n${UNATTENDED}`,
-          sessionName: oneLine(`${name} red #${pr.number} ${pr.title}`).slice(0, 100),
-          issue: pr.number,
-        },
-      });
-    }
+  // A red CI run tells only a run of one merge, so its one session has the one PR.
+  for (const { session, own } of sessions.values()) {
+    const pr = newest(own);
+    const text = breakerText(run, pr, failed, prompts);
+    plan.notes.push({
+      prs: own.map((p) => p.number),
+      session,
+      closing: false,
+      text,
+      fallback: {
+        prompt: `${text}\nThe session that wrote PR #${pr.number} is gone; this fix is yours.\n${UNATTENDED}`,
+        sessionName: oneLine(`${name} red #${pr.number} ${pr.title}`).slice(0, 100),
+        issue: pr.number,
+      },
+    });
   }
   return plan;
 };
@@ -518,23 +420,18 @@ const planTarget = async (run, coverage, prompts, workflows) => {
     };
   }
 
-  const { sessions, owned, unnamed } = await coverage.sessions(pulls, 'deploys');
+  const { sessions, unnamed } = await coverage.sessions(pulls, 'deploys');
   /** @type {Plan} */
   const plan = { reason: null, notes: [], unnamed, triage: null, range, stale: null, advance };
-  for (const { session, own, subscribed } of sessions.values()) {
-    const prs = [...own, ...subscribed].sort(byMerge);
-    const told = subscribed.filter((p) => owned.has(p.number));
+  for (const { session, own } of sessions.values()) {
     plan.notes.push({
-      prs: prs.map((p) => p.number),
-      subscribed: subscribed.map((p) => p.number),
+      prs: own.map((p) => p.number),
       session,
       // Every success asks, "unless you know otherwise": a session whose
       // change another target still has to ship waits for it by the
       // github-tooling rule.
       closing: conclusion === 'success',
-      text: own.length === 0
-        ? deploySubscriberText(run, { target, end, tags }, subscribed, failed, told, prompts)
-        : deployText(run, { target, end, tags }, own, subscribed, failed, told, prompts),
+      text: deployText(run, { target, end, tags }, own, failed, prompts),
     });
   }
   return plan;

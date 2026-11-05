@@ -83,7 +83,7 @@
           "type": "boolean"
         },
         "subscribeMessages": {
-          "description": "Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. A filer hears a `deployed:` label on its issue only through a subscribe line for `deploys`.",
+          "description": "Messages to an issue's filer, the session its body names: a comment on the issue, and its close or reopen. A filer hears no label, a `deployed:` label included.",
           "type": "boolean"
         },
         "redScheduledRun": {
@@ -568,29 +568,6 @@
           ],
           "description": "Replaces the default wording of a red deploy's ask, for several PRs. It may name the fact {pr}, which governor writes in. The text, or { \"file\": \"<path>\" }."
         },
-        "subscribed": {
-          "anyOf": [
-            {
-              "type": "string",
-              "minLength": 1
-            },
-            {
-              "type": "object",
-              "properties": {
-                "file": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
-                }
-              },
-              "required": [
-                "file"
-              ],
-              "additionalProperties": false
-            }
-          ],
-          "description": "Replaces the default wording of a CI or deploy notice's ask to a subscriber. It may name no fact. The text, or { \"file\": \"<path>\" }."
-        },
         "conflicts": {
           "anyOf": [
             {
@@ -638,6 +615,29 @@
           ]
         },
         "mergeHandoffUnread": {
+          "deprecated": true,
+          "description": "Retired: governor sends no message of this kind, so it is never read.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "subscribed": {
           "deprecated": true,
           "description": "Retired: governor sends no message of this kind, so it is never read.",
           "anyOf": [
@@ -1034,7 +1034,7 @@
           }
         },
         "relay": {
-          "description": "Whose text may reach a session that is already running, by `author_association`, with `BOT` for any account GitHub marks as a bot: their comments and reviews, and a session link or `governor:subscribe` line in the body of an issue or PR they open. An event such as a label, a close or a push is judged by the author of the issue or PR it is on. Default `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`, less any of the first three a `review` the file sets leaves out. Governor's own App is never judged.",
+          "description": "Whose text may reach a session that is already running, by `author_association`, with `BOT` for any account GitHub marks as a bot: their comments and reviews, and a session link in the body of an issue or PR they open. An event such as a label, a close or a push is judged by the author of the issue or PR it is on. Default `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`, less any of the first three a `review` the file sets leaves out. Governor's own App is never judged.",
           "type": "array",
           "items": {
             "type": "string",

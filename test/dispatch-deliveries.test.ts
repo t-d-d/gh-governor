@@ -2,8 +2,8 @@
  * Delivering a message to a session: `deliveries` in
  * dispatch/deliveries.mjs decides whom a message reaches and sends it. One
  * verb, `deliver`, to a session or to the owner of a PR, and a record of what
- * came of it: sent, refused, a fallback launched and the PR relinked, a subscriber
- * dropped, skipped, or an error.
+ * came of it: sent, refused, a fallback launched and the PR relinked,
+ * skipped, or an error.
  *
  * Its four adapters are recording fakes here: the GitHub reader, the send
  * into a session, the launcher, and the sessions finder. The turn's own
@@ -14,7 +14,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { DELIVER_LAUNCHES, DISPATCHER_LABEL, GITHUB_SOURCE, deliveries, fromDispatcher, hookLabel, hookSource, standingLine } from '../dispatch/deliveries.mjs';
-import { sessionNamedIn, subscribeLine, subscribersFor } from '../dispatch/webhook/subscribe.mjs';
+import { sessionNamedIn, subscribersFor } from '../dispatch/webhook/subscribe.mjs';
+import { subscribeLine } from './helpers/subscribe-line.ts';
 import { RELAY, dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { SIGN_OFF } from '../scripts/lib/session-signoff.mjs';
@@ -41,7 +42,6 @@ type Told = {
   sessionUrl: string | null;
   error: string | null;
   fallback: { outcome: string; sessionUrl: string | null } | null;
-  dropped: boolean | null;
   skipped: string | null;
   relinked: boolean | null;
 };
@@ -122,7 +122,7 @@ describe('deliver — a message into a session', () => {
     const f = fakes();
     const told = await f.deliver({ session: 'session_01ABC' }, 'the reviewer asked for a test');
     assert.deepEqual(f.sent, [{ session: 'session_01ABC', text: fromDispatcher(`the reviewer asked for a test\n\n${standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })}`, GITHUB_SOURCE) }]);
-    assert.deepEqual(told, { ok: true, answered: true, refused: false, sessionUrl: FRESH, error: null, fallback: null, dropped: null, skipped: null, relinked: null });
+    assert.deepEqual(told, { ok: true, answered: true, refused: false, sessionUrl: FRESH, error: null, fallback: null, skipped: null, relinked: null });
     assert.deepEqual(f.launches, []);
     assert.deepEqual(f.comments, []);
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message' && l.ok === true && l.session === 'session_01ABC'));
@@ -212,7 +212,7 @@ describe('deliver — the resend', () => {
     ]) {
       const answers = [first];
       const f = fakes({ send: async () => answers.shift() ?? accepted('session_01REVIEWER') });
-      const told = await f.deliver({ session: REVIEWER }, 'x', { on: [724], dropFrom: [724] });
+      const told = await f.deliver({ session: REVIEWER }, 'x', { on: [724] });
       assert.equal(told.ok, true, first.output);
       assert.equal(f.sent.length, 2);
       assert.deepEqual(f.slept, [5_000]);
@@ -481,7 +481,7 @@ describe('deliver — a session\'s standing', () => {
   test('lists what else of the session\'s is open, searched by its id, leaving out what the message is about', async () => {
     const seen: string[] = [];
     const f = fakes({ reader: { openNaming: async (id: string) => { seen.push(id); return [open(724), open(730), open(717, false)]; } } });
-    await f.deliver({ session: OWNER }, 'A comment on your pull request.', { on: [724], dropFrom: [724] });
+    await f.deliver({ session: OWNER }, 'A comment on your pull request.', { on: [724] });
     assert.deepEqual(seen, ['session_01OWNERAAA']);
     const text = f.sent[0]!.text;
     assert.match(text, /PR #730: Open 730/);
@@ -602,34 +602,27 @@ describe('deliver — a session\'s standing', () => {
 });
 
 /**
- * A subscriber that refuses (archived) is gone: its line is dropped from the
- * body of what it subscribed to. Only the owner's fire has a fallback.
+ * A session that refuses (archived) a message with no fallback is gone, and
+ * owed nothing: nothing starts, and the body of what it was told of is left
+ * as it is. Governor no longer drops a `governor:subscribe` line, and a
+ * leftover one stays.
  */
-describe('deliver — a subscriber that refuses', () => {
+describe('deliver — a refusal with no fallback', () => {
+  const OLD = 'https://claude.ai/code/session_01OLD';
   const REVIEWER = 'https://claude.ai/code/session_01REVIEWER';
   const FILER = 'https://claude.ai/code/session_01FILERBBB';
-  const body = `The change.\n\n${subscribeLine(REVIEWER, ['comments'])}\n${subscribeLine('https://claude.ai/code/session_01OTHERONE')}${'\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01OLD'}`;
+  const body = `The change.\n\n${subscribeLine(REVIEWER, ['comments'])}${'\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n'}${OLD}`;
   const onPull = (text: string, pull = true) => ({ issue: async (n: number) => ({ number: n, body: text, pull }) });
 
-  test('is dropped from the body and logged, with nothing launched', async () => {
+  test('a PR\'s owner that refuses a push keeps its footer, and a leftover line stays: nothing is written or launched', async () => {
     const f = fakes({ send: archived, reader: onPull(body) });
-    const told = await f.deliver({ session: REVIEWER }, 'A comment on a pull request you subscribe to.', { on: [724], dropFrom: [724] });
-    assert.deepEqual(f.launches, []);
+    const told = await f.deliver({ session: OLD }, 'A push to your pull request.', { on: [724] });
     assert.equal(told.refused, true);
-    assert.equal(told.dropped, true);
-    assert.equal(f.issueEdits.length, 1);
-    assert.equal(f.issueEdits[0]!.issue, 724);
-    assert.doesNotMatch(f.issueEdits[0]!.body, /session_01REVIEWER/);
-    assert.match(f.issueEdits[0]!.body, /session_01OTHERONE/);
-    assert.match(f.issueEdits[0]!.body, /session_01OLD/);
-    assert.ok(f.logged.some((l) => l.event === 'dispatch-unsubscribe' && l.dropped === true && l.on === 724), JSON.stringify(f.logged));
-  });
-
-  test('a refusal with nothing to drop from drops nothing, and says nothing was asked', async () => {
-    const f = fakes({ send: archived });
-    const told = await f.deliver({ session: 'https://claude.ai/code/session_01OLD' }, 'Your pull request was merged.', { on: [724] });
+    assert.deepEqual(f.launches, []);
     assert.deepEqual(f.issueEdits, []);
-    assert.equal(told.dropped, null);
+    assert.deepEqual(f.edits, []);
+    assert.equal(told.fallback, null);
+    assert.ok(!f.logged.some((l) => l.event === 'dispatch-unsubscribe'), JSON.stringify(f.logged));
   });
 
   // A ticket keeps the link of the last session that owned it, archived or
@@ -637,59 +630,42 @@ describe('deliver — a subscriber that refuses', () => {
   test('an issue\'s owner that refuses keeps its link, the refusal logged at info, so the next event tries it again', async () => {
     const filed = `A bug.\n\n${subscribeLine(REVIEWER, ['comments'])}\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${FILER}`;
     const f = fakes({ send: archived, reader: onPull(filed, false) });
-    const told = await f.deliver({ session: FILER }, 'Your issue was closed.', { on: [97], dropFrom: [97] });
+    const told = await f.deliver({ session: FILER }, 'Your issue was closed.', { on: [97] });
     assert.deepEqual(f.launches, []);
     assert.deepEqual(f.issueEdits, [], 'the body is left as it is');
     assert.equal(told.refused, true);
-    assert.equal(told.dropped, false);
-    assert.deepEqual(subscribersFor(filed, 'close'), [{ session: FILER, owner: true }], 'the next close tries the owner again');
+    assert.deepEqual(subscribersFor(filed, 'close', { issue: true }), [{ session: FILER, owner: true }], 'the next close tries the owner again');
     const refusal = f.logged.find((l) => l.event === 'dispatch-message' && l.session === FILER);
     assert.equal(refusal?.level, 'info', JSON.stringify(f.logged));
   });
 
-  test('an issue\'s owner that also subscribed by a line loses the line and keeps its link', async () => {
+  test('an issue\'s owner with a leftover line of its own keeps both: the line is not dropped, and the link still names it', async () => {
     const filed = `A bug.\n\n${subscribeLine(FILER, ['labels'])}\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${FILER}`;
     const f = fakes({ send: archived, reader: onPull(filed, false) });
-    const told = await f.deliver({ session: FILER }, 'A label on your issue.', { on: [97], dropFrom: [97] });
-    assert.equal(told.dropped, true);
-    assert.equal(f.issueEdits.length, 1);
-    const after = f.issueEdits[0]!.body;
-    assert.doesNotMatch(after, /governor:subscribe/);
-    assert.equal(sessionNamedIn(after), FILER);
-  });
-
-  test('a PR\'s owner that refuses keeps its footer: a remark\'s fallback takes the PR over from it', async () => {
-    const f = fakes({ send: archived, reader: onPull(body) });
-    const told = await f.deliver({ session: 'https://claude.ai/code/session_01OLD' }, 'A push to your pull request.', { on: [724], dropFrom: [724] });
+    const told = await f.deliver({ session: FILER }, 'Your issue was closed.', { on: [97] });
+    assert.equal(told.refused, true);
     assert.deepEqual(f.issueEdits, []);
-    assert.equal(told.dropped, false);
+    assert.equal(sessionNamedIn(filed), FILER);
   });
 
-  test('a drop GitHub refuses is logged, and nothing is dropped', async () => {
-    const f = fakes({ send: archived, reader: { ...onPull(body), updateIssue: async () => { throw new Error('PATCH failed: 403'); } } });
-    const told = await f.deliver({ session: REVIEWER }, 'x', { on: [724], dropFrom: [724] });
-    assert.equal(told.dropped, false);
-    assert.ok(f.logged.some((l) => l.event === 'dispatch-unsubscribe' && /403/.test(String(l.error))), JSON.stringify(f.logged));
-  });
-
-  test('a send that fails for any other reason, or is never answered, drops nobody: the session may be live', async () => {
+  test('a send that fails for any other reason, or is never answered, writes and launches nothing: the session may be live', async () => {
     for (const send of [orgLookup, async () => ({ status: 1, output: 'Error: network' })]) {
-      for (const [who, text] of [[REVIEWER, body], [FILER, `A bug.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${FILER}`]] as const) {
-        const f = fakes({ send, reader: onPull(text, who === REVIEWER) });
-        const told = await f.deliver({ session: who }, 'x', { on: [724], dropFrom: [724] });
+      for (const [who, text] of [[OLD, body], [FILER, `A bug.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${FILER}`]] as const) {
+        const f = fakes({ send, reader: onPull(text, who === OLD) });
+        const told = await f.deliver({ session: who }, 'x', { on: [724] });
+        assert.equal(told.refused, false);
         assert.deepEqual(f.issueEdits, []);
         assert.deepEqual(f.launches, []);
-        assert.equal(told.dropped, null);
       }
     }
   });
 
-  test('a refusal with a fallback starts it, and drops nobody', async () => {
+  test('a refusal with a fallback starts it, and writes nothing to the issue', async () => {
     const f = fakes({ send: archived, reader: onPull(body) });
-    const told = await f.deliver({ session: REVIEWER }, 'x', { fallback: { prompt: 'p', sessionName: 's' }, on: [724], dropFrom: [724] });
+    const told = await f.deliver({ session: OLD }, 'x', { fallback: { prompt: 'p', sessionName: 's' }, on: [724] });
     assert.equal(f.launches.length, 1);
     assert.deepEqual(f.issueEdits, []);
-    assert.equal(told.dropped, null);
+    assert.notEqual(told.fallback, null);
   });
 });
 
@@ -705,7 +681,7 @@ describe('deliver — a push by the session itself', () => {
     const f = fakes({ reader: { commit: async (sha: string) => ({ sha, message: `Fix the thing\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: ${SESSION}` }) } });
     const told = await f.deliver({ session: SESSION }, 'A push to your pull request.', { on: [724], commit: SHA });
     assert.deepEqual(f.sent, []);
-    assert.deepEqual(told, { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: `its own push, ${SHA.slice(0, 12)}`, relinked: null });
+    assert.deepEqual(told, { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, skipped: `its own push, ${SHA.slice(0, 12)}`, relinked: null });
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message' && /own push/.test(String(l.skipped))), JSON.stringify(f.logged));
   });
 

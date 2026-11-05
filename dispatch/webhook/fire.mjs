@@ -25,7 +25,7 @@
  * A `message` carries text into a cloud session that already exists (its id
  * or its claude.ai/code URL); one with a `fallback` names the prompt to
  * start a fresh session on, the name for it, and the PR it is on, should the
- * session refuse. A subscriber's names what it is `on`, the `event`,
+ * session refuse. An owner's names what it is `on`, the `event`,
  * a push's `commit`, and `closing` for a close. One on a PR whose body names
  * no session carries `byBranch` in place of the session, and the `poster` to
  * skip. A message queued before the receiver stopped marking a merge may
@@ -58,14 +58,15 @@
 // ── The vocabulary ───────────────────────────────────────────────────────
 
 /**
- * What a subscriber can hear of. `comments` are issue comments and review
+ * What an owner can hear of. `comments` are issue comments and review
  * comments, `reviews` submitted reviews, `pushes` a PR's `synchronize`,
  * `close` a PR closed (merged or not) or an issue closed or reopened,
  * `labels` an issue labelled or unlabelled but for a `deployed: ` label
  * added, `ci` and `deploys` the runs on main after a PR merged
  * (dispatch/workflow.mjs). On an issue, `deploys` is a `deployed: ` label
- * added (`ticketsOf` in dispatch/turn.mjs), which its owner hears only through a line of
- * its own, as with `labels`.
+ * added (`ticketsOf` in dispatch/turn.mjs), which its owner does not hear
+ * of, as with `labels`. The names are the words a `governor:subscribe`
+ * line once used, kept so a message queued under them still parses.
  */
 export const SUBSCRIPTION_EVENTS = /** @type {const} */ (['comments', 'reviews', 'pushes', 'close', 'labels', 'ci', 'deploys']);
 
@@ -262,7 +263,7 @@ export const waitLine = (body) => {
 
 /**
  * How the comment a dispatch leaves on its issue or PR starts: the receiver
- * keeps it off every subscriber, and the task reads the dispatch back by it.
+ * keeps it off every owner, and the task reads the dispatch back by it.
  */
 export const DISPATCH_MARKER = '<!-- governor:dispatched ';
 
@@ -334,10 +335,11 @@ export const lastDispatch = (comments) => {
  * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[] }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
- *   `subscribed`: the session hears by subscription, a `governor:subscribe`
- *   line or as an issue's filer, which the repo's subscribe-messages switch
- *   turns on; without it, it is the PR's owner, whose is the PR-messages
- *   switch (dispatch/repo-config.mjs).
+ *   `subscribed`: the session is an issue's filer, which the repo's
+ *   subscribe-messages switch turns on; without it, it is the PR's owner,
+ *   whose is the PR-messages switch (dispatch/repo-config.mjs). A message
+ *   queued to a `governor:subscribe` line's session before governor stopped
+ *   reading them carries it too.
  *   `authors`: what the receiver judged the fire by under the repo's
  *   `trust.relay`, each a trust value ({@link authorKind}): who wrote what
  *   it relays, and who opened the issue or PR whose body named the session

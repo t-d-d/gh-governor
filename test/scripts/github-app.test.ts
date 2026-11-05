@@ -538,11 +538,11 @@ describe('githubReader', () => {
     await assert.rejects(reader.fileAt('docs/notes/big.md', 'm0'), /no file/);
   });
 
-  // The subscriptions' reads and write.
+  // The owners' reads.
   // The search API allows an installation about thirty calls a minute, and
   // other callers of the App spend it too; the issues list is on the core
   // limit. One read of every open issue and PR serves the whole turn.
-  test('openNaming lists open issues and PRs whose body names the session as owner or subscriber, reading the list once per reader and never searching', async () => {
+  test('openNaming lists open issues and PRs whose body names the session as owner, not by a subscribe line, reading the list once per reader and never searching', async () => {
     const row = (number: number, body: string | null, pull = false) => ({ number, title: `T${number}`, html_url: `u${number}`, body, author_association: 'OWNER', ...(pull ? { pull_request: { url: 'x' } } : {}) });
     const { fetch, calls } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues': (_init: RequestInit | undefined, url: string) => {
@@ -556,7 +556,6 @@ describe('githubReader', () => {
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
     assert.deepEqual(await reader.openNaming('session_01ABC', RELAY), [
       { number: 7, title: 'T7', html_url: 'u7', pull: true },
-      { number: 8, title: 'T8', html_url: 'u8', pull: false },
     ]);
     assert.deepEqual(await reader.openNaming('session_01OTHER', RELAY), [{ number: 10, title: 'T10', html_url: 'u10', pull: false }]);
     assert.equal(calls.length, 2, 'two pages, read once for both sessions');
@@ -593,7 +592,7 @@ describe('githubReader', () => {
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', appId: 77, fetch });
     assert.deepEqual((await reader.openNaming(link, RELAY)).map((r) => r.number), [32, 33]);
-    assert.deepEqual((await reader.openNaming(link, [...RELAY, 'NONE'])).map((r) => r.number), [30, 31, 32, 33]);
+    assert.deepEqual((await reader.openNaming(link, [...RELAY, 'NONE'])).map((r) => r.number), [30, 32, 33], 'a subscribe line names nobody, whoever wrote it');
     assert.deepEqual((await reader.openNaming(link, ['OWNER'])).map((r) => r.number), [32, 33], 'governor\'s own App passes every list');
     assert.equal(calls.length, 1);
   });

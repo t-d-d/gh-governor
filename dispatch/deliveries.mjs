@@ -11,9 +11,9 @@
  * head branch and the PR body is relinked to it, unless the takeover's PR
  * has closed since. A ticket's spec work (`spec`) has its fallback written
  * into the ticket's body as its owner link ({@link nameSpecSession}). No
- * fallback reads or leaves a dispatch marker. With no fallback it
- * drops the refusing subscriber's line; an issue's owner keeps its link,
- * and the refusal is logged at info. A session's
+ * fallback reads or leaves a dispatch marker. With no fallback the
+ * refusal is logged at info, and the body is left as it is: an issue's
+ * owner keeps its link. A session's
  * own push, or a branch owner's own post, is skipped. The owner of a PR whose body names no session is the live local
  * session on its head branch.
  *
@@ -26,7 +26,7 @@
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { instruction } from './prompts.mjs';
 import { commitSession } from './branch-run.mjs';
-import { relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
+import { relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /**
@@ -291,7 +291,6 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   spec?: boolean,
  *   on?: number[],
  *   closing?: boolean,
- *   dropFrom?: number[],
  *   commit?: string | undefined,
  * }} DeliverOptions
  *   `source`: where the text comes from, which names the line it opens
@@ -305,8 +304,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   the ticket's body as its owner ({@link nameSpecSession}). No fallback
  *   reads or leaves a dispatch marker. `on`: the PRs or
  *   issue the message is about, left out of the standing. `closing`: a close
- *   or a change deployed. `dropFrom`: those of `on` the session subscribes
- *   to, which a refusal with no fallback drops it from. `commit`: the push
+ *   or a change deployed. `commit`: the push
  *   the message is of, not told to the session that wrote it.
  *
  * @typedef {{
@@ -316,7 +314,6 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   sessionUrl: string | null,
  *   error: string | null,
  *   fallback: { outcome: LaunchOutcome | 'forwarded' | 'skipped', sessionUrl: string | null } | null,
- *   dropped: boolean | null,
  *   skipped: string | null,
  *   relinked: boolean | null,
  * }} Delivery
@@ -327,9 +324,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   a PR that has closed, or launched (dispatched,
  *   unconfirmed, failed). `relinked`: whether a takeover's session was
  *   written into the PR body's link, null where none was tried; false
- *   fails the turn, since the body still names the archived owner. `dropped`: whether a refusal with no
- *   fallback dropped the session from what it subscribes to, null when none
- *   was tried. `skipped`: why nobody was sent to. `error`: why the send
+ *   fails the turn, since the body still names the archived owner. `skipped`: why nobody was sent to. `error`: why the send
  *   failed, or why no owner could be found.
  *
  * @typedef {{
@@ -502,32 +497,6 @@ export const deliveries = (deps) => {
   };
 
   /**
-   * Drop a subscriber that refused from the body of what it subscribed to:
-   * it is gone, and each later event its line names would be one more
-   * refused send. Only its `governor:subscribe` line goes. An owner's link
-   * stays, an issue's as a PR's: a ticket keeps the link of the last session that owned it,
-   * and its spec work starts a replacement that writes its own. A
-   * write that fails is logged.
-   *
-   * @param {number} on
-   * @param {string} session
-   * @returns {Promise<boolean>} Whether a line was dropped.
-   */
-  const drop = async (on, session) => {
-    try {
-      const github = await deps.reader();
-      const { body } = await github.issue(on);
-      const after = unsubscribe(body, session);
-      if (after !== body) await github.updateIssue(on, { body: after });
-      deps.log('dispatch-unsubscribe', { on, session, dropped: after !== body });
-      return after !== body;
-    } catch (error) {
-      deps.log('dispatch-unsubscribe', { on, session, dropped: false, error: messageOf(error) });
-      return false;
-    }
-  };
-
-  /**
    * Point the PR body's session link at the session a takeover started, so
    * the receiver messages it for every later remark: the body's link is the
    * one record of a PR's session. A launch that printed no link, or a
@@ -565,10 +534,10 @@ export const deliveries = (deps) => {
    * @param {string} session
    * @param {string} text
    * @param {import('./webhook/fire.mjs').Fallback | undefined} withFallback
-   * @param {{ source: MessageSource, takeover: boolean, spec: boolean, on: number[], closing: boolean, dropFrom: number[] }} how
+   * @param {{ source: MessageSource, takeover: boolean, spec: boolean, on: number[], closing: boolean }} how
    * @returns {Promise<Omit<Delivery, 'skipped'> & { answered: boolean }>}
    */
-  const toSession = async (session, text, withFallback, { source, takeover, spec, on, closing, dropFrom }) => {
+  const toSession = async (session, text, withFallback, { source, takeover, spec, on, closing }) => {
     const about = { exclude: on, closing, source };
     const until = deps.now() + DELIVER_LAUNCHES * (deps.launchTimeoutMs ?? Infinity);
     const sent = await send(session, text, about, until);
@@ -636,23 +605,15 @@ export const deliveries = (deps) => {
       }
       deps.log('dispatch-message-fallback', { session, issue: issue ?? null, sessionName, branch: branch === '' ? null : branch, ...fallback, relinked: named, ...(reason === null ? {} : { reason }) });
     }
-    // A refusal with none: a subscriber gone. Its line goes; the turn is not
-    // a failure, since nothing was owed to a session that is not there.
-    /** @type {boolean | null} */
-    let dropped = null;
-    if (refused && !withFallback && dropFrom.length > 0) {
-      dropped = false;
-      for (const from of dropFrom) dropped = (await drop(from, session)) || dropped;
-    }
-    return { ok, answered, refused, sessionUrl, error, fallback, dropped, relinked };
+    return { ok, answered, refused, sessionUrl, error, fallback, relinked };
   };
 
   /** @type {Deliveries['deliver']} */
-  const deliver = async (to, text, { source, fallback, takeover = false, spec = false, on = [], closing = false, dropFrom = [], commit }) => {
+  const deliver = async (to, text, { source, fallback, takeover = false, spec = false, on = [], closing = false, commit }) => {
     // Before anything is read or sent: a message with no source is refused.
     relayLabel(source);
     /** @type {Delivery} */
-    const nobody = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: null, relinked: null };
+    const nobody = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, skipped: null, relinked: null };
     /** @type {string} */
     let session;
     if ('pr' in to) {
@@ -684,7 +645,7 @@ export const deliveries = (deps) => {
       deps.log('dispatch-message', { session, skipped });
       return { ...nobody, skipped };
     }
-    return { ...await toSession(session, text, fallback, { source, takeover, spec, on, closing, dropFrom }), skipped: null };
+    return { ...await toSession(session, text, fallback, { source, takeover, spec, on, closing }), skipped: null };
   };
 
   return { deliver, onBranch };

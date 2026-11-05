@@ -111,6 +111,14 @@ describe('readConfig', () => {
     assert.deepEqual(read.config.prompts, {});
   });
 
+  test('a file that still sets the subscriber\'s prompt stays valid, and it is dropped unread', async () => {
+    for (const subscribed of ['Act on what is yours.', { file: 'gone.md' }]) {
+      const read = readConfig(JSON.stringify({ ...JSON.parse(ASKME_FILE), prompts: { subscribed, conflicts: 'Merge {base}.' } }));
+      assert.ok(read.ok, JSON.stringify(read));
+      assert.deepEqual(read.config.prompts, { conflicts: 'Merge {base}.' });
+    }
+  });
+
   // CI, deploy, branch-run, conflicts and deployed-label
   // messages are any served repo's, read from its own `workflows` section.
   test('the CI, deploy, branch-run, conflicts and deployed-label switches are generic', () => {

@@ -22,7 +22,8 @@ import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, cliEnv,
 import { DEFAULT_SESSION_NAME, DISPATCHER_LABEL, GITHUB_SOURCE, fromDispatcher, hookLabel, standingLine } from '../dispatch/deliveries.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { ownerSpecMessage, specPrompt } from '../dispatch/unblocked.mjs';
-import { sessionNamedIn, subscribeLine } from '../dispatch/webhook/subscribe.mjs';
+import { sessionNamedIn } from '../dispatch/webhook/subscribe.mjs';
+import { subscribeLine } from './helpers/subscribe-line.ts';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { promptFor, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { SIGN_POSTS, UNATTENDED, dispatchMarker, parseFire } from '../dispatch/webhook/fire.mjs';
@@ -4089,7 +4090,7 @@ describe('run — a message into a session', () => {
     const result = await run({ kind: 'message', session: 'session_01ABC', text: 'the reviewer asked for a test' }, deps as never);
     assert.ok(calls.indexOf('workspace.writeLogin') < calls.indexOf('message session_01ABC'), calls.join(', '));
     assert.deepEqual(messages, [{ session: 'session_01ABC', text: fromDispatcher(`the reviewer asked for a test\n\n${standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })}`, GITHUB_SOURCE) }]);
-    assert.deepEqual(result, { kind: 'message', ok: true, answered: true, refused: false, sessionUrl: 'https://claude.ai/code/session_01ABC', error: null, fallback: null, dropped: null, skipped: null, relinked: null, archived: false, loginStored: false, signoffs: { archived: [], kept: [], unsigned: 0, deferred: 0, skipped: null } });
+    assert.deepEqual(result, { kind: 'message', ok: true, answered: true, refused: false, sessionUrl: 'https://claude.ai/code/session_01ABC', error: null, fallback: null, skipped: null, relinked: null, archived: false, loginStored: false, signoffs: { archived: [], kept: [], unsigned: 0, deferred: 0, skipped: null } });
     assert.deepEqual(launches, []);
     assert.deepEqual(comments, []);
     assert.ok(!calls.includes('heartbeat'));
@@ -4890,10 +4891,11 @@ describe('run — a workflow run on main', () => {
     const three = workflowReader({
       runJobs: async () => [stage(DEV), stage(PROD)],
       workflowRuns: async () => [runRow(500, 'success', { head_sha: SHA }), runRow(498, 'success', { head_sha: 'shaP' })],
-      compareCommits: async () => [{ sha: 'm1', message: 'Merge pull request #767 from x' }, { sha: SHA, message: 'Merge pull request #799 from y' }],
+      compareCommits: async () => [{ sha: 'm1', message: 'Merge pull request #767 from x' }, { sha: 'm2', message: 'Merge pull request #780 from z' }, { sha: SHA, message: 'Merge pull request #799 from y' }],
       pullsForCommit: async (sha: string) => (sha === 'm1'
         ? [pr(767, { merge_commit_sha: 'm1', body: `One.${footer('https://claude.ai/code/session_01ONE')}` })]
-        : sha === SHA ? [pr(799, { body: `Two.\n\n${subscribeLine('https://claude.ai/code/session_01THREE', ['deploys'])}${footer(SESSION)}` })] : []),
+        : sha === 'm2' ? [pr(780, { merge_commit_sha: 'm2', body: `Three.${footer('https://claude.ai/code/session_01THREE')}` })]
+        : sha === SHA ? [pr(799, { body: `Two.${footer(SESSION)}` })] : []),
       openNaming: async (id: string) => { throw refusal(id, 403, 'Forbidden', ': API rate limit exceeded for installation', true); },
     });
     const threeRun = harness({ reader: three.reader });
@@ -5020,33 +5022,44 @@ describe('run — a session\'s standing', () => {
 });
 
 /**
- * A subscriber that refuses (archived) is gone: the task drops its line
- * from the body through the body write, and the turn is a success.
- * Only the owner's fire has a fallback.
+ * A session that refuses (archived) a message about an event, with no
+ * fallback, is gone and owed nothing: the turn writes nothing and exits 0.
+ * Governor no longer drops a `governor:subscribe` line from the body. A
+ * by-hand message, with no event, still exits 1 for its caller.
  */
-describe('run — a subscriber that refuses', () => {
+describe('run — a session that refuses a message with no fallback', () => {
   const REVIEWER = 'https://claude.ai/code/session_01REVIEWER';
   const archived = async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) });
   const body = `The change.\n\n${subscribeLine(REVIEWER, ['comments'])}\n${subscribeLine('https://claude.ai/code/session_01OTHERONE')}${'\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01OLD'}`;
 
-  test('is dropped from the body, logged, and the turn exits 0 with nothing launched', async () => {
+  // A message the receiver queued to a line's session before governor
+  // stopped reading lines may still reach the lane.
+  test('a message queued to a line\'s session that refuses leaves the body be, launches nothing, and exits 0', async () => {
     const { deps, issueEdits, launches, logged } = harness({
       message: archived,
       reader: () => ({ ...harness().deps.reader(''), issue: async (n: number) => ({ number: n, body, pull: true }), updateIssue: async (n: number, change: { body: string }) => { issueEdits.push({ issue: n, ...change }); } }),
     });
-    const result = await run({ kind: 'message', session: REVIEWER, text: 'A comment on a pull request you subscribe to.', on: 724, event: 'comments' }, deps as never);
+    const result = await run({ kind: 'message', session: REVIEWER, text: 'A comment on a pull request you subscribe to.', on: 724, event: 'comments', subscribed: true }, deps as never);
     assert.deepEqual(launches, []);
-    assert.equal(issueEdits.length, 1);
-    assert.equal(issueEdits[0]!.issue, 724);
-    assert.doesNotMatch(issueEdits[0]!.body, /session_01REVIEWER/);
-    assert.match(issueEdits[0]!.body, /session_01OTHERONE/);
-    assert.match(issueEdits[0]!.body, /session_01OLD/);
+    assert.deepEqual(issueEdits, []);
+    assert.equal((result as { archived: boolean }).archived, true);
+    assert.equal((result as { event?: string }).event, 'comments');
     assert.equal(exitCodeFor(result as never), 0);
     assert.ok(logged.some((l) => l.event === 'dispatch-message' && l.ok === false), JSON.stringify(logged));
-    assert.ok(logged.some((l) => l.event === 'dispatch-unsubscribe' && l.dropped === true && l.on === 724), JSON.stringify(logged));
+    assert.ok(!logged.some((l) => l.event === 'dispatch-unsubscribe'), JSON.stringify(logged));
   });
 
-  test('an owner refusing a push or a close has no line to drop, and still exits 0', async () => {
+  test('a by-hand message, with no event, that the session refuses exits 1 and names no event', async () => {
+    const { deps, issueEdits, launches } = harness({ message: archived });
+    const result = await run({ kind: 'message', session: REVIEWER, text: 'by hand' }, deps as never);
+    assert.deepEqual(launches, []);
+    assert.deepEqual(issueEdits, []);
+    assert.equal((result as { archived: boolean }).archived, true);
+    assert.equal('event' in (result as object), false);
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  test('an owner refusing a push or a close is left in the body, and the turn exits 0', async () => {
     const { deps, issueEdits } = harness({ message: archived });
     const result = await run({ kind: 'message', session: 'https://claude.ai/code/session_01OLD', text: 'Your pull request was merged.', on: 724, event: 'close' }, deps as never);
     assert.deepEqual(issueEdits, []);
@@ -5056,7 +5069,7 @@ describe('run — a subscriber that refuses', () => {
   /** An answer that is not the session being gone is the dispatcher's fault, not the session's refusal. */
   const orgLookup = async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: 'Unable to get organization UUID' }) });
 
-  test('a send answered with any other failure drops no subscriber and fails the turn: the session may be live', async () => {
+  test('a send answered with any other failure writes nothing and fails the turn: the session may be live', async () => {
     const { deps, issueEdits, launches } = harness({
       message: orgLookup,
       reader: () => ({ ...harness().deps.reader(''), issue: async (n: number) => ({ number: n, body, pull: true }), updateIssue: async (n: number, change: { body: string }) => { issueEdits.push({ issue: n, ...change }); } }),
@@ -5064,7 +5077,7 @@ describe('run — a subscriber that refuses', () => {
     const result = await run({ kind: 'message', session: REVIEWER, text: 'x', on: 724, event: 'comments' }, deps as never);
     assert.deepEqual(issueEdits, []);
     assert.deepEqual(launches, []);
-    assert.equal((result as { dropped: boolean | null }).dropped, null);
+    assert.equal((result as { archived: boolean }).archived, false);
     assert.equal(exitCodeFor(result as never), 1);
   });
 
@@ -5102,18 +5115,20 @@ describe('run — a push by the session itself', () => {
 
 /**
  * A session hears of a run once, every PR of its in the run's range
- * named (planWorkflow, test/dispatch-workflow.test.ts). A subscriber that
- * refuses that one message is dropped from each PR it names.
+ * named (planWorkflow, test/dispatch-workflow.test.ts). An owner that
+ * refuses that one message is told once, and nothing is written: a
+ * leftover `governor:subscribe` line names nobody, and stays.
  */
-describe('run — a subscriber to several of a run\'s PRs refuses', () => {
+describe('run — the owner of several of a run\'s PRs refuses', () => {
   const HEAD = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
+  const OWNER = 'https://claude.ai/code/session_01OWNSBOTH';
   const REVIEWER = 'https://claude.ai/code/session_01REVIEWER';
   const footer = (session: string) => `\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${session}`;
-  const prs = [767, 786].map((number) => ({ number, body: `The change.\n\n${subscribeLine(REVIEWER, ['deploys'])}${footer(`https://claude.ai/code/session_01OWN${number}`)}` }));
+  const prs = [767, 786].map((number) => ({ number, body: `The change.\n\n${subscribeLine(REVIEWER, ['deploys'])}${footer(OWNER)}` }));
   const shas = ['m4390', HEAD];
   const pulls = prs.map((p, i) => ({ number: p.number, title: `The change ${p.number}`, html_url: `https://github.com/${REPO}/pull/${p.number}`, body: p.body, merged_at: `2026-09-26T${String(p.number - 748).padStart(2, '0')}:00:00Z`, merge_commit_sha: shas[i], association: 'OWNER' }));
 
-  test('it is told once and dropped from each', async () => {
+  test('it is told once, the line\'s session not at all, and neither body is written', async () => {
     const sent: string[] = [];
     const issueEdits: number[] = [];
     const { deps } = harness({
@@ -5128,14 +5143,14 @@ describe('run — a subscriber to several of a run\'s PRs refuses', () => {
       }),
       message: async ({ session }: { session: string }) => {
         sent.push(session);
-        return session === REVIEWER
+        return session === OWNER
           ? { status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }
           : { status: 0, output: JSON.stringify({ ok: true }) };
       },
     });
     await run(jobFire(DEV, HEAD), deps as never);
-    assert.equal(sent.filter((s) => s === REVIEWER).length, 1);
-    assert.deepEqual(issueEdits.sort(), [767, 786]);
+    assert.deepEqual(sent, [OWNER]);
+    assert.deepEqual(issueEdits, []);
   });
 });
 
@@ -6373,7 +6388,7 @@ describe('run — a PR whose body names no session', () => {
     }
   });
 
-  test('a deploy whose lookup fails still tells the PR\'s subscribers, and logs why its owner was not', async () => {
+  test('a deploy whose lookup fails tells nobody, not a leftover line\'s session, and logs why its owner was not', async () => {
     const SHA = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
     const REVIEWER = 'https://claude.ai/code/session_01REVIEWER';
     const runRow = (id: number) => ({ id, status: 'completed', conclusion: 'success', event: 'push', head_branch: 'main', head_sha: `sha${id}`, html_url: `https://github.com/${REPO}/actions/runs/${id}`, created_at: at(500 - id) });
@@ -6385,7 +6400,7 @@ describe('run — a PR whose body names no session', () => {
     });
     const { deps, messages, logged } = harness({ reader, sessions: { list: async () => { throw new Error('GET /v1/code/sessions: 503'); }, get: async () => ({}) } });
     await run(jobFire(DEV, SHA), deps as never);
-    assert.deepEqual(messages.map((m) => m.session), [REVIEWER]);
+    assert.deepEqual(messages, []);
     assert.ok(logged.some((l) => l.event === 'dispatch-workflow' && l.pr === PR && /503/.test(String(l.reason))), JSON.stringify(logged));
   });
 

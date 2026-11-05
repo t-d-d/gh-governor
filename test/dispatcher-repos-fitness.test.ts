@@ -207,12 +207,11 @@ describe('fitness: an unlisted owner queues nothing (dispatcher-repos.md)', () =
   const SECRET = 'whsec_fitness';
   const SHA = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
   const OWNER = 'https://claude.ai/code/session_01OWNERAAA';
-  const WATCHER = 'https://claude.ai/code/session_01WATCHES';
   const person = { login: 'someone', type: 'User' };
-  const body = `The change.\n\n<!-- governor:subscribe ${WATCHER} -->\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${OWNER}`;
+  const body = `The change.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${OWNER}`;
   const pr = { number: 12, user: person, author_association: 'OWNER', title: 'A change', html_url: 'https://github.com/x/y/pull/12', body, head: { ref: 'claude/x', sha: SHA }, base: { ref: 'main' } };
   const prIssue = { number: 12, title: 'A change', html_url: 'https://github.com/x/y/pull/12', body, pull_request: { url: 'x' } };
-  const issue = { number: 4, title: 'An issue', html_url: 'https://github.com/x/y/issues/4', body: `Filed.\n\n<!-- governor:subscribe ${WATCHER} -->\n\n${OWNER}`, labels: [], user: person, author_association: 'OWNER', assignees: [] };
+  const issue = { number: 4, title: 'An issue', html_url: 'https://github.com/x/y/issues/4', body: `Filed.\n\n${OWNER}`, labels: [], user: person, author_association: 'OWNER', assignees: [] };
   const mention = (over: Record<string, unknown> = {}) => ({ id: 7, body: '@claude look at this', html_url: 'https://github.com/x/y/issues/4#c7', user: person, author_association: 'MEMBER', ...over });
   const run = (over: Record<string, unknown>) => ({
     action: 'completed',
@@ -224,7 +223,6 @@ describe('fitness: an unlisted owner queues nothing (dispatcher-repos.md)', () =
     issues: [
       ['ready label', { action: 'labeled', issue, label: { name: 'workflow: ready for development' }, sender: person }],
       ['label', { action: 'labeled', issue, label: { name: 'type: bug' }, sender: person }],
-      ['unlabel', { action: 'unlabeled', issue, label: { name: 'type: bug' }, sender: person }],
       ['close', { action: 'closed', issue: { ...issue, state_reason: 'completed' }, sender: person }],
       ['reopen', { action: 'reopened', issue, sender: person }],
       ['opened mentioning', { action: 'opened', issue: { ...issue, body: '@claude fix this' }, sender: person }],
@@ -335,7 +333,6 @@ const KINDS: Record<string, { build: (prompts: Record<string, string>) => Promis
   deployGreenMany: { build: (p) => note(shipped, coverageOf([pull(1), pull(2)], { label: 'deployed: dev' }), p), facts: ['PR #1: PR 1', 'PR #2: PR 2', 'Your changes are on dev'] },
   deployRed: { build: (p) => note(red('Deliver'), coverageOf([pull(1)], { label: 'deployed: dev' }), p), facts: [...RUN_FACTS, 'PR #1: PR 1'] },
   deployRedMany: { build: (p) => note(red('Deliver'), coverageOf([pull(1), pull(2)], { label: 'deployed: dev' }), p), facts: [...RUN_FACTS, 'PR #1: PR 1', 'PR #2: PR 2'] },
-  subscribed: { build: (p) => note(shipped, coverageOf([pull(1)], { label: 'deployed: dev', subscribed: true }), p), facts: ['PR #1: PR 1', 'which you subscribe to'] },
   conflicts: {
     build: (p) => { const m = conflictMessage({ pr: { number: 1, title: 'PR 1', html_url: 'u1' }, base: 'main', head: 'c'.repeat(40), merged: { pr: 2, sha: SHA } }, p); assert.ok(m.fallback.prompt.includes(m.text.split('\n\n')[1]!), 'the fallback carries the instruction'); return m.text; },
     facts: ['PR #1 (PR 1, u1)', 'c'.repeat(40), '#2 merged', SHA],
@@ -395,7 +392,6 @@ const FACTORY_TEXTS: Record<string, [Record<string, string | number>, string]> =
   deployGreenMany: [{ pr: 9, target: 'dev' }, 'Run what their Verification tables promised at `dev deploy`, if anything, and report the results in one comment on PR #9, the newest. If none promised anything there, nothing is owed.'],
   deployRed: [{ pr: 9 }, `${FACTORY_LOGS} If your change caused it, push the fix on a new branch from origin/main with a new PR. If it did not, nothing is owed; say what you found on PR #9.`],
   deployRedMany: [{ pr: 9 }, `${FACTORY_LOGS} If one of your changes caused it, push the fix on a new branch from origin/main with a new PR. If none did, nothing is owed; say what you found in one comment on PR #9, the newest.`],
-  subscribed: [{}, 'Act only on what is yours: a check you promised, a change of yours this bears on.'],
   conflicts: [{ base: 'main' }, 'Merge main into your branch, resolve the conflicts, run the checks and push.'],
 };
 

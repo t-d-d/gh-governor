@@ -1,7 +1,7 @@
 /**
  * What a delivery about a PR or an issue says to sessions: a fresh session
- * summoned by a mention of @claude, and a message to each session
- * subscribed to what happened (subscribe.mjs).
+ * summoned by a mention of @claude, and a message to the session that owns
+ * what happened (subscribe.mjs).
  *
  * A mention: four places it arrives, a comment on an issue or a pull
  * request, a review comment, a review, and an issue opened with the mention
@@ -12,7 +12,7 @@
  * as a lane message, which has a size cap, so a long body is quoted only
  * so far.
  *
- * A subscription: a pull request a session wrote names that session, the
+ * An owner: a pull request a session wrote names that session, the
  * last claude.ai/code link in its body (the attribution footer Claude Code
  * tells every session to end a PR description with), and a message wakes a
  * session whether its container is warm or gone. Such a PR is the
@@ -21,15 +21,14 @@
  * otherwise have been as its fallback, which the task starts only if the
  * session refuses (archived) and the PR is still open. A session's post
  * carries none: the owner's own is an echo, and another session's remark is
- * not worth a takeover. Any other session subscribes with a line in
- * the body, a PR's or an issue's, and hears of the events it names
- * with no fallback: the task drops a subscriber that refuses. An issue a
- * session filed names it the same way, and it hears of every event there
- * but labels and deploys (a `deployed: ` label) as its owner, with
- * no fallback, since an issue has nothing to take over; its link stays
- * should it refuse, so the ticket names its last owner. A push, a
- * close, a label: each is a message fire per subscriber, the owner's with
- * no fallback either, since a gone session owes them nothing. A review
+ * not worth a takeover. An issue a session filed names it the same way,
+ * and it hears of every event there but labels and deploys (a `deployed: `
+ * label) as its owner, with no fallback, since an issue has nothing to
+ * take over; its link stays should it refuse, so the ticket names its last
+ * owner. A push or a close is a message fire to the owner with no fallback
+ * either, since a gone session owes it nothing. No other session hears of
+ * a PR or an issue: a `governor:subscribe` line a body still carries names
+ * nobody. A review
  * bot's findings go through too; they are what the session is waiting for,
  * and the review loop ends when a session reads a remark and posts nothing.
  *
@@ -51,8 +50,8 @@
  *
  * Whose text reaches a session: an author the repo's `trust.relay` lets in
  * (`relay`, the receiver's list, route.mjs). A comment or review is judged
- * by its own author; a session link or a subscribe line in a body counts
- * only where the body's author is let in ({@link relayedBody}); and an
+ * by its own author; a session link in a body counts only where the body's
+ * author is let in ({@link relayedBody}); and an
  * event that carries no text, a label, a close, a reopen or a push, is
  * judged by the author of the issue or PR it is on, since the payload
  * carries no association for its sender. Governor's own App is never
@@ -64,11 +63,11 @@
  * own post. The footer Claude Code puts on a comment names no session, so a
  * session signs its posts only when told to. Every session the dispatcher
  * starts is told in its opening prompt (`SIGN_POSTS`, fire.mjs). A
- * session's post naming no session may be any subscriber's, so it reaches
- * every one, and the message says so ({@link UNSIGNED}). An author that
- * reads its own post back posts nothing and signs the next one. Skipping
- * the owner instead would lose a reviewer session's remark, and an owner
- * that nothing wakes leaves its PR idle.
+ * session's post naming no session may be the owner's, so it reaches the
+ * owner, and the message says so ({@link UNSIGNED}). An author that reads
+ * its own post back posts nothing and signs the next one. Skipping the
+ * owner instead would lose a reviewer session's remark, and an owner that
+ * nothing wakes leaves its PR idle.
  *
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
@@ -111,9 +110,7 @@ const MIN_QUOTE_CHARS = 100;
 
 const OWN_PR = 'This is your pull request. Decide what it needs: a code change (commit and push to its branch), a reply on the thread, or nothing. Do not open a new branch or PR.';
 
-const SUBSCRIBED_PR = 'You subscribe to this pull request; it is not yours. Decide what it needs from you: a review, a reply on the thread, or nothing. Do not push to its branch.';
-
-const SUBSCRIBED_ISSUE = 'You subscribe to this issue. Decide what it needs from you: a reply on the issue, a change to work of yours it bears on, or nothing.';
+const OWN_ISSUE = 'This is your issue. Decide what it needs from you: a reply on the issue, a change to work of yours it bears on, or nothing.';
 
 /**
  * The repo's default branch, off a delivery's `repository`, or null where
@@ -180,10 +177,10 @@ const splitQuote = (text) => {
 };
 
 /**
- * Whom a prompt addresses: a fresh session a mention summoned, the PR's
- * owner, or a subscriber.
+ * Whom a prompt addresses: a fresh session a mention summoned, or the
+ * owner of the PR or the issue.
  *
- * @typedef {'mention' | 'owner' | 'subscriber'} Role
+ * @typedef {'mention' | 'owner'} Role
  * @typedef {import('./fire.mjs').SubscriptionEvent} SubscriptionEvent
  * @typedef {{ login?: string, type?: string }} User
  * @typedef {{ body?: unknown, user?: User, author_association?: unknown, performed_via_github_app?: { id?: unknown } | null }} Written
@@ -259,13 +256,12 @@ const unrelayed = (author, what) => `${what} by ${author.author ?? 'someone'} ($
 const kindsOf = (authors) => [...new Set(authors.filter((a) => a !== null && a.own !== true).map((a) => authorKind(/** @type {import('./fire.mjs').Author} */ (a))))];
 
 /**
- * Why `written` reaches no subscriber, or null when it may: only an author
+ * Why `written` reaches no owner, or null when it may: only an author
  * `relay` lets in may, and governor's own App always. By default a bot's
  * may: a review bot's findings are what a session waits for. A stranger's
  * may not, nor the dispatcher's own marker, nor a person quoting the PR
  * review's marker. Whose post it is decides only who is skipped
- * ({@link fanOut}); the PR review's comment reaches only the owner,
- * whatever it says.
+ * ({@link fanOut}).
  *
  * @param {{ written: Written | undefined, relay: readonly string[], appId: number | undefined }} args
  * @returns {string | null}
@@ -325,16 +321,15 @@ const summons = (prompt, on, reason, appId, by) => {
 };
 
 /**
- * One subscriber's fire: a `message` of the prompt into its session, keyed
- * by the session so each subscriber's is its own lane message. The owner's
- * fire on a remark carries the dispatch it would otherwise have been as
- * the fallback, told to take the PR over; the prompt then rides twice, so a
- * remark too long for the lane is quoted shorter, halving until it
- * fits.
+ * The owner's fire: a `message` of the prompt into its session, keyed by
+ * the session. Its fire on a remark on a PR carries the dispatch it would
+ * otherwise have been as the fallback, told to take the PR over; the
+ * prompt then rides twice, so a remark too long for the lane is quoted
+ * shorter, halving until it fits.
  *
  * @param {{
  *   prompt: (role: Role, limit: number) => string,
- *   subscriber: { session: string | null, owner: boolean },
+ *   session: string | null,
  *   poster?: string | null,
  *   on: any,
  *   event: SubscriptionEvent,
@@ -345,14 +340,15 @@ const summons = (prompt, on, reason, appId, by) => {
  *   unsigned?: boolean,
  *   authors: string[],
  *   reason: string,
- * }} args `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
+ * }} args `session`: the owner's, null for the live session on the PR's
+ *   head branch. `issue`: `on` is an issue, whose owner, its filer, hears
+ *   under the subscribe-messages switch.
  *   `authors`: the kinds the fire was judged by, which the task judges again.
  *   `unsigned`: a session's post naming no session, which the message says
  *   ({@link UNSIGNED}). A session's post carries no fallback.
  * @returns {Queued}
  */
-const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, authors, reason }) => {
-  const role = owner ? 'owner' : 'subscriber';
+const messageFire = ({ prompt, session, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, authors, reason }) => {
   const number = Number.isInteger(on?.number) ? on.number : undefined;
   /** @param {string} text @returns {MessageFire} */
   const fire = (text) => build.message({
@@ -362,26 +358,26 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
     event,
     commit,
     closing,
-    subscribed: !owner || issue,
+    subscribed: issue,
     authors,
-    fallback: owner && fallback
+    fallback: fallback
       ? { prompt: `${text}\n${HANDOFF}\n${UNATTENDED}`, sessionName: sessionName(on?.number, on?.title), issue: number }
       : undefined,
   });
   let limit = EXCERPT_CHARS;
-  let message = fire(prompt(role, limit));
+  let message = fire(prompt('owner', limit));
   while (fireWeight(message) > FIRE_BUDGET && limit > 1) {
     limit = Math.floor(limit / 2);
-    message = fire(prompt(role, limit));
+    message = fire(prompt('owner', limit));
   }
   if (session === null) return { fire: message, reason: `${reason}, for the live session on its head branch, if one is`, key: 'branch-owner' };
   const id = sessionId(session);
-  return { fire: message, reason: `${reason}, for ${id}, which ${owner ? 'its body names' : 'subscribes to it'}`, key: id };
+  return { fire: message, reason: `${reason}, for ${id}, which its body names`, key: id };
 };
 
 /**
- * A fire for each subscriber to `event` on `on` (a PR or an issue), but the
- * session that posted it. `fallback`: the owner's fire carries one, which
+ * A fire for the owner of `on` (a PR or an issue), where it hears of
+ * `event` and did not post it. `fallback`: the owner's fire carries one, which
  * takes the PR over. `closing`: `on` is finished with (an issue
  * closed, a PR closed unmerged); a reopen is the same event and closes
  * nothing, and a merge leaves CI and the deploys to come.
@@ -397,7 +393,6 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   fallback?: boolean,
  *   commit?: string,
  *   closing?: boolean,
- *   ownerOnly?: boolean,
  *   byBranch?: boolean,
  *   sessionPost?: boolean,
  *   unsigned?: boolean,
@@ -408,18 +403,16 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   carries no text; `onAuthor`: who opened `on`. A fire to a session the
  *   body names is judged by both, a fire to the live session on a PR's
  *   head branch by what was written alone, or by `onAuthor` for an event.
- *   `ownerOnly`: the PR's owner hears it, and no subscriber.
- *   `issue`: `on` is an issue, whose owner hears `deploys` only by a line.
+ *   `issue`: `on` is an issue, whose owner hears no `deploys`.
  *   `byBranch`: `on` is a PR, and with no session its body names, the
  *   live session on its head branch is the owner; `sessionPost`, what was
  *   posted is a session's outside any quote (`ownSessionPost`), which then
  *   is that session's own. `unsigned`: a
- *   session posted it and did not sign it (`unsignedPost`), so any
- *   subscriber may have written it, and each hears of it, told so
- *   ({@link UNSIGNED}).
+ *   session posted it and did not sign it (`unsignedPost`), so the owner
+ *   may have written it, and hears of it, told so ({@link UNSIGNED}).
  * @returns {Fanout}
  */
-const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = false, commit, closing = false, ownerOnly = false, byBranch = false, sessionPost = false, unsigned = false, issue = false, reason }) => {
+const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = false, commit, closing = false, byBranch = false, sessionPost = false, unsigned = false, issue = false, reason }) => {
   /** @type {Queued[]} */
   const fires = [];
   /** @type {string[]} */
@@ -428,35 +421,23 @@ const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = fals
   const named = kindsOf([by, onAuthor]);
   if (byBranch && sessionNamedIn(body) === null) {
     if (sessionPost && poster === null) skipped.push("a session's post naming no session, taken for the local session's own");
-    else fires.push(messageFire({ prompt, subscriber: { session: null, owner: true }, poster, on, event, fallback, commit, closing, authors: kindsOf([by ?? onAuthor]), reason }));
+    else fires.push(messageFire({ prompt, session: null, poster, on, event, fallback, commit, closing, authors: kindsOf([by ?? onAuthor]), reason }));
   }
-  for (const subscriber of subscribers) {
-    if (ownerOnly && !subscriber.owner) continue;
-    if (poster !== null && sameSession(poster, subscriber.session)) {
+  for (const { session } of subscribers) {
+    if (poster !== null && sameSession(poster, session)) {
       skipped.push(`${sessionId(poster)}'s own post`);
       continue;
     }
-    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, issue, unsigned, authors: named, reason }));
+    fires.push(messageFire({ prompt, session, on, event, fallback, commit, closing, issue, unsigned, authors: named, reason }));
   }
-  const heard = fires.length === 0 && skipped.length === 0 ? [`${reason}: nobody subscribes to ${event}`] : [];
+  const heard = fires.length === 0 && skipped.length === 0 ? [`${reason}: no owner hears of ${event}`] : [];
   return { fires, reason: [...fires.map((f) => f.reason), ...skipped, ...heard].join('; ') };
 };
 
-/**
- * The first line of a prompt to a subscriber or the owner: what was
- * written, and on whose.
- *
- * @param {'owner' | 'subscriber'} role
- * @param {string} what
- */
-const heading = (role, what) => (role === 'owner' ? `A ${what} on your pull request.` : `A ${what} on a pull request you subscribe to.`);
-
-/** @param {Role} role */
-const closingFor = (role) => (role === 'owner' ? OWN_PR : SUBSCRIBED_PR);
 
 /** @param {any} payload @param {Role} [role] @param {number} [limit] */
 const issueCommentPrompt = ({ issue, comment }, role = 'mention', limit = EXCERPT_CHARS) => [
-  role === 'mention' ? `An issue comment mentioned ${MENTION}.` : 'A comment on an issue you subscribe to.',
+  role === 'mention' ? `An issue comment mentioned ${MENTION}.` : 'A comment on your issue.',
   '',
   `Issue #${issue?.number}: ${oneLine(issue?.title)} (${issue?.html_url})`,
   `Comment by ${comment?.user?.login} (${comment?.html_url}):`,
@@ -464,12 +445,12 @@ const issueCommentPrompt = ({ issue, comment }, role = 'mention', limit = EXCERP
   '',
   role === 'mention'
     ? `Do what the comment asks. If it needs code changes, create a branch, implement them, and open a PR linking issue #${issue?.number}. If it is a question, answer it as a comment on issue #${issue?.number}.`
-    : SUBSCRIBED_ISSUE,
+    : OWN_ISSUE,
 ].join('\n');
 
 /** @param {any} payload @param {Role} [role] @param {number} [limit] */
 const prCommentPrompt = ({ issue, comment }, role = 'mention', limit = EXCERPT_CHARS) => [
-  role === 'mention' ? `A comment on a pull request mentioned ${MENTION}.` : heading(role, 'comment'),
+  role === 'mention' ? `A comment on a pull request mentioned ${MENTION}.` : 'A comment on your pull request.',
   '',
   `PR #${issue?.number}: ${oneLine(issue?.title)} (${issue?.html_url})`,
   `Comment by ${comment?.user?.login} (${comment?.html_url}):`,
@@ -477,12 +458,12 @@ const prCommentPrompt = ({ issue, comment }, role = 'mention', limit = EXCERPT_C
   '',
   role === 'mention'
     ? `You are updating an existing PR. Check out its head branch and work on it directly. If the comment asks for code changes, implement them, commit, and push to that branch; do not open a new branch or PR. If it is a question, answer it as a comment on PR #${issue?.number}.`
-    : closingFor(role),
+    : OWN_PR,
 ].join('\n');
 
 /** @param {any} payload @param {Role} [role] @param {number} [limit] */
 const reviewCommentPrompt = ({ pull_request: pr, comment }, role = 'mention', limit = EXCERPT_CHARS) => [
-  role === 'mention' ? `A PR review comment mentioned ${MENTION}.` : heading(role, 'review comment'),
+  role === 'mention' ? `A PR review comment mentioned ${MENTION}.` : 'A review comment on your pull request.',
   '',
   `PR #${pr?.number}: ${oneLine(pr?.title)} (${pr?.html_url}), head branch "${pr?.head?.ref}"`,
   `Review comment by ${comment?.user?.login} on ${comment?.path} line ${comment?.line ?? comment?.original_line ?? '?'} (${comment?.html_url}):`,
@@ -490,12 +471,12 @@ const reviewCommentPrompt = ({ pull_request: pr, comment }, role = 'mention', li
   '',
   role === 'mention'
     ? `You are updating an existing PR. Check out branch "${pr?.head?.ref}" and work on it directly: address the feedback, commit, and push to that branch; do not open a new branch or PR. Reply on the review thread when done.`
-    : closingFor(role),
+    : OWN_PR,
 ].join('\n');
 
 /** @param {any} payload @param {Role} [role] @param {number} [limit] */
 const reviewPrompt = ({ pull_request: pr, review }, role = 'mention', limit = EXCERPT_CHARS) => [
-  role === 'mention' ? `A PR review mentioned ${MENTION}.` : heading(role, 'review'),
+  role === 'mention' ? `A PR review mentioned ${MENTION}.` : 'A review on your pull request.',
   '',
   `PR #${pr?.number}: ${oneLine(pr?.title)} (${pr?.html_url}), head branch "${pr?.head?.ref}"`,
   `Review by ${review?.user?.login}, state ${review?.state} (${review?.html_url}):`,
@@ -503,7 +484,7 @@ const reviewPrompt = ({ pull_request: pr, review }, role = 'mention', limit = EX
   '',
   role === 'mention'
     ? `You are updating an existing PR. Check out branch "${pr?.head?.ref}" and work on it directly: address the review, commit, and push to that branch; do not open a new branch or PR. Reply on the review when done.`
-    : closingFor(role),
+    : OWN_PR,
 ].join('\n');
 
 /** @param {any} payload */
@@ -518,63 +499,54 @@ const issuePrompt = ({ issue }) => [
   `Analyse the issue. If you can address it, create a branch, implement the fix or feature, and open a PR linking issue #${issue?.number}. Otherwise comment on the issue with your analysis.`,
 ].join('\n');
 
-/** @param {any} payload @param {Role} role */
-const pushPrompt = ({ pull_request: pr, sender, before, after, repository }, role) => [
-  role === 'owner' ? 'A push to your pull request.' : 'A push to a pull request you subscribe to.',
+/** @param {any} payload */
+const pushPrompt = ({ pull_request: pr, sender, before, after, repository }) => [
+  'A push to your pull request.',
   '',
   `PR #${pr?.number}: ${oneLine(pr?.title)} (${pr?.html_url}), head branch "${pr?.head?.ref}"`,
   `Pushed by ${sender?.login}: ${repository?.html_url}/compare/${before}...${after}`,
   '',
-  role === 'owner'
-    ? 'Someone else pushed to your branch: pull it before you push again, and decide whether it needs anything from you.'
-    : SUBSCRIBED_PR,
+  'Someone else pushed to your branch: pull it before you push again, and decide whether it needs anything from you.',
 ].join('\n');
 
-/** @param {any} payload @param {Role} role */
-const prClosedPrompt = ({ pull_request: pr, sender }, role) => {
+/** @param {any} payload */
+const prClosedPrompt = ({ pull_request: pr, sender }) => {
   const how = pr?.merged ? 'merged' : 'closed without merging';
   return [
-    role === 'owner' ? `Your pull request was ${how}.` : `A pull request you subscribe to was ${how}.`,
+    `Your pull request was ${how}.`,
     '',
     `PR #${pr?.number}: ${oneLine(pr?.title)} (${pr?.html_url}), by ${sender?.login}`,
     '',
     pr?.merged
-      ? 'Its change reaches dev and prod through the deploys, which its subscribers to deploys hear of. Nothing else on it is left to do unless its thread says so.'
+      ? 'Its change reaches dev and prod through the deploys, which you hear of. Nothing else on it is left to do unless its thread says so.'
       : 'Nothing on it is left to do unless its thread says so.',
   ].join('\n');
 };
 
-/** @param {any} payload @param {string | null} target The `deployed: ` label's target, if one was added. */
-const issueEventPrompt = ({ action, issue, label, sender }, target) => {
-  if (target !== null) {
-    return [
-      `The change of an issue you subscribe to reached ${target}.`,
-      '',
-      `Issue #${issue?.number}: ${oneLine(issue?.title)} (${issue?.html_url}), labelled "${label?.name}" by ${sender?.login}`,
-      '',
-      SUBSCRIBED_ISSUE,
-    ].join('\n');
-  }
-  const what = {
-    labeled: `was labelled "${label?.name}"`,
-    unlabeled: `lost the label "${label?.name}"`,
-    closed: `was closed${issue?.state_reason ? ` (${String(issue.state_reason).replace(/_/g, ' ')})` : ''}`,
-    reopened: 'was reopened',
-  }[String(action)];
+/**
+ * An issue closed or reopened, to its filer: the only `issues` events an
+ * owner hears of.
+ *
+ * @param {any} payload
+ */
+const issueEventPrompt = ({ action, issue, sender }) => {
+  const what = action === 'closed'
+    ? `was closed${issue?.state_reason ? ` (${String(issue.state_reason).replace(/_/g, ' ')})` : ''}`
+    : 'was reopened';
   return [
-    `An issue you subscribe to ${what}.`,
+    `Your issue ${what}.`,
     '',
     `Issue #${issue?.number}: ${oneLine(issue?.title)} (${issue?.html_url}), by ${sender?.login}`,
     '',
-    SUBSCRIBED_ISSUE,
+    OWN_ISSUE,
   ].join('\n');
 };
 
 /**
  * The three events that carry something written: what it is on (`on`, and
  * whether that is a pull request, `pr`), the text and its author (`by`), the
- * one action that counts (`wanted`, named as `what`), the subscription
- * event it is, and the prompt for it. `issues` is its own arm below: an
+ * one action that counts (`wanted`, named as `what`), the event it is to
+ * the owner, and the prompt for it. `issues` is its own arm below: an
  * assignment carries no text.
  *
  * @type {Record<string, (payload: any) => { on: any, pr: boolean, by: any, wanted: string, what: string, event: SubscriptionEvent, prompt: (payload: any, role?: Role, limit?: number) => string }>}
@@ -600,7 +572,7 @@ const joined = (parts) => ({
 
 /**
  * What something written says to sessions: a summons, where it mentions
- * @claude on what no session owns; a message to each subscriber to it.
+ * @claude on what no session owns; a message to its owner.
  * Null when it is neither (the caller has a better reason).
  *
  * @param {(payload: any) => ReturnType<typeof WRITTEN[string]>} written
@@ -634,25 +606,24 @@ const writtenFires = (written, event, payload, appId, relay) => {
   }
   // A PR naming no session is its head branch's session's, unless a mention summoned one.
   const byBranch = pr && sessionNamedIn(onBody) === null && !summoned;
-  if (subscribersFor(onBody, subscribed).length === 0 && !byBranch) return parts.length === 0 ? null : joined(parts);
+  if (subscribersFor(onBody, subscribed, { issue: !pr }).length === 0 && !byBranch) return parts.length === 0 ? null : joined(parts);
   if (action !== wanted) {
-    parts.push({ fires: [], reason: `${event} ${action}: only a ${wanted} ${what} reaches a subscriber` });
+    parts.push({ fires: [], reason: `${event} ${action}: only a ${wanted} ${what} reaches an owner` });
   } else if (what === 'review' && body.trim() === '' && !VERDICTS.has(by?.state)) {
     // A review with neither text nor a verdict is the wrapper of its inline
     // comments, each of which arrives as an event of its own.
     parts.push({ fires: [], reason: `review ${by?.id} on #${on?.number} carries no text and no verdict: its comments arrive as their own events` });
   } else {
-    // The PR review's comment reaches the PR's owner alone, whatever it
-    // says: a subscriber reads it on the PR. The owner's fire carries the
-    // fallback only where the comment asks something of the session, so a
-    // gone session is replaced whenever in the review turn the comment was
-    // posted, and a pass or a person's wait starts no session with nothing
-    // to do.
-    const ownerOnly = reviewComment(by, appId);
+    // The PR review's comment reaches the PR's owner, whatever it says.
+    // The owner's fire carries the fallback only where the comment asks
+    // something of the session, so a gone session is replaced whenever in
+    // the review turn the comment was posted, and a pass or a person's wait
+    // starts no session with nothing to do.
+    const reviewed = reviewComment(by, appId);
     const refused = notAnUpdate({ written: by, relay, appId });
     // The PR review's marker is the receiver's to read, not the session's
     // to quote: a reply quoting it would be refused as a person's.
-    const told = ownerOnly ? { ...payload, comment: { ...payload?.comment, body: withoutMarker(body) } } : payload;
+    const told = reviewed ? { ...payload, comment: { ...payload?.comment, body: withoutMarker(body) } } : payload;
     parts.push(refused ? { fires: [], reason: refused } : fanOut({
       on,
       body: onBody,
@@ -666,9 +637,8 @@ const writtenFires = (written, event, payload, appId, relay) => {
       // remark is not worth a takeover. A fresh session started on one
       // tends to post and sign off, and its post would start the next. A
       // person's reply quoting a session's post is the person's remark.
-      fallback: pr && !ownSessionPost(body) && (!ownerOnly || ownerActs(withoutMarker(body))),
+      fallback: pr && !ownSessionPost(body) && (!reviewed || ownerActs(withoutMarker(body))),
       issue: !pr,
-      ownerOnly,
       byBranch,
       sessionPost: ownSessionPost(body),
       unsigned: unsignedPost(body),
@@ -679,10 +649,10 @@ const writtenFires = (written, event, payload, appId, relay) => {
 };
 
 /**
- * The fires a mention summons, or a remark on something subscribed to
+ * The fires a mention summons, or a remark on something a session owns
  * queues, with the reason for each refusal; or null when the delivery
- * carries no mention and is on nothing anyone subscribes to (the caller has
- * a better reason).
+ * carries no mention and is on nothing a session owns (the caller has a
+ * better reason).
  *
  * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[] }} args
  * `appId`: the dispatcher's App, whose comment alone is the PR review's.
@@ -721,7 +691,7 @@ export const mentionFires = ({ event, payload, appId, relay = RELAY }) => {
   return null;
 };
 
-/** What each `issues` action is to a subscriber. */
+/** What each `issues` action is to an owner. */
 const ISSUE_EVENTS = /** @type {Record<string, SubscriptionEvent>} */ ({ labeled: 'labels', unlabeled: 'labels', closed: 'close', reopened: 'close' });
 
 /**
@@ -734,13 +704,11 @@ const ISSUE_EVENTS = /** @type {Record<string, SubscriptionEvent>} */ ({ labeled
 const addedLabel = (action, label) => (action === 'labeled' ? label?.name : null);
 
 /**
- * An issue labelled, unlabelled, closed or reopened: a message to each
- * subscriber to it. Who did it is a login, never a session's own post, so
- * every subscriber hears; the filer hears of a label only by a line of its
- * own ({@link subscribersFor}), since the label may well be its own. A
- * `deployed: ` label added is `deploys`, not `labels`: the change
- * reached a target, which on a closed issue ends what a subscriber waits on
- * as a close does, and the filer hears of it only by a line too.
+ * An issue closed or reopened: a message to its filer. Who did it is a
+ * login, never a session's own post. The filer hears of no label
+ * ({@link subscribersFor}), since the label may well be its own, and of no
+ * `deployed: ` label, which is `deploys`, not `labels`: most filers have
+ * signed off by then.
  *
  * Judged by the issue's author, under `relay`.
  *
@@ -753,10 +721,10 @@ export const issueEventFires = (payload, { relay = RELAY, appId } = {}) => {
   const target = deployedTarget(addedLabel(action, payload?.label));
   const deployed = target !== null;
   const event = deployed ? 'deploys' : ISSUE_EVENTS[String(action)];
-  if (event === undefined) return { fires: [], reason: `issues ${action}: nothing a subscriber hears of` };
+  if (event === undefined) return { fires: [], reason: `issues ${action}: nothing an owner hears of` };
   const issue = payload?.issue;
   const onAuthor = authorOf(issue, appId);
-  if (!lets(relay, onAuthor)) return { fires: [], reason: `issue #${issue?.number} ${action}: no subscriber hears of it, as it is ${unrelayed(onAuthor, 'opened')}` };
+  if (!lets(relay, onAuthor)) return { fires: [], reason: `issue #${issue?.number} ${action}: no owner hears of it, as it is ${unrelayed(onAuthor, 'opened')}` };
   return fanOut({
     on: issue,
     body: relayedBody({ body: issue?.body, ...onAuthor }, relay),
@@ -764,7 +732,7 @@ export const issueEventFires = (payload, { relay = RELAY, appId } = {}) => {
     onAuthor,
     event,
     poster: null,
-    prompt: () => issueEventPrompt(payload, target),
+    prompt: () => issueEventPrompt(payload),
     closing: action === 'closed' || (deployed && issue?.state === 'closed'),
     issue: true,
     reason: `issue #${issue?.number} ${deployed ? `deployed to ${target}` : action}`,
@@ -772,8 +740,8 @@ export const issueEventFires = (payload, { relay = RELAY, appId } = {}) => {
 };
 
 /**
- * A pull request pushed to or closed: a message to each subscriber to
- * pushes or to close, the owner included, none with a fallback. A push
+ * A pull request pushed to or closed: a message to its owner, with no
+ * fallback. A push
  * names its commit, so the task can skip the session whose commit it is
  * (its `Claude-Session` trailer): a push is a session's post too, and the
  * receiver cannot read the commit. Every other action is acknowledged.
@@ -787,9 +755,9 @@ export const issueEventFires = (payload, { relay = RELAY, appId } = {}) => {
 export const pullRequestFires = (payload, { relay = RELAY, appId } = {}) => {
   const pr = payload?.pull_request;
   const action = payload?.action;
-  if (action !== 'synchronize' && action !== 'closed') return { fires: [], reason: `pull_request ${action}: only a push or a close reaches a subscriber` };
+  if (action !== 'synchronize' && action !== 'closed') return { fires: [], reason: `pull_request ${action}: only a push or a close reaches an owner` };
   const onAuthor = authorOf(pr, appId);
-  if (!lets(relay, onAuthor)) return { fires: [], reason: `#${pr?.number} ${action}: no subscriber hears of it, as it is ${unrelayed(onAuthor, 'opened')}` };
+  if (!lets(relay, onAuthor)) return { fires: [], reason: `#${pr?.number} ${action}: no owner hears of it, as it is ${unrelayed(onAuthor, 'opened')}` };
   const judged = { body: relayedBody({ body: pr?.body, ...onAuthor }, relay), by: null, onAuthor };
   if (action === 'synchronize') {
     const after = typeof payload?.after === 'string' ? payload.after : pr?.head?.sha;
@@ -798,7 +766,7 @@ export const pullRequestFires = (payload, { relay = RELAY, appId } = {}) => {
       ...judged,
       event: 'pushes',
       poster: null,
-      prompt: (role) => pushPrompt(payload, role),
+      prompt: () => pushPrompt(payload),
       ...(isCommit(after) ? { commit: after } : {}),
       reason: `push to #${pr?.number}`,
     });
@@ -808,7 +776,7 @@ export const pullRequestFires = (payload, { relay = RELAY, appId } = {}) => {
     ...judged,
     event: 'close',
     poster: null,
-    prompt: (role) => prClosedPrompt(payload, role),
+    prompt: () => prClosedPrompt(payload),
     closing: !pr?.merged,
     byBranch: true,
     reason: `#${pr?.number} ${pr?.merged ? 'merged' : 'closed'}`,

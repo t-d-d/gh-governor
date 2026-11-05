@@ -103,7 +103,7 @@ served repos have their owner merge, so a pass there must not merge.
   403 on its read or its write is logged and passed over; any other refusal
   fails the review.
 - Every review comment reaches the session the PR names, without its
-  marker, and no other subscriber. Only a comment the session can act on
+  marker, and no other session. Only a comment the session can act on
   carries the fallback that hands a gone session's PR to a fresh one.
 - The review never runs code from the served repo. A check settings cannot
   express belongs in the repo's own CI, which the review reads as a required

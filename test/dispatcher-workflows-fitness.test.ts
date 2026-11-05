@@ -33,7 +33,6 @@ const plan = (invocation: unknown, covered: unknown) => planWorkflow({ invocatio
 const BUILT: Record<string, () => Promise<string>> = {
   ciBreaker: async () => (await plan(CI, coverage([pull(1)]))).notes[0]!.text,
   ciBreakerFallback: async () => String((await plan(CI, coverage([pull(1)]))).notes[0]!.fallback?.prompt),
-  ciSubscriber: async () => (await plan(CI, coverage([pull(1)], { subscribed: true }))).notes[0]!.text,
   ciTriage: async () => String((await plan(CI, coverage([pull(1), pull(2)]))).triage?.prompt),
   ciBumpTriage: async () => String((await plan(CI, coverage([pull(1, DEPENDABOT)]))).triage?.prompt),
   prodTriage: async () => String((await plan(DELIVER, coverage([pull(1)], { label: 'deployed: prod' }))).triage?.prompt),
@@ -42,7 +41,6 @@ const BUILT: Record<string, () => Promise<string>> = {
   deployGreenDispatcher: async () => (await plan(job('deployed: dispatcher'), coverage([pull(1)], { label: 'deployed: dispatcher' }))).notes[0]!.text,
   deployRedDev: async () => (await plan(DELIVER, coverage([pull(1)], { label: 'deployed: dev' }))).notes[0]!.text,
   deployRedDispatcher: async () => (await plan(DELIVER, coverage([pull(1), pull(2)], { label: 'deployed: dispatcher' }))).notes[0]!.text,
-  deploySubscriber: async () => (await plan(job('deployed: dev'), coverage([pull(1)], { label: 'deployed: dev', subscribed: true }))).notes[0]!.text,
   conflicts: async () => conflictMessage({ pr: { number: 1, title: 'PR 1', html_url: 'u1' }, base: 'main', head: 'c'.repeat(40), merged: { pr: 2, sha: SHA } }, prompts).text,
   conflictsFallback: async () => conflictMessage({ pr: { number: 1, title: 'PR 1', html_url: 'u1' }, base: 'main', head: 'c'.repeat(40), merged: { pr: 2, sha: SHA } }, prompts).fallback.prompt,
 };

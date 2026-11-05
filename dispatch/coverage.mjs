@@ -55,7 +55,7 @@ import { FAILED, LABEL_PREFIX, WORKFLOW_PATH, authorKind, lets } from './webhook
 import {
   BASELINE_READS_MAX, OUT_OF_READS, STALE_RUNS_PAUSES_MS, baselineIn, builtCommit, freshRuns, rangeSince, shippedNothing, shipsAs, short, stoppedAt,
 } from './runs.mjs';
-import { relayedBody, sameSession, sessionId, subscribersFor } from './webhook/subscribe.mjs';
+import { relayedBody, sessionId, sessionNamedIn } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { isCi } from './repo-config.mjs';
 
@@ -74,7 +74,7 @@ import { isCi } from './repo-config.mjs';
  * @typedef {{ baseline: { id: number, commit: string, created: string }, end: string, merges: number }} Range
  *   What the turn logs before it labels or sends: the baseline, the
  *   commit the run built or tested, and the merge commits the compare returned.
- * @typedef {{ session: string, own: PullRow[], subscribed: PullRow[] }} Heard
+ * @typedef {{ session: string, own: PullRow[] }} Heard
  * @typedef {{
  *   reason: string | null,
  *   stale: { newest: { id: number, created: string } | null } | null,
@@ -90,7 +90,7 @@ import { isCi } from './repo-config.mjs';
  *   shipped: PullRow[],
  *   picked: PullRow[],
  *   closes: Map<number, number[]>,
- *   sessions: (prs: PullRow[], event: 'ci' | 'deploys') => Promise<{ sessions: Map<string, Heard>, owned: Set<number>, unnamed: Array<{ pr: number, reason: string }> }>,
+ *   sessions: (prs: PullRow[], event: 'ci' | 'deploys') => Promise<{ sessions: Map<string, Heard>, unnamed: Array<{ pr: number, reason: string }> }>,
  * }} Coverage
  *   `reason`: why the reading stopped short of the PRs, null when it reached
  *   them (or, for CI, a red baseline). `stale`: the stop is one the turn
@@ -103,8 +103,8 @@ import { isCi } from './repo-config.mjs';
  *   `shipped`: the PRs the range merged, the one at its end always;
  *   `picked`: those the paths pick (CI: every one); `closes`: each shipped
  *   PR's closing tickets, as GitHub reads them. `sessions`: each PR's
- *   owner (by footer, else the live session on its head branch) and its
- *   subscribers to `event`, read on ask, so a triage reads no branch.
+ *   owner (by footer, else the live session on its head branch), read on
+ *   ask, so a triage reads no branch.
  */
 
 /**
@@ -146,10 +146,9 @@ const pickedBy = async (reader, paths, prs) => {
 export const byMerge = (a, b) => String(a.merged_at).localeCompare(String(b.merged_at)) || a.number - b.number;
 
 /**
- * The sessions `prs` name for `event`, each with the PRs it wrote and those
- * it subscribes to, oldest merge first. A PR naming none has its owner
- * looked up by head branch; one still with nobody is `unnamed`. `owned`:
- * the PRs a session wrote. A PR whose author `relay`, the repo's
+ * The sessions that own `prs`, each with the PRs it wrote, oldest merge
+ * first. A PR naming none has its owner looked up by head branch; one still
+ * with nobody is `unnamed`. A PR whose author `relay`, the repo's
  * `trust.relay`, does not let in is `unnamed` too, its head branch not
  * looked up: a deploy or a red run is an event on it, judged by its author,
  * and its body names no session ({@link relayedBody}).
@@ -162,8 +161,6 @@ export const byMerge = (a, b) => String(a.merged_at).localeCompare(String(b.merg
 const sessionsOf = async (prs, event, onBranch, relay) => {
   /** @type {Map<string, Heard>} */
   const sessions = new Map();
-  /** @type {Set<number>} */
-  const owned = new Set();
   /** @type {Array<{ pr: number, reason: string }>} */
   const unnamed = [];
   for (const pr of [...prs].sort(byMerge)) {
@@ -171,33 +168,29 @@ const sessionsOf = async (prs, event, onBranch, relay) => {
       unnamed.push({ pr: pr.number, reason: `PR #${pr.number} is by ${pr.author || 'someone'} (${authorKind(pr)}), whom the repo's trust.relay does not let in: nobody hears of its ${event}` });
       continue;
     }
-    let subscribers = subscribersFor(relayedBody(pr, relay), event);
+    let owner = sessionNamedIn(relayedBody(pr, relay));
     /** Why the PR has no owner, where it has none. @type {string} */
     let ownerless = 'a person\'s, or its footer is gone';
     let lookupFailed = false;
-    if (!subscribers.some((s) => s.owner) && onBranch !== undefined && pr.head !== '') {
+    if (owner === null && onBranch !== undefined && pr.head !== '') {
       try {
-        const found = await onBranch(pr.head);
-        if (found !== null) subscribers = [{ session: found, owner: true }, ...subscribers.filter((s) => !sameSession(s.session, found))];
-        else ownerless = `no live session holds its head branch ${pr.head}`;
+        owner = await onBranch(pr.head);
+        if (owner === null) ownerless = `no live session holds its head branch ${pr.head}`;
       } catch (error) {
         ownerless = `its head branch ${pr.head} could not be looked up: ${messageOf(error)}`;
         lookupFailed = true;
         unnamed.push({ pr: pr.number, reason: `PR #${pr.number} names no session, and ${ownerless}` });
       }
     }
-    if (subscribers.length === 0) {
-      if (!lookupFailed) unnamed.push({ pr: pr.number, reason: `PR #${pr.number} names no session (${ownerless}), and nobody subscribes to its ${event}` });
+    if (owner === null) {
+      if (!lookupFailed) unnamed.push({ pr: pr.number, reason: `PR #${pr.number} names no session (${ownerless}), so nobody hears of its ${event}` });
       continue;
     }
-    if (subscribers.some((s) => s.owner)) owned.add(pr.number);
-    for (const { session, owner } of subscribers) {
-      const heard = sessions.get(sessionId(session)) ?? { session, own: [], subscribed: [] };
-      sessions.set(sessionId(session), heard);
-      (owner ? heard.own : heard.subscribed).push(pr);
-    }
+    const heard = sessions.get(sessionId(owner)) ?? { session: owner, own: [] };
+    sessions.set(sessionId(owner), heard);
+    heard.own.push(pr);
   }
-  return { sessions, owned, unnamed };
+  return { sessions, unnamed };
 };
 
 /**

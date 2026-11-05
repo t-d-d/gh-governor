@@ -21,7 +21,7 @@ import { bodyDigest, reviewMarker } from '../dispatch/pr-body.mjs';
 import { readFileSync } from 'node:fs';
 import { commentKey, commentText, heldPassReason, mergeConflictText, ownerActs, passOf, withoutMarker as withoutMarkerText } from '../dispatch/webhook/review-comment.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
-import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
+import { subscribeLine } from './helpers/subscribe-line.ts';
 import { APP_ID, BODY, DEPENDABOT_COMMIT, FILES, HEAD, IAM, MERGE_BASE, PASS, REPO, SKILL, cliOutput, dependabotRow, pullRow } from './helpers/dispatch-review-fixtures.ts';
 import type { Answer, FileRow, Pull, PullCommit, TicketRow } from './helpers/dispatch-review-fixtures.ts';
 import { factoryFile } from './helpers/factory.ts';

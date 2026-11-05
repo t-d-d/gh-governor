@@ -76,15 +76,16 @@ describe('exitCodeFor', () => {
     assert.equal(exitCodeFor({ kind: 'message', ok: false, sessionUrl: null, error: 'archived', loginStored: false, fallback: { outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01NEW' }, relinked: null }), 0);
   });
   /**
-   * A subscriber's message: a refusal is a gone subscriber, dropped
-   * from the body, and no failure; a session's own push, not sent, is none
-   * either. A send the CLI never answered still fails.
+   * A message the receiver queued for an event: a refusal with no fallback
+   * is a gone session, owed nothing, and no failure; a session's own push,
+   * not sent, is none either. A by-hand message, with no event, still exits
+   * 1 for its caller. A send the CLI never answered still fails.
    */
-  test('a refused subscriber, dropped or not, and a skipped own push exit 0; an unanswered send exits 1', () => {
-    assert.equal(exitCodeFor({ kind: 'message', ok: false, answered: true, sessionUrl: null, error: 'archived', loginStored: false, fallback: null, dropped: true }), 0);
-    assert.equal(exitCodeFor({ kind: 'message', ok: false, answered: true, sessionUrl: null, error: 'archived', loginStored: false, fallback: null, dropped: false }), 0);
-    assert.equal(exitCodeFor({ kind: 'message', ok: false, answered: null, sessionUrl: null, error: null, loginStored: false, fallback: null, dropped: null, skipped: 'its own push, bbbbbbbbbbbb' }), 0);
-    assert.equal(exitCodeFor({ kind: 'message', ok: false, answered: false, sessionUrl: null, error: 'network', loginStored: false, fallback: null, dropped: null }), 1);
+  test('a refused message about an event and a skipped own push exit 0; a by-hand refusal and an unanswered send exit 1', () => {
+    assert.equal(exitCodeFor({ kind: 'message', ok: false, answered: true, sessionUrl: null, error: 'archived', loginStored: false, fallback: null, archived: true, event: 'comments' }), 0);
+    assert.equal(exitCodeFor({ kind: 'message', ok: false, answered: true, sessionUrl: null, error: 'archived', loginStored: false, fallback: null, archived: true }), 1);
+    assert.equal(exitCodeFor({ kind: 'message', ok: false, answered: null, sessionUrl: null, error: null, loginStored: false, fallback: null, skipped: 'its own push, bbbbbbbbbbbb' }), 0);
+    assert.equal(exitCodeFor({ kind: 'message', ok: false, answered: false, sessionUrl: null, error: 'network', loginStored: false, fallback: null, event: 'comments' }), 1);
   });
   /**
    * A workflow turn fails only on a fault: a send the CLI never

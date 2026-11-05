@@ -378,11 +378,10 @@ const after = (rows, field, since, by) => {
 
 /**
  * The reads the dispatcher makes, and its writes: a comment, a PR body a
- * fallback points at the session it started, and a body a refusing
- * subscriber is dropped from. Four reads are the workflow turn's: a run's
+ * fallback points at the session it started. Four reads are the workflow turn's: a run's
  * jobs, the runs before it, the PRs a commit merged, and the commits a prod
  * promotion ships; a fifth, one run by id, is a job fire's way to its
- * workflow file. Three are the subscriptions': a body, a
+ * workflow file. Three are the owners': a body, a
  * commit's message, and what is open naming a session. The PR review's:
  * a PR whole, its files, the open PRs, a ticket, a whole thread,
  * the repo's default branch, the checks it requires and the checks at a
@@ -686,7 +685,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
 
     /**
      * The open issues and PRs whose body names `session` (its link or id)
-     * as its owner or in a subscribe line ({@link sessionsNamedIn}), where
+     * as its owner ({@link sessionsNamedIn}), where
      * `relay`, the repo's `trust.relay`, lets the body's author in
      * (`relayedBody`). A member's body that quotes or cites the session is
      * not one, nor a stranger's that names it. Read from

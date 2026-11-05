@@ -75,7 +75,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   pickup: 'A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `pickup.sweepHours` sets.',
   summons: 'A session per `@claude` remark, and a dispatch started by hand.',
   prMessages: 'Messages into the session a PR names, or the local session holding its branch.',
-  subscribeMessages: 'Messages to sessions subscribed by a `governor:subscribe` line, and to an issue\'s filer. A filer hears a `deployed:` label on its issue only through a subscribe line for `deploys`.',
+  subscribeMessages: 'Messages to an issue\'s filer, the session its body names: a comment on the issue, and its close or reopen. A filer hears no label, a `deployed:` label included.',
   redScheduledRun: 'A fresh session on a scheduled run on the default branch that went red.',
   unblocked: 'What a blocker\'s close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket\'s session, and the spec work on a not-ready ticket. The session whose link ends the ticket\'s body owns it and is asked to rewrite its own spec; a fresh session rewrites it only where the body names no session or that session is archived, so nobody takes a ticket from its owner. A file that still sets the older `mergeHandoff` reads as this.',
   ciMessages: 'A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`.',
@@ -294,7 +294,7 @@ const trustSchema = z.strictObject({
     .meta({ description: 'Whose issue or PR may become work when a person sets it going, by `author_association`: pickup starts a ready ticket, and a summons starts a session, only where its author is listed. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `relay` and `review` where the file sets them. `BOT` is refused. The older `pickup.by` is read as this list, and a file may not set both.' }),
   relay: z.array(z.enum(TRUST_VALUES))
     .optional()
-    .meta({ description: 'Whose text may reach a session that is already running, by `author_association`, with `BOT` for any account GitHub marks as a bot: their comments and reviews, and a session link or `governor:subscribe` line in the body of an issue or PR they open. An event such as a label, a close or a push is judged by the author of the issue or PR it is on. Default `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`, less any of the first three a `review` the file sets leaves out. Governor\'s own App is never judged.' }),
+    .meta({ description: 'Whose text may reach a session that is already running, by `author_association`, with `BOT` for any account GitHub marks as a bot: their comments and reviews, and a session link in the body of an issue or PR they open. An event such as a label, a close or a push is judged by the author of the issue or PR it is on. Default `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`, less any of the first three a `review` the file sets leaves out. Governor\'s own App is never judged.' }),
   review: z.array(z.enum(TRUST_VALUES))
     .optional()
     .meta({ description: 'Whose pull requests governor\'s PR review reads, by `author_association`, with `BOT` for any account GitHub marks as a bot. A pull request by an author it leaves out gets a `neutral` `governor` check, and a person merges it. Dependabot\'s pull requests are read by `review.dependabot` whatever it says. Default `OWNER`, `MEMBER` and `COLLABORATOR`.' }),

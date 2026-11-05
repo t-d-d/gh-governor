@@ -14,8 +14,8 @@
  * The one line the stack alarms on is `dispatch-failed`: the metric filter
  * counts it, whether the turn threw, proved nothing, started nothing it was
  * asked to start, or ran out of time. A message an archived session
- * refused, with no fallback tried and no subscriber dropped, still exits 1
- * for the by-hand caller, but logs `dispatch-result`: the dispatcher reached
+ * refused, with no fallback tried and no event the receiver queued it for,
+ * still exits 1 for the by-hand caller, but logs `dispatch-result`: the dispatcher reached
  * the session, and nothing about it needs an operator. Any other fault in
  * the same turn, such as an unread repo, still logs `dispatch-failed`.
  */
@@ -40,9 +40,10 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * - a probe: it proved the runtime;
  * - a message: the session took it; or, refusing, its fallback started,
  *   and for a takeover the PR body's link now names it; or the session the
- *   PR body names now took it; or the PR had closed so nothing started; or a
- *   refusing subscriber's line was dropped (`dropped` is set
- *   whenever that was tried); or the push was the session's own;
+ *   PR body names now took it; or the PR had closed so nothing started; or
+ *   a session gone since refused a message about an event the receiver
+ *   queued it for, with no fallback (`archived` and `event`); or the push
+ *   was the session's own;
  * - a workflow, job or branch run: no send faulted (taken, or refused by a
  *   gone session), every fallback or triage session started, and every
  *   ticket label was read and added;
@@ -68,7 +69,7 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * written (`heartbeatUnwritten`), and no repo's part of the turn failed
  * (`unread`), refusal or not.
  *
- * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string } }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, fallback?: { outcome: string } | null } | null }} result
+ * @param {{ kind: string, ok?: boolean, answered?: boolean | null, archived?: boolean, event?: string, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string } }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, fallback?: { outcome: string } | null } | null }} result
  * @returns {0 | 1}
  */
 export const exitCodeFor = (result) => {
@@ -109,7 +110,9 @@ export const exitCodeFor = (result) => {
     // A takeover's session whose link the PR body did not take: the body
     // still names the archived owner, so the operator is told.
     if (result.relinked === false) return 1;
-    return result.ok || result.skipped != null || result.dropped != null
+    // A refusal of a message about an event, with no fallback: the session
+    // is gone, and owed nothing.
+    return result.ok || result.skipped != null || (result.archived === true && result.event != null)
       || (result.fallback != null && result.fallback.outcome !== 'failed') ? 0 : 1;
   }
   const dispatched = result.dispatched ?? [];

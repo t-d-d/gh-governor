@@ -9,7 +9,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { coverageOf } from '../dispatch/coverage.mjs';
 import { planWorkflow } from '../dispatch/workflow.mjs';
-import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
+import { subscribeLine } from './helpers/subscribe-line.ts';
 import { RELAY, UNATTENDED } from '../dispatch/webhook/fire.mjs';
 import { FINAL_LABELS, FACTORY_WORKFLOWS, WORKFLOW_PATHS, headMerge, workflowFile } from './helpers/dispatch-workflows.ts';
 import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
@@ -356,8 +356,11 @@ describe('planWorkflow — a deploy', () => {
   });
 });
 
-/** A merged PR's subscribers to `ci` and `deploys` hear of the runs on main the way its owner does, without the owner's fallback. */
-describe('planWorkflow — a run\'s subscribers', () => {
+/**
+ * A CI or deploy notice reaches only the session that owns each PR it
+ * covers: a `governor:subscribe` line a PR body still carries names nobody.
+ */
+describe('planWorkflow — a subscribe line on a merged PR', () => {
   const REVIEWER = 'https://claude.ai/code/session_01REVIEWER';
   const body = (events: Parameters<typeof subscribeLine>[1]) => `The change.\n\n${subscribeLine(REVIEWER, events)}${footer(SESSION)}`;
   const watched = (prBody: string, over: Record<string, unknown> = {}) => delivered({ pullsForCommit: async (sha: string) => (sha === SHA ? [pr(799, { body: prBody })] : []), ...over });
@@ -368,52 +371,36 @@ describe('planWorkflow — a run\'s subscribers', () => {
     workflowRuns: async () => [runRow(500, 'failure', { head_sha: SHA }), runRow(498, 'success', { head_sha: 'shaB' })],
     pullFiles: async () => [{ filename: 'dispatch/turn.mjs', status: 'modified' }],
   });
+  const redCi = (prBody: string) => watched(prBody, { workflowRuns: async () => [runRow(500, 'failure', { head_sha: SHA }), runRow(498, 'success')], runJobs: async () => jobs });
 
-  test('a subscriber to ci and deploys hears of each with no Unattended line: its session exists', async () => {
+  test('a red CI, a green job and a red deploy each tell the PR\'s owner alone, as its owner', async () => {
     for (const [invocation, name, r] of [
-      [fire('CI', 'failure'), 'CI', watched(body(['ci', 'deploys']), { workflowRuns: async () => [runRow(500, 'failure', { head_sha: SHA }), runRow(498, 'success')], runJobs: async () => jobs })],
+      [fire('CI', 'failure'), 'CI', redCi(body(['ci', 'deploys']))],
       [jobFire('Deliver', DEV), 'Deliver dev', watched(body(['ci', 'deploys']))],
-      [fire('Dispatch stack', 'failure'), 'Dispatch stack red', redDispatcher(body(['ci', 'deploys']))],
+      [fire('Dispatch stack', 'failure'), 'Dispatch stack red', redDispatcher(body(undefined))],
     ] as const) {
       const plan = await planOf(invocation, r);
-      assert.deepEqual(plan.notes.map((n) => n.session).sort(), [SESSION, REVIEWER].sort(), `${name}: ${plan.reason}`);
-      for (const n of plan.notes) assert.ok(!n.text.includes(UNATTENDED), `${name} to ${n.session}`);
+      assert.deepEqual(plan.notes.map((n) => [n.session, n.prs]), [[SESSION, [799]]], `${name}: ${plan.reason}`);
+      assert.doesNotMatch(plan.notes[0]!.text, /subscribe/i, name);
+      assert.deepEqual(plan.unnamed, [], name);
     }
-  });
-
-  test('a subscriber to deploys hears a dev job after the owner, told whose PR it is and which job published it', async () => {
-    const plan = await planOf(jobFire('Deliver', DEV), watched(body(['deploys'])));
-    assert.deepEqual(plan.notes.map((n) => n.session), [SESSION, REVIEWER]);
-    assert.match(plan.notes[0]!.text, /Your change is on dev/);
-    assert.match(plan.notes[1]!.text, /^PR #799, which you subscribe to, is on dev: Deliver published it \(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\/job\/1\), and the deploy\/dev tag is on a1b2c3d4e5f6\./m);
-    assert.doesNotMatch(plan.notes[1]!.text, /Your change/);
-    assert.match(plan.notes[1]!.text, /own session has been told/);
-    assert.deepEqual(plan.notes[1]!.subscribed, [799], 'a refusal drops it from the PR');
-  });
-
-  test('a subscriber to a PR no session owns is not told an owner heard too', async () => {
-    const plan = await planOf(jobFire('Deliver', DEV), watched(`A person's change.\n\n${subscribeLine(REVIEWER, ['deploys'])}`));
-    assert.deepEqual(plan.notes.map((n) => n.session), [REVIEWER]);
-    assert.doesNotMatch(plan.notes[0]!.text, /own session has been told/);
-  });
-
-  test('a subscriber to ci hears a red main with no fallback; one subscribed only to deploys hears nothing of it', async () => {
-    const redCi = (prBody: string) => watched(prBody, { workflowRuns: async () => [runRow(500, 'failure', { head_sha: SHA }), runRow(498, 'success')], runJobs: async () => jobs });
     const ci = await planOf(fire('CI', 'failure'), redCi(body(['ci'])));
-    assert.deepEqual(ci.notes.map((n) => [n.session, n.fallback === undefined]), [[SESSION, false], [REVIEWER, true]], 'only the owner\'s refusal starts a fix session');
-    assert.deepEqual(ci.notes[1]!.subscribed, [799]);
-
-    const deploysOnly = await planOf(fire('CI', 'failure'), redCi(body(['deploys'])));
-    assert.deepEqual(deploysOnly.notes.map((n) => n.session), [SESSION]);
+    assert.notEqual(ci.notes[0]!.fallback, undefined, 'the owner\'s refusal still starts a fix session');
   });
 
-  test('every green job, dev or prod, asks each session to sign off; a red run does not', async () => {
+  test('a PR no session owns, with only a line, tells nobody and is unnamed', async () => {
+    const plan = await planOf(jobFire('Deliver', DEV), watched(`A person's change.\n\n${subscribeLine(REVIEWER, ['deploys'])}`));
+    assert.deepEqual(plan.notes, []);
+    assert.deepEqual(plan.unnamed.map((u) => u.pr), [799]);
+  });
+
+  test('every green job, dev or prod, asks the owner to sign off; a red run does not', async () => {
     for (const label of [DEV, PROD]) {
       const plan = await planOf(jobFire('Deliver', label), watched(body(['deploys'])));
-      assert.deepEqual(plan.notes.map((n) => n.closing), [true, true], label);
+      assert.deepEqual(plan.notes.map((n) => n.closing), [true], label);
     }
     const red = await planOf(fire('Dispatch stack', 'failure'), redDispatcher(body(['deploys'])));
-    assert.deepEqual(red.notes.map((n) => n.closing), [false, false]);
+    assert.deepEqual(red.notes.map((n) => n.closing), [false]);
   });
 });
 
@@ -469,41 +456,15 @@ describe('planWorkflow — one note per session for a run over several PRs', () 
     assert.match(other.text, /on PR #786\b/);
   });
 
-  test('a session subscribed to several of the run\'s PRs is one note naming each, dropped from each on a refusal', async () => {
-    const prs = [767, 786].map((number) => ({ number, body: `The change.\n\n${subscribeLine(REVIEWER, ['deploys'])}${footer(number === 767 ? OWNER : OTHER)}` }));
-    const plan = await planOf(jobFire('Deliver', DEV), over(prs, 'success'));
-    const toReviewer = plan.notes.filter((n) => n.session === REVIEWER);
-    assert.equal(toReviewer.length, 1);
-    assert.match(toReviewer[0]!.text, /^PRs #767, #786, which you subscribe to, are on dev: Deliver published them \(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\/job\/1\)/m);
-    assert.match(toReviewer[0]!.text, /PR #767/);
-    assert.match(toReviewer[0]!.text, /PR #786/);
-    assert.deepEqual(toReviewer[0]!.subscribed, [767, 786]);
-  });
-
-  test('a session owning one PR and subscribed to another is one note, told which is its own', async () => {
+  test('a session a line names on PRs it does not own is told nothing of them; one owning a PR is told of its own alone', async () => {
     const plan = await planOf(jobFire('Deliver', DEV), over([
-      { number: 767, body: `One.\n\n${subscribeLine(OWNER, ['deploys'])}${footer(OTHER)}` },
+      { number: 767, body: `One.\n\n${subscribeLine(OWNER, ['deploys'])}\n${subscribeLine(REVIEWER, ['deploys'])}${footer(OTHER)}` },
       { number: 799, body: `Two.${footer(OWNER)}` },
     ], 'success'));
-    const own = plan.notes.filter((n) => n.session === OWNER);
-    assert.equal(own.length, 1);
-    assert.match(own[0]!.text, /Your change is on dev/);
-    assert.match(own[0]!.text, /PR #799/);
-    assert.match(own[0]!.text, /subscribe[\s\S]*PR #767/i);
-    assert.match(own[0]!.text, /on PR #799\b/);
-    assert.match(own[0]!.text, /The PR's own session has been told too/, 'the PR it subscribes to has an owner, told too');
-    assert.deepEqual(own[0]!.subscribed, [767]);
-  });
-
-  test('a subscriber to several PRs, only some with an owner, is told whose own session heard it', async () => {
-    const plan = await planOf(jobFire('Deliver', DEV), over([
-      { number: 767, body: `One.\n\n${subscribeLine(REVIEWER, ['deploys'])}${footer(OWNER)}` },
-      { number: 786, body: `A person wrote this.\n\n${subscribeLine(REVIEWER, ['deploys'])}` },
-    ], 'success'));
-    const toReviewer = plan.notes.filter((n) => n.session === REVIEWER);
-    assert.equal(toReviewer.length, 1);
-    assert.match(toReviewer[0]!.text, /PR #767's own session has been told too/);
-    assert.doesNotMatch(toReviewer[0]!.text, /each of PRs #767\b/);
+    assert.deepEqual(plan.notes.map((n) => [n.session, n.prs]).sort(), [[OTHER, [767]], [OWNER, [799]]].sort());
+    const own = plan.notes.find((n) => n.session === OWNER)!;
+    assert.match(own.text, /Your change is on dev/);
+    assert.doesNotMatch(own.text, /PR #767/);
   });
 });
 
@@ -639,7 +600,7 @@ describe('planWorkflow — another repo\'s workflows', () => {
     from: null, at: null, baseline: { id: 498, commit: 'b', created: '', conclusion: 'success', url: 'u' },
     range: { baseline: { id: 498, commit: 'b', created: '' }, end: SHA, merges: shipped.length }, merges: [],
     shipped, picked: shipped, closes: new Map(),
-    sessions: async (prs: unknown[]) => ({ sessions: new Map([['S', { session: 'S', own: prs, subscribed: [] }]]), owned: new Set(), unnamed: [] }),
+    sessions: async (prs: unknown[]) => ({ sessions: new Map([['S', { session: 'S', own: prs }]]), unnamed: [] }),
   });
   const onTrunk = (name: string, path: string) => fire(name, 'failure', { path, branch: 'trunk' });
 

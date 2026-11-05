@@ -1167,7 +1167,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   if (invocation.kind === 'message') {
     const { on, event, commit, closing, text, fallback } = invocation;
     /** @type {import('./deliveries.mjs').Delivery} */
-    let told = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: null, relinked: null };
+    let told = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, skipped: null, relinked: null };
     let loginStored = false;
     try {
       told = await delivery().deliver(
@@ -1179,7 +1179,6 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           takeover: true,
           on: on === undefined ? [] : [on],
           closing: closing === true,
-          dropFrom: event === undefined || on === undefined ? [] : [on],
           commit,
         },
       );
@@ -1190,17 +1189,19 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // it with a live login, so the refusal is the caller's to read, not a
     // dispatcher failure (dispatch/cli.mjs). Any other answer with ok:false
     // (a revoked login, a 5xx), or a fallback that was tried, stays one.
+    // `event`: what the message told of, where the receiver queued it; a
+    // session gone since is told enough, and exits 0.
     const archived = told.refused && told.fallback === null;
-    return { kind: 'message', ...told, archived, loginStored };
+    return { kind: 'message', ...told, archived, ...(event === undefined || on === undefined ? {} : { event }), loginStored };
   }
 
   // A red run on the default branch, or a shipping job that succeeded there: the PR(s)
-  // it is about hear it in the session that wrote them and each subscribed
-  // to it (dispatch/workflow.mjs), and a job's tickets get its label. Whom
+  // it is about hear it in the session that wrote them
+  // (dispatch/workflow.mjs), and a job's tickets get its label. Whom
   // nobody hears of, and why, is a `dispatch-workflow` line, or
   // `dispatch-stale-runs` when the runs list was stale.
   if (invocation.kind === 'workflow' || invocation.kind === 'job') {
-    /** @type {Array<{ prs: number[], session: string } & Omit<import('./deliveries.mjs').Delivery, 'sessionUrl' | 'dropped' | 'skipped' | 'relinked'>>} */
+    /** @type {Array<{ prs: number[], session: string } & Omit<import('./deliveries.mjs').Delivery, 'sessionUrl' | 'skipped' | 'relinked'>>} */
     const deliveries = [];
     /** @type {string | null} */
     let reason = null;
@@ -1291,7 +1292,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
             deps.log('dispatch-workflow', { ...about, untold: owed.slice(i).map((n) => ({ session: n.session, prs: n.prs })), reason: `out of time: past ${WORKFLOW_SEND_WINDOW_MS} ms, another delivery might outrun the deadline` });
             break;
           }
-          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, fallback: note.fallback, on: note.prs, closing: note.closing, dropFrom: note.subscribed });
+          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, fallback: note.fallback, on: note.prs, closing: note.closing });
           deliveries.push({ prs: note.prs, session: note.session, ok, answered, refused, error, fallback });
           // As dispatch/cli.mjs counts a fault: a refusal with no fallback is a gone session, told enough.
           if (ok || (refused && fallback?.outcome !== 'failed')) {
@@ -1339,7 +1340,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   // fallback (dispatch/branch-run.mjs). A `dispatch-branch-run` line says
   // whom, or why nobody.
   if (invocation.kind === 'branch-run') {
-    /** @type {Array<{ prs: number[], session: string } & Omit<import('./deliveries.mjs').Delivery, 'sessionUrl' | 'dropped' | 'skipped' | 'relinked'>>} */
+    /** @type {Array<{ prs: number[], session: string } & Omit<import('./deliveries.mjs').Delivery, 'sessionUrl' | 'skipped' | 'relinked'>>} */
     const deliveries = [];
     /** @type {string | null} */
     let reason = null;

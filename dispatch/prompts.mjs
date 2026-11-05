@@ -154,12 +154,6 @@ export const PROMPTS = Object.freeze({
     fills: ['pr'],
     replaces: "a red deploy's ask, for several PRs",
   },
-  // What a subscriber to a PR it did not write is asked to do with a CI or deploy notice.
-  subscribed: {
-    text: 'Act only on what is yours: a check you promised, a change of yours this bears on.',
-    fills: [],
-    replaces: "a CI or deploy notice's ask to a subscriber",
-  },
   // A PR a merge left conflicted, to its session or the fallback's (dispatch/conflicts.mjs).
   conflicts: {
     text: 'Merge {base} into your branch, resolve the conflicts, run the checks and push.',
@@ -173,9 +167,11 @@ export const PROMPTS = Object.freeze({
  * message of their kind: the schema is strict, and a file the change made
  * invalid would stop its repo being served (dispatch/repo-config.mjs).
  * The merge hand-off's two went when a blocker's close came to be handled
- * in each blocked ticket's own repo (dispatch/unblocked.mjs).
+ * in each blocked ticket's own repo (dispatch/unblocked.mjs). The
+ * subscriber's went with subscribe lines: a CI or deploy notice reaches only
+ * the session that owns the PR.
  */
-export const RETIRED_PROMPTS = Object.freeze(['mergeHandoff', 'mergeHandoffUnread']);
+export const RETIRED_PROMPTS = Object.freeze(['mergeHandoff', 'mergeHandoffUnread', 'subscribed']);
 
 /** A fact a prompt names. */
 const PLACEHOLDER = /\{([A-Za-z]+)\}/g;
