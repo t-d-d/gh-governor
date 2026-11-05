@@ -128,8 +128,27 @@ export const NESTING_READ_LIMIT = 32;
 const OPENER = /[ \t]*(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t\r\n]|$))/y;
 
 /**
+ * A line that is a thematic break of `-` or `*`, three or more with only
+ * spaces between. CommonMark reads such a line as a rule before a list, so
+ * it opens nothing, however many markers it holds.
+ */
+const RULE = / {0,3}([-*])(?:[ \t]*\1){2,}[ \t]*(?=[\r\n]|$)/y;
+
+/**
+ * How many characters `text` holds, as GitHub counts toward its cap: code
+ * points, so an emoji is one, not two UTF-16 code units.
+ *
+ * @param {string} text
+ */
+const characters = (text) => {
+  let count = 0;
+  for (const _ of text) count += 1;
+  return count;
+};
+
+/**
  * Whether `text` is too long or too deeply nested to read for quotes in
- * time: longer than {@link BODY_READ_LIMIT}, or with a line that opens more
+ * time: longer than {@link BODY_READ_LIMIT} characters, or with a line that opens more
  * than {@link NESTING_READ_LIMIT} lists and blockquotes. Such a body is read
  * as quoted whole, so nothing in it summons or names a session: a body built
  * to be slow is never a real summons, and a live link dropped costs a person
@@ -138,9 +157,19 @@ const OPENER = /[ \t]*(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t\r\n]|$))/y;
  *
  * @param {string} text
  */
-export const pastReadingBound = (text) => {
-  if (text.length > BODY_READ_LIMIT) return true;
-  for (const [start, end] of lineSpans(text)) {
+export const pastReadingBound = (text) => pastBound(text, lineSpans(text));
+
+/**
+ * {@link pastReadingBound}, given the spans of `text`'s lines.
+ *
+ * @param {string} text
+ * @param {Array<[number, number]>} lines
+ */
+const pastBound = (text, lines) => {
+  if (text.length > BODY_READ_LIMIT && (text.length > 2 * BODY_READ_LIMIT || characters(text) > BODY_READ_LIMIT)) return true;
+  for (const [start, end] of lines) {
+    RULE.lastIndex = start;
+    if (RULE.test(text)) continue;
     let opened = 0;
     OPENER.lastIndex = start;
     while (OPENER.lastIndex < end && OPENER.test(text)) {
@@ -163,7 +192,7 @@ export const pastReadingBound = (text) => {
  */
 const quotedSpans = (text) => {
   const lines = lineSpans(text);
-  if (pastReadingBound(text)) return lines.filter(([start, end]) => text.slice(start, end).trim() !== '');
+  if (pastBound(text, lines)) return lines.filter(([start, end]) => text.slice(start, end).trim() !== '');
   // Each block's range raises the count from its first line and lowers it
   // after its last, so a line deep in many nested quotes costs one step,
   // not one per quote around it.
@@ -332,7 +361,8 @@ export const sessionNamedIn = (body) => ownerLink(ownerText(String(body ?? '')))
  * The body with `sessionUrl` where {@link sessionNamedIn} reads it: in place
  * of the last session link under the Claude Code footer; under a footer
  * naming none, appended; with no footer, in one appended. A fallback's
- * handoff (dispatch/deliveries.mjs).
+ * handoff (dispatch/deliveries.mjs). Throws for a body {@link pastReadingBound},
+ * which names no session whatever is written into it.
  *
  * @param {unknown} body
  * @param {string} sessionUrl
@@ -340,6 +370,8 @@ export const sessionNamedIn = (body) => ownerLink(ownerText(String(body ?? '')))
  */
 export const relinkSession = (body, sessionUrl) => {
   const text = String(body ?? '');
+  // Such a body reads as quoted whole, so no link written into it would name a session.
+  if (pastReadingBound(text)) throw new Error('the body is too long or too deeply nested to read for its session link, so no link written into it would name a session');
   const masked = ownerText(text);
   const owner = ownerLink(masked);
   if (owner) return `${text.slice(0, owner.at)}${sessionUrl}${text.slice(owner.at + owner.link.length)}`;

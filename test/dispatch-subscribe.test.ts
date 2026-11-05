@@ -509,7 +509,7 @@ describe('a body too large or too deeply nested to read in time', () => {
   });
 
   test('a line opening as many lists as the limit is read as written; one more is past it', () => {
-    const within = `${'- 1) + '.repeat(NESTING_READ_LIMIT / 3)}${'* '.repeat(NESTING_READ_LIMIT % 3)}@claude look`;
+    const within = `${'- 1) + '.repeat(Math.floor(NESTING_READ_LIMIT / 3))}${'* '.repeat(NESTING_READ_LIMIT % 3)}@claude look`;
     assert.equal(pastReadingBound(within), false);
     assert.equal(mentions(within), true);
     const past = `${within.slice(0, -'@claude look'.length)}+ @claude look`;
@@ -527,6 +527,23 @@ describe('a body too large or too deeply nested to read in time', () => {
   test('a quote opened on a line counts toward the limit as a list does', () => {
     assert.equal(pastReadingBound(`${'> '.repeat(NESTING_READ_LIMIT)}a`), false);
     assert.equal(pastReadingBound(`${'> - '.repeat(NESTING_READ_LIMIT / 2)}>a`), true);
+  });
+
+  test('a rule of spaced dashes or stars, however long, opens nothing', () => {
+    const body = `${'- '.repeat(40)}\n${' * '.repeat(40)}\n\n@claude look`;
+    assert.equal(pastReadingBound(body), false);
+    assert.equal(mentions(body), true);
+  });
+
+  test('the limit counts characters, not UTF-16 code units', () => {
+    const body = `@claude look\n${'😀'.repeat(BODY_READ_LIMIT / 2 + 100)}`;
+    assert.ok(body.length > BODY_READ_LIMIT);
+    assert.equal(pastReadingBound(body), false);
+    assert.equal(mentions(body), true);
+  });
+
+  test('relinking a body past the bound refuses, rather than writing a link nothing reads', () => {
+    assert.throws(() => relinkSession(nested(OWNER), REVIEWER), /too long or too deeply nested/);
   });
 
   test('a rule or an emphasis is no list', () => {
