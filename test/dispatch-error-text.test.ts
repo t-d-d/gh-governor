@@ -44,8 +44,11 @@ describe('errorText', () => {
     };
     assert.equal(errorText(badStack), 'the value');
 
+    const unprintableStack = { stack: Object.create(null), toString() { return 'the value'; } };
+    assert.equal(errorText(unprintableStack), 'the value');
+
     const nothingWorks = new Proxy({}, { get() { throw new Error('no property'); } });
-    assert.equal(typeof errorText(nothingWorks), 'string');
+    assert.equal(errorText(nothingWorks), '[unprintable value]');
   });
 
   test('the three callers use it and keep no copy of their own', () => {
