@@ -89,6 +89,16 @@ group.
   the item only tells governor when to look. A lost item costs that
   ticket's wait-ended comment and spec session, and a failed read refuses
   the repo's ended waits for the turn (dispatch/waits.mjs).
+- A ticket whose launch started nothing: `pickup-failed#<repo>` /
+  `<issue>` in `dynamoState`, holding the time it holds the ticket until,
+  put by the launch plan after a launch or claim that started nothing,
+  before it puts the ready labels back, over any
+  earlier one, and expired by `ttl` at that time, an hour on. The selection
+  reads a repo's items in one query and skips each ticket whose time is
+  still to come, logging `dispatch-pickup` with the reason. A missing item
+  means pick up as before, and a failed read refuses the repo's pickup for
+  the turn. A lost item lets one more launch go (dispatch/pickup.mjs,
+  dispatch/launch-plan.mjs).
 - A takeover whose launch printed no session link: `takeover#<repo>` /
   `<pr>` in `dynamoState`, holding the time it stands until, two hours
   after the launch. It is put only where none or an expired one stands,
@@ -115,7 +125,7 @@ group.
 - What the receiver knows of a repo's ready labels: the same item's
   `ready`, the file's `labels.ready`, written in the same `PutItem` as the
   hooks and switches and read in the same one read as the switches. A
-  person's label that it does not list queues no selection fire, and the
+  label that it does not list, whoever added it, queues no selection fire, and the
   delivery's reason says so. A missing item, one without `ready`, malformed
   labels and a failed read queue the selection fire, as for the switches
   (dispatch/webhook/route.mjs).
@@ -152,4 +162,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185. The hook table's item holds the repo's `trust` section, written by the task and read by the receiver, which drops a message only where the refusal is silent and reads the defaults when the item lacks the section or the read fails, since #419, under PRD #396. A PR review's verdict, which the review reads in place of its marker comment's text, was added in #416. A PR's unconfirmed takeover record was added in #455.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185. The hook table's item holds the repo's `trust` section, written by the task and read by the receiver, which drops a message only where the refusal is silent and reads the defaults when the item lacks the section or the read fails, since #419, under PRD #396. A PR review's verdict, which the review reads in place of its marker comment's text, was added in #416. A ticket's failed-launch record, which holds it from pickup for an hour once a launch started nothing, was added in #391. A PR's unconfirmed takeover record was added in #455.

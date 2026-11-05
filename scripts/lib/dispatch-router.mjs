@@ -60,12 +60,19 @@ import { START } from '../../dispatch/trust.mjs';
  *   not list (`authorPicked`), so the selection skips it, with the author's
  *   login where it was read.
  *
- * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, by?: readonly string[], start?: readonly string[], prompts?: Record<string, string | undefined>, signOff?: boolean }} Source
+ * @typedef {{ repo: string, issue: number, until: string }} HeldFailed
+ *   A ready ticket the selection skipped because its last launch started
+ *   nothing, held until `until`.
+ */
+
+/**
+ * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, by?: readonly string[], start?: readonly string[], prompts?: Record<string, string | undefined>, signOff?: boolean, failed?: ReadonlyMap<number, string> }} Source
  *   A served repo's tickets: its reader, its config file's ready, claim and
  *   excluded labels, whose tickets pickup starts (`byOf`,
  *   dispatch/pickup.mjs; `PICKUP_BY` where unset), who may ready one
- *   (`startOf`, dispatch/trust.mjs; `START` where unset), its prompts, and whether
- *   its file turns `signOff` on, which the pickup prompt's ask reads.
+ *   (`startOf`, dispatch/trust.mjs; `START` where unset), its prompts, whether
+ *   its file turns `signOff` on, which the pickup prompt's ask reads, and
+ *   the tickets its failed-launch records hold (`failed`).
  */
 
 /**
@@ -143,10 +150,16 @@ export const strangerReason = ({ association }) =>
  * and with `unlooked`, each whose adder could not be looked up this turn.
  * Neither takes a place under the cap.
  *
- * @param {{ sources: readonly Source[], cap: number, now: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[], outsiders?: Outsider[], strangers?: Stranger[], unstarted?: import('../../dispatch/start.mjs').Unstarted[], unlooked?: import('../../dispatch/start.mjs').Unlooked[] }} args
+ * A source's `failed` holds its tickets whose last launch started nothing
+ * inside the hour, each with the time its record holds until
+ * (`failedLaunchesOf`, dispatch/pickup.mjs). Such a ticket is skipped
+ * however its ready labels came back, takes no place under the cap, and is
+ * recorded in `heldFailed`, so the turn can log it.
+ *
+ * @param {{ sources: readonly Source[], cap: number, now: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[], outsiders?: Outsider[], strangers?: Stranger[], unstarted?: import('../../dispatch/start.mjs').Unstarted[], unlooked?: import('../../dispatch/start.mjs').Unlooked[], heldFailed?: HeldFailed[] }} args
  * @returns {Promise<Dispatch[]>}
  */
-export const planSchedule = async ({ sources, cap, now, only, seen = [], unread, cut, unreadable, relative, outsiders, strangers, unstarted, unlooked }) => {
+export const planSchedule = async ({ sources, cap, now, only, seen = [], unread, cut, unreadable, relative, outsiders, strangers, unstarted, unlooked, heldFailed }) => {
   /** @type {Set<string>} */
   const failed = new Set();
   /**
@@ -217,7 +230,9 @@ export const planSchedule = async ({ sources, cap, now, only, seen = [], unread,
     // Pickup starts only tickets whose author the repo's `by` lists. Such a
     // ticket is judged on its row alone, so it reads nothing more.
     for (const row of ready) {
-      if (authorPicked(row, source.by)) tagged.push({ ...row, source });
+      const until = source.failed?.get(row.number);
+      if (until !== undefined) heldFailed?.push({ repo: source.repo, issue: row.number, until });
+      else if (authorPicked(row, source.by)) tagged.push({ ...row, source });
       else strangers?.push({ repo: source.repo, issue: row.number, association: row.association ?? 'NONE', ...(row.author === undefined ? {} : { author: row.author }) });
     }
   }
