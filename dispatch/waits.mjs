@@ -532,7 +532,9 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  * this repo the wait ticket blocks with no item: with no line, it was linked
  * by hand, and is told once and keeps its link, and an item dated
  * {@link handLinkedUntil} is put for it, so later fires skip it unread. A
- * line written later takes that item over, as any edit does. With a line
+ * line written later takes that item over, as any edit does. Should the
+ * item's date come, the ticket is an ended wait with no line: its link comes
+ * off and its item goes. With a line
  * that has passed or cannot be read, its link comes off, as a turn that
  * failed to take it off left it.
  *

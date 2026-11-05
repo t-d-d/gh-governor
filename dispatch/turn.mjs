@@ -1958,7 +1958,9 @@ export const cliEnv = (env, home, account) => ({
  * waiting ticket's item is `wait#<repo>` / `<issue>`, holding its date, put
  * only where none or the date the turn read stands, deleted only over that
  * date, and expired a month after its date: a lost one costs that ticket's
- * wait-ended comment and spec session. A PR review's verdict is the item
+ * wait-ended comment and spec session, or, for a ticket linked to the wait
+ * ticket by hand and parked twenty years out, one more read of it and its
+ * thread. A PR review's verdict is the item
  * `review#<repo>` / `<pr>`, put only over the item the review read, and
  * expired three months after its write: the review reads it back in place
  * of its comment's text, which a person can edit, and a lost one costs a
