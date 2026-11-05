@@ -531,7 +531,7 @@ const waitFire = (payload) => {
  * `ticketReview` fire naming it, so its turn runs each of the repo's ticket
  * reviews the issue calls for (dispatch/ticket-review.mjs). A title-only
  * edit changes nothing a review reads. A body edit a bot made is governor's
- * own (a disowned session link, a relative wait line rewritten), and must
+ * own (a spec session's link written, a relative wait line rewritten), and must
  * not spend a review's round; a session edits as the owner's account, so
  * its edits still run one. Judged from the payload alone; the fire needs
  * `ticketReviews`, so {@link handle} drops it where the repo's item says

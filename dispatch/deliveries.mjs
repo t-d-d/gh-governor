@@ -12,7 +12,8 @@
  * has closed since. A ticket's spec work (`spec`) has its fallback written
  * into the ticket's body as its owner link ({@link nameSpecSession}). No
  * fallback reads or leaves a dispatch marker. With no fallback it
- * drops the refusing subscriber, or disowns an issue's filer. A session's
+ * drops the refusing subscriber's line; an issue's owner keeps its link,
+ * and the refusal is logged at info. A session's
  * own push, or a branch owner's own post, is skipped. The owner of a PR whose body names no session is the live local
  * session on its head branch.
  *
@@ -25,7 +26,7 @@
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { instruction } from './prompts.mjs';
 import { commitSession } from './branch-run.mjs';
-import { disown, relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
+import { relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /**
@@ -502,21 +503,21 @@ export const deliveries = (deps) => {
 
   /**
    * Drop a subscriber that refused from the body of what it subscribed to:
-   * it is gone, and each later event would be one more refused send. An
-   * issue's owner, its filer, goes the same way, its owner link struck,
-   * under the footer or alone on the last line; a PR's owner stays, the session a remark's fallback takes the
-   * PR over from. A write that fails is logged.
+   * it is gone, and each later event its line names would be one more
+   * refused send. Only its `governor:subscribe` line goes. An owner's link
+   * stays, an issue's as a PR's: a ticket keeps the link of the last session that owned it,
+   * and its spec work starts a replacement that writes its own. A
+   * write that fails is logged.
    *
    * @param {number} on
    * @param {string} session
-   * @returns {Promise<boolean>} Whether a line or an issue's owner link was dropped.
+   * @returns {Promise<boolean>} Whether a line was dropped.
    */
   const drop = async (on, session) => {
     try {
       const github = await deps.reader();
-      const { body, pull } = await github.issue(on);
-      const kept = unsubscribe(body, session);
-      const after = pull ? kept : disown(kept, session);
+      const { body } = await github.issue(on);
+      const after = unsubscribe(body, session);
       if (after !== body) await github.updateIssue(on, { body: after });
       deps.log('dispatch-unsubscribe', { on, session, dropped: after !== body });
       return after !== body;
@@ -573,7 +574,8 @@ export const deliveries = (deps) => {
     const sent = await send(session, text, about, until);
     const { ok, sessionUrl, error, answered } = sent;
     const refused = refusedBy(sent);
-    deps.log('dispatch-message', { session, ok, sessionUrl, error, status: sent.status });
+    // A refusal is an archived session, never a fault: it pages nobody.
+    deps.log('dispatch-message', { ...(refused ? { level: 'info' } : {}), session, ok, sessionUrl, error, status: sent.status });
     /** @type {Delivery['fallback']} */
     let fallback = null;
     // Only a refusal (archived) starts anything: any other failure says
@@ -615,7 +617,7 @@ export const deliveries = (deps) => {
           reason = `PR #${issue} has closed`;
         } else if (owner !== null && !sameSession(owner, session)) {
           const handed = await send(owner, text, about, until);
-          deps.log('dispatch-message', { session: owner, fromBody: true, ok: handed.ok, sessionUrl: handed.sessionUrl, error: handed.error, status: handed.status });
+          deps.log('dispatch-message', { ...(refusedBy(handed) ? { level: 'info' } : {}), session: owner, fromBody: true, ok: handed.ok, sessionUrl: handed.sessionUrl, error: handed.error, status: handed.status });
           if (handed.ok) fallback = { outcome: 'forwarded', sessionUrl: owner };
           else if (!refusedBy(handed)) fallback = { outcome: 'failed', sessionUrl: null };
         }

@@ -171,7 +171,7 @@ Only one answer counts as a refusal: `cloud session <id> is archived`. Any other
 | `ci` | A red CI run on the default branch that this PR may have caused |
 | `deploys` | A shipping job or a red deploy that shipped this PR; on an issue, a `deployed:` label added |
 
-A PR's owner is implicitly subscribed to everything but `labels`; an issue's filer to everything but `labels` and `deploys`. A subscriber that refuses is dropped from the body (`dispatch-unsubscribe`). Nobody hears of its own signed post: the receiver skips the session whose link sits under the Claude Code footer or alone on the line above it. A post with the footer and no link reaches every subscriber, told it may be its own (above). A push names its commit, and the session its `Claude-Session` trailer names is skipped.
+A PR's owner is implicitly subscribed to everything but `labels`; an issue's filer to everything but `labels` and `deploys`. A subscriber that refuses loses its `governor:subscribe` line (`dispatch-unsubscribe`), since nothing takes its place. An owner that refuses keeps its link, an issue's as a PR's, so a ticket always names the last session that owned it. Each later event on that ticket tries the archived owner once more, and the refusal logs `dispatch-message` at info. Spec work to it starts a replacement, which takes the owner link ([The ticket's spec session](#a-blockers-close)). Nobody hears of its own signed post: the receiver skips the session whose link sits under the Claude Code footer or alone on the line above it. A post with the footer and no link reaches every subscriber, told it may be its own (above). A push names its commit, and the session its `Claude-Session` trailer names is skipped.
 
 ## Signing off
 

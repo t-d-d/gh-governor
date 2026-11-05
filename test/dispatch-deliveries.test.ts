@@ -14,7 +14,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { DELIVER_LAUNCHES, DISPATCHER_LABEL, GITHUB_SOURCE, deliveries, fromDispatcher, hookLabel, hookSource, standingLine } from '../dispatch/deliveries.mjs';
-import { subscribeLine, subscribersFor } from '../dispatch/webhook/subscribe.mjs';
+import { sessionNamedIn, subscribeLine, subscribersFor } from '../dispatch/webhook/subscribe.mjs';
 import { RELAY, dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { SIGN_OFF } from '../scripts/lib/session-signoff.mjs';
@@ -450,6 +450,8 @@ describe('deliver — with a fallback', () => {
     assert.equal(both.launches.length, 1);
     assert.deepEqual(fresh.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
     assert.equal(fresh.relinked, true);
+    const refusals = both.logged.filter((l) => l.event === 'dispatch-message');
+    assert.deepEqual(refusals.map((l) => l.level), ['info', 'info'], 'each refusal, the forwarded one too, is logged at info');
     const live = fakes({ send: async (m) => (m.session === 'session_01OLD' ? archived(m) : orgLookup(m)), reader: { pull } });
     const failed = await live.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
     assert.deepEqual(live.launches, []);
@@ -630,16 +632,30 @@ describe('deliver — a subscriber that refuses', () => {
     assert.equal(told.dropped, null);
   });
 
-  test('an issue\'s filer that refuses is struck from its footer, so the next event on the issue messages nobody', async () => {
+  // A ticket keeps the link of the last session that owned it, archived or
+  // not: spec work to it starts a replacement, which writes its own link.
+  test('an issue\'s owner that refuses keeps its link, the refusal logged at info, so the next event tries it again', async () => {
     const filed = `A bug.\n\n${subscribeLine(REVIEWER, ['comments'])}\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${FILER}`;
     const f = fakes({ send: archived, reader: onPull(filed, false) });
-    await f.deliver({ session: FILER }, 'Your issue was closed.', { on: [4415], dropFrom: [4415] });
+    const told = await f.deliver({ session: FILER }, 'Your issue was closed.', { on: [97], dropFrom: [97] });
     assert.deepEqual(f.launches, []);
+    assert.deepEqual(f.issueEdits, [], 'the body is left as it is');
+    assert.equal(told.refused, true);
+    assert.equal(told.dropped, false);
+    assert.deepEqual(subscribersFor(filed, 'close'), [{ session: FILER, owner: true }], 'the next close tries the owner again');
+    const refusal = f.logged.find((l) => l.event === 'dispatch-message' && l.session === FILER);
+    assert.equal(refusal?.level, 'info', JSON.stringify(f.logged));
+  });
+
+  test('an issue\'s owner that also subscribed by a line loses the line and keeps its link', async () => {
+    const filed = `A bug.\n\n${subscribeLine(FILER, ['labels'])}\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${FILER}`;
+    const f = fakes({ send: archived, reader: onPull(filed, false) });
+    const told = await f.deliver({ session: FILER }, 'A label on your issue.', { on: [97], dropFrom: [97] });
+    assert.equal(told.dropped, true);
     assert.equal(f.issueEdits.length, 1);
     const after = f.issueEdits[0]!.body;
-    assert.deepEqual(subscribersFor(after, 'close'), [], 'the next close messages nobody');
-    assert.deepEqual(subscribersFor(after, 'comments'), [{ session: REVIEWER, owner: false }], 'a subscriber\'s line stays');
-    assert.doesNotMatch(after, /session_01FILERBBB/);
+    assert.doesNotMatch(after, /governor:subscribe/);
+    assert.equal(sessionNamedIn(after), FILER);
   });
 
   test('a PR\'s owner that refuses keeps its footer: a remark\'s fallback takes the PR over from it', async () => {
