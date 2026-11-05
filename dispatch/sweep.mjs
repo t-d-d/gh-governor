@@ -276,7 +276,7 @@ export const planSweep = async (invocation, ctx) => {
   for (const stranger of strangers) {
     ctx.log('dispatch-pickup', { level: 'info', repo: stranger.repo, issue: stranger.issue, outcome: 'skipped', reason: strangerReason(stranger) });
   }
-  await Promise.all(strangers.map(async (stranger) => reportUntasked({ reader: await ctx.readerFor(stranger.repo), stranger, what: 'readied', ready: ctx.configOf(stranger.repo).labels.ready, event: 'dispatch-pickup', log: ctx.log })));
+  await Promise.all(strangers.map(async (stranger) => reportUntasked({ reader: await ctx.readerFor(stranger.repo), stranger, what: 'readied', ready: ctx.configOf(stranger.repo).labels.ready, start: startOf(ctx.configOf(stranger.repo)), event: 'dispatch-pickup', log: ctx.log })));
   // Ready labels no person with a say added start nothing, and are said at
   // warn, never error: anyone can open an issue, so it must not page
   // anyone. Each ticket gets one comment, whatever the switches say, since

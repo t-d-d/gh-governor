@@ -1512,6 +1512,47 @@ describe('run: ready labels under a narrowed trust.start', () => {
       assert.match(String(line.reason), /HTTP 502/);
     });
 
+    test(`${path}: with start set to OWNER, a collaborator's ready label on a NONE author's ticket gets the trust.start comment, not the trust.task one`, async () => {
+      const h = readied(by('pat'), { author: 'stranger', association: 'NONE' });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(labelCalls(h.calls), []);
+      const told = h.comments.filter((c) => c.issue === 9);
+      assert.equal(told.length, 1, JSON.stringify(h.comments));
+      assert.ok(told[0]!.body.includes(UNCOUNTED_READY_MARKER));
+      assert.match(told[0]!.body, /`trust\.start`/);
+      assert.match(told[0]!.body, /`pat`, who counts as `COLLABORATOR`/);
+      assert.match(told[0]!.body.split('\n')[0]!, /`trust\.start`/, 'the comment opens on trust.start');
+      assert.doesNotMatch(told[0]!.body.split('\n')[0]!, /`trust\.task`/);
+      assert.doesNotMatch(told[0]!.body, /adds them again starts the ticket/, 'readying it again would still be refused for trust.task');
+      assert.match(told[0]!.body, /`NONE`, which the repo's `trust\.task` leaves out as well/);
+      assert.match(told[0]!.body, /someone `trust\.start` lets in can restate the work/);
+    });
+
+    test(`${path}: with start set to OWNER, a NONE author's ticket whose adder cannot be looked up gets no comment that turn`, async () => {
+      const h = readied(by('pat'), { author: 'stranger', association: 'NONE', ownerType: new Error('HTTP 502') });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 9), []);
+      assert.ok(h.logged.some((l) => l.issue === 9 && l.level === 'warn' && /HTTP 502/.test(String(l.reason))), JSON.stringify(h.logged));
+    });
+
+    test(`${path}: with start set to OWNER, the owner's ready label on a NONE author's ticket still gets the trust.task comment`, async () => {
+      const h = readied(by('acme'), { author: 'stranger', association: 'NONE' });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      const told = h.comments.filter((c) => c.issue === 9);
+      assert.equal(told.length, 1, JSON.stringify(h.comments));
+      assert.match(told[0]!.body, /`trust\.task`/);
+    });
+
+    test(`${path}: with start set to OWNER, a NONE author's own template readying stays silent`, async () => {
+      const h = readied(by('stranger'), { author: 'stranger', association: 'NONE' });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 9), []);
+    });
+
     test(`${path}: at the default start, no adder is looked up`, async () => {
       for (const [association, author] of [['OWNER', 'acme'], ['MEMBER', 'mel']]) {
         const h = readied(by('pat'), { file: withStart(undefined), author, association });
@@ -8611,7 +8652,7 @@ describe('run: a relative wait on a declared blocker', () => {
   const UNTIL = new Date(Date.parse(CLOSED_AT) + 4 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const blocker = { repo: REPO, number: 41, title: 'The parser', reason: 'completed', closedAt: CLOSED_AT };
   const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, ...over });
-  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>>, thread = [] as Array<{ body: string }> } = {}) => {
+  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, openBlockers = 0 as number | null, blockerRows = [] as Array<{ number: number, state: string }>, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>>, thread = [] as Array<{ body: string }> } = {}) => {
     const asked: string[] = [];
     const file = JSON.parse(FACTORY_FILE);
     file.features = { ...file.features, ...features };
@@ -8624,8 +8665,9 @@ describe('run: a relative wait on a declared blocker', () => {
         readyIssues: async () => rows,
         ticket: async (n: number) => {
           asked.push(`ticket ${n}`);
-          return { number: n, title: `Issue ${n}`, body: state.body, state: 'open', labels, pull: false, association: 'MEMBER', openBlockers: 0, ...waitOf(state.body) };
+          return { number: n, title: `Issue ${n}`, body: state.body, state: 'open', labels, pull: false, association: 'MEMBER', ...(openBlockers === null ? {} : { openBlockers }), ...waitOf(state.body) };
         },
+        blockers: async () => blockerRows,
         issue: async (n: number) => ({ number: n, body: state.body, pull: false }),
         updateIssue: async (n: number, { body: next }: { body: string }) => { h.issueEdits.push({ issue: n, body: next }); state.body = next; },
         issueClose: async (n: number) => ({ id: 9000 + n, number: n, title: `Issue ${n}`, state: 'open', reason: null, closedAt: null, ...issues[n] }),
@@ -8656,6 +8698,24 @@ describe('run: a relative wait on a declared blocker', () => {
     assert.deepEqual(h.calls.filter((c) => c.startsWith('label ')), []);
     assert.deepEqual([h.launches, h.messages], [[], []]);
     assert.notEqual(result.row, 'not-planned');
+  });
+
+  test('a close that is not completed, on a ticket another open issue still blocks: the line\'s comment says so', async () => {
+    for (const labels of [READY, ['workflow: under development']]) {
+      const h = relativeTurn({ labels, openBlockers: 1 });
+      await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never);
+      assert.equal(h.comments.length, 1, JSON.stringify(h.comments));
+      assert.ok(h.comments[0]!.body.includes(waitNotPlannedMarker('#41')));
+      assert.match(h.comments[0]!.body, /#7 is still blocked by another open issue/, labels.join());
+    }
+  });
+
+  test('a close that is not completed, on a ticket with no dependency summary whose blocked_by rows hold another open issue: the line\'s comment says so', async () => {
+    const h = relativeTurn({ openBlockers: null, blockerRows: [{ number: 42, state: 'open' }] });
+    await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never);
+    assert.equal(h.comments.length, 1, JSON.stringify(h.comments));
+    assert.match(h.comments[0]!.body, /#7 is still blocked by another open issue/);
+    assert.doesNotMatch(h.comments[0]!.body, /to free it/);
   });
 
   // The line holds only a ticket ready or not ready by its labels. A claimed
