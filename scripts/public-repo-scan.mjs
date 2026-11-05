@@ -38,10 +38,11 @@ const isDoc = (/** @type {string} */ path) => path === 'README.md' || /^docs\/.+
 
 /**
  * In a doc, the name is refused unless it stands bare: joined to a word, a
- * variable, a marker or an issue (`-`, `_`, `:` or `#`) it names the old
- * code or the repo, not the service. Its site, the name and `.com`, passes.
+ * variable, a marker, an issue or a path (`-`, `_`, `:`, `#` or `/`) it names
+ * the old code or the repo, not the service. Its site, the name and `.com`,
+ * passes.
  */
-const NOT_BARE = new RegExp(`(?<=[A-Za-z0-9_-])${OLD_HOME.source}|${OLD_HOME.source}(?=[A-Za-z0-9_:#-])`, 'gi');
+const NOT_BARE = new RegExp(`(?<=[A-Za-z0-9_-])${OLD_HOME.source}|${OLD_HOME.source}(?=[A-Za-z0-9_:#/-])`, 'gi');
 
 /** @type {Array<{ kind: string, pattern: RegExp, allow?: (match: string) => boolean, inDoc?: RegExp }>} */
 const RULES = [
