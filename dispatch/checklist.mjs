@@ -670,7 +670,7 @@ export const reviewPrompt = ({ pull, files, tickets, constraints }) => [
 /**
  * What the model is sent for a PR: governor's frame, the repo's checklist
  * and the suffix saying what the code decided, in place of Claude Code's
- * system prompt (`replace`); the PR's facts as its prompt (`reviewPrompt`);
+ * system prompt; the PR's facts as its prompt (`reviewPrompt`);
  * and the schema its answer is held to. A prompt quoting files leaves
  * test 7 for them to the model.
  *
@@ -683,7 +683,6 @@ const judgeRequest = (skill, question) => {
     system: `${PR_FRAME}\n\n${skill}\n\n${constraints ? CONSTRAINTS_LEFT : DECIDED_IN_CODE}`,
     prompt: reviewPrompt(question),
     schema: constraints ? CONSTRAINT_ANSWER_SCHEMA : ANSWER_SCHEMA,
-    replace: true,
   };
 };
 
@@ -816,7 +815,7 @@ export const checklist = async ({ pull, files, tickets, others, owners, prose, f
  *
  * @param {{
  *   skill: string,
- *   run: (request: { system: string, prompt: string, schema: object, replace: boolean }, pr: number) => Promise<{ output: string }>,
+ *   run: (request: { system: string, prompt: string, schema: object }, pr: number) => Promise<{ output: string }>,
  *   transcript: (t: { sessionId: string, pr: number }) => Promise<object>,
  *   log: (event: string, context: Record<string, unknown>) => void,
  *   spent?: (pr: number, usage: Usage) => void,
