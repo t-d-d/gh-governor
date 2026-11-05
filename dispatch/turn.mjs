@@ -129,7 +129,8 @@ import { reviewPull } from './review.mjs';
 import { reviewTicket } from './ticket-review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
-import { HOOK_PER_HOUR, LANE, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
+import { HOOK_PER_HOUR, LANE, deployedTarget, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
+import { deployedComment } from './webhook/deployed-comment.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, writeHeartbeatIssue } from './heartbeat.mjs';
 import { launcher, routineLaunch } from './launcher.mjs';
@@ -1676,18 +1677,39 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
     if (invocation.kind === 'job') deps.log('dispatch-labels', { ...about, label: plan.label, ...(plan.range ?? {}), reason: plan.reason });
     return null;
   }
+  const target = deployedTarget(plan.label);
   const added = [];
+  const commented = [];
   const failed = [];
   for (const { ticket, prs } of plan.tickets) {
+    // Whether the ticket had the label before this turn: one that did was
+    // told already, by the turn that added it.
+    /** @type {boolean | null} */
+    let had = null;
+    try {
+      had = (await reader.ticket(ticket)).labels.includes(plan.label);
+    } catch (error) {
+      failed.push({ ticket, error: messageOf(error) });
+      deps.log('dispatch-labels', { ...about, label: plan.label, ticket, prs, error: `could not read its labels, so no comment: ${messageOf(error)}` });
+    }
     try {
       await reader.addLabels(ticket, [plan.label]);
       added.push(ticket);
     } catch (error) {
       failed.push({ ticket, error: messageOf(error) });
       deps.log('dispatch-labels', { ...about, label: plan.label, ticket, prs, error: messageOf(error) });
+      continue;
+    }
+    if (had !== false || target === null || invocation.kind !== 'job') continue;
+    try {
+      await reader.comment(ticket, deployedComment({ target, workflow: invocation.workflow, url: invocation.url, commit: invocation.commit }));
+      commented.push(ticket);
+    } catch (error) {
+      failed.push({ ticket, error: messageOf(error) });
+      deps.log('dispatch-labels', { ...about, label: plan.label, ticket, prs, error: `comment refused: ${messageOf(error)}` });
     }
   }
-  deps.log('dispatch-labels', { ...about, label: plan.label, ...plan.range, added });
+  deps.log('dispatch-labels', { ...about, label: plan.label, ...plan.range, added, commented });
   return { label: plan.label, added, failed };
 };
 

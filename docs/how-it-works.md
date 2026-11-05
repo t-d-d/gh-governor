@@ -122,7 +122,7 @@ The receiver (`dispatch/webhook/route.mjs`, `mention.mjs`, `subscribe.mjs`, `hoo
 | Any event on a PR or issue | A `governor:subscribe` line names a session for that event | A message into it | `subscribeMessages` |
 | PR merged | Other open PRs into the default branch are now conflicted | A message to each one's session | `conflicts` |
 | CI run on the default branch went red | Started by a push; the run before it was green | Messages to the suspect merges' sessions, or one fresh session | `ciMessages` |
-| Shipping job on the default branch succeeded | Its name ends `· deployed: <target>` | Messages to the sessions of the merges it shipped; labels their tickets | `deployMessages`, `deployedLabels` |
+| Shipping job on the default branch succeeded | Its name ends `· deployed: <target>` | Messages to the sessions of the merges it shipped; labels their tickets, and comments on each one newly labelled | `deployMessages`, `deployedLabels` |
 | Deploy run on the default branch went red | Its workflow marks a shipping job | Messages, or one fresh session for a `triage` target | `deployMessages` |
 | Scheduled run on the default branch went red | First attempt | One fresh session on the run | `redScheduledRun` |
 | Dispatched run on another branch finished | Any outcome | A message to the session that wrote its commit | `branchRunMessages` |
@@ -214,7 +214,7 @@ A red run after a red run tells nobody: its breakers were already told.
 
 **Deploy targets.** A shipping job's name ends `· deployed: <target>` (a middle dot, one space each side), optionally with `at <sha>`, the commit it built, before it. The workflow file declares a top-level `TICKET_LABEL_PATHS`: `all`, `trigger` (the workflow's own push paths), or globs. Governor reads both at the run's commit; no list of workflow names picks them.
 
-- A green shipping job tells each PR it shipped that its change is on the target, naming the job and the target's tag from `workflows.tags`. With `deployedLabels` on, it labels each ticket those PRs closed `deployed: <target>`.
+- A green shipping job tells each PR it shipped that its change is on the target, naming the job and the target's tag from `workflows.tags`. With `deployedLabels` on, it labels each ticket those PRs closed `deployed: <target>`. The first time a ticket gets that label, governor also comments on it, naming the target, the job and the commit it built. The issue's filer hears that comment as it hears any comment on its issue, and where the issue is closed it is asked to sign off.
 - A red run of a deploy a merge starts (a workflow on `push` or `workflow_run`) tells each PR it shipped that the deploy failed, and asks for a fix only if its change caused it.
 - A red run of a `triage` target starts one fresh session over every merge it shipped instead, since those sessions have usually signed off.
 - A red release dispatched by hand tells nobody: whoever dispatched it is watching it.

@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { dispatchMarker, lastDispatch } from '../dispatch/webhook/fire.mjs';
 import { subscribeLine, subscribersFor } from '../dispatch/webhook/subscribe.mjs';
 import { lastReview, reviewMarker } from '../dispatch/pr-body.mjs';
+import { deployedComment } from '../dispatch/webhook/deployed-comment.mjs';
 
 const OLD = `${['pod', 'stow'].join('')}:`;
 /** The text with each governor marker given the old prefix instead. */
@@ -33,7 +34,9 @@ describe('fitness: governor reads no old-prefix marker (dispatcher-repos.md)', (
     assert.match(dispatchMarker({ at: AT, sessionUrl: SESSION }), /<!-- governor:dispatched /);
     assert.match(subscribeLine(SESSION, undefined), /<!-- governor:subscribe /);
     assert.match(reviewMarker('a'.repeat(40), 'b'.repeat(64)), /<!-- governor:pr-review /);
-    for (const text of [dispatchMarker({ at: AT, sessionUrl: SESSION }), subscribeLine(SESSION, undefined), reviewMarker('a'.repeat(40), 'b'.repeat(64))]) {
+    const deployed = deployedComment({ target: 'prod', workflow: 'Deliver', url: 'https://github.com/acme/factory/actions/runs/500/job/2', commit: 'a'.repeat(40) });
+    assert.match(deployed, /<!-- governor:deployed prod -->$/);
+    for (const text of [dispatchMarker({ at: AT, sessionUrl: SESSION }), subscribeLine(SESSION, undefined), reviewMarker('a'.repeat(40), 'b'.repeat(64)), deployed]) {
       assert.ok(!text.toLowerCase().includes(OLD), text);
     }
   });
