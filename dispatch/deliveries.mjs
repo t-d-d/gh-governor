@@ -234,7 +234,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  * @typedef {{
  *   comments: import('../scripts/lib/dispatch-router.mjs').Reader['comments'],
  *   comment: (n: number, body: string) => Promise<void>,
- *   pull: (n: number) => Promise<{ number: number, body: string, head: string, open: boolean } & import('./webhook/fire.mjs').Author>,
+ *   pull: (n: number) => Promise<{ number: number, body: string, head: string, defaultBranch: string, open: boolean } & import('./webhook/fire.mjs').Author>,
  *   updatePull: (n: number, change: { body: string }) => Promise<void>,
  *   issue: (n: number) => Promise<{ number: number, body: string, pull: boolean }>,
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
@@ -297,7 +297,8 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   `source`: where the text comes from, which names the line it opens
  *   with; a fallback's prompt opens with the same line. `fallback`: what a
  *   refusal starts. A `takeover`'s fallback owns the PR, so it starts on
- *   the PR's head branch and the body's link is rewritten to it, the one
+ *   the PR's head branch, unless that is a fork's or the repo's default
+ *   branch, and the body's link is rewritten to it, the one
  *   record of the PR's session; a red CI's fix session did not write the
  *   merged PR it is told of, so that body keeps its author and nothing is
  *   posted on it. `spec`: the message is a ticket's spec work to its
@@ -607,7 +608,10 @@ export const deliveries = (deps) => {
       // be live, so nothing starts beside it. Otherwise the session starts on
       // the PR's head branch: from the default branch it would be given a new
       // branch and open a second PR. A fork's head is '' here, so none is
-      // named. A fallback that is not a takeover (a red run on a merge) is
+      // named. Nor is a head that is the repo's default branch, or one whose
+      // default branch was not read: a session on it would push straight to
+      // the default branch, so it starts from there on a branch of its own.
+      // A fallback that is not a takeover (a red run on a merge) is
       // meant for a closed PR, and starts a branch of its own.
       if (takeover && issue !== undefined) {
         const pr = await (await deps.reader()).pull(issue);
@@ -621,7 +625,7 @@ export const deliveries = (deps) => {
           if (handed.ok) fallback = { outcome: 'forwarded', sessionUrl: owner };
           else if (!refusedBy(handed)) fallback = { outcome: 'failed', sessionUrl: null };
         }
-        if (fallback === null) branch = pr.head;
+        if (fallback === null && pr.defaultBranch !== '' && pr.head !== pr.defaultBranch) branch = pr.head;
       }
       if (fallback === null) {
         const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL, ...(branch === '' ? {} : { branch }) }, until);
