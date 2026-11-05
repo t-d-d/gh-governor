@@ -118,7 +118,7 @@ import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
 import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
-import { CONFIG_PATH, GENERIC_SWITCHES, switchOf, turnsOn } from './repo-config.mjs';
+import { CONFIG_PATH, SWITCHES, switchOf, turnsOn } from './repo-config.mjs';
 import { planWorkflow } from './workflow.mjs';
 import { coverageOf } from './coverage.mjs';
 import { planBranchRun } from './branch-run.mjs';
@@ -126,7 +126,7 @@ import { checkConflicts } from './conflicts.mjs';
 import { closingFires } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
-import { reviewTicket } from './ticket-review.mjs';
+import { reviewIssue, reviewLabelsOf } from './issue-review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, deployedTarget, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
@@ -175,7 +175,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   mergedSince: (base: string, since: string) => Promise<import('./periodics.mjs').Counted[]>,
  *   issuesOpenedSince: (since: string, by?: readonly string[]) => Promise<import('./periodics.mjs').Counted[]>,
  *   issuesClosedSince: (since: string, by?: readonly string[]) => Promise<import('./periodics.mjs').Counted[]>,
- * } & import('./review.mjs').ReviewReader & import('./waits.mjs').RelativeReader & Pick<import('./ticket-review.mjs').TicketReader, 'parentIssue' | 'openIssues'>} Reader
+ * } & import('./review.mjs').ReviewReader & import('./waits.mjs').RelativeReader & Pick<import('./issue-review.mjs').IssueReader, 'parentIssue' | 'openIssues'>} Reader
  *
  * @typedef {{
  *   owners: readonly string[],
@@ -524,12 +524,14 @@ const turnOf = async (event, deps, built) => {
   const readAt = new Date(deps.now()).toISOString();
   /**
    * Each served repo's hooks, key versions and hourly caps, each of its
-   * switches as {@link turnsOn} reads it, and its ready labels, as its file
-   * reads now, to the receiver's hook table, in one write, so the receiver
-   * refuses a revoked key, a removed hook or a fire past the cap before the
-   * queue, drops a delivery's fire whose switch is off
+   * switches as {@link turnsOn} reads it, its ready labels, and the labels
+   * whose change can start an issue review ({@link reviewLabelsOf}), as its
+   * file reads now, to the receiver's hook table, in one write, so the
+   * receiver refuses a revoked key, a removed hook or a fire past the cap
+   * before the queue, drops a delivery's fire whose switch is off
    * (dispatch/webhook/switches.mjs), and queues a selection fire only for a
-   * ready label (dispatch/webhook/route.mjs). It
+   * ready label and an issue review fire only for a label a review names
+   * (dispatch/webhook/route.mjs). It
    * is written before the turn refuses its fire, so a turn whose own switch
    * is off still brings the item up to the file. A write that
    * fails is logged at error and counts the repo unread, and the turn goes
@@ -543,9 +545,9 @@ const turnOf = async (event, deps, built) => {
     // One item per repo, so the writes are independent: each goes at once.
     const written = await Promise.all(list.map(async ({ repo: served, config }) => {
       const hooks = turnsOn(config, 'hooks') ? config.hooks.map(({ name, keyVersion, perHour }) => ({ name, keyVersion, perHour: perHour ?? HOOK_PER_HOUR })) : [];
-      const switches = Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, turnsOn(config, name)]));
+      const switches = Object.fromEntries(SWITCHES.map((name) => [name, turnsOn(config, name)]));
       try {
-        await deps.hookTable.publish(served, { hooks, switches, ready: config.labels.ready, trust: { relay: relayOf(config) } }, readAt);
+        await deps.hookTable.publish(served, { hooks, switches, ready: config.labels.ready, reviewLabels: reviewLabelsOf(config), trust: { relay: relayOf(config) } }, readAt);
         return null;
       } catch (error) {
         deps.log('hook-table-unwritten', { level: 'error', repo: served, error: messageOf(error) });
@@ -1467,15 +1469,15 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     return { kind: 'review', reviews, loginStored };
   }
 
-  // The ticket reviews: each review the repo lists whose selector the
+  // The issue reviews: each review the repo lists whose selector the
   // issue meets and whose marker its body has moved past, one `claude -p`
-  // apiece with no tools (dispatch/ticket-review.mjs).
-  if (invocation.kind === 'ticketReview') {
+  // apiece with no tools (dispatch/issue-review.mjs).
+  if (invocation.kind === 'issueReview') {
     let loginStored = false;
-    /** @type {{ reviews: import('./ticket-review.mjs').Reviewed[], skipped?: string }} */
+    /** @type {{ reviews: import('./issue-review.mjs').Reviewed[], skipped?: string }} */
     let reviewed;
     try {
-      reviewed = await reviewTicket({
+      reviewed = await reviewIssue({
         repo: fireRepo(),
         issue: invocation.issue,
         reader: await getReader(),
@@ -1487,7 +1489,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     } finally {
       loginStored = await storeIfRefreshed(deps, original, account);
     }
-    return { kind: 'ticketReview', issue: invocation.issue, ...reviewed, loginStored };
+    return { kind: 'issueReview', issue: invocation.issue, ...reviewed, loginStored };
   }
 
   if (invocation.kind === 'wait') {
@@ -2531,7 +2533,7 @@ export const realDeps = () => {
     },
     // The run's transcript, to the drop box the stack names, under governor's
     // own writer, named for the review so a reader tells it from a session's:
-    // the PR review's by its PR, a ticket review's by the key it gives.
+    // the PR review's by its PR, an issue review's by the key it gives.
     transcript: async (run) => {
       const { sessionId } = run;
       const url = env.SESSION_LOG_URL;

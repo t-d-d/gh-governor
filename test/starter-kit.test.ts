@@ -13,7 +13,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
-import { CONFIG_PATH, GENERIC_SWITCHES, namesEnvironment, readConfig } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, GENERIC_SWITCHES, namesEnvironment, readConfig, turnsOn } from '../dispatch/repo-config.mjs';
 import { readConfig as checkerReadConfig } from '../checker/heartbeat-check.mjs';
 import { globMatches } from '../dispatch/checklist.mjs';
 
@@ -86,16 +86,17 @@ describe('the starter kit\'s config file', () => {
     assert.ok(got.ok);
     const backlog = got.config.periodics.find((p) => p.name === 'Backlog review');
     const prompt = String(backlog?.prompt);
-    assert.match(prompt, /only where the file turns ticket reviews on, open ones no ticket review ran on/, 'with the reviews off, every open ticket would read as stuck');
-    assert.match(prompt, /Leave out the heartbeat issue, the wait ticket/, 'no ticket review reads governor\'s own records');
+    assert.match(prompt, /only where the file turns issue reviews on, open ones no issue review ran on/, 'with the reviews off, every open ticket would read as stuck');
+    assert.match(prompt, /Leave out the heartbeat issue, the wait ticket/, 'no issue review reads governor\'s own records');
     assert.match(prompt, /`failure` or `neutral`/);
     assert.match(prompt, /claimed[^.]*no open pull request/);
   });
 
-  test('keeps ticket reviews off, lists none, and keeps its ready and exclude labels', () => {
+  test('keeps issue reviews off by having no section, sets no moved switch, and keeps its ready and exclude labels', () => {
     assert.ok(got.ok);
-    assert.equal(got.config.features.ticketReviews, false);
-    assert.equal(got.config.ticketReviews, undefined);
+    assert.equal(got.config.issueReviews, undefined);
+    assert.equal(turnsOn(got.config, 'issueReviews'), false);
+    assert.equal('ticketReviews' in (JSON.parse(text) as { features: Record<string, unknown> }).features, false, 'the switch moved to the section');
     assert.deepEqual(got.config.labels, { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [], exclude: ['type: prd'] });
   });
 
@@ -162,25 +163,26 @@ describe('the starter kit\'s dark-factory config file', () => {
 
   test('reviews every ticket before pickup builds it, with checks per type and a label per conclusion', () => {
     assert.ok(got.ok);
-    assert.equal(got.config.features.ticketReviews, true);
-    const reviews = got.config.ticketReviews ?? [];
+    assert.equal(turnsOn(got.config, 'issueReviews'), true);
+    assert.equal(got.config.issueReviews?.enabled, undefined, 'the section turns the reviews on');
+    const reviews = got.config.issueReviews?.reviews ?? [];
     assert.equal(reviews.length, 1);
     const triage = reviews[0];
     assert.ok(triage !== undefined);
     assert.equal(triage.name, 'triage');
-    assert.deepEqual(triage.when, { on: 'opened', exclude: ['claimed'] });
-    assert.equal(triage.checklist, undefined, 'governor\'s default checklist is the base: the starter kit ships no skills');
+    assert.deepEqual(triage.when, { exclude: ['claimed'] });
+    assert.equal(triage.prompt, undefined, 'governor\'s default checklist is the review\'s prompt: the starter kit ships no skills');
     assert.deepEqual(triage.conclusions, { success: ['triage: passed'], failure: ['triage: needs edit'], neutral: ['triage: needs a person'] });
-    const types = triage.types ?? [];
+    const types = triage.byLabel ?? [];
     assert.deepEqual(types.map((t) => t.labels), [['type: prd'], ['type: bug', 'bug'], ['type: enhancement']]);
     for (const t of types) {
-      assert.equal(typeof t.checklist, 'string', `${t.labels[0]}: a checklist file is the repo's own`);
-      assert.doesNotMatch(String(t.checklist), /skill/i, `${t.labels[0]}: the starter kit ships no skills`);
+      assert.equal(typeof t.prompt, 'string', `${t.labels[0]}: a prompt file is the repo's own`);
+      assert.doesNotMatch(String(t.prompt), /skill/i, `${t.labels[0]}: the starter kit ships no skills`);
     }
     const [prd, bug, enhancement] = types;
-    assert.match(String(prd?.checklist), /many pull requests/);
-    assert.match(String(bug?.checklist), /reproduce[\s\S]*one pull request's work/);
-    assert.match(String(enhancement?.checklist), /one pull request's work[\s\S]*reviewer checks it is done/);
+    assert.match(String(prd?.prompt), /many pull requests/);
+    assert.match(String(bug?.prompt), /reproduce[\s\S]*one pull request's work/);
+    assert.match(String(enhancement?.prompt), /one pull request's work[\s\S]*reviewer checks it is done/);
     assert.equal(prd?.conclusions, undefined);
     assert.deepEqual(bug?.conclusions, { success: ['triage: build'] }, 'a bug that passes is built with no person');
     assert.equal(enhancement?.conclusions, undefined);
@@ -340,13 +342,14 @@ test('docs/serving-a-repo.md\'s starter kit section describes the triage review 
   const doc = read('docs/serving-a-repo.md');
   const at = doc.indexOf('### The starter kit');
   const section = doc.slice(at, doc.indexOf('\n### ', at + 1));
-  assert.match(section, /`triage` ticket review/);
+  assert.match(section, /`triage` issue review/);
   for (const label of ['triage: build', 'triage: passed', 'triage: needs edit', 'triage: needs a person', 'mode: human']) assert.ok(section.includes(`\`${label}\``), label);
   assert.match(section, /a backlog review every 5 issues opened/);
-  assert.match(section, /where ticket reviews are on, open ones no ticket review ran on/);
+  assert.match(section, /where issue reviews are on, open ones no issue review ran on/);
+  assert.match(section, /issue reviews are off[^.]*no `issueReviews` section/);
   assert.match(section, /adding `mode: human`, and no review run takes it off/);
   assert.match(section, /claimed ones with no open pull request/);
-  assert.doesNotMatch(section, /ticket review every/);
+  assert.doesNotMatch(section, /issue review every/);
 });
 
 test('the README and docs/how-it-works.md name the backlog review, not a periodic ticket review', () => {

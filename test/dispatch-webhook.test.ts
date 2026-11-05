@@ -17,7 +17,7 @@ import { reviewMarker } from '../dispatch/pr-body.mjs';
 import { FIRE_BUDGET, SIGN_POSTS, UNATTENDED, dispatchMarker, fireWeight, parseFire } from '../dispatch/webhook/fire.mjs';
 import { UNSIGNED } from '../dispatch/webhook/mention.mjs';
 import { deployedComment } from '../dispatch/webhook/deployed-comment.mjs';
-import { GENERIC_SWITCHES } from '../dispatch/repo-config.mjs';
+import { SWITCHES } from '../dispatch/repo-config.mjs';
 
 const SECRET = 'whsec_test';
 const REPO = 'acme/factory';
@@ -36,7 +36,7 @@ const APP_ID = 5075844;
  */
 const route = (args: Parameters<typeof routeEvent>[0]) => {
   const routed = routeEvent(args);
-  const fires = routed.fires.filter((f) => f.fire.kind !== 'ticketReview');
+  const fires = routed.fires.filter((f) => f.fire.kind !== 'issueReview');
   const reason = routed.reason;
   assert.ok(fires.length <= 1, `expected at most one fire, got ${fires.length}: ${reason}`);
   return { fire: fires[0]?.fire, reason: fires[0]?.reason ?? reason };
@@ -230,13 +230,13 @@ describe('routeEvent — what a periodic counts', () => {
 
   test('an issue opened, which queues no summons, gets a fire of its own beside its ticket review\'s', () => {
     const { fires } = routeEvent({ event: 'issues', payload: issuesEvent('opened'), owners: OWNERS });
-    assert.deepEqual(fires.map((f) => [f.fire, f.key]), [[{ kind: 'periodics', counted: 'issuesOpened', repo: REPO }, 'periodics'], [{ kind: 'ticketReview', issue: 717, repo: REPO }, 'ticketReview']]);
+    assert.deepEqual(fires.map((f) => [f.fire, f.key]), [[{ kind: 'periodics', counted: 'issuesOpened', repo: REPO }, 'periodics'], [{ kind: 'issueReview', issue: 717, repo: REPO }, 'issueReview']]);
   });
 
   test('an issue opened summoning a session rides the summons', () => {
     const payload = issuesEvent('opened', { issue: { ...issuesEvent('opened').issue, body: '@claude what does the retry budget do?' } });
     const { fires } = routeEvent({ event: 'issues', payload, owners: OWNERS });
-    assert.deepEqual(fires.map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted]), [['dispatch', 'issuesOpened'], ['ticketReview', undefined]]);
+    assert.deepEqual(fires.map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted]), [['dispatch', 'issuesOpened'], ['issueReview', undefined]]);
   });
 
   test('a PR opened, an issue reopened or labelled counts nothing', () => {
@@ -572,7 +572,7 @@ describe('routeEvent — a mention', () => {
   test('an issue a session opened, its footer stripped to its link on the last line, summons nothing by naming @claude', () => {
     const body = 'A comment mentioning @claude on a PR a session owns should message the owner.\nhttps://claude.ai/code/session_01FILERBBB';
     const { fires, reason } = routeEvent({ event: 'issues', payload: issuesEvent('opened', { issue: { ...issuesEvent('opened').issue, body } }), owners: OWNERS });
-    assert.deepEqual(fires.map((f) => f.fire.kind), ['periodics', 'ticketReview'], 'counted, and no summons');
+    assert.deepEqual(fires.map((f) => f.fire.kind), ['periodics', 'issueReview'], 'counted, and no summons');
     assert.match(reason, /a session cannot summon another/);
     const comment = route({ event: 'issue_comment', payload: commentEvent({}, { body: '@claude this one stalled:\nhttps://claude.ai/code/session_01FILERBBB' }), owners: OWNERS });
     assert.equal(comment.fire?.kind, 'dispatch', 'a person\'s comment ending in a session link is still a summons');
@@ -1128,7 +1128,7 @@ describe('routeEvent — subscribers', () => {
     assert.deepEqual(labelled(`Filed.\n\n${subscribeLine(OWNER, ['labels'])}${footer}`).sent.map((m) => [m.session, m.event]), [[OWNER, 'labels']], 'a filer that asks for labels hears them');
 
     const ready = messages('issues', { action: 'labeled', label: { name: 'workflow: ready for development' }, issue: issue(`Filed.${footer}`), sender: member, repository: { full_name: REPO } });
-    assert.deepEqual(ready.all.map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: 'workflow: ready for development', repo: REPO }], 'the ready label still schedules');
+    assert.deepEqual(ready.all.map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: 'workflow: ready for development', repo: REPO }, { kind: 'issueReview', issue: 717, repo: REPO }], 'the ready label still schedules, beside the issue review fire the receiver judges');
   });
 
   test('a deployed: label added is a deploys event: it reaches deploys lines and lines naming no events, not labels lines, and the filer only through a line', () => {
@@ -1197,7 +1197,7 @@ describe('routeEvent — subscribers', () => {
 
   test('the ready label keeps its schedule fire beside the subscriber\'s message, and so does a close', () => {
     const ready = messages('issues', { action: 'labeled', label: { name: 'workflow: ready for development' }, issue: issue(), sender: member, repository: { full_name: REPO } });
-    assert.deepEqual(ready.all.map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: 'workflow: ready for development', repo: REPO }, ...ready.sent.map(({ key: _key, ...fire }) => fire)]);
+    assert.deepEqual(ready.all.map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: 'workflow: ready for development', repo: REPO }, ...ready.sent.map(({ key: _key, ...fire }) => fire), { kind: 'issueReview', issue: 717, repo: REPO }]);
     assert.equal(ready.all[0]!.key, undefined, 'the schedule fire keys on the delivery alone, as before');
     assert.deepEqual(ready.sent.map((m) => m.event), ['labels']);
     const closed = messages('issues', { action: 'closed', issue: { ...issue(), state_reason: 'completed' }, sender: member, repository: { full_name: REPO } });
@@ -1561,9 +1561,12 @@ describe('routeEvent — a workflow run', () => {
   });
 });
 
+/** A repo's item whose file names no label an issue review reads, and says nothing else. */
+const NO_REVIEWS = async () => ({ switches: null, ready: null, reviewLabels: { labeled: [], unlabeled: [] } });
+
 describe('handle', () => {
   test('a signed ready-label delivery queues one schedule fire, keyed by the delivery so a redelivery is not a second fire', async () => {
-    const { deps, queued, logged } = harness();
+    const { deps, queued, logged } = harness({ repoItem: NO_REVIEWS });
     const response = await handle(delivery('issues', issuesEvent('labeled', { label: { name: 'workflow: ready for development' } })), deps);
     assert.equal(response.statusCode, 202);
     assert.equal(queued.length, 1);
@@ -1653,7 +1656,7 @@ describe('handle', () => {
   });
 
   test('a base64 body is verified as the bytes GitHub signed', async () => {
-    const { deps, queued } = harness();
+    const { deps, queued } = harness({ repoItem: NO_REVIEWS });
     const payload = issuesEvent('labeled', { label: { name: 'workflow: ready for development' } });
     const raw = JSON.stringify(payload);
     const response = await handle({
@@ -1666,7 +1669,7 @@ describe('handle', () => {
   });
 
   test('an event that routes nowhere is acknowledged and queues nothing', async () => {
-    const { deps, queued } = harness();
+    const { deps, queued } = harness({ repoItem: NO_REVIEWS });
     const response = await handle(delivery('issues', issuesEvent('unlabeled', { label: { name: 'type: bug' }, sender: { login: 'bot[bot]', type: 'Bot' } })), deps);
     assert.equal(response.statusCode, 200);
     assert.deepEqual(queued, []);
@@ -2123,9 +2126,9 @@ describe('fitness: the receiver drops a fire only where the repo\'s hook-table i
   const red = { action: 'completed', repository: at, workflow_run: { id: 500, name: 'CI', path: '.github/workflows/ci.yml', workflow_id: 77, head_branch: 'main', head_sha: SHA, status: 'completed', conclusion: 'failure', html_url: `https://github.com/${REPO}/actions/runs/500`, event: 'push', run_attempt: 1 } };
   const opened = (body: string) => ({ ...issuesEvent('opened'), issue: { ...issuesEvent('opened').issue, body }, repository: at });
   /** The item as the task writes it: every switch, on where `on` says, and the ready labels where given. */
-  const item = (on: string[], ready: string[] | null = null) => async () => ({ switches: new Map(GENERIC_SWITCHES.map((name) => [name, on.includes(name)])), ready });
+  const item = (on: string[], ready: string[] | null = null) => async () => ({ switches: new Map(SWITCHES.map((name) => [name, on.includes(name)])), ready });
   type Item = { switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null } | null;
-  const ALL = [...GENERIC_SWITCHES];
+  const ALL = [...SWITCHES];
   const kinds = (queued: Array<{ message: Record<string, unknown> }>) => queued.map((q) => (q.message.fire as { kind: string }).kind);
   const handled = async (event: string, payload: unknown, repoItem: () => Promise<Item>) => {
     const h = harness({ repoItem });
@@ -2248,10 +2251,10 @@ describe('fitness: the receiver drops a fire only where the repo\'s hook-table i
     assert.deepEqual(kinds(queued), ['schedule']);
   });
 
-  test('an issue opened in a repo with ticketReviews off queues no ticketReview fire; with it on, it does', async () => {
-    const off = await handled('issues', opened('A ticket.'), item(ALL.filter((n) => n !== 'ticketReviews')));
-    assert.ok(!kinds(off.queued).includes('ticketReview'), JSON.stringify(kinds(off.queued)));
-    assert.deepEqual(kinds((await handled('issues', opened('A ticket.'), item(['ticketReviews']))).queued), ['ticketReview']);
+  test('an issue opened in a repo with issueReviews off queues no issueReview fire; with it on, it does', async () => {
+    const off = await handled('issues', opened('A ticket.'), item(ALL.filter((n) => n !== 'issueReviews')));
+    assert.ok(!kinds(off.queued).includes('issueReview'), JSON.stringify(kinds(off.queued)));
+    assert.deepEqual(kinds((await handled('issues', opened('A ticket.'), item(['issueReviews']))).queued), ['issueReview']);
   });
 
   test('a hook request does not read the switches', async () => {
@@ -2273,14 +2276,14 @@ describe('fitness: a label queues a selection fire only where the repo\'s hook-t
   const WATCHER = 'https://claude.ai/code/session_01WATCHES';
   const issue = { ...issuesEvent('labeled').issue, body: `Filed.\n\n${subscribeLine(WATCHER)}` };
   const labelled = (name: string, sender: Record<string, unknown> = member) => ({ ...issuesEvent('labeled', { issue, label: { name }, sender }), repository: { full_name: REPO } });
-  const on = new Map(GENERIC_SWITCHES.map((name) => [name, true]));
-  type Item = { switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null } | null;
+  const on = new Map(SWITCHES.map((name) => [name, true]));
+  type Item = { switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null, reviewLabels?: { labeled: string[], unlabeled: string[] } } | null;
   const handled = async (payload: unknown, repoItem: () => Promise<Item>) => {
     const h = harness({ repoItem });
     const response = await handle(delivery('issues', payload), h.deps as never);
     return { ...h, response, selections: h.queued.map((q) => q.message.fire as { kind: string, label?: string }).filter((f) => f.kind === 'schedule') };
   };
-  const listed = async () => ({ switches: on, ready: READY });
+  const listed = async () => ({ switches: on, ready: READY, reviewLabels: { labeled: [], unlabeled: [] } });
 
   test('a person adding one of the repo\'s ready labels queues a selection fire', async () => {
     for (const name of READY) {
@@ -2355,7 +2358,7 @@ describe('fitness: a label queues a selection fire only where the repo\'s hook-t
  * labels in the payload against the repo's hook-table item, as for a label.
  */
 describe('fitness: a blocker unlinked from a ready ticket queues its selection fire (dispatcher-repos.md)', () => {
-  const on = new Map(GENERIC_SWITCHES.map((name) => [name, true]));
+  const on = new Map(SWITCHES.map((name) => [name, true]));
   type Item = { switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null } | null;
   const listed = async () => ({ switches: on, ready: READY });
   const ticket = (over: Record<string, unknown> = {}) => ({ number: 519, title: 'A ready ticket', state: 'open', labels: [{ name: 'enhancement' }, { name: 'mode: afk' }], html_url: `https://github.com/${REPO}/issues/519`, body: 'Body.', user: member, author_association: 'OWNER', ...over });
@@ -2634,16 +2637,16 @@ describe('fitness: only text from an author trust.relay lets in reaches a runnin
 });
 
 /**
- * A ticket review (dispatch/ticket-review.mjs) runs on an issue opened,
- * reopened or with its body edited: the receiver queues one `ticketReview`
+ * A ticket review (dispatch/issue-review.mjs) runs on an issue opened,
+ * reopened or with its body edited: the receiver queues one `issueReview`
  * fire naming the issue, from the payload alone, and the task decides which
  * reviews run.
  */
 describe('routeEvent: the ticket review\'s fire', () => {
   const ticketFires = (payload: unknown) => routeEvent({ event: 'issues', payload, owners: OWNERS }).fires
-    .filter((f) => f.fire.kind === 'ticketReview');
+    .filter((f) => f.fire.kind === 'issueReview');
 
-  test('an issue opened, reopened, or edited with a body change queues one ticketReview fire naming it', () => {
+  test('an issue opened, reopened, or edited with a body change queues one issueReview fire naming it', () => {
     for (const payload of [
       issuesEvent('opened'),
       issuesEvent('reopened'),
@@ -2651,16 +2654,15 @@ describe('routeEvent: the ticket review\'s fire', () => {
       issuesEvent('edited', { changes: { title: { from: 'Old' }, body: { from: 'The old body.' } } }),
     ]) {
       const fires = ticketFires(payload);
-      assert.deepEqual(fires.map((f) => [f.fire, f.key]), [[{ kind: 'ticketReview', issue: 717, repo: REPO }, 'ticketReview']], payload.action);
+      assert.deepEqual(fires.map((f) => [f.fire, f.key]), [[{ kind: 'issueReview', issue: 717, repo: REPO }, 'issueReview']], payload.action);
     }
   });
 
-  test('a title-only edit, a bot\'s body edit, a label and a close queue none', () => {
+  test('a title-only edit, a bot\'s body edit and a close queue none', () => {
     for (const payload of [
       issuesEvent('edited', { changes: { title: { from: 'Old' } } }),
       issuesEvent('edited'),
       issuesEvent('edited', { changes: { body: { from: 'The old body.' } }, sender: { login: 'governor-app[bot]', type: 'Bot' } }),
-      issuesEvent('labeled', { label: { name: 'type: bug' } }),
       issuesEvent('closed'),
     ]) {
       assert.deepEqual(ticketFires(payload), [], `${payload.action} ${JSON.stringify((payload as { changes?: unknown }).changes ?? null)}`);
@@ -2671,11 +2673,83 @@ describe('routeEvent: the ticket review\'s fire', () => {
     assert.deepEqual(ticketFires(issuesEvent('opened', { issue: { title: 'No number', body: 'x' } })), []);
   });
 
-  test('the fire needs ticketReviews, and parses back as it was built', () => {
+  test('a label added or removed queues one issueReview fire naming the issue, whoever changed it, carrying the label for the receiver to judge', () => {
+    for (const [action, sender] of [['labeled', member], ['unlabeled', member], ['labeled', { login: 'governor-app[bot]', type: 'Bot' }]] as const) {
+      const fires = ticketFires(issuesEvent(action, { label: { name: 'triage: go' }, sender }));
+      assert.deepEqual(fires.map((f) => [f.fire, f.key, f.reviewLabel]), [[{ kind: 'issueReview', issue: 717, repo: REPO }, 'issueReview', { label: 'triage: go', change: action }]], `${action} by ${sender.type}`);
+    }
+  });
+
+  test('the fire needs issueReviews, and parses back as it was built', () => {
     const [queued] = ticketFires(issuesEvent('opened'));
     assert.ok(queued);
     assert.deepEqual(parseFire(queued.fire), queued.fire);
-    assert.throws(() => parseFire({ kind: 'ticketReview', repo: REPO }), /issue/);
-    assert.throws(() => parseFire({ kind: 'ticketReview', issue: 717 }), /repo/);
+    assert.throws(() => parseFire({ kind: 'issueReview', repo: REPO }), /issue/);
+    assert.throws(() => parseFire({ kind: 'issueReview', issue: 717 }), /repo/);
+  });
+
+  test('a ticketReview fire, queued before the kind took GitHub\'s word, parses as an issueReview one', () => {
+    assert.deepEqual(parseFire({ kind: 'ticketReview', issue: 717, repo: REPO }), { kind: 'issueReview', issue: 717, repo: REPO });
+  });
+});
+
+/**
+ * A label change queues an issue review only where the label can bring the
+ * issue into a review's selector or change its key: added, one in a
+ * review's `when.labels` or a `byLabel` entry's `labels`; removed, one in a
+ * `when.exclude` or a `byLabel` entry's `labels`. The task writes those
+ * labels into the repo's hook-table item (hook-table.mjs), and the receiver
+ * drops any other label change's fire. Where the item cannot say, it queues
+ * the fire and the task decides.
+ */
+describe('fitness: dispatcher-review.md, a label change queues an issue review only for a label a review names', () => {
+  const at = { full_name: REPO, default_branch: 'main' };
+  const REVIEW_LABELS = { labeled: ['triage: go', 'type: bug'], unlabeled: ['claimed', 'type: bug'] };
+  type ReviewLabels = { labeled: readonly string[], unlabeled: readonly string[] } | null | undefined;
+  type Item = { switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null, reviewLabels?: ReviewLabels } | null;
+  const item = (reviewLabels: ReviewLabels, on = true): () => Promise<Item> => async () => ({
+    switches: new Map(SWITCHES.map((name) => [name, name === 'issueReviews' ? on : true])), ready: ['mode: afk'], reviewLabels,
+  });
+  const changed = async (action: 'labeled' | 'unlabeled', label: string, repoItem: () => Promise<Item>) => {
+    const h = harness({ repoItem });
+    const response = await handle(delivery('issues', issuesEvent(action, { label: { name: label }, repository: at })), h.deps as never);
+    return { reviews: h.queued.filter((q) => (q.message.fire as { kind: string }).kind === 'issueReview'), response };
+  };
+
+  test('a label a review selects on or a byLabel entry names, added, queues one issue review fire', async () => {
+    for (const label of ['triage: go', 'type: bug', 'Triage: Go']) {
+      const { reviews } = await changed('labeled', label, item(REVIEW_LABELS));
+      assert.deepEqual(reviews.map((q) => q.message.fire), [{ kind: 'issueReview', issue: 717, repo: REPO }], label);
+    }
+  });
+
+  test('a label a review excludes or a byLabel entry names, removed, queues one issue review fire', async () => {
+    for (const label of ['claimed', 'type: bug']) {
+      const { reviews } = await changed('unlabeled', label, item(REVIEW_LABELS));
+      assert.deepEqual(reviews.map((q) => q.message.fire), [{ kind: 'issueReview', issue: 717, repo: REPO }], label);
+    }
+  });
+
+  test('any other label change queues none, and says why', async () => {
+    for (const [action, label] of [['labeled', 'claimed'], ['labeled', 'triage: done'], ['unlabeled', 'triage: go'], ['unlabeled', 'mode: afk']] as const) {
+      const { reviews, response } = await changed(action, label, item(REVIEW_LABELS));
+      assert.deepEqual(reviews, [], `${action} ${label}`);
+      assert.match(response.body, new RegExp(`issueReview fire, as ${label} .*no issue review`), `${action} ${label}: ${response.body}`);
+    }
+  });
+
+  test('where the item holds no review labels, or there is none, a label change queues the fire for the task to decide', async () => {
+    for (const repoItem of [item(null), item(undefined), async () => null]) {
+      const { reviews } = await changed('labeled', 'anything', repoItem);
+      assert.equal(reviews.length, 1);
+    }
+    const h = harness({ repoItem: async () => { throw new Error('AccessDeniedException'); } });
+    await handle(delivery('issues', issuesEvent('unlabeled', { label: { name: 'anything' }, repository: at })), h.deps as never);
+    assert.equal(h.queued.filter((q) => (q.message.fire as { kind: string }).kind === 'issueReview').length, 1);
+  });
+
+  test('a repo whose issue reviews are off queues none on a label change', async () => {
+    const { reviews } = await changed('labeled', 'triage: go', item(REVIEW_LABELS, false));
+    assert.deepEqual(reviews, []);
   });
 });

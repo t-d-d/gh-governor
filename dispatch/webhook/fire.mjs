@@ -47,9 +47,9 @@
  * since the task reads the hook's from the file (route.mjs, dispatch/hooks.mjs).
  * A `wait` names an issue opened or edited with a `Blocked until:` line,
  * judged from the payload ({@link waitLine}); its turn keeps the ticket's
- * wait item to match its line (dispatch/waits.mjs). A `ticketReview` names
+ * wait item to match its line (dispatch/waits.mjs). A `issueReview` names
  * an issue opened, reopened or with its body edited, whose turn runs the
- * repo's ticket reviews on it (dispatch/ticket-review.mjs).
+ * repo's issue reviews on it (dispatch/issue-review.mjs).
  *
  * Pure, and a leaf: the Lambda packages dispatch/webhook/ whole, and the
  * task image copies this file (dispatch/Dockerfile).
@@ -370,15 +370,15 @@ export const lastDispatch = (comments) => {
  * @typedef {{ number: number, title: string, url: string }} ClosingPull The PR whose merge closed a blocker, in the blocker's repo.
  * @typedef {{ kind: 'wait', issue: number }} WaitFire
  *   An issue opened or edited whose new or old body holds a `Blocked until:` line.
- * @typedef {{ kind: 'ticketReview', issue: number }} TicketReviewFire
+ * @typedef {{ kind: 'issueReview', issue: number }} IssueReviewFire
  *   An issue opened or reopened, or with its body edited by anyone but a
- *   bot: its turn runs each of the repo's ticket reviews the issue now
+ *   bot: its turn runs each of the repo's issue reviews the issue now
  *   calls for.
  * @typedef {{ kind: 'unblocked', issue: number, blocker: Blocker, pr?: ClosingPull }} UnblockedFire
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit
  *   the lane ({@link FIRE_BUDGET}).
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | TicketReviewFire) & { repo?: string, counted?: Count }} Fire
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
@@ -475,8 +475,8 @@ export const build = Object.freeze({
   /** @param {{ issue: number }} args @returns {WaitFire} */
   wait: ({ issue }) => ({ kind: 'wait', issue }),
 
-  /** @param {{ issue: number }} args @returns {TicketReviewFire} */
-  ticketReview: ({ issue }) => ({ kind: 'ticketReview', issue }),
+  /** @param {{ issue: number }} args @returns {IssueReviewFire} */
+  issueReview: ({ issue }) => ({ kind: 'issueReview', issue }),
 
   /**
    * Each title on one line and at most {@link TITLE_LIMIT} characters, so
@@ -756,9 +756,12 @@ const parseKind = (event) => {
     if (!isPositiveInt(e?.issue)) throw new Error(`a wait invocation's issue must be a positive integer, got: ${JSON.stringify(e?.issue)}`);
     return { kind, issue: Number(e?.issue) };
   }
-  if (kind === 'ticketReview') {
-    if (!isPositiveInt(e?.issue)) throw new Error(`a ticketReview invocation's issue must be a positive integer, got: ${JSON.stringify(e?.issue)}`);
-    return { kind, issue: Number(e?.issue) };
+  // `ticketReview` is the kind's name before the feature took GitHub's
+  // word: a fire queued before the deploy is read as the new kind, not
+  // dead-lettered.
+  if (kind === 'issueReview' || kind === 'ticketReview') {
+    if (!isPositiveInt(e?.issue)) throw new Error(`an issueReview invocation's issue must be a positive integer, got: ${JSON.stringify(e?.issue)}`);
+    return { kind: 'issueReview', issue: Number(e?.issue) };
   }
   if (kind === 'conflicts') {
     if (!isPositiveInt(e?.pr)) {

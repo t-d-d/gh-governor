@@ -12,8 +12,9 @@
  * in step, and fails with governor's fault text. It then warns, without
  * failing, on a file that is valid but cannot work: a ready label the repo
  * lacks, a `workflows.ci` file that is not there, a heartbeat issue without
- * its marker, a review glob that matches no path, or a ticket review whose
- * `by` the repo's `trust.review` lets none of in. Only governor can check
+ * its marker, a review glob that matches no path, an issue review whose
+ * `by` the repo's `trust.review` lets none of in, or a switch the file
+ * still sets in `features` that moved to a section of its own. Only governor can check
  * that `environment` resolves, because that needs the claude.ai login. It
  * warns too, in wording of its own, where a `trust` list reaches beyond
  * owners, members and collaborators, and notes each unset list governor
@@ -34,7 +35,7 @@ import { pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 import { globMatches } from '../dispatch/checklist.mjs';
 import { HEARTBEAT_MARKER } from '../dispatch/heartbeat.mjs';
-import { CONFIG_PATH, TICKET_REVIEW_BY, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, ISSUE_REVIEW_BY, MOVED_SWITCHES, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
 import { fitsInside, narrowedLists, reviewOf, trustExposures } from '../dispatch/trust.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
@@ -118,10 +119,10 @@ const warningsOf = async (config, reads) => {
 };
 
 /**
- * A warning for each ticket review whose `by`, or its default, shares no
+ * A warning for each issue review whose `by`, or its default, shares no
  * value with the repo's `trust.review` as governor reads it. Governor
  * refuses a ticket whose author `trust.review` leaves out before it reads
- * any selector (dispatch/ticket-review.mjs), so such a review never runs.
+ * any selector (dispatch/issue-review.mjs), so such a review never runs.
  * It is dead but harmless, so the file is not refused for it.
  *
  * @param {import('../dispatch/repo-config.mjs').FileConfig} config
@@ -129,10 +130,10 @@ const warningsOf = async (config, reads) => {
  */
 const unreviewable = (config) => {
   const trusted = reviewOf(config);
-  return (config.ticketReviews ?? []).flatMap(({ name, when }) => {
-    const by = when.by ?? TICKET_REVIEW_BY;
+  return (config.issueReviews?.reviews ?? []).flatMap(({ name, when }) => {
+    const by = when.by ?? ISSUE_REVIEW_BY;
     if (by.some((a) => trusted.includes(a))) return [];
-    return [`ticketReviews.${name}: its by${when.by === undefined ? ', left at its default,' : ''} is ${by.join(', ')}, and trust.review lets in ${trusted.length === 0 ? 'nobody' : trusted.join(', ')}, so governor refuses every ticket this review selects before it runs, and it never comments`];
+    return [`issueReviews.reviews.${name}: its by${when.by === undefined ? ', left at its default,' : ''} is ${by.join(', ')}, and trust.review lets in ${trusted.length === 0 ? 'nobody' : trusted.join(', ')}, so governor refuses every ticket this review selects before it runs, and it never comments`];
   });
 };
 
@@ -247,6 +248,21 @@ const templateFaults = async (ready, reads) => {
 };
 
 /**
+ * A warning for each switch the file still sets in `features` that moved
+ * to a section of its own ({@link MOVED_SWITCHES}): governor reads the key
+ * as nothing, so a file setting it alone turns nothing on or off. Read from
+ * the file's text, since governor's read drops the key.
+ *
+ * @param {string} text A file `readConfig` accepted.
+ * @returns {string[]}
+ */
+const movedSwitches = (text) => {
+  const features = JSON.parse(text)?.features ?? {};
+  return Object.entries(MOVED_SWITCHES).filter(([old]) => features[old] !== undefined)
+    .map(([old, now]) => `features.${old}: the switch moved to ${now}, so governor reads this key as nothing. Remove it, and turn the feature on or off with ${now}`);
+};
+
+/**
  * One check of the pull request's config file, and of its issue templates.
  * A read that fails, other than a file that is not there, throws, so the
  * run goes red rather than pass a file it could not read.
@@ -269,7 +285,7 @@ export const check = async (reads) => {
   return {
     errors: resolved.ok ? [] : [resolved.fault],
     templates: found.templates,
-    warnings: [...warnings, ...found.warnings],
+    warnings: [...movedSwitches(text), ...warnings, ...found.warnings],
     ...(exposures.length === 0 ? {} : { exposures }),
     ...(narrowed.length === 0 ? {} : { narrowed }),
   };

@@ -14,7 +14,7 @@ import { factoryFile } from './helpers/factory.ts';
 const FACTORY_FILE = factoryFile(CONFIG_PATH);
 /** The factory's config file and the checklist file it names, as its default branch holds them. */
 /** The prompt files the factory's config names, each by its path. */
-const FACTORY_PROMPTS = ['.claude/skills/pr-review/SKILL.md', '.github/ticket-review/triage.md', '.github/ticket-review/bug.md'];
+const FACTORY_PROMPTS = ['.claude/skills/pr-review/SKILL.md', '.github/issue-review/triage.md', '.github/issue-review/bug.md'];
 /** The factory's files under `repo`, as `reads` keys them. */
 const factoryFilesOf = (repo: string) => Object.fromEntries([[repo, FACTORY_FILE], ...FACTORY_PROMPTS.map((path) => [`${repo}:${path}`, factoryFile(path)])]);
 const FACTORY_FILES = factoryFilesOf('acme/factory');
@@ -270,7 +270,7 @@ describe('switchOf', () => {
   test('pickup for a schedule fire; each kind its own switch; summons, PR messages and subscribe messages for the rest', () => {
     assert.equal(switchOf({ kind: 'schedule' }), 'pickup');
     assert.equal(switchOf({ kind: 'review' }), 'prReview');
-    assert.equal(switchOf({ kind: 'ticketReview', issue: 3 }), 'ticketReviews');
+    assert.equal(switchOf({ kind: 'issueReview', issue: 3 }), 'issueReviews');
     assert.equal(switchOf({ kind: 'conflicts', pr: 1, sha: 'a'.repeat(40), base: 'main' }), 'conflicts');
     assert.equal(switchOf({ kind: 'dispatch', prompt: 'p', scheduled: { workflowId: 1, runId: 2, branch: 'main' } }), 'redScheduledRun');
     assert.equal(switchOf({ kind: 'dispatch', prompt: 'p' }), 'summons');

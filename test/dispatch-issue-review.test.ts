@@ -1,7 +1,7 @@
 /**
- * Ticket reviews (dispatch/ticket-review.mjs): on an issue opened, reopened
+ * Ticket reviews (dispatch/issue-review.mjs): on an issue opened, reopened
  * or with its body edited, governor runs each review the repo's
- * `ticketReviews` list holds whose selector the ticket meets, as one
+ * `issueReviews` list holds whose selector the ticket meets, as one
  * `claude -p` with no tools under governor's own frame and default
  * checklist, and posts the model's conclusion as one comment ending in the
  * review's marker.
@@ -12,15 +12,15 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { CONFIG_PATH, configSchema, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, readConfig, resolveFiles, turnsOn } from '../dispatch/repo-config.mjs';
 import { bodyDigest } from '../dispatch/pr-body.mjs';
 import { exitCodeFor } from '../dispatch/cli.mjs';
 import { run as runTurn } from '../dispatch/turn.mjs';
 import { cliResult } from '../dispatch/cli-answer.mjs';
 import {
-  DEFAULT_TICKET_CHECKLIST, LINKED_BODY_LIMIT, LINKED_LIMIT, OPEN_LISTED, TICKET_ANSWER_SCHEMA, TICKET_FRAME,
-  LOOP_LIMIT, checklistFor, conclusionsFor, keyFor, loopMarker, reviewTicket, ticketMarker,
-} from '../dispatch/ticket-review.mjs';
+  DEFAULT_ISSUE_PROMPT, LINKED_BODY_LIMIT, LINKED_LIMIT, OPEN_LISTED, ISSUE_ANSWER_SCHEMA, ISSUE_FRAME,
+  LOOP_LIMIT, promptFor, conclusionsFor, keyFor, loopMarker, reviewIssue, issueMarker,
+} from '../dispatch/issue-review.mjs';
 import { check } from '../checker/config-check.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { factoryFile } from './helpers/factory.ts';
@@ -53,8 +53,8 @@ const PASSES: Conclusion = { conclusion: 'success', text: 'It states the problem
 const GAPS: Conclusion = { conclusion: 'failure', text: 'No problem is stated, and nothing says when it is done.' };
 
 type Conclusions = { success?: string[], failure?: string[], neutral?: string[] };
-type TypeEntry = { labels: string[], checklist?: string, conclusions?: Conclusions };
-type Review = { name: string, when: { on: 'opened', labels?: string[], exclude?: string[], by?: string[] }, conclusions?: Conclusions, checklist?: string, types?: TypeEntry[] };
+type TypeEntry = { labels: string[], prompt?: string, conclusions?: Conclusions };
+type Review = { name: string, when: { labels?: string[], exclude?: string[], by?: string[] }, conclusions?: Conclusions, prompt?: string, byLabel?: TypeEntry[] };
 
 /** The labels each conclusion of `triage` adds in the label tests. */
 const TRIAGE: Conclusions = { success: ['triaged'], failure: ['triage: needs edit'], neutral: ['triage: needs a person'] };
@@ -132,7 +132,7 @@ const harness = (over: {
     },
   };
   const config = {
-    ticketReviews: over.reviews ?? [{ name: 'triage', when: { on: 'opened' as const } }],
+    issueReviews: { reviews: over.reviews ?? [{ name: 'triage', when: {} }] },
     ...(over.trusted === undefined ? {} : { trust: { review: over.trusted } }),
     ...(over.heartbeat === undefined ? {} : { heartbeat: { issue: over.heartbeat } }),
     ...(over.waits === undefined ? {} : { waits: { issue: over.waits } }),
@@ -144,121 +144,178 @@ const harness = (over: {
   };
   const transcript = async (t: { sessionId: string, key: string }) => { transcripts.push(t); return { key: t.key }; };
   const log = (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); };
-  const review = () => reviewTicket({ repo: REPO, issue: 501, reader, config: config as never, run, transcript, log });
+  const review = () => reviewIssue({ repo: REPO, issue: 501, reader, config: config as never, run, transcript, log });
   /** A person or session edits the ticket's body, or its labels. */
   const edit = (change: { body?: string, labels?: string[] }) => { if (change.body !== undefined) live.body = change.body; if (change.labels !== undefined) live.labels = [...change.labels]; };
   return { review, comments, runs, transcripts, logged, openReads, threadReads: () => threadReads, ops, live, edit, reader };
 };
 
+/**
+ * The file's `issueReviews` section holding `list`, each review keyed by its
+ * name. The tests write a review with its name, as the turn reads it, and
+ * this keys it as the file holds it.
+ */
+const section = (list: Array<{ name: string } & Record<string, unknown>>) => ({ reviews: Object.fromEntries(list.map(({ name, ...review }) => [name, review])) });
+
+/** `over` with a list of reviews put into the file's shape ({@link section}). */
+const shaped = (over: Record<string, unknown>) => (Array.isArray(over.issueReviews) ? { ...over, issueReviews: section(over.issueReviews) } : over);
+
 /** A comment governor's App posted, carrying a marker. */
 const posted = (name: string, conclusion: string, key: string, ours = true, id = 1): Thread => ({
-  id, body: `Earlier.\n\n${ticketMarker(name, conclusion, key)}`, created_at: '2026-11-01T00:00:00Z', ours,
+  id, body: `Earlier.\n\n${issueMarker(name, conclusion, key)}`, created_at: '2026-11-01T00:00:00Z', ours,
 });
 
-describe('the ticketReviews config', () => {
-  const file = (ticketReviews: unknown, on = true) => readConfig(JSON.stringify({
-    environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { ticketReviews: on }, ticketReviews,
-  }));
+describe('the issueReviews config', () => {
+  const BASE = { environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: {} };
+  const file = (issueReviews: unknown, over: Record<string, unknown> = {}) => readConfig(JSON.stringify({ ...BASE, issueReviews, ...over }));
+  const reviews = (list: Array<{ name: string } & Record<string, unknown>>) => file(section(list));
 
-  test('a review needs a name and when.on, and every other key has a default', () => {
-    const read = file([{ name: 'triage', when: { on: 'opened' } }]);
+  test('a review keyed by its name needs nothing else: when, conclusions and the prompt each have a default', () => {
+    const read = file({ reviews: { triage: {} } });
     assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.config.issueReviews, { reviews: [{ name: 'triage', when: {}, conclusions: { success: [], failure: [], neutral: [] } }] });
   });
 
-  test('the switch on needs at least one review, and off is off unless the file turns it on', () => {
-    assert.equal(file([]).ok, false);
-    assert.equal(file(undefined).ok, false);
-    const off = readConfig(JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: {} }));
+  test('a file with the section and no enabled runs its reviews; enabled false runs none, and so does a file without the section', () => {
+    const on = file({ reviews: { triage: {} } });
+    assert.ok(on.ok);
+    assert.equal(turnsOn(on.config, 'issueReviews'), true);
+    const enabled = file({ enabled: true, reviews: { triage: {} } });
+    assert.ok(enabled.ok);
+    assert.equal(turnsOn(enabled.config, 'issueReviews'), true);
+    const off = file({ enabled: false, reviews: { triage: {} } });
     assert.ok(off.ok);
-    assert.notEqual(off.config.features.ticketReviews, true);
+    assert.equal(turnsOn(off.config, 'issueReviews'), false);
+    const none = readConfig(JSON.stringify(BASE));
+    assert.ok(none.ok);
+    assert.equal(turnsOn(none.config, 'issueReviews'), false);
   });
 
-  test('two reviews sharing a name, a name off the pattern, an event but opened, or a by GitHub does not use, is invalid', () => {
-    const faults: Array<[string, unknown]> = [
-      ['shared name', [{ name: 'triage', when: { on: 'opened' } }, { name: 'triage', when: { on: 'opened', labels: ['x'] } }]],
-      ['a space', [{ name: 'my review', when: { on: 'opened' } }]],
-      ['a capital', [{ name: 'Triage', when: { on: 'opened' } }]],
-      ['the marker\'s end', [{ name: 'a-->', when: { on: 'opened' } }]],
-      ['labelled', [{ name: 'triage', when: { on: 'labelled' } }]],
-      ['no on', [{ name: 'triage', when: {} }]],
-      ['by BOT', [{ name: 'triage', when: { on: 'opened', by: ['BOT'] } }]],
-      ['by a stranger', [{ name: 'triage', when: { on: 'opened', by: ['STRANGER'] } }]],
-      ['a key no slice has built', [{ name: 'triage', when: { on: 'opened' }, model: 'x' }]],
-      ['an empty checklist', [{ name: 'triage', when: { on: 'opened' }, checklist: ' ' }]],
-      ['a conclusion GitHub does not use', [{ name: 'triage', when: { on: 'opened' }, conclusions: { passed: ['ok'] } }]],
-      ['a conclusion that is not a list', [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: 'ok' } }]],
-      ['an empty types', [{ name: 'triage', when: { on: 'opened' }, types: [] }]],
-      ['a type with no label', [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: [] }] }]],
-      ['a type\'s unknown key', [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], when: {} }] }]],
-      ['a type\'s conclusion GitHub does not use', [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], conclusions: { passed: ['ok'] } }] }]],
+  test('the section lists at least one review, and holds only enabled and reviews', () => {
+    assert.equal(file({ reviews: {} }).ok, false);
+    assert.equal(file({}).ok, false);
+    assert.equal(file({ enabled: true }).ok, false);
+    assert.equal(file({ reviews: { triage: {} }, model: 'x' }).ok, false);
+    assert.equal(file([{ name: 'triage', when: {} }]).ok, false, 'the old list shape');
+  });
+
+  test('reviews run in the order of the file\'s keys, each named by its key', () => {
+    const read = reviews([{ name: 'triage' }, { name: 'community', when: { by: ['NONE'] } }, { name: 'bugs' }]);
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.config.issueReviews?.reviews.map((r) => r.name), ['triage', 'community', 'bugs']);
+  });
+
+  test('a review that sets name, when.on, types or checklist is refused', () => {
+    for (const [why, review] of [
+      ['name', { name: 'triage' }],
+      ['when.on', { when: { on: 'opened' } }],
+      ['types', { types: [{ labels: ['type: bug'] }] }],
+      ['checklist', { checklist: 'Check it.' }],
+    ] as const) {
+      const read = file({ reviews: { triage: review } });
+      assert.equal(read.ok, false, why);
+    }
+  });
+
+  test('a key off the name rules, an empty prompt, or a by GitHub does not use, is invalid', () => {
+    const faults: Array<[string, Record<string, unknown>]> = [
+      ['a space', { 'my review': {} }],
+      ['a capital', { Triage: {} }],
+      ['the marker\'s end', { 'a-->': {} }],
+      ['too long', { ['a'.repeat(65)]: {} }],
+      ['by BOT', { triage: { when: { by: ['BOT'] } } }],
+      ['by a stranger', { triage: { when: { by: ['STRANGER'] } } }],
+      ['a key no slice has built', { triage: { model: 'x' } }],
+      ['an empty prompt', { triage: { prompt: ' ' } }],
+      ['a conclusion GitHub does not use', { triage: { conclusions: { passed: ['ok'] } } }],
+      ['a conclusion that is not a list', { triage: { conclusions: { success: 'ok' } } }],
+      ['an empty byLabel', { triage: { byLabel: [] } }],
+      ['an entry with no label', { triage: { byLabel: [{ labels: [] }] } }],
+      ['an entry\'s unknown key', { triage: { byLabel: [{ labels: ['type: bug'], when: {} }] } }],
+      ['an entry\'s old checklist', { triage: { byLabel: [{ labels: ['type: bug'], checklist: 'x' }] } }],
+      ['an entry\'s conclusion GitHub does not use', { triage: { byLabel: [{ labels: ['type: bug'], conclusions: { passed: ['ok'] } }] } }],
     ];
-    for (const [why, list] of faults) assert.equal(file(list).ok, false, why);
+    for (const [why, listed] of faults) assert.equal(file({ reviews: listed }).ok, false, why);
   });
 
   test('by takes every author_association GitHub uses', () => {
     const by = ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'MANNEQUIN', 'NONE'];
-    assert.ok(file([{ name: 'community', when: { on: 'opened', by, labels: ['a'], exclude: ['b'] } }]).ok);
+    assert.ok(reviews([{ name: 'community', when: { by, labels: ['a'], exclude: ['b'] } }]).ok);
   });
 
-  test('the factory turns the switch on with a review', () => {
+  test('features.ticketReviews is read, and read as nothing: the section turns the reviews on', () => {
+    const moved = readConfig(JSON.stringify({ ...BASE, features: { ticketReviews: true } }));
+    assert.ok(moved.ok, JSON.stringify(moved));
+    assert.equal('ticketReviews' in moved.config.features, false);
+    assert.equal(turnsOn(moved.config, 'issueReviews'), false);
+    const off = file({ reviews: { triage: {} } }, { features: { ticketReviews: false } });
+    assert.ok(off.ok);
+    assert.equal(turnsOn(off.config, 'issueReviews'), true);
+    assert.equal(file({ reviews: { triage: {} } }, { features: { issueReviews: true } }).ok, false, 'the switch is no feature');
+  });
+
+  test('the config check warns that the switch moved, where a file sets features.ticketReviews', async () => {
+    const checkOf = async (text: string) => check({ read: async (path: string) => (path === CONFIG_PATH ? text : null), paths: async () => ({ paths: [], truncated: false }), labels: async () => ['mode: afk', 'claimed'], issueBody: async () => null } as never);
+    const moved = await checkOf(JSON.stringify({ ...BASE, features: { ticketReviews: false } }));
+    assert.deepEqual(moved.errors, []);
+    assert.deepEqual(moved.warnings.filter((w) => /ticketReviews/.test(w)).length, 1, JSON.stringify(moved.warnings));
+    assert.match(moved.warnings.find((w) => /ticketReviews/.test(w)) ?? '', /features\.ticketReviews: .*issueReviews\.enabled/);
+    const now = await checkOf(JSON.stringify({ ...BASE, issueReviews: { reviews: { triage: {} } } }));
+    assert.deepEqual(now.warnings.filter((w) => /ticketReviews/.test(w)), []);
+  });
+
+  test('the factory has the section, with a review', () => {
     const read = readConfig(factoryFile(CONFIG_PATH));
     assert.ok(read.ok, JSON.stringify(read));
-    assert.equal(read.config.features.ticketReviews, true);
-    assert.ok((read.config.ticketReviews ?? []).length > 0);
-  });
-
-  test('the schema is the zod schema\'s', () => {
-    assert.ok(configSchema);
+    assert.equal(turnsOn(read.config, 'issueReviews'), true);
+    assert.ok((read.config.issueReviews?.reviews ?? []).length > 0);
   });
 
   test('conclusions names the labels each conclusion adds, each none where unset', () => {
-    const read = file([{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'] } }]);
+    const read = reviews([{ name: 'triage', conclusions: { success: ['triage: build'] } }]);
     assert.ok(read.ok, JSON.stringify(read));
-    assert.deepEqual(read.config.ticketReviews?.[0]?.conclusions, { success: ['triage: build'], failure: [], neutral: [] });
-    const bare = file([{ name: 'triage', when: { on: 'opened' } }]);
-    assert.ok(bare.ok);
-    assert.deepEqual(bare.config.ticketReviews?.[0]?.conclusions, { success: [], failure: [], neutral: [] });
+    assert.deepEqual(read.config.issueReviews?.reviews[0]?.conclusions, { success: ['triage: build'], failure: [], neutral: [] });
   });
 });
 
 describe('fitness: dispatcher-review.md, the config check warns of a ticket review trust.review never lets in', () => {
   const outsiders = ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'NONE'];
   const checkOf = async (over: Record<string, unknown>) => {
-    const text = JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { ticketReviews: true }, ...over });
+    const text = JSON.stringify(shaped({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: {}, ...over }));
     assert.ok(readConfig(text).ok, 'governor reads the file');
     return check({ read: async (path: string) => (path === CONFIG_PATH ? text : null), paths: async () => ({ paths: [], truncated: false }), labels: async () => ['mode: afk', 'claimed'], issueBody: async () => null } as never);
   };
   const deadOnes = (warnings: string[]) => warnings.filter((w) => /trust\.review/.test(w));
 
   test('a review whose by shares nothing with the default trust.review warns, naming the review, its by and trust.review', async () => {
-    const checked = await checkOf({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: outsiders } }] });
+    const checked = await checkOf({ issueReviews: [{ name: 'community', when: { by: outsiders } }] });
     assert.deepEqual(checked.errors, []);
     const [warning, ...rest] = deadOnes(checked.warnings);
     assert.deepEqual(rest, []);
-    assert.match(warning ?? '', /^ticketReviews\.community: /);
+    assert.match(warning ?? '', /^issueReviews\.reviews\.community: /);
     assert.match(warning ?? '', /CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, NONE/);
     assert.match(warning ?? '', /trust\.review lets in OWNER, MEMBER, COLLABORATOR/);
   });
 
   test('a review left at its default by warns where trust.review lets in none of it', async () => {
-    const checked = await checkOf({ trust: { review: ['CONTRIBUTOR'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' } }] });
+    const checked = await checkOf({ trust: { review: ['CONTRIBUTOR'] }, issueReviews: [{ name: 'triage', when: {} }] });
     const [warning, ...rest] = deadOnes(checked.warnings);
     assert.deepEqual(rest, []);
-    assert.match(warning ?? '', /^ticketReviews\.triage: /);
+    assert.match(warning ?? '', /^issueReviews\.reviews\.triage: /);
     assert.match(warning ?? '', /OWNER, MEMBER, COLLABORATOR/);
     assert.match(warning ?? '', /trust\.review lets in CONTRIBUTOR/);
   });
 
   test('a review sharing one value with trust.review, or one trust.review lets outsiders into, does not warn', async () => {
-    assert.deepEqual(deadOnes((await checkOf({ ticketReviews: [{ name: 'triage', when: { on: 'opened' } }, { name: 'mixed', when: { on: 'opened', by: ['OWNER', ...outsiders] } }] })).warnings), []);
-    const open = await checkOf({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', ...outsiders] }, ticketReviews: [{ name: 'community', when: { on: 'opened', by: outsiders } }] });
+    assert.deepEqual(deadOnes((await checkOf({ issueReviews: [{ name: 'triage', when: {} }, { name: 'mixed', when: { by: ['OWNER', ...outsiders] } }] })).warnings), []);
+    const open = await checkOf({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', ...outsiders] }, issueReviews: [{ name: 'community', when: { by: outsiders } }] });
     assert.deepEqual(deadOnes(open.warnings), []);
   });
 });
 
 describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a config may name', () => {
-  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triage: build'], claim: 'claimed' }, features: { ticketReviews: true } };
-  const text = (over: Record<string, unknown>) => JSON.stringify({ ...base, ...over });
+  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triage: build'], claim: 'claimed' }, features: {} };
+  const text = (over: Record<string, unknown>) => JSON.stringify(shaped({ ...base, ...over }));
   const refused = async (over: Record<string, unknown>, ...words: RegExp[]) => {
     const read = readConfig(text(over));
     assert.equal(read.ok, false, 'governor\'s config read refuses it');
@@ -270,52 +327,52 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   };
 
   test('one label under two conclusions of one review is refused, naming the review and the label', async () => {
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build', 'triage: seen'], neutral: ['triage: seen'] } }] }, /triage/, /"triage: seen"/, /under both success and neutral/);
+    await refused({ issueReviews: [{ name: 'triage', when: {}, conclusions: { success: ['triage: build', 'triage: seen'], neutral: ['triage: seen'] } }] }, /triage/, /"triage: seen"/, /under both success and neutral/);
   });
 
   test('one label in the conclusions of two reviews is refused, naming both reviews and the label', async () => {
-    await refused({ ticketReviews: [
-      { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'], failure: ['looked at'] } },
-      { name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { neutral: ['looked at'] } },
+    await refused({ issueReviews: [
+      { name: 'triage', when: {}, conclusions: { success: ['triage: build'], failure: ['looked at'] } },
+      { name: 'community', when: { by: ['NONE'] }, conclusions: { neutral: ['looked at'] } },
     ] }, /triage/, /community/, /"looked at"/);
   });
 
   test('a review whose by reaches beyond trust.auto and names a ready label in any conclusion is refused', async () => {
     const trust = { auto: ['OWNER'], task: ['OWNER', 'MEMBER', 'COLLABORATOR'] };
-    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'COLLABORATOR'] }, conclusions: { success: ['triage: build'] } }] }, /triage/, /"triage: build"/, /COLLABORATOR/, /trust\.auto/);
-    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'COLLABORATOR'] }, conclusions: { neutral: ['triage: build'] } }] }, /"triage: build"/, /trust\.auto/);
+    await refused({ trust, issueReviews: [{ name: 'triage', when: { by: ['OWNER', 'COLLABORATOR'] }, conclusions: { success: ['triage: build'] } }] }, /triage/, /"triage: build"/, /COLLABORATOR/, /trust\.auto/);
+    await refused({ trust, issueReviews: [{ name: 'triage', when: { by: ['OWNER', 'COLLABORATOR'] }, conclusions: { neutral: ['triage: build'] } }] }, /"triage: build"/, /trust\.auto/);
     // The default by is owners, members and collaborators, past an auto of the owner alone.
-    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'] } }] }, /triage/, /MEMBER/);
+    await refused({ trust, issueReviews: [{ name: 'triage', when: {}, conclusions: { success: ['triage: build'] } }] }, /triage/, /MEMBER/);
   });
 
   test('a review open to outsiders reads trust.auto as narrowed, and an unset auto is the three with a say', async () => {
     // trust.review lets outsiders in, or the review could read none of their tickets.
     const outsiders = { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'NONE'] };
-    await refused({ labels: { ready: ['community: build'], claim: 'claimed' }, trust: outsiders, ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE', 'CONTRIBUTOR'] }, conclusions: { success: ['community: build'] } }] }, /community/, /NONE, CONTRIBUTOR/);
+    await refused({ labels: { ready: ['community: build'], claim: 'claimed' }, trust: outsiders, issueReviews: [{ name: 'community', when: { by: ['NONE', 'CONTRIBUTOR'] }, conclusions: { success: ['community: build'] } }] }, /community/, /NONE, CONTRIBUTOR/);
     // trust.relay narrows an unset auto as autoOf does.
-    await refused({ trust: { relay: ['OWNER', 'BOT'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'MEMBER'] }, conclusions: { success: ['triage: build'] } }] }, /MEMBER/);
+    await refused({ trust: { relay: ['OWNER', 'BOT'] }, issueReviews: [{ name: 'triage', when: { by: ['OWNER', 'MEMBER'] }, conclusions: { success: ['triage: build'] } }] }, /MEMBER/);
   });
 
   test('a review inside trust.auto may ready a ticket, and one beyond it may name labels that ready nothing', () => {
     const ok = (over: Record<string, unknown>) => { const read = readConfig(text(over)); assert.ok(read.ok, JSON.stringify(read)); };
-    ok({ trust: { auto: ['OWNER'], task: ['OWNER', 'MEMBER', 'COLLABORATOR'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER'] }, conclusions: { success: ['triage: build'] } }] });
-    ok({ ticketReviews: [
-      { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'], failure: ['triage: needs edit'] } },
-      { name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['community: reviewed'], failure: ['community: needs info'] } },
+    ok({ trust: { auto: ['OWNER'], task: ['OWNER', 'MEMBER', 'COLLABORATOR'] }, issueReviews: [{ name: 'triage', when: { by: ['OWNER'] }, conclusions: { success: ['triage: build'] } }] });
+    ok({ issueReviews: [
+      { name: 'triage', when: {}, conclusions: { success: ['triage: build'], failure: ['triage: needs edit'] } },
+      { name: 'community', when: { by: ['NONE'] }, conclusions: { success: ['community: reviewed'], failure: ['community: needs info'] } },
     ] });
   });
 
   test('a conclusion label the review selects on is refused, naming the review and the label', async () => {
     // A failure label the selector excludes would stop the review reading the filer's fix.
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened', exclude: ['Needs Edit'] }, conclusions: { failure: ['needs edit'] } }] }, /triage/, /"needs edit"/, /exclude/);
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened', labels: ['incoming'] }, conclusions: { success: ['incoming'] } }] }, /triage/, /"incoming"/, /when\.labels/);
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened', exclude: ['bug report'] }, types: [{ labels: ['bug'], conclusions: { neutral: ['bug report'] } }] }] }, /triage/, /"bug report"/);
+    await refused({ issueReviews: [{ name: 'triage', when: { exclude: ['Needs Edit'] }, conclusions: { failure: ['needs edit'] } }] }, /triage/, /"needs edit"/, /exclude/);
+    await refused({ issueReviews: [{ name: 'triage', when: { labels: ['incoming'] }, conclusions: { success: ['incoming'] } }] }, /triage/, /"incoming"/, /when\.labels/);
+    await refused({ issueReviews: [{ name: 'triage', when: { exclude: ['bug report'] }, byLabel: [{ labels: ['bug'], conclusions: { neutral: ['bug report'] } }] }] }, /triage/, /"bug report"/);
   });
 
   test('a conclusion naming the claim label is refused, naming the review and the label', async () => {
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { neutral: ['Claimed'] } }] }, /triage/, /"Claimed"/, /claim/);
+    await refused({ issueReviews: [{ name: 'triage', when: {}, conclusions: { neutral: ['Claimed'] } }] }, /triage/, /"Claimed"/, /claim/);
     // The claim label belongs in when.exclude, so a conclusion naming it there too gets the one fault, not two.
-    const claimExcluded = { ticketReviews: [{ name: 'triage', when: { on: 'opened', exclude: ['claimed'] }, conclusions: { neutral: ['claimed'] } }] };
+    const claimExcluded = { issueReviews: [{ name: 'triage', when: { exclude: ['claimed'] }, conclusions: { neutral: ['claimed'] } }] };
     await refused(claimExcluded, /triage/, /"claimed"/, /labels\.claim/);
     const read = readConfig(text(claimExcluded));
     assert.doesNotMatch(read.ok ? '' : read.fault, /when\.exclude/);
@@ -323,50 +380,50 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
 
   test('the ready-label rule reads by narrowed by trust.review, the authors the review can read', () => {
     // The default by lets in COLLABORATOR, but trust.review keeps collaborators out, so the review can ready none of their tickets.
-    const read = readConfig(text({ trust: { review: ['OWNER', 'MEMBER'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'] } }] }));
+    const read = readConfig(text({ trust: { review: ['OWNER', 'MEMBER'] }, issueReviews: [{ name: 'triage', when: {}, conclusions: { success: ['triage: build'] } }] }));
     assert.ok(read.ok, JSON.stringify(read));
   });
 
   test('labels are compared as GitHub compares them, ignoring case', async () => {
     // GitHub adds the repo's "mode: afk" for "MODE: AFK", so the outsider rule must see it as the ready label.
-    await refused({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] }, ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['MODE: AFK'] } }] }, /community/, /"MODE: AFK"/);
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['Seen'], neutral: ['seen'] } }] }, /triage/, /"seen"/);
-    await refused({ ticketReviews: [
-      { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['Looked at'] } },
-      { name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { neutral: ['looked at'] } },
+    await refused({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] }, issueReviews: [{ name: 'community', when: { by: ['NONE'] }, conclusions: { success: ['MODE: AFK'] } }] }, /community/, /"MODE: AFK"/);
+    await refused({ issueReviews: [{ name: 'triage', when: {}, conclusions: { success: ['Seen'], neutral: ['seen'] } }] }, /triage/, /"seen"/);
+    await refused({ issueReviews: [
+      { name: 'triage', when: {}, conclusions: { success: ['Looked at'] } },
+      { name: 'community', when: { by: ['NONE'] }, conclusions: { neutral: ['looked at'] } },
     ] }, /triage/, /community/, /"looked at"/);
   });
 
   test('the outsider rule reads only trust.auto, not trust.task', () => {
     // task wider than auto lets nobody new in: the rule is about what governor sets going by itself.
-    const read = readConfig(text({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR'], task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'], relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'], review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'] } }] }));
+    const read = readConfig(text({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR'], task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'], relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'], review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'] }, issueReviews: [{ name: 'triage', when: {}, conclusions: { success: ['triage: build'] } }] }));
     assert.ok(read.ok, JSON.stringify(read));
   });
 
   test('a conclusion label without the review\'s name, a colon and a space is refused, in its conclusions or a types entry\'s, naming the review and the label', async () => {
     // A label people also steer work with, such as mode: human, would come off when another conclusion ran.
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'], neutral: ['mode: human'] } }] }, /triage/, /"mode: human"/, /"triage: "/);
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], conclusions: { success: ['triaged'] } }] }] }, /triage/, /"triaged"/, /ticketReviews\.0\.types\.0\.conclusions\.success/);
+    await refused({ issueReviews: [{ name: 'triage', when: {}, conclusions: { success: ['triage: build'], neutral: ['mode: human'] } }] }, /triage/, /"mode: human"/, /"triage: "/);
+    await refused({ issueReviews: [{ name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'], conclusions: { success: ['triaged'] } }] }] }, /triage/, /"triaged"/, /issueReviews\.reviews\.triage\.byLabel\.0\.conclusions\.success/);
     // Another review's name is not this review's prefix.
-    await refused({ ticketReviews: [{ name: 'community', when: { on: 'opened' }, conclusions: { failure: ['triage: needs edit'] } }] }, /community/, /"triage: needs edit"/);
+    await refused({ issueReviews: [{ name: 'community', when: {}, conclusions: { failure: ['triage: needs edit'] } }] }, /community/, /"triage: needs edit"/);
   });
 
   test('a conclusion label\'s prefix may be in another case', () => {
-    const read = readConfig(text({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['Triage: Build'], failure: ['TRIAGE: needs edit'] }, types: [{ labels: ['type: bug'], conclusions: { neutral: ['Triage: needs a person'] } }] }] }));
+    const read = readConfig(text({ issueReviews: [{ name: 'triage', when: {}, conclusions: { success: ['Triage: Build'], failure: ['TRIAGE: needs edit'] }, byLabel: [{ labels: ['type: bug'], conclusions: { neutral: ['Triage: needs a person'] } }] }] }));
     assert.ok(read.ok, JSON.stringify(read));
   });
 
   test('the factory\'s review names labels for its conclusions', () => {
     const read = readConfig(factoryFile(CONFIG_PATH));
     assert.ok(read.ok);
-    const [triage] = read.config.ticketReviews ?? [];
+    const [triage] = read.config.issueReviews?.reviews ?? [];
     for (const conclusion of ['success', 'failure', 'neutral'] as const) assert.ok((triage?.conclusions[conclusion] ?? []).length > 0, conclusion);
   });
 });
 
 describe('fitness: dispatcher-repos.md, a ticket review\'s checklists are prompt values read from the default branch', () => {
-  const config = (ticketReviews: unknown) => {
-    const read = readConfig(JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { ticketReviews: true }, ticketReviews }));
+  const config = (issueReviews: Array<{ name: string } & Record<string, unknown>>) => {
+    const read = readConfig(JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: {}, issueReviews: section(issueReviews) }));
     assert.ok(read.ok, JSON.stringify(read));
     return read.config;
   };
@@ -374,30 +431,30 @@ describe('fitness: dispatcher-repos.md, a ticket review\'s checklists are prompt
 
   test('a checklist and each type\'s checklist, as text or as a file, are read into text', async () => {
     const file = config([{
-      name: 'triage', when: { on: 'opened' }, checklist: { file: '.github/triage.md' },
-      types: [{ labels: ['type: bug'], checklist: 'Bugs name their repro.' }, { labels: ['type: enhancement'], checklist: { file: '.github/enhancement.md' } }, { labels: ['type: chore'] }],
+      name: 'triage', when: {}, prompt: { file: '.github/triage.md' },
+      byLabel: [{ labels: ['type: bug'], prompt: 'Bugs name their repro.' }, { labels: ['type: enhancement'], prompt: { file: '.github/enhancement.md' } }, { labels: ['type: chore'] }],
     }]);
     const resolved = await resolveFiles(file, files({ '.github/triage.md': '---\nname: triage\n---\n\n# Ours\n', '.github/enhancement.md': 'Enhancements name a user.' }));
     assert.ok(resolved.ok, JSON.stringify(resolved));
-    const [triage] = resolved.config.ticketReviews ?? [];
-    assert.equal(triage?.checklist, '# Ours');
-    assert.deepEqual(triage?.types?.map((t) => t.checklist), ['Bugs name their repro.', 'Enhancements name a user.', undefined]);
+    const [triage] = resolved.config.issueReviews?.reviews ?? [];
+    assert.equal(triage?.prompt, '# Ours');
+    assert.deepEqual(triage?.byLabel?.map((t) => t.prompt), ['Bugs name their repro.', 'Enhancements name a user.', undefined]);
   });
 
   test('a missing or empty checklist file makes the config invalid, naming the key and the path', async () => {
-    const missing = await resolveFiles(config([{ name: 'triage', when: { on: 'opened' }, checklist: { file: '.github/gone.md' } }]), files({}));
+    const missing = await resolveFiles(config([{ name: 'triage', when: {}, prompt: { file: '.github/gone.md' } }]), files({}));
     assert.equal(missing.ok, false);
-    assert.match(missing.ok ? '' : missing.fault, /ticketReviews\.triage\.checklist: \.github\/gone\.md is not on the default branch/);
-    const empty = await resolveFiles(config([{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'] }, { labels: ['type: chore'], checklist: { file: '.github/chore.md' } }] }]), files({ '.github/chore.md': '---\nname: x\n---\n' }));
+    assert.match(missing.ok ? '' : missing.fault, /issueReviews\.reviews\.triage\.prompt: \.github\/gone\.md is not on the default branch/);
+    const empty = await resolveFiles(config([{ name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'] }, { labels: ['type: chore'], prompt: { file: '.github/chore.md' } }] }]), files({ '.github/chore.md': '---\nname: x\n---\n' }));
     assert.equal(empty.ok, false);
-    assert.match(empty.ok ? '' : empty.fault, /ticketReviews\.triage\.types\.1\.checklist: \.github\/chore\.md is empty/);
+    assert.match(empty.ok ? '' : empty.fault, /issueReviews\.reviews\.triage\.byLabel\.1\.prompt: \.github\/chore\.md is empty/);
   });
 
   test('the config check fails a missing checklist file as governor\'s read does', async () => {
-    const text = JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { ticketReviews: true }, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], checklist: { file: '.github/bug.md' } }] }] });
+    const text = JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: {}, issueReviews: section([{ name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'], prompt: { file: '.github/bug.md' } }] }]) });
     const checked = await check({ read: async (path: string) => (path === CONFIG_PATH ? text : null), paths: async () => ({ paths: [], truncated: false }), labels: async () => ['mode: afk', 'claimed'], issueBody: async () => null } as never);
     assert.equal(checked.errors.length, 1);
-    assert.match(checked.errors[0]!, /ticketReviews\.triage\.types\.0\.checklist: \.github\/bug\.md/);
+    assert.match(checked.errors[0]!, /issueReviews\.reviews\.triage\.byLabel\.0\.prompt: \.github\/bug\.md/);
   });
 
   test('the factory\'s review has a checklist file and a types entry, and both read', async () => {
@@ -405,16 +462,16 @@ describe('fitness: dispatcher-repos.md, a ticket review\'s checklists are prompt
     assert.ok(read.ok);
     const resolved = await resolveFiles(read.config, async (path) => { try { return factoryFile(path); } catch { return null; } });
     assert.ok(resolved.ok, JSON.stringify(resolved));
-    const [triage] = resolved.config.ticketReviews ?? [];
-    assert.ok((triage?.checklist ?? '').length > 0);
-    assert.ok((triage?.types ?? []).length > 0);
-    assert.ok((triage?.types ?? []).some((t) => (t.checklist ?? '').length > 0));
+    const [triage] = resolved.config.issueReviews?.reviews ?? [];
+    assert.ok((triage?.prompt ?? '').length > 0);
+    assert.ok((triage?.byLabel ?? []).length > 0);
+    assert.ok((triage?.byLabel ?? []).some((t) => (t.prompt ?? '').length > 0));
   });
 });
 
 describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a types entry may name', () => {
-  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triage: build'], claim: 'claimed' }, features: { ticketReviews: true } };
-  const text = (over: Record<string, unknown>) => JSON.stringify({ ...base, ...over });
+  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triage: build'], claim: 'claimed' }, features: {} };
+  const text = (over: Record<string, unknown>) => JSON.stringify(shaped({ ...base, ...over }));
   const refused = async (over: Record<string, unknown>, ...words: RegExp[]) => {
     const read = readConfig(text(over));
     assert.equal(read.ok, false, 'governor\'s config read refuses it');
@@ -427,69 +484,69 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   const ok = (over: Record<string, unknown>) => { const read = readConfig(text(over)); assert.ok(read.ok, JSON.stringify(read)); };
 
   test('one label under two conclusions of one review, across its default and its entries, is refused', async () => {
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: seen'] }, types: [{ labels: ['type: bug'], conclusions: { failure: ['Triage: Seen'] } }] }] }, /triage/, /"Triage: Seen"/, /under both success and failure/);
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], conclusions: { success: ['triage: seen'] } }, { labels: ['type: chore'], conclusions: { neutral: ['triage: seen'] } }] }] }, /triage/, /"triage: seen"/, /under both success and neutral/);
+    await refused({ issueReviews: [{ name: 'triage', when: {}, conclusions: { success: ['triage: seen'] }, byLabel: [{ labels: ['type: bug'], conclusions: { failure: ['Triage: Seen'] } }] }] }, /triage/, /"Triage: Seen"/, /under both success and failure/);
+    await refused({ issueReviews: [{ name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'], conclusions: { success: ['triage: seen'] } }, { labels: ['type: chore'], conclusions: { neutral: ['triage: seen'] } }] }] }, /triage/, /"triage: seen"/, /under both success and neutral/);
   });
 
   test('the same label under the same conclusion in the default and an entry is allowed', () => {
-    ok({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'] }, types: [{ labels: ['type: bug'], conclusions: { success: ['triage: build', 'triage: bug'] } }] }] });
+    ok({ issueReviews: [{ name: 'triage', when: {}, conclusions: { success: ['triage: build'] }, byLabel: [{ labels: ['type: bug'], conclusions: { success: ['triage: build', 'triage: bug'] } }] }] });
   });
 
   test('one label in two reviews\' conclusions, where either names it in an entry, is refused', async () => {
-    await refused({ ticketReviews: [
-      { name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], conclusions: { failure: ['looked at'] } }] },
-      { name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { neutral: ['looked at'] } },
+    await refused({ issueReviews: [
+      { name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'], conclusions: { failure: ['looked at'] } }] },
+      { name: 'community', when: { by: ['NONE'] }, conclusions: { neutral: ['looked at'] } },
     ] }, /triage/, /community/, /"looked at"/);
   });
 
   test('a review whose by reaches beyond trust.auto and whose bug entry names a ready label is refused', async () => {
-    await refused({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] }, ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['community: reviewed'] }, types: [{ labels: ['type: bug'], conclusions: { success: ['mode: afk'] } }] }] }, /community/, /"mode: afk"/, /NONE/, /trust\.auto/, /ticketReviews\.0\.types\.0\.conclusions: the community review names the ready label/);
+    await refused({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] }, issueReviews: [{ name: 'community', when: { by: ['NONE'] }, conclusions: { success: ['community: reviewed'] }, byLabel: [{ labels: ['type: bug'], conclusions: { success: ['mode: afk'] } }] }] }, /community/, /"mode: afk"/, /NONE/, /trust\.auto/, /issueReviews\.reviews\.community\.byLabel\.0\.conclusions: the community review names the ready label/);
   });
 
-  test('a conclusion that names a label a types entry matches on is refused, in the default or in an entry', async () => {
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { neutral: ['Type: Bug'] }, types: [{ labels: ['type: bug'] }] }] }, /triage/, /"Type: Bug"/, /type/);
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'] }, { labels: ['type: chore'], conclusions: { failure: ['type: bug'] } }] }] }, /triage/, /"type: bug"/);
+  test('a conclusion that names a label a byLabel entry matches on is refused, in the default or in an entry', async () => {
+    await refused({ issueReviews: [{ name: 'triage', when: {}, conclusions: { neutral: ['Type: Bug'] }, byLabel: [{ labels: ['type: bug'] }] }] }, /triage/, /"Type: Bug"/, /byLabel entry/);
+    await refused({ issueReviews: [{ name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'] }, { labels: ['type: chore'], conclusions: { failure: ['type: bug'] } }] }] }, /triage/, /"type: bug"/);
     // Another review's type label is a type too: applying it would change what that review reads.
-    await refused({ ticketReviews: [
-      { name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'] }] },
-      { name: 'scope', when: { on: 'opened' }, conclusions: { success: ['type: bug'] } },
+    await refused({ issueReviews: [
+      { name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'] }] },
+      { name: 'scope', when: {}, conclusions: { success: ['type: bug'] } },
     ] }, /scope/, /"type: bug"/);
   });
 });
 
 describe('fitness: dispatcher-review.md, a ticket review\'s checklists and labels per ticket type', () => {
-  const BUG: TypeEntry = { labels: ['type: bug'], checklist: 'Bugs name their repro.', conclusions: { success: ['triaged', 'triage: build'] } };
-  const SMALL: TypeEntry = { labels: ['size: small', 'size: tiny'], checklist: 'Small tickets name one file.', conclusions: { neutral: ['small: needs a person'], success: ['small: passed'] } };
-  const review = (over: Partial<Review> = {}): Review => ({ name: 'triage', when: { on: 'opened' }, conclusions: TRIAGE, ...over });
+  const BUG: TypeEntry = { labels: ['type: bug'], prompt: 'Bugs name their repro.', conclusions: { success: ['triaged', 'triage: build'] } };
+  const SMALL: TypeEntry = { labels: ['size: small', 'size: tiny'], prompt: 'Small tickets name one file.', conclusions: { neutral: ['small: needs a person'], success: ['small: passed'] } };
+  const review = (over: Partial<Review> = {}): Review => ({ name: 'triage', when: {}, conclusions: TRIAGE, ...over });
   const asTicket = (labels: string[]) => ticketRow({ labels });
 
   test('a review\'s own checklist replaces the default, after governor\'s frame', async () => {
-    const h = harness({ reviews: [review({ checklist: '# Ours\n\nCheck one thing.' })] });
+    const h = harness({ reviews: [review({ prompt: '# Ours\n\nCheck one thing.' })] });
     await h.review();
-    assert.equal(h.runs[0]!.system, `${TICKET_FRAME}\n\n# Ours\n\nCheck one thing.`);
-    assert.ok(!h.runs[0]!.system.includes(DEFAULT_TICKET_CHECKLIST));
+    assert.equal(h.runs[0]!.system, `${ISSUE_FRAME}\n\n# Ours\n\nCheck one thing.`);
+    assert.ok(!h.runs[0]!.system.includes(DEFAULT_ISSUE_PROMPT));
   });
 
   test('a ticket matching two entries gets both checklists after the base, in file order; one matching none gets the base alone', () => {
-    const r = review({ checklist: 'Base.', types: [SMALL, BUG] }) as never;
-    assert.equal(checklistFor(r, asTicket(['Type: Bug', 'size: tiny'])), 'Base.\n\nSmall tickets name one file.\n\nBugs name their repro.');
-    assert.equal(checklistFor(r, asTicket(['type: enhancement'])), 'Base.');
-    assert.equal(checklistFor(review({ types: [BUG] }) as never, asTicket(['type: bug'])), `${DEFAULT_TICKET_CHECKLIST}\n\nBugs name their repro.`);
-    assert.equal(checklistFor(review({ types: [{ labels: ['type: bug'] }] }) as never, asTicket(['type: bug'])), DEFAULT_TICKET_CHECKLIST);
+    const r = review({ prompt: 'Base.', byLabel: [SMALL, BUG] }) as never;
+    assert.equal(promptFor(r, asTicket(['Type: Bug', 'size: tiny'])), 'Base.\n\nSmall tickets name one file.\n\nBugs name their repro.');
+    assert.equal(promptFor(r, asTicket(['type: enhancement'])), 'Base.');
+    assert.equal(promptFor(review({ byLabel: [BUG] }) as never, asTicket(['type: bug'])), `${DEFAULT_ISSUE_PROMPT}\n\nBugs name their repro.`);
+    assert.equal(promptFor(review({ byLabel: [{ labels: ['type: bug'] }] }) as never, asTicket(['type: bug'])), DEFAULT_ISSUE_PROMPT);
   });
 
   test('the run reads the ticket\'s checklists, and a ticket with no type label is reviewed, not failed for lacking one', async () => {
-    const h = harness({ reviews: [review({ types: [BUG] })], ticket: { labels: [] } });
+    const h = harness({ reviews: [review({ byLabel: [BUG] })], ticket: { labels: [] } });
     const result = await h.review();
     assert.equal(result.reviews[0]!.outcome, 'commented');
-    assert.equal(h.runs[0]!.system, `${TICKET_FRAME}\n\n${DEFAULT_TICKET_CHECKLIST}`);
-    const bug = harness({ reviews: [review({ types: [BUG] })] });
+    assert.equal(h.runs[0]!.system, `${ISSUE_FRAME}\n\n${DEFAULT_ISSUE_PROMPT}`);
+    const bug = harness({ reviews: [review({ byLabel: [BUG] })] });
     await bug.review();
-    assert.equal(bug.runs[0]!.system, `${TICKET_FRAME}\n\n${DEFAULT_TICKET_CHECKLIST}\n\nBugs name their repro.`);
+    assert.equal(bug.runs[0]!.system, `${ISSUE_FRAME}\n\n${DEFAULT_ISSUE_PROMPT}\n\nBugs name their repro.`);
   });
 
   test('for each conclusion, the labels come from the first matching entry that names it, and otherwise from the default', () => {
-    const r = review({ types: [SMALL, BUG, { labels: ['type: bug'], conclusions: { success: ['never'], failure: ['bug: needs repro'] } }] }) as never;
+    const r = review({ byLabel: [SMALL, BUG, { labels: ['type: bug'], conclusions: { success: ['never'], failure: ['bug: needs repro'] } }] }) as never;
     assert.deepEqual(conclusionsFor(r, asTicket(['type: bug', 'size: small'])), { success: ['small: passed'], failure: ['bug: needs repro'], neutral: ['small: needs a person'] });
     assert.deepEqual(conclusionsFor(r, asTicket(['type: bug'])), { success: ['triaged', 'triage: build'], failure: ['bug: needs repro'], neutral: TRIAGE.neutral });
     assert.deepEqual(conclusionsFor(r, asTicket([])), { success: TRIAGE.success, failure: TRIAGE.failure, neutral: TRIAGE.neutral });
@@ -497,23 +554,23 @@ describe('fitness: dispatcher-review.md, a ticket review\'s checklists and label
 
   test('a bug\'s success adds triage: build, and a success on an enhancement never removes it', async () => {
     const repoLabels = ['type: bug', 'type: enhancement', 'triage: build', 'triaged', 'triage: needs edit'];
-    const bug = harness({ reviews: [review({ types: [BUG] })], ticket: { labels: ['type: bug'] }, repoLabels });
+    const bug = harness({ reviews: [review({ byLabel: [BUG] })], ticket: { labels: ['type: bug'] }, repoLabels });
     await bug.review();
     assert.deepEqual(bug.live.labels, ['type: bug', 'triaged', 'triage: build']);
-    const enhancement = harness({ reviews: [review({ types: [BUG] })], ticket: { labels: ['type: enhancement', 'triage: build'] }, repoLabels });
+    const enhancement = harness({ reviews: [review({ byLabel: [BUG] })], ticket: { labels: ['type: enhancement', 'triage: build'] }, repoLabels });
     await enhancement.review();
     assert.deepEqual(enhancement.ops, ['add triaged', 'comment passes']);
     assert.deepEqual(enhancement.live.labels, ['type: enhancement', 'triage: build', 'triaged']);
   });
 
   test('a failure takes off a label an entry\'s success named, even where the ticket\'s type has changed since', async () => {
-    const h = harness({ reviews: [review({ types: [BUG] })], answers: [GAPS], ticket: { labels: ['type: enhancement', 'triaged', 'triage: build'] }, repoLabels: ['type: enhancement', 'triaged', 'triage: build', 'triage: needs edit'] });
+    const h = harness({ reviews: [review({ byLabel: [BUG] })], answers: [GAPS], ticket: { labels: ['type: enhancement', 'triaged', 'triage: build'] }, repoLabels: ['type: enhancement', 'triaged', 'triage: build', 'triage: needs edit'] });
     await h.review();
     assert.deepEqual(h.ops, ['remove triaged', 'remove triage: build', 'add triage: needs edit', 'comment waits for an edit']);
   });
 
   test('with types, adding or removing a label an entry names changes the key; with no types the key is the body\'s digest', () => {
-    const r = review({ types: [BUG, SMALL] }) as never;
+    const r = review({ byLabel: [BUG, SMALL] }) as never;
     const key = keyFor(r, asTicket(['type: bug']));
     assert.match(key, /^[0-9a-f]{64}$/);
     assert.notEqual(key, KEY);
@@ -525,7 +582,7 @@ describe('fitness: dispatcher-review.md, a ticket review\'s checklists and label
   });
 
   test('a ticket whose type label changes is reviewed again, and one whose other labels change is not', async () => {
-    const h = harness({ reviews: [review({ types: [BUG] })], live: true });
+    const h = harness({ reviews: [review({ byLabel: [BUG] })], live: true });
     await h.review();
     h.edit({ labels: [...h.live.labels, 'anything'] });
     await h.review();
@@ -536,19 +593,19 @@ describe('fitness: dispatcher-review.md, a ticket review\'s checklists and label
   });
 
   test('the marker carries the key with the ticket\'s type', async () => {
-    const h = harness({ reviews: [review({ types: [BUG] })] });
+    const h = harness({ reviews: [review({ byLabel: [BUG] })] });
     await h.review();
-    assert.ok(h.comments[0]!.body.endsWith(ticketMarker('triage', 'success', keyFor(review({ types: [BUG] }) as never, ticketRow()))));
+    assert.ok(h.comments[0]!.body.endsWith(issueMarker('triage', 'success', keyFor(review({ byLabel: [BUG] }) as never, ticketRow()))));
   });
 });
 
-describe('reviewTicket: which reviews run', () => {
+describe('reviewIssue: which reviews run', () => {
   test('a ticket that meets a review\'s selector gets one comment, in the format, ending in its marker', async () => {
     const h = harness();
     const result = await h.review();
     assert.deepEqual(result.reviews.map((r) => [r.name, r.outcome, r.conclusion]), [['triage', 'commented', 'success']]);
-    assert.deepEqual(h.comments, [{ issue: 501, body: `Triage review: passes. ${PASSES.text}\n\n${ticketMarker('triage', 'success', KEY)}` }]);
-    assert.equal(ticketMarker('triage', 'success', KEY), `<!-- governor:ticket-review triage success ${KEY} -->`);
+    assert.deepEqual(h.comments, [{ issue: 501, body: `Triage review: passes. ${PASSES.text}\n\n${issueMarker('triage', 'success', KEY)}` }]);
+    assert.equal(issueMarker('triage', 'success', KEY), `<!-- governor:issue-review triage success ${KEY} -->`);
   });
 
   test('each conclusion has its words', async () => {
@@ -556,15 +613,15 @@ describe('reviewTicket: which reviews run', () => {
     for (const [answer, words] of [[GAPS, 'waits for an edit'], [neutral, 'waits for a person'], [PASSES, 'passes']] as const) {
       const h = harness({ answers: [answer] });
       await h.review();
-      assert.equal(h.comments[0]!.body, `Triage review: ${words}. ${answer.text}\n\n${ticketMarker('triage', answer.conclusion, KEY)}`);
+      assert.equal(h.comments[0]!.body, `Triage review: ${words}. ${answer.text}\n\n${issueMarker('triage', answer.conclusion, KEY)}`);
     }
   });
 
   test('a ticket that fails the selector on labels, exclude or by gets none', async () => {
     const reviews: Review[] = [
-      { name: 'labels', when: { on: 'opened', labels: ['type: bug', 'triage: wanted'] } },
-      { name: 'exclude', when: { on: 'opened', exclude: ['claimed', 'type: bug'] } },
-      { name: 'by', when: { on: 'opened', by: ['OWNER'] } },
+      { name: 'labels', when: { labels: ['type: bug', 'triage: wanted'] } },
+      { name: 'exclude', when: { exclude: ['claimed', 'type: bug'] } },
+      { name: 'by', when: { by: ['OWNER'] } },
     ];
     const h = harness({ reviews });
     const result = await h.review();
@@ -574,18 +631,18 @@ describe('reviewTicket: which reviews run', () => {
   });
 
   test('labels must all be there, and by reads a missing association as NONE', async () => {
-    assert.equal((await harness({ reviews: [{ name: 'labels', when: { on: 'opened', labels: ['type: bug'] } }] }).review()).reviews[0]!.outcome, 'commented');
-    const none = harness({ ticket: { association: undefined as never }, trusted: ['NONE'], reviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] } }] });
+    assert.equal((await harness({ reviews: [{ name: 'labels', when: { labels: ['type: bug'] } }] }).review()).reviews[0]!.outcome, 'commented');
+    const none = harness({ ticket: { association: undefined as never }, trusted: ['NONE'], reviews: [{ name: 'community', when: { by: ['NONE'] } }] });
     assert.equal((await none.review()).reviews[0]!.outcome, 'commented');
   });
 
   test('labels and exclude match the ticket\'s labels in any case, as GitHub does', async () => {
-    const excluded = harness({ ticket: { labels: ['workflow: under development'] }, reviews: [{ name: 'exclude', when: { on: 'opened', exclude: ['Workflow: Under Development'] } }] });
+    const excluded = harness({ ticket: { labels: ['workflow: under development'] }, reviews: [{ name: 'exclude', when: { exclude: ['Workflow: Under Development'] } }] });
     const skipped = (await excluded.review()).reviews[0]!;
     assert.equal(skipped.outcome, 'skipped');
     assert.deepEqual(excluded.comments, []);
     assert.deepEqual(excluded.runs, []);
-    const required = harness({ ticket: { labels: ['Type: Bug'] }, reviews: [{ name: 'labels', when: { on: 'opened', labels: ['type: bug'] } }] });
+    const required = harness({ ticket: { labels: ['Type: Bug'] }, reviews: [{ name: 'labels', when: { labels: ['type: bug'] } }] });
     assert.equal((await required.review()).reviews[0]!.outcome, 'commented');
     assert.equal(required.comments.length, 1);
   });
@@ -597,7 +654,7 @@ describe('reviewTicket: which reviews run', () => {
   });
 
   test('a ticket whose author trust.review shuts out gets no review, whatever the review\'s by says', async () => {
-    const h = harness({ ticket: { association: 'NONE' }, reviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] } }] });
+    const h = harness({ ticket: { association: 'NONE' }, reviews: [{ name: 'community', when: { by: ['NONE'] } }] });
     const result = await h.review();
     assert.deepEqual(h.comments, []);
     assert.deepEqual(h.runs, []);
@@ -607,13 +664,13 @@ describe('reviewTicket: which reviews run', () => {
   });
 
   test('where two reviews\' selectors match, both run, in file order, each with its own name', async () => {
-    const h = harness({ reviews: [{ name: 'triage', when: { on: 'opened' } }, { name: 'second-look', when: { on: 'opened' } }], answers: [PASSES, GAPS] });
+    const h = harness({ reviews: [{ name: 'triage', when: {} }, { name: 'second-look', when: {} }], answers: [PASSES, GAPS] });
     await h.review();
     assert.equal(h.comments.length, 2);
     assert.match(h.comments[0]!.body, /^Triage review: passes\./);
-    assert.match(h.comments[0]!.body, /governor:ticket-review triage success /);
+    assert.match(h.comments[0]!.body, /governor:issue-review triage success /);
     assert.match(h.comments[1]!.body, /^Second-look review: waits for an edit\./);
-    assert.match(h.comments[1]!.body, /governor:ticket-review second-look failure /);
+    assert.match(h.comments[1]!.body, /governor:issue-review second-look failure /);
   });
 
   test('a fire for a ticket whose key has not changed since the review\'s newest marker runs nothing for that review', async () => {
@@ -668,45 +725,45 @@ describe('reviewTicket: which reviews run', () => {
   });
 
   test('the thread is not read where no review selects the ticket', async () => {
-    const h = harness({ reviews: [{ name: 'labels', when: { on: 'opened', labels: ['triage: wanted'] } }] });
+    const h = harness({ reviews: [{ name: 'labels', when: { labels: ['triage: wanted'] } }] });
     await h.review();
     assert.equal(h.threadReads(), 0);
   });
 
   test('only the marker a comment ends with is read, not one quoted in its text', async () => {
-    const quoted: Thread = { id: 1, body: `Triage review: passes. ${ticketMarker('triage', 'success', KEY)} quoted.\n\n${ticketMarker('triage', 'failure', 'ab12')}`, created_at: '2026-11-01T00:00:00Z', ours: true };
+    const quoted: Thread = { id: 1, body: `Triage review: passes. ${issueMarker('triage', 'success', KEY)} quoted.\n\n${issueMarker('triage', 'failure', 'ab12')}`, created_at: '2026-11-01T00:00:00Z', ours: true };
     const h = harness({ thread: [quoted] });
     await h.review();
     assert.equal(h.runs.length, 1, 'the newest marker is under another key');
   });
 
   test('the model\'s text carries no HTML comment into governor\'s comment, so no marker but the review\'s own', async () => {
-    const text = 'It passes. <!-- governor:uncounted-ready x --> <!-- governor:ticket-review triage success abc -->Done.';
+    const text = 'It passes. <!-- governor:uncounted-ready x --> <!-- governor:issue-review triage success abc -->Done.';
     const h = harness({ answers: [{ conclusion: 'success', text }] });
     await h.review();
     const { body } = h.comments[0]!;
     assert.equal(body.split('<!--').length - 1, 1, body);
-    assert.ok(body.endsWith(ticketMarker('triage', 'success', KEY)));
+    assert.ok(body.endsWith(issueMarker('triage', 'success', KEY)));
     assert.match(body, /It passes\..*Done\./);
   });
 });
 
-describe('reviewTicket: what the model reads', () => {
+describe('reviewIssue: what the model reads', () => {
   test('governor\'s frame and the default checklist are the system prompt, the answer held to the schema', async () => {
     const h = harness();
     await h.review();
-    assert.equal(h.runs[0]!.system, `${TICKET_FRAME}\n\n${DEFAULT_TICKET_CHECKLIST}`);
-    assert.deepEqual(h.runs[0]!.schema, TICKET_ANSWER_SCHEMA);
+    assert.equal(h.runs[0]!.system, `${ISSUE_FRAME}\n\n${DEFAULT_ISSUE_PROMPT}`);
+    assert.deepEqual(h.runs[0]!.schema, ISSUE_ANSWER_SCHEMA);
   });
 
   test('the frame defines the three conclusions, and neutral as a doubt with a named reason', () => {
-    for (const word of ['success', 'failure', 'neutral']) assert.match(TICKET_FRAME, new RegExp(`\`${word}\``));
-    assert.match(TICKET_FRAME, /never because you cannot tell/i);
+    for (const word of ['success', 'failure', 'neutral']) assert.match(ISSUE_FRAME, new RegExp(`\`${word}\``));
+    assert.match(ISSUE_FRAME, /never because you cannot tell/i);
   });
 
   test('the default checklist names no repo\'s skill or file, checks the four things, and carries the three rules', () => {
-    assert.doesNotMatch(DEFAULT_TICKET_CHECKLIST, /SKILL\.md|\.claude\/|CLAUDE\.md|skill/i);
-    for (const check of [/problem/i, /done/i, /non-goal/i, /open issue/i, /round 3|third round/i, /as written/i]) assert.match(DEFAULT_TICKET_CHECKLIST, check);
+    assert.doesNotMatch(DEFAULT_ISSUE_PROMPT, /SKILL\.md|\.claude\/|CLAUDE\.md|skill/i);
+    for (const check of [/problem/i, /done/i, /non-goal/i, /open issue/i, /round 3|third round/i, /as written/i]) assert.match(DEFAULT_ISSUE_PROMPT, check);
   });
 
   test('stdin holds the ticket, its parent, its same-repo links, the open issues and the round', async () => {
@@ -723,7 +780,7 @@ describe('reviewTicket: what the model reads', () => {
     const body = `${BODY}\n\nSee other/repo#5, https://github.com/other/repo/issues/6, #80 and #81.`;
     const h = harness({ ticket: { body }, issues: { 81: { pull: true, title: 'A PR' } } });
     await h.review();
-    const skips = h.logged.filter((l) => l.event === 'dispatch-ticket-review-link');
+    const skips = h.logged.filter((l) => l.event === 'dispatch-issue-review-link');
     assert.ok(skips.length >= 4, JSON.stringify(skips));
     assert.ok(skips.every((l) => l.level === 'info'));
     assert.doesNotMatch(h.runs[0]!.prompt, /A PR/);
@@ -733,7 +790,7 @@ describe('reviewTicket: what the model reads', () => {
     const h = harness({ ticket: { body: `${BODY}\n\nSee #82.` }, gone: [82] });
     const result = await h.review();
     assert.equal(result.reviews[0]!.outcome, 'commented');
-    assert.ok(h.logged.some((l) => l.event === 'dispatch-ticket-review-link' && l.link === '#82' && l.level === 'info'));
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-issue-review-link' && l.link === '#82' && l.level === 'info'));
   });
 
   test('the open issues listed leave out the ticket itself', async () => {
@@ -747,7 +804,7 @@ describe('reviewTicket: what the model reads', () => {
     const h = harness({ parent: { repo: 'other/repo', title: 'Elsewhere' } });
     await h.review();
     assert.doesNotMatch(h.runs[0]!.prompt, /Elsewhere/);
-    assert.ok(h.logged.some((l) => l.event === 'dispatch-ticket-review-link' && l.level === 'info'));
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-issue-review-link' && l.level === 'info'));
   });
 
   test('the caps hold, and stdin says what it left out', async () => {
@@ -765,36 +822,36 @@ describe('reviewTicket: what the model reads', () => {
   });
 });
 
-describe('reviewTicket: a run that does not answer', () => {
+describe('reviewIssue: a run that does not answer', () => {
   test('a failed run, or an answer outside the schema, posts no marker, lets the other reviews run, and is a failure', async () => {
     for (const bad of [cliError('the API answered 500'), cliOutput({ conclusion: 'maybe', text: 'x' }), cliOutput({ conclusion: 'success', text: '' }), 'no json at all']) {
-      const h = harness({ reviews: [{ name: 'triage', when: { on: 'opened' } }, { name: 'second', when: { on: 'opened' } }], answers: [bad, PASSES] });
+      const h = harness({ reviews: [{ name: 'triage', when: {} }, { name: 'second', when: {} }], answers: [bad, PASSES] });
       const result = await h.review();
       assert.deepEqual(result.reviews.map((r) => [r.name, r.outcome]), [['triage', 'failed'], ['second', 'commented']], bad);
       assert.equal(h.comments.length, 1);
       assert.match(h.comments[0]!.body, /^Second review/);
-      const line = h.logged.find((l) => l.event === 'dispatch-ticket-review' && l.review === 'triage');
+      const line = h.logged.find((l) => l.event === 'dispatch-issue-review' && l.review === 'triage');
       assert.equal(line?.level, 'error');
-      assert.equal(exitCodeFor({ kind: 'ticketReview', reviews: result.reviews } as never), 1);
+      assert.equal(exitCodeFor({ kind: 'issueReview', reviews: result.reviews } as never), 1);
     }
   });
 
   test('a comment GitHub refuses leaves no marker, logs at error, and the other reviews still run', async () => {
     let calls = 0;
-    const h = harness({ reviews: [{ name: 'triage', when: { on: 'opened' } }, { name: 'second', when: { on: 'opened' } }], comment: async () => { calls += 1; if (calls === 1) throw Object.assign(new Error('POST failed: 403'), { status: 403 }); } });
+    const h = harness({ reviews: [{ name: 'triage', when: {} }, { name: 'second', when: {} }], comment: async () => { calls += 1; if (calls === 1) throw Object.assign(new Error('POST failed: 403'), { status: 403 }); } });
     const result = await h.review();
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['failed', 'commented']);
-    assert.equal(exitCodeFor({ kind: 'ticketReview', reviews: result.reviews } as never), 1);
+    assert.equal(exitCodeFor({ kind: 'issueReview', reviews: result.reviews } as never), 1);
   });
 
   test('a run the session limit stops posts nothing, does not alarm, and no later review runs', async () => {
-    const h = harness({ reviews: [{ name: 'triage', when: { on: 'opened' } }, { name: 'second', when: { on: 'opened' } }], answers: [cliError('Claude AI usage limit reached: you have hit your session limit')] });
+    const h = harness({ reviews: [{ name: 'triage', when: {} }, { name: 'second', when: {} }], answers: [cliError('Claude AI usage limit reached: you have hit your session limit')] });
     const result = await h.review();
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['limited', 'limited']);
     assert.equal(h.runs.length, 1);
     assert.deepEqual(h.comments, []);
-    assert.ok(h.logged.filter((l) => l.event === 'dispatch-ticket-review').every((l) => l.level !== 'error'));
-    assert.equal(exitCodeFor({ kind: 'ticketReview', reviews: result.reviews } as never), 0);
+    assert.ok(h.logged.filter((l) => l.event === 'dispatch-issue-review').every((l) => l.level !== 'error'));
+    assert.equal(exitCodeFor({ kind: 'issueReview', reviews: result.reviews } as never), 0);
   });
 
   test('the weekly limit is a fault', async () => {
@@ -809,11 +866,11 @@ describe('fitness: dispatcher-review.md, the loop guard stops a review that keep
   const rounds = (...conclusions: string[]) => conclusions.map((c, i) => posted('triage', c, `a${i}`, true, i + 1));
   const guard = (name = 'triage', ours = true, id = 99): Thread => ({ id, body: `Stopped.\n\n${loopMarker(name)}`, created_at: '2026-11-02T00:00:00Z', ours });
   const fails = (n: number) => rounds(...Array.from({ length: n }, () => 'failure'));
-  const guards = (h: ReturnType<typeof harness>) => h.comments.filter((c) => c.body.includes('governor:ticket-review-loop'));
+  const guards = (h: ReturnType<typeof harness>) => h.comments.filter((c) => c.body.includes('governor:issue-review-loop'));
 
   test('the limit is five, and the guard\'s marker names the review', () => {
     assert.equal(LOOP_LIMIT, 5);
-    assert.equal(loopMarker('triage'), '<!-- governor:ticket-review-loop triage -->');
+    assert.equal(loopMarker('triage'), '<!-- governor:issue-review-loop triage -->');
   });
 
   test('at the fifth failure in a row, governor posts one guard comment ending in its marker, and logs at error', async () => {
@@ -827,9 +884,9 @@ describe('fitness: dispatcher-review.md, the loop guard stops a review that keep
     assert.match(stop!.body, /^Triage review: stopped on this ticket after 5 failures in a row\./);
     assert.match(stop!.body, /person decides/);
     assert.match(stop!.body, /Deleting this comment/);
-    const line = h.logged.find((l) => l.event === 'dispatch-ticket-review-loop');
-    assert.deepEqual(line, { event: 'dispatch-ticket-review-loop', level: 'error', repo: REPO, issue: 501, review: 'triage', count: 5 });
-    assert.equal(exitCodeFor({ kind: 'ticketReview', reviews: result.reviews } as never), 0);
+    const line = h.logged.find((l) => l.event === 'dispatch-issue-review-loop');
+    assert.deepEqual(line, { event: 'dispatch-issue-review-loop', level: 'error', repo: REPO, issue: 501, review: 'triage', count: 5 });
+    assert.equal(exitCodeFor({ kind: 'issueReview', reviews: result.reviews } as never), 0);
   });
 
   test('the fourth failure in a row, or a fifth run that does not fail, posts no guard', async () => {
@@ -837,7 +894,7 @@ describe('fitness: dispatcher-review.md, the loop guard stops a review that keep
       const h = harness({ thread, answers: [answer] });
       await h.review();
       assert.deepEqual(guards(h), []);
-      assert.equal(h.logged.some((l) => l.event === 'dispatch-ticket-review-loop'), false);
+      assert.equal(h.logged.some((l) => l.event === 'dispatch-issue-review-loop'), false);
     }
   });
 
@@ -860,13 +917,13 @@ describe('fitness: dispatcher-review.md, the loop guard stops a review that keep
   });
 
   test('with the guard on the thread, later edits do not run that review, and other reviews on the ticket still run', async () => {
-    const h = harness({ thread: [...fails(5), guard()], reviews: [{ name: 'triage', when: { on: 'opened' } }, { name: 'second', when: { on: 'opened' } }], answers: [PASSES] });
+    const h = harness({ thread: [...fails(5), guard()], reviews: [{ name: 'triage', when: {} }, { name: 'second', when: {} }], answers: [PASSES] });
     const result = await h.review();
     assert.deepEqual(result.reviews.map((r) => [r.name, r.outcome]), [['triage', 'skipped'], ['second', 'commented']]);
     assert.match(String(result.reviews[0]!.reason), /loop guard/);
     assert.equal(h.runs.length, 1);
     assert.match(h.comments[0]!.body, /^Second review/);
-    const line = h.logged.find((l) => l.event === 'dispatch-ticket-review' && l.review === 'triage');
+    const line = h.logged.find((l) => l.event === 'dispatch-issue-review' && l.review === 'triage');
     assert.equal(line?.level, 'info');
     assert.equal(line?.outcome, 'skipped');
   });
@@ -891,7 +948,7 @@ describe('fitness: dispatcher-review.md, the loop guard stops a review that keep
     await tenth.review();
     assert.equal(guards(tenth).length, 1);
     assert.match(guards(tenth)[0]!.body, /after 10 failures in a row/);
-    assert.equal(tenth.logged.find((l) => l.event === 'dispatch-ticket-review-loop')?.count, 10);
+    assert.equal(tenth.logged.find((l) => l.event === 'dispatch-issue-review-loop')?.count, 10);
   });
 
   test('a guard marker in a comment governor\'s App did not post, or one quoted mid-comment, stops nothing', async () => {
@@ -907,7 +964,7 @@ describe('fitness: dispatcher-review.md, the loop guard stops a review that keep
     const h = harness({ thread: [posted('triage', 'failure', 'a'), guard('other')] });
     await h.review();
     assert.match(h.runs[0]!.prompt, /This is round 2 of this review\./);
-    const named = harness({ thread: [guard('triage-loop')], reviews: [{ name: 'triage-loop', when: { on: 'opened' } }, { name: 'triage', when: { on: 'opened' } }] });
+    const named = harness({ thread: [guard('triage-loop')], reviews: [{ name: 'triage-loop', when: {} }, { name: 'triage', when: {} }] });
     const result = await named.review();
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['skipped', 'commented']);
     assert.match(named.runs[0]!.prompt, /This is round 1 of this review\./);
@@ -920,15 +977,15 @@ describe('fitness: dispatcher-review.md, the loop guard stops a review that keep
     assert.equal(result.reviews[0]!.outcome, 'commented');
     assert.equal(result.reviews[0]!.conclusion, 'failure');
     assert.equal(h.comments.length, 1);
-    const line = h.logged.find((l) => l.event === 'dispatch-ticket-review-loop');
+    const line = h.logged.find((l) => l.event === 'dispatch-issue-review-loop');
     assert.equal(line?.level, 'error');
     assert.match(String(line?.error), /403/);
-    assert.equal(exitCodeFor({ kind: 'ticketReview', reviews: result.reviews } as never), 1);
+    assert.equal(exitCodeFor({ kind: 'issueReview', reviews: result.reviews } as never), 1);
   });
 });
 
 describe('fitness: dispatcher-review.md, a conclusion applies the labels the repo names', () => {
-  const triage = (when: Review['when'] = { on: 'opened' }): Review => ({ name: 'triage', when, conclusions: TRIAGE });
+  const triage = (when: Review['when'] = {}): Review => ({ name: 'triage', when, conclusions: TRIAGE });
 
   test('a run removes the labels the other two conclusions name, then adds its own, then posts its comment, and touches no other label', async () => {
     const h = harness({ reviews: [triage()], ticket: { labels: ['type: bug', 'mode: afk', 'triage: needs edit', 'triage: needs a person', 'anything else'] }, repoLabels: ['type: bug', 'mode: afk', 'triaged', 'triage: needs edit', 'triage: needs a person', 'anything else'] });
@@ -977,7 +1034,7 @@ describe('fitness: dispatcher-review.md, a conclusion applies the labels the rep
   test('a label governor creates carries a description GitHub accepts, at most 100 characters, whatever the review\'s name', async () => {
     const descriptions: string[] = [];
     const name = 'a'.repeat(64);
-    const h = harness({ reviews: [{ name, when: { on: 'opened' }, conclusions: TRIAGE }], repoLabels: ['type: bug'] });
+    const h = harness({ reviews: [{ name, when: {}, conclusions: TRIAGE }], repoLabels: ['type: bug'] });
     const ensure = h.reader.ensureLabel;
     h.reader.ensureLabel = async (label: string, description?: string) => { descriptions.push(String(description)); await ensure(label); };
     await h.review();
@@ -986,7 +1043,7 @@ describe('fitness: dispatcher-review.md, a conclusion applies the labels the rep
   });
 
   test('a review that names no labels writes none', async () => {
-    const h = harness({ reviews: [{ name: 'triage', when: { on: 'opened' } }], answers: [GAPS] });
+    const h = harness({ reviews: [{ name: 'triage', when: {} }], answers: [GAPS] });
     await h.review();
     assert.deepEqual(h.ops, ['comment waits for an edit']);
   });
@@ -1002,7 +1059,7 @@ describe('fitness: dispatcher-review.md, a conclusion applies the labels the rep
     test(`a label ${refused} GitHub refuses posts no comment, logs at error, lets the other reviews run, exits 1, and the next edit runs the review again`, async () => {
       let refuse = true;
       const h = harness({
-        reviews: [triage(), { name: 'scope', when: { on: 'opened' } }],
+        reviews: [triage(), { name: 'scope', when: {} }],
         ticket: { labels: ['type: bug', 'triage: needs edit'] },
         repoLabels: ['type: bug', 'triage: needs edit'],
         live: true,
@@ -1012,9 +1069,9 @@ describe('fitness: dispatcher-review.md, a conclusion applies the labels the rep
       assert.deepEqual(result.reviews.map((r) => [r.name, r.outcome]), [['triage', 'failed'], ['scope', 'commented']]);
       assert.match(String(result.reviews[0]!.error), /403/);
       assert.deepEqual(h.comments.map((c) => c.body.split(' review:')[0]), ['Scope']);
-      const line = h.logged.find((l) => l.event === 'dispatch-ticket-review' && l.review === 'triage');
+      const line = h.logged.find((l) => l.event === 'dispatch-issue-review' && l.review === 'triage');
       assert.equal(line?.level, 'error');
-      assert.equal(exitCodeFor({ kind: 'ticketReview', reviews: result.reviews } as never), 1);
+      assert.equal(exitCodeFor({ kind: 'issueReview', reviews: result.reviews } as never), 1);
       refuse = false;
       h.edit({ body: `${BODY}\n\nEdited.` });
       const again = await h.review();
@@ -1029,7 +1086,7 @@ describe('fitness: dispatcher-review.md, a conclusion applies the labels the rep
     const result = await h.review();
     assert.equal(result.reviews[0]!.outcome, 'failed');
     assert.ok(h.live.labels.includes('triaged'));
-    assert.ok(h.logged.some((l) => l.event === 'dispatch-ticket-review' && l.level === 'error' && /triaged/.test(String(l.error))));
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-issue-review' && l.level === 'error' && /triaged/.test(String(l.error))));
   });
 
   test('the loop guard still comes after the review\'s comment, at the fifth failure in a row', async () => {
@@ -1069,17 +1126,17 @@ describe('fitness: dispatcher-review.md, a conclusion applies the labels the rep
   });
 
   test('the ticket review shares no code with pickup', () => {
-    const closure = [...importClosure(ROOT, 'dispatch/ticket-review.mjs')];
+    const closure = [...importClosure(ROOT, 'dispatch/issue-review.mjs')];
     const pickup = ['scripts/lib/ready-work.mjs', 'scripts/lib/dispatch-router.mjs', 'dispatch/pickup.mjs', 'dispatch/launch-plan.mjs'];
     assert.deepEqual(closure.filter((path) => pickup.includes(path)), []);
   });
 });
 
-describe('reviewTicket: what it logs and keeps', () => {
-  test('each run logs dispatch-ticket-review with the repo, issue, review, conclusion and usage', async () => {
+describe('reviewIssue: what it logs and keeps', () => {
+  test('each run logs dispatch-issue-review with the repo, issue, review, conclusion and usage', async () => {
     const h = harness();
     await h.review();
-    const line = h.logged.find((l) => l.event === 'dispatch-ticket-review');
+    const line = h.logged.find((l) => l.event === 'dispatch-issue-review');
     assert.equal(line?.repo, REPO);
     assert.equal(line?.issue, 501);
     assert.equal(line?.review, 'triage');
@@ -1090,7 +1147,41 @@ describe('reviewTicket: what it logs and keeps', () => {
   test('the transcript goes to the drop box keyed by the review, the issue and the session', async () => {
     const h = harness();
     await h.review();
-    assert.deepEqual(h.transcripts, [{ sessionId: 'sess-1', key: 'ticket-review-triage-501-sess-1' }]);
+    assert.deepEqual(h.transcripts, [{ sessionId: 'sess-1', key: 'issue-review-triage-501-sess-1' }]);
+  });
+});
+
+/**
+ * A label change queues the issue review fire (dispatch/webhook/route.mjs),
+ * and the turn reads the issue's labels as they are then: an issue
+ * labelled into a review's selector after it opened is reviewed on that
+ * label's fire, and a label change that leaves the review's key alone makes
+ * no model call.
+ */
+describe('fitness: dispatcher-review.md, a label change runs the review the label brings the issue into', () => {
+  test('an issue labelled into a review\'s selector after it opened is reviewed on that label\'s fire, and a second label change with the body unchanged makes no model call', async () => {
+    const h = harness({ live: true, ticket: { labels: [] }, reviews: [{ name: 'triage', when: { labels: ['mode: afk'] } }] });
+    const opened = await h.review();
+    assert.deepEqual(opened.reviews.map((r) => r.outcome), ['skipped'], 'opened without the label: not selected');
+    assert.equal(h.runs.length, 0);
+    h.edit({ labels: ['mode: afk'] });
+    const labelled = await h.review();
+    assert.deepEqual(labelled.reviews.map((r) => r.outcome), ['commented']);
+    assert.equal(h.runs.length, 1);
+    h.edit({ labels: ['mode: afk', 'type: chore'] });
+    const again = await h.review();
+    assert.deepEqual(again.reviews.map((r) => [r.outcome, r.reason]), [['skipped', 'the triage review already read #501 as its body stands']]);
+    assert.equal(h.runs.length, 1, 'no second model call');
+  });
+
+  test('a byLabel label added changes the key, so the review reads the issue again', async () => {
+    const h = harness({ live: true, ticket: { labels: [] }, reviews: [{ name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'], prompt: 'Bugs name a repro.' }] }] });
+    await h.review();
+    assert.equal(h.runs.length, 1);
+    h.edit({ labels: ['type: bug'] });
+    await h.review();
+    assert.equal(h.runs.length, 2);
+    assert.match(h.runs[1]!.system, /Bugs name a repro\./);
   });
 });
 
@@ -1104,7 +1195,7 @@ describe('cliResult: the CLI result line both reviews read', () => {
   });
 });
 
-describe('run: a ticketReview fire through the turn', () => {
+describe('run: an issueReview fire through the turn', () => {
   const LOGIN = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-a', refreshToken: 'sk-ant-ort01-r', expiresAt: Date.parse('2026-11-04T13:00:00Z'), refreshTokenExpiresAt: Date.parse('2026-12-04T12:00:00Z'), scopes: ['user:profile', 'user:inference', 'user:sessions:claude_code'] } });
   const turn = async (config: string) => {
     const comments: Array<{ issue: number, body: string }> = [];
@@ -1143,25 +1234,25 @@ describe('run: a ticketReview fire through the turn', () => {
       archive: async () => ({ ok: true }),
       state: {},
     };
-    const result = await runTurn({ kind: 'ticketReview', issue: 501, repo: REPO }, deps as never);
+    const result = await runTurn({ kind: 'issueReview', issue: 501, repo: REPO }, deps as never);
     return { result: result as unknown as { kind: string, refusal?: string, reviews?: Array<{ outcome: string }> }, comments, runs, added };
   };
 
   test('with the switch on, the fixture\'s review labels the ticket through the GitHub reader and comments on it', async () => {
     const { result, comments, added } = await turn(factoryFile(CONFIG_PATH));
-    assert.equal(result.kind, 'ticketReview');
-    const triage = (readConfig(factoryFile(CONFIG_PATH)) as { config: { ticketReviews: Array<{ conclusions: { success: string[] } }> } }).config.ticketReviews[0]!;
+    assert.equal(result.kind, 'issueReview');
+    const triage = (readConfig(factoryFile(CONFIG_PATH)) as { config: { issueReviews: { reviews: Array<{ conclusions: { success: string[] } }> } } }).config.issueReviews.reviews[0]!;
     assert.deepEqual(added, triage.conclusions.success);
     assert.deepEqual(result.reviews?.map((r) => r.outcome), ['commented']);
     assert.equal(comments.length, 1);
     assert.equal(exitCodeFor(result as never), 0);
   });
 
-  test('with the switch off, no review runs', async () => {
-    const file = JSON.parse(factoryFile(CONFIG_PATH)) as { features: Record<string, boolean> };
-    file.features.ticketReviews = false;
+  test('with the section\'s enabled false, no review runs', async () => {
+    const file = JSON.parse(factoryFile(CONFIG_PATH)) as { issueReviews: { enabled?: boolean } };
+    file.issueReviews.enabled = false;
     const { result, comments, runs } = await turn(JSON.stringify(file));
-    assert.match(String(result.refusal), /ticketReviews/);
+    assert.match(String(result.refusal), /issueReviews/);
     assert.deepEqual(comments, []);
     assert.deepEqual(runs, []);
   });

@@ -49,7 +49,7 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * - a review: every PR came to an outcome (a merge GitHub refused, an
  *   answer outside the checklist or a failed read is a fault; a run the
  *   login's session limit refused is not);
- * - a ticket review: every review that ran posted its comment (a failed
+ * - an issue review: every review that ran posted its comment (a failed
  *   run, an answer outside the schema or a refused comment is a fault; a
  *   run the login's session limit refused is not);
  * - a conflicts check: every PR was checked;
@@ -94,7 +94,7 @@ export const exitCodeFor = (result) => {
       || (result.cursor != null && 'error' in result.cursor);
     return faulted ? 1 : 0;
   }
-  if (result.kind === 'review' || result.kind === 'ticketReview' || result.kind === 'conflicts') {
+  if (result.kind === 'review' || result.kind === 'issueReview' || result.kind === 'conflicts') {
     const outcomes = result.kind === 'conflicts' ? result.checks ?? [] : result.reviews ?? [];
     // A loop guard's comment that did not post leaves the review standing,
     // and the operator is told.
