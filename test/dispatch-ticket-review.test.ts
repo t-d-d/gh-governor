@@ -221,6 +221,41 @@ describe('the ticketReviews config', () => {
   });
 });
 
+describe('fitness: dispatcher-review.md, the config check warns of a ticket review trust.review never lets in', () => {
+  const outsiders = ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'NONE'];
+  const checkOf = async (over: Record<string, unknown>) => {
+    const text = JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { ticketReviews: true }, ...over });
+    assert.ok(readConfig(text).ok, 'governor reads the file');
+    return check({ read: async (path: string) => (path === CONFIG_PATH ? text : null), paths: async () => ({ paths: [], truncated: false }), labels: async () => ['mode: afk', 'claimed'], issueBody: async () => null } as never);
+  };
+  const deadOnes = (warnings: string[]) => warnings.filter((w) => /trust\.review/.test(w));
+
+  test('a review whose by shares nothing with the default trust.review warns, naming the review, its by and trust.review', async () => {
+    const checked = await checkOf({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: outsiders } }] });
+    assert.deepEqual(checked.errors, []);
+    const [warning, ...rest] = deadOnes(checked.warnings);
+    assert.deepEqual(rest, []);
+    assert.match(warning ?? '', /^ticketReviews\.community: /);
+    assert.match(warning ?? '', /CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, NONE/);
+    assert.match(warning ?? '', /trust\.review lets in OWNER, MEMBER, COLLABORATOR/);
+  });
+
+  test('a review left at its default by warns where trust.review lets in none of it', async () => {
+    const checked = await checkOf({ trust: { review: ['CONTRIBUTOR'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' } }] });
+    const [warning, ...rest] = deadOnes(checked.warnings);
+    assert.deepEqual(rest, []);
+    assert.match(warning ?? '', /^ticketReviews\.triage: /);
+    assert.match(warning ?? '', /OWNER, MEMBER, COLLABORATOR/);
+    assert.match(warning ?? '', /trust\.review lets in CONTRIBUTOR/);
+  });
+
+  test('a review sharing one value with trust.review, or one trust.review lets outsiders into, does not warn', async () => {
+    assert.deepEqual(deadOnes((await checkOf({ ticketReviews: [{ name: 'triage', when: { on: 'opened' } }, { name: 'mixed', when: { on: 'opened', by: ['OWNER', ...outsiders] } }] })).warnings), []);
+    const open = await checkOf({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', ...outsiders] }, ticketReviews: [{ name: 'community', when: { on: 'opened', by: outsiders } }] });
+    assert.deepEqual(deadOnes(open.warnings), []);
+  });
+});
+
 describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a config may name', () => {
   const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triaged'], claim: 'claimed' }, features: { ticketReviews: true } };
   const text = (over: Record<string, unknown>) => JSON.stringify({ ...base, ...over });
