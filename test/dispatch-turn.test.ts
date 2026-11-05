@@ -2243,6 +2243,20 @@ describe('run — an unblocked fire', () => {
     assert.equal(exitCodeFor(result as never), 0);
   });
 
+  test('claimed, the marker\'s session and the body\'s both archived: both are tried, and the turn does not fail', async () => {
+    const sent: string[] = [];
+    const bothArchived = async ({ session }: { session: string }) => {
+      sent.push(session);
+      return { status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) };
+    };
+    const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }], body: specBody(SPEC), over: { message: bothArchived } });
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.deepEqual(sent, [WORK, SPEC]);
+    assert.equal((result.messaged as { refused: boolean }).refused, true);
+    assert.deepEqual([h.launches, h.comments, h.issueEdits], [[], [], []]);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
   test('claimed, the marker\'s session archived and the body naming the same session, none, or one the relay leaves out: nothing more is sent', async () => {
     for (const [body, association] of [[specBody(WORK), 'MEMBER'], ['', 'MEMBER'], [specBody(SPEC), 'NONE']] as const) {
       const sent: string[] = [];

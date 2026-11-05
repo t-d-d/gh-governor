@@ -195,15 +195,17 @@ export const planUnblocked = async (invocation, ctx) => {
     /** @type {import('./deliveries.mjs').Delivery} */
     let told;
     let loginStored = false;
+    /** What came of a send, for the log. @param {import('./deliveries.mjs').Delivery} sent */
+    const outcomeOf = (sent) => (sent.ok ? 'messaged' : sent.refused ? 'its session is archived' : 'not messaged');
     try {
       told = await ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue] });
-      ctx.log('dispatch-unblocked', { ...about, session, outcome: told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged' });
+      ctx.log('dispatch-unblocked', { ...about, session, outcome: outcomeOf(told) });
       // A marker can outlive its builder, and a spec session that claimed
       // the ticket since posts none: a refusal from the marker's session
       // goes on to the session the owner link names, where that is another.
       if (told.refused && marked !== null && owner !== null && !sameSession(owner, marked)) {
         told = await ctx.delivery().deliver({ session: owner }, text, { source: GITHUB_SOURCE, on: [issue] });
-        ctx.log('dispatch-unblocked', { ...about, session: owner, fromBody: true, outcome: told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged' });
+        ctx.log('dispatch-unblocked', { ...about, session: owner, fromBody: true, outcome: outcomeOf(told) });
       }
     } finally {
       loginStored = await ctx.storeLogin();
