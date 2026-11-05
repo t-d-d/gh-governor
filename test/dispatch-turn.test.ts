@@ -4197,6 +4197,58 @@ describe('realDeps().message', () => {
   });
 });
 
+/**
+ * The real review runner puts governor's system prompt in place of Claude
+ * Code's own, for the PR review and the ticket reviews alike: the default
+ * prompt is written for a coding agent with tools, and a review has none. A
+ * fake `claude` on PATH answers with its arguments and the text of the
+ * file it was given as the system prompt, read before the runner removes it.
+ */
+describe('realDeps().review', () => {
+  test('passes --system-prompt-file with the system prompt\'s text, never --append-system-prompt-file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'governor-test-'));
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    mkdirSync(join(dir, 'repo'));
+    writeFileSync(
+      join(bin, 'claude'),
+      [
+        '#!/usr/bin/env node',
+        "const { readFileSync } = require('node:fs');",
+        'const argv = process.argv.slice(2);',
+        "const at = argv.indexOf('--system-prompt-file');",
+        "const system = at === -1 ? null : readFileSync(argv[at + 1], 'utf8');",
+        "let stdin = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+        "process.stdin.on('end', () => { process.stdout.write(`${JSON.stringify({ argv, system, stdin })}\\n`); });",
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const saved = { PATH: process.env.PATH, HOME: process.env.HOME, DISPATCH_WORKDIR: process.env.DISPATCH_WORKDIR };
+    process.env.PATH = `${bin}:${saved.PATH ?? ''}`;
+    process.env.HOME = dir;
+    process.env.DISPATCH_WORKDIR = join(dir, 'repo');
+    try {
+      const schema = { type: 'object' };
+      const { status, output } = await realDeps().review({ system: 'You review pull requests.\n', prompt: 'PR #7', schema });
+      assert.equal(status, 0, output);
+      const answer = JSON.parse(output.trim().split('\n').pop() ?? '');
+      assert.ok(!answer.argv.includes('--append-system-prompt-file'), `appended to Claude Code's prompt: ${answer.argv.join(' ')}`);
+      assert.ok(answer.argv.includes('--system-prompt-file'), `no --system-prompt-file: ${answer.argv.join(' ')}`);
+      assert.equal(answer.system, 'You review pull requests.\n');
+      assert.equal(answer.stdin, 'PR #7');
+      assert.equal(answer.argv[answer.argv.indexOf('--json-schema') + 1], JSON.stringify(schema));
+      assert.equal(answer.argv[answer.argv.indexOf('--tools') + 1], '');
+    } finally {
+      process.env.PATH = saved.PATH;
+      if (saved.HOME === undefined) delete process.env.HOME; else process.env.HOME = saved.HOME;
+      if (saved.DISPATCH_WORKDIR === undefined) delete process.env.DISPATCH_WORKDIR; else process.env.DISPATCH_WORKDIR = saved.DISPATCH_WORKDIR;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // A login refresh prepares the workspace before the turn knows to
 // name its repo; the turn's own prepare still makes the fire's repo its origin.
 describe('realDeps().workspace.prepare', () => {
