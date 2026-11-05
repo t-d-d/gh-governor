@@ -244,6 +244,22 @@ export const WAIT_UNLINED_MARKER = '<!-- governor:wait-unlined -->';
 /** The marker on governor's one comment on a ticket the wait ticket had no room for. */
 export const WAIT_FULL_MARKER = '<!-- governor:wait-full -->';
 
+/** How far ahead governor parks a hand-linked ticket's item: past any wait a person means. */
+export const HAND_LINKED_YEARS = 20;
+
+/**
+ * The date of a hand-linked ticket's item: the same day, `HAND_LINKED_YEARS`
+ * on. The item only keeps the schedule fire from reading the ticket again:
+ * the person's link still holds it.
+ *
+ * @param {number} now
+ */
+export const handLinkedUntil = (now) => {
+  const at = new Date(now);
+  at.setUTCFullYear(at.getUTCFullYear() + HAND_LINKED_YEARS);
+  return at.toISOString().slice(0, 10);
+};
+
 /**
  * The comment a ticket linked to the wait ticket with no line gets.
  *
@@ -514,9 +530,13 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  * fire. A link just removed is not counted as an open blocker, though the
  * ticket's dependency summary may still count it. Then each open ticket in
  * this repo the wait ticket blocks with no item: with no line, it was linked
- * by hand, and is told once and keeps its link; with a line that has passed
- * or cannot be read, its link comes off, as a turn that failed to take it
- * off left it.
+ * by hand, and is told once and keeps its link, and an item dated
+ * {@link handLinkedUntil} is put for it, so later fires skip it unread. A
+ * line written later takes that item over, as any edit does. Should the
+ * item's date come, the ticket is an ended wait with no line: its link comes
+ * off and its item goes. With a line
+ * that has passed or cannot be read, its link comes off, as a turn that
+ * failed to take it off left it.
  *
  * With `auto`, the repo's `trust.auto` (dispatch/trust.mjs): a ticket whose
  * author it does not let in gets its comment, but no spec work, and its
@@ -634,7 +654,13 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
         // has passed, a line that cannot be read, or a relative line:
         // governor's link, which a turn could not take off, so it comes off
         // now, before the sweep.
-        if (ticket.wait === undefined) await links.unlined(number);
+        if (ticket.wait === undefined) {
+          await links.unlined(number);
+          // The link holds the ticket; the item only spares later fires a read.
+          const until = handLinkedUntil(now);
+          const written = await state.recordWait(repo, number, null, until);
+          log(WAIT, { repo, issue: number, until, outcome: written ? 'linked by hand: parked' : 'linked by hand: an item stood already' });
+        }
         else if (!('until' in ticket.wait) || !isWaiting({ wait: ticket.wait }, now)) await links.hide(number);
       }
     } catch (error) {

@@ -33,7 +33,7 @@ import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, readLastRun } from '../
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
-import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitNotPlannedMarker, waitOwnerMessage, waitSpecPrompt } from '../dispatch/waits.mjs';
+import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, handLinkedUntil, waitEndedMarker, waitNotPlannedMarker, waitOwnerMessage, waitSpecPrompt } from '../dispatch/waits.mjs';
 import { waitOf } from '../scripts/lib/ready-work.mjs';
 import { UNREADIED_MARKER } from '../scripts/lib/ready-work.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
@@ -3335,6 +3335,39 @@ describe('run: a waiting ticket linked to the wait ticket', () => {
     await run({ source: 'aws.events' }, h.deps as never);
     assert.deepEqual(linkCalls(h), []);
     assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNLINED_MARKER)).length, 1, JSON.stringify(h.comments));
+  });
+
+  test('the bare fire parks a hand-linked ticket under an item twenty years out, and a later fire reads neither the ticket nor its thread', async () => {
+    const row = { number: 7, state: 'open', title: 'Issue 7', repo: REPO };
+    const h = linksTurn({ ticket: ticketWith({}), linked: true, blocking: [row] });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNLINED_MARKER)).length, 1, JSON.stringify(h.comments));
+    assert.equal(handLinkedUntil(NOW), '2046-09-25');
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, '2046-09-25']]);
+    assert.deepEqual(linkCalls(h), [], 'the person\'s link stays');
+    const thread = h.comments.map((c, i) => ({ id: i + 1, body: c.body, created_at: new Date(NOW).toISOString(), ours: true }));
+    const next = linksTurn({ ticket: ticketWith({}), linked: true, blocking: [row], thread, item: '2046-09-25' });
+    const reads: string[] = [];
+    const reader = next.deps.reader;
+    next.deps.reader = ((...a: unknown[]) => {
+      const r = (reader as (...b: unknown[]) => Record<string, unknown>)(...a);
+      return {
+        ...r,
+        ticket: async (n: number) => { reads.push(`ticket #${n}`); return (r.ticket as (n: number) => Promise<unknown>)(n); },
+        allComments: async (n: number) => { reads.push(`thread #${n}`); return thread; },
+      };
+    }) as never;
+    await run({ source: 'aws.events' }, next.deps as never);
+    assert.deepEqual(reads.filter((r) => r.endsWith('#7')), []);
+    assert.deepEqual([next.comments, linkCalls(next)], [[], []]);
+    assert.deepEqual([...next.waitItems], [[`${REPO}#7`, '2046-09-25']]);
+  });
+
+  test('a line written later on a parked hand-linked ticket takes its item over', async () => {
+    const h = linksTurn({ ticket: ticketWith({ wait: { until: LATER } }), linked: true, item: '2046-09-25' });
+    await run(fire, h.deps as never);
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
+    assert.deepEqual(linkCalls(h), []);
   });
 
   test('the bare fire removes the link of a wait that ended before it reads the backlog, and a ticket not ready still gets its comment and spec session', async () => {

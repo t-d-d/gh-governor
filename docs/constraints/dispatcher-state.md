@@ -86,9 +86,14 @@ group.
   bare schedule fire reads a repo's items in one query and deletes or
   rewrites each over the date it read. It expires a month after its date.
   The ticket's `Blocked until:` line stays the record people read and edit:
-  the item only tells governor when to look. A lost item costs that
-  ticket's wait-ended comment and spec session, and a failed read refuses
-  the repo's ended waits for the turn (dispatch/waits.mjs).
+  the item only tells governor when to look. The one item with no line
+  behind it is a ticket linked to the wait ticket by hand, with no line:
+  the bare schedule fire tells it once and puts an item twenty years out,
+  so later fires skip it unread. The person's link, not the item, holds
+  that ticket, and a line written later takes the item over. A lost item
+  costs that ticket's wait-ended comment and spec session, or for a
+  hand-linked ticket one more read of it and its thread, and a failed read
+  refuses the repo's ended waits for the turn (dispatch/waits.mjs).
 - A ticket whose launch started nothing: `pickup-failed#<repo>` /
   `<issue>` in `dynamoState`, holding the time it holds the ticket until,
   put by the launch plan after a launch or claim that started nothing,
@@ -155,4 +160,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185. The hook table's item holds the repo's `trust` section, written by the task and read by the receiver, which drops a message only where the refusal is silent and reads the defaults when the item lacks the section or the read fails, since #419, under PRD #396. A PR review's verdict, which the review reads in place of its marker comment's text, was added in #416. A ticket's failed-launch record, which holds it from pickup for an hour once a launch started nothing, was added in #391.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185. The hook table's item holds the repo's `trust` section, written by the task and read by the receiver, which drops a message only where the refusal is silent and reads the defaults when the item lacks the section or the read fails, since #419, under PRD #396. A PR review's verdict, which the review reads in place of its marker comment's text, was added in #416. A ticket's failed-launch record, which holds it from pickup for an hour once a launch started nothing, was added in #391. A ticket linked to the wait ticket by hand keeps a wait item twenty years out, so the bare schedule fire stops reading it, since #233, under PRD #185.
