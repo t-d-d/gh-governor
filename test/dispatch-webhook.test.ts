@@ -16,6 +16,7 @@ import { relinkSession, sessionNamedIn, subscribeLine } from '../dispatch/webhoo
 import { reviewMarker } from '../dispatch/pr-body.mjs';
 import { FIRE_BUDGET, SIGN_POSTS, UNATTENDED, dispatchMarker, fireWeight, parseFire } from '../dispatch/webhook/fire.mjs';
 import { UNSIGNED } from '../dispatch/webhook/mention.mjs';
+import { deployedComment } from '../dispatch/webhook/deployed-comment.mjs';
 import { GENERIC_SWITCHES } from '../dispatch/repo-config.mjs';
 
 const SECRET = 'whsec_test';
@@ -1149,6 +1150,49 @@ describe('routeEvent — subscribers', () => {
     const removed = deployed(`Filed.\n\n${lines}${footer}`, 'unlabeled');
     assert.deepEqual(removed.sent.map((m) => [m.session, m.event]), [[REVIEWER, 'labels']], 'a removal is a person\'s edit, so a labels event');
     assert.deepEqual(deployed(`Filed.\n\n${lines}${footer}`, 'labeled', 'deployment: prod').sent.map((m) => m.event), ['labels'], 'only the deployed: family');
+  });
+
+  /**
+   * A shipping job that labels a ticket `deployed: <target>` also comments
+   * on it (dispatch/turn.mjs). The owner hears the comment, as any comment
+   * governor's App posts, without the marker, and with the sign-off ask
+   * only where the issue is closed. It does not hear the label.
+   */
+  describe('governor\'s deploy comment', () => {
+    const app = { user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE', performed_via_github_app: { id: APP_ID } };
+    const text = deployedComment({ target: 'prod', workflow: 'Deliver', url: 'https://github.com/acme/factory/actions/runs/500/job/2', commit: 'a'.repeat(40) });
+    const commented = (on: Record<string, unknown>, by: Record<string, unknown> = app) => messages('issue_comment', commentEvent({ issue: on }, { ...by, body: text }));
+
+    test('the comment is one line naming the target, the job and the commit, then the governor:deployed marker', () => {
+      assert.equal(text, `Deployed to prod by Deliver ([job](https://github.com/acme/factory/actions/runs/500/job/2)), built from aaaaaaa.\n\n<!-- governor:deployed prod -->`);
+    });
+
+    test('reaches the issue\'s owner without its marker, asking for sign-off on a closed issue and not on an open one', () => {
+      const closed = commented({ ...issue(`Filed.${footer}`), state: 'closed' }).sent;
+      assert.deepEqual(closed.map((m) => [m.session, m.event, m.on, m.closing]), [[OWNER, 'comments', 717, true]]);
+      assert.ok(closed[0]!.text.includes('Deployed to prod by Deliver'), closed[0]!.text);
+      assert.doesNotMatch(closed[0]!.text, /governor:deployed/);
+      assert.equal(closed[0]!.fallback, undefined);
+
+      const open = commented({ ...issue(`Filed.${footer}`), state: 'open' }).sent;
+      assert.deepEqual(open.map((m) => [m.session, m.event, m.closing]), [[OWNER, 'comments', undefined]]);
+    });
+
+    test('a person\'s comment quoting the marker on a closed issue asks for no sign-off', () => {
+      const quoted = commented({ ...issue(`Filed.${footer}`), state: 'closed' }, { user: member, author_association: 'OWNER' }).sent;
+      assert.deepEqual(quoted.map((m) => [m.session, m.closing]), [[OWNER, undefined]]);
+    });
+
+    test('an issue whose body names no owner, or whose author may not name a session, queues no message for it', () => {
+      assert.deepEqual(commented({ ...issue('Filed.'), state: 'closed' }).sent, []);
+      const stranger = { login: 'someone', type: 'User' };
+      assert.deepEqual(commented({ ...issue(`Filed.${footer}`), state: 'closed', user: stranger, author_association: 'NONE' }).sent, []);
+    });
+
+    test('the deployed: label beside it queues no message to the owner', () => {
+      const labelled = messages('issues', { action: 'labeled', label: { name: 'deployed: prod' }, issue: { ...issue(`Filed.${footer}`), state: 'closed' }, sender: { login: 'governor-app[bot]', type: 'Bot' }, repository: { full_name: REPO } });
+      assert.deepEqual(labelled.sent, []);
+    });
   });
 
   test('the ready label keeps its schedule fire beside the subscriber\'s message, and so does a close', () => {

@@ -83,7 +83,7 @@
           "type": "boolean"
         },
         "subscribeMessages": {
-          "description": "Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. A filer hears a `deployed:` label on its issue only through a subscribe line for `deploys`.",
+          "description": "Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. A filer hears of its ticket's first deploy to each target through governor's comment on its issue, which asks it to sign off where the issue is closed. It hears a `deployed:` label only through a subscribe line for `deploys`.",
           "type": "boolean"
         },
         "redScheduledRun": {
@@ -111,7 +111,7 @@
           "type": "boolean"
         },
         "deployedLabels": {
-          "description": "A shipping job labels the tickets it shipped `deployed: <target>`. Needs `deployMessages`.",
+          "description": "A shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, so the issue's filer hears of the deploy. Needs `deployMessages`.",
           "type": "boolean"
         },
         "prReview": {

@@ -129,14 +129,14 @@ The switches in `features`:
 | `pickup` | A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `pickup.sweepHours` sets. |
 | `summons` | A session per `@claude` remark, and a dispatch started by hand. |
 | `prMessages` | Messages into the session a PR names, or the newest live session holding its branch. |
-| `subscribeMessages` | Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. A filer hears a `deployed:` label on its issue only through a subscribe line for `deploys`. |
+| `subscribeMessages` | Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. A filer hears of its ticket's first deploy to each target through governor's comment on its issue, which asks it to sign off where the issue is closed. It hears a `deployed:` label only through a subscribe line for `deploys`. |
 | `redScheduledRun` | A fresh session on a scheduled run on the default branch that went red. |
 | `unblocked` | What a blocker's close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket's session, and the spec work on a not-ready ticket. The session whose link ends the ticket's body owns it and is asked to rewrite its own spec; a fresh session rewrites it only where the body names no session or that session is archived, so nobody takes a ticket from its owner. A file that still sets the older `mergeHandoff` reads as this. |
 | `ciMessages` | A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`. |
 | `deployMessages` | A shipping job, or a red deploy, tells the sessions of the merges it shipped. |
 | `branchRunMessages` | A run dispatched on a branch tells the session that wrote its commit. |
 | `conflicts` | A merge into the default branch tells each PR it left conflicted. |
-| `deployedLabels` | A shipping job labels the tickets it shipped `deployed: <target>`. Needs `deployMessages`. |
+| `deployedLabels` | A shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, so the issue's filer hears of the deploy. Needs `deployMessages`. |
 | `prReview` | The PR review, run from the `review` section. |
 | `heartbeat` | Governor records each fire on the issue the `heartbeat` section names: a line for pickup and one per periodic. In the older shape with a `marker`, the hourly sweep stamps the issue's `last-run:` line instead. |
 | `periodics` | A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached. |
@@ -210,7 +210,7 @@ What to expect once it is set up:
 - **The tag is named when the job ends.** A message says "the <tag> tag is on <sha>" as soon as the shipping job succeeds. If a later job moves the tag, the message runs ahead of it, and is wrong if that job fails. Mark the job that moves the tag, or a job after it.
 - **The first marked deploy tells nobody.** A shipping job covers the merges since the last green run that shipped the same label. The first run with the marker has none, so it only sets the baseline. Messages and labels start with the next one.
 - **A deploy workflow that is also `workflows.ci`.** Many small repos run the gate inside the deploy. A red run of that workflow is then CI: it goes to `ciMessages` (the one suspect's session, or one fresh session for several), never to the red-deploy message (the `deployRed` prompt). A green shipping job in it still uses `deployMessages`. A deploy runs only after the merge, so it has no run at a PR's head: with `prReview` on, set `review.waitForCi` to `false`, or every PR's review waits for a CI run that never comes.
-- **An issue's filer does not hear the label by default.** A filer is subscribed to everything on its issue but `labels` and `deploys`. To hear a `deployed:` label, the issue body needs `<!-- governor:subscribe <session link> events=deploys -->` naming the filer, and the repo needs `subscribeMessages` and `deployedLabels` on. A filer that has signed off by then refuses the message, and governor drops its line.
+- **An issue's filer hears the comment, not the label.** The first time a ticket gets a `deployed:` label, governor comments on it, naming the target, the job and the commit it built, and the filer hears that comment as any comment on its issue. On a closed issue the message asks the filer to sign off. The repo needs `subscribeMessages` and `deployedLabels` on. A ticket that already had the label gets no second comment. The filer is not told of the label itself unless a `governor:subscribe` line names it for `deploys`, so by default it hears each deploy once. A filer that has signed off by then refuses the message, and nothing starts.
 
 A minimal deploy workflow, `.github/workflows/deploy.yml`, with both marks:
 

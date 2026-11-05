@@ -5062,6 +5062,64 @@ describe('run — a workflow run on main', () => {
       }
       assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 500);
     });
+
+    /**
+     * A ticket newly labelled `deployed: <target>` gets one comment saying
+     * so, which its owner hears as any comment on its issue. One that had
+     * the label before the turn gets none.
+     */
+    describe('the deploy comment', () => {
+      const commented = (labelsOf: (n: number) => string[], comment?: (n: number, body: string) => Promise<void>) => {
+        const comments: Array<{ issue: number; body: string }> = [];
+        const made = caughtUp(greens);
+        const reader = made.reader();
+        Object.assign(reader, {
+          ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: labelsOf(n), pull: false, association: 'MEMBER' }),
+          comment: comment ?? (async (n: number, body: string) => { comments.push({ issue: n, body }); }),
+        });
+        return { ...made, comments };
+      };
+
+      test('each ticket newly labelled gets one comment naming the target, the job and the commit, ending in the marker', async () => {
+        const { reader, comments, labelled } = commented(() => []);
+        const h = harness({ reader });
+        h.cursors.set(DEV_CURSOR, { runId: 498, commit: 'shaB', created: at(498) });
+        assert.equal(exitCodeFor(await run(jobFire(DEV), h.deps as never) as never), 0);
+        assert.deepEqual(labelled.map((l) => l.ticket).sort(), [730, 736]);
+        assert.deepEqual(comments.map((c) => c.issue).sort(), [730, 736]);
+        for (const { body } of comments) {
+          assert.equal(body, `Deployed to dev by Deliver ([job](${stage(DEV).html_url})), built from ${SHA_MAIN.slice(0, 7)}.\n\n<!-- governor:deployed dev -->`);
+        }
+      });
+
+      test('a ticket that already carried the label gets no comment, and keeps the label', async () => {
+        const { reader, comments, labelled } = commented((n) => (n === 730 ? [DEV] : []));
+        const h = harness({ reader });
+        h.cursors.set(DEV_CURSOR, { runId: 498, commit: 'shaB', created: at(498) });
+        await run(jobFire(DEV), h.deps as never);
+        assert.deepEqual(labelled.map((l) => l.ticket).sort(), [730, 736]);
+        assert.deepEqual(comments.map((c) => c.issue), [736]);
+      });
+
+      test('a refused comment is logged on the dispatch-labels line and fails the turn, and the label stays', async () => {
+        const { reader, labelled } = commented(() => [], async (n: number) => { if (n === 730) throw new Error('403 Resource not accessible by integration'); });
+        const h = harness({ reader });
+        h.cursors.set(DEV_CURSOR, { runId: 498, commit: 'shaB', created: at(498) });
+        const r = await run(jobFire(DEV), h.deps as never);
+        assert.equal(exitCodeFor(r as never), 1);
+        assert.deepEqual(labelled.map((l) => l.ticket).sort(), [730, 736]);
+        assert.ok(h.logged.some((l) => l.event === 'dispatch-labels' && l.ticket === 730 && /403/.test(String(l.error))), JSON.stringify(h.logged));
+        assert.equal(h.messages.length, 2, 'the deploy messages still go');
+      });
+
+      test('with deployedLabels off, nothing is labelled and nothing commented', async () => {
+        const { reader, comments, labelled } = commented(() => []);
+        const h = harness({ reader, configFile: async () => (() => { const f = JSON.parse(FACTORY_FILE); f.features.deployedLabels = false; return JSON.stringify(f); })() });
+        h.cursors.set(DEV_CURSOR, { runId: 498, commit: 'shaB', created: at(498) });
+        await run(jobFire(DEV), h.deps as never);
+        assert.deepEqual([labelled, comments], [[], []]);
+      });
+    });
   });
 
   test('once a resend fails in a turn, later sends in it are not sent again: the fault is not a blip', async () => {

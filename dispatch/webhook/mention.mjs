@@ -77,6 +77,7 @@
 
 import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
+import { DEPLOYED_MARKER } from './deployed-comment.mjs';
 import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
 
 export const MENTION = '@claude';
@@ -652,10 +653,17 @@ const writtenFires = (written, event, payload, appId, relay, bodies) => {
     // posted, and a pass or a person's wait starts no session with nothing
     // to do.
     const ownerOnly = reviewComment(by, appId);
+    // Governor's deploy comment on an issue (dispatch/turn.mjs): on a
+    // closed issue the change reaching a target ends what its owner waits
+    // on, as a close does. A person's comment quoting the marker is a remark.
+    const deployed = !pr && body.includes(DEPLOYED_MARKER) && postedByApp(by, appId);
     const refused = notAnUpdate({ written: by, relay, appId });
-    // The PR review's marker is the receiver's to read, not the session's
-    // to quote: a reply quoting it would be refused as a person's.
-    const told = ownerOnly ? { ...payload, comment: { ...payload?.comment, body: withoutMarker(body) } } : payload;
+    // The PR review's marker, and the deploy comment's, are the receiver's
+    // to read, not the session's to quote: a reply quoting the review's
+    // would be refused as a person's.
+    const told = ownerOnly ? { ...payload, comment: { ...payload?.comment, body: withoutMarker(body) } }
+      : deployed ? { ...payload, comment: { ...payload?.comment, body: withoutMarker(body, DEPLOYED_MARKER) } }
+        : payload;
     parts.push(refused ? { fires: [], reason: refused } : fanOut({
       on,
       body: onBody,
@@ -675,6 +683,7 @@ const writtenFires = (written, event, payload, appId, relay, bodies) => {
       byBranch,
       sessionPost: ownSessionPost(body),
       unsigned: unsignedPost(body),
+      closing: deployed && on?.state === 'closed',
       reason: `${what} ${by?.id} on #${on?.number}`,
     }));
   }
