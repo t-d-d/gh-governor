@@ -1646,6 +1646,27 @@ describe('handle', () => {
   });
 });
 
+describe('handle — a body too deeply nested to read in time', () => {
+  test('reads it as quoted, queues nothing for its mention, and logs that at info', async () => {
+    const { deps, queued, logged } = harness();
+    const body = `${'- '.repeat(16000)}@claude please look`;
+    const started = performance.now();
+    const response = await handle(delivery('issue_comment', commentEvent({}, { body })), deps);
+    const took = performance.now() - started;
+    assert.ok(took < 1000, `${took} ms`);
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(queued.length, 0);
+    const read = logged.filter((l) => l.event === 'body-read-as-quoted');
+    assert.deepEqual(read, [{ event: 'body-read-as-quoted', level: 'info', delivery: 'd-1', github: 'issue_comment', body: 'comment', length: body.length }]);
+  });
+
+  test('logs nothing for a body read as written', async () => {
+    const { deps, logged } = harness();
+    await handle(delivery('issue_comment', commentEvent()), deps);
+    assert.deepEqual(logged.filter((l) => l.event === 'body-read-as-quoted'), []);
+  });
+});
+
 describe('cachedSecret', () => {
   test('reads the secret once per warm environment', async () => {
     let reads = 0;
