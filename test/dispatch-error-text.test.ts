@@ -31,6 +31,23 @@ describe('errorText', () => {
     assert.equal(errorText(null), 'null');
   });
 
+  test('a value String() cannot convert gives a line instead of throwing', () => {
+    const bare = Object.create(null);
+    assert.equal(errorText(bare), '[object Object]');
+
+    const badToString = { toString() { throw new Error('no string'); } };
+    assert.equal(errorText(badToString), '[object Object]');
+
+    const badStack = {
+      get stack() { throw new Error('no stack'); },
+      toString() { return 'the value'; },
+    };
+    assert.equal(errorText(badStack), 'the value');
+
+    const nothingWorks = new Proxy({}, { get() { throw new Error('no property'); } });
+    assert.equal(typeof errorText(nothingWorks), 'string');
+  });
+
   test('the three callers use it and keep no copy of their own', () => {
     for (const path of ['dispatch/cli.mjs', 'dispatch/webhook/starter.mjs', 'dispatch/webhook/route.mjs']) {
       const source = readFileSync(join(ROOT, path), 'utf8');
