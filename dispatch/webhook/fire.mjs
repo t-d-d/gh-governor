@@ -314,8 +314,9 @@ export const lastDispatch = (comments) => {
 
 /**
  * @typedef {{ kind: 'schedule', issue?: number, freed?: number, label?: string }} ScheduleFire
- *   `label`: the label just added to `issue` in a repo whose ready labels
- *   the receiver does not know; the turn ends before the login unless it is
+ *   `label`: the label just added to `issue`, or the ready label `issue`
+ *   carries when a blocker was unlinked from it, in a repo whose ready labels
+ *   the receiver may not know; the turn ends before the login unless it is
  *   one of them.
  * @typedef {{ kind: 'probe' }} ProbeFire
  * @typedef {{ kind: 'dispatch', prompt: string, sessionName?: string, model?: string, scheduled?: ScheduledRun, on?: number, author?: string, writer?: string, assigner?: string }} DispatchFire

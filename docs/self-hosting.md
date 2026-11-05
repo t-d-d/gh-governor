@@ -38,7 +38,7 @@ Under your account's or organisation's **Settings → Developer settings → Git
    - **Metadata**: Read. Every App has it.
 
    The deploy checks that the App holds each of these, and that each installation on a listed owner has accepted them. When you add a permission later, accept it on every installation too.
-4. **Subscribe to events**: Check run, Issue comment, Issues, Pull request, Pull request review, Pull request review comment, Status, Workflow job, Workflow run. The API cannot set these, so tick them here. The deploy refuses to point the webhook while one is missing.
+4. **Subscribe to events**: Check run, Issue comment, Issue dependencies, Issues, Pull request, Pull request review, Pull request review comment, Status, Workflow job, Workflow run. The API cannot set these, so tick them here. The deploy refuses to point the webhook while one is missing.
 5. **Where can this GitHub App be installed?**: **Any account**. A private App installs only on the account that owns it. The deployment's owner list is what keeps an outsider's installation from using your login.
 6. Create the App. Note its **App ID** and its slug (the last part of its public URL).
 7. Under **Private keys**, generate a key and save the `.pem` file.

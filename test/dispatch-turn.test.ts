@@ -1034,6 +1034,20 @@ describe('run — the dispatcher claims what it launches', () => {
     assert.deepEqual(line.reads, [{ labels: ['type: bug'], openBlockers: 0 }]);
   });
 
+  // A blocker unlinked queues the same fire as a ready label (route.mjs), so
+  // a ticket another open issue still blocks is skipped as for a label.
+  test('a selection fire for a ready ticket still blocked by another open issue starts nothing, and logs it skipped', async () => {
+    const base = harness();
+    const { deps, launches, logged } = harness({
+      reader: () => ({ ...base.deps.reader(''), ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'open', labels: [READY, 'mode: afk'], pull: false, association: 'MEMBER', openBlockers: 1 }) }),
+    });
+    await run({ kind: 'schedule', issue: 9, label: READY }, deps as never);
+    assert.deepEqual(launches, []);
+    const line = logged.find((l) => l.event === 'dispatch-pickup' && l.issue === 9);
+    assert.ok(line, JSON.stringify(logged));
+    assert.deepEqual(line.reads, [{ labels: [READY, 'mode: afk'], openBlockers: 1 }]);
+  });
+
   test('a label fire under a DispatchCap of 0 starts nothing, and logs the cap as the reason, not the ticket', async () => {
     const { deps, launches, logged } = harness({ cap: 0 });
     await run({ kind: 'schedule', issue: 9 }, deps as never);

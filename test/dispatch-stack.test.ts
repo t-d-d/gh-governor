@@ -1015,8 +1015,8 @@ describe('infra/governor.cfn.yml — the fire lane', () => {
   });
 
   // A shipping job's own completion is the fire, so the hook hears jobs.
-  test('the receiver routes the three events a mention arrives in, beside check runs, issues, pull requests, statuses, workflow jobs and workflow runs', () => {
-    assert.deepEqual([...HOOK_EVENTS].sort(), ['check_run', 'issue_comment', 'issues', 'pull_request', 'pull_request_review', 'pull_request_review_comment', 'status', 'workflow_job', 'workflow_run']);
+  test('the receiver routes the three events a mention arrives in, beside check runs, issue dependencies, issues, pull requests, statuses, workflow jobs and workflow runs', () => {
+    assert.deepEqual([...HOOK_EVENTS].sort(), ['check_run', 'issue_comment', 'issue_dependencies', 'issues', 'pull_request', 'pull_request_review', 'pull_request_review_comment', 'status', 'workflow_job', 'workflow_run']);
   });
 
   test('the Mac runner\'s workflow is gone: a mention comes through the receiver', () => {

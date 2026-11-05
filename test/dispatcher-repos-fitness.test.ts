@@ -230,6 +230,9 @@ describe('fitness: an unlisted owner queues nothing (dispatcher-repos.md)', () =
       ['opened mentioning', { action: 'opened', issue: { ...issue, body: '@claude fix this' }, sender: person }],
       ['assigned to claude', { action: 'assigned', issue, assignee: { login: 'claude' }, sender: person }],
     ],
+    issue_dependencies: [
+      ['blocker unlinked', { action: 'blocked_by_removed', blocked_issue: { ...issue, state: 'open', labels: [{ name: 'workflow: ready for development' }] }, blocking_issue: { number: 3, state: 'open', labels: [] }, sender: person }],
+    ],
     issue_comment: [
       ['mention', { action: 'created', issue, comment: mention() }],
       ['remark on a PR', { action: 'created', issue: prIssue, comment: mention({ body: 'A remark.' }) }],

@@ -65,6 +65,10 @@
  * included, and every session that finished started two more; bounded to
  * what the close blocked, a chain advances one link per merge and cannot
  * fan out past the dependency graph.
+ * A "blocked by" link removed from a ticket queues the selection fire a
+ * ready label queues, for that ticket, where it carries one of the repo's
+ * ready labels ({@link unlinkedFire}): GitHub sends no other event a ticket
+ * freed by hand would be heard by, and it would wait for the sweep.
  * A PR merged into the default branch tells its owner session, as any close
  * does, and lists no blocked ticket: the merging session has no step left
  * after the merge, and can sign off.
@@ -106,7 +110,8 @@ import { pastReadingBound } from './subscribe.mjs';
 /**
  * The events the receiver acts on, which the App's webhook subscribes to:
  * check runs and statuses, for a check that ended on a PR's head, issues
- * for the selection, the three a mention of @claude can arrive in
+ * for the selection, issue dependencies, for a blocker unlinked from a
+ * ready ticket, the three a mention of @claude can arrive in
  * (mention.mjs), pull requests, for a push or a close a subscriber hears
  * of, workflow jobs, for a shipping job that succeeded on main,
  * and workflow runs, for a red main, a red deploy and a run that ended on
@@ -114,7 +119,7 @@ import { pastReadingBound } from './subscribe.mjs';
  * GitHub lists them. The nightly `dispatch-app-events` check holds the
  * App's subscription to cover them (scripts/lib/conformance-app-events.mjs).
  */
-export const HOOK_EVENTS = Object.freeze(['check_run', 'issue_comment', 'issues', 'pull_request', 'pull_request_review', 'pull_request_review_comment', 'status', 'workflow_job', 'workflow_run']);
+export const HOOK_EVENTS = Object.freeze(['check_run', 'issue_comment', 'issue_dependencies', 'issues', 'pull_request', 'pull_request_review', 'pull_request_review_comment', 'status', 'workflow_job', 'workflow_run']);
 
 /**
  * The repository permissions governor uses, each at the level it needs,
@@ -195,7 +200,10 @@ export const verifySignature = (secret, body, signature) => {
 /**
  * @typedef {import('./fire.mjs').Fire} Fire
  * @typedef {import('./fire.mjs').FireMessage} FireMessage
- * @typedef {{ fire: Fire, reason: string, key?: string }} Queued One fire, and the key that tells it from the delivery's others.
+ * @typedef {{ fire: Fire, reason: string, key?: string, ready?: readonly string[] }} Queued One fire, and the key that tells it from the delivery's others.
+ *   `ready`: a selection fire's ticket's labels, one of which must be a
+ *   ready label for the fire to queue; the receiver names the first the
+ *   repo's hook-table item lists as the fire's label ({@link switchedOn}).
  * @typedef {{ fires: Queued[], reason: string }} Decision
  */
 
@@ -574,6 +582,39 @@ const mergedFire = (payload, main) => {
 };
 
 /**
+ * A "blocked by" link removed from a ticket: the selection fire a ready
+ * label queues, naming the ticket, or why not. GitHub sends the removal to
+ * each side's repo, `blocked_by_removed` to the blocked ticket's, naming it
+ * as `blocked_issue`, and `blocking_removed` to the blocker's: only the
+ * first queues, so one removal is one fire, in the ticket's own repo. The
+ * fire carries the ticket's labels as `ready`, for {@link switchedOn} to
+ * judge against the repo's ready labels; the turn reads the ticket's
+ * blockers and labels afresh, so one still blocked is skipped as for a
+ * label. Who removed the link decides nothing, as for a label. A link added
+ * queues nothing: the selection already skips a blocked ticket.
+ *
+ * @param {any} payload
+ * @returns {Decision}
+ */
+const unlinkedFire = (payload) => {
+  const action = String(payload?.action);
+  if (action === 'blocked_by_added' || action === 'blocking_added') return nothing(`issue_dependencies ${action}: a link added: the selection already skips a blocked ticket`);
+  if (action === 'blocking_removed') return nothing('issue_dependencies blocking_removed: the blocked ticket\'s repo hears blocked_by_removed, which carries the fire');
+  if (action !== 'blocked_by_removed') return nothing(`issue_dependencies ${action}: not one the dispatcher acts on`);
+  const ticket = payload?.blocked_issue;
+  const number = ticket?.number;
+  if (!Number.isInteger(number) || number <= 0) return nothing('issue_dependencies blocked_by_removed names no blocked issue');
+  const blocker = Number.isInteger(payload?.blocking_issue?.number) ? `#${payload.blocking_issue.number}` : 'a blocker';
+  if (ticket?.state === 'closed') return nothing(`${blocker} unlinked from #${number}, and #${number} is closed: nothing to select`);
+  /** @type {string[]} */
+  const labels = (Array.isArray(ticket?.labels) ? ticket.labels : [])
+    .map((/** @type {any} */ label) => (typeof label === 'string' ? label : label?.name))
+    .filter((/** @type {unknown} */ name) => typeof name === 'string' && name !== '');
+  if (labels.length === 0) return nothing(`${blocker} unlinked from #${number}, and #${number} carries no label, so no ready one`);
+  return one({ fire: build.schedule({ issue: number }), reason: `${blocker} unlinked from #${number}: select it if it carries one of the repo's ready labels`, ready: labels });
+};
+
+/**
  * What a delivery means for the dispatcher. Anything not listed queues
  * nothing: a session costs money and attention, and the schedule fire
  * covers whatever this misses.
@@ -648,6 +689,7 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
     const counted = action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened', 'dispatch') : mentioned;
     return both(both(counted, waitFire(payload)), ticketReviewFire(payload));
   }
+  if (event === 'issue_dependencies') return unlinkedFire(payload);
   if (event === 'pull_request') {
     const reviewed = both(pullRequestFires(payload, trust), reviewFire(payload));
     return main === null ? reviewed : both(reviewed, mergedFire(payload, main));
@@ -863,7 +905,9 @@ const judged = async (route, delivery, deps) => {
 
 /**
  * A delivery's fires less those the repo's item in the hook table drops: a
- * selection fire for a label the item's ready labels do not list, and each
+ * selection fire for a label the item's ready labels do not list, or for a
+ * ticket whose labels hold none of them (`ready`, which names the first that
+ * does as the fire's label), and each
  * fire whose switch the item says is off ({@link droppedBy}). An item
  * without ready labels drops no selection fire, and one without switches
  * drops nothing by switch. A dropped fire's reason names the label or the
@@ -882,7 +926,13 @@ const switchedOn = (decision, item, delivery, deps) => {
   const kept = [];
   /** @type {string[]} */
   const dropped = [];
-  for (const queued of decision.fires) {
+  for (const listed of decision.fires) {
+    const picked = pickedLabel(listed, item);
+    if (picked === null) {
+      dropped.push(`its ${listed.fire.kind} fire, as #${'issue' in listed.fire ? listed.fire.issue : '?'} carries none of ${repo}'s ready labels`);
+      continue;
+    }
+    const queued = picked === undefined ? listed : { ...listed, fire: { ...listed.fire, label: picked } };
     const { fire } = queued;
     const label = fire.kind === 'schedule' ? fire.label : undefined;
     if (label !== undefined && item?.ready && !item.ready.includes(label)) {
@@ -893,11 +943,27 @@ const switchedOn = (decision, item, delivery, deps) => {
     if (off === null) kept.push(queued);
     else dropped.push(`its ${fire.kind} fire, as ${repo}'s file turns ${off.join(' and ')} off`);
   }
-  if (dropped.length === 0) return decision;
+  if (dropped.length === 0) return { ...decision, fires: kept };
   const reason = `${decision.reason}; dropped ${dropped.join(', and ')}`;
   // A delivery with every fire dropped is logged once, as one that queued nothing.
   if (kept.length > 0) deps.log('webhook-dropped', { level: 'info', delivery: delivery ?? null, repo, reason });
   return { fires: kept, reason };
+};
+
+/**
+ * The ready label a fire carrying its ticket's labels (`ready`) is to name:
+ * the first the item lists, null where it lists none, and undefined where
+ * the fire carries no labels or the item cannot say, so the fire is queued
+ * as routed and the task reads the ticket.
+ *
+ * @param {Queued} queued
+ * @param {import('./hook-table.mjs').Known | null} item
+ * @returns {string | null | undefined}
+ */
+const pickedLabel = (queued, item) => {
+  if (queued.ready === undefined || !item?.ready) return undefined;
+  const ready = item.ready;
+  return queued.ready.find((label) => ready.includes(label)) ?? null;
 };
 
 /**
