@@ -102,8 +102,8 @@ A dark factory runs with the lights off, because nobody works on the floor. Each
 
 | The repo turns on | What is left for a person |
 |---|---|
-| Pickup and PR messages | Review and merge every pull request. This repo runs this way. |
-| The PR review, with `merge` off | Merge the pull requests the model passed. |
+| Pickup and PR messages | Review and merge every pull request. |
+| The PR review, with `merge` off | Merge the pull requests the model passed. This repo runs this way. |
 | The PR review, with `merge` on | Only what the review cannot pass, such as a change to a human-only path. Podstow's repo runs this way, and most of its pull requests merge with no person. |
 
 The rules for what a person keeps are plain config. [The test fixture's file](test/fixtures/factory/.github/dispatch.json) shows what they look like for a repo with the merge on: 37 human-only paths, each with its reason. They cover the architectural rules, the agents' own instructions and skills, the infrastructure, and the deploy and promotion gates.
