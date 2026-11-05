@@ -74,7 +74,7 @@
 
 import { DEPENDABOT, authorKind, lets } from './webhook/fire.mjs';
 import { commentKey, commentText, heldPassReason, ownerActs, passOf, sentence } from './webhook/review-comment.mjs';
-import { checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
+import { checkLabel, checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
 import { bodyDigest, closedBy, closingTickets, foreignClosings, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
@@ -85,6 +85,7 @@ import { RED_CONCLUSIONS } from '../scripts/lib/github-app.mjs';
  * @typedef {import('../scripts/lib/github-app.mjs').FileRow} FileRow
  * @typedef {import('../scripts/lib/github-app.mjs').TicketRow} TicketRow
  * @typedef {import('../scripts/lib/github-app.mjs').ThreadRow} ThreadRow
+ * @typedef {import('./checklist.mjs').RequiredCheck} RequiredCheck
  * @typedef {import('./checklist.mjs').Answer} Answer
  * @typedef {import('./checklist.mjs').ClosedTicket} ClosedTicket
  * @typedef {import('./checklist.mjs').ConstraintTexts} ConstraintTexts
@@ -104,12 +105,12 @@ import { RED_CONCLUSIONS } from '../scripts/lib/github-app.mjs';
  *   merge: (n: number, options: { sha: string }) => Promise<{ merged: boolean, sha: string }>,
  *   checkRun: (run: { name: string, sha: string, state: CheckState, title: string, summary: string }) => Promise<void>,
  *   requiredChecks: (branch: string) => Promise<string[]>,
- *   checksAt: (sha: string) => Promise<Array<{ name: string, state: 'red' | 'green' | 'pending' }>>,
+ *   checksAt: (sha: string) => Promise<Array<{ name: string, state: 'red' | 'green' | 'pending', app?: string }>>,
  *   ciRuns: (path: string, sha: string) => Promise<Array<import('../scripts/lib/github-app.mjs').RunRow & { path: string }>>,
  * }} ReviewReader
  *   `requiredChecks`: the status checks a branch's protection and rulesets
  *   require. `checksAt`: the latest check runs and statuses at a commit,
- *   each red, green or pending. `ciRuns`: a workflow's runs at a commit,
+ *   each red, green or pending, a check run with the slug of its App. `ciRuns`: a workflow's runs at a commit,
  *   newest first.
  * @typedef {'in_progress' | 'success' | 'failure' | 'neutral'} CheckState
  * @typedef {'merged' | 'passed' | 'conflict' | 'commented' | 'marker-moved' | 'skipped' | 'limited' | 'failed' | 'out-of-time'} Outcome
@@ -156,32 +157,43 @@ const MERGEABLE_WAIT_MS = 3000;
  * there: any run of the name pending, or none started. Red wins over
  * pending, and a name whose only run was skipped reads green. The checks
  * the base requires on GitHub and those the repo's `requireChecks` lists
- * count alike, each name once. None required reads no check: a repo with
- * no CI needs no checks permission.
+ * count alike, each once. A listed entry that names its App reads only
+ * that App's check runs of the name, so a job of the same name in a PR's
+ * own workflow neither meets nor fails it. A name GitHub requires reads
+ * every run and status of the name. None required reads no check: a repo
+ * with no CI needs no checks permission.
  *
  * @param {ReviewReader} reader
  * @param {PullRequestRow} pull
- * @param {readonly string[]} listed The repo's `review.requireChecks`.
- * @returns {Promise<{ red: string[], pending: string[] }>}
+ * @param {readonly RequiredCheck[]} listed The repo's `review.requireChecks`.
+ * @returns {Promise<{ red: RequiredCheck[], pending: RequiredCheck[] }>}
  */
 const requiredStates = async (reader, pull, listed) => {
   // The review's own check is left out: a repo that requires it would
   // otherwise skip the review until the review had run, and read its own
   // earlier failure at the same head as a red required check.
-  const required = [...new Set([...(await reader.requiredChecks(pull.base)), ...listed])].filter((name) => name !== CHECK);
-  if (required.length === 0) return { red: [], pending: [] };
+  /** @type {Map<string, RequiredCheck>} */
+  const byKey = new Map();
+  for (const entry of [...(await reader.requiredChecks(pull.base)), ...listed]) {
+    const name = typeof entry === 'string' ? entry : entry.name;
+    if (name === CHECK) continue;
+    byKey.set(typeof entry === 'string' ? JSON.stringify([name]) : JSON.stringify([name, entry.app]), entry);
+  }
+  if (byKey.size === 0) return { red: [], pending: [] };
   const checks = await reader.checksAt(pull.headSha);
-  /** @type {string[]} */
+  /** @type {RequiredCheck[]} */
   const red = [];
-  /** @type {string[]} */
+  /** @type {RequiredCheck[]} */
   const pending = [];
-  for (const name of required) {
-    const runs = checks.filter((c) => c.name === name);
+  for (const entry of byKey.values()) {
+    const runs = typeof entry === 'string'
+      ? checks.filter((c) => c.name === entry)
+      : checks.filter((c) => c.name === entry.name && c.app === entry.app);
     // Unfinished while any run of the name is pending, even beside a green
     // one: a run that skipped its job reads green while the push run of the
     // same name is still going.
-    if (runs.some((c) => c.state === 'red')) red.push(name);
-    else if (runs.length === 0 || runs.some((c) => c.state === 'pending')) pending.push(name);
+    if (runs.some((c) => c.state === 'red')) red.push(entry);
+    else if (runs.length === 0 || runs.some((c) => c.state === 'pending')) pending.push(entry);
   }
   return { red, pending };
 };
@@ -291,7 +303,7 @@ export const readFacts = async (reader, pull, started) => {
  * @param {ReviewReader} reader
  * @param {PullRequestRow} pull
  * @param {string[]} list The Dependabot list.
- * @param {string[]} red The required checks red on its head.
+ * @param {RequiredCheck[]} red The required checks red on its head.
  * @param {string | null} redCi The CI workflow's file, where its run at the head is red.
  * @returns {Promise<Answer>}
  */
@@ -397,7 +409,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     const [checks, cis] = await Promise.all([requiredStates(reader, pull, review.requireChecks), ci === undefined ? null : ciState(reader, pull, ci)]);
     const ciWaits = cis === 'pending';
     if (checks.pending.length > 0 || ciWaits) {
-      const names = checks.pending.map((c) => `\`${c}\``).join(', ');
+      const names = checks.pending.map(checkLabel).join(', ');
       const what = [
         ...(checks.pending.length > 0 ? [`required check${checks.pending.length > 1 ? 's' : ''} ${names}`] : []),
         ...(ciWaits ? [`CI workflow \`${ci}\``] : []),

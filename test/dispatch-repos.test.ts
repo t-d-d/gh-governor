@@ -149,7 +149,7 @@ describe('readConfig', () => {
       tickets: { require: [{ labels: ['mode: afk', 'mode: hitl'] }], forbid: [{ labels: ['type: adr'], unless: ['ready'] }] },
       quote: ['docs/rules/*.md', '!docs/rules/README.md'],
       dependabot: ['/package-lock.json'],
-      requireChecks: ['codeql', 'ci/circleci'],
+      requireChecks: ['codeql', 'ci/circleci', { name: 'scan', app: 'github-code-scanning' }],
       waitForCi: false,
       merge: false,
     });
@@ -158,7 +158,7 @@ describe('readConfig', () => {
     assert.deepEqual(full.config.review?.humanOnly[0], { glob: 'infra/**', reason: 'the stacks', unless: [] });
     assert.deepEqual(full.config.review?.tickets.require, [{ labels: ['mode: afk', 'mode: hitl'], unless: [] }]);
     assert.equal(full.config.review?.merge, false);
-    assert.deepEqual(full.config.review?.requireChecks, ['codeql', 'ci/circleci']);
+    assert.deepEqual(full.config.review?.requireChecks, ['codeql', 'ci/circleci', { name: 'scan', app: 'github-code-scanning' }]);
     assert.equal(full.config.review?.waitForCi, false);
     const fault = (review: unknown) => {
       const refused = on(review);
@@ -175,6 +175,9 @@ describe('readConfig', () => {
     assert.match(fault({ checklist: 'c', tickets: { needs: [] } }), /needs/);
     assert.match(fault({ checklist: 'c', quote: ['!'] }), /review\.quote/);
     assert.match(fault({ checklist: 'c', merge: 'no' }), /review\.merge/);
+    assert.match(fault({ checklist: 'c', requireChecks: [{ name: 'scan' }] }), /review\.requireChecks/, 'an entry that is not a bare name names its App');
+    assert.match(fault({ checklist: 'c', requireChecks: [{ name: 'scan', app: ' ' }] }), /review\.requireChecks/);
+    assert.match(fault({ checklist: 'c', requireChecks: [{ name: 'scan', app: 'github-actions', id: 1 }] }), /review\.requireChecks/);
     assert.match(fault({ checklist: 'c', script: 'check.sh' }), /script/, 'no repo-supplied code');
   });
 

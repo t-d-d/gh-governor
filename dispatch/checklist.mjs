@@ -46,6 +46,7 @@ import { cliResult, usageLimit } from './cli-answer.mjs';
  * @typedef {import('../scripts/lib/github-app.mjs').FileRow} FileRow
  * @typedef {import('../scripts/lib/github-app.mjs').PullCommitRow} PullCommitRow
  * @typedef {import('../scripts/lib/github-app.mjs').TicketRow} TicketRow
+ * @typedef {string | { name: string, app: string }} RequiredCheck A required check: a name any App or status may post, or a name and the slug of the App that must post it.
  * @typedef {{ answer: 'pass', reason: string, reused?: string } | { answer: 'fail', test: number, reason: string, editable: boolean, claim?: true, push?: true, person?: { test: number, reason: string } }} Answer `reused`: the head an earlier review's model gave this pass at, reused at a new head with nothing it reads changed. `claim`: the ticket waits for the author session to claim it, not for an edit. `push`: a required check is red, and waits for the author session's push. `person`: a later test no edit meets, beside a first one the author session meets by an edit, or by a claim with `claim`; `editable` is then false.
  * @typedef {import('./repo-config.mjs').HumanOnly} HumanOnly
  * @typedef {import('./repo-config.mjs').TicketRule} TicketRule
@@ -240,6 +241,14 @@ export const dependabotAnswer = ({ files, commits, list }) => {
 
 /** Labels as a reason names them. @param {string[]} labels */
 const named = (labels) => labels.map((l) => `\`${l}\``).join(', ');
+
+/**
+ * A required check as a message names it: its name, and the App that must
+ * post it where a `review.requireChecks` entry names one.
+ *
+ * @param {RequiredCheck} check
+ */
+export const checkLabel = (check) => (typeof check === 'string' ? `\`${check}\`` : `\`${check.name}\` from \`${check.app}\``);
 
 /**
  * Whether a ticket neither claimed nor excluded is still waiting for its
@@ -530,14 +539,14 @@ const listFailure = (files, { humanOnly, quote }, decided, waived) => {
  * the CI workflow whose latest run there ended red. A push that turns them
  * green meets it, and the push is reviewed again.
  *
- * @param {string[]} red
+ * @param {RequiredCheck[]} red
  * @param {string | null} [ci] The CI workflow's file, where its run at the head is red.
  * @returns {Answer | null}
  */
 export const checksFailure = (red, ci = null) => {
   /** @type {string[]} */
   const parts = [];
-  if (red.length > 0) parts.push(`the required check${red.length > 1 ? 's' : ''} ${named(red)}`);
+  if (red.length > 0) parts.push(`the required check${red.length > 1 ? 's' : ''} ${red.map(checkLabel).join(', ')}`);
   if (ci !== null) parts.push(`the CI workflow \`${ci}\``);
   if (parts.length === 0) return null;
   const many = red.length > 1 || parts.length > 1;
@@ -569,7 +578,7 @@ export const checksFailure = (red, ci = null) => {
  *   owners?: { verification: ClosedTicket[], later: ClosedTicket[] },
  *   prose?: Array<{ number: number, text: string }>,
  *   foreign?: Array<{ repo: string, number: number, text: string }>,
- *   red?: string[],
+ *   red?: RequiredCheck[],
  *   redCi?: string | null,
  *   unattended?: boolean,
  * }} facts `tickets`: the body's closing tickets, in its order. `others`: the other open PRs and the tickets each closes. `owners`: the tickets `namedOwners` read, as read. `prose`: the body's `proseClosings`. `foreign`: its `foreignClosings`. `red`: the required checks red on the head. `redCi`: the CI workflow's file, where its latest run at the head ended red. `unattended`: governor started the session the body names.
@@ -746,7 +755,7 @@ export { usageLimit };
  *   owners: { verification: ClosedTicket[], later: ClosedTicket[] },
  *   prose: Array<{ number: number, text: string }>,
  *   foreign: Array<{ repo: string, number: number, text: string }>,
- *   red?: string[],
+ *   red?: RequiredCheck[],
  *   redCi?: string | null,
  *   constraintTexts: (paths: string[]) => Promise<ConstraintTexts>,
  *   unattended: () => Promise<boolean>,
