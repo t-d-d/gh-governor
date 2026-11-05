@@ -967,12 +967,19 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         runs.push(...batch);
         if (batch.length < 100) break;
       }
-      const status = await call('GET', `/repos/${repo}/commits/${sha}/status?per_page=100`);
+      /** @type {any[]} */
+      const statuses = [];
+      for (let page = 1; page <= 30; page += 1) {
+        const answer = await call('GET', `/repos/${repo}/commits/${sha}/status?${new URLSearchParams({ per_page: '100', page: String(page) })}`);
+        const batch = answer?.statuses ?? [];
+        statuses.push(...batch);
+        if (batch.length < 100) break;
+      }
       /** @type {(red: boolean, pending: boolean) => 'red' | 'green' | 'pending'} */
       const stateOf = (red, pending) => (red ? 'red' : pending ? 'pending' : 'green');
       return [
         ...runs.map((r) => ({ name: String(r?.name ?? ''), state: stateOf(RED_CONCLUSIONS.has(String(r?.conclusion)), typeof r?.conclusion !== 'string') })),
-        ...(status?.statuses ?? []).map((/** @type {any} */ st) => ({ name: String(st?.context ?? ''), state: stateOf(st?.state === 'failure' || st?.state === 'error', st?.state === 'pending') })),
+        ...statuses.map((/** @type {any} */ st) => ({ name: String(st?.context ?? ''), state: stateOf(st?.state === 'failure' || st?.state === 'error', st?.state === 'pending') })),
       ];
     },
 
