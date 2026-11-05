@@ -46,10 +46,10 @@ import { cliResult, usageLimit } from './cli-answer.mjs';
  * @typedef {import('../scripts/lib/github-app.mjs').FileRow} FileRow
  * @typedef {import('../scripts/lib/github-app.mjs').PullCommitRow} PullCommitRow
  * @typedef {import('../scripts/lib/github-app.mjs').TicketRow} TicketRow
- * @typedef {string | { name: string, app: string }} RequiredCheck A required check: a name any App or status may post, or a name and the slug of the App that must post it.
  * @typedef {{ answer: 'pass', reason: string, reused?: string } | { answer: 'fail', test: number, reason: string, editable: boolean, claim?: true, push?: true, person?: { test: number, reason: string } }} Answer `reused`: the head an earlier review's model gave this pass at, reused at a new head with nothing it reads changed. `claim`: the ticket waits for the author session to claim it, not for an edit. `push`: a required check is red, and waits for the author session's push. `person`: a later test no edit meets, beside a first one the author session meets by an edit, or by a claim with `claim`; `editable` is then false.
  * @typedef {import('./repo-config.mjs').HumanOnly} HumanOnly
  * @typedef {import('./repo-config.mjs').TicketRule} TicketRule
+ * @typedef {import('./repo-config.mjs').RequiredCheck} RequiredCheck
  * @typedef {{
  *   humanOnly: HumanOnly[],
  *   tickets: { require: TicketRule[], forbid: TicketRule[] },

@@ -172,12 +172,11 @@ const requiredStates = async (reader, pull, listed) => {
   // The review's own check is left out: a repo that requires it would
   // otherwise skip the review until the review had run, and read its own
   // earlier failure at the same head as a red required check.
-  /** @type {Map<string, RequiredCheck>} */
+  /** @type {Map<string, { entry: RequiredCheck, name: string, app: string | null }>} */
   const byKey = new Map();
   for (const entry of [...(await reader.requiredChecks(pull.base)), ...listed]) {
-    const name = typeof entry === 'string' ? entry : entry.name;
-    if (name === CHECK) continue;
-    byKey.set(typeof entry === 'string' ? JSON.stringify([name]) : JSON.stringify([name, entry.app]), entry);
+    const [name, app] = typeof entry === 'string' ? [entry, null] : [entry.name, entry.app];
+    if (name !== CHECK) byKey.set(JSON.stringify([name, app]), { entry, name, app });
   }
   if (byKey.size === 0) return { red: [], pending: [] };
   const checks = await reader.checksAt(pull.headSha);
@@ -185,10 +184,8 @@ const requiredStates = async (reader, pull, listed) => {
   const red = [];
   /** @type {RequiredCheck[]} */
   const pending = [];
-  for (const entry of byKey.values()) {
-    const runs = typeof entry === 'string'
-      ? checks.filter((c) => c.name === entry)
-      : checks.filter((c) => c.name === entry.name && c.app === entry.app);
+  for (const { entry, name, app } of byKey.values()) {
+    const runs = checks.filter((c) => c.name === name && (app === null || c.app === app));
     // Unfinished while any run of the name is pending, even beside a green
     // one: a run that skipped its job reads green while the push run of the
     // same name is still going.

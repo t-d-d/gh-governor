@@ -211,7 +211,7 @@ const reviewSchema = z.strictObject({
     z.string().trim().min(1),
     z.strictObject({
       name: z.string().trim().min(1).meta({ description: 'The check run\'s name.' }),
-      app: z.string().trim().min(1).meta({ description: 'The slug of the GitHub App that must post it, such as `github-actions` or `github-code-scanning`. A run of the name from any other App, and a commit status of the name, does not count.' }),
+      app: z.string().trim().regex(/^[a-z0-9][a-z0-9-]*$/, 'an App slug: lowercase letters, digits and hyphens, the last part of its github.com/apps/<slug> page').meta({ description: 'The slug of the GitHub App that must post it, such as `github-actions` or `github-code-scanning`: lowercase letters, digits and hyphens, the last part of its `github.com/apps/<slug>` page. A run of the name from any other App, and a commit status of the name, does not count.' }),
     }),
   ])).default([]).meta({ description: 'Checks the review treats as required, beside any the default branch requires on GitHub: a name, which a check run from any App or a commit status context meets, or `{ "name", "app" }`, which only that App\'s check run of the name meets. One red on the PR\'s head fails the review for a push; one not finished, or not posted, holds the review with `governor` in progress until it ends. A name GitHub also requires counts once, and the review\'s own `governor` check is left out. Default none.' }),
   waitForCi: z.boolean().default(true).meta({ description: 'Whether the review waits for the `workflows.ci` run at the PR\'s head: one red fails it for a push, one not finished, or none at the head, holds it with `governor` in progress. Set it false where the CI workflow does not run on pull requests, such as one that runs only on a push to the default branch; the review then reads no workflow runs, and still reads the required checks and `requireChecks`. A red CI run on the default branch still drives `ciMessages`. Default true.' }),
@@ -568,6 +568,7 @@ export const configSchema = z.strictObject({
  *   targets whose failure gets one fresh session. `tags`: each target's tag.
  * @typedef {{ labels: string[], unless: string[] }} TicketRule
  * @typedef {{ glob: string, reason: string, unless: string[] }} HumanOnly
+ * @typedef {string | { name: string, app: string }} RequiredCheck A required check: a name any App or status may post, or a name and the slug of the App that must post it.
  * @typedef {{
  *   checklist: string,
  *   humanOnly: HumanOnly[],
@@ -575,7 +576,7 @@ export const configSchema = z.strictObject({
  *   quote: string[],
  *   decides: string[],
  *   dependabot: string[],
- *   requireChecks: Array<string | { name: string, app: string }>,
+ *   requireChecks: RequiredCheck[],
  *   waitForCi: boolean,
  *   merge: boolean,
  * }} Review The PR review's settings, its checklist read.

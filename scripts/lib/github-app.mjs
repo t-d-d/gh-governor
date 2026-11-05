@@ -950,8 +950,8 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
-     * The latest check run of each name, and the latest status of each
-     * context, at a commit: red when it ended in a way that blocks a merge,
+     * The latest check runs at a commit, as the API's `latest` filter
+     * answers them, and the latest status of each context: red when it ended in a way that blocks a merge,
      * pending while it has not ended, green otherwise. A check run carries
      * the slug of the App that posted it; a status has none. Needs the
      * App's Checks and Commit statuses read.

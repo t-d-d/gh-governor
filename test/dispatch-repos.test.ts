@@ -177,6 +177,9 @@ describe('readConfig', () => {
     assert.match(fault({ checklist: 'c', merge: 'no' }), /review\.merge/);
     assert.match(fault({ checklist: 'c', requireChecks: [{ name: 'scan' }] }), /review\.requireChecks/, 'an entry that is not a bare name names its App');
     assert.match(fault({ checklist: 'c', requireChecks: [{ name: 'scan', app: ' ' }] }), /review\.requireChecks/);
+    for (const app of ['GitHub-Actions', 'github.com/apps/github-actions', 'github actions']) {
+      assert.match(fault({ checklist: 'c', requireChecks: [{ name: 'scan', app }] }), /review\.requireChecks/, `${app} is no App slug, and no check run would ever meet it`);
+    }
     assert.match(fault({ checklist: 'c', requireChecks: [{ name: 'scan', app: 'github-actions', id: 1 }] }), /review\.requireChecks/);
     assert.match(fault({ checklist: 'c', script: 'check.sh' }), /script/, 'no repo-supplied code');
   });

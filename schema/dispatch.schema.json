@@ -901,8 +901,8 @@
                   },
                   "app": {
                     "type": "string",
-                    "minLength": 1,
-                    "description": "The slug of the GitHub App that must post it, such as `github-actions` or `github-code-scanning`. A run of the name from any other App, and a commit status of the name, does not count."
+                    "pattern": "^[a-z0-9][a-z0-9-]*$",
+                    "description": "The slug of the GitHub App that must post it, such as `github-actions` or `github-code-scanning`: lowercase letters, digits and hyphens, the last part of its `github.com/apps/<slug>` page. A run of the name from any other App, and a commit status of the name, does not count."
                   }
                 },
                 "required": [
