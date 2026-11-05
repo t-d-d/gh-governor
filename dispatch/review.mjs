@@ -53,16 +53,19 @@
  *   conflict after a conflict, edits that comment in place, words and
  *   marker, instead of posting again.
  * - No run but the CI workflow's at the head holds a merge (an earlier
- *   review held one while a Deploy Prod run was unfinished). A PR whose newest review is a held pass from
- *   before that change, same head and body, is merged on it without
- *   judging again, and the comment edited to say it merged.
+ *   review held one while a Deploy Prod run was unfinished). A held pass
+ *   from before that change merges nothing: its PR is judged again.
  *
  * Every comment ends with a marker (dispatch/pr-body.mjs) naming the head
- * and the body reviewed, so neither is read twice, and, where the model
- * was asked, the digest of what it read. A pass at an earlier head is
- * reused at a new one where that digest is the same: the tests decided in
- * code run again, and only the model's answer is kept. A fail is never
- * reused. The comment is the
+ * and the body reviewed, and, where the model was asked, the digest of
+ * what it read. The review keeps the same verdict in the state table
+ * (`Verdicts`), and reads it back from there alone: a person with write
+ * access can edit any comment, governor's included, so comment text never
+ * passes a PR. A head and body the verdict names are not read twice. A
+ * pass at an earlier head is reused at a new one where the digest is the
+ * same: the tests decided in code run again, and only the model's answer
+ * is kept. A fail is never reused. A missing item reuses nothing. The
+ * comment is the
  * record, and also how the session the PR body names hears the review:
  * the receiver queues that session a message fire for each new comment
  * (webhook/mention.mjs). Only one the session can act on, a fail an edit,
@@ -73,7 +76,7 @@
  */
 
 import { DEPENDABOT, authorKind, lets } from './webhook/fire.mjs';
-import { commentKey, commentText, heldPassReason, ownerActs, passOf, sentence } from './webhook/review-comment.mjs';
+import { commentKey, commentText, ownerActs, sentence } from './webhook/review-comment.mjs';
 import { checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
 import { bodyDigest, closedBy, closingTickets, foreignClosings, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
@@ -111,6 +114,19 @@ import { RED_CONCLUSIONS } from '../scripts/lib/github-app.mjs';
  *   require. `checksAt`: the latest check runs and statuses at a commit,
  *   each red, green or pending. `ciRuns`: a workflow's runs at a commit,
  *   newest first.
+ * @typedef {{ headSha: string, bodySha: string, readSha: string | null, pass: { reason: string, at: string } | null, again: boolean }} Verdict
+ *   What a review that commented decided, as the next review relies on it:
+ *   the head and body digest it read, the digest of what the model read
+ *   (`readDigest`, dispatch/checklist.mjs) or null where the code decided,
+ *   the model's pass with its reason and the head it was given at, or null,
+ *   and `again` for a test-8 fail, read again at the same head.
+ * @typedef {{
+ *   read: (pr: number) => Promise<(Verdict & { at: string }) | null>,
+ *   record: (pr: number, read: (Verdict & { at: string }) | null, verdict: Verdict) => Promise<boolean>,
+ * }} Verdicts
+ *   The PR's verdict in the state table: read (null for none), and written
+ *   over the item read, false where another review's stood. A read or
+ *   write that fails throws.
  * @typedef {'in_progress' | 'success' | 'failure' | 'neutral'} CheckState
  * @typedef {'merged' | 'passed' | 'conflict' | 'commented' | 'marker-moved' | 'skipped' | 'limited' | 'failed' | 'out-of-time'} Outcome
  * @typedef {{ pr: number, outcome: Outcome, reason: string | null, headSha: string | null, answer: Answer | null, error: string | null, check: string | null }} Reviewed
@@ -315,11 +331,12 @@ const bumpAnswer = async (reader, pull, list, red, redCi) => {
  *   labels: import('./checklist.mjs').Rules['labels'],
  *   base: string,
  *   started: (session: string) => Promise<boolean>,
+ *   verdicts: Verdicts,
  *   trusted: readonly string[],
  *   ci?: string,
  *   outOfTime?: boolean,
  *   byCommit?: boolean,
- * }} args `review.checklist`: the checklist the model reads, part of the digest a pass is reused by. `started`: whether governor started a session, from its state table. `trusted`: the repo's `trust.review`, whose authors' PRs it reads. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads, left out where `review.waitForCi` is false.
+ * }} args `review.checklist`: the checklist the model reads, part of the digest a pass is reused by. `started`: whether governor started a session, from its state table. `verdicts`: the PR's last verdict, in the same table. `trusted`: the repo's `trust.review`, whose authors' PRs it reads. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads, left out where `review.waitForCi` is false.
  *   `outOfTime`: the turn ran out of time for this PR. It goes through the
  *   usual skips, then posts a `failure` check in place of reading the facts
  *   and asking the model. `byCommit`: the fire carried the commit and not
@@ -328,7 +345,7 @@ const bumpAnswer = async (reader, pull, list, red, redCi) => {
  *   so it is skipped without another.
  * @returns {Promise<Reviewed>}
  */
-export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, trusted, ci, outOfTime = false, byCommit = false }) => {
+export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, verdicts, trusted, ci, outOfTime = false, byCommit = false }) => {
   /** @type {import('./checklist.mjs').Rules} */
   const rules = { humanOnly: review.humanOnly, tickets: review.tickets, quote: review.quote, decides: review.decides, labels };
   /** @type {Reviewed} */
@@ -372,22 +389,20 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     }
     if (headSha !== undefined && headSha !== pull.headSha) return skip(`#${number} has moved past ${headSha.slice(0, 12)} to ${pull.headSha.slice(0, 12)}: that push's fire reviews it`);
     const bodySha = bodyDigest(pull.body);
-    const last = lastReview(await reader.allComments(number));
+    // The verdict comes from the state table, never from the comment: a
+    // person with write access can edit governor's comment. The comment is
+    // read only to edit it in place.
+    const [verdict, thread] = await Promise.all([verdicts.read(number), reader.allComments(number)]);
+    const last = lastReview(thread);
     // A red required check's or CI run's fail is read again: a re-run can turn it green on the same head.
-    const reviewedAlready = last !== null && last.headSha === pull.headSha && last.bodySha === bodySha && commentKey(last.text) !== 'push';
-    // A pass whose merge an earlier review held, from before no run held a
-    // merge: merged on that pass without judging it again.
-    const heldReason = reviewedAlready ? heldPassReason(last.text) : null;
-    if (reviewedAlready && heldReason === null) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
+    if (verdict !== null && verdict.headSha === pull.headSha && verdict.bodySha === bodySha && !verdict.again) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
     // The model's pass at an earlier head, offered for reuse: the checklist
     // reuses it only where what the model reads has the same digest. A
-    // marker naming no digest, or a fail, offers nothing.
+    // verdict naming no digest, or a fail, offers nothing.
     /** @type {{ read: string, reason: string, at: string } | null} */
-    let earlier = null;
-    if (last !== null && last.readSha !== null && last.headSha !== pull.headSha) {
-      const passed = passOf(last.text);
-      if (passed !== null) earlier = { read: last.readSha, reason: passed.reason, at: passed.reused ?? last.headSha };
-    }
+    const earlier = verdict !== null && verdict.readSha !== null && verdict.pass !== null && verdict.headSha !== pull.headSha
+      ? { read: verdict.readSha, reason: verdict.pass.reason, at: verdict.pass.at }
+      : null;
     /** @type {string | null} The digest of what the model read, or would have: null where the code decided. */
     let readSha = null;
 
@@ -411,18 +426,15 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
 
     // A required check would wait on a PR that gets no check at all, so it
     // fails out loud, and the owner can bypass it.
-    // A held pass carries no check, so it gets this one too.
     if (outOfTime) {
       const why = `The review turn ran out of time before it reached this pull request. ${RUNS_AGAIN}`;
       await check('failure', DID_NOT_RUN, why);
       return { ...reviewed, outcome: /** @type {Outcome} */ ('out-of-time'), reason: why };
     }
 
-    // The facts are read again for a held pass: a ticket may have closed or
-    // changed its labels since. Only the judgement is kept.
     const answer = bump
       ? await bumpAnswer(reader, pull, review.dependabot, checks.red, redCi)
-      : await checklist({ ...await readFacts(reader, pull, started), red: checks.red, redCi, held: heldReason, rules, system: review.checklist ?? '', earlier, read: (digest) => { readSha = digest; } }, judge);
+      : await checklist({ ...await readFacts(reader, pull, started), red: checks.red, redCi, rules, system: review.checklist ?? '', earlier, read: (digest) => { readSha = digest; } }, judge);
     reviewed.answer = answer;
 
     let conflict = false;
@@ -443,12 +455,11 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     }
 
     let outcome = /** @type {Outcome} */ (answer.answer === 'pass' ? (conflict ? 'conflict' : review.merge ? 'merged' : 'passed') : 'commented');
-    const said = commentText(answer, { conflict, merge: review.merge });
-    const text = heldReason !== null && outcome === 'merged' ? `${said} Merged once the promotion ended.` : said;
+    const text = commentText(answer, { conflict, merge: review.merge });
     const marker = reviewMarker(pull.headSha, bodySha, readSha);
     // A fail only a person meets is `neutral`, which passes a required
     // check: never one the author session can act on.
-    await check(answer.answer === 'pass' && !conflict ? 'success' : ownerActs(said) ? 'failure' : 'neutral', firstSentence(text), text);
+    await check(answer.answer === 'pass' && !conflict ? 'success' : ownerActs(text) ? 'failure' : 'neutral', firstSentence(text), text);
     if (outcome === 'merged') {
       const done = await reader.merge(number, { sha: pull.headSha });
       if (!done.merged) throw new Error(`GitHub did not merge #${number}`);
@@ -458,15 +469,22 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     const body = `${text}\n\n${marker}`;
     const key = commentKey(text);
     const saidAlready = last !== null && key !== null && commentKey(last.text) === key;
-    if (heldReason !== null && outcome === 'merged') {
-      // The held pass's comment now says the merge happened.
-      await reader.updateComment(/** @type {{ id: number }} */ (last).id, body);
-    } else if (saidAlready) {
+    if (saidAlready) {
       await reader.updateComment(last.id, body);
       outcome = 'marker-moved';
     } else {
       await reader.comment(number, body);
     }
+    // After the comment: one GitHub refused leaves no verdict, so the next
+    // fire reads the PR again. Another review's item standing is its own
+    // verdict, as good as this one.
+    await verdicts.record(number, verdict, {
+      headSha: pull.headSha,
+      bodySha,
+      readSha,
+      pass: answer.answer === 'pass' && readSha !== null ? { reason: answer.reason, at: answer.reused ?? pull.headSha } : null,
+      again: key === 'push',
+    });
     return { ...reviewed, outcome, reason: text };
   } catch (error) {
     const limited = /** @type {{ limit?: string }} */ (error)?.limit === 'session';

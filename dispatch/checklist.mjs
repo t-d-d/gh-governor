@@ -750,29 +750,26 @@ export { usageLimit };
  *   redCi?: string | null,
  *   constraintTexts: (paths: string[]) => Promise<ConstraintTexts>,
  *   unattended: () => Promise<boolean>,
- *   held?: string | null,
  *   rules: Rules,
  *   system?: string,
  *   earlier?: { read: string, reason: string, at: string } | null,
  *   read?: (digest: string) => void,
- * }} Facts `decideInCode`'s facts, and: `constraintTexts`, the read of the quoted files the model is to read, made only when it is asked; `unattended`, the read of whether governor started the PR's session, made only where a label's waiver changes the answer; `held`, the reason of a pass whose merge a promotion held, kept in place of a new judgement; `rules`, the repo's review settings and labels; `system`, the repo's checklist, part of what the model reads; `earlier`, the model's pass at an earlier head, with the digest of what it read then (`readDigest`), its reason and the head it was given at; `read`, told the digest of what the model reads, wherever the code leaves the answer to it.
+ * }} Facts `decideInCode`'s facts, and: `constraintTexts`, the read of the quoted files the model is to read, made only when it is asked; `unattended`, the read of whether governor started the PR's session, made only where a label's waiver changes the answer; `rules`, the repo's review settings and labels; `system`, the repo's checklist, part of what the model reads; `earlier`, the model's pass at an earlier head, with the digest of what it read then (`readDigest`), its reason and the head it was given at; `read`, told the digest of what the model reads, wherever the code leaves the answer to it.
  */
 
 /**
  * The checklist's answer for a PR's facts: the code's fail when tests 1,
- * 7 and 8 or the owners decide one; otherwise a held pass's own reason, so a
- * pass waiting on a promotion is not judged twice; otherwise the
- * model's, or its pass at an earlier head where what it reads has the same
- * digest: a merge from the base branch puts it the same question. A fail
- * is never reused. The facts are a held pass's too: a ticket closed during the
- * promotion fails it in code. No edit to the description changes a
+ * 7 and 8 or the owners decide one; otherwise the model's, or its pass at
+ * an earlier head where what it reads has the same digest: a merge from
+ * the base branch puts it the same question. A fail is never reused. No
+ * edit to the description changes a
  * quoted file's text, so the model's test-7 fail is never editable.
  *
  * @param {Facts} facts
  * @param {Judge} judge
  * @returns {Promise<Answer>}
  */
-export const checklist = async ({ pull, files, tickets, others, owners, prose, foreign, red = [], redCi = null, constraintTexts, unattended, held = null, rules, system = '', earlier = null, read = () => {} }, judge) => {
+export const checklist = async ({ pull, files, tickets, others, owners, prose, foreign, red = [], redCi = null, constraintTexts, unattended, rules, system = '', earlier = null, read = () => {} }, judge) => {
   const decide = (/** @type {boolean} */ unwatched) => decideInCode({ files, tickets, rules, others, owners, prose, foreign, red, redCi, unattended: unwatched });
   // The table is read only where a label's waiver changes the answer: a
   // read that fails then fails no review it could not change.
@@ -780,7 +777,6 @@ export const checklist = async ({ pull, files, tickets, others, owners, prose, f
   const unwaived = decide(true);
   const decided = isDeepStrictEqual(waived, unwaived) || !await unattended() ? waived : unwaived;
   if (decided !== null) return decided;
-  if (held !== null) return { answer: 'pass', reason: held };
   const left = constraintsLeft(files, tickets, rules);
   const constraints = left.length === 0 ? null : await constraintTexts(left);
   const found = tickets.filter(/** @returns {t is TicketRow} */ (t) => !('missing' in t));
@@ -803,7 +799,7 @@ export const checklist = async ({ pull, files, tickets, others, owners, prose, f
  *
  * A run the account's allowance refused: every later run would meet it, so
  * none starts, and each PR that needs one gets its error. A PR decided in
- * code, or a held pass, still settles. One judge per turn.
+ * code, or a reused pass, still settles. One judge per turn.
  *
  * @param {{
  *   skill: string,
