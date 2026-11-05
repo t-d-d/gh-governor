@@ -79,7 +79,7 @@
           "type": "boolean"
         },
         "prMessages": {
-          "description": "Messages into the session a PR names, or the local session holding its branch.",
+          "description": "Messages into the session a PR names, or the newest live session holding its branch.",
           "type": "boolean"
         },
         "subscribeMessages": {

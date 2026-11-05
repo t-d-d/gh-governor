@@ -34,7 +34,7 @@ import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, readLastRun } from '../
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
-import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, waitEndedMarker, waitNotPlannedMarker, waitOwnerMessage, waitSpecPrompt } from '../dispatch/waits.mjs';
+import { WAIT_FULL_MARKER, WAIT_PROMPT, WAIT_RELATIVE_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE, WAIT_UNREADABLE_MARKER, handLinkedUntil, waitEndedMarker, waitNotPlannedMarker, waitOwnerMessage, waitSpecPrompt } from '../dispatch/waits.mjs';
 import { waitOf } from '../scripts/lib/ready-work.mjs';
 import { UNREADIED_MARKER } from '../scripts/lib/ready-work.mjs';
 import { CONNECTOR_MISSING, ROUTINE_REFUSED } from '../dispatch/turn.mjs';
@@ -3338,6 +3338,39 @@ describe('run: a waiting ticket linked to the wait ticket', () => {
     assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNLINED_MARKER)).length, 1, JSON.stringify(h.comments));
   });
 
+  test('the bare fire parks a hand-linked ticket under an item twenty years out, and a later fire reads neither the ticket nor its thread', async () => {
+    const row = { number: 7, state: 'open', title: 'Issue 7', repo: REPO };
+    const h = linksTurn({ ticket: ticketWith({}), linked: true, blocking: [row] });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.comments.filter((c) => c.issue === 7 && c.body.includes(WAIT_UNLINED_MARKER)).length, 1, JSON.stringify(h.comments));
+    assert.equal(handLinkedUntil(NOW), '2046-09-25');
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, '2046-09-25']]);
+    assert.deepEqual(linkCalls(h), [], 'the person\'s link stays');
+    const thread = h.comments.map((c, i) => ({ id: i + 1, body: c.body, created_at: new Date(NOW).toISOString(), ours: true }));
+    const next = linksTurn({ ticket: ticketWith({}), linked: true, blocking: [row], thread, item: '2046-09-25' });
+    const reads: string[] = [];
+    const reader = next.deps.reader;
+    next.deps.reader = ((...a: unknown[]) => {
+      const r = (reader as (...b: unknown[]) => Record<string, unknown>)(...a);
+      return {
+        ...r,
+        ticket: async (n: number) => { reads.push(`ticket #${n}`); return (r.ticket as (n: number) => Promise<unknown>)(n); },
+        allComments: async (n: number) => { reads.push(`thread #${n}`); return thread; },
+      };
+    }) as never;
+    await run({ source: 'aws.events' }, next.deps as never);
+    assert.deepEqual(reads.filter((r) => r.endsWith('#7')), []);
+    assert.deepEqual([next.comments, linkCalls(next)], [[], []]);
+    assert.deepEqual([...next.waitItems], [[`${REPO}#7`, '2046-09-25']]);
+  });
+
+  test('a line written later on a parked hand-linked ticket takes its item over', async () => {
+    const h = linksTurn({ ticket: ticketWith({ wait: { until: LATER } }), linked: true, item: '2046-09-25' });
+    await run(fire, h.deps as never);
+    assert.deepEqual([...h.waitItems], [[`${REPO}#7`, LATER]]);
+    assert.deepEqual(linkCalls(h), []);
+  });
+
   test('the bare fire removes the link of a wait that ended before it reads the backlog, and a ticket not ready still gets its comment and spec session', async () => {
     // The ticket's dependency summary still counts the link it just lost.
     const h = linksTurn({ ticket: ticketWith({ wait: { until: PAST }, openBlockers: 1 }), linked: true, item: PAST });
@@ -6555,6 +6588,93 @@ describe('run — a PR whose body names no session', () => {
     assert.ok(api.asked.includes('list sk-ant-oat01-a'), 'the list is read under the stored login');
   });
 
+  /** A cloud session holding the branch, updated `minutesAgo`. */
+  const cloud = (minutesAgo: number) => ({ id: 'cse_01CLOUD', session_status: 'SESSION_STATUS_IDLE', environment_kind: 'remote', updated_at: at(minutesAgo), external_metadata: { current_branches: { '': BRANCH } } });
+  const CLOUD = 'https://claude.ai/code/session_01CLOUD';
+
+  test('a cloud session on its head branch newer than the local one gets the remark', async () => {
+    const api = sessionsApi([cloud(1), local], onBranch);
+    const { deps, messages, launches } = harness({ reader: unnamedReader(), sessions: api.sessions });
+    await run(messageFire(remark().fires), deps as never);
+    assert.deepEqual(messages.map((m) => m.session), [CLOUD]);
+    assert.deepEqual(launches, []);
+  });
+
+  test('a local session on its head branch newer than the cloud one gets the remark', async () => {
+    const api = sessionsApi([local, cloud(30)], onBranch);
+    const { deps, messages } = harness({ reader: unnamedReader(), sessions: api.sessions });
+    await run(messageFire(remark().fires), deps as never);
+    assert.deepEqual(messages.map((m) => m.session), [LOCAL]);
+  });
+
+  test('the session found on its head branch is written into the PR body', async () => {
+    const api = sessionsApi([cloud(1)]);
+    const edits: Array<{ pr: number; body: string }> = [];
+    const { deps } = harness({ reader: unnamedReader({ updatePull: async (pr: number, { body }: { body: string }) => { edits.push({ pr, body }); } }), sessions: api.sessions });
+    await run(messageFire(remark().fires), deps as never);
+    assert.equal(edits.length, 1, JSON.stringify(edits));
+    assert.equal(edits[0]!.pr, PR);
+    assert.equal(sessionNamedIn(edits[0]!.body), CLOUD);
+  });
+
+  /**
+   * A PR whose body links an archived session: the newest live session on
+   * its head branch is the owner, so a remark reaches it, the body is
+   * relinked to it, and no fresh session takes the PR over.
+   */
+  test('a remark on a PR linking an archived session reaches the newest live session on its branch and starts nothing', async () => {
+    const LINKED = `${UNNAMED}\n\nhttps://claude.ai/code/session_01OLD`;
+    const edits: Array<{ pr: number; body: string }> = [];
+    const reader = unnamedReader({ pull: async (n: number) => ({ number: n, body: LINKED, head: BRANCH, defaultBranch: 'main', open: true }), updatePull: async (pr: number, { body }: { body: string }) => { edits.push({ pr, body }); } });
+    const api = sessionsApi([cloud(1), local], onBranch);
+    const sent: string[] = [];
+    const { deps, launches } = harness({
+      reader,
+      sessions: api.sessions,
+      message: async ({ session }: { session: string }) => (sent.push(session), session.endsWith('01OLD')
+        ? { status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }
+        : { status: 0, output: JSON.stringify({ ok: true, session_id: 'session_01CLOUD', url: CLOUD }) }),
+    });
+    const routed = routeEvent({
+      event: 'issue_comment',
+      owners: ['acme'],
+      appId: APP_ID,
+      payload: {
+        action: 'created',
+        repository: { full_name: REPO },
+        issue: { ...prPayload, body: LINKED, pull_request: { url: 'p' } },
+        comment: { id: 93, body: 'Why the new section?', html_url: `https://github.com/${REPO}/pull/${PR}#issuecomment-93`, user: { login: 'tdickinson', type: 'User' }, author_association: 'OWNER' },
+      },
+    });
+    const result = await run(messageFire(routed.fires), deps as never);
+    assert.deepEqual(sent, ['https://claude.ai/code/session_01OLD', CLOUD]);
+    assert.deepEqual(launches, []);
+    assert.equal(sessionNamedIn(edits[0]!.body), CLOUD);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('a push to a PR linking an archived session reaches the live session on its branch', async () => {
+    const LINKED = `${UNNAMED}\n\nhttps://claude.ai/code/session_01OLD`;
+    const reader = unnamedReader({ pull: async (n: number) => ({ number: n, body: LINKED, head: BRANCH, defaultBranch: 'main', open: true }) });
+    const sent: string[] = [];
+    const { deps, launches } = harness({
+      reader,
+      sessions: sessionsApi([local], onBranch).sessions,
+      message: async ({ session }: { session: string }) => (sent.push(session), session.endsWith('01OLD')
+        ? { status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }
+        : { status: 0, output: JSON.stringify({ ok: true, session_id: 'session_01LOCAL', url: LOCAL }) }),
+    });
+    const pushed = routeEvent({
+      event: 'pull_request',
+      owners: ['acme'],
+      appId: APP_ID,
+      payload: { action: 'synchronize', after: 'b'.repeat(40), repository: { full_name: REPO }, sender: { login: 'tdickinson', type: 'User' }, pull_request: { ...prPayload, body: LINKED, base: { ref: 'main' }, head: { ref: BRANCH, sha: 'b'.repeat(40) } } },
+    });
+    await run(messageFire(pushed.fires), deps as never);
+    assert.deepEqual(sent, ['https://claude.ai/code/session_01OLD', LOCAL]);
+    assert.deepEqual(launches, []);
+  });
+
   // The record as the API sends some: the session under `response_shape`.
   test('a comment reaches the live session whose record names its branch under response_shape', async () => {
     const api = sessionsApi([local], { cse_01LOCAL: { response_shape: onBranch.cse_01LOCAL } });
@@ -6628,13 +6748,13 @@ describe('run — a PR whose body names no session', () => {
   });
 
   /**
-   * A summons on such a PR starts a fresh session, unless `trust.task`
-   * refuses the PR's author. Then the remark goes to the live session on
-   * its head branch, judged by `trust.relay`, as a remark that is not a
-   * summons does, and governor posts no refusal. With no live session
-   * there, the refusal comment is posted as before.
+   * A summons on such a PR is judged by `trust.start` first. Then, where a
+   * live session holds its head branch, the remark goes to it, judged by
+   * `trust.relay`, and no fresh session starts, whatever `trust.task` says
+   * of the PR's author. With no live session there, `trust.task` judges the
+   * author: a refusal comment, or a fresh session, as before.
    */
-  describe('a summons trust.task refuses', () => {
+  describe('a summons on it', () => {
     /** The factory's file with `trust` in place of its `pickup.by`, which a file may not set beside `trust.task`. */
     const fileWith = (trust: Record<string, string[]>) => {
       const file = JSON.parse(FACTORY_FILE);
@@ -6673,9 +6793,89 @@ describe('run — a PR whose body names no session', () => {
       assert.deepEqual(h.launches, []);
       assert.deepEqual(h.messages.map((m) => m.session), [LOCAL]);
       assert.match(h.messages[0]!.text, /why the new section\?/);
-      assert.match(h.messages[0]!.text, /trust\.task/);
       assert.ok(!h.messages[0]!.text.includes(UNATTENDED), 'the line for a fresh unattended session is not the branch owner\'s');
       assert.deepEqual(h.comments, []);
+    });
+
+    /**
+     * Where a live session holds the branch, a summons `trust.start` lets in
+     * goes to it, judged by `trust.relay`, whatever `trust.task` says of the
+     * PR's author: the live session owns the PR, and no fresh session starts.
+     */
+    test('a summons trust.task lets in reaches the live session on the branch, and its link goes into the body', async () => {
+      const h = withFile(FACTORY_FILE, sessionsApi([local], onBranch).sessions);
+      const result = await run(summonsOn('COLLABORATOR'), h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.messages.map((m) => m.session), [LOCAL]);
+      assert.match(h.messages[0]!.text, /why the new section\?/);
+      assert.deepEqual(h.comments, []);
+      assert.equal(sessionNamedIn(h.edits.find((e) => e.pr === PR)!.body), LOCAL);
+      assert.equal(exitCodeFor(result as never), 0);
+    });
+
+    test('with no live session on the branch, a summons trust.task lets in starts a fresh session as before', async () => {
+      const h = withFile(FACTORY_FILE, sessionsApi([]).sessions);
+      await run(summonsOn('COLLABORATOR'), h.deps as never);
+      assert.deepEqual(h.messages, []);
+      assert.equal(h.launches.length, 1);
+    });
+
+    test('with trust.start set to OWNER, a collaborator\'s summons gets the start refusal and reaches no session, though one holds the branch', async () => {
+      const h = withFile(fileWith({ start: ['OWNER'] }), sessionsApi([local], onBranch).sessions);
+      await run(summonsOn('COLLABORATOR'), h.deps as never);
+      assert.deepEqual(h.messages, []);
+      assert.deepEqual(h.launches, []);
+      const told = h.comments.filter((c) => c.issue === PR);
+      assert.equal(told.length, 1, JSON.stringify(h.comments));
+      assert.match(told[0]!.body, /`trust\.start`/);
+    });
+
+    test('with trust.start set to OWNER, the collaborator\'s remark without @claude reaches the session on the branch', async () => {
+      const h = withFile(fileWith({ start: ['OWNER'] }), sessionsApi([local], onBranch).sessions);
+      const routed = routeEvent({
+        event: 'issue_comment',
+        owners: ['acme'],
+        appId: APP_ID,
+        payload: {
+          action: 'created',
+          repository: { full_name: REPO },
+          issue: { ...prPayload, pull_request: { url: 'p' } },
+          comment: { id: 94, body: 'why the new section?', html_url: `https://github.com/${REPO}/pull/${PR}#issuecomment-94`, user: { login: 'pat', type: 'User' }, author_association: 'COLLABORATOR' },
+        },
+      });
+      await run(messageFire(routed.fires), h.deps as never);
+      assert.deepEqual(h.messages.map((m) => m.session), [LOCAL]);
+      assert.deepEqual(h.launches, []);
+    });
+
+    test('a writer trust.relay leaves out reaches nobody where a live session holds the branch, and nothing fresh starts', async () => {
+      const h = withFile(fileWith({ relay: ['OWNER', 'BOT'], task: ['OWNER'] }), sessionsApi([local], onBranch).sessions);
+      const pr = { ...summonsOn('MEMBER') } as Record<string, unknown>;
+      // The PR's author is the owner here, so trust.task would let a fresh session start.
+      await run({ ...pr, author: 'OWNER' } as never, h.deps as never);
+      assert.deepEqual(h.messages, []);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments, []);
+    });
+
+    test('a lookup that fails starts nothing and fails the turn', async () => {
+      const failing = { list: async () => { throw new Error('GET /v1/code/sessions: 503'); }, get: async () => null };
+      const h = withFile(FACTORY_FILE, failing);
+      const result = await run(summonsOn('COLLABORATOR'), h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.messages, []);
+      assert.equal(exitCodeFor(result as never), 1);
+    });
+
+    test('a branch lookup that fails after the linked owner answers archived starts nothing and fails the turn', async () => {
+      const LINKED = `${UNNAMED}\n\nhttps://claude.ai/code/session_01OLD`;
+      const failing = { list: async () => { throw new Error('GET /v1/code/sessions: 503'); }, get: async () => null };
+      const h = withFile(FACTORY_FILE, failing, { pull: async (n: number) => ({ number: n, body: LINKED, head: BRANCH, defaultBranch: 'main', open: true, association: 'OWNER' }) }, {
+        message: async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }),
+      });
+      const result = await run(summonsOn('COLLABORATOR'), h.deps as never);
+      assert.deepEqual(h.launches, [], 'nothing starts beside a session on the branch that may be live');
+      assert.equal(exitCodeFor(result as never), 1);
     });
 
     test('with no live session on its head branch, the remark gets the trust.task refusal comment', async () => {
@@ -6689,12 +6889,15 @@ describe('run — a PR whose body names no session', () => {
       assert.match(told[0]!.body, /`trust\.task`/);
     });
 
-    test('a writer trust.relay leaves out does not reach the session on the branch, and gets the refusal', async () => {
+    // trust.task is not read where a live session owns the PR, so its
+    // refusal is not posted either: the owner is already on the work.
+    test('a writer trust.relay leaves out does not reach the session on the branch, and trust.task posts no refusal', async () => {
       const file = fileWith({ task: ['OWNER'], relay: ['OWNER', 'BOT'] });
       const h = withFile(file, sessionsApi([local], onBranch).sessions);
       await run(summonsOn('MEMBER'), h.deps as never);
       assert.deepEqual(h.messages, []);
-      assert.equal(h.comments.filter((c) => c.issue === PR).length, 1, JSON.stringify(h.comments));
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === PR), []);
     });
 
     test('with prMessages off, the remark does not reach the session on the branch, and gets the refusal', async () => {

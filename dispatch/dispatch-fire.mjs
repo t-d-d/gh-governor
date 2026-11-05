@@ -2,12 +2,15 @@
  * A dispatch fire: a session started by hand or by a summons, on the fire's
  * own prompt, or one for a scheduled run on the default branch gone red,
  * on the run's facts the fire carries and the repo's instruction
- * (`redRunPrompt`, dispatch/workflow.mjs). A summons starts one only where
- * the repo's `trust.start` lets in who set it going, and its `trust.task`
- * lets in the author of the issue or PR it is on. A summons `trust.task`
- * refuses on a PR whose body names no session goes to the live session on
- * the PR's head branch instead, as a remark that is not a summons does,
- * and gets the refusal comment only where no such session takes it.
+ * (`redRunPrompt`, dispatch/workflow.mjs). A summons is judged by the
+ * repo's `trust.start` first: a writer or assigner it leaves out gets the
+ * one refusal comment, and nothing is reached or started. A written summons
+ * on a PR then looks for the PR's owner (`ownerOf`, dispatch/deliveries.mjs):
+ * where a live session owns it, the remark goes there, judged by
+ * `trust.relay`, the session's link goes into the PR body, and no fresh
+ * session starts, whatever `trust.task` says of the PR's author. Only
+ * where nobody owns the PR does `trust.task` judge the author, and a fresh
+ * session start.
  * A red scheduled run whose run before went red too starts nothing: the
  * session the red before started is on the failure.
  */
@@ -94,50 +97,81 @@ const unstartedSummons = async ({ repo, on, writer, assigner }, ctx) => {
 };
 
 /**
- * What a summons says to the live session on its PR's head branch, when
- * `trust.task` refused it a fresh session: the summons's own prompt,
- * which quotes the remark and points at the PR, without the line meant for
- * an unattended fresh session.
+ * What a summons says to the live session that owns the PR it is on: the
+ * summons's own prompt, which quotes the remark and points at the PR,
+ * without the line meant for an unattended fresh session.
  *
  * @param {string} prompt
  */
-const branchOwnerText = (prompt) => [
-  'This remark summoned a fresh session on your pull request, but the repo\'s trust.task leaves out the pull request\'s author, so no fresh session starts and the remark comes to you, the live session on its head branch.',
+const ownerText = (prompt) => [
+  'This remark summoned a fresh session on your pull request, but you are the live session that owns it, so no fresh session starts and the remark comes to you.',
   '',
   prompt.endsWith(`\n${UNATTENDED}`) ? prompt.slice(0, -UNATTENDED.length - 1) : prompt,
 ].join('\n');
 
 /**
- * Whether a summons `trust.task` refused reached the live session on the
- * head branch of the PR it is on, as a remark that is not a summons does
- * (dispatch/webhook/mention.mjs): only where the repo's `trust.relay` lets
- * the writer in, its `prMessages` switch is on, and `on` is a PR. The
- * receiver queues a summons on a PR only where the PR's body names no
- * session, and the delivery reads the body again. A writer the fire does not
- * name is let in nowhere. A read that fails reaches nobody, and the
- * refusal is posted as ever. A send that throws stores a login the CLI
- * refreshed before the turn fails, as a hook's or an unblocked fire's
- * send does: the turn's own store-back runs only after the plan.
+ * What became of looking for the owner of the PR a written summons is on:
+ * `none` where nobody owns it, or the lookup was not run; `held` where a
+ * live session owns it but `trust.relay` leaves the writer out, so the
+ * remark reaches nobody; `told`, the delivery to the owner.
  *
- * @param {{ repo: string, on: number, writer?: string | undefined, prompt: string }} summons
- * @param {import('./turn.mjs').TurnContext} ctx
- * @returns {Promise<import('./deliveries.mjs').Delivery | null>} The delivery, or null where none was tried.
+ * @typedef {{ kind: 'none' } | { kind: 'held', session: string } | { kind: 'told', told: import('./deliveries.mjs').Delivery }} Owned
  */
-const toBranchOwner = async ({ repo, on, writer, prompt }, ctx) => {
+
+/**
+ * Look for the owner of the PR a written summons is on, and hand it the
+ * remark: the session the PR body links, else the newest live session on
+ * its head branch (`ownerOf`, dispatch/deliveries.mjs). Run only where the
+ * repo's `prMessages` switch is on and `on` is a PR; otherwise, or where
+ * nobody owns it, `none`. A linked session that answers archived, with no
+ * live session on the branch, owns nothing either. A read whether `on` is a
+ * PR that fails is `none`, logged at warn: a summons on an issue owes the
+ * lookup nothing. A lookup that fails is a `told` with its error, and
+ * nothing starts beside a session that may be live. A send that throws
+ * stores a login the CLI refreshed before the turn fails, as a hook's or an
+ * unblocked fire's send does: the turn's own store-back runs only after the
+ * plan.
+ *
+ * @param {{ repo: string, on: number, writer: string, prompt: string }} summons
+ * @param {import('./turn.mjs').TurnContext} ctx
+ * @returns {Promise<Owned>}
+ */
+const toOwner = async ({ repo, on, writer, prompt }, ctx) => {
   const config = ctx.configOf(repo);
-  if (writer === undefined || !relayOf(config).includes(writer) || !turnsOn(config, 'prMessages')) return null;
+  if (!turnsOn(config, 'prMessages')) return { kind: 'none' };
   try {
-    if (!(await (await ctx.readerFor(repo)).issue(on)).pull) return null;
+    if (!(await (await ctx.readerFor(repo)).issue(on)).pull) return { kind: 'none' };
   } catch (error) {
-    ctx.log('dispatch-launch', { level: 'warn', repo, issue: on, error: `could not read whether #${on} is a PR, so its head branch's session is not told: ${messageOf(error)}` });
-    return null;
+    ctx.log('dispatch-launch', { level: 'warn', repo, issue: on, error: `could not read whether #${on} is a PR, so its owner is not looked for: ${messageOf(error)}` });
+    return { kind: 'none' };
   }
+  /** @type {import('./deliveries.mjs').Delivery} */
+  const failed = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, skipped: null, relinked: null };
+  /** @type {string | null} */
+  let session;
   try {
-    return await ctx.delivery().deliver({ pr: on }, branchOwnerText(prompt), { source: GITHUB_SOURCE, on: [on] });
+    ({ session } = await ctx.delivery().ownerOf(on));
+  } catch (error) {
+    const why = `could not look for the owner of PR #${on}, so nothing starts beside a session that may be live: ${messageOf(error)}`;
+    ctx.log('dispatch-launch', { level: 'error', repo, issue: on, error: why });
+    return { kind: 'told', told: { ...failed, error: why } };
+  }
+  if (session === null) return { kind: 'none' };
+  if (!relayOf(config).includes(writer)) return { kind: 'held', session };
+  /** @type {import('./deliveries.mjs').Delivery} */
+  let told;
+  try {
+    // Strict: a branch lookup that fails after a linked owner answers
+    // archived fails the delivery, so no fresh session starts beside a
+    // session that may be live.
+    told = await ctx.delivery().deliver({ pr: on }, ownerText(prompt), { source: GITHUB_SOURCE, on: [on], strict: true });
   } catch (error) {
     await ctx.storeLogin();
     throw error;
   }
+  // Nobody took it and nobody else was found: the PR has no live owner.
+  if (told.skipped !== null || (told.refused && told.fallback === null)) return { kind: 'none' };
+  return { kind: 'told', told };
 };
 
 /**
@@ -160,21 +194,34 @@ export const planDispatch = async (invocation, ctx) => {
     const refused = await unstartedSummons({ repo, on, writer, assigner }, ctx);
     if (refused) return { launches: [], unread: [] };
   }
-  // A summons names the issue or PR it is on and who opened it: work is
-  // about it only where the repo's trust.task lets that author in. A
-  // refusal starts nothing. On a PR it goes to the live session on its
-  // head branch, which owns a PR naming no session; where none takes it,
-  // the refusal is said once on it, at info.
-  if (on !== undefined && author !== undefined && !taskOf(ctx.configOf(repo)).includes(author)) {
-    const stranger = { repo, issue: on, association: author };
-    const told = await toBranchOwner({ repo, on, writer, prompt: invocation.prompt }, ctx);
-    if (told?.ok === true) {
-      ctx.log('dispatch-launch', { level: 'info', repo, issue: on, outcome: 'forwarded', sessionUrl: told.sessionUrl, reason: `a summons: ${strangerReason(stranger)}; it went to the live session on the PR's head branch` });
+  // A written summons on a PR goes to the PR's live owner, where it has
+  // one: the summons sets work going, and the owner is already on it. No
+  // fresh session starts beside it, and trust.task is not read: the PR's
+  // author is not who the remark sets work going for.
+  if (on !== undefined && writer !== undefined) {
+    const owned = await toOwner({ repo, on, writer, prompt: invocation.prompt }, ctx);
+    if (owned.kind === 'held') {
+      ctx.log('dispatch-launch', { level: 'info', repo, issue: on, outcome: 'refused', session: owned.session, reason: `a summons by ${writer}, whom the repo's trust.relay leaves out, on a PR a live session owns: it reaches nobody, and no fresh session starts beside the owner` });
+      return { launches: [], unread: [] };
+    }
+    if (owned.kind === 'told') {
+      const { told } = owned;
+      // A linked owner that answered archived and handed it on: the session
+      // on the branch took it, and the refusal is no error.
+      const handed = !told.ok && told.fallback?.outcome === 'forwarded';
+      const error = told.ok || handed ? null : told.error;
+      ctx.log('dispatch-launch', { ...(error === null ? { level: 'info' } : {}), repo, issue: on, outcome: told.ok || handed ? 'forwarded' : 'not forwarded', sessionUrl: handed ? told.fallback?.sessionUrl : told.sessionUrl, ...(error === null ? {} : { error }), reason: 'a summons on a PR a live session owns: it went to that session, and no fresh session starts' });
       return { launches: [], unread: [], result: { messaged: told } };
     }
+  }
+  // A summons names the issue or PR it is on and who opened it: a fresh
+  // session's work is about it only where the repo's trust.task lets that
+  // author in. A refusal starts nothing, and is said once on it, at info.
+  if (on !== undefined && author !== undefined && !taskOf(ctx.configOf(repo)).includes(author)) {
+    const stranger = { repo, issue: on, association: author };
     ctx.log('dispatch-launch', { level: 'info', repo, issue: on, outcome: 'refused', reason: `a summons: ${strangerReason(stranger)}` });
     await reportUntasked({ reader: await ctx.readerFor(repo), stranger, what: 'summoned', event: 'dispatch-launch', log: ctx.log });
-    return { launches: [], unread: [], ...(told === null ? {} : { result: { messaged: told } }) };
+    return { launches: [], unread: [] };
   }
   if (scheduled !== undefined && await redBefore(scheduled, () => ctx.readerFor(repo), ctx)) return { launches: [], unread: [] };
   return {

@@ -11,8 +11,8 @@
  * The session told is the one that wrote the commit the run tested, read
  * off its `Claude-Session` trailer ({@link commitSession}): the session that
  * pushed a branch's head is the one that dispatches on it. A local session
- * writes no trailer, so with none the live local session holding the
- * branch is asked for, as a PR's owner is. With neither, nobody is told.
+ * writes no trailer, so with none the most recently updated live session
+ * holding the branch, local or cloud, is asked for, as a PR's owner is. With neither, nobody is told.
  * Nothing starts in a gone session's place: a run nobody waits on owes
  * nothing.
  *
@@ -97,7 +97,7 @@ const verdict = (run, failed) => {
  * Who hears of `invocation`, and what.
  *
  * @param {{ invocation: BranchRunFire, reader: BranchRunReader, onBranch?: (branch: string) => Promise<string | null> }} args
- *   `onBranch`: the live local session holding a branch, or null; a lookup
+ *   `onBranch`: the newest live session holding a branch, or null; a lookup
  *   that fails throws.
  * @returns {Promise<BranchRunPlan>}
  */
@@ -107,7 +107,7 @@ export const planBranchRun = async ({ invocation: run, reader, onBranch }) => {
   const signed = await commitSession(reader.commit, headSha);
   const session = signed ?? (onBranch === undefined ? null : await onBranch(branch));
   if (session === null) {
-    return { session: null, text: null, reason: `${name} run ${runId} on ${branch}: no session signed its commit ${commit}, and no live local session holds the branch` };
+    return { session: null, text: null, reason: `${name} run ${runId} on ${branch}: no session signed its commit ${commit}, and no live session holds the branch` };
   }
   // The jobs only name what failed; a read of them that fails still tells
   // the waiting session the verdict, and the reason says why they are missing.
@@ -134,7 +134,7 @@ export const planBranchRun = async ({ invocation: run, reader, onBranch }) => {
     'If you did not dispatch it, nothing is owed.',
   ].join('\n');
   const reason = signed === null
-    ? `${name} run ${runId} on ${branch}: no session signed its commit ${commit}; the local session ${session} holds the branch`
+    ? `${name} run ${runId} on ${branch}: no session signed its commit ${commit}; the live session ${session} holds the branch`
     : `${name} run ${runId} on ${branch}: its commit ${commit}'s Claude-Session trailer names ${session}`;
   return { session, text, reason: jobsError === null ? reason : `${reason}; its jobs could not be read: ${jobsError}` };
 };

@@ -11,10 +11,10 @@
  * read of the fire: the
  * merges it covers, the PRs its paths pick, and each PR's owner, the session
  * its body's Claude Code footer names (the owner a remark on the PR
- * reaches, webhook/subscribe.mjs). A PR whose body names none was raised
- * from a local session, and its owner is the live session holding its head
- * branch. Nobody else hears of a PR's CI or deploys. The turn labels
- * tickets from the same reading.
+ * reaches, webhook/subscribe.mjs). A PR whose body names none, or whose
+ * named owner is archived, has the newest live session holding its head
+ * branch as its owner (dispatch/deliveries.mjs). Nobody else hears of a
+ * PR's CI or deploys. The turn labels tickets from the same reading.
  *
  * - A red CI run (the repo's `workflows.ci`) is its merges' to
  *   fix only when the CI run before it on the default branch was green.

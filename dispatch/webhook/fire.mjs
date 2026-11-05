@@ -324,8 +324,8 @@ export const lastDispatch = (comments) => {
  *   `on`: the issue or PR a summons is on (mention.mjs). `author`: who opened
  *   it, as a trust value ({@link authorKind}), which the task judges by the
  *   repo's `trust.task` and refuses, with one comment on `on`, where it is
- *   left out, unless the live session on a PR's head branch takes it
- *   (dispatch/dispatch-fire.mjs). A summons on what governor's own
+ *   left out; a summons on a PR a live session owns goes to that session
+ *   and reads no `trust.task` (dispatch/dispatch-fire.mjs). A summons on what governor's own
  *   App opened carries none, as every list lets it in; so does a fire queued
  *   before the receiver named it. `writer`: the association of who wrote
  *   the summons, which the task judges by the repo's `trust.start`.

@@ -529,6 +529,8 @@ describe('run — what reaches the owner session', () => {
     await review({ kind: 'review', pr: 767 }, h);
     const [fire] = receiverFires(h.comments[0]!.body);
     const refused = harness({ sent: '{"ok":false,"error":"cloud session session_01OLD is archived and cannot accept new messages"}' });
+    // No live session holds the PR's head branch, so the takeover starts one.
+    Object.assign(refused.deps, { sessions: { list: async () => ({ data: [] }), get: async () => null } });
     const told = await run(fire, refused.deps as never);
     assert.equal(refused.launches.length, 1);
     const launch = refused.launches[0] as { prompt: string, sessionName: string };

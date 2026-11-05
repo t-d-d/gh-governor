@@ -103,8 +103,8 @@ import { isCi } from './repo-config.mjs';
  *   `shipped`: the PRs the range merged, the one at its end always;
  *   `picked`: those the paths pick (CI: every one); `closes`: each shipped
  *   PR's closing tickets, as GitHub reads them. `sessions`: each PR's
- *   owner (by footer, else the live session on its head branch), read on
- *   ask, so a triage reads no branch.
+ *   owner (by footer, else the newest live session on its head branch),
+ *   read on ask, so a triage reads no branch.
  */
 
 /**

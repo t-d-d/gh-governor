@@ -459,6 +459,24 @@ describe('deliver — with a fallback', () => {
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.outcome === 'skipped' && String(l.reason).includes(until) && /no session link/.test(String(l.reason))), JSON.stringify(f.logged));
   });
 
+  // The session the unconfirmed takeover started may be on the branch by
+  // now: the owner lookup finds it, and the remark reaches it, hold or not.
+  test('inside the two hours, a live session on the branch takes the remark, and still nothing starts', async () => {
+    const LIVE = 'https://claude.ai/code/session_01LIVE';
+    const f = fakes({
+      send: async (m) => (m.session === 'session_01OLD' ? archived(m) : accepted('session_01LIVE')),
+      reader: { pull: markedAt(NOW - 60 * 60_000) },
+      sessions: () => async (branch: string) => (branch === 'claude/branch-724' ? LIVE : null),
+    });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'a later remark', { fallback: onPr, takeover: true });
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD', LIVE]);
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: LIVE });
+    assert.equal(f.edits.length, 1, 'the body is relinked to the session found on the branch');
+    assert.equal(sessionNamedIn(f.edits[0]!.body), LIVE);
+    assert.doesNotMatch(f.edits[0]!.body, /governor:owner-unknown/, 'the owner is known again, so the line goes');
+  });
+
   test('a marker whose two hours have passed launches the takeover, and its relink removes the marker', async () => {
     const f = fakes({ send: archived, reader: { pull: markedAt(NOW - TAKEOVER_HOLD_MS) } });
     const told = await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
@@ -834,8 +852,30 @@ describe('deliver — to the owner of a PR', () => {
     const told = await f.deliver({ pr: PR }, 'Why the new section?', { on: [PR] });
     assert.deepEqual(f.sent.map((m) => m.session), [LOCAL]);
     assert.equal(told.ok, true);
-    assert.deepEqual(asked[0], { branch: BRANCH, bridgeOnly: true }, 'only a local session owns a PR naming none (#871)');
+    assert.deepEqual(asked[0], { branch: BRANCH }, 'a session of either kind on the branch may own it');
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message' && l.on === PR && l.branch === BRANCH && l.session === LOCAL), JSON.stringify(f.logged));
+  });
+
+  test('the session found on the branch has its link written into the PR body, so later events route by it', async () => {
+    const f = fakes({ reader: unnamed(), sessions: holding({ [BRANCH]: LOCAL }) });
+    await f.deliver({ pr: PR }, 'Why the new section?', { on: [PR] });
+    assert.equal(f.edits.length, 1, JSON.stringify(f.edits));
+    assert.equal(f.edits[0]!.pr, PR);
+    assert.equal(sessionNamedIn(f.edits[0]!.body), LOCAL);
+    assert.ok(f.edits[0]!.body.startsWith(UNNAMED), 'the body keeps what it said');
+  });
+
+  test('a send the branch\'s session did not take writes no link', async () => {
+    const f = fakes({ send: orgLookup, reader: unnamed(), sessions: holding({ [BRANCH]: LOCAL }) });
+    await f.deliver({ pr: PR }, 'Why?', { on: [PR] });
+    assert.deepEqual(f.edits, []);
+  });
+
+  test('a link write GitHub refuses is logged, and the message still counts as delivered', async () => {
+    const f = fakes({ reader: unnamed({ updatePull: async () => { throw new Error(`PATCH /pulls/${PR} failed: 422`); } }), sessions: holding({ [BRANCH]: LOCAL }) });
+    const told = await f.deliver({ pr: PR }, 'Why?', { on: [PR] });
+    assert.equal(told.ok, true);
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-relink' && /422/.test(String(l.error))), JSON.stringify(f.logged));
   });
 
   test('with no live session on its head branch, nobody is messaged, nothing is taken over, and it says why', async () => {
@@ -953,5 +993,104 @@ describe('deliver — to the owner of a PR', () => {
     const cloud = fakes({ reader, sessions: holding({ [OTHER]: LOCAL }) });
     await cloud.deliver({ session: LOCAL }, 'Your change is on dev.');
     assert.doesNotMatch(cloud.sent[0]!.text, /#889/, 'a session not found by a branch is not searched by one');
+  });
+});
+
+/**
+ * A PR's owner is the live session its body links, else the most recently
+ * updated live session on its head branch. A linked session that answers
+ * archived hands the message to the branch's session, which the body is
+ * relinked to, and nothing fresh starts.
+ */
+describe('deliver: a PR whose body links an archived session', () => {
+  const BRANCH = 'claude/branch-724';
+  const OLD = 'https://claude.ai/code/session_01OLD';
+  const LIVE = 'https://claude.ai/code/session_01LIVE';
+  const PR = 724;
+  const reader = (over: Record<string, unknown> = {}) => ({
+    pull: async (n: number) => ({ number: n, body: PR_BODY, head: BRANCH, defaultBranch: 'main', open: true, association: 'OWNER' }),
+    ...over,
+  });
+  const onBranch = (owners: Record<string, string>) => () => async (branch: string) => owners[branch] ?? null;
+  const takeover = { prompt: 'p', sessionName: 's', issue: PR };
+  const goneOld = async (m: Message): Promise<Answer> => (m.session === OLD || m.session === 'session_01OLD' ? archived(m) : accepted('session_01LIVE'));
+
+  test('a remark goes to the live session on its branch, the body is relinked to it, and nothing fresh starts', async () => {
+    const f = fakes({ send: goneOld, reader: reader(), sessions: onBranch({ [BRANCH]: LIVE }) });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'Why?', { fallback: takeover, takeover: true, on: [PR] });
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD', LIVE]);
+    assert.deepEqual(f.launches, []);
+    assert.equal(told.refused, true);
+    assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: LIVE });
+    assert.equal(f.edits.length, 1);
+    assert.equal(sessionNamedIn(f.edits[0]!.body), LIVE);
+  });
+
+  test('an event with no fallback to the PR it owns goes to the live session on the branch too', async () => {
+    const f = fakes({ send: goneOld, reader: reader(), sessions: onBranch({ [BRANCH]: LIVE }) });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'A push.', { owns: [PR], on: [PR] });
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD', LIVE]);
+    assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: LIVE });
+    assert.equal(sessionNamedIn(f.edits[0]!.body), LIVE);
+  });
+
+  test('a red run\'s note to an archived owner reaches the branch\'s session before any fix session starts', async () => {
+    const f = fakes({ send: goneOld, reader: reader(), sessions: onBranch({ [BRANCH]: LIVE }) });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'CI went red.', { owns: [PR], fallback: { prompt: 'fix it', sessionName: 'fix' }, on: [PR] });
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: LIVE });
+  });
+
+  test('with no live session on the branch, a remark takes the PR over as before', async () => {
+    const f = fakes({ send: archived, reader: reader(), sessions: onBranch({}) });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'Why?', { fallback: takeover, takeover: true, on: [PR] });
+    assert.equal(f.launches.length, 1);
+    assert.equal(f.launches[0]!.branch, BRANCH);
+    assert.deepEqual(told.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
+  });
+
+  test('a push the branch\'s session wrote is not handed to it when the linked owner answers archived', async () => {
+    const SHA = 'c'.repeat(40);
+    const f = fakes({ send: goneOld, reader: reader({ commit: async (sha: string) => ({ sha, message: `Fix\n\nClaude-Session: ${LIVE}` }) }), sessions: onBranch({ [BRANCH]: LIVE }) });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'A push.', { owns: [PR], on: [PR], commit: SHA });
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD']);
+    assert.equal(told.fallback, null);
+  });
+
+  test('with strict, a branch lookup that fails after the owner answers archived fails the delivery', async () => {
+    const f = fakes({ send: archived, reader: reader(), sessions: () => async () => { throw new Error('GET /v1/code/sessions: 503'); } });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'Why?', { owns: [PR], on: [PR], strict: true });
+    assert.deepEqual(told.fallback, { outcome: 'failed', sessionUrl: null });
+  });
+
+  test('with no live session on the branch, an event with no fallback reaches nobody', async () => {
+    const f = fakes({ send: archived, reader: reader(), sessions: onBranch({}) });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'A push.', { owns: [PR], on: [PR] });
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD']);
+    assert.deepEqual(f.launches, []);
+    assert.equal(told.fallback, null);
+  });
+
+  test('a branch lookup that fails starts nothing beside a session that may be live, and fails the fallback', async () => {
+    const f = fakes({ send: archived, reader: reader(), sessions: () => async () => { throw new Error('GET /v1/code/sessions: 503'); } });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'Why?', { fallback: takeover, takeover: true, on: [PR] });
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(told.fallback, { outcome: 'failed', sessionUrl: null });
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && /503/.test(String(l.error))), JSON.stringify(f.logged));
+  });
+
+  test('a PR whose body links a live session reaches it, even where a newer session holds the branch', async () => {
+    const f = fakes({ reader: reader(), sessions: () => { throw new Error('not asked'); } });
+    await f.deliver({ pr: PR }, 'Why?', { on: [PR] });
+    assert.deepEqual(f.sent.map((m) => m.session), [OLD]);
+    assert.deepEqual(f.edits, []);
+  });
+
+  test('a byBranch fire whose body links an archived session reaches the branch\'s session', async () => {
+    const f = fakes({ send: goneOld, reader: reader(), sessions: onBranch({ [BRANCH]: LIVE }) });
+    const told = await f.deliver({ pr: PR }, 'Why?', { on: [PR], fallback: takeover, takeover: true });
+    assert.deepEqual(f.sent.map((m) => m.session), [OLD, LIVE]);
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: LIVE });
   });
 });
