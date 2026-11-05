@@ -78,7 +78,7 @@
       "name": "triage",
       "when": { "on": "opened", "exclude": ["workflow: under development"] },
       "conclusions": {
-        "success": ["triaged"],
+        "success": ["triage: passed"],
         "failure": ["triage: needs edit"],
         "neutral": ["triage: needs a person"]
       },
