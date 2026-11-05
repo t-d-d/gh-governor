@@ -57,8 +57,8 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  *   or is gone; for a not-ready ticket's owner, the same, unless the spec
  *   session that replaced a gone owner started nothing;
  * - a fire: not every launch failed, and every served repo's config file
- *   was read; a summons trust.task refused and sent to the live session on
- *   its PR's head branch, that the send did not fault. A fire with nothing
+ *   was read; a summons sent to the live session that owns its PR, that
+ *   the send did not fault, nor the lookup for that session fail. A fire with nothing
  *   to start is a success, as the heartbeat rule says;
  * - a turn its repo's config file refused: not served, or a switch turned
  *   off, is as designed;
@@ -106,9 +106,9 @@ export const exitCodeFor = (result) => {
   // not-ready ticket's owner: a gone session is told enough, unless the spec
   // session in its place started nothing.
   if (result.kind === 'unblocked' && result.messaged != null) return faultedSend(result.messaged) ? 1 : 0;
-  // A summons trust.task refused, sent to the live session on its PR's head
-  // branch: a send that faulted fails the turn, as a message's does. No
-  // live session on the branch is no fault: the refusal comment went.
+  // A summons sent to the live session that owns its PR: a send that
+  // faulted, or a lookup that failed, fails the turn, as a message's does.
+  // No live owner is no fault: the summons was judged as before.
   if (result.kind === 'dispatch' && result.messaged != null && result.messaged.skipped == null && faultedSend(result.messaged)) return 1;
   if (result.kind === 'message') {
     // A takeover's session whose link the PR body did not take: the body
