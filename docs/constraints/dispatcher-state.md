@@ -73,6 +73,13 @@ group.
   and never expired. The PR review reads it, and a failed read fails the review. A
   lost item lets a ticket's mode label waive a human-only path, so the item
   outlasts every PR it guards (dispatcher-review.md).
+- A PR review's verdict: `review#<repo>` / `<pr>` in `dynamoState`, the
+  head, the body digest, the read digest and the model's pass the review
+  relies on, put after the review's comment only where none or the item the
+  review read stands, and expired three months after its write. The review
+  reads it in place of its comment's text, which a person can edit. A lost
+  item costs a model call and no merge, and a failed read fails the review
+  (dispatcher-review.md).
 - A waiting ticket's date: `wait#<repo>` / `<issue>` in `dynamoState`, in
   a repo whose file turns `waits` on. The `wait` turn puts it only where
   none or the date it read stands, and deletes it only over that date; the
@@ -138,4 +145,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185. The hook table's item holds the repo's `trust` section, written by the task and read by the receiver, which drops a message only where the refusal is silent and reads the defaults when the item lacks the section or the read fails, since #419, under PRD #396.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185. The hook table's item holds the repo's `trust` section, written by the task and read by the receiver, which drops a message only where the refusal is silent and reads the defaults when the item lacks the section or the read fails, since #419, under PRD #396. A PR review's verdict, which the review reads in place of its marker comment's text, was added in #416.
