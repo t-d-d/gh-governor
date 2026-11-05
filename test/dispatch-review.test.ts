@@ -1735,6 +1735,44 @@ describe('run — required checks still running, or run again', () => {
     const still = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }], thread });
     assert.deepEqual((await reviewTagalong(still)).reviews.map((r) => r.outcome), ['marker-moved'], 'still red: the comment stands, edited in place');
   });
+
+  test('a check\'s end at a head whose last review failed test 8 on the same red checks posts no comment and no check: another App\'s answer to the `governor` check cannot loop', async () => {
+    const byCommit = (h: ReturnType<typeof harness>) => review({ kind: 'review', headSha: HEAD, repo: TAGALONG }, h);
+    const open = [{ number: 767, headSha: HEAD, draft: false, body: '' }];
+    const red = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }] });
+    await reviewTagalong(red);
+    const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
+
+    const same = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'aggregate', state: 'green' }], thread });
+    const turn = await byCommit(same);
+    assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped']);
+    assert.match(String(turn.reviews[0]!.reason), /same red checks/);
+    assert.deepEqual([same.comments.length, same.commentEdits.length, same.checkRuns.length, same.judged.length], [0, 0, 0, 0]);
+
+    // The red checks changed: another one turned red, so the fail is said again.
+    const more = tagalong({ open, required: ['gate', 'lint'], checks: [{ name: 'gate', state: 'red' }, { name: 'lint', state: 'red' }], thread });
+    assert.deepEqual((await byCommit(more)).reviews.map((r) => r.outcome), ['marker-moved']);
+    assert.match(more.commentEdits[0]!.body, /`gate`, `lint` are red/);
+    assert.deepEqual(more.checkRuns.map((c) => c.state), ['failure']);
+
+    // A re-run that turned it green is read again.
+    const green = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'green' }], thread });
+    assert.deepEqual((await byCommit(green)).reviews.map((r) => r.outcome), ['passed']);
+    assert.equal(green.judged.length, 1);
+  });
+
+  test('a check\'s end on the same red checks still answers where governor\'s own check at the head is in progress: a re-run that waited does not leave it waiting', async () => {
+    const byCommit = (h: ReturnType<typeof harness>) => review({ kind: 'review', headSha: HEAD, repo: TAGALONG }, h);
+    const open = [{ number: 767, headSha: HEAD, draft: false, body: '' }];
+    const red = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }] });
+    await reviewTagalong(red);
+    const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
+
+    // `gate` was re-run, a review in between posted the check in progress, and the re-run ended red again.
+    const waited = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'governor', state: 'pending' }], thread });
+    assert.deepEqual((await byCommit(waited)).reviews.map((r) => r.outcome), ['marker-moved']);
+    assert.deepEqual(waited.checkRuns.map((c) => c.state), ['failure']);
+  });
 });
 
 describe('run — the CI workflow\'s run at the head (test 8)', () => {

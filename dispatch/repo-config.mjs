@@ -33,7 +33,7 @@
 import { z } from 'zod';
 import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, SUMMONERS, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
-import { BOT, START, TRUST_VALUES, autoOf, taskKey as taskKeyOf, taskSet } from './trust.mjs';
+import { BOT, START, TRUST_VALUES, autoOf, reviewOf, taskKey as taskKeyOf, taskSet } from './trust.mjs';
 
 /** Where the file lives, on the repo's default branch. */
 export const CONFIG_PATH = '.github/dispatch.json';
@@ -405,7 +405,7 @@ const ticketReviewSchema = z.strictObject({
     success: z.array(label).default([]).meta({ description: 'The labels a `success` adds: the ticket passes. Default none.' }),
     failure: z.array(label).default([]).meta({ description: 'The labels a `failure` adds: the ticket waits for an edit by whoever filed it. Default none.' }),
     neutral: z.array(label).default([]).meta({ description: 'The labels a `neutral` adds: the ticket waits for a person. Default none.' }),
-  }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by` reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on.' }),
+  }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on, a label the review\'s own `when.labels` or `when.exclude` names, or `labels.claim`.' }),
   checklist: z.union([z.string().trim().min(1), promptFile]).optional().meta({ description: 'The review\'s base checklist, after governor\'s fixed frame: the text, or { "file": "<path>" }. Default governor\'s own checklist.' }),
   types: z.array(ticketTypeSchema).min(1).optional().meta({ description: 'Checks and labels per ticket type, each entry matched by label. A ticket gets the base checklist and then each matching entry\'s, in file order; one matching none gets the base alone. For each conclusion, the labels come from the first matching entry that names it, and otherwise from `conclusions`.' }),
 });
@@ -483,11 +483,17 @@ export const configSchema = z.strictObject({
   // removes a label another conclusion or review just added; none that a
   // `types` entry matches on, so no run changes a ticket's type; and none
   // that readies a ticket on a review governor runs for an author outside
-  // trust.auto: a stranger's text would set work going by itself.
+  // trust.auto: a stranger's text would set work going by itself. The
+  // authors a review runs for are its `by` narrowed by trust.review, since
+  // it reads no other ticket. None that the review's own `when` selects
+  // on: a failure label it excludes stops it reading the filer's fix. And
+  // never the claim label, which would come off a ticket being built.
   .superRefine((c, ctx) => {
     /** @type {Map<string, string>} Each label, lower-cased as GitHub matches it, and the review that names it. */
     const owner = new Map();
     const auto = autoOf(c);
+    const review = reviewOf(c);
+    const claimKey = c.labels.claim.toLowerCase();
     const readyKeys = new Set(c.labels.ready.map((l) => l.toLowerCase()));
     /** @type {Map<string, string>} Each label a `types` entry matches on, lower-cased, and the review whose entry names it. */
     const typeKeys = new Map();
@@ -504,6 +510,10 @@ export const configSchema = z.strictObject({
       const under = new Map();
       /** @type {Map<string, Array<string | number>>} Each ready label this review names, as written, and where it is first named. */
       const ready = new Map();
+      /** @type {Map<string, string>} Each label the review's `when` names, lower-cased, and the key that names it. */
+      const selects = new Map();
+      for (const l of when.exclude ?? []) selects.set(l.toLowerCase(), 'when.exclude');
+      for (const l of when.labels ?? []) selects.set(l.toLowerCase(), 'when.labels');
       for (const { path: at, sets } of places) {
         for (const conclusion of CONCLUSION_NAMES) {
           for (const l of sets[conclusion] ?? []) {
@@ -517,14 +527,18 @@ export const configSchema = z.strictObject({
             else if (other === undefined) owner.set(key, name);
             const typed = typeKeys.get(key);
             if (typed !== undefined) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and a types entry of the ${typed} review matches on it: applying it would change the ticket's type. Give the conclusion a label no types entry matches on` });
+            // The claim label belongs in when.exclude, so the claim fault stands alone.
+            const selector = selects.get(key);
+            if (key === claimKey) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and it is labels.claim: a run would add or take the claim off a ticket. Give the conclusion a label of its own` });
+            else if (selector !== undefined) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and its own ${selector} names it too: applying it would change whether the review runs on the ticket again. Give the conclusion a label the review does not select on` });
             if (readyKeys.has(key) && !ready.has(l)) ready.set(l, at);
           }
         }
       }
-      const beyond = (when.by ?? TICKET_REVIEW_BY).filter((a) => !auto.includes(a));
+      const beyond = (when.by ?? TICKET_REVIEW_BY).filter((a) => review.includes(a) && !auto.includes(a));
       if (beyond.length === 0) return;
       for (const [l, path] of ready) {
-        ctx.addIssue({ code: 'custom', path, message: `the ${name} review names the ready label "${l}", and its by lets in ${beyond.join(', ')}, which trust.auto does not: a ticket from them could be readied with no person choosing it. Narrow the review's by to trust.auto, or give it labels that ready nothing` });
+        ctx.addIssue({ code: 'custom', path, message: `the ${name} review names the ready label "${l}", and its by, within trust.review, lets in ${beyond.join(', ')}, which trust.auto does not: a ticket from them could be readied with no person choosing it. Narrow the review's by to trust.auto, or give it labels that ready nothing` });
       }
     });
   })

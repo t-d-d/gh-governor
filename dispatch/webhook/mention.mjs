@@ -580,15 +580,16 @@ const joined = (parts) => ({
  * @param {any} payload
  * @param {number | undefined} appId The dispatcher's App, whose comment alone is the PR review's.
  * @param {readonly string[]} relay Whose text may reach a running session.
+ * @param {readonly string[]} bodies Whose body may name a session.
  * @returns {Fanout | null}
  */
-const writtenFires = (written, event, payload, appId, relay) => {
+const writtenFires = (written, event, payload, appId, relay, bodies) => {
   const action = payload?.action;
   const { on, pr, by, wanted, what, event: subscribed, prompt } = written(payload ?? {});
   const body = String(by?.body ?? '');
   const onAuthor = authorOf(on, appId);
-  // The sessions `on` names, read only where relay lets its author in.
-  const onBody = relayedBody({ body: on?.body, ...onAuthor }, relay);
+  // The sessions `on` names, read only where `bodies` lets its author in.
+  const onBody = relayedBody({ body: on?.body, ...onAuthor }, bodies);
   /** @type {Fanout[]} */
   const parts = [];
   let summoned = false;
@@ -654,16 +655,18 @@ const writtenFires = (written, event, payload, appId, relay) => {
  * carries no mention and is on nothing a session owns (the caller has a
  * better reason).
  *
- * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[] }} args
+ * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[], bodies?: readonly string[] }} args
  * `appId`: the dispatcher's App, whose comment alone is the PR review's.
  * `relay`: whose text may reach a running session, the defaults where the
- * receiver knows no other (route.mjs).
+ * receiver knows no other (route.mjs). `bodies`: whose body may name a
+ * session, `relay` where unset. The receiver widens `relay` to the three to
+ * drop only a comment it is sure of, and reads bodies under the file's list.
  * @returns {Fanout | null}
  */
-export const mentionFires = ({ event, payload, appId, relay = RELAY }) => {
+export const mentionFires = ({ event, payload, appId, relay = RELAY, bodies = relay }) => {
   const action = payload?.action;
   const written = WRITTEN[String(event)];
-  if (written) return writtenFires(written, String(event), payload, appId, relay);
+  if (written) return writtenFires(written, String(event), payload, appId, relay, bodies);
   if (event === 'issues') {
     const issue = payload?.issue;
     // The one just assigned is `assignee`; `issue.assignees` is everyone,
@@ -704,10 +707,11 @@ const ISSUE_EVENTS = /** @type {Record<string, SubscriptionEvent>} */ ({ closed:
  * Judged by the issue's author, under `relay`.
  *
  * @param {any} payload
- * @param {{ relay?: readonly string[], appId?: number | undefined }} [trust]
+ * @param {{ relay?: readonly string[], bodies?: readonly string[], appId?: number | undefined }} [trust]
+ * `bodies`: whose body may name a session, `relay` where unset.
  * @returns {Fanout}
  */
-export const issueEventFires = (payload, { relay = RELAY, appId } = {}) => {
+export const issueEventFires = (payload, { relay = RELAY, bodies = relay, appId } = {}) => {
   const action = payload?.action;
   const issue = payload?.issue;
   if (action === 'labeled' || action === 'unlabeled') return { fires: [], reason: `issue #${issue?.number} ${action}: its filer hears of no label` };
@@ -717,7 +721,7 @@ export const issueEventFires = (payload, { relay = RELAY, appId } = {}) => {
   if (!lets(relay, onAuthor)) return { fires: [], reason: `issue #${issue?.number} ${action}: no owner hears of it, as it is ${unrelayed(onAuthor, 'opened')}` };
   return fanOut({
     on: issue,
-    body: relayedBody({ body: issue?.body, ...onAuthor }, relay),
+    body: relayedBody({ body: issue?.body, ...onAuthor }, bodies),
     by: null,
     onAuthor,
     event,
@@ -739,16 +743,17 @@ export const issueEventFires = (payload, { relay = RELAY, appId } = {}) => {
  * Judged by the PR's author, under `relay`.
  *
  * @param {any} payload
- * @param {{ relay?: readonly string[], appId?: number | undefined }} [trust]
+ * @param {{ relay?: readonly string[], bodies?: readonly string[], appId?: number | undefined }} [trust]
+ * `bodies`: whose body may name a session, `relay` where unset.
  * @returns {Fanout}
  */
-export const pullRequestFires = (payload, { relay = RELAY, appId } = {}) => {
+export const pullRequestFires = (payload, { relay = RELAY, bodies = relay, appId } = {}) => {
   const pr = payload?.pull_request;
   const action = payload?.action;
   if (action !== 'synchronize' && action !== 'closed') return { fires: [], reason: `pull_request ${action}: only a push or a close reaches an owner` };
   const onAuthor = authorOf(pr, appId);
   if (!lets(relay, onAuthor)) return { fires: [], reason: `#${pr?.number} ${action}: no owner hears of it, as it is ${unrelayed(onAuthor, 'opened')}` };
-  const judged = { body: relayedBody({ body: pr?.body, ...onAuthor }, relay), by: null, onAuthor };
+  const judged = { body: relayedBody({ body: pr?.body, ...onAuthor }, bodies), by: null, onAuthor };
   if (action === 'synchronize') {
     const after = typeof payload?.after === 'string' ? payload.after : pr?.head?.sha;
     return fanOut({
