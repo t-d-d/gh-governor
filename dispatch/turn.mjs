@@ -37,8 +37,8 @@
  * a refused turn leaves it, so the next job covers the
  * refused one.
  * A `branch-run` turn sends a finished run dispatched on a branch to the
- * session that wrote the commit it ran on, or the local session holding the
- * branch, with no fallback (dispatch/branch-run.mjs).
+ * session that wrote the commit it ran on, or the newest live session holding
+ * the branch, with no fallback (dispatch/branch-run.mjs).
  * A `conflicts` turn follows a merge into the default branch: it reads every open PR's
  * mergeable state and messages each conflicted one's owner session, with
  * the fallback, naming the merge and main's commit; a conditional record in
@@ -71,12 +71,15 @@
  * own events, ends
  * `Signing off.`; a turn that messaged sessions first waits, on a quiet fire
  * lane, for their replies (scripts/lib/session-signoff.mjs).
- * A PR whose body names no session was raised from a local session, which
- * cannot learn its own link: a message fire on it carries
- * `byBranch`, and a workflow turn reaches it the same way. The turn asks the
- * sessions API, under the stored login, for the live session holding the
- * PR's head branch (scripts/lib/session-branch.mjs); with none, nobody is
- * told.
+ * A PR's owner is the live session its body links, else the most recently
+ * updated live session, local or cloud, holding the PR's head branch
+ * (dispatch/deliveries.mjs). A message fire on a PR whose body names no
+ * session carries `byBranch`, and a workflow turn reaches it the same way;
+ * a linked owner that answers archived hands the message to the branch's
+ * session. The turn asks the sessions API, under the stored login, which
+ * session holds the branch (scripts/lib/session-branch.mjs), and writes
+ * the one it finds into the PR body; with none, nobody is told, or the
+ * message's fallback starts.
  * A refresh rotates the refresh token, so two turns refreshing the same
  * login would leave one of them dead: the schedule's spacing keeps them
  * apart, and a by-hand run waits for a fire to finish (scripts/run-turn.mjs).
@@ -1185,6 +1188,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           closing: closing === true,
           dropFrom: event === undefined || on === undefined ? [] : [on],
           commit,
+          // The owner's message, not a subscriber's: an archived owner's
+          // goes to the live session on the PR's head branch.
+          owns: on === undefined || invocation.subscribed === true ? [] : [on],
         },
       );
     } finally {
@@ -1295,7 +1301,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
             deps.log('dispatch-workflow', { ...about, untold: owed.slice(i).map((n) => ({ session: n.session, prs: n.prs })), reason: `out of time: past ${WORKFLOW_SEND_WINDOW_MS} ms, another delivery might outrun the deadline` });
             break;
           }
-          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, fallback: note.fallback, on: note.prs, closing: note.closing, dropFrom: note.subscribed });
+          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, fallback: note.fallback, on: note.prs, closing: note.closing, dropFrom: note.subscribed, owns: note.prs.filter((n) => !note.subscribed.includes(n)) });
           deliveries.push({ prs: note.prs, session: note.session, ok, answered, refused, error, fallback });
           // As dispatch/cli.mjs counts a fault: a refusal with no fallback is a gone session, told enough.
           if (ok || (refused && fallback?.outcome !== 'failed')) {
@@ -1339,7 +1345,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   }
 
   // A run dispatched on a branch, finished: the session that wrote the commit
-  // it tested, or the local session holding the branch, hears it, with no
+  // it tested, or the newest live session holding the branch, hears it, with no
   // fallback (dispatch/branch-run.mjs). A `dispatch-branch-run` line says
   // whom, or why nobody.
   if (invocation.kind === 'branch-run') {

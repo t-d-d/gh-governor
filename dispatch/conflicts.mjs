@@ -10,8 +10,8 @@
  * (the read starts GitHub's computation), so the nulls are read again after
  * a wait; a PR still null is never taken for a conflict.
  *
- * A conflicted PR's owner session (the one its body names, else the live
- * local session on its head branch) gets a message naming the PR,
+ * A conflicted PR's owner session (the live one its body names, else the
+ * newest live session on its head branch) gets a message naming the PR,
  * the commit the branch is at and the merge that moved it, with the fallback a
  * remark gets: an archived owner's PR is taken over by one fresh session
  * that resolves the conflict (dispatch/deliveries.mjs). Nothing is posted on

@@ -74,7 +74,7 @@ export const RETIRED_SWITCHES = Object.freeze({ mergeHandoff: 'unblocked' });
 const SWITCH_DESCRIPTIONS = Object.freeze({
   pickup: 'A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `pickup.sweepHours` sets.',
   summons: 'A session per `@claude` remark, and a dispatch started by hand.',
-  prMessages: 'Messages into the session a PR names, or the local session holding its branch.',
+  prMessages: 'Messages into the session a PR names, or the newest live session holding its branch.',
   subscribeMessages: 'Messages to sessions subscribed by a `governor:subscribe` line, and to an issue\'s filer. A filer hears a `deployed:` label on its issue only through a subscribe line for `deploys`.',
   redScheduledRun: 'A fresh session on a scheduled run on the default branch that went red.',
   unblocked: 'What a blocker\'s close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket\'s session, and the spec work on a not-ready ticket. The session whose link ends the ticket\'s body owns it and is asked to rewrite its own spec; a fresh session rewrites it only where the body names no session or that session is archived, so nobody takes a ticket from its owner. A file that still sets the older `mergeHandoff` reads as this.',

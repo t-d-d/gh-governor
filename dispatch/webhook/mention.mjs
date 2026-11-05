@@ -40,9 +40,11 @@
  * PR whose body names no session queues one owner's fire with `byBranch` in
  * place of the session, the remark's with its fallback. A push does not:
  * the session on the branch is the one pushing, and its commits carry no
- * trailer to tell. Nor does a mention, which summons a fresh session there
- * as ever, nor a session's post naming no session, which is taken for the
- * local session's own; a post naming one tells the task it as `poster`.
+ * trailer to tell. Nor does a mention, which queues a summons: the task
+ * hands it to the PR's live owner where it has one, and starts a fresh
+ * session only where it has none (dispatch/dispatch-fire.mjs). Nor does a
+ * session's post naming no session, which is taken for the branch
+ * session's own; a post naming one tells the task it as `poster`.
  *
  * Who may summon a fresh session: someone with a say in the repository
  * (owner, member, collaborator). A bot cannot, and neither can a session:
