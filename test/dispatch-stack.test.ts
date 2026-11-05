@@ -1141,10 +1141,9 @@ describe('.github/workflows/deploy.yml', () => {
     assert.doesNotMatch(apply?.run ?? '', /ReservedConcurrency/, 'a task has no reserved concurrency to set');
   });
 
-  test('probes the task through the by-hand script so the two cannot drift, on every invocation of the workflow', () => {
+  test('probes the task through the by-hand script so the two cannot drift', () => {
     const probe = steps.find(withId('probe'));
     assert.match(probe?.run ?? '', /node scripts\/run-turn\.mjs --kind probe/);
-    assert.equal(probe?.if, undefined, 'the probe must run on every invocation of the workflow');
   });
 
   // Every step after the probe is the rollback, so a green probe is the end
@@ -1190,8 +1189,8 @@ const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success
     const expression = /\b(success|failure|always|cancelled)\(\)/.test(condition) ? condition : `success()${condition ? ` && (${condition})` : ''}`;
     // GitHub's expression syntax, for the subset these steps use, read as JavaScript.
     const js = expression.replace(/!=/g, '!==').replace(/(?<![!=])==/g, '===');
-    const runs = Boolean(new Function('success', 'failure', 'always', 'steps', 'inputs', `return (${js});`)(
-      () => !failed, () => failed, () => true,
+    const runs = Boolean(new Function('success', 'failure', 'always', 'cancelled', 'steps', 'inputs', `return (${js});`)(
+      () => !failed, () => failed, () => true, () => false,
       new Proxy(state, { get: (target, id: string) => target[id] ?? { outcome: '', outputs: {} } }),
       { probe_only: probeOnly },
     ));
@@ -1291,8 +1290,33 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     assert.ok(failed);
   });
 
-  test('a red step before the probe rolls nothing back', () => {
+  test('a red apply probes nothing and rolls nothing back', () => {
     const { ran } = runDeploy({ outcomes: { apply: 'failure' } });
     assert.equal(ran.at(-1), 'apply');
+  });
+
+  test('a red step before the apply probes nothing', () => {
+    const { ran } = runDeploy({ outcomes: { previous: 'failure' } });
+    assert.equal(ran.at(-1), 'previous');
+  });
+
+  // The steps between the apply and the probe touch the App and read back
+  // what GitHub and AWS hold, not the image. Once the apply has put the new
+  // image in, the probe checks it whatever those steps did, so a red one
+  // never leaves an unprobed image running.
+  test('probes on every invocation, and after a successful apply whatever the steps between them did', () => {
+    const probe = steps.find(withId('probe'));
+    assert.equal(probe?.if, "${{ success() || (!cancelled() && steps.apply.outcome == 'success') }}");
+    const between = steps.slice(steps.findIndex(withId('apply')) + 1, steps.findIndex(withId('probe')));
+    assert.ok(between.length > 0, 'no step sits between the apply and the probe');
+    for (const step of between) {
+      const key = step.id ?? step.name ?? '';
+      const red = runDeploy({ outcomes: { [key]: 'failure', probe: 'failure' } });
+      assert.deepEqual(after(red.ran, key), ['probe', 'rollback', 'reprobe'], `a red '${key}' does not probe and roll back a red probe`);
+      assert.ok(red.failed);
+      const green = runDeploy({ outcomes: { [key]: 'failure' } });
+      assert.equal(green.ran.at(-1), 'probe', `a red '${key}' rolls back after a green probe`);
+      assert.ok(green.failed, `a red '${key}' leaves the deploy green`);
+    }
   });
 });
