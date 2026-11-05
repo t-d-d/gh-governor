@@ -13,7 +13,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { DELIVER_LAUNCHES, DISPATCHER_LABEL, GITHUB_SOURCE, deliveries, fromDispatcher, hookLabel, hookSource, standingLine } from '../dispatch/deliveries.mjs';
+import { DELIVER_LAUNCHES, DISPATCHER_LABEL, TAKEOVER_HOLD_MS, GITHUB_SOURCE, deliveries, fromDispatcher, hookLabel, hookSource, standingLine } from '../dispatch/deliveries.mjs';
 import { sessionNamedIn, subscribeLine, subscribersFor } from '../dispatch/webhook/subscribe.mjs';
 import { RELAY, dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
@@ -65,6 +65,7 @@ const fakes = (over: {
   repo?: string;
   signOff?: boolean;
   relay?: readonly string[];
+  takeovers?: { standing?: (pr: number) => Promise<{ until: string } | null>; record?: (pr: number, record: { at: string; until: string }) => Promise<boolean> };
 } = {}) => {
   const sent: Message[] = [];
   const untils: number[] = [];
@@ -76,6 +77,8 @@ const fakes = (over: {
   const asked: string[] = [];
   const logged: Array<{ event: string; [key: string]: unknown }> = [];
   const slept: number[] = [];
+  const takeoverReads: number[] = [];
+  const takeoverRecords: Array<{ pr: number; at: string; until: string }> = [];
   let readers = 0;
   const reader = {
     comments: async () => [],
@@ -109,12 +112,16 @@ const fakes = (over: {
     now: over.now ?? (() => NOW),
     log: (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); },
     sleep: async (ms: number) => { slept.push(ms); },
+    takeovers: {
+      standing: async (pr: number) => { takeoverReads.push(pr); return over.takeovers?.standing ? over.takeovers.standing(pr) : null; },
+      record: async (pr: number, record: { at: string; until: string }) => { takeoverRecords.push({ pr, ...record }); return over.takeovers?.record ? over.takeovers.record(pr, record) : true; },
+    },
     ...(over.launchTimeoutMs === undefined ? {} : { launchTimeoutMs: over.launchTimeoutMs }),
   });
   // Every send names its source; these tests relay GitHub activity unless one says otherwise.
   const deliver = (to: { session: string } | { pr: number; poster?: string }, text: string, options: Record<string, unknown> = {}) =>
     delivery.deliver(to, text, { source: GITHUB_SOURCE, ...options } as never) as Promise<Told>;
-  return { delivery, deliver, sent, untils, launches, comments, edits, issueEdits, searches, asked, logged, slept, readers: () => readers };
+  return { delivery, deliver, sent, untils, launches, comments, edits, issueEdits, searches, asked, logged, slept, takeoverReads, takeoverRecords, readers: () => readers };
 };
 
 describe('deliver — a message into a session', () => {
@@ -394,6 +401,77 @@ describe('deliver — with a fallback', () => {
     assert.deepEqual(f.comments, []);
     assert.equal(told.relinked, false);
     assert.ok(f.logged.some((l) => l.event === 'dispatch-relink' && l.level === 'error'), JSON.stringify(f.logged));
+  });
+
+  /**
+   * A takeover whose launch printed no link may still be running, and the
+   * body still names the archived owner. The record it leaves holds the PR
+   * for two hours: a remark inside them starts no second session on the
+   * same branch.
+   */
+  test('a takeover whose launch printed no session link records the PR, held for two hours', async () => {
+    const f = fakes({ send: archived, launch: async () => ({ outcome: 'unconfirmed', sessionUrl: null }) });
+    await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.deepEqual(f.takeoverRecords, [{ pr: 724, at: new Date(NOW).toISOString(), until: new Date(NOW + TAKEOVER_HOLD_MS).toISOString() }]);
+    assert.equal(TAKEOVER_HOLD_MS, 2 * 60 * 60 * 1000);
+  });
+
+  test('a takeover whose launch printed a link, or failed, or a fallback that is no takeover, records nothing', async () => {
+    const linked = fakes({ send: archived });
+    await linked.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    const failed = fakes({ send: archived, launch: async () => ({ outcome: 'failed', sessionUrl: null }) });
+    await failed.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    const red = fakes({ send: archived, launch: async () => ({ outcome: 'unconfirmed', sessionUrl: null }) });
+    await red.deliver({ session: 'session_01OLD' }, 'CI is red', { fallback: onPr });
+    assert.deepEqual([...linked.takeoverRecords, ...failed.takeoverRecords, ...red.takeoverRecords], []);
+    assert.deepEqual(red.takeoverReads, [], 'a fallback that is no takeover reads no record');
+  });
+
+  test('a remark that follows an unconfirmed takeover with no link, inside its two hours, starts no second session', async () => {
+    const until = new Date(NOW + 60 * 60_000).toISOString();
+    const f = fakes({ send: archived, takeovers: { standing: async () => ({ until }) } });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'a later remark', { fallback: onPr, takeover: true });
+    assert.deepEqual(f.takeoverReads, [724]);
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(f.edits, []);
+    assert.deepEqual(f.comments, []);
+    assert.equal(told.refused, true);
+    assert.deepEqual(told.fallback, { outcome: 'skipped', sessionUrl: null });
+    assert.equal(told.relinked, null);
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.outcome === 'skipped' && String(l.reason).includes(until) && /no session link/.test(String(l.reason))), JSON.stringify(f.logged));
+  });
+
+  test('a record whose two hours have passed, or none, launches the takeover as before', async () => {
+    const past = fakes({ send: archived, takeovers: { standing: async () => ({ until: new Date(NOW).toISOString() }) } });
+    const late = await past.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.equal(past.launches.length, 1);
+    assert.deepEqual(late.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
+    const none = fakes({ send: archived });
+    await none.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.equal(none.launches.length, 1);
+    assert.deepEqual(none.takeoverReads, [724]);
+  });
+
+  // A failed read is never a missing record (dispatcher-state.md).
+  test('a record that cannot be read refuses the delivery and starts nothing', async () => {
+    const f = fakes({ send: archived, takeovers: { standing: async () => { throw new Error('AccessDeniedException'); } } });
+    await assert.rejects(f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true }), /AccessDeniedException/);
+    assert.deepEqual(f.launches, []);
+  });
+
+  // The PR is read first: a closed PR, or a body naming the session now, needs no record read.
+  test('a takeover of a closed PR, or one the body forwards, reads no record', async () => {
+    const closed = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: false }) } });
+    await closed.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.deepEqual(closed.takeoverReads, []);
+  });
+
+  test('a record that cannot be written is logged at error; the turn already fails on the relink', async () => {
+    const f = fakes({ send: archived, launch: async () => ({ outcome: 'unconfirmed', sessionUrl: null }), takeovers: { record: async () => { throw new Error('AccessDeniedException'); } } });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'hi', { fallback: onPr, takeover: true });
+    assert.equal(told.relinked, false);
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-takeover-record' && l.level === 'error' && /AccessDeniedException/.test(String(l.error))), JSON.stringify(f.logged));
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.outcome === 'unconfirmed'), JSON.stringify(f.logged));
   });
 
   test('a rewrite GitHub refuses logs at error and reports the relink failed; the fallback it started still stands', async () => {

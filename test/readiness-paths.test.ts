@@ -162,6 +162,7 @@ const depsOf = (reader: unknown, launches: string[], messages: string[], errors:
     sweep: async () => null, recordSweep: async () => true, hookSession: async () => null, recordHookSession: async () => true,
     recordSession: async () => {}, startedSession: async () => false,
     waits: async () => [], wait: async () => null, recordWait: async () => true, dropWait: async () => true,
+    takeover: async () => null, recordTakeover: async () => true,
   },
 });
 

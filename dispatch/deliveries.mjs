@@ -178,6 +178,13 @@ export const OUTPUT_TAIL = 2000;
 /** The name a session gets when its invocation names none. */
 export const DEFAULT_SESSION_NAME = 'dispatch';
 
+/**
+ * How long a takeover whose launch printed no session link holds its PR: a
+ * later remark's takeover starts nothing while it stands, since the session
+ * may be running on the PR's branch though the body names no session.
+ */
+export const TAKEOVER_HOLD_MS = 2 * 60 * 60 * 1000;
+
 /** How many launch budgets one delivery's send and fallback launch share. */
 export const DELIVER_LAUNCHES = 2;
 
@@ -261,6 +268,10 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   now: () => number,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  *   sleep: (ms: number) => Promise<void>,
+ *   takeovers: {
+ *     standing: (pr: number) => Promise<{ until: string } | null>,
+ *     record: (pr: number, record: { at: string, until: string }) => Promise<boolean>,
+ *   },
  *   launchTimeoutMs?: number | undefined,
  * }} DeliveryDeps
  *   `prompts`: the turn's repo's config file's prompts. `signOff`: whether
@@ -277,7 +288,11 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   finder by branch, under the turn's login; a login it cannot use throws,
  *   saying what it was `asking`. `launchTimeoutMs`: one launch budget; a
  *   delivery's send and fallback share {@link DELIVER_LAUNCHES} of
- *   them, and with none, no end.
+ *   them, and with none, no end. `takeovers`: the repo's record of each
+ *   PR whose takeover launch printed no session link, in the state table
+ *   (`takeover#<repo>` / `<pr>`, dispatch/turn.mjs): read, null where none
+ *   stands, and put with the time it holds the PR until, false where one
+ *   held. A read that fails throws.
  *
  * @typedef {{ session: string } | { pr: number, poster?: string }} Recipient
  *   A session, or the owner of PR `pr` whose body named no session when the
@@ -324,7 +339,8 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   answered at all, null when nothing was sent. `refused`: it answered the
  *   session archived. `fallback`: what a refusal with one did: forwarded to
  *   the session a takeover's PR body names now, skipped for a takeover of
- *   a PR that has closed, or launched (dispatched,
+ *   a PR that has closed or that an unconfirmed takeover holds, or
+ *   launched (dispatched,
  *   unconfirmed, failed). `relinked`: whether a takeover's session was
  *   written into the PR body's link, null where none was tried; false
  *   fails the turn, since the body still names the archived owner. `dropped`: whether a refusal with no
@@ -533,7 +549,8 @@ export const deliveries = (deps) => {
    * one record of a PR's session. A launch that printed no link, or a
    * rewrite GitHub refuses, logs at error and the caller fails the turn;
    * the next remark finds the archived owner in the body and takes the PR
-   * over again.
+   * over again, unless the launch printed no link: then the PR's takeover
+   * record holds it for two hours ({@link holdTakeover}).
    *
    * @param {number} pr
    * @param {string | null} sessionUrl
@@ -553,6 +570,25 @@ export const deliveries = (deps) => {
     } catch (error) {
       deps.log('dispatch-relink', { level: 'error', pr, sessionUrl, error: messageOf(error), reason });
       return false;
+    }
+  };
+
+  /**
+   * Hold PR `pr` for {@link TAKEOVER_HOLD_MS} after a takeover whose launch
+   * printed no session link, so the next remark starts no second session
+   * beside it. A record already standing holds it already. A write that
+   * fails is logged at error: the failed relink already fails the turn.
+   *
+   * @param {number} pr
+   */
+  const holdTakeover = async (pr) => {
+    const at = deps.now();
+    const record = { at: new Date(at).toISOString(), until: new Date(at + TAKEOVER_HOLD_MS).toISOString() };
+    try {
+      const put = await deps.takeovers.record(pr, record);
+      deps.log('dispatch-takeover-record', { pr, ...record, put });
+    } catch (error) {
+      deps.log('dispatch-takeover-record', { level: 'error', pr, ...record, error: messageOf(error), reason: 'the next remark on the PR may start a second session beside this one' });
     }
   };
 
@@ -621,6 +657,17 @@ export const deliveries = (deps) => {
           if (handed.ok) fallback = { outcome: 'forwarded', sessionUrl: owner };
           else if (!refusedBy(handed)) fallback = { outcome: 'failed', sessionUrl: null };
         }
+        // A takeover before this one launched and printed no link: its
+        // session may be running on the head branch, and the body still
+        // names the archived owner. While its record stands nothing starts
+        // beside it. A missing record launches; a failed read throws.
+        if (fallback === null) {
+          const held = await deps.takeovers.standing(issue);
+          if (held !== null && Date.parse(held.until) > deps.now()) {
+            fallback = { outcome: 'skipped', sessionUrl: null };
+            reason = `a takeover of PR #${issue} launched and printed no session link, so its session may be running; nothing starts beside it until ${held.until}`;
+          }
+        }
         if (fallback === null) branch = pr.head;
       }
       if (fallback === null) {
@@ -630,6 +677,7 @@ export const deliveries = (deps) => {
           if (spec) {
             named = await nameSpecSession(await deps.reader(), { repo: deps.repo, issue, sessionUrl: started.sessionUrl, log: deps.log });
           } else if (takeover) {
+            if (started.sessionUrl === null) await holdTakeover(issue);
             named = relinked = await relink(issue, started.sessionUrl);
           }
         }

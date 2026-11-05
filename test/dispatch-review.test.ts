@@ -200,6 +200,9 @@ const harness = (over: {
         if (typeof over.started === 'string') throw new Error(over.started);
         return (over.started ?? []).includes(session);
       },
+      // No PR here has an unconfirmed takeover standing.
+      takeover: async () => null,
+      recordTakeover: async () => true,
     },
   };
   return { deps, sessionsRead, ciReads, checkRuns, writes, comments, commentEdits, merges, judged, transcripts, messages, launches, logged, reads, requiredReads, baseReads, fileReads, readerApps };
