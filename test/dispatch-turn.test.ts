@@ -4373,7 +4373,7 @@ describe('realDeps().message', () => {
 
 /**
  * The real review runner puts governor's system prompt in place of Claude
- * Code's own, for the PR review and the ticket reviews alike: the default
+ * Code's own, for the PR review and the issue reviews alike: the default
  * prompt is written for a coding agent with tools, and a review has none. A
  * fake `claude` on PATH answers with its arguments and the text of the
  * file it was given as the system prompt, read before the runner removes it.

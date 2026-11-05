@@ -74,8 +74,8 @@ The smallest useful file:
 
 The kit holds four files:
 
-- `.github/dispatch.json` names its JSON Schema in `$schema`, at the commit the config check is pinned to, so an editor describes each key on hover. Its `features` lists every switch, so the file shows every feature governor has: the ones it leaves off are `false`. It turns on pickup, summons, PR messages, subscriptions, sign-off, the heartbeat and three periodics: a code review every 10 merges into the default branch, a backlog review every 5 issues opened, each also weekly when its count has counted anything, and a weekly review on its day limit alone. The backlog review checks the issues opened, then lists on the heartbeat issue the tickets left stuck: claimed ones with no open pull request, and, where ticket reviews are on, open ones no ticket review ran on and ones still carrying a review's `failure` or `neutral` labels. Ticket reviews are off, with none listed, and the ready labels are `mode: afk` alone: a ready label only a review adds would stop pickup with the reviews off. Each prompt is plain text that needs no skill, and acts on the window governor writes under it: the last fire's time, and what each count counted since. A repo can swap any prompt for one that calls its own skill.
-- `.github/dispatch.dark-factory.json` is the same file with every switch but `hooks` on. It keeps the placeholders and the three periodics, and reviews every ticket before pickup builds it. Its `triage` ticket review runs on each ticket opened, or with its body edited, that is not claimed. It reads governor's default checklist, then a check of the ticket's type: a PRD, a bug (`type: bug` or `bug`) or an enhancement. Readiness is the review's label and the mode is a person's. The one ready label is `triage: build`. A bug that passes gets `triage: build`, so pickup builds it with no person. An enhancement that passes gets `triage: passed`, and a person readies it by adding `triage: build`. A ticket its filer must edit gets `triage: needs edit`, and one a person must decide gets `triage: needs a person`, which is among the excluded labels beside `mode: human`, so pickup never takes a ticket the review doubts. A person holds a ticket by adding `mode: human`, and no review run takes it off. A person overrules the review by adding `triage: build` by hand. Create the `triage: build` label before the file goes in, or the config check warns that no ticket can carry it. It names the CI workflow `ciMessages` reads in `workflows.ci`, and has a `review` section: a plain-text checklist that needs no skill, `merge` true, and a human-only list that leaves every `CLAUDE.md`, `.claude/`, `.github/workflows/`, `.github/actions/`, `.github/dispatch.json` itself and `infra/` to a person, each with its reason. A PR touching one of them waits for a person to merge it.
+- `.github/dispatch.json` names its JSON Schema in `$schema`, at the commit the config check is pinned to, so an editor describes each key on hover. Its `features` lists every switch, so the file shows every feature governor has: the ones it leaves off are `false`. It turns on pickup, summons, PR messages, subscriptions, sign-off, the heartbeat and three periodics: a code review every 10 merges into the default branch, a backlog review every 5 issues opened, each also weekly when its count has counted anything, and a weekly review on its day limit alone. The backlog review checks the issues opened, then lists on the heartbeat issue the tickets left stuck: claimed ones with no open pull request, and, where issue reviews are on, open ones no issue review ran on and ones still carrying a review's `failure` or `neutral` labels. Its issue reviews are off, since it has no `issueReviews` section, and the ready labels are `mode: afk` alone: a ready label only a review adds would stop pickup with the reviews off. Each prompt is plain text that needs no skill, and acts on the window governor writes under it: the last fire's time, and what each count counted since. A repo can swap any prompt for one that calls its own skill.
+- `.github/dispatch.dark-factory.json` is the same file with every switch but `hooks` on. It keeps the placeholders and the three periodics, and reviews every ticket before pickup builds it. Its `triage` issue review runs on each ticket that is not claimed, when it is opened, reopened or has its body edited, and when a label that changes which of its `byLabel` entries apply is added or removed. It reads governor's default prompt, then a check of the ticket's type from its `byLabel` entries: a PRD, a bug (`type: bug` or `bug`) or an enhancement. Readiness is the review's label and the mode is a person's. The one ready label is `triage: build`. A bug that passes gets `triage: build`, so pickup builds it with no person. An enhancement that passes gets `triage: passed`, and a person readies it by adding `triage: build`. A ticket its filer must edit gets `triage: needs edit`, and one a person must decide gets `triage: needs a person`, which is among the excluded labels beside `mode: human`, so pickup never takes a ticket the review doubts. A person holds a ticket by adding `mode: human`, and no review run takes it off. A person overrules the review by adding `triage: build` by hand. Create the `triage: build` label before the file goes in, or the config check warns that no ticket can carry it. It names the CI workflow `ciMessages` reads in `workflows.ci`, and has a `review` section: a plain-text checklist that needs no skill, `merge` true, and a human-only list that leaves every `CLAUDE.md`, `.claude/`, `.github/workflows/`, `.github/actions/`, `.github/dispatch.json` itself and `infra/` to a person, each with its reason. A PR touching one of them waits for a person to merge it.
 - `.github/workflows/heartbeat.yml` calls [the heartbeat checker](#the-heartbeat-checker) every hour, pinned to a commit of this repo.
 - `.github/workflows/config-check.yml` calls [the config check](#the-config-check) on each pull request that changes `dispatch.json` or an issue template, pinned to a commit of this repo.
 
@@ -120,7 +120,7 @@ The schema is `configSchema` in [dispatch/repo-config.mjs](../dispatch/repo-conf
 | `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
 | `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on. |
 | `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on. |
-| `ticketReviews` | when `ticketReviews` is on | The ticket reviews governor runs, in file order, each with its `name`, its selector `when`, the labels each of its `conclusions` adds, and optionally its own `checklist` and checks and labels per ticket type (`types`). Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. At least one when the `ticketReviews` switch is on. |
+| `issueReviews` | no | The issue reviews: `reviews`, each keyed by its name, with its selector `when`, the labels each of its `conclusions` adds, and optionally its own `prompt` and checks and labels per label (`byLabel`), and `enabled`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. Governor runs them where the file has this section, unless `enabled` is `false`. |
 
 The switches in `features`:
 
@@ -143,7 +143,6 @@ The switches in `features`:
 | `hooks` | A session on a hook's prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook's last session is open goes into that session as a message. |
 | `waits` | When a ticket's `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker's close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch. |
 | `signOff` | Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off. |
-| `ticketReviews` | Each review the `ticketReviews` list holds comments on a ticket it selects, when the ticket is opened, reopened or has its body edited: whether it passes, waits for an edit, or waits for a person. |
 
 `workflows`:
 
@@ -308,7 +307,7 @@ Some of governor's work starts with nobody choosing the ticket. `trust.auto` lis
 - a spec session, or a message to the ticket's owner session, when a not-ready ticket's blocker closes or its wait ends;
 - a periodic's counts of issues opened and closed, and the issues its prompt lists. Merges count whoever opened them;
 - the conflicts check's message to a PR's session, and the fresh session that takes the PR over when that one is archived;
-- a ticket review's ready label: governor refuses a file where a review whose `by`, narrowed by `trust.review`, reaches beyond `trust.auto` names a ready label in any of its `conclusions` ([Ticket reviews and pickup](#ticket-reviews-and-pickup)).
+- an issue review's ready label: governor refuses a file where a review whose `by`, narrowed by `trust.review`, reaches beyond `trust.auto` names a ready label in any of its `conclusions` ([Issue reviews and pickup](#issue-reviews-and-pickup)).
 
 The default is `OWNER`, `MEMBER` and `COLLABORATOR`. So a stranger's issue linked as blocked by a real ticket gets no spec session when that ticket closes, a stranger's `Blocked until:` line starts nothing when its date passes, and a stranger's issue neither brings a periodic due nor appears in its prompt. Each of these is logged at info, and nothing pages the operator. A repo can narrow the list:
 
@@ -345,61 +344,79 @@ The default is `OWNER`, `MEMBER` and `COLLABORATOR`. So a stranger's pull reques
 
 `review` sits at the top of the chain `auto` ⊆ `task` ⊆ `relay` ⊆ `review`: where the file sets it beside any of the others, every value each names, `BOT` aside, must be in `review`, or governor refuses the file. A list the file leaves unset is narrowed to fit it, never widened, and `review` itself is never narrowed. The [config check](#the-config-check) warns where `review` reaches beyond owners, members and collaborators: where `review.merge` is on, a pass merges such a pull request with no person reading it.
 
-### Ticket reviews and pickup
+### Issue reviews
 
-Each ticket review names, in `conclusions`, the labels each of its conclusions adds:
+A repo turns issue reviews on with an `issueReviews` section. Governor runs its reviews unless the section sets `"enabled": false`, and a file without the section runs none. A file that still sets `features.ticketReviews` is read, but governor reads that key as nothing, and the [config check](#the-config-check) warns that the switch is now `issueReviews.enabled`.
+
+`reviews` holds each review keyed by its name: lower-case letters, digits and hyphens. The name goes into every comment and marker the review writes, so renaming a review starts its rounds afresh. Reviews run in the order of their keys, except that JavaScript puts a key made only of digits first. A file with two reviews under one name keeps the last.
+
+A review's `when` selects the issues it reads, and is optional:
+
+- `labels`: the issue must carry every one of these, in any case.
+- `exclude`: the issue must carry none of these, in any case.
+- `by`: whose issues it reads, by `author_association`, narrowed by `trust.review`. Default `OWNER`, `MEMBER` and `COLLABORATOR`.
+
+A review without `when` reads every issue its default `by` lets in.
+
+**When a review runs.** An issue opened, reopened or with its body edited queues the reviews. So does a label change that can bring the issue into a review or change which of its `byLabel` entries apply: a label added that a review's `when.labels` or a `byLabel` entry's `labels` names, or a label removed that a review's `when.exclude` or a `byLabel` entry's `labels` names. Any other label change, such as a review's own conclusion labels or the claim label, starts nothing. Each run reads the issue's labels as they are then, and skips a review whose newest marker on the issue carries the issue's current key: its body, and with `byLabel`, which of the entries' labels it carries. A label change that leaves that key as it was makes no model call.
+
+### Issue reviews and pickup
+
+Each issue review names, in `conclusions`, the labels each of its conclusions adds:
 
 ```json
-"ticketReviews": [
-  {
-    "name": "triage",
-    "when": { "on": "opened", "exclude": ["workflow: under development"] },
-    "conclusions": {
-      "success": ["triage: build"],
-      "failure": ["triage: needs edit"],
-      "neutral": ["triage: needs a person"]
+"issueReviews": {
+  "reviews": {
+    "triage": {
+      "when": { "exclude": ["workflow: under development"] },
+      "conclusions": {
+        "success": ["triage: build"],
+        "failure": ["triage: needs edit"],
+        "neutral": ["triage: needs a person"]
+      }
     }
   }
-]
+}
 ```
 
-On every run governor adds the conclusion's labels and removes the ones the other two conclusions name, creating a label the repo lacks. It touches no other label. Every label a review's conclusions name, in its `conclusions` and in each `types` entry's, starts with the review's name, a colon and a space, in any case: `triage: build` for a review named `triage`. Governor refuses a file otherwise. A run removes labels, so a label it shares with people would come off when a person had put it there: a `success` would take off a `mode: human` hold a member added, and pickup would start the ticket. So a review's labels are its own, new labels for its outcomes. The repo's own labels, such as `mode: afk` and `mode: human`, stay a person's: list them in `labels.ready`, `labels.exclude` and a review's `when`, and no review adds or removes them. Reviews and pickup share no code: they meet only through the review's labels. Two patterns:
+On every run governor adds the conclusion's labels and removes the ones the other two conclusions name, creating a label the repo lacks. It touches no other label. Every label a review's conclusions name, in its `conclusions` and in each `byLabel` entry's, starts with the review's name, a colon and a space, in any case: `triage: build` for a review named `triage`. Governor refuses a file otherwise. A run removes labels, so a label it shares with people would come off when a person had put it there: a `success` would take off a `mode: human` hold a member added, and pickup would start the ticket. So a review's labels are its own, new labels for its outcomes. The repo's own labels, such as `mode: afk` and `mode: human`, stay a person's: list them in `labels.ready`, `labels.exclude` and a review's `when`, and no review adds or removes them. Reviews and pickup share no code: they meet only through the review's labels. Two patterns:
 
 - **Review every ticket before it is built.** List the review's `success` label among `labels.ready`, here `"ready": ["triage: build"]`. A ticket is not ready until the review has passed it, and a later `failure` or `neutral` takes the label off again. A ticket the review readies is picked up by its label's own fire, as a person's label is. The review queues no pickup fire of its own.
-- **Trust a ticket someone has readied.** List the ready labels in the review's `when.exclude`. A ticket that carries them when it opens is not reviewed, and pickup starts it as today. That review's `conclusions` then cannot name those labels, so it readies nothing itself.
+- **Review a ticket once someone readies it.** List the ready label in the review's `when.labels`, here `"labels": ["mode: afk"]`. Adding the label queues the review at once, so a ticket filed before it was ready is read when it becomes so. That review's `conclusions` then cannot name the label, so it readies nothing itself.
 
 Put the `neutral` labels in `labels.exclude`, beside a person's hold such as `mode: human`, so pickup never takes a ticket the review doubted. Put the claim label in `when.exclude`, so a ticket already being built is not reviewed when its session edits the body. A person overrules a review by adding its `success` label by hand.
 
-Governor refuses a file where a conclusion names a label that does not start with the review's name, a colon and a space, where one label appears under two conclusions of one review, where one label appears in two reviews' conclusions, where a review whose `by` reaches beyond `trust.auto` names a ready label, or where a conclusion names a label a `types` entry matches on, a label the same review's `when.labels` or `when.exclude` names, or `labels.claim`. The ready-label rule reads a review's `by` narrowed by `trust.review`, since the review reads no ticket whose author `trust.review` leaves out. Each rule reads a review's `conclusions` with every `types` entry's. On an open-source repo, keep the default `by` on the review whose labels can ready a ticket, and give strangers a second review whose labels ready nothing.
+Governor refuses a file where a conclusion names a label that does not start with the review's name, a colon and a space, where one label appears under two conclusions of one review, where one label appears in two reviews' conclusions, where a review whose `by` reaches beyond `trust.auto` names a ready label, or where a conclusion names a label a `byLabel` entry matches on, a label the same review's `when.labels` or `when.exclude` names, or `labels.claim`. The ready-label rule reads a review's `by` narrowed by `trust.review`, since the review reads no ticket whose author `trust.review` leaves out. Each rule reads a review's `conclusions` with every `byLabel` entry's. On an open-source repo, keep the default `by` on the review whose labels can ready a ticket, and give strangers a second review whose labels ready nothing.
 
-### A ticket review's checklists and ticket types
+### An issue review's prompt and its checks per label
 
-A review's `checklist` replaces governor's default checklist, after governor's fixed frame. It is text or `{ "file": "<path>" }`, read from the default branch with the config file, as `review.checklist` is. A missing or empty file makes the config invalid.
+A review's `prompt` replaces governor's default prompt, after governor's fixed frame. It is text or `{ "file": "<path>" }`, read from the default branch with the config file, as `review.checklist` is. A missing or empty file makes the config invalid.
 
-`types` adds checks and labels per ticket type, matched by label:
+`byLabel` adds checks and labels per issue label:
 
 ```json
-"ticketReviews": [
-  {
-    "name": "triage",
-    "when": { "on": "opened", "exclude": ["workflow: under development"] },
-    "checklist": { "file": ".github/ticket-review.md" },
-    "conclusions": { "success": ["triage: passed"], "failure": ["triage: needs edit"], "neutral": ["triage: needs a person"] },
-    "types": [
-      {
-        "labels": ["type: bug"],
-        "checklist": "A bug says how to make it happen, what happened, and what should have.",
-        "conclusions": { "success": ["triage: build"] }
-      }
-    ]
+"issueReviews": {
+  "reviews": {
+    "triage": {
+      "when": { "exclude": ["workflow: under development"] },
+      "prompt": { "file": ".github/issue-review.md" },
+      "conclusions": { "success": ["triage: passed"], "failure": ["triage: needs edit"], "neutral": ["triage: needs a person"] },
+      "byLabel": [
+        {
+          "labels": ["type: bug"],
+          "prompt": "A bug says how to make it happen, what happened, and what should have.",
+          "conclusions": { "success": ["triage: build"] }
+        }
+      ]
+    }
   }
-]
+}
 ```
 
 - An entry matches a ticket carrying any of its `labels`, in any case.
-- A ticket gets the base checklist, then each matching entry's `checklist`, in file order. A ticket matching no entry gets the base alone, and is not failed for lacking a type label.
+- A ticket gets the review's prompt, then each matching entry's `prompt`, in file order. A ticket matching no entry gets the review's prompt alone, and is not failed for lacking a label.
 - An entry's `conclusions` names only the conclusions it overrides. For each conclusion, the labels come from the first matching entry that names it, and otherwise from the review's `conclusions`. Here, with `"ready": ["triage: build"]`, a bug that passes is readied with no person, and an enhancement that passes waits for one to add `triage: build`.
-- With `types`, the key a review's marker carries covers the labels the entries name. A label change alone queues no review: the ticket is reviewed again at its next body edit or reopen, under its labels then.
+- With `byLabel`, the key a review's marker carries covers the labels the entries name. Adding or removing one of those labels queues the review, which runs again only where the key changed.
 
 ### The heartbeat checker
 
@@ -483,7 +500,8 @@ It warns, without failing, on a file governor reads but that cannot work:
 - a `workflows.ci` file that is not in the repo;
 - a heartbeat issue that does not exist or lacks its marker, `<!-- governor:heartbeat -->`, or the repo's own in the older shape;
 - a `review.humanOnly` or `review.quote` glob that matches no path;
-- a ticket review whose `by`, or its default, shares no value with `trust.review`: governor refuses every ticket such a review selects before it runs, so it never comments;
+- an issue review whose `by`, or its default, shares no value with `trust.review`: governor refuses every ticket such a review selects before it runs, so it never comments;
+- `features.ticketReviews`, which governor reads as nothing: the switch is now `issueReviews.enabled`;
 - an issue template it cannot parse, or a template folder in a tree too large for GitHub to list whole, so its labels went unchecked.
 
 It warns too, under a title of its own, where a `trust` list the file sets reaches beyond `OWNER`, `MEMBER` and `COLLABORATOR`, and says what that list opens. Such a file works, so this is not a "cannot work" warning. It adds a notice for each list the file leaves unset that governor narrowed to fit the lists it sets, `trust.task` among them ([Whose issues governor sets going by itself](#whose-issues-governor-sets-going-by-itself), [Whose issues and pull requests work may be about](#whose-issues-and-pull-requests-work-may-be-about), [Whose text reaches a running session](#whose-text-reaches-a-running-session), [Whose pull requests the PR review reads](#whose-pull-requests-the-pr-review-reads)).

@@ -543,7 +543,7 @@ const waitFire = (payload) => {
 
 /**
  * An issue opened, reopened, or edited with its body changed: a
- * `issueReview` fire naming it, so its turn runs each of the repo's ticket
+ * `issueReview` fire naming it, so its turn runs each of the repo's issue
  * reviews the issue calls for (dispatch/issue-review.mjs). A title-only
  * edit changes nothing a review reads. A body edit a bot made is governor's
  * own (a spec session's link written, a relative wait line rewritten), and must

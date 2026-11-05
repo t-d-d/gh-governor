@@ -31,7 +31,7 @@ const APP_ID = 5075844;
 /**
  * The one fire a delivery queues, or none: most deliveries queue at most one,
  * and those that fan out to subscribers are read with `routeEvent` itself.
- * The ticket review's fire, which an issue opened, reopened or with its body
+ * The issue review's fire, which an issue opened, reopened or with its body
  * edited queues beside the rest, is set aside: its own describe pins it.
  */
 const route = (args: Parameters<typeof routeEvent>[0]) => {
@@ -228,7 +228,7 @@ describe('routeEvent — what a periodic counts', () => {
     assert.deepEqual(counted('issues', issuesEvent('closed')), [['schedule', 'issuesClosed', undefined]]);
   });
 
-  test('an issue opened, which queues no summons, gets a fire of its own beside its ticket review\'s', () => {
+  test('an issue opened, which queues no summons, gets a fire of its own beside its issue review\'s', () => {
     const { fires } = routeEvent({ event: 'issues', payload: issuesEvent('opened'), owners: OWNERS });
     assert.deepEqual(fires.map((f) => [f.fire, f.key]), [[{ kind: 'periodics', counted: 'issuesOpened', repo: REPO }, 'periodics'], [{ kind: 'issueReview', issue: 717, repo: REPO }, 'issueReview']]);
   });
@@ -1207,7 +1207,7 @@ describe('routeEvent — subscribers', () => {
   });
 
   // Who added a ready label does not decide whether governor acts on it: a
-  // label governor's App puts back, or a ticket review adds, queues the
+  // label governor's App puts back, or an issue review adds, queues the
   // selection as a person's does. A launch that started nothing is kept from
   // starting again at once by the state table's record, not by the sender.
   test('a ready label the dispatcher\'s App added queues a selection, and still reaches subscribers', () => {
@@ -2637,12 +2637,12 @@ describe('fitness: only text from an author trust.relay lets in reaches a runnin
 });
 
 /**
- * A ticket review (dispatch/issue-review.mjs) runs on an issue opened,
+ * An issue review (dispatch/issue-review.mjs) runs on an issue opened,
  * reopened or with its body edited: the receiver queues one `issueReview`
  * fire naming the issue, from the payload alone, and the task decides which
  * reviews run.
  */
-describe('routeEvent: the ticket review\'s fire', () => {
+describe('routeEvent: the issue review\'s fire', () => {
   const ticketFires = (payload: unknown) => routeEvent({ event: 'issues', payload, owners: OWNERS }).fires
     .filter((f) => f.fire.kind === 'issueReview');
 

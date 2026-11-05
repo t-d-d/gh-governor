@@ -1,5 +1,5 @@
 /**
- * Ticket reviews (dispatch/issue-review.mjs): on an issue opened, reopened
+ * Issue reviews (dispatch/issue-review.mjs): on an issue opened, reopened
  * or with its body edited, governor runs each review the repo's
  * `issueReviews` list holds whose selector the ticket meets, as one
  * `claude -p` with no tools under governor's own frame and default
@@ -278,7 +278,7 @@ describe('the issueReviews config', () => {
   });
 });
 
-describe('fitness: dispatcher-review.md, the config check warns of a ticket review trust.review never lets in', () => {
+describe('fitness: dispatcher-review.md, the config check warns of an issue review trust.review never lets in', () => {
   const outsiders = ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'NONE'];
   const checkOf = async (over: Record<string, unknown>) => {
     const text = JSON.stringify(shaped({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: {}, ...over }));
@@ -421,7 +421,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   });
 });
 
-describe('fitness: dispatcher-repos.md, a ticket review\'s checklists are prompt values read from the default branch', () => {
+describe('fitness: dispatcher-repos.md, an issue review\'s prompts are prompt values read from the default branch', () => {
   const config = (issueReviews: Array<{ name: string } & Record<string, unknown>>) => {
     const read = readConfig(JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: {}, issueReviews: section(issueReviews) }));
     assert.ok(read.ok, JSON.stringify(read));
@@ -514,7 +514,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   });
 });
 
-describe('fitness: dispatcher-review.md, a ticket review\'s checklists and labels per ticket type', () => {
+describe('fitness: dispatcher-review.md, an issue review\'s prompts and labels per issue label', () => {
   const BUG: TypeEntry = { labels: ['type: bug'], prompt: 'Bugs name their repro.', conclusions: { success: ['triaged', 'triage: build'] } };
   const SMALL: TypeEntry = { labels: ['size: small', 'size: tiny'], prompt: 'Small tickets name one file.', conclusions: { neutral: ['small: needs a person'], success: ['small: passed'] } };
   const review = (over: Partial<Review> = {}): Review => ({ name: 'triage', when: {}, conclusions: TRIAGE, ...over });
@@ -1125,7 +1125,7 @@ describe('fitness: dispatcher-review.md, a conclusion applies the labels the rep
     assert.deepEqual(await sweep(), []);
   });
 
-  test('the ticket review shares no code with pickup', () => {
+  test('the issue review shares no code with pickup', () => {
     const closure = [...importClosure(ROOT, 'dispatch/issue-review.mjs')];
     const pickup = ['scripts/lib/ready-work.mjs', 'scripts/lib/dispatch-router.mjs', 'dispatch/pickup.mjs', 'dispatch/launch-plan.mjs'];
     assert.deepEqual(closure.filter((path) => pickup.includes(path)), []);

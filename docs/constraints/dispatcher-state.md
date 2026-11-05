@@ -19,8 +19,8 @@ group.
   the state table holds records other checks trust. It is built the same
   way. It holds only what the receiver reads and counts: one item per served
   repo, `hooks#<repo>` / `listed`, each hook's name, `keyVersion` and
-  `perHour`, each of the repo's switches, its ready labels and its `trust`
-  lists as the task read them, which the task puts in one write each time
+  `perHour`, each of the repo's switches, its ready labels, its issue
+  review labels and its `trust` lists as the task read them, which the task puts in one write each time
   it reads the repo's file; and one
   item per hook and clock hour, `fires#<repo>#<hook>` / `<hour>`, the
   receiver's count of that hook's fires and the signatures it counted,
@@ -34,8 +34,8 @@ group.
 - A missing item means the use's fallback (the first turn after a deploy, a
   lost item); a read that fails means the turn refuses. Never treat a failed
   read as a missing item. The one exception is the receiver's read of a
-  repo's switches, ready labels and trust lists: a missing item, an item
-  without them and a failed read all queue the fire, which leaves the task
+  repo's switches, ready labels, issue review labels and trust lists: a
+  missing item, an item without them and a failed read all queue the fire, which leaves the task
   to decide, and judge a message by the default `trust.relay`; the failed
   read is logged at error.
 - Every use survives a lost item: there is no point-in-time recovery. A new
@@ -127,6 +127,16 @@ group.
   delivery's reason says so. A missing item, one without `ready`, malformed
   labels and a failed read queue the selection fire, as for the switches
   (dispatch/webhook/route.mjs).
+- What the receiver knows of the labels whose change can start an issue
+  review: the same item's `reviewLabels`, one list for a label added (each
+  review's `when.labels` and `byLabel` labels) and one for a label removed
+  (each review's `when.exclude` and `byLabel` labels), lower-cased
+  (`reviewLabelsOf`, dispatch/issue-review.mjs), written in the same
+  `PutItem` as the ready labels and read in the same one read. A label
+  change it does not list for that change queues no issue review fire, and
+  the delivery's reason says so. A missing item, one without
+  `reviewLabels`, malformed lists and a failed read queue the fire, as for
+  the ready labels.
 - What the receiver knows of whose text reaches a session: the same item's
   `trust`, a map from each list the receiver reads to its values,
   `relay` as governor reads the file (`relayOf`, dispatch/trust.mjs),
@@ -160,4 +170,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185. The hook table's item holds the repo's `trust` section, written by the task and read by the receiver, which drops a message only where the refusal is silent and reads the defaults when the item lacks the section or the read fails, since #419, under PRD #396. A PR review's verdict, which the review reads in place of its marker comment's text, was added in #416. A ticket's failed-launch record, which holds it from pickup for an hour once a launch started nothing, was added in #391. A ticket linked to the wait ticket by hand keeps a wait item twenty years out, so the bare schedule fire stops reading it, since #233, under PRD #185.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185. The hook table's item holds the repo's `trust` section, written by the task and read by the receiver, which drops a message only where the refusal is silent and reads the defaults when the item lacks the section or the read fails, since #419, under PRD #396. A PR review's verdict, which the review reads in place of its marker comment's text, was added in #416. A ticket's failed-launch record, which holds it from pickup for an hour once a launch started nothing, was added in #391. A ticket linked to the wait ticket by hand keeps a wait item twenty years out, so the bare schedule fire stops reading it, since #233, under PRD #185. The hook table's item holds the labels whose change can start an issue review, which the receiver queues an issue review fire by, under the same fallback as the ready labels, since #524.
