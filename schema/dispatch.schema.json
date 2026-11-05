@@ -1314,7 +1314,7 @@
               "failure": [],
               "neutral": []
             },
-            "description": "The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion's labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on, a label the review's own `when.labels` or `when.exclude` names, or `labels.claim`.",
+            "description": "The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion's labels and removes the ones the other two name, and touches no other label. Each label starts with the review's name and a colon, such as `triage: build` for a review named `triage`, in any case, so a review never adds or removes a label a person uses. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on, a label the review's own `when.labels` or `when.exclude` names, or `labels.claim`.",
             "type": "object",
             "properties": {
               "success": {
@@ -1418,7 +1418,7 @@
                   ]
                 },
                 "conclusions": {
-                  "description": "The conclusions whose labels this entry overrides, each a list. A conclusion it leaves out takes its labels from an entry later in the file that matches, or from the review's `conclusions`.",
+                  "description": "The conclusions whose labels this entry overrides, each a list, each label starting with the review's name and a colon. A conclusion it leaves out takes its labels from an entry later in the file that matches, or from the review's `conclusions`.",
                   "type": "object",
                   "properties": {
                     "success": {

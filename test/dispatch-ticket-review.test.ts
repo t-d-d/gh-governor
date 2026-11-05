@@ -212,9 +212,9 @@ describe('the ticketReviews config', () => {
   });
 
   test('conclusions names the labels each conclusion adds, each none where unset', () => {
-    const read = file([{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'] } }]);
+    const read = file([{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'] } }]);
     assert.ok(read.ok, JSON.stringify(read));
-    assert.deepEqual(read.config.ticketReviews?.[0]?.conclusions, { success: ['triaged'], failure: [], neutral: [] });
+    assert.deepEqual(read.config.ticketReviews?.[0]?.conclusions, { success: ['triage: build'], failure: [], neutral: [] });
     const bare = file([{ name: 'triage', when: { on: 'opened' } }]);
     assert.ok(bare.ok);
     assert.deepEqual(bare.config.ticketReviews?.[0]?.conclusions, { success: [], failure: [], neutral: [] });
@@ -257,7 +257,7 @@ describe('fitness: dispatcher-review.md, the config check warns of a ticket revi
 });
 
 describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a config may name', () => {
-  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triaged'], claim: 'claimed' }, features: { ticketReviews: true } };
+  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triage: build'], claim: 'claimed' }, features: { ticketReviews: true } };
   const text = (over: Record<string, unknown>) => JSON.stringify({ ...base, ...over });
   const refused = async (over: Record<string, unknown>, ...words: RegExp[]) => {
     const read = readConfig(text(over));
@@ -270,37 +270,37 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   };
 
   test('one label under two conclusions of one review is refused, naming the review and the label', async () => {
-    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged', 'seen'], neutral: ['seen'] } }] }, /triage/, /"seen"/);
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build', 'seen'], neutral: ['seen'] } }] }, /triage/, /"seen"/);
   });
 
   test('one label in the conclusions of two reviews is refused, naming both reviews and the label', async () => {
     await refused({ ticketReviews: [
-      { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'], failure: ['looked at'] } },
+      { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'], failure: ['looked at'] } },
       { name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { neutral: ['looked at'] } },
     ] }, /triage/, /community/, /"looked at"/);
   });
 
   test('a review whose by reaches beyond trust.auto and names a ready label in any conclusion is refused', async () => {
     const trust = { auto: ['OWNER'], task: ['OWNER', 'MEMBER', 'COLLABORATOR'] };
-    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'COLLABORATOR'] }, conclusions: { success: ['triaged'] } }] }, /triage/, /"triaged"/, /COLLABORATOR/, /trust\.auto/);
+    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'COLLABORATOR'] }, conclusions: { success: ['triage: build'] } }] }, /triage/, /"triage: build"/, /COLLABORATOR/, /trust\.auto/);
     await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'COLLABORATOR'] }, conclusions: { neutral: ['mode: afk'] } }] }, /"mode: afk"/);
     // The default by is owners, members and collaborators, past an auto of the owner alone.
-    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'] } }] }, /triage/, /MEMBER/);
+    await refused({ trust, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'] } }] }, /triage/, /MEMBER/);
   });
 
   test('a review open to outsiders reads trust.auto as narrowed, and an unset auto is the three with a say', async () => {
     // trust.review lets outsiders in, or the review could read none of their tickets.
     const outsiders = { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'NONE'] };
-    await refused({ trust: outsiders, ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE', 'CONTRIBUTOR'] }, conclusions: { success: ['triaged'] } }] }, /community/, /NONE, CONTRIBUTOR/);
+    await refused({ trust: outsiders, ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE', 'CONTRIBUTOR'] }, conclusions: { success: ['triage: build'] } }] }, /community/, /NONE, CONTRIBUTOR/);
     // trust.relay narrows an unset auto as autoOf does.
-    await refused({ trust: { relay: ['OWNER', 'BOT'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'MEMBER'] }, conclusions: { success: ['triaged'] } }] }, /MEMBER/);
+    await refused({ trust: { relay: ['OWNER', 'BOT'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'MEMBER'] }, conclusions: { success: ['triage: build'] } }] }, /MEMBER/);
   });
 
   test('a review inside trust.auto may ready a ticket, and one beyond it may name labels that ready nothing', () => {
     const ok = (over: Record<string, unknown>) => { const read = readConfig(text(over)); assert.ok(read.ok, JSON.stringify(read)); };
-    ok({ trust: { auto: ['OWNER'], task: ['OWNER', 'MEMBER', 'COLLABORATOR'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER'] }, conclusions: { success: ['triaged'] } }] });
+    ok({ trust: { auto: ['OWNER'], task: ['OWNER', 'MEMBER', 'COLLABORATOR'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER'] }, conclusions: { success: ['triage: build'] } }] });
     ok({ ticketReviews: [
-      { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'], failure: ['triage: needs edit'] } },
+      { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'], failure: ['triage: needs edit'] } },
       { name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['community: reviewed'], failure: ['community: needs info'] } },
     ] });
   });
@@ -323,7 +323,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
 
   test('the ready-label rule reads by narrowed by trust.review, the authors the review can read', () => {
     // The default by lets in COLLABORATOR, but trust.review keeps collaborators out, so the review can ready none of their tickets.
-    const read = readConfig(text({ trust: { review: ['OWNER', 'MEMBER'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'] } }] }));
+    const read = readConfig(text({ trust: { review: ['OWNER', 'MEMBER'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'] } }] }));
     assert.ok(read.ok, JSON.stringify(read));
   });
 
@@ -339,7 +339,20 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
 
   test('the outsider rule reads only trust.auto, not trust.task', () => {
     // task wider than auto lets nobody new in: the rule is about what governor sets going by itself.
-    const read = readConfig(text({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR'], task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'], relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'], review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'] } }] }));
+    const read = readConfig(text({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR'], task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'], relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'], review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'BOT'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'] } }] }));
+    assert.ok(read.ok, JSON.stringify(read));
+  });
+
+  test('a conclusion label without the review\'s name and a colon is refused, in its conclusions or a types entry\'s, naming the review and the label', async () => {
+    // A label people also steer work with, such as mode: human, would come off when another conclusion ran.
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'], neutral: ['mode: human'] } }] }, /triage/, /"mode: human"/, /"triage: "/);
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, types: [{ labels: ['type: bug'], conclusions: { success: ['triaged'] } }] }] }, /triage/, /"triaged"/, /ticketReviews\.0\.types\.0\.conclusions\.success/);
+    // Another review's name is not this review's prefix.
+    await refused({ ticketReviews: [{ name: 'community', when: { on: 'opened' }, conclusions: { failure: ['triage: needs edit'] } }] }, /community/, /"triage: needs edit"/);
+  });
+
+  test('a conclusion label\'s prefix may be in another case', () => {
+    const read = readConfig(text({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['Triage: Build'], failure: ['TRIAGE: needs edit'] }, types: [{ labels: ['type: bug'], conclusions: { neutral: ['Triage: needs a person'] } }] }] }));
     assert.ok(read.ok, JSON.stringify(read));
   });
 
@@ -400,7 +413,7 @@ describe('fitness: dispatcher-repos.md, a ticket review\'s checklists are prompt
 });
 
 describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a types entry may name', () => {
-  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triaged'], claim: 'claimed' }, features: { ticketReviews: true } };
+  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triage: build'], claim: 'claimed' }, features: { ticketReviews: true } };
   const text = (over: Record<string, unknown>) => JSON.stringify({ ...base, ...over });
   const refused = async (over: Record<string, unknown>, ...words: RegExp[]) => {
     const read = readConfig(text(over));
@@ -419,7 +432,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   });
 
   test('the same label under the same conclusion in the default and an entry is allowed', () => {
-    ok({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'] }, types: [{ labels: ['type: bug'], conclusions: { success: ['triaged', 'mode: afk'] } }] }] });
+    ok({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triage: build'] }, types: [{ labels: ['type: bug'], conclusions: { success: ['triage: build', 'triage: bug'] } }] }] });
   });
 
   test('one label in two reviews\' conclusions, where either names it in an entry, is refused', async () => {

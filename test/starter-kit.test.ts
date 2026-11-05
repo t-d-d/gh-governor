@@ -152,8 +152,9 @@ describe('the starter kit\'s dark-factory config file', () => {
     const { ready, exclude, ...rest } = got.config.labels;
     const { ready: starterReady, exclude: starterExclude, ...starterRest } = starter.config.labels;
     assert.deepEqual(rest, starterRest);
-    assert.deepEqual(ready, [...starterReady, 'triaged'], 'a ticket is ready once the triage review passes it');
-    assert.deepEqual(exclude, [...starterExclude, 'mode: human'], 'a ticket the review doubts waits for a person');
+    assert.deepEqual(starterReady, ['mode: afk']);
+    assert.deepEqual(ready, ['triage: build'], 'readiness is the review\'s label, and a ticket is ready once the triage review or a person adds it');
+    assert.deepEqual(exclude, [...starterExclude, 'mode: human', 'triage: needs a person'], 'a person\'s hold and a ticket the review doubts both wait for a person');
     assert.deepEqual(got.config.pickup, starter.config.pickup);
     assert.deepEqual(got.config.heartbeat, starter.config.heartbeat);
     assert.deepEqual(got.config.periodics, starter.config.periodics);
@@ -169,7 +170,7 @@ describe('the starter kit\'s dark-factory config file', () => {
     assert.equal(triage.name, 'triage');
     assert.deepEqual(triage.when, { on: 'opened', exclude: ['claimed'] });
     assert.equal(triage.checklist, undefined, 'governor\'s default checklist is the base: the starter kit ships no skills');
-    assert.deepEqual(triage.conclusions, { success: ['triaged'], failure: ['triage: needs edit'], neutral: ['mode: human'] });
+    assert.deepEqual(triage.conclusions, { success: ['triage: passed'], failure: ['triage: needs edit'], neutral: ['triage: needs a person'] });
     const types = triage.types ?? [];
     assert.deepEqual(types.map((t) => t.labels), [['type: prd'], ['type: bug', 'bug'], ['type: enhancement']]);
     for (const t of types) {
@@ -181,10 +182,12 @@ describe('the starter kit\'s dark-factory config file', () => {
     assert.match(String(bug?.checklist), /reproduce[\s\S]*one pull request's work/);
     assert.match(String(enhancement?.checklist), /one pull request's work[\s\S]*reviewer checks it is done/);
     assert.equal(prd?.conclusions, undefined);
-    assert.deepEqual(bug?.conclusions, { success: ['triaged', 'mode: afk'] }, 'a bug that passes is built with no person');
+    assert.deepEqual(bug?.conclusions, { success: ['triage: build'] }, 'a bug that passes is built with no person');
     assert.equal(enhancement?.conclusions, undefined);
     const conclusionLabels = [triage.conclusions, ...types.map((t) => t.conclusions ?? {})].flatMap((c) => Object.values(c).flat());
-    assert.ok(got.config.labels.ready.every((l) => l === 'mode: afk' || conclusionLabels.includes(l)), 'each ready label but mode: afk is one the review adds');
+    assert.ok(got.config.labels.ready.every((l) => conclusionLabels.includes(l)), 'each ready label is one the review adds');
+    assert.ok(conclusionLabels.every((l) => l.startsWith('triage: ')), 'the review adds and removes only labels of its own');
+    assert.ok(conclusionLabels.every((l) => !['mode: afk', 'mode: human'].includes(l)), 'no review changes a person\'s mode label');
     assert.ok(triage.conclusions.neutral.every((l) => got.config.labels.exclude.includes(l)), 'pickup never takes a ticket the review doubts');
   });
 
@@ -338,10 +341,10 @@ test('docs/serving-a-repo.md\'s starter kit section describes the triage review 
   const at = doc.indexOf('### The starter kit');
   const section = doc.slice(at, doc.indexOf('\n### ', at + 1));
   assert.match(section, /`triage` ticket review/);
-  for (const label of ['triaged', 'triage: needs edit', 'mode: human']) assert.ok(section.includes(`\`${label}\``), label);
+  for (const label of ['triage: build', 'triage: passed', 'triage: needs edit', 'triage: needs a person', 'mode: human']) assert.ok(section.includes(`\`${label}\``), label);
   assert.match(section, /a backlog review every 5 issues opened/);
   assert.match(section, /where ticket reviews are on, open ones no ticket review ran on/);
-  assert.match(section, /taking off `mode: human`/);
+  assert.match(section, /adding `mode: human`, and no review run takes it off/);
   assert.match(section, /claimed ones with no open pull request/);
   assert.doesNotMatch(section, /ticket review every/);
 });

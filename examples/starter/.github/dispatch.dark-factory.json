@@ -2,10 +2,10 @@
   "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/9c5c1ca576777b6c8a3e4d26e96cb534c7dfca1c/schema/dispatch.schema.json",
   "environment": "my-env",
   "labels": {
-    "ready": ["mode: afk", "triaged"],
+    "ready": ["triage: build"],
     "claim": "claimed",
     "claimRemoves": [],
-    "exclude": ["type: prd", "mode: human"]
+    "exclude": ["type: prd", "mode: human", "triage: needs a person"]
   },
   "features": {
     "pickup": true,
@@ -74,7 +74,7 @@
         {
           "labels": ["type: bug", "bug"],
           "checklist": "A bug says how to reproduce it, what happened, and what should have happened. It is one pull request's work.",
-          "conclusions": { "success": ["triaged", "mode: afk"] }
+          "conclusions": { "success": ["triage: build"] }
         },
         {
           "labels": ["type: enhancement"],
@@ -82,9 +82,9 @@
         }
       ],
       "conclusions": {
-        "success": ["triaged"],
+        "success": ["triage: passed"],
         "failure": ["triage: needs edit"],
-        "neutral": ["mode: human"]
+        "neutral": ["triage: needs a person"]
       }
     }
   ]
