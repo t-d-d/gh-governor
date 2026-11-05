@@ -27,9 +27,10 @@ spends the one claude.ai login.
   read the item's ready labels (no item, one written before it held them, a
   malformed item, a failed read). A "blocked by" link removed from an issue
   (`issue_dependencies`, `blocked_by_removed`) queues the same selection
-  fire for that issue, whoever removed it, only if one of the issue's labels
-  in the payload is one the item lists, or the receiver cannot read the
-  item's ready labels; a link added queues nothing. The task writes the ready labels, as it
+  fire for that issue, whoever removed it, only if the issue is the
+  delivery's repo's, is open, and carries a label in the payload that the
+  item lists, or any label where the receiver cannot read the item's ready
+  labels; a link added queues nothing. The task writes the ready labels, as it
   read the file, each time it reads the repo's file (dispatcher-state.md).
   The receiver still holds no token and never reads the file. A new ready
   label needs no deploy: it reaches the item at the repo's next turn, and a

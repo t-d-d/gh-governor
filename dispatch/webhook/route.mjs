@@ -605,6 +605,10 @@ const unlinkedFire = (payload) => {
   const number = ticket?.number;
   if (!Number.isInteger(number) || number <= 0) return nothing('issue_dependencies blocked_by_removed names no blocked issue');
   const blocker = Number.isInteger(payload?.blocking_issue?.number) ? `#${payload.blocking_issue.number}` : 'a blocker';
+  // The fire takes the delivery's repo, so a ticket that repo does not hold
+  // would name another ticket by its number.
+  const repo = String(payload?.repository?.full_name);
+  if (!heldBy(ticket, repo)) return nothing(`${blocker} unlinked from #${number}, and #${number} is not ${repo}'s by its links: nothing to select here`);
   if (ticket?.state === 'closed') return nothing(`${blocker} unlinked from #${number}, and #${number} is closed: nothing to select`);
   /** @type {string[]} */
   const labels = (Array.isArray(ticket?.labels) ? ticket.labels : [])
@@ -612,6 +616,22 @@ const unlinkedFire = (payload) => {
     .filter((/** @type {unknown} */ name) => typeof name === 'string' && name !== '');
   if (labels.length === 0) return nothing(`${blocker} unlinked from #${number}, and #${number} carries no label, so no ready one`);
   return one({ fire: build.schedule({ issue: number }), reason: `${blocker} unlinked from #${number}: select it if it carries one of the repo's ready labels`, ready: labels });
+};
+
+/**
+ * Whether an issue in a payload is `repo`'s, by its page link or its API
+ * link. GitHub keeps a repo's name in either as `full_name` spells it, but
+ * a name is matched without case, as GitHub matches it.
+ *
+ * @param {any} issue
+ * @param {string} repo
+ * @returns {boolean}
+ */
+const heldBy = (issue, repo) => {
+  const want = repo.toLowerCase();
+  const page = typeof issue?.html_url === 'string' ? issue.html_url.toLowerCase() : '';
+  const api = typeof issue?.repository_url === 'string' ? issue.repository_url.toLowerCase() : '';
+  return page.startsWith(`https://github.com/${want}/issues/`) || api === `https://api.github.com/repos/${want}`;
 };
 
 /**

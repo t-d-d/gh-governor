@@ -2398,6 +2398,20 @@ describe('fitness: a blocker unlinked from a ready ticket queues its selection f
     assert.match(decision.reason, /not on the owner list/);
   });
 
+  // A fire's repo is the delivery's, so a ticket another repo holds would
+  // name that repo's number in this one.
+  test('a ticket the delivery\'s repo does not hold queues nothing, and says why', () => {
+    const elsewhere = ticket({ html_url: 'https://github.com/acme/other/issues/519', repository_url: 'https://api.github.com/repos/acme/other' });
+    const decision = routeEvent({ event: 'issue_dependencies', payload: unlinked('blocked_by_removed', { blocked_issue: elsewhere }), owners: OWNERS });
+    assert.deepEqual(decision.fires, []);
+    assert.match(decision.reason, /#519 is not acme\/factory's/);
+    const { html_url: _h, ...unplaced } = ticket();
+    const unknown = routeEvent({ event: 'issue_dependencies', payload: unlinked('blocked_by_removed', { blocked_issue: unplaced }), owners: OWNERS });
+    assert.deepEqual(unknown.fires, []);
+    const placed = routeEvent({ event: 'issue_dependencies', payload: unlinked('blocked_by_removed', { blocked_issue: { ...unplaced, repository_url: `https://api.github.com/repos/${REPO}` } }), owners: OWNERS });
+    assert.equal(placed.fires.length, 1, placed.reason);
+  });
+
   test('a removal by a bot or by governor\'s own App queues as a person\'s does', async () => {
     for (const sender of [{ login: 'governor-app[bot]', type: 'Bot' }, { login: 'renovate[bot]', type: 'Bot' }]) {
       const { fires } = await handled(unlinked('blocked_by_removed', { sender }), listed);
