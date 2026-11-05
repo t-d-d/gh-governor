@@ -967,8 +967,8 @@ describe('the checklist\'s parts', () => {
     assert.ok(logged.some((l) => l.event === 'dispatch-review-transcript' && l.context.sessionId === 's1'), JSON.stringify(logged));
   });
 
-  test('the run replaces Claude Code\'s system prompt with governor\'s frame, then the repo\'s checklist, then the suffix', async () => {
-    const sent: Array<{ system: string, prompt: string, schema: object, replace?: boolean }> = [];
+  test('the run\'s system prompt is governor\'s frame, then the repo\'s checklist, then the suffix', async () => {
+    const sent: Array<{ system: string, prompt: string, schema: object }> = [];
     const judge = cliJudge({
       skill: SKILL,
       run: async (request) => {
@@ -982,9 +982,9 @@ describe('the checklist\'s parts', () => {
     const quoting = { ...plain, constraints: { base: '', head: '', files: [{ path: 'docs/constraints/review.md', before: 'Old.', after: 'New.' }] } };
     await judge(plain);
     await judge(quoting);
-    assert.deepEqual(sent.map((r) => [r.replace, r.system]), [
-      [true, `${PR_FRAME}\n\n${SKILL}\n\n${DECIDED_IN_CODE}`],
-      [true, `${PR_FRAME}\n\n${SKILL}\n\n${CONSTRAINTS_LEFT}`],
+    assert.deepEqual(sent.map((r) => r.system), [
+      `${PR_FRAME}\n\n${SKILL}\n\n${DECIDED_IN_CODE}`,
+      `${PR_FRAME}\n\n${SKILL}\n\n${CONSTRAINTS_LEFT}`,
     ]);
     assert.match(PR_FRAME, /one pull request/);
     assert.match(PR_FRAME, /no tools/);

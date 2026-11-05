@@ -26,7 +26,7 @@ import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from
 import { byOf, failedLaunchesOf, failedReason } from './pickup.mjs';
 import { authorKind, autoOf, lets, relayOf, startOf } from './trust.mjs';
 import { lastDispatch } from './webhook/fire.mjs';
-import { relayedBody, sessionNamedIn } from './webhook/subscribe.mjs';
+import { relayedBody, sameSession, sessionNamedIn } from './webhook/subscribe.mjs';
 
 /** @typedef {import('./turn.mjs').Reader} Reader */
 
@@ -184,8 +184,9 @@ export const planUnblocked = async (invocation, ctx) => {
     // for as long as it takes. With none, the body's owner link: an owner
     // that claimed its own ticket builds it. The link counts only where the
     // repo's trust.relay lets the body's author in.
-    const session = lastDispatch(await reader.comments(issue))?.sessionUrl
-      ?? sessionNamedIn(relayedBody(ticket, relayOf(config)));
+    const marked = lastDispatch(await reader.comments(issue))?.sessionUrl ?? null;
+    const owner = sessionNamedIn(relayedBody(ticket, relayOf(config)));
+    const session = marked ?? owner;
     if (session === null) {
       ctx.log('dispatch-unblocked', { ...about, outcome: 'nobody told: no dispatch marker or owner link on the ticket names its session' });
       return { answer: { kind: invocation.kind, row, commented, messaged: null, dispatched: [] } };
@@ -194,12 +195,21 @@ export const planUnblocked = async (invocation, ctx) => {
     /** @type {import('./deliveries.mjs').Delivery} */
     let told;
     let loginStored = false;
+    /** What came of a send, for the log. @param {import('./deliveries.mjs').Delivery} sent */
+    const outcomeOf = (sent) => (sent.ok ? 'messaged' : sent.refused ? 'its session is archived' : 'not messaged');
     try {
       told = await ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue] });
+      ctx.log('dispatch-unblocked', { ...about, session, outcome: outcomeOf(told) });
+      // A marker can outlive its builder, and a spec session that claimed
+      // the ticket since posts none: a refusal from the marker's session
+      // goes on to the session the owner link names, where that is another.
+      if (told.refused && marked !== null && owner !== null && !sameSession(owner, marked)) {
+        told = await ctx.delivery().deliver({ session: owner }, text, { source: GITHUB_SOURCE, on: [issue] });
+        ctx.log('dispatch-unblocked', { ...about, session: owner, fromBody: true, outcome: outcomeOf(told) });
+      }
     } finally {
       loginStored = await ctx.storeLogin();
     }
-    ctx.log('dispatch-unblocked', { ...about, session, outcome: told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged' });
     return { answer: { kind: invocation.kind, row, commented, messaged: told, dispatched: [], loginStored } };
   }
   // A not-ready ticket's spec work starts with no person choosing the

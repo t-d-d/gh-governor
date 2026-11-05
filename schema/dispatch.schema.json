@@ -1240,7 +1240,7 @@
                 "description": "The event that runs the review. Only `\"opened\"`: an open issue opened, reopened or with its body edited."
               },
               "labels": {
-                "description": "Labels the ticket must carry, every one of them. Default none.",
+                "description": "Labels the ticket must carry, every one of them, in any case. Default none.",
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -1250,7 +1250,7 @@
                 }
               },
               "exclude": {
-                "description": "Labels the ticket must not carry, any of them. Default none.",
+                "description": "Labels the ticket must not carry, any of them, in any case. Default none.",
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -1290,7 +1290,7 @@
               "failure": [],
               "neutral": []
             },
-            "description": "The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion's labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by` reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on.",
+            "description": "The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion's labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on, a label the review's own `when.labels` or `when.exclude` names, or `labels.claim`.",
             "type": "object",
             "properties": {
               "success": {
