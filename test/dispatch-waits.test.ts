@@ -255,6 +255,8 @@ describe('a waiting ticket that is gone or moved', () => {
         wait: async () => ({ until: '2026-11-05' }),
         recordWait: async () => true,
         dropWait: async (repo: string, issue: number, read: string) => { dropped.push([repo, issue, read]); return true; },
+        toldUnlined: async () => [],
+        recordUnlined: async () => {},
       },
     };
   };
@@ -315,6 +317,8 @@ describe('a waiting ticket that is gone or moved', () => {
       wait: async () => ({ until: '2026-11-05' }),
       recordWait: async () => true,
       dropWait: async () => true,
+      toldUnlined: async () => [],
+      recordUnlined: async () => {},
     };
     const reader = {
       ticket: async (n: number) => {
