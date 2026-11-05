@@ -1957,7 +1957,7 @@ export const cliEnv = (env, home, account) => ({
  * wait-ended comment and spec session. A ticket linked to the wait ticket by
  * hand that governor has told is the item `unlined#<repo>` / `<issue>`, put
  * only where none stands and expired a month after it is put: a lost one
- * costs one read of that ticket's thread.
+ * costs one more read of that ticket and its thread.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -1977,6 +1977,37 @@ export const dynamoState = (client, table) => {
     const until = item.until?.S;
     if (typeof until !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(until) || Number.isNaN(Date.parse(`${until}T00:00:00Z`))) throw new Error(`the wait item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
     return until;
+  };
+  /**
+   * Every item under one partition key, each with its issue number from its
+   * sort key, read page by page. A sort key that is not an issue is a
+   * failed read, never a missing item.
+   *
+   * @param {{ S: string }} key
+   * @param {string} what
+   * @returns {Promise<Array<{ issue: number, item: Record<string, any> }>>}
+   */
+  const issueItems = async (key, what) => {
+    /** @type {Array<{ issue: number, item: Record<string, any> }>} */
+    const found = [];
+    /** @type {Record<string, any> | undefined} */
+    let after;
+    do {
+      const page = await client.send(new QueryCommand({
+        TableName: table,
+        KeyConditionExpression: 'pk = :pk',
+        ExpressionAttributeValues: { ':pk': key },
+        ConsistentRead: true,
+        ...(after === undefined ? {} : { ExclusiveStartKey: after }),
+      }));
+      for (const item of page.Items ?? []) {
+        const issue = Number(item.sk?.S);
+        if (!Number.isSafeInteger(issue) || issue <= 0) throw new Error(`the ${what} item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
+        found.push({ issue, item });
+      }
+      after = page.LastEvaluatedKey;
+    } while (after !== undefined);
+    return found;
   };
   /** @param {unknown} error */
   const refused = (error) => error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException';
@@ -2097,28 +2128,7 @@ export const dynamoState = (client, table) => {
         throw error;
       }
     },
-    waits: async (repo) => {
-      /** @type {Array<{ issue: number, until: string }>} */
-      const found = [];
-      /** @type {Record<string, any> | undefined} */
-      let after;
-      do {
-        const page = await client.send(new QueryCommand({
-          TableName: table,
-          KeyConditionExpression: 'pk = :pk',
-          ExpressionAttributeValues: { ':pk': waitPk(repo) },
-          ConsistentRead: true,
-          ...(after === undefined ? {} : { ExclusiveStartKey: after }),
-        }));
-        for (const item of page.Items ?? []) {
-          const issue = Number(item.sk?.S);
-          if (!Number.isSafeInteger(issue) || issue <= 0) throw new Error(`the wait item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
-          found.push({ issue, until: untilOf(item) });
-        }
-        after = page.LastEvaluatedKey;
-      } while (after !== undefined);
-      return found;
-    },
+    waits: async (repo) => (await issueItems(waitPk(repo), 'wait')).map(({ issue, item }) => ({ issue, until: untilOf(item) })),
     wait: async (repo, issue) => {
       const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: waitKey(repo, issue), ConsistentRead: true }));
       return item === undefined ? null : { until: untilOf(item) };
@@ -2153,28 +2163,7 @@ export const dynamoState = (client, table) => {
         throw error;
       }
     },
-    toldUnlined: async (repo) => {
-      /** @type {number[]} */
-      const found = [];
-      /** @type {Record<string, any> | undefined} */
-      let after;
-      do {
-        const page = await client.send(new QueryCommand({
-          TableName: table,
-          KeyConditionExpression: 'pk = :pk',
-          ExpressionAttributeValues: { ':pk': unlinedPk(repo) },
-          ConsistentRead: true,
-          ...(after === undefined ? {} : { ExclusiveStartKey: after }),
-        }));
-        for (const item of page.Items ?? []) {
-          const issue = Number(item.sk?.S);
-          if (!Number.isSafeInteger(issue) || issue <= 0) throw new Error(`the told item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
-          found.push(issue);
-        }
-        after = page.LastEvaluatedKey;
-      } while (after !== undefined);
-      return found;
-    },
+    toldUnlined: async (repo) => (await issueItems(unlinedPk(repo), 'told')).map(({ issue }) => issue),
     recordUnlined: async (repo, issue) => {
       try {
         await client.send(new PutItemCommand({

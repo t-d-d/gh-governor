@@ -639,12 +639,24 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
   if (links !== undefined && blocking !== undefined) {
     const waiting = new Set(items.map((i) => i.issue));
     try {
-      const [all, told] = await Promise.all([blocking(links.board), state.toldUnlined(repo)]);
-      const toldSet = new Set(told);
+      // A failed read of the told tickets refuses only the rows with no
+      // line, the hand-linked ones: a stale link of governor's still comes
+      // off, since pickup counts it as an open blocker.
+      /** @type {string | null} */
+      let untold = null;
+      const [all, told] = await Promise.all([blocking(links.board), state.toldUnlined(repo).catch((error) => {
+        untold = messageOf(error);
+        return null;
+      })]);
+      if (untold !== null) {
+        log(WAIT_UNHANDLED, { level: 'error', repo, board: links.board, error: untold, reason: 'the tickets governor told could not be read, so the hand-linked ones wait for the next fire' });
+        unread.push({ repo, error: `wait ticket #${links.board}: ${untold}` });
+      }
+      const toldSet = new Set(told ?? []);
       // A row carries its body's line, so one with none that was told
       // needs no read. A row with a line is read, so a line added later is
       // never missed.
-      const rows = all.filter((r) => r.state === 'open' && (r.repo ?? repo).toLowerCase() === repo.toLowerCase() && !waiting.has(r.number) && !(r.wait === undefined && toldSet.has(r.number)));
+      const rows = all.filter((r) => r.state === 'open' && (r.repo ?? repo).toLowerCase() === repo.toLowerCase() && !waiting.has(r.number) && !(r.wait === undefined && (told === null || toldSet.has(r.number))));
       for (const { number } of rows) {
         const ticket = await ticketOf(reader, number);
         if (ticket === null || ticket.state !== 'open') continue;

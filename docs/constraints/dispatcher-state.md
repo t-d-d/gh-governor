@@ -87,7 +87,7 @@ group.
   stands, after the comment or after finding its marker, and expired a
   month after it is put. The bare schedule fire reads a repo's items in one
   query and reads no thread of a ticket it lists. The marker comment stays
-  the record people read. A lost item costs one read of that ticket's
+  the record people read. A lost item costs one more read of that ticket and its
   thread, and a failed read refuses the repo's hand-linked tickets for the
   turn (dispatch/waits.mjs).
 
