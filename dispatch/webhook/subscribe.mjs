@@ -106,16 +106,64 @@ const lineSpans = (text) => {
 };
 
 /**
+ * The longest body the receiver reads quotes in, in characters: GitHub's own
+ * cap on a comment's, an issue's or a PR's body.
+ */
+export const BODY_READ_LIMIT = 65536;
+
+/**
+ * The most lists and blockquotes the receiver lets one line open. The
+ * parser's time for a line grows with the square of the containers it
+ * opens: `- ` 16,000 times on one line took seconds. No body a person
+ * writes opens more than a few.
+ */
+export const NESTING_READ_LIMIT = 32;
+
+/**
+ * One list item or blockquote opened on a line: a `>`, or a list marker
+ * followed by a space, a tab or the line's end. Counted from a line's
+ * start while each follows the last, so it may count more than the parser
+ * opens, never fewer.
+ */
+const OPENER = /[ \t]*(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t\r\n]|$))/y;
+
+/**
+ * Whether `text` is too long or too deeply nested to read for quotes in
+ * time: longer than {@link BODY_READ_LIMIT}, or with a line that opens more
+ * than {@link NESTING_READ_LIMIT} lists and blockquotes. Such a body is read
+ * as quoted whole, so nothing in it summons or names a session: a body built
+ * to be slow is never a real summons, and a live link dropped costs a person
+ * one more comment, while a quoted link read as live sends text where nobody
+ * meant it. Time linear in the body.
+ *
+ * @param {string} text
+ */
+export const pastReadingBound = (text) => {
+  if (text.length > BODY_READ_LIMIT) return true;
+  for (const [start, end] of lineSpans(text)) {
+    let opened = 0;
+    OPENER.lastIndex = start;
+    while (OPENER.lastIndex < end && OPENER.test(text)) {
+      opened += 1;
+      if (opened > NESTING_READ_LIMIT) return true;
+    }
+  }
+  return false;
+};
+
+/**
  * The spans of the lines of `text` that render inside a blockquote, as
  * commonmark.js reads it (vendor/README.md): every line in the source range
  * of a blockquote, or of any block inside one. A line of only spaces is
- * left as it is.
+ * left as it is. A body {@link pastReadingBound} is not parsed: every line
+ * of it is quoted.
  *
  * @param {string} text
  * @returns {Array<[number, number]>}
  */
 const quotedSpans = (text) => {
   const lines = lineSpans(text);
+  if (pastReadingBound(text)) return lines.filter(([start, end]) => text.slice(start, end).trim() !== '');
   // Each block's range raises the count from its first line and lowers it
   // after its last, so a line deep in many nested quotes costs one step,
   // not one per quote around it.
