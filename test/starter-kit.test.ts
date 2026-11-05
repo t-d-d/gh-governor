@@ -72,14 +72,31 @@ describe('the starter kit\'s config file', () => {
     assert.ok(namesEnvironment(got.config.environment));
   });
 
-  test('has a code review on merges, a ticket review on issues opened, and a weekly review on its day limit alone', () => {
+  test('has a code review on merges, a backlog review on issues opened, and a weekly review on its day limit alone', () => {
     assert.ok(got.ok);
-    const shapes = got.config.periodics.map((p) => ({ counts: Object.keys(p.counts ?? {}), days: p.days }));
+    const shapes = got.config.periodics.map((p) => ({ name: p.name, counts: Object.keys(p.counts ?? {}), days: p.days }));
     assert.deepEqual(shapes, [
-      { counts: ['merges'], days: 7 },
-      { counts: ['issuesOpened'], days: 7 },
-      { counts: [], days: 7 },
+      { name: 'Code review', counts: ['merges'], days: 7 },
+      { name: 'Backlog review', counts: ['issuesOpened'], days: 7 },
+      { name: 'Weekly review', counts: [], days: 7 },
     ]);
+  });
+
+  test('its backlog review lists the stuck tickets: none reviewed, held by a review, and claimed with no open pull request', () => {
+    assert.ok(got.ok);
+    const backlog = got.config.periodics.find((p) => p.name === 'Backlog review');
+    const prompt = String(backlog?.prompt);
+    assert.match(prompt, /only where the file turns ticket reviews on, open ones no ticket review ran on/, 'with the reviews off, every open ticket would read as stuck');
+    assert.match(prompt, /Leave out the heartbeat issue, the wait ticket/, 'no ticket review reads governor\'s own records');
+    assert.match(prompt, /`failure` or `neutral`/);
+    assert.match(prompt, /claimed[^.]*no open pull request/);
+  });
+
+  test('keeps ticket reviews off, lists none, and keeps its ready and exclude labels', () => {
+    assert.ok(got.ok);
+    assert.equal(got.config.features.ticketReviews, false);
+    assert.equal(got.config.ticketReviews, undefined);
+    assert.deepEqual(got.config.labels, { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [], exclude: ['type: prd'] });
   });
 
   test('its prompts are plain text, call no skill, act on the window governor lists, and sign off', () => {
@@ -121,15 +138,54 @@ describe('the starter kit\'s dark-factory config file', () => {
     assert.deepEqual(checkPin(), [commit], 'bump $schema in both files and the config check together');
   });
 
+  test('names the same commit as the heartbeat checker\'s pin', () => {
+    const workflow = yaml.load(read(WORKFLOW_FILE)) as { jobs: Record<string, { uses?: string }> };
+    const pins = Object.values(workflow.jobs).map((j) => /@([0-9a-f]{40})$/.exec(String(j.uses))?.[1]);
+    assert.deepEqual(pins, [schemaCommit(text)], 'move every pin in the kit together');
+  });
+
   test('keeps the starter file\'s placeholders and periodics', () => {
     assert.ok(got.ok);
     const starter = readConfig(read(CONFIG_FILE));
     assert.ok(starter.ok);
     assert.equal(got.config.environment, 'my-env');
-    assert.deepEqual(got.config.labels, starter.config.labels);
+    const { ready, exclude, ...rest } = got.config.labels;
+    const { ready: starterReady, exclude: starterExclude, ...starterRest } = starter.config.labels;
+    assert.deepEqual(rest, starterRest);
+    assert.deepEqual(ready, [...starterReady, 'triaged'], 'a ticket is ready once the triage review passes it');
+    assert.deepEqual(exclude, [...starterExclude, 'mode: human'], 'a ticket the review doubts waits for a person');
     assert.deepEqual(got.config.pickup, starter.config.pickup);
     assert.deepEqual(got.config.heartbeat, starter.config.heartbeat);
     assert.deepEqual(got.config.periodics, starter.config.periodics);
+  });
+
+  test('reviews every ticket before pickup builds it, with checks per type and a label per conclusion', () => {
+    assert.ok(got.ok);
+    assert.equal(got.config.features.ticketReviews, true);
+    const reviews = got.config.ticketReviews ?? [];
+    assert.equal(reviews.length, 1);
+    const triage = reviews[0];
+    assert.ok(triage !== undefined);
+    assert.equal(triage.name, 'triage');
+    assert.deepEqual(triage.when, { on: 'opened', exclude: ['claimed'] });
+    assert.equal(triage.checklist, undefined, 'governor\'s default checklist is the base: the starter kit ships no skills');
+    assert.deepEqual(triage.conclusions, { success: ['triaged'], failure: ['triage: needs edit'], neutral: ['mode: human'] });
+    const types = triage.types ?? [];
+    assert.deepEqual(types.map((t) => t.labels), [['type: prd'], ['type: bug', 'bug'], ['type: enhancement']]);
+    for (const t of types) {
+      assert.equal(typeof t.checklist, 'string', `${t.labels[0]}: a checklist file is the repo's own`);
+      assert.doesNotMatch(String(t.checklist), /skill/i, `${t.labels[0]}: the starter kit ships no skills`);
+    }
+    const [prd, bug, enhancement] = types;
+    assert.match(String(prd?.checklist), /many pull requests/);
+    assert.match(String(bug?.checklist), /reproduce[\s\S]*one pull request's work/);
+    assert.match(String(enhancement?.checklist), /one pull request's work[\s\S]*reviewer checks it is done/);
+    assert.equal(prd?.conclusions, undefined);
+    assert.deepEqual(bug?.conclusions, { success: ['triaged', 'mode: afk'] }, 'a bug that passes is built with no person');
+    assert.equal(enhancement?.conclusions, undefined);
+    const conclusionLabels = [triage.conclusions, ...types.map((t) => t.conclusions ?? {})].flatMap((c) => Object.values(c).flat());
+    assert.ok(got.config.labels.ready.every((l) => l === 'mode: afk' || conclusionLabels.includes(l)), 'each ready label but mode: afk is one the review adds');
+    assert.ok(triage.conclusions.neutral.every((l) => got.config.labels.exclude.includes(l)), 'pickup never takes a ticket the review doubts');
   });
 
   test('names the CI workflow ciMessages needs', () => {
@@ -275,4 +331,24 @@ test('the README\'s "Run your own" step points at the dark-factory file, not the
   const section = readme.slice(at, readme.indexOf('\n## ', at + 1));
   assert.match(section, /\(examples\/starter\/\.github\/dispatch\.dark-factory\.json\)/);
   assert.doesNotMatch(section, /test\/fixtures/);
+});
+
+test('docs/serving-a-repo.md\'s starter kit section describes the triage review and the backlog review', () => {
+  const doc = read('docs/serving-a-repo.md');
+  const at = doc.indexOf('### The starter kit');
+  const section = doc.slice(at, doc.indexOf('\n### ', at + 1));
+  assert.match(section, /`triage` ticket review/);
+  for (const label of ['triaged', 'triage: needs edit', 'mode: human']) assert.ok(section.includes(`\`${label}\``), label);
+  assert.match(section, /a backlog review every 5 issues opened/);
+  assert.match(section, /where ticket reviews are on, open ones no ticket review ran on/);
+  assert.match(section, /taking off `mode: human`/);
+  assert.match(section, /claimed ones with no open pull request/);
+  assert.doesNotMatch(section, /ticket review every/);
+});
+
+test('the README and docs/how-it-works.md name the backlog review, not a periodic ticket review', () => {
+  assert.match(read('README.md'), /weekly backlog review/);
+  assert.doesNotMatch(read('README.md'), /weekly ticket review/);
+  assert.match(read('docs/how-it-works.md'), /periodic "Backlog review"/);
+  assert.doesNotMatch(read('docs/how-it-works.md'), /periodic "Ticket review"/);
 });

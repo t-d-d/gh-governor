@@ -371,7 +371,7 @@ A repo turns the heartbeat on and names one issue, `"heartbeat": { "issue": <num
 - pickup: last sweep 2026-10-29T20:00:00.000Z, started 2 sessions
 - periodic "Code review": last fire 2026-10-29T18:04:11.000Z, by 20 merges, session https://claude.ai/code/session_…, open
 - periodic "Weekly retro": last fire 2026-10-27T20:00:00.000Z, by its day limit of 7 days, session none, nothing to do
-- periodic "Ticket review": first read 2026-10-29T20:00:00.000Z, session none, not fired yet
+- periodic "Backlog review": first read 2026-10-29T20:00:00.000Z, session none, not fired yet
 <!-- governor:heartbeat-end -->
 ```
 

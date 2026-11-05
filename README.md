@@ -91,7 +91,7 @@ A repo turns each feature on with a switch in its `.github/dispatch.json`.
 | CI and deploys | A red build tells the sessions whose merges may have broken it. A deploy tells the sessions whose work it shipped, and labels their tickets. |
 | PR review | A model checks each pull request against the repo's own checklist, from its description, the list of files it changes and the tickets it closes, and CI checks the code. A pass merges it, or leaves it for a person to merge, and each review posts a `governor` check a ruleset can require. |
 | Ticket reviews | A model with no tools reads each ticket as it opens, or when its body is edited, against the repo's own checklist, and comments whether it passes, waits for an edit, or waits for a person, naming every gap at once. Governor applies the labels the repo names for that conclusion, so a repo can gate pickup on a review by listing its `success` label among the ready labels. A repo can add checks and labels per ticket type (`types`), so a bug that passes is readied with no person while an enhancement that passes waits for one. |
-| Periodics | Recurring sessions, such as a code review every 10 merges or a weekly ticket review. |
+| Periodics | Recurring sessions, such as a code review every 10 merges, or a weekly backlog review that lists the tickets left stuck. |
 | Hooks | A system outside GitHub, such as a cloud alarm, starts a session with a signed request. |
 | Waits | A ticket that opens with `Blocked until: 2026-11-20` is not started before that date. |
 | Sign-off | A session whose last reply ends `Signing off.` is archived, and a message about a close or a deploy, with nothing else open, asks the session to sign off. |

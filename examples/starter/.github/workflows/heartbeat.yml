@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   check:
-    uses: t-d-d/gh-governor/.github/workflows/heartbeat-check.yml@9b376ad3ca40f5f8c2c7465fc125401cd4e29f4e
+    uses: t-d-d/gh-governor/.github/workflows/heartbeat-check.yml@9c5c1ca576777b6c8a3e4d26e96cb534c7dfca1c
     with:
       tolerance-hours: 3
       labels: heartbeat
