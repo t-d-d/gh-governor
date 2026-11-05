@@ -527,9 +527,10 @@ export const configSchema = z.strictObject({
             else if (other === undefined) owner.set(key, name);
             const typed = typeKeys.get(key);
             if (typed !== undefined) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and a types entry of the ${typed} review matches on it: applying it would change the ticket's type. Give the conclusion a label no types entry matches on` });
+            // The claim label belongs in when.exclude, so the claim fault stands alone.
             const selector = selects.get(key);
-            if (selector !== undefined) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and its own ${selector} names it too: applying it would change whether the review runs on the ticket again. Give the conclusion a label the review does not select on` });
             if (key === claimKey) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and it is labels.claim: a run would add or take the claim off a ticket. Give the conclusion a label of its own` });
+            else if (selector !== undefined) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and its own ${selector} names it too: applying it would change whether the review runs on the ticket again. Give the conclusion a label the review does not select on` });
             if (readyKeys.has(key) && !ready.has(l)) ready.set(l, at);
           }
         }

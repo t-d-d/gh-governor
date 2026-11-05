@@ -292,7 +292,7 @@ The config is invalid where one label appears under two conclusions of one revie
 **Connecting a review to pickup.** Reviews and pickup share no code. They meet only through labels the repo's config names. Two patterns:
 
 - **Review every ticket before it is built.** List the review's `success` label among `labels.ready`. Pickup takes a ticket only when it carries every ready label, so a ticket is not ready until the review has passed it, and a later `failure` or `neutral` takes the label off again. A ticket the review readies is taken at the repo's next pickup sweep (`pickup.sweepHours`): the receiver queues no selection fire for a label a bot adds, and the review queues no pickup fire.
-- **Trust a ticket someone has readied.** List the ready labels in the review's `when.exclude`. A ticket that carries them when it opens is not reviewed, and pickup starts it as today.
+- **Trust a ticket someone has readied.** List the ready labels in the review's `when.exclude`. A ticket that carries them when it opens is not reviewed, and pickup starts it as today. That review's `conclusions` then cannot name those labels, so it readies nothing itself.
 
 A person overrules a review by adding its `success` label by hand. Put the `neutral` labels in `labels.exclude`, so pickup never takes a ticket the review doubted.
 

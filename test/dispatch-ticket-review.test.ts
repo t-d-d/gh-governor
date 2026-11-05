@@ -279,6 +279,11 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
 
   test('a conclusion naming the claim label is refused, naming the review and the label', async () => {
     await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { neutral: ['Claimed'] } }] }, /triage/, /"Claimed"/, /claim/);
+    // The claim label belongs in when.exclude, so a conclusion naming it there too gets the one fault, not two.
+    const claimExcluded = { ticketReviews: [{ name: 'triage', when: { on: 'opened', exclude: ['claimed'] }, conclusions: { neutral: ['claimed'] } }] };
+    await refused(claimExcluded, /triage/, /"claimed"/, /labels\.claim/);
+    const read = readConfig(text(claimExcluded));
+    assert.doesNotMatch(read.ok ? '' : read.fault, /when\.exclude/);
   });
 
   test('the ready-label rule reads by narrowed by trust.review, the authors the review can read', () => {
