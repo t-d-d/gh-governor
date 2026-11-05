@@ -358,11 +358,13 @@ const ownerLink = (masked) => {
 export const sessionNamedIn = (body) => ownerLink(ownerText(String(body ?? '')))?.link ?? null;
 
 /**
- * A takeover's line that its launch printed no session link: the time it
- * did, in a comment the takeover reads back, and a sentence a person reads.
- * The rest of the line is governor's, and goes with the marker.
+ * A takeover's line that its launch printed no session link: a sentence a
+ * person reads, then the time in a comment the takeover reads back. The
+ * sentence comes first: a line that opens with a comment is an HTML block,
+ * and GitHub would show the sentence after it raw. The whole line is
+ * governor's, and goes with the marker, newline and all.
  */
-const OWNER_UNKNOWN = /\n?<!--[ \t]*governor:owner-unknown[ \t]+(\S+)[ \t]*-->[^\n]*/g;
+const OWNER_UNKNOWN = /[^\n]*<!--[ \t]*governor:owner-unknown[ \t]+(\S+)[ \t]*-->[^\n]*(?:\n|$)/g;
 
 /**
  * The body with every owner-unknown line removed.
@@ -389,7 +391,8 @@ export const ownerUnknownSince = (body) => {
  * in place of any earlier one. The owner link stays where it is, so the
  * body routes to the same session as before: the line goes just above the
  * line that holds the owner link, or at the end where there is none.
- * {@link relinkSession} removes it.
+ * {@link relinkSession} removes it. Throws for a body
+ * {@link pastReadingBound}, where no line written would be read.
  *
  * @param {unknown} body
  * @param {string} at an ISO time
@@ -397,7 +400,8 @@ export const ownerUnknownSince = (body) => {
  */
 export const markOwnerUnknown = (body, at) => {
   const text = withoutOwnerUnknown(body);
-  const line = `<!-- governor:owner-unknown ${at} --> _Governor took this PR over at ${at}, but the launch printed no session link, so this PR's session is not known._`;
+  if (pastReadingBound(text)) throw new Error('the body is too long or too deeply nested to read, so no owner-unknown line written into it would be read');
+  const line = `_Governor took this PR over at ${at}, but the launch printed no session link, so this PR's session is not known._ <!-- governor:owner-unknown ${at} -->`;
   const owner = ownerLink(ownerText(text));
   if (!owner) return `${text.trimEnd()}${text.trim() ? '\n\n' : ''}${line}`;
   const start = text.lastIndexOf('\n', owner.at) + 1;

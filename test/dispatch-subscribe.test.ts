@@ -51,7 +51,7 @@ describe('owner unknown', () => {
     const marked = markOwnerUnknown(body, AT);
     assert.equal(sessionNamedIn(marked), OWNER, 'routing still reaches the archived owner');
     assert.equal(ownerUnknownSince(marked), AT);
-    assert.match(marked, /<!-- governor:owner-unknown 2026-11-05T09:12:00\.000Z -->/);
+    assert.match(marked, /<!-- governor:owner-unknown 2026-11-05T09:12:00\.000Z -->$/m);
     assert.match(marked, /no session link/, 'a person reading the PR sees why');
     assert.equal(ownerUnknownSince(body), null);
   });
@@ -70,6 +70,21 @@ describe('owner unknown', () => {
     const marked = markOwnerUnknown(issue, AT);
     assert.equal(sessionNamedIn(marked), FILER);
     assert.equal(ownerUnknownSince(marked), AT);
+  });
+
+  test('a marker above an owner link on the first line goes cleanly; the sentence comes before the comment, so GitHub renders it', () => {
+    const marked = markOwnerUnknown(OWNER, AT);
+    assert.equal(sessionNamedIn(marked), OWNER);
+    assert.equal(relinkSession(marked, FILER), FILER);
+    assert.match(marked, /^_Governor took this PR over/);
+    const types: string[] = [];
+    const walker = new commonmark.Parser().parse(marked).walker();
+    for (let step = walker.next(); step !== null; step = walker.next()) if (step.entering) types.push(step.node.type);
+    assert.ok(types.includes('emph') && !types.includes('html_block'), `the sentence renders as emphasis, not as a raw HTML block: ${types.join(' ')}`);
+  });
+
+  test('a body too long to read is not marked: nothing would read the line', () => {
+    assert.throws(() => markOwnerUnknown(`${'x'.repeat(2 * BODY_READ_LIMIT + 1)}${footer}`, AT), /too long/);
   });
 
   test('a body naming no owner is marked at its end', () => {
