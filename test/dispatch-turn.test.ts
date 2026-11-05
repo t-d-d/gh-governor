@@ -378,6 +378,8 @@ const harness = (over: Record<string, unknown> = {}) => {
       },
       recordSession: async (session: string) => { recorded.push(session); },
       startedSession: async (session: string) => recorded.includes(session),
+      verdict: async () => null,
+      recordVerdict: async () => true,
       waits: async (repo: string) => [...waitItems].filter(([k]) => k.startsWith(`${repo}#`)).map(([k, until]) => ({ issue: Number(k.slice(repo.length + 1)), until })),
       wait: async (repo: string, issue: number) => (waitItems.has(`${repo}#${issue}`) ? { until: waitItems.get(`${repo}#${issue}`) } : null),
       // Conditional writes, as the table's: only over the date the turn read.
@@ -1519,6 +1521,47 @@ describe('run: ready labels under a narrowed trust.start', () => {
       assert.ok(line !== undefined, JSON.stringify(h.logged));
       assert.equal(line.level, 'warn');
       assert.match(String(line.reason), /HTTP 502/);
+    });
+
+    test(`${path}: with start set to OWNER, a collaborator's ready label on a NONE author's ticket gets the trust.start comment, not the trust.task one`, async () => {
+      const h = readied(by('pat'), { author: 'stranger', association: 'NONE' });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(labelCalls(h.calls), []);
+      const told = h.comments.filter((c) => c.issue === 9);
+      assert.equal(told.length, 1, JSON.stringify(h.comments));
+      assert.ok(told[0]!.body.includes(UNCOUNTED_READY_MARKER));
+      assert.match(told[0]!.body, /`trust\.start`/);
+      assert.match(told[0]!.body, /`pat`, who counts as `COLLABORATOR`/);
+      assert.match(told[0]!.body.split('\n')[0]!, /`trust\.start`/, 'the comment opens on trust.start');
+      assert.doesNotMatch(told[0]!.body.split('\n')[0]!, /`trust\.task`/);
+      assert.doesNotMatch(told[0]!.body, /adds them again starts the ticket/, 'readying it again would still be refused for trust.task');
+      assert.match(told[0]!.body, /`NONE`, which the repo's `trust\.task` leaves out as well/);
+      assert.match(told[0]!.body, /someone `trust\.start` lets in can restate the work/);
+    });
+
+    test(`${path}: with start set to OWNER, a NONE author's ticket whose adder cannot be looked up gets no comment that turn`, async () => {
+      const h = readied(by('pat'), { author: 'stranger', association: 'NONE', ownerType: new Error('HTTP 502') });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 9), []);
+      assert.ok(h.logged.some((l) => l.issue === 9 && l.level === 'warn' && /HTTP 502/.test(String(l.reason))), JSON.stringify(h.logged));
+    });
+
+    test(`${path}: with start set to OWNER, the owner's ready label on a NONE author's ticket still gets the trust.task comment`, async () => {
+      const h = readied(by('acme'), { author: 'stranger', association: 'NONE' });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      const told = h.comments.filter((c) => c.issue === 9);
+      assert.equal(told.length, 1, JSON.stringify(h.comments));
+      assert.match(told[0]!.body, /`trust\.task`/);
+    });
+
+    test(`${path}: with start set to OWNER, a NONE author's own template readying stays silent`, async () => {
+      const h = readied(by('stranger'), { author: 'stranger', association: 'NONE' });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.comments.filter((c) => c.issue === 9), []);
     });
 
     test(`${path}: at the default start, no adder is looked up`, async () => {
@@ -6081,6 +6124,57 @@ describe('realDeps: the state table', () => {
     await assert.rejects(failing.startedSession('session_01ABC'), /AccessDeniedException/);
     await assert.rejects(failing.recordSession('session_01ABC'), /AccessDeniedException/);
   });
+  // A lost verdict costs a model call, never a merge: no item reuses nothing.
+  test('a PR review\'s verdict is one item per repo and PR, read consistently, written only over the item the review read, and expires', async () => {
+    const sent: Array<{ name: string; input: Record<string, any> }> = [];
+    let refuse = false;
+    const AT = '2026-10-20T12:00:00.000Z';
+    const H = 'a'.repeat(40);
+    const B = 'b'.repeat(64);
+    const R = 'c'.repeat(64);
+    const client = {
+      send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
+        sent.push({ name: command.constructor.name, input: command.input });
+        if (refuse) throw Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' });
+        if (command.constructor.name !== 'GetItemCommand') return {};
+        if (command.input.Key.sk.S === '12') return { Item: { pk: { S: 'review#acme/factory' }, sk: { S: '12' }, headSha: { S: H }, bodySha: { S: B }, readSha: { S: R }, passReason: { S: 'It holds.' }, passAt: { S: H }, again: { BOOL: false }, at: { S: AT } } };
+        if (command.input.Key.sk.S === '13') return { Item: { pk: { S: 'review#acme/factory' }, sk: { S: '13' }, headSha: { S: H }, bodySha: { S: B }, again: { BOOL: true }, at: { S: AT } } };
+        return {};
+      },
+    };
+    const state = dynamoState(client as never, 'T');
+    const read = await state.verdict(REPO, 12);
+    assert.deepEqual(read, { headSha: H, bodySha: B, readSha: R, pass: { reason: 'It holds.', at: H }, again: false, at: AT });
+    assert.deepEqual(await state.verdict(REPO, 13), { headSha: H, bodySha: B, readSha: null, pass: null, again: true, at: AT });
+    assert.equal(await state.verdict(REPO, 14), null);
+    assert.deepEqual(sent[0]?.input.Key, { pk: { S: 'review#acme/factory' }, sk: { S: '12' } });
+    assert.equal(sent[0]?.input.ConsistentRead, true);
+
+    sent.length = 0;
+    assert.equal(await state.recordVerdict(REPO, 12, read, { headSha: H, bodySha: B, readSha: null, pass: null, again: false }), true);
+    const put = sent[0]!;
+    assert.equal(put.name, 'PutItemCommand');
+    const { at, ttl, ...item } = put.input.Item;
+    assert.deepEqual(item, { pk: { S: 'review#acme/factory' }, sk: { S: '12' }, headSha: { S: H }, bodySha: { S: B }, again: { BOOL: false } });
+    assert.ok(!Number.isNaN(Date.parse(at.S)));
+    assert.ok(Number(ttl.N) > Date.now() / 1000);
+    assert.match(String(put.input.ConditionExpression), /#at = :read/);
+    assert.deepEqual(put.input.ExpressionAttributeValues[':read'], { S: AT });
+    await state.recordVerdict(REPO, 14, null, { headSha: H, bodySha: B, readSha: R, pass: { reason: 'It holds.', at: H }, again: false });
+    assert.deepEqual([sent[1]?.input.Item.readSha, sent[1]?.input.Item.passReason, sent[1]?.input.Item.passAt], [{ S: R }, { S: 'It holds.' }, { S: H }]);
+    assert.match(String(sent[1]?.input.ConditionExpression), /attribute_not_exists\(pk\)/);
+
+    refuse = true;
+    assert.equal(await state.recordVerdict(REPO, 12, read, { headSha: H, bodySha: B, readSha: null, pass: null, again: false }), false, 'another review\'s item standing is no fault');
+    const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
+    await assert.rejects(failing.verdict(REPO, 12), /AccessDeniedException/);
+    await assert.rejects(failing.recordVerdict(REPO, 12, null, { headSha: H, bodySha: B, readSha: null, pass: null, again: false }), /AccessDeniedException/);
+    const malformed = dynamoState({ send: async () => ({ Item: { pk: { S: 'review#acme/factory' }, sk: { S: '12' }, headSha: { S: H }, at: { S: AT } } }) } as never, 'T');
+    await assert.rejects(malformed.verdict(REPO, 12), /malformed/);
+    const halfPass = dynamoState({ send: async () => ({ Item: { pk: { S: 'review#acme/factory' }, sk: { S: '12' }, headSha: { S: H }, bodySha: { S: B }, passReason: { S: 'It holds.' }, again: { BOOL: false }, at: { S: AT } } }) } as never, 'T');
+    await assert.rejects(halfPass.verdict(REPO, 12), /malformed/);
+  });
+
   // A takeover whose launch printed no session link holds its PR for two hours.
   test('an unconfirmed takeover is one item per repo and PR, read consistently, put only where none or an expired one stands, and expires', async () => {
     const sent: Array<{ name: string; input: Record<string, any> }> = [];
@@ -8643,7 +8737,7 @@ describe('run: a relative wait on a declared blocker', () => {
   const UNTIL = new Date(Date.parse(CLOSED_AT) + 4 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const blocker = { repo: REPO, number: 41, title: 'The parser', reason: 'completed', closedAt: CLOSED_AT };
   const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, ...over });
-  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>>, thread = [] as Array<{ body: string }> } = {}) => {
+  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, openBlockers = 0 as number | null, blockerRows = [] as Array<{ number: number, state: string }>, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>>, thread = [] as Array<{ body: string }> } = {}) => {
     const asked: string[] = [];
     const file = JSON.parse(FACTORY_FILE);
     file.features = { ...file.features, ...features };
@@ -8656,8 +8750,9 @@ describe('run: a relative wait on a declared blocker', () => {
         readyIssues: async () => rows,
         ticket: async (n: number) => {
           asked.push(`ticket ${n}`);
-          return { number: n, title: `Issue ${n}`, body: state.body, state: 'open', labels, pull: false, association: 'MEMBER', openBlockers: 0, ...waitOf(state.body) };
+          return { number: n, title: `Issue ${n}`, body: state.body, state: 'open', labels, pull: false, association: 'MEMBER', ...(openBlockers === null ? {} : { openBlockers }), ...waitOf(state.body) };
         },
+        blockers: async () => blockerRows,
         issue: async (n: number) => ({ number: n, body: state.body, pull: false }),
         updateIssue: async (n: number, { body: next }: { body: string }) => { h.issueEdits.push({ issue: n, body: next }); state.body = next; },
         issueClose: async (n: number) => ({ id: 9000 + n, number: n, title: `Issue ${n}`, state: 'open', reason: null, closedAt: null, ...issues[n] }),
@@ -8688,6 +8783,24 @@ describe('run: a relative wait on a declared blocker', () => {
     assert.deepEqual(h.calls.filter((c) => c.startsWith('label ')), []);
     assert.deepEqual([h.launches, h.messages], [[], []]);
     assert.notEqual(result.row, 'not-planned');
+  });
+
+  test('a close that is not completed, on a ticket another open issue still blocks: the line\'s comment says so', async () => {
+    for (const labels of [READY, ['workflow: under development']]) {
+      const h = relativeTurn({ labels, openBlockers: 1 });
+      await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never);
+      assert.equal(h.comments.length, 1, JSON.stringify(h.comments));
+      assert.ok(h.comments[0]!.body.includes(waitNotPlannedMarker('#41')));
+      assert.match(h.comments[0]!.body, /#7 is still blocked by another open issue/, labels.join());
+    }
+  });
+
+  test('a close that is not completed, on a ticket with no dependency summary whose blocked_by rows hold another open issue: the line\'s comment says so', async () => {
+    const h = relativeTurn({ openBlockers: null, blockerRows: [{ number: 42, state: 'open' }] });
+    await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never);
+    assert.equal(h.comments.length, 1, JSON.stringify(h.comments));
+    assert.match(h.comments[0]!.body, /#7 is still blocked by another open issue/);
+    assert.doesNotMatch(h.comments[0]!.body, /to free it/);
   });
 
   // The line holds only a ticket ready or not ready by its labels. A claimed

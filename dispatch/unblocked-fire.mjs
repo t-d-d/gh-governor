@@ -83,21 +83,25 @@ export const planUnblocked = async (invocation, ctx) => {
   // The ticket's status under the repo's rules, read at the clock's time.
   /** @param {Parameters<typeof ticketStatus>[0]} read @param {Parameters<typeof ticketStatus>[1]['blockers']} [blockers] */
   const statusOf = (read, blockers) => ticketStatus(read, { labels: config.labels, now: ctx.now(), blockers });
-  /** Whether the ticket's own line holds it, by its labels. @param {Parameters<typeof ticketStatus>[0]} read */
-  const lineHolds = (read) => {
-    const status = statusOf(read);
-    return status.open && status.holds.includes('line');
-  };
   // A relative `Blocked until:` line on this close is settled first,
   // whatever the switches say: rewritten into its date, or, on a close
   // that was not completed, left with one comment that replaces the
   // not-planned row's (dispatch/waits.mjs). Only a ticket ready or not
   // ready by its labels is then held; a claimed or excluded one takes its
-  // own row, so a claimed ticket's session still hears the close.
-  const settleRelative = (/** @type {{ state: string, labels: readonly string[], wait?: import('../scripts/lib/ready-work.mjs').Wait }} */ read) =>
-    relativeAtClose({ reader, repo, ticket: read, fire: invocation, prompts: ctx.prompts, now: ctx.now(), log: ctx.log, holds: lineHolds(read) });
+  // own row, so a claimed ticket's session still hears the close. One
+  // status read says both whether the line holds the ticket and whether
+  // another open issue still blocks it. A read taken once, with no retry,
+  // may still count the blocker that just closed (`readUnblocked`), so it
+  // (`retried: false`) never says the ticket is still blocked.
+  /** @param {{ state: string, labels: readonly string[], openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait }} read @param {Parameters<typeof ticketStatus>[1]['blockers']} [blockers] @param {boolean} [retried] */
+  const settleRelative = (read, blockers, retried = true) => {
+    const status = statusOf(read, blockers);
+    const holds = status.open && status.holds.includes('line');
+    const blocked = retried && status.open && status.holds.includes('blocker');
+    return relativeAtClose({ reader, repo, ticket: read, fire: invocation, prompts: ctx.prompts, now: ctx.now(), log: ctx.log, holds, blocked });
+  };
   if (!turnsOn(config, 'pickup') && !turnsOn(config, 'unblocked')) {
-    const settled = await settleRelative(await reader.ticket(issue));
+    const settled = await settleRelative(await reader.ticket(issue), undefined, false);
     const why = `${repo}'s ${CONFIG_PATH} turns neither pickup nor unblocked on`;
     ctx.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, issue, reason: why, ...(settled === null ? {} : { relative: settled.outcome }) });
     return { answer: { kind: invocation.kind, refusal: why, dispatched: [] } };
@@ -105,7 +109,7 @@ export const planUnblocked = async (invocation, ctx) => {
   const read = await readUnblocked(reader, issue, ctx.sleep, statusOf);
   const { blockers, reads } = read;
   let { ticket } = read;
-  const settled = await settleRelative(ticket);
+  const settled = await settleRelative(ticket, blockers);
   // A line changed since the ticket's read is no longer this close's: the
   // ticket is read again and takes its row as it now stands.
   const changed = settled?.outcome === 'line changed';
@@ -281,7 +285,7 @@ export const planUnblocked = async (invocation, ctx) => {
         ? { outcome: 'skipped', reason: strangerReason(stranger) }
         : { outcome: planned.length === 0 ? 'not selectable: blocked, or no longer ready' : 'picking up' }) });
     if (outsider !== undefined) await reportUncounted({ reader, outsider, log: ctx.log });
-    if (stranger !== undefined) await reportUntasked({ reader, stranger, what: 'readied', ready: config.labels.ready, event: 'dispatch-unblocked', log: ctx.log });
+    if (stranger !== undefined) await reportUntasked({ reader, stranger, what: 'readied', ready: config.labels.ready, start: startOf(config), event: 'dispatch-unblocked', log: (event, context) => ctx.log(event, { ...about, ...context }) });
   } else {
     // The spec session is not claimed: the ticket is not ready, so the
     // sweep leaves it, and the claim it adds before it builds keeps it off

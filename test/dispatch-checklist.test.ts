@@ -3,7 +3,7 @@
  * out. Tests 1 and 7 and the state of the tickets a PR names are decided in
  * code; the rest is the model's, its one port faked here with a canned
  * `claude -p` output. What follows the answer (the merge, the comment, the
- * held pass) is the review turn's, in test/dispatch-review.test.ts.
+ * verdict it records) is the review turn's, in test/dispatch-review.test.ts.
  *
  * Each case reads its facts through `readFacts` over a fake reader, as the
  * turn does, and checks the answer and the comment text it makes.

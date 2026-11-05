@@ -1141,10 +1141,9 @@ describe('.github/workflows/deploy.yml', () => {
     assert.doesNotMatch(apply?.run ?? '', /ReservedConcurrency/, 'a task has no reserved concurrency to set');
   });
 
-  test('probes the task through the by-hand script so the two cannot drift, on every invocation of the workflow', () => {
+  test('probes the task through the by-hand script so the two cannot drift', () => {
     const probe = steps.find(withId('probe'));
     assert.match(probe?.run ?? '', /node scripts\/run-turn\.mjs --kind probe/);
-    assert.equal(probe?.if, undefined, 'the probe must run on every invocation of the workflow');
   });
 
   // Every step after the probe is the rollback, so a green probe is the end
@@ -1175,14 +1174,17 @@ describe('.github/workflows/deploy.yml', () => {
  * The deploy job as Actions runs it, as far as its steps' `if:` reads: each
  * step runs when its condition holds (with `success() &&` before it when it
  * names no status function, as Actions reads it), and a
- * step that runs takes the outcome `outcomes` gives it, or success.
+ * step that runs takes the outcome `outcomes` gives it, or success. A
+ * `cancelled` outcome is the run cancelled during that step: from then on
+ * only a step that asks for `cancelled()` or `always()` runs.
  * Returns the ids (or names) of the steps that ran, in order.
  */
-const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success' | 'failure'>, previousImage = 'governor@sha256:good', newImage = 'governor@sha256:new' } = {}) => {
+const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success' | 'failure' | 'cancelled'>, previousImage = 'governor@sha256:good', newImage = 'governor@sha256:new' } = {}) => {
   const outputsOf: Record<string, Record<string, string>> = { previous: { image_uri: previousImage }, image: { image_uri: newImage } };
   const state: Record<string, { outcome: string; outputs: Record<string, string> }> = {};
   const ran: string[] = [];
   let failed = false;
+  let cancelled = false;
   for (const step of steps) {
     const key = step.id ?? step.name ?? '';
     const condition = (step.if ?? '').replace(/^\$\{\{\s*|\s*\}\}$/g, '');
@@ -1190,8 +1192,8 @@ const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success
     const expression = /\b(success|failure|always|cancelled)\(\)/.test(condition) ? condition : `success()${condition ? ` && (${condition})` : ''}`;
     // GitHub's expression syntax, for the subset these steps use, read as JavaScript.
     const js = expression.replace(/!=/g, '!==').replace(/(?<![!=])==/g, '===');
-    const runs = Boolean(new Function('success', 'failure', 'always', 'steps', 'inputs', `return (${js});`)(
-      () => !failed, () => failed, () => true,
+    const runs = Boolean(new Function('success', 'failure', 'always', 'cancelled', 'steps', 'inputs', `return (${js});`)(
+      () => !failed && !cancelled, () => failed && !cancelled, () => true, () => cancelled,
       new Proxy(state, { get: (target, id: string) => target[id] ?? { outcome: '', outputs: {} } }),
       { probe_only: probeOnly },
     ));
@@ -1202,6 +1204,7 @@ const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success
     ran.push(key);
     const outcome = outcomes[key] ?? 'success';
     if (outcome === 'failure') failed = true;
+    if (outcome === 'cancelled') cancelled = true;
     if (step.id) state[step.id] = { outcome, outputs: outputsOf[step.id] ?? {} };
   }
   return { ran, failed };
@@ -1291,8 +1294,41 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     assert.ok(failed);
   });
 
-  test('a red step before the probe rolls nothing back', () => {
+  test('a red apply probes nothing and rolls nothing back', () => {
     const { ran } = runDeploy({ outcomes: { apply: 'failure' } });
     assert.equal(ran.at(-1), 'apply');
+  });
+
+  test('a red step before the apply probes nothing', () => {
+    const { ran } = runDeploy({ outcomes: { previous: 'failure' } });
+    assert.equal(ran.at(-1), 'previous');
+  });
+
+  // The steps between the apply and the probe touch the App and read back
+  // what GitHub and AWS hold, not the image. Once the apply has put the new
+  // image in, the probe checks it whatever those steps did, so a red one
+  // never leaves an unprobed image running.
+  test('probes on every invocation, and after a successful apply whatever the steps between them did', () => {
+    const probe = steps.find(withId('probe'));
+    assert.equal(probe?.if, "${{ success() || (!cancelled() && steps.apply.outcome == 'success') }}");
+    const between = steps.slice(steps.findIndex(withId('apply')) + 1, steps.findIndex(withId('probe')));
+    assert.ok(between.length > 0, 'no step sits between the apply and the probe');
+    for (const step of between) {
+      const key = step.id ?? step.name ?? '';
+      const red = runDeploy({ outcomes: { [key]: 'failure', probe: 'failure' } });
+      assert.deepEqual(after(red.ran, key), ['probe', 'rollback', 'reprobe'], `a red '${key}' does not probe and roll back a red probe`);
+      const green = runDeploy({ outcomes: { [key]: 'failure' } });
+      assert.equal(green.ran.at(-1), 'probe', `a red '${key}' rolls back after a green probe`);
+      assert.ok(green.failed, `a red '${key}' leaves the deploy green`);
+    }
+  });
+
+  test('a deploy cancelled after the apply probes nothing and rolls nothing back', () => {
+    const between = steps.slice(steps.findIndex(withId('apply')) + 1, steps.findIndex(withId('probe')));
+    for (const step of between) {
+      const key = step.id ?? step.name ?? '';
+      const { ran } = runDeploy({ outcomes: { [key]: 'cancelled' } });
+      assert.equal(ran.at(-1), key, `a deploy cancelled during '${key}' ran ${after(ran, key).join(', ')}`);
+    }
   });
 });

@@ -883,11 +883,35 @@
         },
         "requireChecks": {
           "default": [],
-          "description": "Names of check runs and commit status contexts the review treats as required, beside any the default branch requires on GitHub. One red on the PR's head fails the review for a push; one not finished, or not posted, holds the review with `governor` in progress until it ends. A name GitHub also requires counts once, and the review's own `governor` check is left out. Default none.",
+          "description": "Checks the review treats as required, beside any the default branch requires on GitHub: a name, which a check run from any App or a commit status context meets, or `{ \"name\", \"app\" }`, which only that App's check run of the name meets. One red on the PR's head fails the review for a push; one not finished, or not posted, holds the review with `governor` in progress until it ends. A name GitHub also requires counts once, and the review's own `governor` check is left out. Default none.",
           "type": "array",
           "items": {
-            "type": "string",
-            "minLength": 1
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The check run's name."
+                  },
+                  "app": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9-]*$",
+                    "description": "The slug of the GitHub App that must post it, such as `github-actions` or `github-code-scanning`: lowercase letters, digits and hyphens, the last part of its `github.com/apps/<slug>` page. A run of the name from any other App, and a commit status of the name, does not count."
+                  }
+                },
+                "required": [
+                  "name",
+                  "app"
+                ],
+                "additionalProperties": false
+              }
+            ]
           }
         },
         "waitForCi": {
@@ -1290,7 +1314,7 @@
               "failure": [],
               "neutral": []
             },
-            "description": "The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion's labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by` reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on.",
+            "description": "The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion's labels and removes the ones the other two name, and touches no other label. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on, a label the review's own `when.labels` or `when.exclude` names, or `labels.claim`.",
             "type": "object",
             "properties": {
               "success": {
