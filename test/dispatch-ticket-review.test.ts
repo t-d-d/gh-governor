@@ -80,6 +80,10 @@ const harness = (over: {
   labelWrite?: (op: string, label: string) => void,
   /** The thread grows with each comment posted, as GitHub's does. */
   live?: boolean,
+  /** Who added each of the ticket's starting labels; governor's App where unnamed. */
+  adders?: Record<string, string>,
+  /** Throws for a read of the ticket's label events GitHub refuses. */
+  addsRead?: () => void,
 } = {}) => {
   const comments: Array<{ issue: number, body: string }> = [];
   const runs: Array<{ system: string, prompt: string, schema: unknown, replace?: boolean }> = [];
@@ -94,6 +98,12 @@ const harness = (over: {
   const live = { labels: [...ticketRow(over.ticket).labels], body: ticketRow(over.ticket).body };
   const repoLabels = new Set(over.repoLabels ?? ['type: bug', 'type: enhancement', 'mode: afk']);
   const thread: Thread[] = [...(over.thread ?? [])];
+  /** The ticket's `labeled` events, oldest first, as GitHub's events API holds them. */
+  const adds = live.labels.map((label) => {
+    const actor = over.adders?.[label] ?? 'governor-app[bot]';
+    return { label, actor, bot: actor.endsWith('[bot]'), ours: over.adders?.[label] === undefined };
+  });
+  let addsReads = 0;
   const reader = {
     ticket: async (n: number) => {
       if (over.gone?.includes(n)) throw Object.assign(new Error(`GET /issues/${n} failed: 410`), { status: 410 });
@@ -121,8 +131,15 @@ const harness = (over: {
       for (const label of labels) {
         assert.ok(repoLabels.has(label), `${label} was ensured before it was added`);
         if (!live.labels.includes(label)) live.labels.push(label);
+        adds.push({ label, actor: 'governor-app[bot]', bot: true, ours: true });
       }
       ops.push(`add ${labels.join(', ')}`);
+    },
+    labelAdds: async (issue: number) => {
+      assert.equal(issue, 501);
+      addsReads += 1;
+      over.addsRead?.();
+      return adds.map((a) => ({ ...a }));
     },
     removeLabel: async (issue: number, label: string) => {
       over.labelWrite?.('remove', label);
@@ -147,7 +164,9 @@ const harness = (over: {
   const review = () => reviewTicket({ repo: REPO, issue: 501, reader, config: config as never, run, transcript, log });
   /** A person or session edits the ticket's body, or its labels. */
   const edit = (change: { body?: string, labels?: string[] }) => { if (change.body !== undefined) live.body = change.body; if (change.labels !== undefined) live.labels = [...change.labels]; };
-  return { review, comments, runs, transcripts, logged, openReads, threadReads: () => threadReads, ops, live, edit, reader };
+  /** A person adds a label to the ticket by hand. */
+  const label = (name: string, actor = 'a-member') => { if (!live.labels.includes(name)) live.labels.push(name); adds.push({ label: name, actor, bot: false, ours: false }); };
+  return { review, comments, runs, transcripts, logged, openReads, threadReads: () => threadReads, addsReads: () => addsReads, ops, live, edit, label, reader };
 };
 
 /** A comment governor's App posted, carrying a marker. */
@@ -984,6 +1003,69 @@ describe('fitness: dispatcher-review.md, a conclusion applies the labels the rep
     h.edit({ body: `${BODY}\n\nEdited.` });
     await h.review();
     assert.deepEqual(await sweep(), []);
+  });
+
+  test('a member\'s hold label stays on a success, though the review\'s neutral names it', async () => {
+    const HOLD: Conclusions = { success: ['triaged'], failure: ['triage: needs edit'], neutral: ['mode: human'] };
+    const h = harness({ reviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: HOLD }], answers: [PASSES], ticket: { labels: ['type: bug', 'mode: afk'] }, live: true });
+    h.label('mode: human');
+    const result = await h.review();
+    assert.equal(result.reviews[0]!.outcome, 'commented');
+    assert.ok(h.live.labels.includes('mode: human'), 'a person\'s hold stays');
+    assert.deepEqual(h.ops, ['create triaged', 'add triaged', 'comment passes']);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-ticket-review-labels' && Array.isArray(l.kept) && (l.kept as string[]).includes('mode: human')));
+  });
+
+  test('a neutral label governor\'s App added comes off on a later success', async () => {
+    const HOLD: Conclusions = { success: ['triaged'], failure: ['triage: needs edit'], neutral: ['mode: human'] };
+    const h = harness({ reviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: HOLD }], answers: [{ conclusion: 'neutral', text: 'It builds a non-goal.' }, PASSES], live: true });
+    await h.review();
+    assert.ok(h.live.labels.includes('mode: human'));
+    h.edit({ body: `${BODY}\n\nNo longer a non-goal.` });
+    await h.review();
+    assert.deepEqual(h.live.labels, ['type: bug', 'triaged']);
+  });
+
+  test('a label governor added and a person added again after is the person\'s, and stays; one only a person added stays in any case', async () => {
+    const h = harness({ reviews: [triage()], answers: [PASSES], ticket: { labels: ['type: bug', 'triage: needs edit', 'Triage: Needs A Person'] }, adders: { 'Triage: Needs A Person': 'a-member' } });
+    h.label('triage: needs edit');
+    await h.review();
+    assert.deepEqual(h.live.labels, ['type: bug', 'triage: needs edit', 'Triage: Needs A Person', 'triaged']);
+  });
+
+  test('a label no labeled event names is not governor\'s, and stays', async () => {
+    const h = harness({ reviews: [triage()], answers: [PASSES], ticket: { labels: ['type: bug', 'triage: needs edit'] } });
+    h.reader.labelAdds = async () => [];
+    await h.review();
+    assert.ok(h.live.labels.includes('triage: needs edit'));
+  });
+
+  test('a run whose read of the label events fails changes no label, logs at error, posts no comment, and the next edit runs it again', async () => {
+    let refuse = true;
+    const h = harness({
+      reviews: [triage()], answers: [PASSES], live: true,
+      ticket: { labels: ['type: bug', 'triage: needs edit'] },
+      addsRead: () => { if (refuse) throw Object.assign(new Error('GET /events failed: 502'), { status: 502 }); },
+    });
+    const result = await h.review();
+    assert.equal(result.reviews[0]!.outcome, 'failed');
+    assert.deepEqual(h.ops, []);
+    assert.deepEqual(h.comments, []);
+    const line = h.logged.find((l) => l.event === 'dispatch-ticket-review' && l.review === 'triage');
+    assert.equal(line?.level, 'error');
+    assert.match(String(line?.error), /502/);
+    assert.equal(exitCodeFor({ kind: 'ticketReview', reviews: result.reviews } as never), 1);
+    refuse = false;
+    h.edit({ body: `${BODY}\n\nEdited.` });
+    const again = await h.review();
+    assert.equal(again.reviews[0]!.outcome, 'commented');
+    assert.deepEqual(h.live.labels, ['type: bug', 'triaged']);
+  });
+
+  test('the label events are not read where the ticket carries nothing to take off', async () => {
+    const h = harness({ reviews: [triage()], answers: [PASSES] });
+    await h.review();
+    assert.equal(h.addsReads(), 0);
   });
 
   test('the ticket review shares no code with pickup', () => {

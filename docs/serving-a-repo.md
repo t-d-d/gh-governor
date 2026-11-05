@@ -363,12 +363,12 @@ Each ticket review names, in `conclusions`, the labels each of its conclusions a
 ]
 ```
 
-On every run governor adds the conclusion's labels and removes the ones the other two conclusions name, creating a label the repo lacks. It touches no other label. Reviews and pickup share no code: they meet only through these labels. Two patterns:
+On every run governor adds the conclusion's labels and removes the ones the other two conclusions name, creating a label the repo lacks. It removes a label only where governor's App added it last, read from the ticket's `labeled` events. A person's label is never taken off: a member who holds a ticket by adding `mode: human` keeps that hold through a later `success`, even though the review's `neutral` names the same label. It touches no other label. Reviews and pickup share no code: they meet only through these labels. Two patterns:
 
-- **Review every ticket before it is built.** List the review's `success` label among `labels.ready`, here `"ready": ["mode: afk", "triaged"]`. A ticket is not ready until the review has passed it, and a later `failure` or `neutral` takes the label off again. Pickup takes a ticket the review readied at the repo's next sweep (`pickup.sweepHours`), since a label governor adds queues no selection of its own.
+- **Review every ticket before it is built.** List the review's `success` label among `labels.ready`, here `"ready": ["mode: afk", "triaged"]`. A ticket is not ready until the review has passed it, and a later `failure` or `neutral` takes the label off again where the review added it. Pickup takes a ticket the review readied at the repo's next sweep (`pickup.sweepHours`), since a label governor adds queues no selection of its own.
 - **Trust a ticket someone has readied.** List the ready labels in the review's `when.exclude`. A ticket that carries them when it opens is not reviewed, and pickup starts it as today.
 
-Put the `neutral` labels in `labels.exclude`, as `mode: human` is, so pickup never takes a ticket the review doubted. Put the claim label in `when.exclude`, so a ticket already being built is not reviewed when its session edits the body. A person overrules a review by adding its `success` label by hand.
+Put the `neutral` labels in `labels.exclude`, as `mode: human` is, so pickup never takes a ticket the review doubted. Put the claim label in `when.exclude`, so a ticket already being built is not reviewed when its session edits the body. A person overrules a review by adding its `success` label by hand, and a later run leaves that label on.
 
 Governor refuses a file where one label appears under two conclusions of one review, where one label appears in two reviews' conclusions, where a review whose `by` reaches beyond `trust.auto` names a ready label, or where a conclusion names a label a `types` entry matches on. Each rule reads a review's `conclusions` with every `types` entry's. On an open-source repo, keep the default `by` on the review whose labels can ready a ticket, and give strangers a second review whose labels ready nothing.
 
