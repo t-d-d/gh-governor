@@ -120,9 +120,9 @@ const HELD_PASS = /^Passes the PR review: ([\s\S]*?) The merge waits for Deploy 
 
 /**
  * The pass's reason a held pass comment carries, or null for any other
- * text: the next review merges on it without judging again. Nothing
- * writes one any more; the reader stays so a PR held before the change
- * merges on its next review.
+ * text. Nothing writes one any more, and the review merges on none: it
+ * reads its verdict from the state table, never from comment text
+ * (dispatch/review.mjs). `passOf` reads a held pass as no pass.
  *
  * @param {string} text
  */
@@ -135,7 +135,8 @@ const PASSED = new RegExp(`^(?:${escaped(PASSES)}|${escaped(CONFLICT)} )([\\s\\S
  * The model's pass a comment carries, or null for any other text: a pass,
  * one the owner merges, or a conflict, each with the model's reason, and
  * the head the answer was given at where the comment reused it. A held
- * pass is none: it waits on a merge, and `heldPassReason` reads it.
+ * pass is none. The review relies on no comment's pass: its verdict is in
+ * the state table.
  *
  * @param {string} text
  * @returns {{ reason: string, reused: string | null } | null}

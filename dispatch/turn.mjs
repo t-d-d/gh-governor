@@ -256,6 +256,8 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   recordConflict: (repo: string, pr: number, merge: string) => Promise<boolean>,
  *   recordSession: (session: string) => Promise<void>,
  *   startedSession: (session: string) => Promise<boolean>,
+ *   verdict: (repo: string, pr: number) => Promise<(import('./review.mjs').Verdict & { at: string }) | null>,
+ *   recordVerdict: (repo: string, pr: number, read: (import('./review.mjs').Verdict & { at: string }) | null, verdict: import('./review.mjs').Verdict) => Promise<boolean>,
  * } & import('./periodics.mjs').PeriodicState & import('./pickup.mjs').PickupState & import('./hooks.mjs').HookState & import('./waits.mjs').WaitState} DispatchState
  *   Each label's cursor, by its repo, its workflow's file name and the
  *   label (null for CI's, which earns none): read (null when it has none),
@@ -272,6 +274,8 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   record the turn read, false where another stood.
  *   A session governor started, by URL or id: recorded, and read back by
  *   the PR review (dispatch/review.mjs), whichever repo its PR is in.
+ *   A PR review's verdict (dispatch/review.mjs): read, and written over
+ *   the item the review read, false where another stood.
  *   A read or write that fails throws.
  *
  * @typedef {{ told: string[], failed: string[] }} Delivered
@@ -1445,7 +1449,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           break;
         }
         const outOfTime = spentMs > REVIEW_WINDOW_MS;
-        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, trusted, outOfTime, ...(workflows.ci === undefined || !review.waitForCi ? {} : { ci: workflows.ci }) });
+        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, verdicts: { read: (n) => deps.state.verdict(fireRepo(), n), record: (n, read, verdict) => deps.state.recordVerdict(fireRepo(), n, read, verdict) }, trusted, outOfTime, ...(workflows.ci === undefined || !review.waitForCi ? {} : { ci: workflows.ci }) });
         const usage = spent.get(reviewed.pr);
         deps.log('dispatch-review', { ...reviewed, ...(usage === undefined ? {} : { usage }) });
         reviews.push(reviewed);
@@ -1694,6 +1698,9 @@ export const WORKFLOW_SEND_WINDOW_MS = 5 * 60 * 1000;
  * answers 5xx every time otherwise holds the cursor for good.
  */
 export const WORKFLOW_SEND_TRIES = 3;
+
+/** How long a PR review's verdict outlives its last write: a lost one only asks the model again. */
+const VERDICT_TTL_S = 90 * 24 * 60 * 60;
 
 /** How long a delivered record outlives its last write: past any cursor held that long, it is never read again. */
 const DELIVERED_TTL_S = 30 * 24 * 60 * 60;
@@ -1951,7 +1958,14 @@ export const cliEnv = (env, home, account) => ({
  * waiting ticket's item is `wait#<repo>` / `<issue>`, holding its date, put
  * only where none or the date the turn read stands, deleted only over that
  * date, and expired a month after its date: a lost one costs that ticket's
- * wait-ended comment and spec session.
+ * wait-ended comment and spec session. A PR review's verdict is the item
+ * `review#<repo>` / `<pr>`, put only over the item the review read, and
+ * expired three months after its write: the review reads it back in place
+ * of its comment's text, which a person can edit, and a lost one costs a
+ * model call. A ticket whose launch started nothing is the item
+ * `pickup-failed#<repo>` / `<issue>`, holding the time pickup holds it
+ * until, put after the launch over any earlier one, and expired at that
+ * time: a lost one lets one more launch go.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -1963,6 +1977,7 @@ export const dynamoState = (client, table) => {
   const periodicKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `periodic#${repo}` }, sk: { S: name } });
   const hookKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `hook#${repo}` }, sk: { S: name } });
   const sweepKey = (/** @type {string} */ repo) => ({ pk: { S: `pickup#${repo}` }, sk: { S: 'sweep' } });
+  const failedPk = (/** @type {string} */ repo) => ({ S: `pickup-failed#${repo}` });
   const waitPk = (/** @type {string} */ repo) => ({ S: `wait#${repo.toLowerCase()}` });
   const waitKey = (/** @type {string} */ repo, /** @type {number} */ issue) => ({ pk: waitPk(repo), sk: { S: String(issue) } });
   /** An item's date, or a throw: a malformed item is a failed read, never a missing one. @param {Record<string, any>} item */
@@ -1973,6 +1988,7 @@ export const dynamoState = (client, table) => {
   };
   /** @param {unknown} error */
   const refused = (error) => error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException';
+  const verdictKey = (/** @type {string} */ repo, /** @type {number} */ pr) => ({ pk: { S: `review#${repo}` }, sk: { S: String(pr) } });
   const sessionKey = (/** @type {string} */ session) => ({ pk: { S: `session#${sessionId(session)}` }, sk: { S: 'started' } });
   const sent = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label, /** @type {number | null} */ from) => ({ pk: pk(repo, workflow), sk: { S: `delivered#${label === null ? '' : `${label}#`}${from ?? 'none'}` } });
   return {
@@ -2032,6 +2048,45 @@ export const dynamoState = (client, table) => {
     startedSession: async (session) => {
       const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: sessionKey(session), ConsistentRead: true }));
       return item !== undefined;
+    },
+    verdict: async (repo, pr) => {
+      const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: verdictKey(repo, pr), ConsistentRead: true }));
+      if (item === undefined) return null;
+      const headSha = item.headSha?.S;
+      const bodySha = item.bodySha?.S;
+      const at = item.at?.S;
+      const again = item.again?.BOOL;
+      const reason = item.passReason?.S;
+      const passAt = item.passAt?.S;
+      // A malformed item is a failed read, never a missing one.
+      if (headSha === undefined || bodySha === undefined || at === undefined || typeof again !== 'boolean' || (item.readSha !== undefined && item.readSha.S === undefined) || (reason === undefined) !== (passAt === undefined)) {
+        throw new Error(`the review verdict item for ${repo}#${pr} is malformed: ${JSON.stringify(item)}`);
+      }
+      return { headSha, bodySha, readSha: item.readSha?.S ?? null, pass: reason === undefined || passAt === undefined ? null : { reason, at: passAt }, again, at };
+    },
+    recordVerdict: async (repo, pr, read, { headSha, bodySha, readSha, pass, again }) => {
+      try {
+        await client.send(new PutItemCommand({
+          TableName: table,
+          Item: {
+            ...verdictKey(repo, pr),
+            headSha: { S: headSha },
+            bodySha: { S: bodySha },
+            ...(readSha === null ? {} : { readSha: { S: readSha } }),
+            ...(pass === null ? {} : { passReason: { S: pass.reason }, passAt: { S: pass.at } }),
+            again: { BOOL: again },
+            at: { S: new Date().toISOString() },
+            [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.now() / 1000) + VERDICT_TTL_S) },
+          },
+          ...(read === null
+            ? { ConditionExpression: 'attribute_not_exists(pk)' }
+            : { ConditionExpression: '#at = :read', ExpressionAttributeNames: { '#at': 'at' }, ExpressionAttributeValues: { ':read': { S: read.at } } }),
+        }));
+        return true;
+      } catch (error) {
+        if (refused(error)) return false;
+        throw error;
+      }
     },
     periodic: async (repo, name) => {
       const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: periodicKey(repo, name), ConsistentRead: true }));
@@ -2168,6 +2223,39 @@ export const dynamoState = (client, table) => {
         if (error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException') return false;
         throw error;
       }
+    },
+    failedLaunches: async (repo) => {
+      /** @type {Array<{ issue: number, until: string }>} */
+      const found = [];
+      /** @type {Record<string, any> | undefined} */
+      let after;
+      do {
+        const page = await client.send(new QueryCommand({
+          TableName: table,
+          KeyConditionExpression: 'pk = :pk',
+          ExpressionAttributeValues: { ':pk': failedPk(repo) },
+          ConsistentRead: true,
+          ...(after === undefined ? {} : { ExclusiveStartKey: after }),
+        }));
+        for (const item of page.Items ?? []) {
+          const issue = Number(item.sk?.S);
+          const until = item.until?.S;
+          // A malformed item is a failed read, never a missing one.
+          if (!Number.isSafeInteger(issue) || issue <= 0 || typeof until !== 'string' || Number.isNaN(Date.parse(until))) {
+            throw new Error(`the failed-launch item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
+          }
+          found.push({ issue, until });
+        }
+        after = page.LastEvaluatedKey;
+      } while (after !== undefined);
+      return found;
+    },
+    // A later failure moves the record on: the same put again, nothing to race.
+    recordFailedLaunch: async (repo, issue, until) => {
+      await client.send(new PutItemCommand({
+        TableName: table,
+        Item: { pk: failedPk(repo), sk: { S: String(issue) }, until: { S: until }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.ceil(Date.parse(until) / 1000)) } },
+      }));
     },
     advance: async (repo, workflow, label, { runId, commit, created }) => {
       try {
@@ -2433,17 +2521,21 @@ export const realDeps = () => {
     sleep: (ms) => new Promise((resolveSleep) => { setTimeout(resolveSleep, ms); }),
     fires: env.DISPATCH_FIRES_QUEUE_URL ? sqsFires(sqs, env.DISPATCH_FIRES_QUEUE_URL) : undefined,
     enqueue: env.DISPATCH_FIRES_QUEUE_URL ? sqsEnqueue(sqs, env.DISPATCH_FIRES_QUEUE_URL) : undefined,
-    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, no periodic starts, no repo is swept, and a review a label's waiver would pass fails, rather than guess.
+    // No table named: every read and write fails, so a workflow turn refuses, and a conflicts turn tells nobody, no periodic starts, no repo is swept, and every PR review fails, rather than guess.
     state: env.DISPATCH_STATE_TABLE
       ? dynamoState(new DynamoDBClient({}), env.DISPATCH_STATE_TABLE)
       : {
         cursor: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         advance: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         delivered: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        verdict: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordVerdict: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         periodic: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordPeriodic: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         sweep: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordSweep: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        failedLaunches: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordFailedLaunch: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         hookSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordHookSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         record: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },

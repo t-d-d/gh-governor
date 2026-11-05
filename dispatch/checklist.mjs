@@ -49,6 +49,7 @@ import { cliResult, usageLimit } from './cli-answer.mjs';
  * @typedef {{ answer: 'pass', reason: string, reused?: string } | { answer: 'fail', test: number, reason: string, editable: boolean, claim?: true, push?: true, person?: { test: number, reason: string } }} Answer `reused`: the head an earlier review's model gave this pass at, reused at a new head with nothing it reads changed. `claim`: the ticket waits for the author session to claim it, not for an edit. `push`: a required check is red, and waits for the author session's push. `person`: a later test no edit meets, beside a first one the author session meets by an edit, or by a claim with `claim`; `editable` is then false.
  * @typedef {import('./repo-config.mjs').HumanOnly} HumanOnly
  * @typedef {import('./repo-config.mjs').TicketRule} TicketRule
+ * @typedef {import('./repo-config.mjs').RequiredCheck} RequiredCheck
  * @typedef {{
  *   humanOnly: HumanOnly[],
  *   tickets: { require: TicketRule[], forbid: TicketRule[] },
@@ -240,6 +241,14 @@ export const dependabotAnswer = ({ files, commits, list }) => {
 
 /** Labels as a reason names them. @param {string[]} labels */
 const named = (labels) => labels.map((l) => `\`${l}\``).join(', ');
+
+/**
+ * A required check as a message names it: its name, and the App that must
+ * post it where a `review.requireChecks` entry names one.
+ *
+ * @param {RequiredCheck} check
+ */
+export const checkLabel = (check) => (typeof check === 'string' ? `\`${check}\`` : `\`${check.name}\` from \`${check.app}\``);
 
 /**
  * Whether a ticket neither claimed nor excluded is still waiting for its
@@ -530,14 +539,14 @@ const listFailure = (files, { humanOnly, quote }, decided, waived) => {
  * the CI workflow whose latest run there ended red. A push that turns them
  * green meets it, and the push is reviewed again.
  *
- * @param {string[]} red
+ * @param {RequiredCheck[]} red
  * @param {string | null} [ci] The CI workflow's file, where its run at the head is red.
  * @returns {Answer | null}
  */
 export const checksFailure = (red, ci = null) => {
   /** @type {string[]} */
   const parts = [];
-  if (red.length > 0) parts.push(`the required check${red.length > 1 ? 's' : ''} ${named(red)}`);
+  if (red.length > 0) parts.push(`the required check${red.length > 1 ? 's' : ''} ${red.map(checkLabel).join(', ')}`);
   if (ci !== null) parts.push(`the CI workflow \`${ci}\``);
   if (parts.length === 0) return null;
   const many = red.length > 1 || parts.length > 1;
@@ -569,7 +578,7 @@ export const checksFailure = (red, ci = null) => {
  *   owners?: { verification: ClosedTicket[], later: ClosedTicket[] },
  *   prose?: Array<{ number: number, text: string }>,
  *   foreign?: Array<{ repo: string, number: number, text: string }>,
- *   red?: string[],
+ *   red?: RequiredCheck[],
  *   redCi?: string | null,
  *   unattended?: boolean,
  * }} facts `tickets`: the body's closing tickets, in its order. `others`: the other open PRs and the tickets each closes. `owners`: the tickets `namedOwners` read, as read. `prose`: the body's `proseClosings`. `foreign`: its `foreignClosings`. `red`: the required checks red on the head. `redCi`: the CI workflow's file, where its latest run at the head ended red. `unattended`: governor started the session the body names.
@@ -745,33 +754,30 @@ export { usageLimit };
  *   owners: { verification: ClosedTicket[], later: ClosedTicket[] },
  *   prose: Array<{ number: number, text: string }>,
  *   foreign: Array<{ repo: string, number: number, text: string }>,
- *   red?: string[],
+ *   red?: RequiredCheck[],
  *   redCi?: string | null,
  *   constraintTexts: (paths: string[]) => Promise<ConstraintTexts>,
  *   unattended: () => Promise<boolean>,
- *   held?: string | null,
  *   rules: Rules,
  *   system?: string,
  *   earlier?: { read: string, reason: string, at: string } | null,
  *   read?: (digest: string) => void,
- * }} Facts `decideInCode`'s facts, and: `constraintTexts`, the read of the quoted files the model is to read, made only when it is asked; `unattended`, the read of whether governor started the PR's session, made only where a label's waiver changes the answer; `held`, the reason of a pass whose merge a promotion held, kept in place of a new judgement; `rules`, the repo's review settings and labels; `system`, the repo's checklist, part of what the model reads; `earlier`, the model's pass at an earlier head, with the digest of what it read then (`readDigest`), its reason and the head it was given at; `read`, told the digest of what the model reads, wherever the code leaves the answer to it.
+ * }} Facts `decideInCode`'s facts, and: `constraintTexts`, the read of the quoted files the model is to read, made only when it is asked; `unattended`, the read of whether governor started the PR's session, made only where a label's waiver changes the answer; `rules`, the repo's review settings and labels; `system`, the repo's checklist, part of what the model reads; `earlier`, the model's pass at an earlier head, with the digest of what it read then (`readDigest`), its reason and the head it was given at; `read`, told the digest of what the model reads, wherever the code leaves the answer to it.
  */
 
 /**
  * The checklist's answer for a PR's facts: the code's fail when tests 1,
- * 7 and 8 or the owners decide one; otherwise a held pass's own reason, so a
- * pass waiting on a promotion is not judged twice; otherwise the
- * model's, or its pass at an earlier head where what it reads has the same
- * digest: a merge from the base branch puts it the same question. A fail
- * is never reused. The facts are a held pass's too: a ticket closed during the
- * promotion fails it in code. No edit to the description changes a
+ * 7 and 8 or the owners decide one; otherwise the model's, or its pass at
+ * an earlier head where what it reads has the same digest: a merge from
+ * the base branch puts it the same question. A fail is never reused. No
+ * edit to the description changes a
  * quoted file's text, so the model's test-7 fail is never editable.
  *
  * @param {Facts} facts
  * @param {Judge} judge
  * @returns {Promise<Answer>}
  */
-export const checklist = async ({ pull, files, tickets, others, owners, prose, foreign, red = [], redCi = null, constraintTexts, unattended, held = null, rules, system = '', earlier = null, read = () => {} }, judge) => {
+export const checklist = async ({ pull, files, tickets, others, owners, prose, foreign, red = [], redCi = null, constraintTexts, unattended, rules, system = '', earlier = null, read = () => {} }, judge) => {
   const decide = (/** @type {boolean} */ unwatched) => decideInCode({ files, tickets, rules, others, owners, prose, foreign, red, redCi, unattended: unwatched });
   // The table is read only where a label's waiver changes the answer: a
   // read that fails then fails no review it could not change.
@@ -779,7 +785,6 @@ export const checklist = async ({ pull, files, tickets, others, owners, prose, f
   const unwaived = decide(true);
   const decided = isDeepStrictEqual(waived, unwaived) || !await unattended() ? waived : unwaived;
   if (decided !== null) return decided;
-  if (held !== null) return { answer: 'pass', reason: held };
   const left = constraintsLeft(files, tickets, rules);
   const constraints = left.length === 0 ? null : await constraintTexts(left);
   const found = tickets.filter(/** @returns {t is TicketRow} */ (t) => !('missing' in t));
@@ -802,7 +807,7 @@ export const checklist = async ({ pull, files, tickets, others, owners, prose, f
  *
  * A run the account's allowance refused: every later run would meet it, so
  * none starts, and each PR that needs one gets its error. A PR decided in
- * code, or a held pass, still settles. One judge per turn.
+ * code, or a reused pass, still settles. One judge per turn.
  *
  * @param {{
  *   skill: string,
