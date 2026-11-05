@@ -46,7 +46,7 @@
  */
 
 import { waitLine } from './webhook/fire.mjs';
-import { UNREADIED_HELD, ownerMessage, sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
+import { UNREADIED_HELD, ownerMessage, sameRepo, specSession, stillBlockedSentence, unblockedFacts } from './unblocked.mjs';
 import { relayedBody, sessionNamedIn } from './webhook/subscribe.mjs';
 import { AUTO, RELAY, authorKind, lets } from './trust.mjs';
 import { DAY_MS } from './periodics.mjs';
@@ -743,17 +743,21 @@ const refOf = (repo, closed) => (sameRepo(repo, closed.repo) ? `#${closed.number
  * than as completed: the close's facts, the not-planned ask, and what to do
  * with the line. Where the line holds the ticket (`holds`), how to free it;
  * a claimed or excluded ticket is not held, so it is told only that the
- * line waits on a close that will not settle it.
+ * line waits on a close that will not settle it. Where another open issue
+ * still blocks the ticket (`blocked`), the comment says so after the ask,
+ * as the not-planned row's does (`notPlannedComment`, dispatch/unblocked.mjs),
+ * and does not say the line alone frees it.
  *
- * @param {{ facts: string, issue: number, ref: string, prompts: Record<string, string | undefined>, holds?: boolean }} args
+ * @param {{ facts: string, issue: number, ref: string, prompts: Record<string, string | undefined>, holds?: boolean, blocked?: boolean }} args
  */
-export const waitNotPlannedComment = ({ facts, issue, ref, prompts, holds = true }) => [
+export const waitNotPlannedComment = ({ facts, issue, ref, prompts, holds = true, blocked = false }) => [
   facts,
   '',
   instruction(prompts, 'unblockedNotPlanned'),
   '',
+  ...(blocked ? [stillBlockedSentence(issue), ''] : []),
   holds
-    ? `#${issue} stays held by its \`Blocked until:\` line, which waits on ${ref} closing. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line, to free it.`
+    ? `#${issue} stays held by its \`Blocked until:\` line, which waits on ${ref} closing. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line${blocked ? '' : ', to free it'}.`
     : `#${issue}'s \`Blocked until:\` line waits on ${ref} closing, and this close does not give it a date. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line.`,
   '',
   waitNotPlannedMarker(ref),
@@ -777,16 +781,17 @@ export const waitRelativeComment = (ref) => [
  * read just before the write, so a person's edit elsewhere stays. A body
  * whose line no longer waits on `closed` is left alone. Any other close
  * leaves the line and comments once, saying it holds the ticket where it
- * does (`holds`, true where unset).
+ * does (`holds`, true where unset), and that another open issue still
+ * blocks it where one does (`blocked`).
  *
- * @param {{ reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>, repo: string, issue: number, closed: { repo: string, number: number, reason?: string | null, closedAt: string }, facts: string, prompts: Record<string, string | undefined>, log: Log, holds?: boolean }} args
+ * @param {{ reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>, repo: string, issue: number, closed: { repo: string, number: number, reason?: string | null, closedAt: string }, facts: string, prompts: Record<string, string | undefined>, log: Log, holds?: boolean, blocked?: boolean }} args
  * @returns {Promise<{ outcome: string, wait?: { until: string } }>}
  */
-const settle = async ({ reader, repo, issue, closed, facts, prompts, log, holds = true }) => {
+const settle = async ({ reader, repo, issue, closed, facts, prompts, log, holds = true, blocked = false }) => {
   const ref = refOf(repo, closed);
   const about = { repo, issue, closed: ref, reason: closed.reason ?? null };
   if (closed.reason !== undefined && closed.reason !== null && closed.reason !== 'completed') {
-    const outcome = await sayOnce(reader, issue, waitNotPlannedMarker(ref), waitNotPlannedComment({ facts, issue, ref, prompts, holds }));
+    const outcome = await sayOnce(reader, issue, waitNotPlannedMarker(ref), waitNotPlannedComment({ facts, issue, ref, prompts, holds, blocked }));
     log(WAIT_RELATIVE, { ...about, outcome: outcome === 'commented' ? 'held: commented on a close that was not completed' : 'held: already told of a close that was not completed' });
     return { outcome };
   }
@@ -811,7 +816,8 @@ const settle = async ({ reader, repo, issue, closed, facts, prompts, log, holds 
  * the wait is never shorter. Null where the line is not this close's, or
  * the ticket's read names another number: it moved to another repo.
  * `holds`: whether the line holds the ticket by its status (`ticketStatus`),
- * true where unset.
+ * true where unset. `blocked`: whether another open issue still blocks the
+ * ticket, false where unset.
  *
  * @param {{
  *   reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>,
@@ -822,14 +828,15 @@ const settle = async ({ reader, repo, issue, closed, facts, prompts, log, holds 
  *   now: number,
  *   log: Log,
  *   holds?: boolean,
+ *   blocked?: boolean,
  * }} args
  * @returns {Promise<{ outcome: string, wait?: { until: string } } | null>}
  */
-export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now, log, holds = true }) => {
+export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now, log, holds = true, blocked = false }) => {
   if (ticket.state !== 'open' || (ticket.number !== undefined && ticket.number !== fire.issue) || !waitsOnClose(ticket.wait, repo, fire.blocker)) return null;
   const { blocker } = fire;
   const closed = { repo: blocker.repo, number: blocker.number, reason: blocker.reason ?? null, closedAt: blocker.closedAt ?? new Date(now).toISOString() };
-  return settle({ reader, repo, issue: fire.issue, closed, facts: unblockedFacts({ ...fire, repo }, { quote: true }), prompts, log, holds });
+  return settle({ reader, repo, issue: fire.issue, closed, facts: unblockedFacts({ ...fire, repo }, { quote: true }), prompts, log, holds, blocked });
 };
 
 /**
