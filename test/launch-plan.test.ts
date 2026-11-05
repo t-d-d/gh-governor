@@ -181,6 +181,18 @@ describe('launchPlan starts every launch a plan holds', () => {
     assert.deepEqual([...held, ...failing.held], []);
   });
 
+  // A claim that fails part way has taken a ready label off, and its release
+  // puts it back, which queues a selection fire like any other. Without the
+  // record that fire would claim again at once, and fail the same way.
+  test('a claim that fails after taking a ready label off puts the failed-launch record before the labels go back', async () => {
+    const { ctx, writes, held, asked } = context({ failWrite: (w) => w.op === 'remove' && w.label === CONFIG.labels.claimRemoves[0] });
+    await launchPlan(plan([ticket(8)]), ctx, NOW);
+    assert.deepEqual(asked, []);
+    assert.deepEqual(held.map(({ repo, issue, until }) => ({ repo, issue, until })), [{ repo: REPO, issue: 8, until: new Date(NOW + PICKUP_FAILED_HOLD_MS).toISOString() }]);
+    const putBack = writes.findIndex((w) => w.issue === 8 && w.op === 'add' && JSON.stringify(w.labels) === JSON.stringify(CONFIG.labels.claimRemoves));
+    assert.ok(putBack >= held[0]!.writesBefore, 'the record stands before the labels go back');
+  });
+
   test('a failed-launch record that cannot be put is logged at error, and the ticket is still released', async () => {
     const { ctx, writes, logged } = context({ failRecord: true, launched: () => ({ outcome: 'failed', sessionUrl: null, status: 1, output: 'no' }) });
     await launchPlan(plan([ticket(9)]), ctx, NOW);

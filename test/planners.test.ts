@@ -293,6 +293,17 @@ describe('planUnblocked: an unblocked fire\'s plan', () => {
     assert.match(String(said?.reason), new RegExp(until));
   });
 
+  test('a ready ticket held by its failed-launch record is said as held on the unblocked line, not as unselectable', async () => {
+    const until = new Date(NOW + 30 * 60 * 1000).toISOString();
+    const { ctx, logged } = ticketContext();
+    (ctx as any).state.failedLaunches = async () => [{ issue: 7, until }];
+    await planUnblocked(fire(), ctx);
+    const said = logged.filter((l: any) => l.event === 'dispatch-unblocked' && l.issue === 7);
+    assert.equal(said.length, 1, JSON.stringify(logged));
+    assert.equal(said[0]?.outcome, 'skipped');
+    assert.match(String(said[0]?.reason), new RegExp(until));
+  });
+
   test('a ticket not ready plans a spec session that claims nothing but holds its repo', async () => {
     const { ctx } = ticketContext({ labels: ['type: bug'] });
     const plan = await planUnblocked(fire(), ctx) as any;

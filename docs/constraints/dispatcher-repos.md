@@ -37,6 +37,7 @@ spends the one claude.ai login.
   whoever puts the ready labels back. Before governor puts back the labels
   the claim took off (`claimRemoves`), it puts the ticket's failed-launch
   record in the state table, expiring an hour later (dispatcher-state.md).
+  A claim that fails part way puts it too, before its release.
   While it stands, the selection skips the ticket, takes no place under the
   cap for it, and logs `dispatch-pickup` with the reason
   (`failedLaunchesOf`, dispatch/pickup.mjs). The label webhook, the sweep

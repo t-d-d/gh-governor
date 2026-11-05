@@ -84,7 +84,8 @@ group.
   the repo's ended waits for the turn (dispatch/waits.mjs).
 - A ticket whose launch started nothing: `pickup-failed#<repo>` /
   `<issue>` in `dynamoState`, holding the time it holds the ticket until,
-  put by the launch plan before it puts the ready labels back, over any
+  put by the launch plan after a launch or claim that started nothing,
+  before it puts the ready labels back, over any
   earlier one, and expired by `ttl` at that time, an hour on. The selection
   reads a repo's items in one query and skips each ticket whose time is
   still to come, logging `dispatch-pickup` with the reason. A missing item

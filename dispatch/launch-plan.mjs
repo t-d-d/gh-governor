@@ -148,6 +148,23 @@ export const launchPlan = async (plan, ctx, started) => {
   const labelled = new Set();
 
   /**
+   * Put the ticket's failed-launch record, which holds it from pickup for
+   * the hour (dispatch/pickup.mjs). The ready labels go back on next, and a
+   * ready label queues a selection fire whoever added it, so the record is
+   * put first. One that cannot be put is logged, and the release goes on.
+   *
+   * @param {{ repo: string, issue: number }} ticket
+   */
+  const hold = async ({ repo, issue }) => {
+    const until = new Date(now() + PICKUP_FAILED_HOLD_MS).toISOString();
+    try {
+      await state.recordFailedLaunch(repo, issue, until);
+    } catch (error) {
+      log(PICKUP_FAILED_UNRECORDED, { level: 'error', repo, issue, until, error: messageOf(error), reason: 'its ready labels go back with nothing to hold it, so its label\'s fire may launch it again at once' });
+    }
+  };
+
+  /**
    * Put the ready labels the claim took off back, and take the claim off. A
    * release that fails leaves the ticket in `claims`, so the turn's end logs
    * it stranded.
@@ -178,8 +195,8 @@ export const launchPlan = async (plan, ctx, started) => {
    * over someone else's work, or on work that waits on another. So is one
    * whose author the repo's `trust.task` does not list (`authorPicked`),
    * and one whose ready labels no one in the repo's `trust.start` added
-   * last (`judgeReady`). A claim that fails is
-   * released, and starts nothing.
+   * last (`judgeReady`). A claim that fails puts the ticket's failed-launch
+   * record, is released, and starts nothing.
    *
    * @param {{ repo: string, issue: number }} ticket
    * @returns {Promise<'claimed' | 'taken' | 'failed'>}
@@ -248,6 +265,8 @@ export const launchPlan = async (plan, ctx, started) => {
       return 'claimed';
     } catch (error) {
       log('dispatch-claim', { repo, issue, outcome: 'not claimed', error: messageOf(error) });
+      // The release puts back any ready label the claim took off.
+      await hold(ticket);
       await release(ticket);
       return 'failed';
     }
@@ -303,15 +322,7 @@ export const launchPlan = async (plan, ctx, started) => {
       if (entry.started !== undefined) await entry.started(launched, firedAt);
       if (entry.holdsRepo && outcome === 'failed') {
         if (ticket !== null && entry.claim) {
-          // The ready labels go back on, and a ready label queues a
-          // selection fire whoever added it, so the record that holds the
-          // ticket from pickup for the hour is put first.
-          const until = new Date(now() + PICKUP_FAILED_HOLD_MS).toISOString();
-          try {
-            await state.recordFailedLaunch(ticket.repo, ticket.issue, until);
-          } catch (error) {
-            log(PICKUP_FAILED_UNRECORDED, { level: 'error', repo: ticket.repo, issue: ticket.issue, until, error: messageOf(error), reason: 'its ready labels go back with nothing to hold it, so its label\'s fire may launch it again at once' });
-          }
+          await hold(ticket);
           await release(ticket);
         }
         // A launch that started nothing is the repo's environment or the

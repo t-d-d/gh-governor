@@ -261,21 +261,25 @@ export const planUnblocked = async (invocation, ctx) => {
     const heldFailed = [];
     // A ticket whose last launch started nothing is held for the hour; a
     // read that fails refuses the fire, never reads as no record.
-    const failed = await failedLaunchesOf(ctx.state, repo, ctx.now());
-    const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, by: byOf(config), start: startOf(config), prompts: ctx.prompts, signOff: turnsOn(config, 'signOff'), failed }], cap: 1, now: ctx.now(), only: [issue], outsiders, strangers, unstarted, unlooked, heldFailed });
+    const now = ctx.now();
+    const failed = await failedLaunchesOf(ctx.state, repo, now);
+    const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, by: byOf(config), start: startOf(config), prompts: ctx.prompts, signOff: turnsOn(config, 'signOff'), failed }], cap: 1, now, only: [issue], outsiders, strangers, unstarted, unlooked, heldFailed });
     for (const held of heldFailed) ctx.log('dispatch-pickup', { level: 'info', repo: held.repo, issue: held.issue, outcome: 'skipped', reason: failedReason(held.until) });
     for (const d of planned) launches.push({ repo: d.repo, issue, claim: true, holdsRepo: true, asked: { prompt: readyPrompt(d.prompt, invocation, ctx.prompts), sessionName: d.sessionName, model: DEFAULT_MODEL } });
     const [outsider] = outsiders;
     const [stranger] = strangers;
     const [refused] = unstarted;
     const [unknown] = unlooked;
+    const [failedHold] = heldFailed;
     if (refused !== undefined) await reportUnstarted({ reader, unstarted: refused, what: 'readied', event: 'dispatch-unblocked', log: (event, context) => ctx.log(event, { ...about, ...context }) });
     else if (unknown !== undefined) reportUnlooked({ unlooked: unknown, event: 'dispatch-unblocked', log: (event, context) => ctx.log(event, { ...about, ...context }) });
-    else ctx.log('dispatch-unblocked', { ...about, ...(outsider !== undefined
-      ? { outcome: 'skipped', reason: outsiderReason(outsider) }
-      : stranger !== undefined
-        ? { outcome: 'skipped', reason: strangerReason(stranger) }
-        : { outcome: planned.length === 0 ? 'not selectable: blocked, or no longer ready' : 'picking up' }) });
+    else ctx.log('dispatch-unblocked', { ...about, ...(failedHold !== undefined
+      ? { outcome: 'skipped', reason: failedReason(failedHold.until) }
+      : outsider !== undefined
+        ? { outcome: 'skipped', reason: outsiderReason(outsider) }
+        : stranger !== undefined
+          ? { outcome: 'skipped', reason: strangerReason(stranger) }
+          : { outcome: planned.length === 0 ? 'not selectable: blocked, or no longer ready' : 'picking up' }) });
     if (outsider !== undefined) await reportUncounted({ reader, outsider, log: ctx.log });
     if (stranger !== undefined) await reportUntasked({ reader, stranger, what: 'readied', ready: config.labels.ready, event: 'dispatch-unblocked', log: ctx.log });
   } else {
