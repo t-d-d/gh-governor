@@ -993,6 +993,10 @@ describe('routeEvent — owners', () => {
     const merged = messages('pull_request', pullRequestEvent('closed', { pull_request: { ...pullRequestEvent('closed').pull_request, merged: true } }));
     assert.deepEqual(merged.sent.map((m) => [m.session, m.event, m.closing]), [[OWNER, 'close', undefined]]);
     assert.match(merged.sent[0]!.text, /merged/);
+    // The receiver cannot read the repo's switches or targets, so the owner
+    // is not promised a deploy message the repo may never send.
+    assert.match(merged.sent[0]!.text, /where the repo sends deploy messages/);
+    assert.doesNotMatch(merged.sent[0]!.text, /dev and prod/);
     assert.ok(merged.sent.every((m) => m.fallback === undefined));
     const abandoned = messages('pull_request', pullRequestEvent('closed'));
     assert.deepEqual(abandoned.sent.map((m) => m.session), [OWNER]);
@@ -1121,6 +1125,9 @@ describe('routeEvent — owners', () => {
     const labelled = (body: string, action = 'labeled') => messages('issues', { action, label: { name: 'type: adr' }, issue: issue(body), sender: member, repository: { full_name: REPO } });
     assert.deepEqual(labelled(`Filed.${footer}`).sent, []);
     assert.deepEqual(labelled(`Filed.${footer}`, 'unlabeled').sent, []);
+    for (const action of ['labeled', 'unlabeled']) {
+      assert.match(labelled(`Filed.${footer}`, action).reason, /issue #717 \w+: its filer hears of no label/, 'the reason says why, whatever the body names');
+    }
     assert.deepEqual(labelled(`Filed.\n\n${subscribeLine(FILER)}${footer}`).sent, [], 'a line names nobody');
     assert.deepEqual(labelled(`Filed.\n\n${subscribeLine(OWNER, ['labels'])}${footer}`).sent, [], 'a filer\'s line asking for labels hears nothing');
 

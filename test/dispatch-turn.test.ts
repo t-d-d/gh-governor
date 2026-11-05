@@ -6566,7 +6566,7 @@ describe('run — a run dispatched on a branch', () => {
     });
     const refused = await run(fireOf(payload()), gone.deps as never);
     assert.deepEqual(gone.launches, []);
-    assert.deepEqual(gone.issueEdits, [], 'nothing to unsubscribe it from');
+    assert.deepEqual(gone.issueEdits, [], 'nothing is written to the body');
     assert.equal(exitCodeFor(refused as never), 0);
 
     const faulty = harness({

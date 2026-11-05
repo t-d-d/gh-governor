@@ -72,7 +72,7 @@
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
-import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
+import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
 import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
 
@@ -518,7 +518,7 @@ const prClosedPrompt = ({ pull_request: pr, sender }) => {
     `PR #${pr?.number}: ${oneLine(pr?.title)} (${pr?.html_url}), by ${sender?.login}`,
     '',
     pr?.merged
-      ? 'Its change reaches dev and prod through the deploys, which you hear of. Nothing else on it is left to do unless its thread says so.'
+      ? 'Its change ships with the deploys that follow, and you hear of each where the repo sends deploy messages. Nothing else on it is left to do unless its thread says so.'
       : 'Nothing on it is left to do unless its thread says so.',
   ].join('\n');
 };
@@ -691,24 +691,15 @@ export const mentionFires = ({ event, payload, appId, relay = RELAY }) => {
   return null;
 };
 
-/** What each `issues` action is to an owner. */
-const ISSUE_EVENTS = /** @type {Record<string, SubscriptionEvent>} */ ({ labeled: 'labels', unlabeled: 'labels', closed: 'close', reopened: 'close' });
-
-/**
- * The label a delivery added, or null: a removal is a person's edit, since
- * the dispatcher only ever adds a `deployed: ` label.
- *
- * @param {unknown} action
- * @param {{ name?: unknown } | undefined} label
- */
-const addedLabel = (action, label) => (action === 'labeled' ? label?.name : null);
+/** What each `issues` action an owner hears of is to it. */
+const ISSUE_EVENTS = /** @type {Record<string, SubscriptionEvent>} */ ({ closed: 'close', reopened: 'close' });
 
 /**
  * An issue closed or reopened: a message to its filer. Who did it is a
- * login, never a session's own post. The filer hears of no label
- * ({@link subscribersFor}), since the label may well be its own, and of no
- * `deployed: ` label, which is `deploys`, not `labels`: most filers have
- * signed off by then.
+ * login, never a session's own post. A label, added or taken off, reaches
+ * nobody: it carries no text, so nothing names the session that set it,
+ * and a filer that labels its own issue would hear its own act back. A
+ * `deployed: ` label is one too: most filers have signed off by then.
  *
  * Judged by the issue's author, under `relay`.
  *
@@ -718,11 +709,10 @@ const addedLabel = (action, label) => (action === 'labeled' ? label?.name : null
  */
 export const issueEventFires = (payload, { relay = RELAY, appId } = {}) => {
   const action = payload?.action;
-  const target = deployedTarget(addedLabel(action, payload?.label));
-  const deployed = target !== null;
-  const event = deployed ? 'deploys' : ISSUE_EVENTS[String(action)];
-  if (event === undefined) return { fires: [], reason: `issues ${action}: nothing an owner hears of` };
   const issue = payload?.issue;
+  if (action === 'labeled' || action === 'unlabeled') return { fires: [], reason: `issue #${issue?.number} ${action}: its filer hears of no label` };
+  const event = ISSUE_EVENTS[String(action)];
+  if (event === undefined) return { fires: [], reason: `issues ${action}: nothing an owner hears of` };
   const onAuthor = authorOf(issue, appId);
   if (!lets(relay, onAuthor)) return { fires: [], reason: `issue #${issue?.number} ${action}: no owner hears of it, as it is ${unrelayed(onAuthor, 'opened')}` };
   return fanOut({
@@ -733,9 +723,9 @@ export const issueEventFires = (payload, { relay = RELAY, appId } = {}) => {
     event,
     poster: null,
     prompt: () => issueEventPrompt(payload),
-    closing: action === 'closed' || (deployed && issue?.state === 'closed'),
+    closing: action === 'closed',
     issue: true,
-    reason: `issue #${issue?.number} ${deployed ? `deployed to ${target}` : action}`,
+    reason: `issue #${issue?.number} ${action}`,
   });
 };
 

@@ -40,9 +40,9 @@
  *   failed release dispatched by hand tells nobody: whoever dispatched it
  *   is watching it.
  *
- * A session hears of a run once: one message naming every PR of its
- * in the run's range, and asking for one report, on the newest. One message is one
- * standing-line search, so a busy range does not spend the App's search
+ * A session hears of a run once: one message naming every PR it wrote in
+ * the run's range, and asking for one report, on the newest. One message is
+ * one standing-line search, so a busy range does not spend the App's search
  * limit a PR at a time.
  *
  * A run covers every PR merged since its baseline (dispatch/coverage.mjs).

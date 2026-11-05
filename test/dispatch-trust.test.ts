@@ -183,6 +183,7 @@ describe('what a relay the file widens exposes', () => {
     assert.match(String(said), /running session/);
     assert.match(String(said), /session link/);
     assert.doesNotMatch(String(said), /cannot work/);
+    assert.doesNotMatch(String(said), /subscribe/, 'governor reads no subscribe line, so none routes anything');
   });
 
   test('BOT in a relay the file sets warns of a bot that quotes strangers\' issues', () => {

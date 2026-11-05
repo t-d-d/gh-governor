@@ -800,7 +800,7 @@ const parseMessage = (e, event) => {
     throw new Error(`a message invocation's on must be a positive integer, got: ${JSON.stringify(e.on)}`);
   }
   if (e.event !== undefined && !EVENTS.has(String(e.event))) {
-    throw new Error(`a message invocation's event is not one a session subscribes to: ${JSON.stringify(e.event)}`);
+    throw new Error(`a message invocation's event is not one an owner hears of: ${JSON.stringify(e.event)}`);
   }
   if (e.commit !== undefined && !isCommit(e.commit)) {
     throw new Error(`a message invocation's commit must be a commit id, got: ${JSON.stringify(e.commit)}`);
