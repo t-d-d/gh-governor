@@ -8,7 +8,7 @@
  * keyed by the secret both sides hold), decides what it means for the
  * dispatcher, and queues its fires on the lane the dispatcher task reads
  * (dispatch/lane.mjs). Three kinds of fire for issues and remarks: a `schedule`
- * fire naming the issue and a label a person just added to it, queued only
+ * fire naming the issue and a label just added to it, by anyone, queued only
  * where the repo's hook-table item lists the label as ready or cannot say
  * ({@link handle}), which the task dispatches if the label is one of the
  * repo's ready labels and the selection would, and no other; a `dispatch` fire with a prompt of its
@@ -621,13 +621,12 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
     const label = payload?.label?.name;
     /** @type {Decision | null} */
     let selection = null;
-    // A label a bot added is the dispatcher's own: a ready label put back on
-    // a launch that failed, or a claim. A fire for it would launch
-    // the ticket again, and the payload names no App behind a bot sender,
-    // so no label a bot adds selects. Subscribers still hear it below.
-    if (action === 'labeled' && payload?.sender?.type === 'Bot') {
-      selection = nothing(`issue #${number} labelled ${label} by ${payload.sender.login ?? 'a bot'}: the dispatcher's own, no selection`);
-    } else if (action === 'labeled' && typeof label === 'string' && label !== '' && typeof number === 'number') {
+    // A label queues the selection whoever added it: a ready label governor
+    // puts back after a launch that started nothing, or one a ticket review
+    // adds, is read as a person's. The task keeps such a launch from
+    // starting again at once by its state-table record (dispatch/pickup.mjs),
+    // and judges who added the label (`judgeReady`). Subscribers hear it below.
+    if (action === 'labeled' && typeof label === 'string' && label !== '' && typeof number === 'number') {
       // Routing reads only the payload: {@link handle} drops this fire where
       // the repo's hook-table item says the label is not one of its ready
       // labels, and the task ends the turn before the login where the file

@@ -152,6 +152,7 @@ const harness = (over: Record<string, unknown> = {}) => {
   const hookWrites: Array<{ repo: string; name: string; record: { session: string; at: string } }> = [];
   // Each waiting ticket's item, keyed `<repo>#<issue>`, holding its date, and every write to one.
   const waitItems = new Map<string, string>();
+  const failedLaunches = new Map<string, string>();
   const waitWrites: Array<{ repo: string; issue: number; until: string | null }> = [];
   // The login's sessions, as the sessions list answers them, and each one's
   // events page, by `cse_` id; and every events read, with its token.
@@ -356,6 +357,8 @@ const harness = (over: Record<string, unknown> = {}) => {
         periodicWrites.push({ repo, name, record });
         return true;
       },
+      failedLaunches: async (repo: string) => [...failedLaunches].filter(([k]) => k.startsWith(`${repo}#`)).map(([k, until]) => ({ issue: Number(k.slice(repo.length + 1)), until })),
+      recordFailedLaunch: async (repo: string, issue: number, until: string) => { failedLaunches.set(`${repo}#${issue}`, until); },
       sweep: async (repo: string) => sweeps.get(repo) ?? null,
       // A conditional write, as the table's: never back to an older sweep.
       recordSweep: async (repo: string, at: string) => {
@@ -395,7 +398,7 @@ const harness = (over: Record<string, unknown> = {}) => {
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, failedLaunches, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -6265,6 +6268,44 @@ describe('realDeps: the state table', () => {
     await assert.rejects(malformed.sweep(REPO), /malformed/);
   });
 
+  // A launch that started nothing holds its ticket from pickup for an hour,
+  // whoever puts its ready labels back. A lost item lets one more launch go.
+  test('a ticket\'s failed-launch record is one item per ticket, put with its time and expiry, and read by one query per repo', async () => {
+    const sent: Array<{ name: string; input: Record<string, any> }> = [];
+    const UNTIL = '2026-10-20T13:17:00.000Z';
+    let pages = [
+      { Items: [{ pk: { S: 'pickup-failed#acme/factory' }, sk: { S: '7' }, until: { S: UNTIL } }], LastEvaluatedKey: { pk: { S: 'pickup-failed#acme/factory' }, sk: { S: '7' } } },
+      { Items: [{ pk: { S: 'pickup-failed#acme/factory' }, sk: { S: '9' }, until: { S: UNTIL } }] },
+    ];
+    const client = {
+      send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
+        sent.push({ name: command.constructor.name, input: command.input });
+        if (command.constructor.name === 'QueryCommand') return pages.shift() ?? {};
+        return {};
+      },
+    };
+    const state = dynamoState(client as never, 'T');
+    await state.recordFailedLaunch(REPO, 7, UNTIL);
+    assert.equal(sent[0]?.name, 'PutItemCommand');
+    assert.deepEqual(sent[0]?.input.Item, { pk: { S: 'pickup-failed#acme/factory' }, sk: { S: '7' }, until: { S: UNTIL }, ttl: { N: String(Date.parse(UNTIL) / 1000) } });
+    assert.equal(sent[0]?.input.ConditionExpression, undefined, 'a later failure moves the record on: nothing to race');
+
+    sent.length = 0;
+    assert.deepEqual(await state.failedLaunches(REPO), [{ issue: 7, until: UNTIL }, { issue: 9, until: UNTIL }]);
+    assert.equal(sent.length, 2, 'every page');
+    assert.deepEqual(sent[0]?.input.ExpressionAttributeValues, { ':pk': { S: 'pickup-failed#acme/factory' } });
+    assert.equal(sent[0]?.input.ConsistentRead, true);
+    assert.deepEqual(sent[1]?.input.ExclusiveStartKey, { pk: { S: 'pickup-failed#acme/factory' }, sk: { S: '7' } });
+
+    pages = [{ Items: [{ pk: { S: 'pickup-failed#acme/factory' }, sk: { S: '7' }, until: { S: 'soon' } }] }];
+    await assert.rejects(state.failedLaunches(REPO), /malformed/);
+    pages = [{ Items: [{ pk: { S: 'pickup-failed#acme/factory' }, sk: { S: 'x' }, until: { S: UNTIL } }] }];
+    await assert.rejects(state.failedLaunches(REPO), /malformed/);
+    const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
+    await assert.rejects(failing.failedLaunches(REPO), /AccessDeniedException/);
+    await assert.rejects(failing.recordFailedLaunch(REPO, 7, UNTIL), /AccessDeniedException/);
+  });
+
   // A day limit with nothing to do is its fire, and opens no minimum gap:
   // the record says so, and reads back the same.
   test('a periodic\'s nothing-to-do record, and the last run it keeps, are written and read back as such', async () => {
@@ -9075,6 +9116,41 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
       }
     });
   }
+
+  // A ready label governor puts back after a launch that started nothing
+  // queues a selection fire, as any ready label does. The ticket's
+  // failed-launch record holds it for the hour, whoever's label it was.
+  test('schedule: a ticket whose launch failed is not launched again by its label\'s fire inside the hour, and is after it', async () => {
+    let clock = NOW;
+    let starts = false;
+    const h = harness({
+      configFile: async (repo: string) => (repo === REPO ? FILE : null),
+      now: () => clock,
+      launch: async (launch: Launch) => {
+        h.launches.push(launch);
+        return starts ? { status: 0, output: CONFIRMED } : { status: 1, output: 'environment not found' };
+      },
+    });
+    const reader = h.deps.reader;
+    h.deps.reader = ((token: string) => ({
+      ...reader(token),
+      ticket: async (n: number) => ({ number: n, id: 9000 + n, title: `Issue ${n}`, body: '', state: 'open', labels: [READY, 'mode: afk'], pull: false, association: 'MEMBER', openBlockers: 0 }),
+    })) as unknown as typeof reader;
+    await run(FIRES.label, h.deps as never);
+    assert.equal(h.launches.length, 1);
+    assert.deepEqual(labelCalls(h.calls), [...claimed(7), ...released(7)], 'released: the ready labels are back');
+    assert.deepEqual([...h.failedLaunches.keys()], [`${REPO}#7`]);
+
+    clock = NOW + 30 * 60 * 1000;
+    await run(FIRES.label, h.deps as never);
+    assert.equal(h.launches.length, 1, 'the put-back label\'s fire starts nothing inside the hour');
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-pickup' && l.issue === 7 && l.outcome === 'skipped' && /started nothing/.test(String(l.reason))), JSON.stringify(h.logged));
+
+    clock = NOW + HOUR + 1;
+    starts = true;
+    await run(FIRES.label, h.deps as never);
+    assert.equal(h.launches.length, 2, 'past the hour the ticket is picked up as before');
+  });
 });
 
 /**

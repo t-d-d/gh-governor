@@ -44,13 +44,53 @@ export const SWEEP_HOURS = 1;
 export const SWEEP_SLACK_MS = 30 * 60 * 1000;
 
 /**
+ * How long a ticket whose launch started nothing is held from pickup. Its
+ * ready labels go back on at once (`claimRemoves`, dispatch/launch-plan.mjs),
+ * and a ready label queues a selection fire whoever added it
+ * (dispatch/webhook/route.mjs), so without the hold that fire would launch
+ * the ticket again straight away, and it would most likely fail the same
+ * way. Past the hour the ticket is picked up as before.
+ */
+export const PICKUP_FAILED_HOLD_MS = HOUR_MS;
+
+/** The log event for a failed-launch record that could not be put. */
+export const PICKUP_FAILED_UNRECORDED = 'dispatch-pickup-failed-unrecorded';
+
+/**
  * @typedef {{
  *   sweep: (repo: string) => Promise<string | null>,
  *   recordSweep: (repo: string, at: string) => Promise<boolean>,
+ *   failedLaunches: (repo: string) => Promise<Array<{ issue: number, until: string }>>,
+ *   recordFailedLaunch: (repo: string, issue: number, until: string) => Promise<void>,
  * }} PickupState
  *   A repo's last sweep's time: read (null when there is none; a read that
  *   fails throws), and written unless a later one stands (false then).
+ *   A repo's failed-launch records, `pickup-failed#<repo>` / `<issue>`, each
+ *   with the time it holds its ticket until: read all at once, lapsed ones
+ *   included until the table expires them (a read that fails throws), and
+ *   put after a launch that started nothing, over any earlier one.
  */
+
+/**
+ * The repo's tickets whose failed-launch record still stands at `now`, each
+ * with the time it holds until. A missing record holds nothing; a read that
+ * fails throws, and is never read as no record.
+ *
+ * @param {Pick<PickupState, 'failedLaunches'>} state
+ * @param {string} repo
+ * @param {number} now
+ * @returns {Promise<Map<number, string>>}
+ */
+export const failedLaunchesOf = async (state, repo, now) => new Map(
+  (await state.failedLaunches(repo)).filter(({ until }) => Date.parse(until) > now).map(({ issue, until }) => [issue, until]),
+);
+
+/**
+ * Why pickup skipped a ticket its failed-launch record holds.
+ *
+ * @param {string} until
+ */
+export const failedReason = (until) => `its last launch started nothing, so pickup holds it until ${until}, whoever put its ready labels back`;
 
 /**
  * A repo's sweep interval, in whole hours.
