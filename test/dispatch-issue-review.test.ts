@@ -400,7 +400,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
     assert.ok(read.ok, JSON.stringify(read));
   });
 
-  test('a conclusion label without the review\'s name, a colon and a space is refused, in its conclusions or a types entry\'s, naming the review and the label', async () => {
+  test('a conclusion label without the review\'s name, a colon and a space is refused, in its conclusions or a byLabel entry\'s, naming the review and the label', async () => {
     // A label people also steer work with, such as mode: human, would come off when another conclusion ran.
     await refused({ issueReviews: [{ name: 'triage', when: {}, conclusions: { success: ['triage: build'], neutral: ['mode: human'] } }] }, /triage/, /"mode: human"/, /"triage: "/);
     await refused({ issueReviews: [{ name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'], conclusions: { success: ['triaged'] } }] }] }, /triage/, /"triaged"/, /issueReviews\.reviews\.triage\.byLabel\.0\.conclusions\.success/);
@@ -457,7 +457,7 @@ describe('fitness: dispatcher-repos.md, an issue review\'s prompts are prompt va
     assert.match(checked.errors[0]!, /issueReviews\.reviews\.triage\.byLabel\.0\.prompt: \.github\/bug\.md/);
   });
 
-  test('the factory\'s review has a checklist file and a types entry, and both read', async () => {
+  test('the factory\'s review has a prompt file and a byLabel entry, and both read', async () => {
     const read = readConfig(factoryFile(CONFIG_PATH));
     assert.ok(read.ok);
     const resolved = await resolveFiles(read.config, async (path) => { try { return factoryFile(path); } catch { return null; } });
@@ -469,7 +469,7 @@ describe('fitness: dispatcher-repos.md, an issue review\'s prompts are prompt va
   });
 });
 
-describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a types entry may name', () => {
+describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a byLabel entry may name', () => {
   const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triage: build'], claim: 'claimed' }, features: {} };
   const text = (over: Record<string, unknown>) => JSON.stringify(shaped({ ...base, ...over }));
   const refused = async (over: Record<string, unknown>, ...words: RegExp[]) => {
@@ -506,7 +506,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   test('a conclusion that names a label a byLabel entry matches on is refused, in the default or in an entry', async () => {
     await refused({ issueReviews: [{ name: 'triage', when: {}, conclusions: { neutral: ['Type: Bug'] }, byLabel: [{ labels: ['type: bug'] }] }] }, /triage/, /"Type: Bug"/, /byLabel entry/);
     await refused({ issueReviews: [{ name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'] }, { labels: ['type: chore'], conclusions: { failure: ['type: bug'] } }] }] }, /triage/, /"type: bug"/);
-    // Another review's type label is a type too: applying it would change what that review reads.
+    // Another review's byLabel label counts too: applying it would change what that review reads.
     await refused({ issueReviews: [
       { name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'] }] },
       { name: 'scope', when: {}, conclusions: { success: ['type: bug'] } },
@@ -535,7 +535,7 @@ describe('fitness: dispatcher-review.md, an issue review\'s prompts and labels p
     assert.equal(promptFor(review({ byLabel: [{ labels: ['type: bug'] }] }) as never, asTicket(['type: bug'])), DEFAULT_ISSUE_PROMPT);
   });
 
-  test('the run reads the ticket\'s checklists, and a ticket with no type label is reviewed, not failed for lacking one', async () => {
+  test('the run reads the ticket\'s prompts, and a ticket matching no byLabel entry is reviewed, not failed for lacking a label', async () => {
     const h = harness({ reviews: [review({ byLabel: [BUG] })], ticket: { labels: [] } });
     const result = await h.review();
     assert.equal(result.reviews[0]!.outcome, 'commented');
@@ -581,7 +581,7 @@ describe('fitness: dispatcher-review.md, an issue review\'s prompts and labels p
     assert.equal(keyFor(review() as never, asTicket(['type: bug', 'size: tiny'])), KEY);
   });
 
-  test('a ticket whose type label changes is reviewed again, and one whose other labels change is not', async () => {
+  test('a ticket whose byLabel labels change is reviewed again, and one whose other labels change is not', async () => {
     const h = harness({ reviews: [review({ byLabel: [BUG] })], live: true });
     await h.review();
     h.edit({ labels: [...h.live.labels, 'anything'] });
