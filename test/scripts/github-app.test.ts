@@ -1248,6 +1248,22 @@ describe('a served repo\'s reads', () => {
     assert.equal(new URL(calls[0]!.url).searchParams.get('filter'), 'latest');
   });
 
+  test('checksAt reads every page of the commit\'s statuses: a status past the first page still counts', async () => {
+    const sha = 'a'.repeat(40);
+    const { fetch } = fakeFetch({
+      [`https://api.github.com/repos/t-d-d/askme-mcp/commits/${sha}/check-runs`]: { check_runs: [] },
+      [`https://api.github.com/repos/t-d-d/askme-mcp/commits/${sha}/status`]: (_init: RequestInit | undefined, url: string) => {
+        const page = Number(new URL(url).searchParams.get('page') ?? '1');
+        const size = Number(new URL(url).searchParams.get('per_page') ?? '30');
+        const statuses = [...Array.from({ length: 150 }, (_, i) => ({ context: `ci/other-${i}`, state: 'success' })), { context: 'ci/required', state: 'failure' }];
+        return { total_count: statuses.length, statuses: statuses.slice((page - 1) * size, page * size) };
+      },
+    });
+    const checks = await githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch }).checksAt(sha);
+    assert.equal(checks.length, 151);
+    assert.deepEqual(checks.filter((c) => c.state === 'red').map((c) => c.name), ['ci/required']);
+  });
+
   test('checkRun posts a run of its name at the head reviewed: completed with its conclusion, or in progress with none', async () => {
     const posted: unknown[] = [];
     const { fetch } = fakeFetch({ 'https://api.github.com/repos/t-d-d/askme-mcp/check-runs': (init: RequestInit | undefined) => { posted.push({ method: init?.method, body: JSON.parse(String(init?.body)) }); return { id: 1 }; } });

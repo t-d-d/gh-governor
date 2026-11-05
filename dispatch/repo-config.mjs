@@ -403,8 +403,8 @@ const ticketReviewSchema = z.strictObject({
   name: z.string().regex(HOOK_NAME, 'lower-case letters, digits and hyphens: it goes into a marker that can never be migrated').meta({ description: 'The review\'s name: lower-case letters, digits and hyphens, unique in the list. It goes into every comment and marker the review writes, so renaming a review starts its rounds afresh.' }),
   when: z.strictObject({
     on: z.literal('opened').meta({ description: 'The event that runs the review. Only `"opened"`: an open issue opened, reopened or with its body edited.' }),
-    labels: z.array(label).optional().meta({ description: 'Labels the ticket must carry, every one of them. Default none.' }),
-    exclude: z.array(label).optional().meta({ description: 'Labels the ticket must not carry, any of them. Default none.' }),
+    labels: z.array(label).optional().meta({ description: 'Labels the ticket must carry, every one of them, in any case. Default none.' }),
+    exclude: z.array(label).optional().meta({ description: 'Labels the ticket must not carry, any of them, in any case. Default none.' }),
     by: z.array(z.enum(ASSOCIATIONS)).min(1).optional().meta({ description: 'Who may have opened the ticket, as GitHub\'s `author_association` values. Default `OWNER`, `MEMBER` and `COLLABORATOR`. The repo\'s `trust.review` bounds every review.' }),
   }).meta({ description: 'The review\'s selector: `on`, the event, and the labels and authors a ticket must meet.' }),
   conclusions: z.strictObject({
