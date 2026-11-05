@@ -47,9 +47,10 @@
  * since the task reads the hook's from the file (route.mjs, dispatch/hooks.mjs).
  * A `wait` names an issue opened or edited with a `Blocked until:` line,
  * judged from the payload ({@link waitLine}); its turn keeps the ticket's
- * wait item to match its line (dispatch/waits.mjs). A `issueReview` names
- * an issue opened, reopened or with its body edited, whose turn runs the
- * repo's issue reviews on it (dispatch/issue-review.mjs).
+ * wait item to match its line (dispatch/waits.mjs). An `issueReview` names
+ * an issue opened, reopened, with its body edited, or with a label added or
+ * removed that a review names, whose turn runs the repo's issue reviews on
+ * it (dispatch/issue-review.mjs).
  *
  * Pure, and a leaf: the Lambda packages dispatch/webhook/ whole, and the
  * task image copies this file (dispatch/Dockerfile).
@@ -371,9 +372,9 @@ export const lastDispatch = (comments) => {
  * @typedef {{ kind: 'wait', issue: number }} WaitFire
  *   An issue opened or edited whose new or old body holds a `Blocked until:` line.
  * @typedef {{ kind: 'issueReview', issue: number }} IssueReviewFire
- *   An issue opened or reopened, or with its body edited by anyone but a
- *   bot: its turn runs each of the repo's issue reviews the issue now
- *   calls for.
+ *   An issue opened or reopened, with its body edited by anyone but a
+ *   bot, or with a label a review names added or removed by anyone: its
+ *   turn runs each of the repo's issue reviews the issue now calls for.
  * @typedef {{ kind: 'unblocked', issue: number, blocker: Blocker, pr?: ClosingPull }} UnblockedFire
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit

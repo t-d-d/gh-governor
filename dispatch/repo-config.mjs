@@ -13,14 +13,15 @@
  * often pickup sweeps its ready tickets (`pickup`, dispatch/pickup.mjs), lists the
  * recurring sessions the schedule fire starts (`periodics`, dispatch/periodics.mjs),
  * and lists the hooks an outside system fires (`hooks`, dispatch/hooks.mjs).
- * Every feature is a switch, off unless the file turns it on, and a turn
+ * Every feature is a switch, off unless the file turns it on (the issue
+ * reviews by having their section, {@link turnsOn}), and a turn
  * refuses a fire kind its repo's file does not turn on ({@link switchOf}).
  * Every switch is generic: the schema accepts none by repo. The file holds
  * no secret: a served repo may be public.
  *
  * Every prompt value, each in `prompts`, the review's `checklist`, each
- * periodic's `prompt` and each hook's, and an issue review's `checklist` and
- * each of its `types` entries', is the
+ * periodic's `prompt` and each hook's, and an issue review's `prompt` and
+ * each of its `byLabel` entries', is the
  * text or `{ "file": "<path>" }`, a file in the repo read from the default
  * branch beside the config file ({@link resolveFiles}).
  *

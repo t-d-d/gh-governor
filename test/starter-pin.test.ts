@@ -270,7 +270,7 @@ const schemaPin = (file: string) => {
 // Skipped while governor at the pin refuses the issueReviews section the
 // dark-factory file now holds, and governor now refuses the old list. #526
 // moves the starter kit's pins and turns this check back on.
-describe('the starter kit\'s config files at their pinned commit', { skip: '#526 moves the pins and turns this check back on once #525 is on main' }, () => {
+describe('the starter kit\'s config files at their pinned commit', { skip: 'governor at the pinned commit refuses the issueReviews section, and the pins move once the config reshape is on main (#526)' }, () => {
   // The pinned commit's tree, read from git history into a temporary folder,
   // with this checkout's modules beside it, so its readConfig can be imported.
   let dir: string | undefined;
