@@ -198,7 +198,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   launchTimeoutMs?: number,
  *   probe: () => Promise<{ ok: boolean, detail: string }>,
  *   message: (message: { session: string, text: string }) => Promise<LaunchResult>,
- *   review: (run: { system: string, prompt: string, schema: object, replace?: boolean }) => Promise<LaunchResult>,
+ *   review: (run: { system: string, prompt: string, schema: object }) => Promise<LaunchResult>,
  *   transcript: (run: { sessionId: string } & ({ pr: number } | { key: string })) => Promise<{ key: string } | { skipped: string }>,
  *   sleep: (ms: number) => Promise<void>,
  *   archive: import('../scripts/lib/session-signoff.mjs').Archive,
@@ -2437,17 +2437,16 @@ export const realDeps = () => {
     // on stdin, no tools (the PR's text is someone else's, and the answer is
     // a judgement over it), the answer held to the schema. The only process
     // a review starts: it runs none of the served repo's code.
-    // The PR review and the ticket reviews (`replace`) put their frame and
-    // checklist in place of Claude Code's own system prompt, which is
-    // written for a coding agent with tools.
-    review: async ({ system, prompt, schema, replace = false }) => {
+    // Every review's frame and checklist go in place of Claude Code's own
+    // system prompt, which is written for a coding agent with tools.
+    review: async ({ system, prompt, schema }) => {
       const dir = mkdtempSync(join(tmpdir(), 'governor-review-'));
       try {
         const systemFile = join(dir, 'system.md');
         writeFileSync(systemFile, system);
         const child = spawn('claude', [
           '-p', '--output-format', 'json', '--model', DEFAULT_MODEL,
-          replace ? '--system-prompt-file' : '--append-system-prompt-file', systemFile, '--json-schema', JSON.stringify(schema), '--tools', '',
+          '--system-prompt-file', systemFile, '--json-schema', JSON.stringify(schema), '--tools', '',
         ], { cwd, env: cliEnv(env, home, account), stdio: ['pipe', 'pipe', 'pipe'] });
         child.stdin.on('error', () => {});
         child.stdin.end(prompt);

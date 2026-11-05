@@ -278,6 +278,35 @@ describe('a waiting ticket that is gone or moved', () => {
     assert.equal(lifted.specs.length, 1, 'a person\'s answer lifts the hold');
   });
 
+  test('the schedule fire reads several ended waits side by side, and returns their specs by issue', async () => {
+    const started: number[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const state = {
+      waits: async () => [{ issue: 12, until: '2026-11-05' }, { issue: 3, until: '2026-11-05' }, { issue: 7, until: '2026-11-05' }],
+      wait: async () => ({ until: '2026-11-05' }),
+      recordWait: async () => true,
+      dropWait: async () => true,
+    };
+    const reader = {
+      ticket: async (n: number) => {
+        started.push(n);
+        await gate;
+        return { number: n, title: `Issue ${n}`, state: 'open', labels: [], association: 'MEMBER', wait: { until: '2026-11-05' } };
+      },
+      blockers: async () => [],
+      allComments: async () => [],
+      comment: async () => {},
+    };
+    const pending = endedWaits({ reader: reader as never, state, repo: REPO, labels: LABELS, spec: true, now: NOW, log: () => {} });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual([...started].sort((a, b) => a - b), [3, 7, 12], 'every ticket read starts before the first resolves');
+    release();
+    const ended = await pending;
+    assert.deepEqual(ended.specs.map((s) => s.issue), [3, 7, 12]);
+    assert.deepEqual(ended.unread, []);
+  });
+
   test('a wait fire for a ticket that is gone drops its item, and does not throw', async () => {
     const { state, dropped } = stateWith();
     const { reader } = readerWith(async () => { throw gone(410); });
