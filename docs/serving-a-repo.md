@@ -308,7 +308,7 @@ Some of governor's work starts with nobody choosing the ticket. `trust.auto` lis
 - a spec session, or a message to the ticket's owner session, when a not-ready ticket's blocker closes or its wait ends;
 - a periodic's counts of issues opened and closed, and the issues its prompt lists. Merges count whoever opened them;
 - the conflicts check's message to a PR's session, and the fresh session that takes the PR over when that one is archived;
-- a ticket review's ready label: governor refuses a file where a review whose `by` reaches beyond `trust.auto` names a ready label in any of its `conclusions` ([Ticket reviews and pickup](#ticket-reviews-and-pickup)).
+- a ticket review's ready label: governor refuses a file where a review whose `by`, narrowed by `trust.review`, reaches beyond `trust.auto` names a ready label in any of its `conclusions` ([Ticket reviews and pickup](#ticket-reviews-and-pickup)).
 
 The default is `OWNER`, `MEMBER` and `COLLABORATOR`. So a stranger's issue linked as blocked by a real ticket gets no spec session when that ticket closes, a stranger's `Blocked until:` line starts nothing when its date passes, and a stranger's issue neither brings a periodic due nor appears in its prompt. Each of these is logged at info, and nothing pages the operator. A repo can narrow the list:
 
@@ -366,11 +366,11 @@ Each ticket review names, in `conclusions`, the labels each of its conclusions a
 On every run governor adds the conclusion's labels and removes the ones the other two conclusions name, creating a label the repo lacks. It removes a label only where governor's App added it last, read from the ticket's `labeled` events. A person's label is never taken off: a member who holds a ticket by adding `mode: human` keeps that hold through a later `success`, even though the review's `neutral` names the same label. It touches no other label. Reviews and pickup share no code: they meet only through these labels. Two patterns:
 
 - **Review every ticket before it is built.** List the review's `success` label among `labels.ready`, here `"ready": ["mode: afk", "triaged"]`. A ticket is not ready until the review has passed it, and a later `failure` or `neutral` takes the label off again where the review added it. Pickup takes a ticket the review readied at the repo's next sweep (`pickup.sweepHours`), since a label governor adds queues no selection of its own.
-- **Trust a ticket someone has readied.** List the ready labels in the review's `when.exclude`. A ticket that carries them when it opens is not reviewed, and pickup starts it as today.
+- **Trust a ticket someone has readied.** List the ready labels in the review's `when.exclude`. A ticket that carries them when it opens is not reviewed, and pickup starts it as today. That review's `conclusions` then cannot name those labels, so it readies nothing itself.
 
 Put the `neutral` labels in `labels.exclude`, as `mode: human` is, so pickup never takes a ticket the review doubted. Put the claim label in `when.exclude`, so a ticket already being built is not reviewed when its session edits the body. A person overrules a review by adding its `success` label by hand, and a later run leaves that label on.
 
-Governor refuses a file where one label appears under two conclusions of one review, where one label appears in two reviews' conclusions, where a review whose `by` reaches beyond `trust.auto` names a ready label, or where a conclusion names a label a `types` entry matches on. Each rule reads a review's `conclusions` with every `types` entry's. On an open-source repo, keep the default `by` on the review whose labels can ready a ticket, and give strangers a second review whose labels ready nothing.
+Governor refuses a file where one label appears under two conclusions of one review, where one label appears in two reviews' conclusions, where a review whose `by` reaches beyond `trust.auto` names a ready label, or where a conclusion names a label a `types` entry matches on, a label the same review's `when.labels` or `when.exclude` names, or `labels.claim`. The ready-label rule reads a review's `by` narrowed by `trust.review`, since the review reads no ticket whose author `trust.review` leaves out. Each rule reads a review's `conclusions` with every `types` entry's. On an open-source repo, keep the default `by` on the review whose labels can ready a ticket, and give strangers a second review whose labels ready nothing.
 
 ### A ticket review's checklists and ticket types
 

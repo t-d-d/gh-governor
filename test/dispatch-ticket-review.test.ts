@@ -308,7 +308,9 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   });
 
   test('a review open to outsiders reads trust.auto as narrowed, and an unset auto is the three with a say', async () => {
-    await refused({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE', 'CONTRIBUTOR'] }, conclusions: { success: ['triaged'] } }] }, /community/, /NONE, CONTRIBUTOR/);
+    // trust.review lets outsiders in, or the review could read none of their tickets.
+    const outsiders = { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'NONE'] };
+    await refused({ trust: outsiders, ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE', 'CONTRIBUTOR'] }, conclusions: { success: ['triaged'] } }] }, /community/, /NONE, CONTRIBUTOR/);
     // trust.relay narrows an unset auto as autoOf does.
     await refused({ trust: { relay: ['OWNER', 'BOT'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened', by: ['OWNER', 'MEMBER'] }, conclusions: { success: ['triaged'] } }] }, /MEMBER/);
   });
@@ -322,9 +324,31 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
     ] });
   });
 
+  test('a conclusion label the review selects on is refused, naming the review and the label', async () => {
+    // A failure label the selector excludes would stop the review reading the filer's fix.
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened', exclude: ['Needs Edit'] }, conclusions: { failure: ['needs edit'] } }] }, /triage/, /"needs edit"/, /exclude/);
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened', labels: ['incoming'] }, conclusions: { success: ['incoming'] } }] }, /triage/, /"incoming"/, /when\.labels/);
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened', exclude: ['bug report'] }, types: [{ labels: ['bug'], conclusions: { neutral: ['bug report'] } }] }] }, /triage/, /"bug report"/);
+  });
+
+  test('a conclusion naming the claim label is refused, naming the review and the label', async () => {
+    await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { neutral: ['Claimed'] } }] }, /triage/, /"Claimed"/, /claim/);
+    // The claim label belongs in when.exclude, so a conclusion naming it there too gets the one fault, not two.
+    const claimExcluded = { ticketReviews: [{ name: 'triage', when: { on: 'opened', exclude: ['claimed'] }, conclusions: { neutral: ['claimed'] } }] };
+    await refused(claimExcluded, /triage/, /"claimed"/, /labels\.claim/);
+    const read = readConfig(text(claimExcluded));
+    assert.doesNotMatch(read.ok ? '' : read.fault, /when\.exclude/);
+  });
+
+  test('the ready-label rule reads by narrowed by trust.review, the authors the review can read', () => {
+    // The default by lets in COLLABORATOR, but trust.review keeps collaborators out, so the review can ready none of their tickets.
+    const read = readConfig(text({ trust: { review: ['OWNER', 'MEMBER'] }, ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['triaged'] } }] }));
+    assert.ok(read.ok, JSON.stringify(read));
+  });
+
   test('labels are compared as GitHub compares them, ignoring case', async () => {
     // GitHub adds the repo's "mode: afk" for "MODE: AFK", so the outsider rule must see it as the ready label.
-    await refused({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['MODE: AFK'] } }] }, /community/, /"MODE: AFK"/);
+    await refused({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] }, ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['MODE: AFK'] } }] }, /community/, /"MODE: AFK"/);
     await refused({ ticketReviews: [{ name: 'triage', when: { on: 'opened' }, conclusions: { success: ['Seen'], neutral: ['seen'] } }] }, /triage/, /"seen"/);
     await refused({ ticketReviews: [
       { name: 'triage', when: { on: 'opened' }, conclusions: { success: ['Looked at'] } },
@@ -425,7 +449,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   });
 
   test('a review whose by reaches beyond trust.auto and whose bug entry names a ready label is refused', async () => {
-    await refused({ ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['community: reviewed'] }, types: [{ labels: ['type: bug'], conclusions: { success: ['mode: afk'] } }] }] }, /community/, /"mode: afk"/, /NONE/, /trust\.auto/, /ticketReviews\.0\.types\.0\.conclusions: the community review names the ready label/);
+    await refused({ trust: { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] }, ticketReviews: [{ name: 'community', when: { on: 'opened', by: ['NONE'] }, conclusions: { success: ['community: reviewed'] }, types: [{ labels: ['type: bug'], conclusions: { success: ['mode: afk'] } }] }] }, /community/, /"mode: afk"/, /NONE/, /trust\.auto/, /ticketReviews\.0\.types\.0\.conclusions: the community review names the ready label/);
   });
 
   test('a conclusion that names a label a types entry matches on is refused, in the default or in an entry', async () => {
