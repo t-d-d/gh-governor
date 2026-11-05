@@ -8089,7 +8089,7 @@ describe('fitness: a merge into a served repo\'s default branch reaches its conf
       branchHead: async (branch: string) => { asked.push(`head ${branch}`); return TRUNK; },
       openPulls: async () => [{ number: 12, draft: false, base: 'trunk' }, { number: 13, draft: false, base: 'main' }],
       pullRequest: async (n: number) => { asked.push(`pull ${n}`); return { number: n, title: `PR ${n}`, body: BODY, state: 'open', draft: false, base: 'trunk', headSha: 'f'.repeat(40), mergeable: false, html_url: `https://github.com/${TDD}/pull/${n}`, association: 'OWNER' }; },
-      pull: async (n: number) => ({ number: n, body: BODY, head: `claude/branch-${n}`, defaultBranch: 'main', open: true, association: 'OWNER' }),
+      pull: async (n: number) => ({ number: n, body: BODY, head: `claude/branch-${n}`, defaultBranch: 'trunk', open: true, association: 'OWNER' }),
     };
     const h = harness({ configFile: async (repo: string) => (repo === TDD ? FILE : FACTORY_FILE), reader: () => reader, sleep: async () => {} });
     await run(fire, h.deps as never);

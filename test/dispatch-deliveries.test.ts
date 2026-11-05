@@ -291,6 +291,7 @@ describe('deliver — with a fallback', () => {
   test('a takeover of a PR whose default branch was not read launches on no branch', async () => {
     const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: 'main', defaultBranch: '', open: true }) } });
     await f.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: onPr, takeover: true });
+    assert.equal(f.launches.length, 1);
     assert.equal(f.launches[0]!.branch, undefined);
   });
 

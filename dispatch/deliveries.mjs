@@ -297,7 +297,8 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   `source`: where the text comes from, which names the line it opens
  *   with; a fallback's prompt opens with the same line. `fallback`: what a
  *   refusal starts. A `takeover`'s fallback owns the PR, so it starts on
- *   the PR's head branch and the body's link is rewritten to it, the one
+ *   the PR's head branch, unless that is a fork's or the repo's default
+ *   branch, and the body's link is rewritten to it, the one
  *   record of the PR's session; a red CI's fix session did not write the
  *   merged PR it is told of, so that body keeps its author and nothing is
  *   posted on it. `spec`: the message is a ticket's spec work to its
