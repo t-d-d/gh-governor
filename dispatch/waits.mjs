@@ -46,7 +46,7 @@
  */
 
 import { waitLine } from './webhook/fire.mjs';
-import { UNREADIED_HELD, ownerMessage, sameRepo, specSession, unblockedFacts } from './unblocked.mjs';
+import { UNREADIED_HELD, ownerMessage, sameRepo, specSession, stillBlockedSentence, unblockedFacts } from './unblocked.mjs';
 import { relayedBody, sessionNamedIn } from './webhook/subscribe.mjs';
 import { AUTO, RELAY, authorKind, lets } from './trust.mjs';
 import { DAY_MS } from './periodics.mjs';
@@ -745,7 +745,7 @@ export const waitNotPlannedComment = ({ facts, issue, ref, prompts, holds = true
   '',
   instruction(prompts, 'unblockedNotPlanned'),
   '',
-  ...(blocked ? [`#${issue} is still blocked by another open issue, so this close does not free it.`, ''] : []),
+  ...(blocked ? [stillBlockedSentence(issue), ''] : []),
   holds
     ? `#${issue} stays held by its \`Blocked until:\` line, which waits on ${ref} closing. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line${blocked ? '' : ', to free it'}.`
     : `#${issue}'s \`Blocked until:\` line waits on ${ref} closing, and this close does not give it a date. Write a date into the line, as \`Blocked until: YYYY-MM-DD\`, or delete the line.`,
