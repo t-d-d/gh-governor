@@ -657,10 +657,10 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       await call('POST', `/repos/${repo}/issues/${number}/comments`, { body });
     },
 
-    /** A pull request's body, a null one as '', its head branch ({@link headOf}), whether it is open, neither closed nor merged, and its author ({@link authorOf}). @param {number} number @returns {Promise<{ number: number, body: string, head: string, open: boolean } & Required<import('../../dispatch/webhook/fire.mjs').Author>>} */
+    /** A pull request's body, a null one as '', its head branch ({@link headOf}), the repo's default branch from its base, '' where none is read, whether it is open, neither closed nor merged, and its author ({@link authorOf}). @param {number} number @returns {Promise<{ number: number, body: string, head: string, defaultBranch: string, open: boolean } & Required<import('../../dispatch/webhook/fire.mjs').Author>>} */
     pull: async (number) => {
       const row = await call('GET', `/repos/${repo}/pulls/${number}`);
-      return { number: row.number, body: row.body ?? '', head: headOf(row), open: row.state === 'open', ...authorOf(row) };
+      return { number: row.number, body: row.body ?? '', head: headOf(row), defaultBranch: String(row?.base?.repo?.default_branch ?? ''), open: row.state === 'open', ...authorOf(row) };
     },
 
     /** Rewrite a pull request's body. @param {number} number @param {{ body: string }} change */

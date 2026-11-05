@@ -80,7 +80,7 @@ const fakes = (over: {
   const reader = {
     comments: async () => [],
     comment: async (n: number, body: string) => { comments.push({ issue: n, body }); },
-    pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: true }),
+    pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', defaultBranch: 'main', open: true }),
     updatePull: async (n: number, { body }: { body: string }) => { edits.push({ pr: n, body }); },
     issue: async (n: number) => ({ number: n, body: PR_BODY, pull: true }),
     updateIssue: async (n: number, { body }: { body: string }) => { issueEdits.push({ issue: n, body }); },
@@ -269,15 +269,35 @@ describe('deliver — with a fallback', () => {
   // and pushes there. A launch on it the CLI refuses reads as any failed
   // launch, so the line names the branch the operator looks for.
   test('a takeover\'s fallback launches on the PR\'s head branch, and its line names it', async () => {
-    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: 'claude/branch-724', open: true }) } });
+    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: 'claude/branch-724', defaultBranch: 'main', open: true }) } });
     await f.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: onPr, takeover: true });
     assert.equal(f.launches[0]!.branch, 'claude/branch-724');
     assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.branch === 'claude/branch-724'), JSON.stringify(f.logged));
   });
 
+  // A same-repo PR whose head is the default branch: a session started on
+  // it would push straight to the default branch. It starts from the
+  // default branch with a branch of its own instead.
+  test('a takeover of a PR whose head is the default branch launches on no branch', async () => {
+    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: 'trunk', defaultBranch: 'trunk', open: true }) } });
+    await f.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: onPr, takeover: true });
+    assert.equal(f.launches.length, 1);
+    assert.equal(f.launches[0]!.branch, undefined);
+    assert.ok(f.logged.some((l) => l.event === 'dispatch-message-fallback' && l.branch === null), JSON.stringify(f.logged));
+  });
+
+  // A default branch the reader could not read is no proof the head is not
+  // it: the session starts on no branch rather than risk pushing there.
+  test('a takeover of a PR whose default branch was not read launches on no branch', async () => {
+    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: 'main', defaultBranch: '', open: true }) } });
+    await f.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: onPr, takeover: true });
+    assert.equal(f.launches.length, 1);
+    assert.equal(f.launches[0]!.branch, undefined);
+  });
+
   // A fork's head is not this repo's branch: the reader gives '' for it.
   test('a takeover of a PR from a fork, or a fallback on no PR, names no branch', async () => {
-    const fork = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: true }) } });
+    const fork = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', defaultBranch: 'main', open: true }) } });
     await fork.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: onPr, takeover: true });
     assert.equal(fork.launches[0]!.branch, undefined);
     assert.ok(fork.logged.some((l) => l.event === 'dispatch-message-fallback' && l.branch === null), JSON.stringify(fork.logged));
@@ -289,7 +309,7 @@ describe('deliver — with a fallback', () => {
   // A fallback that is not a takeover (a red run on a merge) is for a merged
   // PR, whose branch is done with: its session starts a branch of its own.
   test('a fallback that is no takeover starts on no PR branch', async () => {
-    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: 'claude/branch-724', open: false }) } });
+    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: 'claude/branch-724', defaultBranch: 'main', open: false }) } });
     await f.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback: onPr });
     assert.equal(f.launches.length, 1);
     assert.equal(f.launches[0]!.branch, undefined);
@@ -314,7 +334,7 @@ describe('deliver — with a fallback', () => {
   // session told to take a finished PR over has nothing to do, so the PR is
   // read when the owner refuses, not when the remark arrived.
   test('a takeover on a PR that has closed or merged since the remark starts nothing, and leaves no marker', async () => {
-    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: false }) } });
+    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', defaultBranch: 'main', open: false }) } });
     const told = await f.deliver({ session: 'session_01OLD' }, 'a person\'s remark', { fallback: onPr, takeover: true });
     assert.deepEqual(f.launches, []);
     assert.deepEqual(f.comments, []);
@@ -325,7 +345,7 @@ describe('deliver — with a fallback', () => {
   });
 
   test('a fallback that is not a takeover starts on a closed PR: a red run on a merge is meant for one', async () => {
-    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', open: false }) } });
+    const f = fakes({ send: archived, reader: { pull: async (n: number) => ({ number: n, body: PR_BODY, head: '', defaultBranch: 'main', open: false }) } });
     const told = await f.deliver({ session: 'session_01OLD' }, 'CI is red', { fallback: onPr, takeover: false });
     assert.equal(f.launches.length, 1);
     assert.deepEqual(told.fallback, { outcome: 'dispatched', sessionUrl: FRESH });
@@ -431,7 +451,7 @@ describe('deliver — with a fallback', () => {
     const moved = PR_BODY.replace('session_01OLD', 'session_01NEW');
     const f = fakes({
       send: async (m) => (m.session === 'session_01OLD' ? archived(m) : accepted('session_01NEW')),
-      reader: { pull: async (n: number) => ({ number: n, body: moved, head: 'claude/branch-724', open: true, association: 'OWNER' }) },
+      reader: { pull: async (n: number) => ({ number: n, body: moved, head: 'claude/branch-724', defaultBranch: 'main', open: true, association: 'OWNER' }) },
     });
     const told = await f.deliver({ session: 'session_01OLD' }, 'a second inline comment', { fallback: onPr, takeover: true });
     assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD', 'https://claude.ai/code/session_01NEW']);
@@ -748,7 +768,7 @@ describe('deliver — to the owner of a PR', () => {
   const LOCAL = 'https://claude.ai/code/session_01LOCAL';
   const PR = 4492;
   const unnamed = (over: Record<string, unknown> = {}) => ({
-    pull: async (n: number) => ({ number: n, body: UNNAMED, head: BRANCH, open: true, association: 'OWNER' }),
+    pull: async (n: number) => ({ number: n, body: UNNAMED, head: BRANCH, defaultBranch: 'main', open: true, association: 'OWNER' }),
     issue: async (n: number) => ({ number: n, body: UNNAMED, pull: true }),
     openPulls: async () => [{ number: PR, draft: false, base: 'main', head: BRANCH, title: 'Lessons', html_url: `https://github.com/${REPO}/pull/${PR}`, body: UNNAMED, association: 'OWNER' }],
     ...over,
@@ -780,7 +800,7 @@ describe('deliver — to the owner of a PR', () => {
   });
 
   test('a PR with no head branch has no owner to look for', async () => {
-    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: UNNAMED, head: '', open: true }) }), sessions: () => { throw new Error('not asked'); } });
+    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: UNNAMED, head: '', defaultBranch: 'main', open: true }) }), sessions: () => { throw new Error('not asked'); } });
     const told = await f.deliver({ pr: PR }, 'Why?');
     assert.equal(told.skipped, `no live session holds PR #${PR}'s head branch`);
   });
@@ -805,21 +825,21 @@ describe('deliver — to the owner of a PR', () => {
   });
 
   test('a body that has named its session since the fire was queued: that session is told, and the finder is not asked', async () => {
-    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH, open: true, association: 'OWNER' }) }), sessions: () => { throw new Error('not asked'); } });
+    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH, defaultBranch: 'main', open: true, association: 'OWNER' }) }), sessions: () => { throw new Error('not asked'); } });
     await f.deliver({ pr: PR }, 'Why?', { on: [PR] });
     assert.deepEqual(f.sent.map((m) => m.session), ['https://claude.ai/code/session_01NAMED']);
   });
 
   test('a body naming a session, opened by an author trust.relay does not let in, names none: the branch\'s session is the owner', async () => {
     const asked: Array<{ branch: string; bridgeOnly?: boolean }> = [];
-    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH, open: true, author: 'drive-by', association: 'NONE' }) }), sessions: holding({ [BRANCH]: LOCAL }, asked) });
+    const f = fakes({ reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH, defaultBranch: 'main', open: true, author: 'drive-by', association: 'NONE' }) }), sessions: holding({ [BRANCH]: LOCAL }, asked) });
     await f.deliver({ pr: PR }, 'Why?', { on: [PR] });
     assert.deepEqual(f.sent.map((m) => m.session), [LOCAL]);
     assert.equal(asked[0]?.branch, BRANCH, 'the finder is asked');
   });
 
   test('where the file\'s relay lets NONE in, the same body names its session', async () => {
-    const f = fakes({ relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT', 'NONE'], reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH, open: true, author: 'drive-by', association: 'NONE' }) }), sessions: () => { throw new Error('not asked'); } });
+    const f = fakes({ relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT', 'NONE'], reader: unnamed({ pull: async (n: number) => ({ number: n, body: `${UNNAMED}\n\nhttps://claude.ai/code/session_01NAMED`, head: BRANCH, defaultBranch: 'main', open: true, author: 'drive-by', association: 'NONE' }) }), sessions: () => { throw new Error('not asked'); } });
     await f.deliver({ pr: PR }, 'Why?', { on: [PR] });
     assert.deepEqual(f.sent.map((m) => m.session), ['https://claude.ai/code/session_01NAMED']);
   });
