@@ -2090,7 +2090,7 @@ describe('routeEvent — every served repo', () => {
   });
 
   test('the events the receiver routes are the ones the App\'s webhook subscribes to', () => {
-    assert.deepEqual([...HOOK_EVENTS].sort(), ['check_run', 'issue_comment', 'issues', 'pull_request', 'pull_request_review', 'pull_request_review_comment', 'status', 'workflow_job', 'workflow_run']);
+    assert.deepEqual([...HOOK_EVENTS].sort(), ['check_run', 'issue_comment', 'issue_dependencies', 'issues', 'pull_request', 'pull_request_review', 'pull_request_review_comment', 'status', 'workflow_job', 'workflow_run']);
   });
 });
 
@@ -2342,6 +2342,139 @@ describe('fitness: a label queues a selection fire only where the repo\'s hook-t
     let reads = 0;
     await handled(labelled('type: bug'), async () => { reads += 1; return { switches: on, ready: READY }; });
     assert.equal(reads, 1);
+  });
+});
+
+/**
+ * A "blocked by" link removed from a ticket that carries one of the repo's
+ * ready labels queues the selection fire a ready label queues, for that one
+ * ticket, under `pickup`. GitHub's `issue_dependencies` event sends
+ * `blocked_by_removed` to the blocked ticket's repo, naming it as
+ * `blocked_issue`, and `blocking_removed` to the blocker's: only the first
+ * queues, so one removal is one fire. The receiver judges the ticket's
+ * labels in the payload against the repo's hook-table item, as for a label.
+ */
+describe('fitness: a blocker unlinked from a ready ticket queues its selection fire (dispatcher-repos.md)', () => {
+  const on = new Map(GENERIC_SWITCHES.map((name) => [name, true]));
+  type Item = { switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null } | null;
+  const listed = async () => ({ switches: on, ready: READY });
+  const ticket = (over: Record<string, unknown> = {}) => ({ number: 519, title: 'A ready ticket', state: 'open', labels: [{ name: 'enhancement' }, { name: 'mode: afk' }], html_url: `https://github.com/${REPO}/issues/519`, body: 'Body.', user: member, author_association: 'OWNER', ...over });
+  const blocker = { number: 518, title: 'Its blocker', state: 'open', labels: [{ name: 'mode: afk' }], html_url: `https://github.com/${REPO}/issues/518` };
+  const unlinked = (action: string, over: Record<string, unknown> = {}) => ({
+    action,
+    blocked_issue_id: 9519,
+    blocked_issue: ticket(),
+    blocking_issue_id: 9518,
+    blocking_issue: blocker,
+    repository: { full_name: REPO },
+    sender: member,
+    ...over,
+  });
+  const handled = async (payload: unknown, repoItem: () => Promise<Item>) => {
+    const h = harness({ repoItem });
+    const response = await handle(delivery('issue_dependencies', payload), h.deps as never);
+    return { ...h, response, fires: h.queued.map((q) => q.message.fire) };
+  };
+
+  test('the receiver routes the issue-dependencies event', () => {
+    assert.ok(HOOK_EVENTS.includes('issue_dependencies'));
+  });
+
+  test('a blocker unlinked from a ticket carrying a ready label queues one selection fire for it, naming the ready label', async () => {
+    const { fires, response, queued } = await handled(unlinked('blocked_by_removed'), listed);
+    assert.equal(response.statusCode, 202, response.body);
+    assert.deepEqual(fires, [{ kind: 'schedule', issue: 519, label: 'mode: afk', repo: REPO }]);
+    assert.equal(queued[0]!.dedupId, 'd-1', 'keyed by the delivery, so a redelivery is not a second fire');
+    assert.match(response.body, /#518 unlinked from #519/);
+  });
+
+  test('routed from the payload alone, the fire names the ticket and no label until the item is read', () => {
+    const decision = routeEvent({ event: 'issue_dependencies', payload: unlinked('blocked_by_removed'), owners: OWNERS });
+    assert.deepEqual(decision.fires.map((f) => f.fire), [{ kind: 'schedule', issue: 519, repo: REPO }]);
+  });
+
+  test('a ticket with no ready label queues nothing, and says why', async () => {
+    const { fires, response, logged } = await handled(unlinked('blocked_by_removed', { blocked_issue: ticket({ labels: [{ name: 'enhancement' }] }) }), listed);
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(fires, []);
+    assert.match(response.body, /#519 carries none of acme\/factory's ready labels/);
+    assert.equal(logged.find((l) => l.event === 'webhook-ignored')?.level, 'info');
+  });
+
+  test('a ticket with no label at all queues nothing from the payload alone, and says why', () => {
+    const decision = routeEvent({ event: 'issue_dependencies', payload: unlinked('blocked_by_removed', { blocked_issue: ticket({ labels: [] }) }), owners: OWNERS });
+    assert.deepEqual(decision.fires, []);
+    assert.match(decision.reason, /#519 carries no label/);
+  });
+
+  test('a ready label matches exactly, as the task matches it', async () => {
+    const { fires } = await handled(unlinked('blocked_by_removed', { blocked_issue: ticket({ labels: [{ name: 'Mode: AFK' }] }) }), listed);
+    assert.deepEqual(fires, []);
+  });
+
+  test('a link added queues nothing, and says why', () => {
+    for (const action of ['blocked_by_added', 'blocking_added']) {
+      const decision = routeEvent({ event: 'issue_dependencies', payload: unlinked(action), owners: OWNERS });
+      assert.deepEqual(decision.fires, [], action);
+      assert.match(decision.reason, /added: the selection already skips a blocked ticket/, action);
+    }
+  });
+
+  test('the blocker\'s side of a removal queues nothing: the blocked ticket\'s side carries the fire', () => {
+    const decision = routeEvent({ event: 'issue_dependencies', payload: unlinked('blocking_removed', { blocked_issue_repo: { full_name: REPO } }), owners: OWNERS });
+    assert.deepEqual(decision.fires, []);
+    assert.match(decision.reason, /blocked_by_removed/);
+  });
+
+  test('a closed ticket, or a payload naming no ticket, queues nothing', () => {
+    const closed = routeEvent({ event: 'issue_dependencies', payload: unlinked('blocked_by_removed', { blocked_issue: ticket({ state: 'closed' }) }), owners: OWNERS });
+    assert.deepEqual(closed.fires, []);
+    assert.match(closed.reason, /#519 is closed/);
+    const { blocked_issue: _b, ...nameless } = unlinked('blocked_by_removed');
+    const none = routeEvent({ event: 'issue_dependencies', payload: nameless, owners: OWNERS });
+    assert.deepEqual(none.fires, []);
+    assert.match(none.reason, /names no blocked issue/);
+  });
+
+  test('a ticket in an unlisted owner\'s repo queues nothing, and says why', () => {
+    const decision = routeEvent({ event: 'issue_dependencies', payload: unlinked('blocked_by_removed', { repository: { full_name: 'stranger/repo' } }), owners: OWNERS });
+    assert.deepEqual(decision.fires, []);
+    assert.match(decision.reason, /not on the owner list/);
+  });
+
+  // A fire's repo is the delivery's, so a ticket another repo holds would
+  // name that repo's number in this one.
+  test('a ticket the delivery\'s repo does not hold queues nothing, and says why', () => {
+    const elsewhere = ticket({ html_url: 'https://github.com/acme/other/issues/519', repository_url: 'https://api.github.com/repos/acme/other' });
+    const decision = routeEvent({ event: 'issue_dependencies', payload: unlinked('blocked_by_removed', { blocked_issue: elsewhere }), owners: OWNERS });
+    assert.deepEqual(decision.fires, []);
+    assert.match(decision.reason, /#519 is not acme\/factory's/);
+    const { html_url: _h, ...unplaced } = ticket();
+    const unknown = routeEvent({ event: 'issue_dependencies', payload: unlinked('blocked_by_removed', { blocked_issue: unplaced }), owners: OWNERS });
+    assert.deepEqual(unknown.fires, []);
+    const placed = routeEvent({ event: 'issue_dependencies', payload: unlinked('blocked_by_removed', { blocked_issue: { ...unplaced, repository_url: `https://api.github.com/repos/${REPO}` } }), owners: OWNERS });
+    assert.equal(placed.fires.length, 1, placed.reason);
+  });
+
+  test('a removal by a bot or by governor\'s own App queues as a person\'s does', async () => {
+    for (const sender of [{ login: 'governor-app[bot]', type: 'Bot' }, { login: 'renovate[bot]', type: 'Bot' }]) {
+      const { fires } = await handled(unlinked('blocked_by_removed', { sender }), listed);
+      assert.deepEqual(fires, [{ kind: 'schedule', issue: 519, label: 'mode: afk', repo: REPO }], sender.login);
+    }
+  });
+
+  test('a repo whose pickup is off drops the fire, and the reason names the switch', async () => {
+    const { fires, response } = await handled(unlinked('blocked_by_removed'), async () => ({ switches: new Map([['pickup', false]]), ready: READY }));
+    assert.deepEqual(fires, []);
+    assert.match(response.body, /pickup off/);
+  });
+
+  test('no item, an item from before the ready labels, or a failed read queue the fire with no label, and the task reads the ticket', async () => {
+    for (const read of [async () => null, async () => ({ switches: on, ready: null }), async () => { throw new Error('AccessDeniedException'); }]) {
+      const { fires, response } = await handled(unlinked('blocked_by_removed', { blocked_issue: ticket({ labels: [{ name: 'enhancement' }] }) }), read as () => Promise<Item>);
+      assert.equal(response.statusCode, 202, response.body);
+      assert.deepEqual(fires, [{ kind: 'schedule', issue: 519, repo: REPO }]);
+    }
   });
 });
 
