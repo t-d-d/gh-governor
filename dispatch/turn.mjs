@@ -1678,6 +1678,9 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
     return null;
   }
   const target = deployedTarget(plan.label);
+  // The one comment each newly labelled ticket gets; a label that names no
+  // target, or a run, gets none.
+  const note = target !== null && invocation.kind === 'job' ? deployedComment({ target, workflow: invocation.workflow, url: invocation.url, commit: invocation.commit }) : null;
   const added = [];
   const commented = [];
   const failed = [];
@@ -1686,11 +1689,13 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
     // told already, by the turn that added it.
     /** @type {boolean | null} */
     let had = null;
-    try {
-      had = (await reader.ticket(ticket)).labels.includes(plan.label);
-    } catch (error) {
-      failed.push({ ticket, error: messageOf(error) });
-      deps.log('dispatch-labels', { ...about, label: plan.label, ticket, prs, error: `could not read its labels, so no comment: ${messageOf(error)}` });
+    if (note !== null) {
+      try {
+        had = (await reader.ticket(ticket)).labels.includes(plan.label);
+      } catch (error) {
+        failed.push({ ticket, error: messageOf(error) });
+        deps.log('dispatch-labels', { ...about, label: plan.label, ticket, prs, error: `could not read its labels, so no comment: ${messageOf(error)}` });
+      }
     }
     try {
       await reader.addLabels(ticket, [plan.label]);
@@ -1700,9 +1705,9 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
       deps.log('dispatch-labels', { ...about, label: plan.label, ticket, prs, error: messageOf(error) });
       continue;
     }
-    if (had !== false || target === null || invocation.kind !== 'job') continue;
+    if (had !== false || note === null) continue;
     try {
-      await reader.comment(ticket, deployedComment({ target, workflow: invocation.workflow, url: invocation.url, commit: invocation.commit }));
+      await reader.comment(ticket, note);
       commented.push(ticket);
     } catch (error) {
       failed.push({ ticket, error: messageOf(error) });

@@ -77,7 +77,7 @@
 
 import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
-import { DEPLOYED_MARKER, withoutDeployedMarker } from './deployed-comment.mjs';
+import { DEPLOYED_MARKER } from './deployed-comment.mjs';
 import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
 
 export const MENTION = '@claude';
@@ -662,7 +662,7 @@ const writtenFires = (written, event, payload, appId, relay, bodies) => {
     // to read, not the session's to quote: a reply quoting the review's
     // would be refused as a person's.
     const told = ownerOnly ? { ...payload, comment: { ...payload?.comment, body: withoutMarker(body) } }
-      : deployed ? { ...payload, comment: { ...payload?.comment, body: withoutDeployedMarker(body) } }
+      : deployed ? { ...payload, comment: { ...payload?.comment, body: withoutMarker(body, DEPLOYED_MARKER) } }
         : payload;
     parts.push(refused ? { fires: [], reason: refused } : fanOut({
       on,

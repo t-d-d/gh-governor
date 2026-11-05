@@ -193,10 +193,13 @@ export const ownerActs = (text) => {
 
 /**
  * The comment's words without its marker: what the owner session is told.
+ * The marker is the PR review's unless another of governor's comments
+ * (the deploy comment, deployed-comment.mjs) names its own.
  *
  * @param {string} body
+ * @param {string} [marker]
  */
-export const withoutMarker = (body) => {
-  const at = body.indexOf(REVIEW_MARKER);
+export const withoutMarker = (body, marker = REVIEW_MARKER) => {
+  const at = body.indexOf(marker);
   return (at === -1 ? body : body.slice(0, at)).trim();
 };

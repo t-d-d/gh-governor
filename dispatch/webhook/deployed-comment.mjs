@@ -20,14 +20,3 @@ export const DEPLOYED_MARKER = '<!-- governor:deployed ';
  */
 export const deployedComment = ({ target, workflow, url, commit }) =>
   `Deployed to ${target} by ${workflow} ([job](${url})), built from ${commit.slice(0, 7)}.\n\n${DEPLOYED_MARKER}${target} -->`;
-
-/**
- * The comment's words without its marker: what the issue's owner is told.
- * A body with no marker is returned trimmed.
- *
- * @param {string} body
- */
-export const withoutDeployedMarker = (body) => {
-  const at = body.indexOf(DEPLOYED_MARKER);
-  return (at === -1 ? body : body.slice(0, at)).trim();
-};
