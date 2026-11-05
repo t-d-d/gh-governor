@@ -309,20 +309,21 @@ const lastMerged = (rows, mergedAt) => rows.reduce((/** @type {T | undefined} */
 
 /**
  * Every page of a list endpoint that pages a hundred at a time, up to
- * `pages` of them.
+ * `pages` of them. `rowsOf` takes a page's rows from its answer, for an
+ * endpoint that wraps its list in an object.
  *
  * @param {(method: string, path: string, body?: unknown) => Promise<any>} call
  * @param {string} path Without a query string of its own.
  * @param {Record<string, string>} query
  * @param {number} [pages]
+ * @param {(answer: any) => any[]} [rowsOf]
  * @returns {Promise<any[]>}
  */
-const allPages = async (call, path, query, pages = 30) => {
+const allPages = async (call, path, query, pages = 30, rowsOf = (answer) => answer) => {
   /** @type {any[]} */
   const rows = [];
   for (let page = 1; page <= pages; page += 1) {
-    /** @type {any[]} */
-    const batch = await call('GET', `${path}?${new URLSearchParams({ ...query, per_page: '100', page: String(page) })}`);
+    const batch = rowsOf(await call('GET', `${path}?${new URLSearchParams({ ...query, per_page: '100', page: String(page) })}`));
     rows.push(...batch);
     if (batch.length < 100) break;
   }
@@ -959,22 +960,10 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      * @returns {Promise<Array<{ name: string, state: 'red' | 'green' | 'pending' }>>}
      */
     checksAt: async (sha) => {
-      /** @type {any[]} */
-      const runs = [];
-      for (let page = 1; page <= 30; page += 1) {
-        const answer = await call('GET', `/repos/${repo}/commits/${sha}/check-runs?${new URLSearchParams({ filter: 'latest', per_page: '100', page: String(page) })}`);
-        const batch = answer?.check_runs ?? [];
-        runs.push(...batch);
-        if (batch.length < 100) break;
-      }
-      /** @type {any[]} */
-      const statuses = [];
-      for (let page = 1; page <= 30; page += 1) {
-        const answer = await call('GET', `/repos/${repo}/commits/${sha}/status?${new URLSearchParams({ per_page: '100', page: String(page) })}`);
-        const batch = answer?.statuses ?? [];
-        statuses.push(...batch);
-        if (batch.length < 100) break;
-      }
+      const [runs, statuses] = await Promise.all([
+        allPages(call, `/repos/${repo}/commits/${sha}/check-runs`, { filter: 'latest' }, undefined, (answer) => answer?.check_runs ?? []),
+        allPages(call, `/repos/${repo}/commits/${sha}/status`, {}, undefined, (answer) => answer?.statuses ?? []),
+      ]);
       /** @type {(red: boolean, pending: boolean) => 'red' | 'green' | 'pending'} */
       const stateOf = (red, pending) => (red ? 'red' : pending ? 'pending' : 'green');
       return [
