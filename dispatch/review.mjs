@@ -352,8 +352,10 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
   const reviewed = { pr: number, outcome: 'skipped', reason: null, headSha: null, answer: null, error: null, check: null };
   /** @param {string} reason */
   const skip = (reason) => ({ ...reviewed, outcome: /** @type {Outcome} */ ('skipped'), reason });
-  // A PR merged before a later write failed keeps its check: the review ran.
+  // A PR merged, or commented on, before a later write failed keeps its
+  // check: the review ran, and its comment says what the check does.
   let merged = false;
+  let said = false;
   /**
    * The `governor` check at the head read. A 403 on the read of the runs
    * already there, or on the write, is an installation that has not granted
@@ -390,12 +392,13 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     if (headSha !== undefined && headSha !== pull.headSha) return skip(`#${number} has moved past ${headSha.slice(0, 12)} to ${pull.headSha.slice(0, 12)}: that push's fire reviews it`);
     const bodySha = bodyDigest(pull.body);
     // The verdict comes from the state table, never from the comment: a
-    // person with write access can edit governor's comment. The comment is
-    // read only to edit it in place.
-    const [verdict, thread] = await Promise.all([verdicts.read(number), reader.allComments(number)]);
-    const last = lastReview(thread);
+    // person with write access can edit governor's comment.
+    const verdict = await verdicts.read(number);
     // A red required check's or CI run's fail is read again: a re-run can turn it green on the same head.
     if (verdict !== null && verdict.headSha === pull.headSha && verdict.bodySha === bodySha && !verdict.again) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
+    // The comment is read only to edit it in place, so a PR skipped above
+    // pages through no thread.
+    const last = lastReview(await reader.allComments(number));
     // The model's pass at an earlier head, offered for reuse: the checklist
     // reuses it only where what the model reads has the same digest. A
     // verdict naming no digest, or a fail, offers nothing.
@@ -475,6 +478,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     } else {
       await reader.comment(number, body);
     }
+    said = true;
     // After the comment: one GitHub refused leaves no verdict, so the next
     // fire reads the PR again. Another review's item standing is its own
     // verdict, as good as this one.
@@ -489,7 +493,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
   } catch (error) {
     const limited = /** @type {{ limit?: string }} */ (error)?.limit === 'session';
     const message = messageOf(error);
-    if (reviewed.headSha !== null && reviewed.headSha !== '' && !merged) {
+    if (reviewed.headSha !== null && reviewed.headSha !== '' && !merged && !said) {
       // A gate fails out loud, and the owner can bypass it. A check write
       // that fails here too leaves the review's own error as the one told.
       const quoted = message.length <= ERROR_CHARS ? message : `${message.slice(0, ERROR_CHARS - 1).trimEnd()}…`;

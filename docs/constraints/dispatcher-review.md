@@ -88,6 +88,8 @@ served repos have their owner merge, so a pass there must not merge.
   access can edit any comment, governor's included, so the comment is the
   record people read, and the review reads it only to edit it in place. A
   missing item means no reuse and no skip, so the model is asked again. A
+  read that fails fails the review. A write that fails after the comment
+  fails it too, and leaves the check the comment matches. A
   held pass from before no run held a merge merges nothing: its PR is
   judged again.
 - A pass merges, pinned to the head reviewed, only where `merge` is true.

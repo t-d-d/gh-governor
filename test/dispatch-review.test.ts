@@ -114,6 +114,8 @@ const harness = (over: {
    * comment would have put. A string is the error the read fails with.
    */
   verdicts?: Record<number, Verdict | null> | string,
+  /** The error the verdict's write fails with. */
+  verdictWrite?: string,
 } = {}) => {
   const checkRuns: Array<{ name: string, sha: string, state: string, title: string, summary: string }> = [];
   /** The review's writes in the order made: each check by its state, the merge, the comment. */
@@ -132,6 +134,7 @@ const harness = (over: {
   const fileReads: string[] = [];
   const readerApps: number[] = [];
   const sessionsRead: string[] = [];
+  const threadReads: number[] = [];
   const verdictWrites: Array<{ repo: string, pr: number, read: Verdict | null, verdict: Omit<Verdict, 'at'> }> = [];
   const ciReads: Array<[string, string]> = [];
   const pulls = over.pulls ?? { 767: pullRow() };
@@ -186,7 +189,7 @@ const harness = (over: {
         }
         return { number: n, title: `Ticket ${n}`, body: '## Acceptance criteria\n\n- It reviews.', state: 'open', labels: ['mode: afk', 'type: nfr', 'workflow: under development'], pull: false, association: 'MEMBER', ...row };
       },
-      allComments: async (n: number) => over.threads?.[n] ?? over.thread ?? [],
+      allComments: async (n: number) => { threadReads.push(n); return over.threads?.[n] ?? over.thread ?? []; },
       comment: async (issue: number, body: string) => { if (over.comment) await over.comment(); comments.push({ issue, body }); writes.push('comment'); },
       updateComment: async (id: number, body: string) => { commentEdits.push({ id, body }); },
       // The send path's reads: the standing line, a fallback's marker and relink.
@@ -228,12 +231,13 @@ const harness = (over: {
         return verdictOf(over.threads?.[pr] ?? over.thread ?? []);
       },
       recordVerdict: async (repo: string, pr: number, read: Verdict | null, verdict: Omit<Verdict, 'at'>) => {
+        if (over.verdictWrite !== undefined) throw new Error(over.verdictWrite);
         verdictWrites.push({ repo, pr, read, verdict });
         return true;
       },
     },
   };
-  return { deps, sessionsRead, verdictWrites, ciReads, checkRuns, writes, comments, commentEdits, merges, judged, transcripts, messages, launches, logged, reads, requiredReads, baseReads, fileReads, readerApps };
+  return { deps, sessionsRead, threadReads, verdictWrites, ciReads, checkRuns, writes, comments, commentEdits, merges, judged, transcripts, messages, launches, logged, reads, requiredReads, baseReads, fileReads, readerApps };
 };
 
 type Review = { pr: number, outcome: string, reason?: string | null, error?: string | null, test?: number };
@@ -996,6 +1000,21 @@ describe('fitness: run — the review reads its earlier verdict from the state t
     const refused = harness({ verdicts: { 767: null }, comment: async () => { throw new Error('POST /comments failed: 500'); } });
     await review({ kind: 'review', pr: 767, headSha: HEAD }, refused);
     assert.deepEqual(refused.verdictWrites, [], 'a comment GitHub refused records no verdict, so the next fire reads the PR again');
+  });
+
+  test('a verdict write that fails after the comment fails the review loudly, and leaves the check the comment matches', async () => {
+    const h = harness({ config: tagalongFile(), tickets: { 748: { labels: ['claimed'] } }, verdicts: { 767: null }, verdictWrite: 'ProvisionedThroughputExceededException' });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => [r.outcome, r.error]), [['failed', 'ProvisionedThroughputExceededException']]);
+    assert.equal(h.comments.length, 1, 'the pass is said');
+    assert.deepEqual(h.checkRuns.map((c) => c.state), ['success'], 'no failure check under a comment that says it passes');
+  });
+
+  test('a PR the table says was reviewed at its head and body reads no comment thread: the thread is read only to edit it', async () => {
+    const h = harness({ verdicts: { 767: FAIL_ITEM(HEAD) } });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['skipped']);
+    assert.deepEqual(h.threadReads, []);
   });
 
   test('a verdict that cannot be read fails the review: nothing merges and nothing is said', async () => {
