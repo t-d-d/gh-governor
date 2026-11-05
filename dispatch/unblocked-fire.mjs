@@ -99,7 +99,7 @@ export const planUnblocked = async (invocation, ctx) => {
   // not-planned row's (dispatch/waits.mjs). Only a ticket ready or not
   // ready by its labels is then held; a claimed or excluded one takes its
   // own row, so a claimed ticket's session still hears the close.
-  /** @param {Parameters<typeof ticketStatus>[0]} read @param {Parameters<typeof ticketStatus>[1]['blockers']} [blockers] */
+  /** @param {{ state: string, labels: readonly string[], wait?: import('../scripts/lib/ready-work.mjs').Wait }} read @param {Parameters<typeof ticketStatus>[1]['blockers']} [blockers] */
   const settleRelative = (read, blockers) =>
     relativeAtClose({ reader, repo, ticket: read, fire: invocation, prompts: ctx.prompts, now: ctx.now(), log: ctx.log, holds: lineHolds(read), blocked: stillBlocked(read, blockers) });
   if (!turnsOn(config, 'pickup') && !turnsOn(config, 'unblocked')) {
