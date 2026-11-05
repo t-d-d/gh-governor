@@ -1147,18 +1147,14 @@ describe('.github/workflows/deploy.yml', () => {
   });
 
   // Every step after the probe is the rollback, so a green probe is the end
-  // of a green deploy.
-  // The page alone also runs on a cancel, and only once the rollback started.
+  // of a green deploy. The page alone also runs on a cancel, and only once
+  // the rollback started, which a green probe never starts.
   test('runs nothing after a green probe', () => {
     const after = steps.slice(steps.findIndex(withId('probe')) + 1);
     assert.ok(after.length > 0, 'nothing follows the probe');
     for (const step of after) {
-      const condition = step.if ?? '';
-      if (step.id === 'page') {
-        assert.match(condition, /^\$\{\{ \(failure\(\) && \(.*\)\) \|\| \(cancelled\(\) && steps\.rollback\.outcome != '' && steps\.rollback\.outcome != 'skipped' && [^|]*\) \}\}$/, `'${step.name}' can run after a green probe`);
-      } else {
-        assert.match(condition, /^\$\{\{ failure\(\) && /, `'${step.name}' can run after a green probe`);
-      }
+      const guard = step.id === 'page' ? /^\$\{\{ always\(\) && steps\.rollback\.outcome != '' && steps\.rollback\.outcome != 'skipped' && [^|]*\}\}$/ : /^\$\{\{ failure\(\) && /;
+      assert.match(step.if ?? '', guard, `'${step.name}' can run after a green probe`);
     }
   });
 
@@ -1185,14 +1181,17 @@ describe('.github/workflows/deploy.yml', () => {
  * step that runs takes the outcome `outcomes` gives it, or success. A
  * `cancelled` outcome is the run cancelled during that step: from then on
  * only a step that asks for `cancelled()` or `always()` runs.
+ * `cancelKeepsFailure` reads a cancel after a failed step the other way,
+ * the job still failed and not cancelled, for a condition that must hold
+ * under either reading.
  * Returns the ids (or names) of the steps that ran, in order.
  */
-const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success' | 'failure' | 'cancelled'>, previousImage = 'governor@sha256:good', newImage = 'governor@sha256:new' } = {}) => {
+const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success' | 'failure' | 'cancelled'>, previousImage = 'governor@sha256:good', newImage = 'governor@sha256:new', cancelKeepsFailure = false } = {}) => {
   const outputsOf: Record<string, Record<string, string>> = { previous: { image_uri: previousImage }, image: { image_uri: newImage } };
   const state: Record<string, { outcome: string; outputs: Record<string, string> }> = {};
   const ran: string[] = [];
   let failed = false;
-  let cancelled = false;
+  let status: 'success' | 'failure' | 'cancelled' = 'success';
   for (const step of steps) {
     const key = step.id ?? step.name ?? '';
     const condition = (step.if ?? '').replace(/^\$\{\{\s*|\s*\}\}$/g, '');
@@ -1201,7 +1200,7 @@ const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success
     // GitHub's expression syntax, for the subset these steps use, read as JavaScript.
     const js = expression.replace(/!=/g, '!==').replace(/(?<![!=])==/g, '===');
     const runs = Boolean(new Function('success', 'failure', 'always', 'cancelled', 'steps', 'inputs', `return (${js});`)(
-      () => !failed && !cancelled, () => failed && !cancelled, () => true, () => cancelled,
+      () => status === 'success', () => status === 'failure', () => true, () => status === 'cancelled',
       new Proxy(state, { get: (target, id: string) => target[id] ?? { outcome: '', outputs: {} } }),
       { probe_only: probeOnly },
     ));
@@ -1212,7 +1211,7 @@ const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success
     ran.push(key);
     const outcome = outcomes[key] ?? 'success';
     if (outcome === 'failure') failed = true;
-    if (outcome === 'cancelled') cancelled = true;
+    if (outcome !== 'success' && (status === 'success' || (outcome === 'cancelled' && !cancelKeepsFailure))) status = outcome;
     if (step.id) state[step.id] = { outcome, outputs: outputsOf[step.id] ?? {} };
   }
   return { ran, failed };
@@ -1284,15 +1283,19 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     assert.deepEqual(after(ran, 'probe'), ['rollback', 'page']);
   });
 
-  // A job cancelled by hand or by its timeout runs no `failure()` step, so
-  // the page asks for `cancelled()` too: governor may be down until the
-  // rollback's probe passes.
+  // A cancel by hand or by the job's timeout comes after the red probe, so
+  // the job may read as failed or as cancelled. The page reads the
+  // rollback's own outcomes under `always()`, which holds either way:
+  // governor may be down until the rollback's probe passes.
   test('pages the operator when the run is cancelled after the rollback started and before its probe passed', () => {
     const page = steps.find(withId('page'));
-    assert.equal(page?.if, "${{ (failure() && (steps.rollback.outcome == 'failure' || steps.reprobe.outcome == 'failure')) || (cancelled() && steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && steps.reprobe.outcome != 'success') }}");
-    assert.deepEqual(after(runDeploy({ outcomes: { probe: 'failure', rollback: 'cancelled' } }).ran, 'probe'), ['rollback', 'page'], 'a run cancelled during the rollback\'s apply pages no one');
-    assert.deepEqual(after(runDeploy({ outcomes: { probe: 'failure', reprobe: 'cancelled' } }).ran, 'probe'), ['rollback', 'reprobe', 'page'], 'a run cancelled during the rollback\'s probe pages no one');
-    assert.deepEqual(after(runDeploy({ outcomes: { probe: 'failure', rollback: 'failure', page: 'cancelled' } }).ran, 'probe'), ['rollback', 'page']);
+    assert.equal(page?.if, "${{ always() && steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && steps.reprobe.outcome != 'success' }}");
+    for (const cancelKeepsFailure of [false, true]) {
+      const reading = cancelKeepsFailure ? 'the job still read as failed' : 'the job read as cancelled';
+      assert.deepEqual(after(runDeploy({ cancelKeepsFailure, outcomes: { probe: 'failure', rollback: 'cancelled' } }).ran, 'probe'), ['rollback', 'page'], `a run cancelled during the rollback's apply pages no one, with ${reading}`);
+      assert.deepEqual(after(runDeploy({ cancelKeepsFailure, outcomes: { probe: 'failure', reprobe: 'cancelled' } }).ran, 'probe'), ['rollback', 'reprobe', 'page'], `a run cancelled during the rollback's probe pages no one, with ${reading}`);
+      assert.deepEqual(after(runDeploy({ cancelKeepsFailure, outcomes: { probe: 'failure', rollback: 'failure', page: 'cancelled' } }).ran, 'probe'), ['rollback', 'page']);
+    }
   });
 
   test('a run cancelled before the rollback started pages no one', () => {
@@ -1301,11 +1304,16 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     assert.equal(runDeploy({ outcomes: { previous: 'cancelled' } }).ran.at(-1), 'previous');
   });
 
+  // `job.status` may read `failure` or `cancelled` after a cancel that
+  // follows the red probe, so the page reads the rollback's own outcomes: only a failed
+  // apply or probe says governor is down.
   test('the page says when the run was cancelled mid-rollback', () => {
     const page = steps.find(withId('page'));
-    assert.equal(page?.env?.JOB_STATUS, '${{ job.status }}');
+    assert.equal(page?.env?.ROLLBACK_OUTCOME, '${{ steps.rollback.outcome }}');
+    assert.equal(page?.env?.REPROBE_OUTCOME, '${{ steps.reprobe.outcome }}');
+    assert.equal(page?.env?.JOB_STATUS, undefined, 'the page reads job.status, which may say failure after a cancel');
     const run = page?.run ?? '';
-    assert.match(run, /if \[ "\$JOB_STATUS" = cancelled \]/);
+    assert.match(run, /if \[ "\$ROLLBACK_OUTCOME" = failure \] \|\| \[ "\$REPROBE_OUTCOME" = failure \]/);
     assert.match(run, /cancelled[^\n]*mid-rollback/i);
     assert.match(run, /--subject "\$SUBJECT"/);
     assert.match(run, /--message "\$MESSAGE"/);
