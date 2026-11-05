@@ -57,6 +57,17 @@ describe('exitCodeFor', () => {
     assert.equal(exitCodeFor({ kind: 'schedule', queued: ['acme/factory#7'], passedOver: [] } as never), 0);
   });
 
+  // A summons trust.task refused, sent on to the live session on its PR's
+  // head branch: a send that faulted is the operator's to read, as a
+  // message's is; no session on the branch, or a gone one, is not.
+  test('a refused summons whose send to the head branch\'s session faulted is a fault; one nobody held or a gone session refused is not', () => {
+    const dispatch = (messaged: { ok: boolean, refused: boolean, skipped: string | null }) => ({ kind: 'dispatch', dispatched: [], loginStored: false, messaged });
+    assert.equal(exitCodeFor(dispatch({ ok: true, refused: false, skipped: null })), 0);
+    assert.equal(exitCodeFor(dispatch({ ok: false, refused: false, skipped: 'no live session holds PR #42\'s head branch' })), 0);
+    assert.equal(exitCodeFor(dispatch({ ok: false, refused: true, skipped: null })), 0);
+    assert.equal(exitCodeFor(dispatch({ ok: false, refused: false, skipped: null })), 1);
+  });
+
   test('a message is the CLI\'s answer: 0 delivered, 1 refused', () => {
     assert.equal(exitCodeFor({ kind: 'message', ok: true, sessionUrl: 'https://claude.ai/code/session_01ABC', error: null, loginStored: false }), 0);
     assert.equal(exitCodeFor({ kind: 'message', ok: false, sessionUrl: null, error: 'archived', loginStored: false }), 1);

@@ -6582,6 +6582,111 @@ describe('run — a PR whose body names no session', () => {
     assert.ok(logged.some((l) => l.event === 'dispatch-message' && l.branch === BRANCH), JSON.stringify(logged));
   });
 
+  /**
+   * A summons on such a PR starts a fresh session, unless `trust.task`
+   * refuses the PR's author. Then the remark goes to the live session on
+   * its head branch, judged by `trust.relay`, as a remark that is not a
+   * summons does, and governor posts no refusal. With no live session
+   * there, the refusal comment is posted as before.
+   */
+  describe('a summons trust.task refuses', () => {
+    /** The factory's file with `trust` in place of its `pickup.by`, which a file may not set beside `trust.task`. */
+    const fileWith = (trust: Record<string, string[]>) => {
+      const file = JSON.parse(FACTORY_FILE);
+      delete file.pickup.by;
+      return JSON.stringify({ ...file, trust });
+    };
+    const ownerTask = fileWith({ task: ['OWNER'] });
+    const summonsOn = (writer = 'OWNER') => {
+      const routed = routeEvent({
+        event: 'issue_comment',
+        owners: ['acme'],
+        appId: APP_ID,
+        payload: {
+          action: 'created',
+          repository: { full_name: REPO },
+          issue: { ...prPayload, user: { login: 'pat', type: 'User' }, author_association: 'COLLABORATOR', pull_request: { url: 'p' } },
+          comment: { id: 92, body: '@claude why the new section?', html_url: `https://github.com/${REPO}/pull/${PR}#issuecomment-92`, user: { login: 'tdickinson', type: 'User' }, author_association: writer },
+        },
+      });
+      const found = routed.fires.map((f) => f.fire as { kind: string }).filter((f) => f.kind === 'dispatch');
+      assert.equal(found.length, 1, JSON.stringify(routed));
+      return found[0]!;
+    };
+    /** A harness whose reader reads the PR as unnamedReader does, and records its comments in the harness. */
+    const withFile = (file: string, sessions: unknown, over: Record<string, unknown> = {}, deps: Record<string, unknown> = {}) => {
+      const h = harness({ ...deps, sessions, configFile: async (repo: string) => (repo === REPO ? file : null) });
+      const reader = h.deps.reader as (...a: unknown[]) => Record<string, unknown>;
+      const unnamed = unnamedReader(over)();
+      h.deps.reader = ((...a: unknown[]) => ({ ...reader(...a), pull: unnamed.pull, issue: unnamed.issue, openPulls: unnamed.openPulls })) as never;
+      return h;
+    };
+
+    test('an owner\'s summons on a collaborator\'s PR reaches the live session on its head branch, and the PR gets no refusal', async () => {
+      const h = withFile(ownerTask, sessionsApi([local], onBranch).sessions);
+      await run(summonsOn(), h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.messages.map((m) => m.session), [LOCAL]);
+      assert.match(h.messages[0]!.text, /why the new section\?/);
+      assert.match(h.messages[0]!.text, /trust\.task/);
+      assert.ok(!h.messages[0]!.text.includes(UNATTENDED), 'the line for a fresh unattended session is not the branch owner\'s');
+      assert.deepEqual(h.comments, []);
+    });
+
+    test('with no live session on its head branch, the remark gets the trust.task refusal comment', async () => {
+      const h = withFile(ownerTask, sessionsApi([]).sessions);
+      await run(summonsOn(), h.deps as never);
+      assert.deepEqual(h.launches, []);
+      assert.deepEqual(h.messages, []);
+      const told = h.comments.filter((c) => c.issue === PR);
+      assert.equal(told.length, 1, JSON.stringify(h.comments));
+      assert.ok(told[0]!.body.includes(UNCOUNTED_READY_MARKER));
+      assert.match(told[0]!.body, /`trust\.task`/);
+    });
+
+    test('a writer trust.relay leaves out does not reach the session on the branch, and gets the refusal', async () => {
+      const file = fileWith({ task: ['OWNER'], relay: ['OWNER', 'BOT'] });
+      const h = withFile(file, sessionsApi([local], onBranch).sessions);
+      await run(summonsOn('MEMBER'), h.deps as never);
+      assert.deepEqual(h.messages, []);
+      assert.equal(h.comments.filter((c) => c.issue === PR).length, 1, JSON.stringify(h.comments));
+    });
+
+    test('with prMessages off, the remark does not reach the session on the branch, and gets the refusal', async () => {
+      const off = JSON.parse(ownerTask);
+      off.features = { ...off.features, prMessages: false };
+      const h = withFile(JSON.stringify(off), sessionsApi([local], onBranch).sessions);
+      await run(summonsOn(), h.deps as never);
+      assert.deepEqual(h.messages, []);
+      assert.equal(h.comments.filter((c) => c.issue === PR).length, 1, JSON.stringify(h.comments));
+    });
+
+    test('a send to the session on its head branch that throws after the CLI refreshed the login fails the turn with the login stored', async () => {
+      let refresh = (_t: string) => {};
+      const h = withFile(ownerTask, sessionsApi([local], onBranch).sessions, {}, {
+        message: async () => {
+          refresh(REFRESHED);
+          throw new Error('the message CLI could not be spawned');
+        },
+      });
+      refresh = h.setLoginOnDisk;
+      await assert.rejects(run(summonsOn(), h.deps as never), /could not be spawned/);
+      assert.deepEqual(h.stored, [SECRET_REFRESHED]);
+    });
+
+    test('on an issue, the refusal is posted and no head branch is looked for', async () => {
+      const looked: number[] = [];
+      const h = withFile(ownerTask, sessionsApi([local], onBranch).sessions, {
+        issue: async (n: number) => ({ number: n, body: '', pull: false }),
+        pull: async (n: number) => { looked.push(n); throw new Error('not a PR'); },
+      });
+      await run({ ...summonsOn(), on: 3 } as never, h.deps as never);
+      assert.deepEqual(looked, []);
+      assert.deepEqual(h.messages, []);
+      assert.equal(h.comments.filter((c) => c.issue === 3).length, 1, JSON.stringify(h.comments));
+    });
+  });
+
   test('a local owner\'s standing counts its other open PR by head branch, and a close does not ask it to sign off', async () => {
     const OTHER = 'claude/second-thing-9f1e2d';
     const holding = { cse_01LOCAL: { ...onBranch.cse_01LOCAL, session_context: { outcomes: [{ git_repository: { git_info: { repo: 'acme/factory', branches: [BRANCH, OTHER] } } }] } } };
