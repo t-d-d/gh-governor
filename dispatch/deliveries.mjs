@@ -34,7 +34,7 @@
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { instruction } from './prompts.mjs';
 import { commitSession } from './branch-run.mjs';
-import { relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
+import { markOwnerUnknown, ownerUnknownSince, relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /**
@@ -185,6 +185,14 @@ export const OUTPUT_TAIL = 2000;
 
 /** The name a session gets when its invocation names none. */
 export const DEFAULT_SESSION_NAME = 'dispatch';
+
+/**
+ * How long a takeover whose launch printed no session link holds its PR,
+ * from the time its owner-unknown line gives: a later remark's takeover
+ * starts nothing while it stands, since the session may be running on the
+ * PR's branch though the body names no new session.
+ */
+export const TAKEOVER_HOLD_MS = 2 * 60 * 60 * 1000;
 
 /** How many launch budgets one delivery's send and fallback launch share. */
 export const DELIVER_LAUNCHES = 2;
@@ -343,7 +351,8 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   answered at all, null when nothing was sent. `refused`: it answered the
  *   session archived. `fallback`: what a refusal with one did: forwarded to
  *   the session a takeover's PR body names now, skipped for a takeover of
- *   a PR that has closed, or launched (dispatched,
+ *   a PR that has closed or that an unconfirmed takeover holds, or
+ *   launched (dispatched,
  *   unconfirmed, failed). `relinked`: whether a takeover's session was
  *   written into the PR body's link, null where none was tried; false
  *   fails the turn, since the body still names the archived owner. `dropped`: whether a refusal with no
@@ -631,7 +640,10 @@ export const deliveries = (deps) => {
    * one record of a PR's session. A launch that printed no link, or a
    * rewrite GitHub refuses, logs at error and the caller fails the turn;
    * the next remark finds the archived owner in the body and takes the PR
-   * over again.
+   * over again, unless the launch printed no link: then the body gets a
+   * line saying so ({@link markOwnerUnknown}), and that holds the PR for
+   * {@link TAKEOVER_HOLD_MS}. A line that cannot be written is logged at
+   * error, as the failed relink is.
    *
    * @param {number} pr
    * @param {string | null} sessionUrl
@@ -640,7 +652,16 @@ export const deliveries = (deps) => {
   const relink = async (pr, sessionUrl) => {
     const reason = 'the PR body still names the archived owner, so its next remark starts another session';
     if (sessionUrl === null) {
-      deps.log('dispatch-relink', { level: 'error', pr, sessionUrl, error: 'the launcher printed no session link', reason });
+      deps.log('dispatch-relink', { level: 'error', pr, sessionUrl, error: 'the launcher printed no session link', reason: 'the PR body still names the archived owner, so its next remark after the owner-unknown line expires starts another session' });
+      const at = new Date(deps.now()).toISOString();
+      try {
+        const github = await deps.reader();
+        const { body } = await github.pull(pr);
+        await github.updatePull(pr, { body: markOwnerUnknown(body, at) });
+        deps.log('dispatch-owner-unknown', { pr, at });
+      } catch (error) {
+        deps.log('dispatch-owner-unknown', { level: 'error', pr, at, error: messageOf(error), reason });
+      }
       return false;
     }
     try {
@@ -710,6 +731,8 @@ export const deliveries = (deps) => {
       const gone = [session];
       /** Whether the PR has closed, which a takeover has nothing to take over of. */
       let closed = false;
+      /** Why an unconfirmed takeover holds the PR, where one does: nothing starts beside it. @type {string | null} */
+      let held = null;
       // A takeover reads the PR now, not when the remark arrived. One that
       // has closed or merged since has nothing to take over: a remark posted
       // while the PR was open can be delivered after it merged. A remark
@@ -739,6 +762,19 @@ export const deliveries = (deps) => {
           else if (!refusedBy(handed)) fallback = { outcome: 'failed', sessionUrl: null };
           else gone.push(owner);
         }
+        // A takeover before this one launched and printed no link: its
+        // session may be running on the head branch, and the body still
+        // names the archived owner, with a line saying when. For two hours
+        // from then nothing starts beside it, though the session on the
+        // branch, found below, still takes the message. A line with a time
+        // still to come is none governor wrote, and holds nothing.
+        if (fallback === null) {
+          const since = ownerUnknownSince(relayedBody(pr, deps.relay));
+          const at = since === null ? Number.NaN : Date.parse(since);
+          if (at <= deps.now() && deps.now() < at + TAKEOVER_HOLD_MS) {
+            held = `PR #${issue}'s body says a takeover at ${since} launched and printed no session link, so its session may be running; nothing starts beside it until ${new Date(at + TAKEOVER_HOLD_MS).toISOString()}`;
+          }
+        }
         if (fallback === null && pr.defaultBranch !== '' && pr.head !== pr.defaultBranch) branch = pr.head;
       }
       // Step 2 of the owner lookup: the live session on the PR's head
@@ -750,6 +786,10 @@ export const deliveries = (deps) => {
           fallback = { outcome: passed.outcome, sessionUrl: passed.sessionUrl };
           if (passed.error !== undefined) reason = passed.error;
         }
+      }
+      if (fallback === null && held !== null) {
+        fallback = { outcome: 'skipped', sessionUrl: null };
+        reason = held;
       }
       if (fallback === null) {
         const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL, ...(branch === '' ? {} : { branch }) }, until);

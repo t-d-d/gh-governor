@@ -22,7 +22,7 @@ import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, cliEnv,
 import { DEFAULT_SESSION_NAME, DISPATCHER_LABEL, GITHUB_SOURCE, fromDispatcher, hookLabel, standingLine } from '../dispatch/deliveries.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { ownerSpecMessage, specPrompt } from '../dispatch/unblocked.mjs';
-import { sessionNamedIn, subscribeLine } from '../dispatch/webhook/subscribe.mjs';
+import { ownerUnknownSince, sessionNamedIn, subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { promptFor, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { SIGN_POSTS, UNATTENDED, dispatchMarker, parseFire } from '../dispatch/webhook/fire.mjs';
@@ -4423,6 +4423,36 @@ describe('run — a message with a fallback', () => {
     assert.equal((result as { relinked: unknown }).relinked, false);
     assert.ok(logged.some((l) => l.event === 'dispatch-relink' && l.level === 'error'), JSON.stringify(logged));
     assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  // A takeover whose launch printed no link leaves the body naming the
+  // archived owner. The line it adds to the body holds the PR, so the next
+  // remark inside two hours starts no second session beside the first.
+  test('a remark that follows an unconfirmed takeover with no link starts no second session, and the turn exits 0', async () => {
+    const base = harness();
+    let body = PR_BODY;
+    const launches: unknown[] = [];
+    const { deps, logged } = harness({
+      message: async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }),
+      launch: async (launch: unknown) => { launches.push(launch); return { status: 3, output: 'timed out' }; },
+      reader: () => ({
+        ...base.deps.reader(''),
+        pull: async (n: number) => ({ number: n, body, head: 'claude/branch-724', defaultBranch: 'main', open: true, association: 'OWNER' }),
+        updatePull: async (_n: number, change: { body: string }) => { body = change.body; },
+      }),
+    });
+    const fire = { kind: 'message', session: 'https://claude.ai/code/session_01OLD', text: 'hi', fallback: { ...fallback, issue: 724 } };
+    const first = await run(fire, deps as never);
+    assert.equal(launches.length, 1);
+    assert.deepEqual((first as { fallback: unknown }).fallback, { outcome: 'unconfirmed', sessionUrl: null });
+    assert.equal(exitCodeFor(first as never), 1, 'the operator is told by the exit code');
+    assert.equal(ownerUnknownSince(body), new Date(NOW).toISOString());
+    assert.equal(sessionNamedIn(body), 'https://claude.ai/code/session_01OLD', 'the body still routes to the archived owner');
+    const second = await run(fire, deps as never);
+    assert.equal(launches.length, 1, 'no second session');
+    assert.deepEqual((second as { fallback: unknown }).fallback, { outcome: 'skipped', sessionUrl: null });
+    assert.ok(logged.some((l) => l.event === 'dispatch-message-fallback' && l.outcome === 'skipped' && /no session link/.test(String(l.reason))), JSON.stringify(logged));
+    assert.equal(exitCodeFor(second as never), 0);
   });
 
   // A remark's fallback takes the PR over, so its session starts on the PR's
