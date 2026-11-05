@@ -141,7 +141,7 @@ describe('readConfig', () => {
     const read = on({ checklist: 'Pass a PR that says what it changes.' });
     assert.ok(read.ok, JSON.stringify(read));
     assert.deepEqual(read.config.review, {
-      checklist: 'Pass a PR that says what it changes.', humanOnly: [], tickets: { require: [], forbid: [] }, quote: [], decides: [], dependabot: [], requireChecks: [], merge: true,
+      checklist: 'Pass a PR that says what it changes.', humanOnly: [], tickets: { require: [], forbid: [] }, quote: [], decides: [], dependabot: [], requireChecks: [], waitForCi: true, merge: true,
     });
     const full = on({
       checklist: { file: 'docs/review.md' },
@@ -150,6 +150,7 @@ describe('readConfig', () => {
       quote: ['docs/rules/*.md', '!docs/rules/README.md'],
       dependabot: ['/package-lock.json'],
       requireChecks: ['codeql', 'ci/circleci'],
+      waitForCi: false,
       merge: false,
     });
     assert.ok(full.ok, JSON.stringify(full));
@@ -158,6 +159,7 @@ describe('readConfig', () => {
     assert.deepEqual(full.config.review?.tickets.require, [{ labels: ['mode: afk', 'mode: hitl'], unless: [] }]);
     assert.equal(full.config.review?.merge, false);
     assert.deepEqual(full.config.review?.requireChecks, ['codeql', 'ci/circleci']);
+    assert.equal(full.config.review?.waitForCi, false);
     const fault = (review: unknown) => {
       const refused = on(review);
       assert.ok(!refused.ok, JSON.stringify(review));
