@@ -40,7 +40,9 @@
  *   workflow at the head counts too, as a required check does: a repo whose
  *   plan cannot require a check still holds a pass for its CI. A repo whose
  *   CI runs only after the merge sets `review.waitForCi` false, and the
- *   turn then passes no `ci`.
+ *   turn then passes no `ci`. A check's end at a head whose last review
+ *   failed test 8 on the same red checks says nothing again, so another
+ *   App answering the `governor` check cannot loop with it.
  * - A Dependabot PR is answered in code by the repo's Dependabot list
  *   (`dependabotAnswer`), not the checklist, and passes like any.
  *   Its conflict is no comment: Dependabot rebases its own PRs, and the
@@ -395,8 +397,10 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // person with write access can edit governor's comment.
     const verdict = await verdicts.read(number);
     // A red required check's or CI run's fail is read again: a re-run can turn it green on the same head.
-    if (verdict !== null && verdict.headSha === pull.headSha && verdict.bodySha === bodySha && !verdict.again) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
-    // The comment is read only to edit it in place, so a PR skipped above
+    const sameHead = verdict !== null && verdict.headSha === pull.headSha && verdict.bodySha === bodySha;
+    if (sameHead && !verdict.again) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
+    // The comment is read only to edit it in place, and to tell which red
+    // checks a test-8 fail the table holds named, so a PR skipped above
     // pages through no thread.
     const last = lastReview(await reader.allComments(number));
     // The model's pass at an earlier head, offered for reuse: the checklist
@@ -426,6 +430,17 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
       return skip(`#${number}'s ${what} ${many ? 'have' : 'has'} not finished on ${pull.headSha.slice(0, 12)}: its end reviews it`);
     }
     const redCi = cis === 'red' ? /** @type {string} */ (ci) : null;
+    // A check's end at a head whose last review failed test 8 on these same
+    // red checks says nothing again: another App answering the `governor`
+    // check with a check of its own would otherwise loop. A re-run that
+    // changes which checks are red, or turns them green, is still read, and
+    // so is one where governor's own check there is in progress: a review
+    // that waited on the re-run would otherwise leave it waiting.
+    const sameRed = checksFailure(checks.red, redCi);
+    if (byCommit && sameRed !== null && sameHead && verdict.again && last !== null && last.text === commentText(sameRed, { conflict: false })) {
+      const waiting = (await reader.checksAt(pull.headSha)).some((c) => c.name === CHECK && c.state === 'pending');
+      if (!waiting) return skip(`#${number} failed test 8 at ${pull.headSha.slice(0, 12)} on the same red checks: a check's end there changes nothing`);
+    }
 
     // A required check would wait on a PR that gets no check at all, so it
     // fails out loud, and the owner can bypass it.
