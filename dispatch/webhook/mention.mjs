@@ -574,6 +574,76 @@ const issueEventPrompt = ({ action, issue, label, sender }, target) => {
 };
 
 /**
+ * What a ticket's spec owner is told of a body edit. The delivery names only
+ * a login, and sessions edit as the operator's, so governor cannot tell the
+ * spec owner's own edit from a person's.
+ */
+export const EDIT_SPEC_OWNER = 'The edit names only a login, and sessions edit as the operator\'s, so it may be your own. Read the body again before you next edit it, so you do not write over a person\'s change from an old copy.';
+
+/** What a ticket's builder is told of a body edit. */
+export const EDIT_BUILDER = 'Its spec changed. Build against the body as it now reads, and record in your PR description where your work differs from it.';
+
+/**
+ * A ticket's body edited: what happened, before what each role is told.
+ *
+ * @param {any} payload
+ */
+const bodyEditPrompt = ({ issue, sender }) => [
+  `The body of issue #${issue?.number} was edited.`,
+  '',
+  `Issue #${issue?.number}: ${oneLine(issue?.title)} (${issue?.html_url}), edited by ${sender?.login}`,
+].join('\n');
+
+/**
+ * Whether an `issues` delivery is a body edit that reaches a ticket's
+ * roles: the body changed, and not by a bot. A bot's body edit is governor's
+ * own (a spec session's link written, a wait line rewritten), and the
+ * delivery carries no App id to tell another bot's from it.
+ *
+ * @param {any} payload
+ */
+const bodyEdited = (payload) => payload?.action === 'edited'
+  && payload?.changes?.body !== undefined
+  && payload?.sender?.type !== 'Bot';
+
+/**
+ * A ticket's body edited: the spec owner's message, told the edit may be
+ * its own ({@link EDIT_SPEC_OWNER}). On a claimed ticket the ticket fire
+ * ({@link ticketFires}) replaces it and reaches the builders too. Only the
+ * spec owner hears it here: a subscribe line names no body edits.
+ *
+ * Judged by the issue's author, under `relay`.
+ *
+ * @param {any} payload
+ * @param {{ relay?: readonly string[], bodies?: readonly string[], appId?: number | undefined }} [trust]
+ * @returns {Fanout}
+ */
+export const bodyEditFires = (payload, { relay = RELAY, bodies = relay, appId } = {}) => {
+  const issue = payload?.issue;
+  if (!bodyEdited(payload) || issue?.pull_request) return { fires: [], reason: '' };
+  const onAuthor = authorOf(issue, appId);
+  if (!lets(relay, onAuthor)) return { fires: [], reason: `issue #${issue?.number} body edited: no session hears of it, as it is ${unrelayed(onAuthor, 'opened')}` };
+  // The spec owner the body names, read only where `bodies` lets its author in.
+  const ticketBody = relayedBody({ body: issue?.body, ...onAuthor }, bodies);
+  const owner = sessionNamedIn(ticketBody);
+  const reason = `issue #${issue?.number} body edited`;
+  if (owner === null) return { fires: [], reason: `${reason}: its body names no spec owner` };
+  // `comments` only drops an archived spec owner from the body's subscribe
+  // lines, as a comment's message does.
+  const fire = messageFire({
+    prompt: () => `${bodyEditPrompt(payload)}\n\n${EDIT_SPEC_OWNER}`,
+    subscriber: { session: owner, owner: true },
+    on: issue,
+    event: 'comments',
+    fallback: false,
+    issue: true,
+    authors: kindsOf([onAuthor]),
+    reason,
+  });
+  return { fires: [fire], reason: fire.reason };
+};
+
+/**
  * The three events that carry something written: what it is on (`on`, and
  * whether that is a pull request, `pr`), the text and its author (`by`), the
  * one action that counts (`wanted`, named as `what`), the subscription
@@ -840,8 +910,9 @@ export const pullRequestFires = (payload, { relay = RELAY, bodies = relay, appId
  */
 
 /**
- * The ticket fire a comment on an issue, or an issue closed or reopened,
- * may queue (dispatch/ticket-fire.mjs): one fire for the spec owner and
+ * The ticket fire a comment on an issue, an issue closed or reopened, or
+ * its body edited ({@link bodyEdited}), may queue
+ * (dispatch/ticket-fire.mjs): one fire for the spec owner and
  * the builders together, which the task sends to each role, told which it
  * holds. The receiver cannot find the builders, so it queues this beside
  * the spec owner's own message, and settles which goes once it knows the
@@ -866,7 +937,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
   const ticketBody = relayedBody({ body: issue?.body, ...onAuthor }, bodies);
   const owner = sessionNamedIn(ticketBody);
   const state = issue?.state === 'closed' ? 'closed' : 'open';
-  /** @type {{ text: (limit: number) => string, event: 'comments' | 'close', poster: string | null, closing: boolean, authors: string[], ownerOnly: boolean, what: string }} */
+  /** @type {{ text: (limit: number) => string, event: 'comments' | 'close' | 'edit', poster: string | null, closing: boolean, authors: string[], ownerOnly: boolean, what: string }} */
   let about;
   if (event === 'issue_comment') {
     const comment = payload?.comment;
@@ -895,6 +966,17 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
       authors: kindsOf([onAuthor]),
       ownerOnly: false,
       what: `issue #${issue.number} ${payload.action}`,
+    };
+  } else if (event === 'issues' && bodyEdited(payload)) {
+    if (!lets(relay, onAuthor)) return none;
+    about = {
+      text: () => bodyEditPrompt(payload),
+      event: 'edit',
+      poster: null,
+      closing: false,
+      authors: kindsOf([onAuthor]),
+      ownerOnly: false,
+      what: `issue #${issue.number} body edited`,
     };
   } else {
     return none;
