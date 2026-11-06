@@ -581,6 +581,14 @@ describe('fitness: a ticket\'s roles are found one way (dispatcher-repos.md)', (
     assert.equal([...source('dispatch/roles.mjs').matchAll(/\bbuildersOf\(/g)].length, 1);
   });
 
+  test('one closing-keyword grammar, under dispatch/webhook/, serves the receiver and closedBy', () => {
+    const grammars = files.filter((f) => /close\[sd\]\?/.test(source(f)));
+    assert.deepEqual(grammars, ['dispatch/webhook/closing.mjs']);
+    for (const user of ['dispatch/pr-body.mjs', 'dispatch/webhook/mention.mjs']) {
+      assert.match(source(user), /from '\.\/(?:webhook\/)?closing\.mjs'/, user);
+    }
+  });
+
   test('the "Roles on #N" lines are written in one place', () => {
     const writers = files.filter((f) => /Roles on #\$\{/.test(source(f)) || /its builder is \$\{/.test(source(f)));
     assert.deepEqual(writers, ['dispatch/roles.mjs']);

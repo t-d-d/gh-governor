@@ -48,7 +48,7 @@ COPY dispatch/lane.mjs dispatch/turn.mjs dispatch/launcher.mjs dispatch/deliveri
 # fire needs (switches.mjs), the bodies the turn reads the way the
 # receiver does, and the error text the task logs the way the receiver does
 # (error-text.mjs).
-COPY dispatch/webhook/error-text.mjs dispatch/webhook/fire.mjs dispatch/webhook/mention.mjs dispatch/webhook/subscribe.mjs dispatch/webhook/review-comment.mjs dispatch/webhook/deployed-comment.mjs dispatch/webhook/hook-table.mjs dispatch/webhook/switches.mjs ./dispatch/webhook/
+COPY dispatch/webhook/error-text.mjs dispatch/webhook/fire.mjs dispatch/webhook/mention.mjs dispatch/webhook/subscribe.mjs dispatch/webhook/review-comment.mjs dispatch/webhook/deployed-comment.mjs dispatch/webhook/hook-table.mjs dispatch/webhook/switches.mjs dispatch/webhook/closing.mjs ./dispatch/webhook/
 # The markdown parser subscribe.mjs reads quotes with, and the notices of the
 # three packages it carries (dispatch/webhook/vendor/README.md).
 COPY dispatch/webhook/vendor/commonmark.cjs dispatch/webhook/vendor/LICENSE.commonmark dispatch/webhook/vendor/LICENSE.entities dispatch/webhook/vendor/LICENSE.mdurl ./dispatch/webhook/vendor/

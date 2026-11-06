@@ -76,6 +76,7 @@
  */
 
 import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
+import { closingNumbers } from './closing.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
 import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
 
@@ -947,18 +948,6 @@ export const pullRequestFires = (payload, { relay = RELAY, bodies = relay, appId
  */
 
 /**
- * Each issue number a body may close, roughly: a closing keyword and a
- * reference, `#N`, `owner/repo#N` or an issue's URL, after a colon or a
- * space, as `closedBy` (dispatch/pr-body.mjs) reads them. The receiver
- * cannot import the task's grammar, so it reads every repository's
- * references, too many, and never fewer: the task reads the body again.
- */
-const CLOSING_REF = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?:\s*:\s*|\s+)(?:https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/|(?:[\w.-]+\/[\w.-]+)?#)(\d+)\b/gi;
-
-/** @param {unknown} body @returns {Set<string>} */
-const roughlyCloses = (body) => new Set([...String(body ?? '').matchAll(CLOSING_REF)].map((m) => String(m[1])));
-
-/**
  * The `closingPr` fire a PR opened, reopened or edited may queue: its body
  * may now close a ticket, and where a session other than the ticket's
  * builder owns it, the task names that session the ticket's builder in a
@@ -977,12 +966,14 @@ export const closingPrFires = (payload, { relay = RELAY, appId } = {}) => {
   if (action !== 'opened' && action !== 'reopened' && action !== 'edited') return none;
   if (!Number.isInteger(pr?.number) || pr.number <= 0 || pr?.state !== 'open') return none;
   if (!lets(relay, authorOf(pr, appId))) return none;
-  const closes = roughlyCloses(pr?.body);
+  // By the one closing grammar closedBy reads too, every repository's
+  // references counted: too many, never fewer, as the task reads the body again.
+  const closes = closingNumbers(pr?.body);
   if (closes.size === 0) return none;
   if (action === 'edited') {
     const from = payload?.changes?.body?.from;
     if (typeof from !== 'string') return none;
-    const before = roughlyCloses(from);
+    const before = closingNumbers(from);
     if ([...closes].every((n) => before.has(n))) return none;
   }
   const reason = `#${pr.number} ${action}, its body closing ${[...closes].map((n) => `#${n}`).join(', ')}: a change of builder for the task to judge`;

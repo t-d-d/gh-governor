@@ -164,7 +164,8 @@ export const planClosingPr = async (invocation, ctx) => {
     return answer();
   }
   const owners = ctx.delivery();
-  const { session } = await owners.ownerOf(pr);
+  // The PR as read above: the owner is found without reading it again.
+  const { session } = await owners.ownerOf(pr, pull);
   if (session === null) {
     ctx.log('dispatch-builder', { repo, pr, outcome: 'nothing announced', reason: 'no session holds it' });
     return answer();

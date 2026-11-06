@@ -38,7 +38,7 @@ import { markOwnerUnknown, ownerUnknownSince, relayedBody, relinkSession, sameSe
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
-import { TOLD, tellBuilderChange } from './told.mjs';
+import { tellBuilderChange } from './told.mjs';
 import { rolesOf } from './roles.mjs';
 
 /**
@@ -257,7 +257,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   pull: (n: number) => Promise<{ number: number, body: string, head: string, defaultBranch: string, open: boolean } & import('./webhook/fire.mjs').Author>,
  *   updatePull: (n: number, change: { body: string }) => Promise<void>,
  *   issue: (n: number) => Promise<{ number: number, body: string, pull: boolean }>,
- *   ticket: (n: number) => Promise<{ title: string, body: string, author?: string, association?: string, app?: boolean }>,
+ *   ticket: (n: number) => Promise<{ title: string, body: string, pull?: boolean, author?: string, association?: string, app?: boolean }>,
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
  *   openPulls: () => Promise<import('../scripts/lib/github-app.mjs').OpenPullRow[]>,
  *   openNaming: (session: string, relay: readonly string[], options?: { claim?: string }) => Promise<OpenRow[]>,
@@ -371,13 +371,16 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  * @typedef {{
  *   deliver: (to: Recipient, text: string, options: DeliverOptions) => Promise<Delivery>,
  *   onBranch: (branch: string) => Promise<string | null>,
- *   ownerOf: (pr: number) => Promise<{ session: string | null, branch: string, linked: boolean }>,
+ *   ownerOf: (pr: number, read?: PullRow) => Promise<{ session: string | null, branch: string, linked: boolean }>,
  * }} Deliveries
  *   `onBranch`: the most recently updated live session holding a branch,
  *   local or cloud. `ownerOf`: PR `pr`'s owner as its body and branch say
  *   now, sending nothing: the session the body links (`linked`), whose
  *   liveness only a send learns, else the session on its head branch, or
- *   null. A read that fails throws.
+ *   null. `read`: the PR as the caller just read it, so it is not read
+ *   again. A read that fails throws.
+ *
+ * @typedef {Awaited<ReturnType<DeliveryReader['pull']>>} PullRow
  */
 
 /**
@@ -509,8 +512,8 @@ export const deliveries = (deps) => {
   };
 
   /** @type {Deliveries['ownerOf']} */
-  const ownerOf = async (pr) => {
-    const row = await (await deps.reader()).pull(pr);
+  const ownerOf = async (pr, read) => {
+    const row = read ?? await (await deps.reader()).pull(pr);
     const { head } = row;
     const named = sessionNamedIn(relayedBody(row, deps.relay));
     if (named !== null) return { session: named, branch: head, linked: true };
@@ -553,12 +556,15 @@ export const deliveries = (deps) => {
 
   /**
    * Post governor's dispatch comment, naming the PR's new owner, on each
-   * ticket the PR's body closes: a takeover moves the builder role with the
-   * PR. The comment is a record for people, which the relay sends to
-   * nobody, so this turn then tells the ticket's spec owner of its new
-   * builder itself (dispatch/told.mjs). The owner it replaced refused as
-   * archived, so it displaces no live builder. A comment that fails is
-   * logged at warn: no lookup depends on it, and nobody is told.
+   * issue the PR's body closes, open or closed alike: a takeover moves the
+   * builder role with the PR, and a PR's owner builds every issue it closes
+   * (dispatch/builders.mjs). Each number is read first, to tell an issue
+   * from a PR, which gets no comment. The comment is a record for people,
+   * which the relay sends to nobody, so this turn then tells the ticket's
+   * spec owner of its new builder itself (dispatch/told.mjs). The owner it
+   * replaced refused as archived, so it displaces no live builder. A read
+   * or a comment that fails is logged at warn: no lookup depends on the
+   * comment, and nobody is told.
    *
    * @param {number} pr
    * @param {string} body
@@ -567,20 +573,20 @@ export const deliveries = (deps) => {
   const announce = async (pr, body, sessionUrl) => {
     const at = new Date(deps.now()).toISOString();
     for (const issue of closedBy(body, deps.repo)) {
-      try {
-        await (await deps.reader()).comment(issue, dispatchMarker({ at, sessionUrl }));
-        deps.log('dispatch-builder', { pr, issue, session: sessionUrl, outcome: 'announced the PR\'s new owner as the ticket\'s builder' });
-      } catch (error) {
-        deps.log('dispatch-builder', { level: 'warn', pr, issue, session: sessionUrl, error: messageOf(error), reason: 'the ticket names no new builder, and its spec owner is not told' });
-        continue;
-      }
       /** @type {{ title: string, owner: string | null }} */
       let read;
       try {
-        const row = await (await deps.reader()).ticket(issue);
+        const github = await deps.reader();
+        const row = await github.ticket(issue);
+        if (row.pull === true) {
+          deps.log('dispatch-builder', { pr, issue, session: sessionUrl, outcome: 'nothing announced', reason: 'the number is a PR, not an issue' });
+          continue;
+        }
         read = { title: row.title, owner: (await rolesOf({ issue, relay: deps.relay, ticket: row })).owner };
+        await github.comment(issue, dispatchMarker({ at, sessionUrl }));
+        deps.log('dispatch-builder', { pr, issue, session: sessionUrl, outcome: 'announced the PR\'s new owner as the ticket\'s builder' });
       } catch (error) {
-        deps.log(TOLD, { repo: deps.repo, issue, change: 'dispatched', level: 'error', outcome: 'nobody told', error: messageOf(error), reason: 'the ticket could not be read for its spec owner; the comment stands' });
+        deps.log('dispatch-builder', { level: 'warn', pr, issue, session: sessionUrl, error: messageOf(error), reason: 'the ticket names no new builder, and its spec owner is not told' });
         continue;
       }
       await tellBuilderChange({

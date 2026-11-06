@@ -11,6 +11,7 @@
 
 import { createHash } from 'node:crypto';
 import { REVIEW_MARKER } from './webhook/review-comment.mjs';
+import { CLOSING } from './webhook/closing.mjs';
 
 /**
  * @typedef {import('../scripts/lib/github-app.mjs').ThreadRow} ThreadRow
@@ -129,7 +130,6 @@ export const lastReview = (thread) => {
   return null;
 };
 
-const CLOSING = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?:\s*:\s*|\s+)(?:https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/|([\w.-]+\/[\w.-]+)?#)(\d+)\b/gi;
 /** What may sit before a top line's first reference: a list marker. */
 const LIST_MARKER = /^[ \t]*(?:[-*+][ \t]+)?$/;
 /** What may sit between two references of one line, and after the last. */
