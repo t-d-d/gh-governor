@@ -282,9 +282,11 @@ describe('planTicket: a body edit that moved the owner link, under sessionRules'
   test('the notice goes to the old owner and the builder, not to the editor', async () => {
     const { ctx, sent } = context();
     await planTicket(editFire(), ctx);
-    assert.deepEqual(to(sent).slice(0, 2), [OWNER, BUILDER]);
-    assert.ok(!sent.slice(0, 2).some((s) => s.session === EDITOR));
+    // #624: the old owner first, then the editor's correction, then the builder.
+    assert.deepEqual(to(sent), [OWNER, EDITOR, BUILDER]);
+    assert.equal(sent[1]!.text, correctionText(7, 'edit-owned', OWNER), 'the editor hears only its correction, not the notice');
     assert.match(sent[0]!.text, /body of issue #7 was edited/);
+    assert.match(sent[2]!.text, /body of issue #7 was edited/);
   });
 
   test('a live owner keeps its issue: its link is written back, the rest of the edit stays, and the editor is told once', async () => {
@@ -313,8 +315,8 @@ describe('planTicket: a body edit that moved the owner link, under sessionRules'
     const unsigned = context();
     await planTicket(editFire({ moved: { old: 'unsigned' } }), unsigned.ctx);
     assert.deepEqual(unsigned.writes, []);
-    assert.deepEqual(to(unsigned.sent), [BUILDER, EDITOR]);
-    assert.equal(unsigned.sent[1]!.text, takeText(7, 'unsigned'));
+    assert.deepEqual(to(unsigned.sent), [EDITOR, BUILDER]);
+    assert.equal(unsigned.sent[0]!.text, takeText(7, 'unsigned'));
   });
 
   test('a take is no correction: a second take is confirmed again', async () => {
@@ -403,6 +405,47 @@ describe('planTicket: a body edit that moved the owner link, under sessionRules'
     const { ctx } = context({ fails: [EDITOR] });
     const plan = await planTicket(editFire({ labels: ['mode: afk'] }), ctx) as any;
     assert.equal(exitCodeFor(plan.answer), 1);
+  });
+
+  // #624: the builders are told once the take is settled, naming the right spec owner.
+  const rolesLine = (spec: string) => `Roles on #7: its spec owner is ${spec}; its builder is ${BUILDER}.`;
+  const toBuilder = (sent: Sent[]) => sent.filter((s) => s.session === BUILDER);
+
+  test('a take on a claimed ticket names the editor as the spec owner in the builder\'s roles line, sent once the take is settled', async () => {
+    const gone = context({ archived: [OWNER] });
+    await planTicket(editFire(), gone.ctx);
+    assert.deepEqual(to(gone.sent), [OWNER, EDITOR, BUILDER]);
+    assert.equal(toBuilder(gone.sent).length, 1);
+    assert.ok(toBuilder(gone.sent)[0]!.text.includes(rolesLine(EDITOR)), toBuilder(gone.sent)[0]!.text);
+    const unsigned = context();
+    await planTicket(editFire({ moved: { old: 'unsigned' } }), unsigned.ctx);
+    assert.deepEqual(to(unsigned.sent), [EDITOR, BUILDER]);
+    assert.ok(toBuilder(unsigned.sent)[0]!.text.includes(rolesLine(EDITOR)), toBuilder(unsigned.sent)[0]!.text);
+  });
+
+  test('an edit that is not a take names the old owner in the builder\'s roles line', async () => {
+    const live = context();
+    await planTicket(editFire(), live.ctx);
+    assert.deepEqual(to(live.sent), [OWNER, EDITOR, BUILDER]);
+    assert.ok(toBuilder(live.sent)[0]!.text.includes(rolesLine(OWNER)), toBuilder(live.sent)[0]!.text);
+  });
+
+  test('a settle that fails still reaches the builder, naming the old owner', async () => {
+    for (const over of [{ readFails: true }, { writeFails: true }, { capped: [OWNER] }]) {
+      const { ctx, sent } = context(over);
+      await planTicket(editFire(), ctx);
+      assert.equal(toBuilder(sent).length, 1, JSON.stringify(over));
+      assert.ok(toBuilder(sent)[0]!.text.includes(rolesLine(OWNER)), JSON.stringify(over));
+    }
+  });
+
+  test('a send to a builder, or to the old owner, that faults still fails the turn', async () => {
+    for (const fails of [[BUILDER], [OWNER]]) {
+      const { ctx, sent } = context({ archived: [OWNER].filter((s) => !fails.includes(s)), fails });
+      const plan = await planTicket(editFire(), ctx) as any;
+      assert.equal(exitCodeFor(plan.answer), 1, fails[0]);
+      assert.equal(toBuilder(sent).length, 1, fails[0]);
+    }
   });
 
   test('with sessionRules off, the edit reaches the roles as today: the new owner, told it may be its own, and the builder', async () => {
