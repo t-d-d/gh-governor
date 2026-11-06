@@ -93,6 +93,7 @@ describe('promptFor: the check before building', () => {
   test('tells the session never to edit the ticket body, and to record a difference in a comment and the PR description', () => {
     const prompt = promptFor(700, 'T', 'o/r', CLAIM);
     assert.match(prompt, /Never edit #700's body/);
+    assert.match(prompt, /its owner, the session whose link ends it, or else whoever wrote it/);
     assert.match(prompt, /say so in a comment on #700 and in your PR description/);
     assert.match(prompt, /build against what the code needs/);
   });

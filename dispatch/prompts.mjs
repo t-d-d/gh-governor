@@ -41,7 +41,7 @@ export const PROMPTS = Object.freeze({
       'Implement GitHub issue #{issue} in {repo} through to a reviewable PR.',
       'The dispatcher claimed #{issue} for this session: it is `{claim}` for you, so proceed on it.',
       'Before you build, read #{issue} against the code. If the code already does what it asks, or the work is far larger than the ticket reads, comment on #{issue} saying which and what you found, and stop without building. Leave `{claim}` on #{issue}, so pickup does not start it again and a person decides.',
-      "Never edit #{issue}'s body: the session whose link ends it owns the spec. Where the spec looks wrong or out of date, say so in a comment on #{issue} and in your PR description, and build against what the code needs.",
+      "Never edit #{issue}'s body: its spec belongs to its owner, the session whose link ends it, or else whoever wrote it. Where the spec looks wrong or out of date, say so in a comment on #{issue} and in your PR description, and build against what the code needs.",
       'Unattended session: push and raise the PR without asking, `Closes #{issue}`.',
     ].join('\n'),
     fills: ['issue', 'repo', 'claim'],
