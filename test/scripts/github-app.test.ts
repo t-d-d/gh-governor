@@ -881,6 +881,20 @@ describe('githubReader', () => {
     assert.deepEqual((await reader.issuesOpenedSince(SINCE)).map((i) => i.number), [6, 7, 8, 9], 'with no list, every issue');
   });
 
+  test('given a trust list, issuesOpenedSince and issuesClosedSince let in an issue governor\'s App filed, as the receiver does, and no other App\'s', async () => {
+    const rows = [
+      { number: 9, title: 'Another App\'s', created_at: '2026-10-22T00:00:00Z', closed_at: '2026-10-22T00:00:00Z', author_association: 'NONE', user: { login: 'other-app[bot]', type: 'Bot' }, performed_via_github_app: { id: 1 } },
+      { number: 8, title: 'Governor\'s own', created_at: '2026-10-21T00:00:00Z', closed_at: '2026-10-21T00:00:00Z', author_association: 'NONE', user: { login: 'governor-app[bot]', type: 'Bot' }, performed_via_github_app: { id: 77 } },
+    ];
+    const { fetch } = fakeFetch({ 'https://api.github.com/repos/acme/factory/issues': rows });
+    const by = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+    const reader = githubReader({ token: 't', repo: 'acme/factory', appId: 77, fetch });
+    assert.deepEqual((await reader.issuesOpenedSince(SINCE, by)).map((i) => i.number), [8]);
+    assert.deepEqual((await reader.issuesClosedSince(SINCE, by)).map((i) => i.number), [8]);
+    const unnamed = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual((await unnamed.issuesOpenedSince(SINCE, by)).map((i) => i.number), [], 'a reader with no App id owns no issue');
+  });
+
   test('branchHead reads the commit a branch is at', async () => {
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/git/ref/heads/main': { ref: 'refs/heads/main', object: { sha: 'a'.repeat(40), type: 'commit' } },
