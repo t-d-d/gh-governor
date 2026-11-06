@@ -158,7 +158,8 @@ spends the one claude.ai login.
   before, and the task reads nothing more from GitHub. Where governor
   itself comments on a claimed ticket at a blocker's close, the builders
   hear that comment and get no second message of it, unless
-  `subscribeMessages` is off. A builder's standing line counts an open
+  `subscribeMessages` is off or `trust.relay` leaves out the ticket's
+  author, whom that comment's message is judged by. A builder's standing line counts an open
   claimed ticket whose newest dispatch marker names it and that no open PR
   closes, so it is not asked to sign off before its PR exists.
 - Pickup starts a ticket only where its author's `author_association` is

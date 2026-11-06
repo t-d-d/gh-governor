@@ -2216,6 +2216,19 @@ describe('run — an unblocked fire', () => {
     assert.ok(h.logged.some((l) => l.event === 'dispatch-unblocked' && /hear governor's comment/.test(String(l.outcome))), JSON.stringify(h.logged.filter((l) => l.event === 'dispatch-unblocked')));
   });
 
+  // The comment's ticket fire is judged by the ticket's author under the
+  // file's trust.relay, so where that leaves the author out the comment
+  // reaches no builder, and the turn messages them itself.
+  test('not planned, and claimed, on a ticket whose author trust.relay leaves out: the comment, and its session is messaged too', async () => {
+    const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }], association: 'CONTRIBUTOR', over: {} });
+    const file = JSON.parse(FACTORY_FILE);
+    file.trust = { relay: ['OWNER', 'MEMBER'] };
+    h.deps.configFile = (async (repo: string) => (repo === REPO ? JSON.stringify(file) : null)) as typeof h.deps.configFile;
+    await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never);
+    assert.deepEqual(h.comments.map((c) => c.issue), [7]);
+    assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK']);
+  });
+
   test('not planned, and claimed, with subscribeMessages off: the comment, and its session is messaged the same text', async () => {
     const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }], features: { subscribeMessages: false } });
     await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never);

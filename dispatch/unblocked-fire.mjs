@@ -185,8 +185,10 @@ export const planUnblocked = async (invocation, ctx) => {
     }
     // Governor's comment on a claimed ticket reaches its builders as any
     // comment does (dispatch/ticket-fire.mjs), under subscribeMessages, so
-    // a builder hears the close once, in the comment's words.
-    if (commented && turnsOn(config, 'subscribeMessages')) {
+    // a builder hears the close once, in the comment's words. That fire is
+    // judged by the ticket's author under trust.relay, so where the relay
+    // leaves the author out, the builders are messaged here instead.
+    if (commented && turnsOn(config, 'subscribeMessages') && lets(relayOf(config), ticket)) {
       ctx.log('dispatch-unblocked', { ...about, outcome: "commented: the ticket's spec owner and builders hear governor's comment", ...(unreadied === undefined ? {} : { unreadied }) });
       return { answer: { kind: invocation.kind, row, commented, messaged: null, dispatched: [] } };
     }
