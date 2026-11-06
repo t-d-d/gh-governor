@@ -27,11 +27,11 @@ import { ownerUnknownSince, sessionNamedIn, subscribeLine } from '../dispatch/we
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { promptFor, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { SIGN_POSTS, UNATTENDED, dispatchMarker, lastDispatch, parseFire } from '../dispatch/webhook/fire.mjs';
-import { SESSION_RULES } from '../dispatch/session-rules.mjs';
+import { SESSION_RULES, SESSION_RULES_BLOCK, SESSION_RULES_FILE, blockIn } from '../dispatch/session-rules.mjs';
 import { WORKFLOW_PATHS, headMerge, workflowFile, workflowFile as workflowFixture } from './helpers/dispatch-workflows.ts';
 import { SIGN_OFF, SIGNOFF_LATEST_START_MS, SIGNOFF_PAGES, SIGNOFF_REPLY_POLL_MS, SIGNOFF_REPLY_WAIT_MS, SIGNOFF_WINDOW_MS, ARCHIVE_TIMEOUT_MS } from '../scripts/lib/session-signoff.mjs';
 import { LOGIN_EXPIRY_WARNING_MS, storedLogin } from '../scripts/lib/claude-login.mjs';
-import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat } from '../dispatch/heartbeat.mjs';
+import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat } from '../dispatch/heartbeat.mjs';
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
@@ -62,6 +62,10 @@ const WAITS_OFF_FILE = (() => {
   delete file.waits;
   return JSON.stringify(file);
 })();
+/** The factory's CLAUDE.md, carrying the current session rules block. */
+const FACTORY_CLAUDE = factoryFile(SESSION_RULES_FILE);
+/** A config file fake answering the factory's `file` and, for its CLAUDE.md, the fixture's, which carries the session rules block; none elsewhere. */
+const factoryFiles = (file: string) => async (repo: string, _token: string, path?: string) => (repo !== REPO ? null : path === SESSION_RULES_FILE ? FACTORY_CLAUDE : file);
 /** The factory's file without the `sessionRules` switch: a repo that never turned it on. */
 const RULES_OFF_FILE = (() => {
   const file = JSON.parse(FACTORY_FILE);
@@ -195,8 +199,10 @@ const harness = (over: Record<string, unknown> = {}) => {
     owners: ['acme', 't-d-d'],
     // The App's installations: the factory's alone unless a test says otherwise.
     installations: async () => [{ account: 'acme', repos: [REPO] }],
-    // Each repo's config file on its default branch: the factory's own, none elsewhere.
-    configFile: async (repo: string, _token: string) => (repo === REPO ? FACTORY_FILE : null),
+    // Each repo's config file on its default branch: the factory's own, none
+    // elsewhere. The factory's CLAUDE.md, which the bare fire checks for the
+    // session rules block, is its own too; any other path reads as the file.
+    configFile: factoryFiles(FACTORY_FILE),
     cap: 2,
     now: () => NOW,
     sleep: async (ms: number) => {
@@ -9160,6 +9166,164 @@ describe('fitness: the heartbeat writes only the issue the repo names, on the sc
  * on any turn, marks a periodic's session signed off and never moves the
  * fire time. Nothing outside the block changes.
  */
+/**
+ * The bare schedule fire reads each served repo's `CLAUDE.md`, or the file
+ * `sessionRules.file` names, from its default branch, where the repo's file
+ * turns `sessionRules` on, and checks it for the current session rules
+ * block. A missing or old block logs at warn and puts a line on the
+ * heartbeat; a current block, or the switch off, clears it. It never stops
+ * the repo being served, and a read that fails changes nothing.
+ */
+describe('fitness: the hourly sweep checks each served repo\'s session rules block (dispatcher-repos.md)', () => {
+  const AT = new Date(NOW).toISOString();
+  const OLD_BLOCK = '<!-- governor:session-rules v0 -->\nOld rules.\n<!-- governor:session-rules-end -->';
+  const RULES_FILE_SET = (() => {
+    const file = JSON.parse(FACTORY_FILE);
+    file.sessionRules = { file: 'docs/AGENTS.md' };
+    return JSON.stringify(file);
+  })();
+  const HEARTBEAT_OFF_FILE = (() => {
+    const file = JSON.parse(FACTORY_FILE);
+    file.heartbeat = { ...file.heartbeat, enabled: false };
+    return JSON.stringify(file);
+  })();
+
+  /**
+   * The factory, its heartbeat issue held in `beat`, and its rules file
+   * answered by `rules`: text, null for no file, or an Error to throw.
+   */
+  const swept = ({ file = FACTORY_FILE, rules, body = BEAT_BODY }: { file?: string; rules: string | null | Error; body?: string }) => {
+    const beat = { body, writes: 0 };
+    const asked: string[] = [];
+    const base = harness();
+    const h = harness({
+      configFile: async (repo: string, _token: string, path?: string) => {
+        if (repo !== REPO) return null;
+        if (path === undefined) return file;
+        // A prompt file the repo's file names: any text serves.
+        if (path !== 'CLAUDE.md' && path !== 'docs/AGENTS.md') return 'A prompt.';
+        asked.push(path);
+        if (rules instanceof Error) throw rules;
+        return rules;
+      },
+      reader: (token: string) => ({
+        ...base.deps.reader(token),
+        readyIssues: async () => [],
+        issue: async (n: number) => (n === BEAT.issue ? { number: n, body: beat.body, pull: false } : { number: n, body: PR_BODY, pull: true }),
+        updateIssue: async (n: number, { body: next }: { body: string }) => {
+          if (n !== BEAT.issue) return;
+          beat.body = next;
+          beat.writes += 1;
+        },
+      }),
+    });
+    return { ...h, beat, asked, rulesLogs: () => h.logged.filter((l) => l.event.startsWith('dispatch-session-rules')) };
+  };
+
+  test('the factory\'s own CLAUDE.md carries the current block', () => {
+    assert.equal(blockIn(FACTORY_CLAUDE), 'current');
+  });
+
+  test('a missing block in CLAUDE.md logs at warn naming the repo, the file and which, and puts the line on the heartbeat', async () => {
+    const h = swept({ rules: '# Working here\n' });
+    turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.deepEqual(h.asked, ['CLAUDE.md']);
+    assert.deepEqual(h.rulesLogs(), [{ event: 'dispatch-session-rules', level: 'warn', repo: REPO, file: 'CLAUDE.md', block: 'missing', reason: 'sessions a person starts in this repo are not given the session rules: copy the current block into the file (docs/serving-a-repo.md, The session rules)' }]);
+    assert.deepEqual(readHeartbeat(h.beat.body).rules, { file: 'CLAUDE.md', block: 'missing' });
+    assert.deepEqual(readHeartbeat(h.beat.body).pickup, { at: AT, started: 0 }, 'the repo is served as before');
+    assert.deepEqual(h.logged.find((l) => l.event === 'dispatch-heartbeat')?.rules, { file: 'CLAUDE.md', block: 'missing' }, 'the write\'s log names the line it set');
+  });
+
+  test('no file at all reads as a missing block', async () => {
+    const h = swept({ rules: null });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(readHeartbeat(h.beat.body).rules, { file: 'CLAUDE.md', block: 'missing' });
+  });
+
+  test('the file sessionRules.file names is the one read, and an old block is reported as old, not missing', async () => {
+    const h = swept({ file: RULES_FILE_SET, rules: `# Agents\n\n${OLD_BLOCK}\n` });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.asked, ['docs/AGENTS.md']);
+    assert.equal(h.rulesLogs()[0]?.block, 'old');
+    assert.equal(h.rulesLogs()[0]?.file, 'docs/AGENTS.md');
+    assert.deepEqual(readHeartbeat(h.beat.body).rules, { file: 'docs/AGENTS.md', block: 'old' });
+  });
+
+  test('a current block clears the line, and logs nothing', async () => {
+    const h = swept({ rules: `# Working here\n\n${SESSION_RULES_BLOCK}\n`, body: stampHeartbeat(BEAT_BODY, { rules: { file: 'CLAUDE.md', block: 'missing' } }) });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(readHeartbeat(h.beat.body).rules, undefined);
+    assert.deepEqual(h.rulesLogs(), []);
+  });
+
+  test('sessionRules turned off clears the line, with no read of the file', async () => {
+    const h = swept({ file: RULES_OFF_FILE, rules: new Error('not read'), body: stampHeartbeat(BEAT_BODY, { rules: { file: 'CLAUDE.md', block: 'old' } }) });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.asked, []);
+    assert.equal(readHeartbeat(h.beat.body).rules, undefined);
+  });
+
+  test('a read that fails logs at warn, leaves the heartbeat\'s line as it was, and serves the repo as before', async () => {
+    const h = swept({ rules: new Error('GET /repos/acme/factory/contents/CLAUDE.md failed: 502 Bad Gateway'), body: stampHeartbeat(BEAT_BODY, { rules: { file: 'CLAUDE.md', block: 'old' } }) });
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.deepEqual(h.rulesLogs(), [{ event: 'dispatch-session-rules-unread', level: 'warn', repo: REPO, file: 'CLAUDE.md', error: 'GET /repos/acme/factory/contents/CLAUDE.md failed: 502 Bad Gateway', reason: 'the session rules block was not checked, and the heartbeat\'s line stays as it was' }]);
+    assert.deepEqual(readHeartbeat(h.beat.body).rules, { file: 'CLAUDE.md', block: 'old' });
+    assert.deepEqual(readHeartbeat(h.beat.body).pickup, { at: AT, started: 0 });
+    assert.equal(result.heartbeat, true);
+    assert.equal('unread' in result, false, 'a failed read fails nothing');
+  });
+
+  test('a heartbeat read that fails on a fire changing only the session rules line logs at warn and fails nothing', async () => {
+    // No periodics, and pickup's sweep not due: the rules line is the fire's one change.
+    const file = JSON.parse(FACTORY_FILE);
+    delete file.periodics;
+    const h = swept({ file: JSON.stringify(file), rules: '# Working here\n' });
+    h.deps.state.sweep = async () => AT;
+    const reader = h.deps.reader;
+    h.deps.reader = ((...args: Parameters<typeof reader>) => ({ ...reader(...args), issue: async () => { throw new Error('GET /repos/acme/factory/issues/412 failed: 502 Bad Gateway'); } })) as typeof reader;
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.equal('heartbeatUnwritten' in result, false, JSON.stringify(result));
+    const unwritten = h.logged.filter((l) => l.event === 'dispatch-heartbeat-unwritten');
+    assert.deepEqual(unwritten.map((l) => l.level), ['warn']);
+  });
+
+  test('a heartbeat read that fails on a fire writing pickup\'s line still fails the turn, as before', async () => {
+    const h = swept({ rules: '# Working here\n' });
+    const reader = h.deps.reader;
+    h.deps.reader = ((...args: Parameters<typeof reader>) => ({ ...reader(...args), issue: async () => { throw new Error('GET /repos/acme/factory/issues/412 failed: 502 Bad Gateway'); } })) as typeof reader;
+    const result = await run({ source: 'aws.events' }, h.deps as never);
+    assert.ok('heartbeatUnwritten' in result, JSON.stringify(result));
+    assert.deepEqual(h.logged.filter((l) => l.event === 'dispatch-heartbeat-unwritten').map((l) => l.level), ['error']);
+  });
+
+  test('with the heartbeat off, a missing block still logs at warn, and nothing is written', async () => {
+    const h = swept({ file: HEARTBEAT_OFF_FILE, rules: '# Working here\n' });
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(h.rulesLogs()[0]?.level, 'warn');
+    assert.equal(h.beat.writes, 0);
+  });
+
+  test('an unchanged line is not written again', async () => {
+    const h = swept({ rules: '# Working here\n' });
+    await run({ source: 'aws.events' }, h.deps as never);
+    const after = h.beat.body;
+    const again = swept({ rules: '# Working here\n', body: after });
+    // Pickup's line moves only at its interval: the factory's last sweep is now.
+    again.deps.state.sweep = async () => AT;
+    await run({ source: 'aws.events' }, again.deps as never);
+    assert.equal(again.beat.writes, 0);
+  });
+
+  for (const fire of [{ kind: 'schedule', repo: REPO }, { kind: 'schedule', repo: REPO, issue: 7 }]) {
+    test(`${JSON.stringify(fire)} reads no rules file: only the bare fire checks`, async () => {
+      const h = swept({ rules: '# Working here\n' });
+      await run(fire, h.deps as never);
+      assert.deepEqual(h.asked, []);
+      assert.deepEqual(h.rulesLogs(), []);
+    });
+  }
+});
+
 describe('fitness: every fire is recorded on the governor heartbeat, and only by the fire it reports (dispatcher-repos.md)', () => {
   const FACTORY_PERIODICS = FACTORY_CONFIG.periodics as Array<{ name: string; days: number }>;
   const RETRO = FACTORY_PERIODICS.find((p) => p.name === 'Weekly retro')!;
@@ -9188,7 +9352,7 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
     const writes: string[] = [];
     const base = harness();
     const h = harness({
-      configFile: async (repo: string) => (repo === REPO ? file : null),
+      configFile: factoryFiles(file),
       reader: (token: string) => ({
         ...base.deps.reader(token),
         openPulls: async () => [],
@@ -9420,7 +9584,7 @@ describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval 
     let backlogReads = 0;
     const base = harness();
     const h = harness({
-      configFile: async (repo: string) => (repo === REPO ? JSON.stringify(file) : null),
+      configFile: factoryFiles(JSON.stringify(file)),
       reader: (token: string) => ({
         ...base.deps.reader(token),
         readyIssues: async () => {
@@ -10436,7 +10600,7 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
       const waits = row.waits ?? [];
       const ticketLabels = row.labels ?? [READY, 'mode: afk'];
       const h = harness({
-        configFile: async (repo: string) => (repo === REPO ? FILE : null),
+        configFile: factoryFiles(FILE),
         now: () => clock,
         ...(row.cap === undefined ? {} : { cap: row.cap }),
         launch: async (launch: Launch) => {
@@ -10530,7 +10694,7 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
     let clock = NOW;
     let starts = false;
     const h = harness({
-      configFile: async (repo: string) => (repo === REPO ? FILE : null),
+      configFile: factoryFiles(FILE),
       now: () => clock,
       launch: async (launch: Launch) => {
         h.launches.push(launch);

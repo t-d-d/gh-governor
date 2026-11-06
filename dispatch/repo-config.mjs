@@ -564,7 +564,7 @@ const signOffSchema = z.strictObject({
  */
 const sessionRulesSchema = z.strictObject({
   enabled,
-  file: repoPath.optional().meta({ description: 'The file that carries governor\'s session rules block, a path from the repo\'s root, which the config check reads at a pull request\'s head. Default `CLAUDE.md` at the root.' }),
+  file: repoPath.optional().meta({ description: 'The file that carries governor\'s session rules block, a path from the repo\'s root, which the config check reads at a pull request\'s head, and governor\'s hourly fire on the default branch. Default `CLAUDE.md` at the root.' }),
 });
 
 /**

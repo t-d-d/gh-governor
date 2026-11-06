@@ -140,6 +140,16 @@ describe('the checker reads exactly what governor writes', () => {
     assert.deepEqual(checker.readHeartbeat(body), readHeartbeat(body));
   });
 
+  test('the session rules line reads back the same, and a later stamp keeps it', () => {
+    for (const rules of [{ file: 'CLAUDE.md', block: 'missing' }, { file: 'docs/AGENTS.md', block: 'old' }] as const) {
+      let body = stampHeartbeat(BODY, { pickup: { at: AT, started: 1 }, periodics: periodics as never, rules });
+      assert.deepEqual(checker.readHeartbeat(body), readHeartbeat(body));
+      assert.deepEqual(checker.readHeartbeat(body).rules, rules);
+      body = stampHeartbeat(body, { pickup: { at: iso(NOW), started: 2 } });
+      assert.deepEqual(checker.readHeartbeat(body).rules, rules);
+    }
+  });
+
   test('a body with only the marker reads as nothing recorded, and one without it is refused', () => {
     assert.deepEqual(checker.readHeartbeat(BODY), readHeartbeat(BODY));
     assert.throws(() => checker.readHeartbeat('someone\'s ticket'), /governor:heartbeat/);
@@ -304,6 +314,20 @@ describe('checking the heartbeat', () => {
     const gh = github({ heartbeat: fresh() });
     await run(gh);
     assert.deepEqual(gh.open(), []);
+  });
+
+  test('a session rules line, missing or old, opens no issue: it is the operator\'s to read, not an alarm', async () => {
+    for (const block of ['missing', 'old'] as const) {
+      const gh = github({ heartbeat: stampHeartbeat(fresh(), { rules: { file: 'CLAUDE.md', block } }) });
+      await run(gh);
+      assert.deepEqual(gh.open(), []);
+    }
+  });
+
+  test('a checker that does not know the session rules line skips it, as it skips any line it does not know', async () => {
+    const body = stampHeartbeat(fresh(), { rules: { file: 'CLAUDE.md', block: 'missing' } });
+    const before = body.replace(/^- session rules: .*\n/m, '- a line from a later governor\n');
+    assert.deepEqual(checker.readHeartbeat(before), checker.readHeartbeat(fresh()));
   });
 
   test('pickup older than its interval plus the tolerance gets one issue, carrying the caller\'s labels', async () => {
