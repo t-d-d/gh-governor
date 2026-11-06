@@ -75,9 +75,8 @@
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
-import { DISPATCH_MARKER, dispatchedTo, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
+import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
 import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
-import { DEPLOYED_MARKER } from './deployed-comment.mjs';
 import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
 
 export const MENTION = '@claude';
@@ -229,20 +228,23 @@ const notASummons = ({ body, user, association, issue = false }) => {
 const reviewComment = (written, appId) => String(written?.body ?? '').includes(REVIEW_MARKER) && postedByApp(written, appId);
 
 /**
- * Whether `written` is governor's deploy comment: one governor's App
- * posted carrying the deploy marker (dispatch/webhook/deployed-comment.mjs).
- * On an issue it is a record for people, and the relay sends it to nobody:
- * the shipping turn that posted it messages the ticket's roles itself
- * (dispatch/turn.mjs), so one turn decides who hears a deploy. A person's
- * comment quoting the marker is a remark like any other.
+ * Whether `written` is a comment governor's App posted on an issue. On an
+ * issue every such comment is a record for people, and the relay sends it
+ * to nobody: the turn that posted it messaged the roles that should hear
+ * it, so one turn decides who hears each fact governor states. That holds
+ * for a dispatch comment, a blocker's close, a wait's comments, a trust
+ * refusal, an issue review and a deploy alike, and for any kind written
+ * later. A person's comment quoting governor's marker is a remark like any
+ * other. A comment on a PR is out of the rule: the PR review's comment
+ * still reaches the PR's owner here.
  *
- * @param {any} written
+ * @param {Written | undefined} written
  * @param {number | undefined} appId
  */
-const deployComment = (written, appId) => String(written?.body ?? '').includes(DEPLOYED_MARKER) && postedByApp(written, appId);
+const governorComment = (written, appId) => postedByApp(written, appId);
 
-/** Why a deploy comment on issue `n` queued nothing. @param {unknown} n */
-const deployDropped = (n) => `governor's deploy comment on #${n} is a record for people: the shipping turn told the ticket's roles itself`;
+/** Why governor's own comment on issue `n` queued nothing. @param {unknown} n */
+const governorDropped = (n) => `governor's comment on #${n} is a record for people: the turn that posted it told the roles that should hear it`;
 
 /**
  * The author of an issue, a PR or a remark in a payload, as a trust list
@@ -727,7 +729,7 @@ const writtenFires = (written, event, payload, appId, relay, bodies) => {
   const action = payload?.action;
   const { on, pr, by, wanted, what, event: subscribed, prompt } = written(payload ?? {});
   const body = String(by?.body ?? '');
-  if (!pr && deployComment(by, appId)) return { fires: [], reason: deployDropped(on?.number) };
+  if (!pr && governorComment(by, appId)) return { fires: [], reason: governorDropped(on?.number) };
   const onAuthor = authorOf(on, appId);
   // The sessions `on` names, read only where `bodies` lets its author in.
   const onBody = relayedBody({ body: on?.body, ...onAuthor }, bodies);
@@ -945,32 +947,6 @@ export const pullRequestFires = (payload, { relay = RELAY, bodies = relay, appId
  */
 
 /**
- * Governor's own dispatch comment on an issue, a change of builder: one
- * ticket fire naming the builder it names and the builder it displaced,
- * for the task to send to the spec owner and the displaced builder
- * (dispatch/ticket-fire.mjs). Only a comment governor's App posted counts:
- * a marker in anyone else's comment reaches nobody, so a copied marker
- * cannot announce a false builder or ask a live one to sign off. The fire
- * waits for no claim label: pickup's launch comment reaches the spec owner
- * whatever the hook table holds. Null for any other delivery.
- *
- * @param {{ event: string | undefined, payload: any, appId: number | undefined, labels: string[], owner: string | null, state: 'open' | 'closed' }} args
- * @returns {{ fires: Array<{ fire: import('./fire.mjs').TicketFire, reason: string, key: string }>, reason: string } | null}
- */
-const dispatchFire = ({ event, payload, appId, labels, owner, state }) => {
-  const comment = payload?.comment;
-  if (event !== 'issue_comment' || payload?.action !== 'created') return null;
-  const body = String(comment?.body ?? '');
-  if (!body.includes(DISPATCH_MARKER) || !postedByApp(comment, appId)) return null;
-  const issue = payload.issue;
-  const { builder, displaced } = dispatchedTo(body);
-  const text = `Issue #${issue.number}: ${oneLine(issue?.title)} (${issue?.html_url}) has a new builder: ${builder ?? 'a cloud session the launcher printed no link for'}, as governor's dispatch comment on it says (${comment?.html_url}).`;
-  const fire = build.ticket({ issue: issue.number, text, event: 'dispatched', state, labels, owner, authors: [], builder, displaced });
-  const reason = `governor's dispatch comment ${comment?.id} on #${issue.number}: for its spec owner${displaced === null ? '' : ' and the builder it displaced'}`;
-  return { fires: [{ fire, reason, key: 'ticket' }], reason };
-};
-
-/**
  * Each issue number a body may close, roughly: a closing keyword and a
  * reference, `#N`, `owner/repo#N` or an issue's URL, after a colon or a
  * space, as `closedBy` (dispatch/pr-body.mjs) reads them. The receiver
@@ -1024,8 +1000,8 @@ export const closingPrFires = (payload, { relay = RELAY, appId } = {}) => {
  * none. What reaches no session today reaches none here either: a PR's
  * comment, an edited one, the dispatcher's marker, a stranger's comment.
  *
- * Governor's deploy comment reaches no session: the shipping turn tells
- * the ticket's roles itself ({@link deployComment}).
+ * A comment governor's App posted reaches no session: the turn that posted
+ * it told the roles itself ({@link governorComment}).
  *
  * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[], bodies?: readonly string[] }} args
  * @returns {{ fires: TicketQueued[], reason: string }}
@@ -1037,15 +1013,13 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
   const onAuthor = authorOf(issue, appId);
   // The spec owner the body names, read only where `bodies` lets its author in.
   const { state, labels, owner = null } = summonedTicket(issue, bodies, appId);
-  const dispatched = dispatchFire({ event, payload, appId, labels, owner, state });
-  if (dispatched !== null) return dispatched;
   if (labels.length === 0) return none;
   /** @type {{ text: (limit: number) => string, event: 'comments' | 'close' | 'edit', poster: string | null, closing: boolean, authors: string[], what: string }} */
   let about;
   if (event === 'issue_comment') {
     const comment = payload?.comment;
     if (payload?.action !== 'created') return none;
-    if (deployComment(comment, appId)) return { fires: [], reason: deployDropped(issue.number) };
+    if (governorComment(comment, appId)) return { fires: [], reason: governorDropped(issue.number) };
     if (notAnUpdate({ written: comment, relay, appId }) !== null) return none;
     const body = String(comment?.body ?? '');
     const unsigned = unsignedPost(body);

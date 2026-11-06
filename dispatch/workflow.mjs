@@ -67,7 +67,7 @@ import { short } from './runs.mjs';
 import { DEPENDABOT, FAILED, LABEL_PREFIX, UNATTENDED } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { sameSession } from './webhook/subscribe.mjs';
-import { listed } from './ticket-fire.mjs';
+import { listed } from './told.mjs';
 import { instruction } from './prompts.mjs';
 
 /**

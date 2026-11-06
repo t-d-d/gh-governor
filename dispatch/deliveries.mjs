@@ -38,6 +38,7 @@ import { markOwnerUnknown, ownerUnknownSince, relayedBody, relinkSession, sameSe
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
+import { TOLD, specOwnerOf, tellBuilderChange } from './told.mjs';
 
 /**
  * The event a spec session logs when its link could not be written into its
@@ -255,6 +256,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   pull: (n: number) => Promise<{ number: number, body: string, head: string, defaultBranch: string, open: boolean } & import('./webhook/fire.mjs').Author>,
  *   updatePull: (n: number, change: { body: string }) => Promise<void>,
  *   issue: (n: number) => Promise<{ number: number, body: string, pull: boolean }>,
+ *   ticket: (n: number) => Promise<{ title: string, body: string, author?: string, association?: string, app?: boolean }>,
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
  *   openPulls: () => Promise<import('../scripts/lib/github-app.mjs').OpenPullRow[]>,
  *   openNaming: (session: string, relay: readonly string[], options?: { claim?: string }) => Promise<OpenRow[]>,
@@ -551,9 +553,11 @@ export const deliveries = (deps) => {
   /**
    * Post governor's dispatch comment, naming the PR's new owner, on each
    * ticket the PR's body closes: a takeover moves the builder role with the
-   * PR, and the comment tells the ticket's spec owner. The owner it
-   * replaced refused as archived, so it displaces no live builder. A
-   * comment that fails is logged at warn: no lookup depends on it.
+   * PR. The comment is a record for people, which the relay sends to
+   * nobody, so this turn then tells the ticket's spec owner of its new
+   * builder itself (dispatch/told.mjs). The owner it replaced refused as
+   * archived, so it displaces no live builder. A comment that fails is
+   * logged at warn: no lookup depends on it, and nobody is told.
    *
    * @param {number} pr
    * @param {string} body
@@ -567,7 +571,28 @@ export const deliveries = (deps) => {
         deps.log('dispatch-builder', { pr, issue, session: sessionUrl, outcome: 'announced the PR\'s new owner as the ticket\'s builder' });
       } catch (error) {
         deps.log('dispatch-builder', { level: 'warn', pr, issue, session: sessionUrl, error: messageOf(error), reason: 'the ticket names no new builder, and its spec owner is not told' });
+        continue;
       }
+      /** @type {{ title: string, owner: string | null }} */
+      let read;
+      try {
+        const row = await (await deps.reader()).ticket(issue);
+        read = { title: row.title, owner: specOwnerOf(row, deps.relay) };
+      } catch (error) {
+        deps.log(TOLD, { repo: deps.repo, issue, change: 'dispatched', level: 'error', outcome: 'nobody told', error: messageOf(error), reason: 'the ticket could not be read for its spec owner; the comment stands' });
+        continue;
+      }
+      await tellBuilderChange({
+        deliver: (session, text, options) => deliver({ session }, text, { source: GITHUB_SOURCE, ...options }),
+        log: deps.log,
+        repo: deps.repo,
+        issue,
+        title: read.title,
+        url: `https://github.com/${deps.repo}/issues/${issue}`,
+        owner: read.owner,
+        builder: sessionUrl,
+        displaced: null,
+      });
     }
   };
 

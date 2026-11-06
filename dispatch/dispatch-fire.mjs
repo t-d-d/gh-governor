@@ -39,7 +39,7 @@ import { startKinds } from './start.mjs';
 import { reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 import { RED, UNATTENDED } from './webhook/fire.mjs';
 import { redRunPrompt } from './workflow.mjs';
-import { rolesText } from './ticket-fire.mjs';
+import { rolesText } from './told.mjs';
 import { sameSession } from './webhook/subscribe.mjs';
 
 /**

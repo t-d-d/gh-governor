@@ -27,6 +27,7 @@ import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
 import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
 import { byOf, failedLaunchesOf, failedReason, sweepDue, sweepHoursOf } from './pickup.mjs';
 import { autoOf, relayOf, startOf } from './trust.mjs';
+import { tellerFor } from './told.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 
 /** A fallback outcome that started the spec session. */
@@ -161,8 +162,10 @@ export const planSweep = async (invocation, ctx) => {
   if (ctx.bare) {
     const byRepo = await Promise.all(ctx.served.filter(({ config }) => turnsOn(config, 'waits')).map(async ({ repo, config }) => {
       const reader = await ctx.readerFor(repo);
-      const links = waitLinks({ reader, repo, board: config.waits?.issue, log: ctx.log });
-      const ended = await endedWaits({ reader, state: ctx.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), auto: autoOf(config), relay: relayOf(config), now: ctx.now(), log: ctx.log, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
+      // A warning, a fix only the spec owner can make, tells the spec owner.
+      const tell = tellerFor(ctx, repo, GITHUB_SOURCE);
+      const links = waitLinks({ reader, repo, board: config.waits?.issue, log: ctx.log, tell });
+      const ended = await endedWaits({ reader, state: ctx.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), auto: autoOf(config), relay: relayOf(config), now: ctx.now(), log: ctx.log, tell, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
       return { repo, config, ended };
     }));
     endedByRepo.push(...byRepo);
@@ -256,7 +259,8 @@ export const planSweep = async (invocation, ctx) => {
   // said once on the ticket whatever the repo's switches say. Each report
   // catches its own failure, so they run side by side and keep the launch
   // window for the launches.
-  await Promise.all(unreadable.map(async ({ repo, issue, value }) => reportUnreadable({ reader: await ctx.readerFor(repo), repo, issue, value, log: ctx.log })));
+  // Its comment tells the ticket's spec owner, under pickup.
+  await Promise.all(unreadable.map(async ({ repo, issue, value }) => reportUnreadable({ reader: await ctx.readerFor(repo), repo, issue, value, log: ctx.log, tell: tellerFor(ctx, repo, GITHUB_SOURCE) })));
   // A relative line on a ready ticket, in a repo pickup sweeps: the sweep
   // leaves it to an open blocker's close, or settles it, whatever the
   // repo's other switches say, or says once that it cannot. A failure is
@@ -264,7 +268,7 @@ export const planSweep = async (invocation, ctx) => {
   await Promise.all(relative.map(async (report) => {
     const { repo, issue, after } = report;
     try {
-      await repairRelative({ ...report, reader: await ctx.readerFor(repo), link: false, prompts: ctx.configOf(repo).prompts, now: ctx.now(), log: ctx.log });
+      await repairRelative({ ...report, reader: await ctx.readerFor(repo), link: false, prompts: ctx.configOf(repo).prompts, now: ctx.now(), log: ctx.log, tell: tellerFor(ctx, repo, GITHUB_SOURCE) });
     } catch (error) {
       ctx.log(WAIT_RELATIVE, { level: 'error', repo, issue, after, error: messageOf(error), reason: 'the ticket stays held, and the next sweep tries again' });
     }
