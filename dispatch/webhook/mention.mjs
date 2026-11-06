@@ -991,6 +991,41 @@ export const closingPrFires = (payload, { relay = RELAY, appId } = {}) => {
 };
 
 /**
+ * The `prEdit` fire a PR body edit may queue: an edit sent by no bot,
+ * whose old body (`changes.body.from`) names session A and whose new body
+ * names B, where B is not A, both read through `relayedBody` under
+ * `bodies`. The task sends A a notice and, where A takes it, writes A's
+ * link back and tells B once (dispatch/take.mjs). It needs `prMessages`
+ * and `sessionRules` both (`switchesOf`, switches.mjs). Governor's own
+ * relinks are a bot's edits, and queue nothing. An old body that named no
+ * session queues nothing: there is no offer on a PR, and governor takes a
+ * PR over when its owner is archived. A PR whose author `relay` leaves out
+ * queues nothing: its body names no session.
+ *
+ * @param {any} payload
+ * @param {{ relay?: readonly string[], bodies?: readonly string[], appId?: number | undefined }} [trust]
+ * `bodies`: whose body may name a session, `relay` where unset.
+ * @returns {{ fires: Array<{ fire: import('./fire.mjs').PrEditFire, reason: string, key: string }>, reason: string }}
+ */
+export const prEditFires = (payload, { relay = RELAY, bodies = relay, appId } = {}) => {
+  const none = { fires: [], reason: '' };
+  const pr = payload?.pull_request;
+  if (payload?.action !== 'edited' || payload?.changes?.body === undefined || payload?.sender?.type === 'Bot') return none;
+  if (!Number.isInteger(pr?.number) || pr.number <= 0) return none;
+  const onAuthor = authorOf(pr, appId);
+  if (!lets(relay, onAuthor)) return none;
+  const now = relayedBody({ body: pr?.body, ...onAuthor }, bodies);
+  const to = sessionNamedIn(now);
+  if (to === null) return none;
+  const from = payload.changes.body.from;
+  const old = relayedBody({ body: typeof from === 'string' ? from : '', ...onAuthor }, bodies);
+  const was = sessionNamedIn(old);
+  if (was === null || sameSession(was, to)) return none;
+  const reason = `#${pr.number} body edited, its session link moved from ${sessionId(was)} to ${sessionId(to)}: for its owner to hear`;
+  return { fires: [{ fire: build.prEdit({ pr: pr.number, from: was, to, authors: kindsOf([onAuthor]) }), reason, key: 'prEdit' }], reason };
+};
+
+/**
  * The ticket fire a comment on an issue, an issue closed or reopened, or
  * its body edited ({@link bodyEdited}), may queue
  * (dispatch/ticket-fire.mjs): one fire for the spec owner and

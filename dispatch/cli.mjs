@@ -121,6 +121,10 @@ export const exitCodeFor = (result) => {
   // The offer of an ownerless issue to the session that commented on it: a
   // send that faulted fails the turn, and a gone session is told enough.
   if (result.kind === 'offer') return result.messaged != null && faultedSend(result.messaged) ? 1 : 0;
+  // A PR body edit that moved its session link: the owner's notice or the
+  // editor's correction that faulted fails the turn, and a gone session is
+  // told enough.
+  if (result.kind === 'prEdit') return result.messaged != null && faultedSend(result.messaged) ? 1 : 0;
   // A summons sent to the live session that owns its PR: a send that
   // faulted, or a lookup that failed, fails the turn, as a message's does.
   // No live owner is no fault: the summons was judged as before.

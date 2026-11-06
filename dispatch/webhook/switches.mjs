@@ -40,7 +40,9 @@ export const isCi = (run, workflows) => workflows.ci !== undefined && run.path =
  * fire, an ownerless issue offered to the session that commented on it,
  * needs `sessionRules` (dispatch/offer.mjs). A ticket's `wait`
  * fire needs `waits` (dispatch/waits.mjs), and an `issueReview` fire
- * `issueReviews` (dispatch/issue-review.mjs).
+ * `issueReviews` (dispatch/issue-review.mjs). A `prEdit` fire, a PR body
+ * edit that moved its session link, needs `prMessages` here and
+ * `sessionRules` as well ({@link switchesOf}).
  *
  * @param {import('./fire.mjs').Fire} fire
  * @param {{ ci?: string | undefined }} [workflows] The repo's config file's.
@@ -54,6 +56,7 @@ export const switchOf = (fire, workflows = {}) => {
     case 'ticket': return 'subscribeMessages';
     case 'closingPr': return 'subscribeMessages';
     case 'offer': return 'sessionRules';
+    case 'prEdit': return 'prMessages';
     case 'workflow': return isCi(fire, workflows) ? 'ciMessages' : 'deployMessages';
     case 'job': return 'deployMessages';
     case 'branch-run': return 'branchRunMessages';
@@ -65,6 +68,22 @@ export const switchOf = (fire, workflows = {}) => {
     case 'issueReview': return 'issueReviews';
     default: return null;
   }
+};
+
+/**
+ * Every switch a fire needs, each of which must be on: the one
+ * {@link switchOf} names, and for a `prEdit` fire `sessionRules` too, since
+ * its notice is a message to a PR's owner under the session rules
+ * (dispatch/take.mjs). Empty for a fire that needs none.
+ *
+ * @param {import('./fire.mjs').Fire} fire
+ * @param {{ ci?: string | undefined }} [workflows] The repo's config file's.
+ * @returns {string[]}
+ */
+export const switchesOf = (fire, workflows = {}) => {
+  if (fire.kind === 'prEdit') return ['prMessages', 'sessionRules'];
+  const name = switchOf(fire, workflows);
+  return name === null ? [] : [name];
 };
 
 /**
@@ -84,6 +103,8 @@ export const switchOf = (fire, workflows = {}) => {
  *   `workflows.ci`, which the item does not hold, so it is dropped only
  *   where the switch it would need as CI and the one it would need
  *   otherwise are both off, each as {@link switchOf} names it.
+ * - A `prEdit` fire is dropped where any switch it needs is off
+ *   ({@link switchesOf}).
  *
  * @param {import('./fire.mjs').Fire} fire
  * @param {ReadonlyMap<string, boolean> | null} switches
@@ -93,6 +114,10 @@ export const droppedBy = (fire, switches) => {
   if (switches === null || fire.kind === 'conflicts') return null;
   const off = (/** @type {string} */ name) => switches.get(name) === false;
   if (fire.counted !== undefined && !off('periodics')) return null;
+  if (fire.kind === 'prEdit') {
+    const names = switchesOf(fire).filter(off);
+    return names.length > 0 ? names : null;
+  }
   const needs = fire.kind === 'workflow' ? [switchOf(fire, { ci: fire.path }), switchOf(fire)] : [switchOf(fire)];
   const names = [...new Set(needs.filter((name) => name !== null))];
   return names.length > 0 && names.every(off) ? names : null;

@@ -149,7 +149,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   hooks: 'A session on a hook\'s prompt when a signed request fires one of the hooks `sessions` holds. A fire while the hook\'s last session is open goes into that session as a message. Needs at least one hook when on.',
   waits: 'When a ticket\'s `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker\'s close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.',
   signOff: 'Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off.',
-  sessionRules: 'The three rules every session in the repo follows: sign what you post, only an owner edits a body or pushes to a PR\'s branch, and comment on what you do not own. Every session governor starts reads them in the lines governor adds to its opening prompt, in place of the signing line. Sessions a person starts read them in the block the repo copies into its `CLAUDE.md`, or the file `file` names, and the config check warns where that block is missing or old. With `signOff` on as well, an issue a session owns holds its ask to sign off only where it carries a ready label or the claim label, since signing off gives it up. Governor also offers an issue nobody owns to a session that signs a comment on it, confirms a take by a session that ends its body with its own link, and, with `subscribeMessages` on, writes a live owner\'s link back after another session moves it.',
+  sessionRules: 'The three rules every session in the repo follows: sign what you post, only an owner edits a body or pushes to a PR\'s branch, and comment on what you do not own. Every session governor starts reads them in the lines governor adds to its opening prompt, in place of the signing line. Sessions a person starts read them in the block the repo copies into its `CLAUDE.md`, or the file `file` names, and the config check warns where that block is missing or old. With `signOff` on as well, an issue a session owns holds its ask to sign off only where it carries a ready label or the claim label, since signing off gives it up. Governor also offers an issue nobody owns to a session that signs a comment on it, confirms a take by a session that ends its body with its own link, and, with `subscribeMessages` on, writes a live owner\'s link back after another session moves it. With `prMessages` on, it does the same for a PR\'s session link.',
 });
 
 /** A section's `enabled` key. */
@@ -325,7 +325,7 @@ export const NO_WORKFLOWS = Object.freeze({ triage: [], tags: {} });
 
 // What CI is, and the switch each fire kind needs, live in a leaf the
 // receiver shares (dispatch/webhook/switches.mjs).
-export { isCi, switchOf } from './webhook/switches.mjs';
+export { isCi, switchOf, switchesOf } from './webhook/switches.mjs';
 
 /**
  * The heartbeat's section: `issue`, the issue governor records its fires

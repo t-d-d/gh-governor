@@ -455,7 +455,13 @@ export const lastDispatch = (comments) => {
  *   ticket. The task reads the PR and each ticket it closes, and where a
  *   claimed ticket's builder is not the PR's owner, posts the dispatch
  *   comment naming that owner (dispatch/ticket-fire.mjs).
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire | ClosingPrFire | OfferFire) & { repo?: string, counted?: Count }} Fire
+ * @typedef {{ kind: 'prEdit', pr: number, from: string, to: string, authors?: string[] }} PrEditFire
+ *   A PR body edit, by no bot, that moved the PR's session link from
+ *   `from` to `to`, both read under the repo's `trust.relay`. Under
+ *   `prMessages` and `sessionRules` the task sends `from` a notice and,
+ *   where it takes it, writes its link back and tells `to` once
+ *   (dispatch/take.mjs). `authors`: as a message fire's.
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire | ClosingPrFire | OfferFire | PrEditFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
@@ -589,6 +595,9 @@ export const build = Object.freeze({
 
   /** @param {{ pr: number }} args @returns {ClosingPrFire} */
   closingPr: ({ pr }) => ({ kind: 'closingPr', pr }),
+
+  /** @param {{ pr: number, from: string, to: string, authors?: string[] | undefined }} args @returns {PrEditFire} */
+  prEdit: ({ pr, from, to, authors }) => ({ kind: 'prEdit', pr, from, to, ...present({ authors }) }),
 
   /**
    * Each title on one line and at most {@link TITLE_LIMIT} characters, so
@@ -892,6 +901,16 @@ const parseKind = (event) => {
     if (!(typeof e?.session === 'string' && MESSAGE_SESSION.test(e.session))) throw new Error(`an offer invocation's session must be a session id or claude.ai/code URL, got: ${JSON.stringify(e?.session)}`);
     if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) throw new Error(`an offer invocation's authors are trust values, got: ${JSON.stringify(e.authors)}`);
     return { kind, issue: Number(e?.issue), session: e.session, ...(e?.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (e.authors)] }) };
+  }
+  if (kind === 'prEdit') {
+    if (!isPositiveInt(e?.pr)) throw new Error(`a prEdit invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);
+    for (const key of ['from', 'to']) {
+      // A URL, not a bare id: `from` is written into the PR body as its link.
+      const value = e?.[key];
+      if (!(typeof value === 'string' && value.startsWith('https://claude.ai/code/') && MESSAGE_SESSION.test(value))) throw new Error(`a prEdit invocation's ${key} must be a claude.ai/code session URL, got: ${JSON.stringify(e?.[key])}`);
+    }
+    if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) throw new Error(`a prEdit invocation's authors are trust values, got: ${JSON.stringify(e.authors)}`);
+    return { kind, pr: Number(e?.pr), from: String(e?.from), to: String(e?.to), ...(e?.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (e.authors)] }) };
   }
   if (kind === 'closingPr') {
     if (!isPositiveInt(e?.pr)) throw new Error(`a closingPr invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);
