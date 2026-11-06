@@ -1243,6 +1243,7 @@
           "type": "boolean"
         },
         "reviews": {
+          "description": "The issue reviews, each keyed by its name: lower-case letters, digits and hyphens. The name goes into every comment and marker the review writes, so renaming a review starts its rounds afresh. Reviews run in the order of their keys. At least one when on.",
           "type": "object",
           "propertyNames": {
             "type": "string",
@@ -1452,13 +1453,9 @@
               }
             },
             "additionalProperties": false
-          },
-          "description": "The issue reviews, each keyed by its name: lower-case letters, digits and hyphens. The name goes into every comment and marker the review writes, so renaming a review starts its rounds afresh. Reviews run in the order of their keys. At least one."
+          }
         }
       },
-      "required": [
-        "reviews"
-      ],
       "additionalProperties": false
     }
   },

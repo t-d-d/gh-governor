@@ -302,7 +302,7 @@ describe('one section per feature, in .github/governor.json', () => {
 
   test('each section\'s prompt or prompts key reads as the message kind the old prompts key named', () => {
     // A prompt naming every fact its kind has, so the text is valid for it.
-    const textFor = (kind: string) => `Do the ${kind} work.${(PROMPTS as Record<string, { fills: string[] }>)[kind]?.fills.map((f) => ` {${f}}`).join('') ?? ''}`;
+    const textFor = (kind: string) => `Do the ${kind} work.${PROMPTS[kind]?.fills.map((f) => ` {${f}}`).join('') ?? ''}`;
     const file: Record<string, any> = { ...MINIMAL, pickup: { ...PICKUP } };
     for (const [section, place] of Object.entries(SECTION_PROMPTS)) {
       file[section] ??= {};

@@ -518,11 +518,11 @@ const issueReviewsSchema = z.strictObject({
   reviews: z.record(
     z.string().regex(HOOK_NAME, 'a review\'s name is lower-case letters, digits and hyphens: it goes into a marker that can never be migrated'),
     issueReviewSchema,
-  ).refine((reviews) => Object.keys(reviews).length > 0, 'lists at least one issue review')
-    .meta({ description: 'The issue reviews, each keyed by its name: lower-case letters, digits and hyphens. The name goes into every comment and marker the review writes, so renaming a review starts its rounds afresh. Reviews run in the order of their keys. At least one.' }),
+  ).optional()
+    .meta({ description: 'The issue reviews, each keyed by its name: lower-case letters, digits and hyphens. The name goes into every comment and marker the review writes, so renaming a review starts its rounds afresh. Reviews run in the order of their keys. At least one when on.' }),
 }).transform(({ enabled, reviews }) => ({
   ...(enabled === undefined ? {} : { enabled }),
-  reviews: Object.entries(reviews).map(([name, review]) => ({ name, ...review })),
+  reviews: Object.entries(reviews ?? {}).map(([name, review]) => ({ name, ...review })),
 }));
 
 /** A section whose feature has no settings but its prompts. */
@@ -607,6 +607,7 @@ const fileSchema = z.strictObject({
     if (on('prReview') && raw.prReview.prompt === undefined) ctx.addIssue({ code: 'custom', path: ['prReview', 'prompt'], message: 'prReview is on, so its section needs a prompt' });
     if (on('heartbeat') && raw.heartbeat.issue === undefined) ctx.addIssue({ code: 'custom', path: ['heartbeat', 'issue'], message: 'heartbeat is on, so its section needs the issue it records on' });
     if (on('periodics') && Object.keys(raw.periodics.sessions ?? {}).length === 0) ctx.addIssue({ code: 'custom', path: ['periodics', 'sessions'], message: 'periodics is on, so its section lists at least one periodic' });
+    if (on('issueReviews') && Object.keys(raw.issueReviews.reviews ?? {}).length === 0) ctx.addIssue({ code: 'custom', path: ['issueReviews', 'reviews'], message: 'issueReviews is on, so its section lists at least one issue review' });
     if (on('hooks') && Object.keys(raw.hooks.sessions ?? {}).length === 0) ctx.addIssue({ code: 'custom', path: ['hooks', 'sessions'], message: 'hooks is on, so its section lists at least one hook' });
   });
 

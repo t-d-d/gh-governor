@@ -7479,7 +7479,7 @@ describe('run — every served repo', () => {
     h.sweeps.set(REPO, new Date(NOW - 30 * 60 * 1000).toISOString());
     const result = await run({ source: 'aws.events' }, h.deps as never);
     assert.deepEqual(h.launches, []);
-    assert.ok(h.calls.includes('heartbeat'), 'the factory\'s heartbeat is still written');
+    assert.ok(h.issueEdits.some((e) => e.issue === BEAT.issue), 'the factory\'s heartbeat is still written');
     assert.deepEqual((result as { unread?: Array<{ repo: string }> }).unread?.map((u) => u.repo), [ASKME]);
     assert.equal(exitCodeFor(result as never), 1);
   });
@@ -8020,7 +8020,9 @@ describe('run — every served repo', () => {
   // and a repo's `signOff` prompt replaces it.
   test('a close asks a session to sign off, in its repo\'s signOff prompt or the default', async () => {
     for (const prompts of [{}, { signOff: 'End your reply with `Signing off.` once the docs are tidy.' }]) {
-      const h = twoRepos({ askmeFile: JSON.stringify({ ...JSON.parse(askmeWith({ prMessages: true, signOff: true })), prompts }) });
+      const file = JSON.parse(askmeWith({ prMessages: true, signOff: true }));
+      if ('signOff' in prompts) file.signOff.prompt = prompts.signOff;
+      const h = twoRepos({ askmeFile: JSON.stringify(file) });
       await run({ ...owners, text: 'Your pull request was closed.', closing: true }, h.deps as never);
       const text = (h.messages[0] as { text: string }).text;
       assert.ok(text.endsWith(standingLine([], { repo: ASKME, closing: true, prompts })), text);
@@ -8089,7 +8091,9 @@ describe('run — every served repo', () => {
     assert.match(String(((await run(fire, off.deps as never)) as { refusal?: string }).refusal), /redScheduledRun/);
     assert.deepEqual(off.launches, []);
     for (const prompts of [{}, { redScheduledRun: 'Run `make doctor`, then fix what it names.' }]) {
-      const h = twoRepos({ askmeFile: JSON.stringify({ ...JSON.parse(askmeWith({ redScheduledRun: true })), prompts }) });
+      const file = JSON.parse(askmeWith({ redScheduledRun: true }));
+      if ('redScheduledRun' in prompts) file.redScheduledRun.prompt = prompts.redScheduledRun;
+      const h = twoRepos({ askmeFile: JSON.stringify(file) });
       await run(fire, h.deps as never);
       assert.equal(h.launches.length, 1, h.calls.join('; '));
       const { prompt } = h.launches[0] as { prompt: string };
@@ -8143,19 +8147,20 @@ describe('run — every served repo', () => {
 });
 
 /**
- * The heartbeat is a per-repo setting: the bare schedule fire
- * stamps `last-run` into the issue each repo's file names, and only where its
- * body already carries the marker. A fire naming a repo or an issue is not
- * the sweep and writes nothing, or a label or a merge would keep the
+ * The heartbeat is a per-repo setting: the bare schedule fire writes
+ * pickup's line into the issue each repo's file names, and only where its
+ * body already carries governor's marker. A fire naming a repo or an issue
+ * is not the sweep and writes nothing, or a label or a merge would keep the
  * heartbeat fresh while the schedule was dead.
  */
 describe('fitness: the heartbeat writes only the issue the repo names, on the schedule fire (dispatcher-repos.md)', () => {
   const ASKME = 't-d-d/askme-mcp';
-  const ASKME_BEAT = { issue: 12, marker: '<!-- askme:heartbeat -->' };
+  const ASKME_BEAT = { issue: 12 };
   const ASKME_FILE = JSON.stringify({ environment: 'env_01ASK', pickup: { ready: ['mode: afk'], claim: 'claimed' }, heartbeat: ASKME_BEAT });
+  const AT = new Date(NOW).toISOString();
 
   /** The factory and askme-mcp, each with its own heartbeat issue; the writes by repo. */
-  const served = ({ askmeBody = `${ASKME_BEAT.marker}\n`, unreadable, ...over }: { askmeBody?: string; unreadable?: string; [key: string]: unknown } = {}) => {
+  const served = ({ askmeBody = `${HEARTBEAT_MARKER}\n`, unreadable, ...over }: { askmeBody?: string; unreadable?: string; [key: string]: unknown } = {}) => {
     const writes: Array<{ repo: string; issue: number; body: string }> = [];
     const base = harness();
     const h = harness({
@@ -8176,14 +8181,15 @@ describe('fitness: the heartbeat writes only the issue the repo names, on the sc
     return { ...h, writes };
   };
 
-  test('the bare schedule fire stamps last-run into each repo\'s own issue, keeping the rest of its body', async () => {
+  test('the bare schedule fire writes pickup\'s line into each repo\'s own issue, keeping the rest of its body', async () => {
     const h = served();
     const result = turn(await run({ source: 'aws.events' }, h.deps as never));
     assert.equal(result.heartbeat, true);
-    assert.deepEqual(h.writes.map((w) => [w.repo, w.issue]).sort(), [[ASKME, ASKME_BEAT.issue], [REPO, BEAT.issue]].sort());
-    const at = new Date(NOW).toISOString();
-    assert.equal(h.writes.find((w) => w.repo === REPO)!.body, BEAT_BODY.replace('2026-10-27T23:18:43.641Z', at));
-    assert.equal(readLastRun(h.writes.find((w) => w.repo === ASKME)!.body, ASKME_BEAT.marker), at);
+    assert.deepEqual([...new Set(h.writes.map((w) => `${w.repo}#${w.issue}`))].sort(), [`${ASKME}#${ASKME_BEAT.issue}`, `${REPO}#${BEAT.issue}`].sort());
+    const factory = h.writes.filter((w) => w.repo === REPO).at(-1)!.body;
+    assert.deepEqual(readHeartbeat(factory).pickup, { at: AT, started: 0 });
+    assert.ok(factory.endsWith('\n\nKeep this issue closed.\n'), factory);
+    assert.deepEqual(readHeartbeat(h.writes.find((w) => w.repo === ASKME)!.body).pickup, { at: AT, started: 0 });
   });
 
   for (const fire of [{ kind: 'schedule', repo: REPO }, { kind: 'schedule', repo: ASKME }, { kind: 'schedule', repo: REPO, issue: 7 }, { kind: 'schedule', repo: REPO, freed: 5 }]) {
@@ -8197,7 +8203,7 @@ describe('fitness: the heartbeat writes only the issue the repo names, on the sc
   test('an issue whose body lacks the marker is not written, on an error naming the repo and issue', async () => {
     const h = served({ askmeBody: 'someone\'s ticket' });
     await run({ source: 'aws.events' }, h.deps as never);
-    assert.deepEqual(h.writes.map((w) => w.repo), [REPO], 'the other repo\'s heartbeat still goes');
+    assert.deepEqual([...new Set(h.writes.map((w) => w.repo))], [REPO], 'the other repo\'s heartbeat still goes');
     const refused = h.logged.find((l) => l.event === 'dispatch-heartbeat-refused');
     assert.ok(refused, JSON.stringify(h.logged));
     assert.equal(refused.level, 'error');
@@ -8207,8 +8213,9 @@ describe('fitness: the heartbeat writes only the issue the repo names, on the sc
 
   test('an issue that cannot be read fails the turn, on an error naming the repo and issue, after the other repos\' heartbeats', async () => {
     const h = served({ unreadable: REPO });
-    await assert.rejects(run({ source: 'aws.events' }, h.deps as never), /404/);
-    assert.deepEqual(h.writes.map((w) => w.repo), [ASKME], 'the other repo\'s heartbeat still goes');
+    const result = await run({ source: 'aws.events' }, h.deps as never);
+    assert.equal(exitCodeFor(result as never), 1);
+    assert.deepEqual([...new Set(h.writes.map((w) => w.repo))], [ASKME], 'the other repo\'s heartbeat still goes');
     const unwritten = h.logged.find((l) => l.event === 'dispatch-heartbeat-unwritten');
     assert.ok(unwritten, JSON.stringify(h.logged));
     assert.equal(unwritten.level, 'error');

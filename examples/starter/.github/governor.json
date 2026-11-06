@@ -34,5 +34,6 @@
   },
   "hooks": { "enabled": false },
   "waits": { "enabled": false },
-  "signOff": {}
+  "signOff": {},
+  "issueReviews": { "enabled": false }
 }
