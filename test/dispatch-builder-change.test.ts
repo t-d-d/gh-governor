@@ -20,6 +20,7 @@ import { SWITCHES, readConfig, type RepoConfig } from '../dispatch/repo-config.m
 import { planClosingPr, planTicket } from '../dispatch/ticket-fire.mjs';
 import { GITHUB_SOURCE, deliveries } from '../dispatch/deliveries.mjs';
 import { sessionNamedIn } from '../dispatch/webhook/subscribe.mjs';
+import { closedBy } from '../dispatch/pr-body.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 const SECRET = 'whsec_test';
@@ -178,6 +179,12 @@ describe('the receiver: a PR that comes to close a ticket queues a closingPr fir
     for (const body of [`Closes https://github.com/${REPO}/issues/7\n\n${OTHER}`, `Fixes:#7\n\n${OTHER}`, `Resolves : #7\n\n${OTHER}`]) {
       assert.equal(ofKind(await handled('pull_request', pull('opened', body)), 'closingPr').length, 1, body);
     }
+  });
+
+  test('a reference closedBy reads past an HTML comment queues the fire too', async () => {
+    const body = `Closes <!-- the ticket -->#7\n\n${OTHER}`;
+    assert.deepEqual(closedBy(body, REPO), [7]);
+    assert.equal(ofKind(await handled('pull_request', pull('opened', body)), 'closingPr').length, 1);
   });
 });
 

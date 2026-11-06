@@ -11,7 +11,7 @@
 
 import { createHash } from 'node:crypto';
 import { REVIEW_MARKER } from './webhook/review-comment.mjs';
-import { CLOSING } from './webhook/closing.mjs';
+import { CLOSING, withoutQuietComments } from './webhook/closing.mjs';
 
 /**
  * @typedef {import('../scripts/lib/github-app.mjs').ThreadRow} ThreadRow
@@ -135,21 +135,6 @@ const LIST_MARKER = /^[ \t]*(?:[-*+][ \t]+)?$/;
 /** What may sit between two references of one line, and after the last. */
 const BETWEEN = /^\s*[,;.&]?\s*(?:and\s+)?$/i;
 const AFTER = /^[\s.,;]*$/;
-/** An HTML comment, to the end where unclosed: it renders as nothing. */
-const HTML_COMMENT = /<!--[\s\S]*?(?:-->|(?![\s\S]))/g;
-/** Whether text holds a closing reference at all. */
-const HAS_CLOSING = new RegExp(CLOSING.source, 'i');
-
-/**
- * The body with each HTML comment that holds no closing reference blanked,
- * its newlines kept: a PR template's comments, or a subscribe line, render
- * as nothing, so they neither end the top nor sit on a line's text. One
- * holding a closing reference stays, read like any text.
- *
- * @param {string} body
- */
-const withoutQuietComments = (body) => body.replace(HTML_COMMENT, (c) => (HAS_CLOSING.test(c) ? c : c.replace(/[^\n]/g, ' ')));
-
 /**
  * Whether a line is nothing but its closing references: at most a list
  * marker before them, punctuation or "and" between, punctuation after.
