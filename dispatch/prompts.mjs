@@ -33,11 +33,15 @@ export const PROMPTS = Object.freeze({
   // The check comes first: a ticket the code already settles, or one far
   // larger than it reads, gets a comment and no build. It keeps its claim, so
   // pickup does not start it again, and a person decides.
+  // The builder never writes the body: the body is what the PR is reviewed
+  // against, and Claude Code ends any body a session writes with its own
+  // link, which would take the ticket from its spec owner.
   pickup: {
     text: [
       'Implement GitHub issue #{issue} in {repo} through to a reviewable PR.',
       'The dispatcher claimed #{issue} for this session: it is `{claim}` for you, so proceed on it.',
       'Before you build, read #{issue} against the code. If the code already does what it asks, or the work is far larger than the ticket reads, comment on #{issue} saying which and what you found, and stop without building. Leave `{claim}` on #{issue}, so pickup does not start it again and a person decides.',
+      "Never edit #{issue}'s body: the session whose link ends it owns the spec. Where the spec looks wrong or out of date, say so in a comment on #{issue} and in your PR description, and build against what the code needs.",
       'Unattended session: push and raise the PR without asking, `Closes #{issue}`.',
     ].join('\n'),
     fills: ['issue', 'repo', 'claim'],
@@ -51,11 +55,10 @@ export const PROMPTS = Object.freeze({
   },
   // A blocker's close, in the blocked ticket's own repo (dispatch/unblocked.mjs).
   // A ready ticket's pickup prompt, after the facts of the close.
-  // A ticket's body ends with its owner's link, and Claude Code ends any
-  // body a session writes with its own, so the pickup session comments and
-  // leaves an owned body to its owner.
+  // The builder never writes the body, whoever owns it: it comments, and
+  // the spec owner hears the comment and updates its spec.
   unblockedReady: {
-    text: "Before you build, check the spec against what merged. Where the merge changed what the ticket builds on, say so in a comment on the ticket and in your PR description. Leave the body to the session whose link ends it: that session owns the ticket and updates its spec. Fix the body yourself only where it ends with no session link.",
+    text: "Before you build, check the spec against what merged. Where the merge changed what the ticket builds on, say so in a comment on the ticket and in your PR description. Never edit the ticket's body, whether or not a session link ends it: its spec owner updates the spec.",
     fills: [],
     replaces: "a ready ticket's ask, below its pickup prompt and the facts of its blocker's close",
   },
