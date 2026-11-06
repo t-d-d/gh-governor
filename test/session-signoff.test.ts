@@ -159,6 +159,8 @@ const sweepOver = async (rows: Array<Record<string, unknown>>, pages: Record<str
     now: () => NOW,
     log: (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); },
     repos: [SERVED],
+    // No open PR names a session unless a test says otherwise.
+    holds: async () => [],
     list: async () => rows,
     lookup: async (id: string) => ({ row: rows.find((r) => r.id === id) ?? null, from: 'list' as const }),
     events: async (id: string) => {
@@ -303,7 +305,7 @@ describe('fitness: a sign-off is read from the session (session-signoff.md)', ()
       },
     });
     const counts = logged.filter((l) => l.event === 'dispatch-signoff' && 'candidates' in l).map(({ turnedAway: _t, ...rest }) => rest);
-    assert.deepEqual(counts, [{ event: 'dispatch-signoff', listed: 5, candidates: 4, archived: 1, unsigned: 1, kept: 1, deferred: 1 }]);
+    assert.deepEqual(counts, [{ event: 'dispatch-signoff', listed: 5, candidates: 4, archived: 1, held: 0, unsigned: 1, kept: 1, deferred: 1 }]);
     assert.equal(logged.filter((l) => typeof l.deferred === 'number').length, 1);
   });
 
@@ -341,6 +343,69 @@ describe('fitness: a sign-off is read from the session (session-signoff.md)', ()
     for (const reply of [CLOUD_REPLY, BRIDGE_REPLY, NOT_SIGNED]) {
       for (const line of reply.split('\n').filter((l) => l.trim() !== '')) assert.ok(!text.includes(line), line);
     }
+  });
+});
+
+/**
+ * A session's word is not enough while it still owns an open PR: a later
+ * conflict, review or red run needs the session that wrote the PR.
+ */
+describe('fitness: a session that owns an open PR is held, whatever its reply says (session-signoff.md)', () => {
+  test('a signed-off session an open PR\'s body names is not archived, and the hold is logged with the PR\'s number', async () => {
+    const asked: Array<{ session: string; repos: string[] }> = [];
+    const { archived, logged, sweep } = await sweepOver([row('cse_01OWNER')], { cse_01OWNER: cloudSignedOff }, {
+      holds: async (session: string, repos: string[]) => { asked.push({ session, repos }); return [587]; },
+    });
+    assert.deepEqual(archived, []);
+    assert.deepEqual(asked, [{ session: 'session_01OWNER', repos: [SERVED] }]);
+    assert.deepEqual(sweep.held, ['session_01OWNER']);
+    const line = logged.find((l) => l.event === 'dispatch-signoff' && l.session === 'session_01OWNER');
+    assert.deepEqual(line, { event: 'dispatch-signoff', session: 'session_01OWNER', decision: 'held', archived: false, prs: [587] });
+    assert.equal(logged.find((l) => 'candidates' in l)?.held, 1);
+  });
+
+  test('once no open PR names it, a later sweep archives it where its newest reply signs off', async () => {
+    const { archived, sweep } = await sweepOver([row('cse_01OWNER')], { cse_01OWNER: cloudSignedOff }, { holds: async () => [] });
+    assert.deepEqual(archived, ['session_01OWNER']);
+    assert.deepEqual(sweep.held, []);
+  });
+
+  test('a session that did not sign off is not looked up: only a sign-off is held', async () => {
+    let asked = 0;
+    await sweepOver([row('cse_01AGAIN')], { cse_01AGAIN: cloudSignedOffThenNot }, { holds: async () => { asked += 1; return [587]; } });
+    assert.equal(asked, 0);
+  });
+
+  test('asks only of the served repos the session names', async () => {
+    const asked: string[][] = [];
+    const both = { ...row('cse_01OWNER'), config: { sources: [{ type: 'git_repository', url: `https://github.com/${SERVED}` }, { type: 'git_repository', url: 'https://github.com/t-d-d/askme-mcp' }] } };
+    await sweepOver([both], { cse_01OWNER: cloudSignedOff }, { holds: async (_s: string, repos: string[]) => { asked.push(repos); return []; } });
+    assert.deepEqual(asked, [[SERVED]]);
+  });
+
+  test('a failed read of the open list archives nothing, and keeps the session with the reason', async () => {
+    const { archived, sweep, logged } = await sweepOver([row('cse_01OWNER')], { cse_01OWNER: cloudSignedOff }, {
+      holds: async () => { throw new Error('GET /repos/acme/factory/issues: 502'); },
+    });
+    assert.deepEqual(archived, []);
+    assert.deepEqual(sweep.kept, [{ session: 'session_01OWNER', error: 'could not read the open PRs: GET /repos/acme/factory/issues: 502' }]);
+    assert.ok(logged.some((l) => l.session === 'session_01OWNER' && l.decision === 'signed off' && l.archived === false && /could not read the open PRs/.test(String(l.reason))));
+  });
+
+  test('a hold is told through onHeld, whose answer joins the hold\'s line; one that throws is logged and archives nothing', async () => {
+    const told: Array<{ session: string; prs: number[]; repos: string[] }> = [];
+    const first = await sweepOver([row('cse_01OWNER')], { cse_01OWNER: cloudSignedOff }, {
+      holds: async () => [587],
+      onHeld: async (session: string, prs: number[], repos: string[]) => { told.push({ session, prs, repos }); return { told: true }; },
+    });
+    assert.deepEqual(told, [{ session: 'session_01OWNER', prs: [587], repos: [SERVED] }]);
+    assert.ok(first.logged.some((l) => l.session === 'session_01OWNER' && l.decision === 'held' && l.told === true));
+    const failed = await sweepOver([row('cse_01OWNER')], { cse_01OWNER: cloudSignedOff }, {
+      holds: async () => [587],
+      onHeld: async () => { throw new Error('state table: 500'); },
+    });
+    assert.deepEqual(failed.archived, []);
+    assert.ok(failed.logged.some((l) => l.session === 'session_01OWNER' && l.decision === 'held' && l.told === false && /500/.test(String(l.error))));
   });
 });
 

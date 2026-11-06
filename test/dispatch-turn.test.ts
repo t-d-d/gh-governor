@@ -151,6 +151,8 @@ const harness = (over: Record<string, unknown> = {}) => {
   const delivered = new Map<string, { told: Set<string>; failed: string[]; tickets?: Set<number> }>();
   // Each PR a merge's conflicts check told, by repo, PR and merge commit.
   const conflictsTold = new Set<string>();
+  // Each session governor told it was held from its sign-off.
+  const heldTold = new Set<string>();
   // Each periodic's record, keyed `<repo>#<name>`, and every write to one.
   const periodics = new Map<string, { at: string; session: string | null; baseline: boolean }>();
   const periodicWrites: Array<{ repo: string; name: string; record: { at: string; session: string | null; baseline: boolean } }> = [];
@@ -396,6 +398,12 @@ const harness = (over: Record<string, unknown> = {}) => {
         return true;
       },
       recordSession: async (session: string) => { recorded.push(session); },
+      // A conditional write, as the table's: false where the record stood.
+      recordHeld: async (session: string) => {
+        if (heldTold.has(session)) return false;
+        heldTold.add(session);
+        return true;
+      },
       startedSession: async (session: string) => recorded.includes(session),
       verdict: async () => null,
       recordVerdict: async () => true,
@@ -417,7 +425,7 @@ const harness = (over: Record<string, unknown> = {}) => {
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, failedLaunches, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, publishedClaim, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, heldTold, failedLaunches, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, publishedClaim, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -4604,7 +4612,7 @@ describe('run — a message into a session', () => {
     const result = await run({ kind: 'message', session: 'session_01ABC', text: 'the reviewer asked for a test' }, deps as never);
     assert.ok(calls.indexOf('workspace.writeLogin') < calls.indexOf('message session_01ABC'), calls.join(', '));
     assert.deepEqual(messages, [{ session: 'session_01ABC', text: fromDispatcher(`the reviewer asked for a test\n\n${standingLine([], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })}`, GITHUB_SOURCE) }]);
-    assert.deepEqual(result, { kind: 'message', ok: true, answered: true, refused: false, sessionUrl: 'https://claude.ai/code/session_01ABC', error: null, fallback: null, dropped: null, skipped: null, relinked: null, archived: false, loginStored: false, signoffs: { archived: [], kept: [], unsigned: 0, deferred: 0, skipped: null } });
+    assert.deepEqual(result, { kind: 'message', ok: true, answered: true, refused: false, sessionUrl: 'https://claude.ai/code/session_01ABC', error: null, fallback: null, dropped: null, skipped: null, relinked: null, archived: false, loginStored: false, signoffs: { archived: [], held: [], kept: [], unsigned: 0, deferred: 0, skipped: null } });
     assert.deepEqual(launches, []);
     assert.deepEqual(comments, []);
     assert.ok(!calls.includes('heartbeat'));
@@ -6285,8 +6293,93 @@ describe('run — a merge to main leaves PRs conflicted', () => {
  */
 describe('run — sessions that signed off', () => {
   const MESSAGE = { kind: 'message', session: 'session_01ABC', text: 'A comment.' };
-  type Sweep = { archived: string[]; kept: Array<{ session: string; error: string }>; unsigned: number; deferred: number; skipped: string | null };
+  type Sweep = { archived: string[]; held: string[]; kept: Array<{ session: string; error: string }>; unsigned: number; deferred: number; skipped: string | null };
   const sweepOf = (result: unknown) => (result as { signoffs: Sweep }).signoffs;
+
+  /** A reader whose open list names `session` in the bodies of `rows`: a PR where `pull`. */
+  const naming = (h: ReturnType<typeof harness>, session: string, rows: Array<{ number: number; pull: boolean }>, seen: Array<{ id: string; relay: unknown }> = []) => {
+    const base = h.deps.reader;
+    (h.deps as { reader: unknown }).reader = (token: string) => ({
+      ...base(token),
+      openNaming: async (id: string, relay: unknown) => {
+        seen.push({ id, relay });
+        return id === session ? rows.map((r) => ({ ...r, title: `T${r.number}`, html_url: `https://github.com/${REPO}/${r.pull ? 'pull' : 'issues'}/${r.number}` })) : [];
+      },
+    });
+    return seen;
+  };
+
+  test('holds a signed-off session an open PR\'s body names, logs the PR\'s number, and tells it once where the file sets heldMessage', async () => {
+    const h = harness();
+    h.rows.push(sessionRow('cse_01OWNER'));
+    h.pages.set('cse_01OWNER', cloudSignedOff);
+    const seen = naming(h, 'session_01OWNER', [{ number: 587, pull: true }]);
+    const first = sweepOf(await run({ kind: 'schedule' }, h.deps as never));
+    assert.deepEqual(h.archives, []);
+    assert.deepEqual(first.held, ['session_01OWNER']);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-signoff' && l.session === 'session_01OWNER' && l.decision === 'held' && JSON.stringify(l.prs) === '[587]' && l.told === true), JSON.stringify(h.logged.filter((l) => l.event === 'dispatch-signoff')));
+    assert.ok(seen.every((s) => s.id === 'session_01OWNER' && Array.isArray(s.relay)), 'read from the open list, by the repo\'s relay list');
+    assert.deepEqual(h.messages.map((m) => m.session), ['session_01OWNER']);
+    const text = h.messages[0]!.text;
+    assert.match(text, /not archived/);
+    assert.match(text, /#587/);
+    assert.match(text, /stays open until governor asks you to sign off/);
+    assert.match(text, /merges and its change deploys, or .*closes/);
+    assert.deepEqual([...h.heldTold], ['session_01OWNER']);
+    // A later hold of the same session is logged only.
+    h.messages.length = 0;
+    const second = sweepOf(await run({ kind: 'schedule' }, h.deps as never));
+    assert.deepEqual(second.held, ['session_01OWNER']);
+    assert.deepEqual(h.messages, [], 'no second message, whatever the session does next');
+    assert.deepEqual(h.archives, []);
+  });
+
+  test('with heldMessage unset, a hold sends no message and writes no record', async () => {
+    const file = JSON.parse(FACTORY_FILE);
+    delete file.signOff.heldMessage;
+    const unset = JSON.stringify(file);
+    const h = harness({ configFile: async (repo: string) => (repo === REPO ? unset : null) });
+    h.rows.push(sessionRow('cse_01OWNER'));
+    h.pages.set('cse_01OWNER', cloudSignedOff);
+    naming(h, 'session_01OWNER', [{ number: 587, pull: true }]);
+    const sweep = sweepOf(await run({ kind: 'schedule' }, h.deps as never));
+    assert.deepEqual(sweep.held, ['session_01OWNER']);
+    assert.deepEqual(h.messages, []);
+    assert.deepEqual([...h.heldTold], []);
+    assert.deepEqual(h.archives, []);
+  });
+
+  test('an open issue that names the session holds nothing: only an open PR does', async () => {
+    const h = harness();
+    h.rows.push(sessionRow('cse_01OWNER'));
+    h.pages.set('cse_01OWNER', cloudSignedOff);
+    naming(h, 'session_01OWNER', [{ number: 571, pull: false }]);
+    const sweep = sweepOf(await run({ kind: 'schedule' }, h.deps as never));
+    assert.deepEqual(sweep.archived, ['session_01OWNER']);
+    assert.deepEqual(h.messages, []);
+  });
+
+  test('a failed read of the open list archives nothing', async () => {
+    const h = harness();
+    h.rows.push(sessionRow('cse_01OWNER'));
+    h.pages.set('cse_01OWNER', cloudSignedOff);
+    const base = h.deps.reader;
+    (h.deps as { reader: unknown }).reader = (token: string) => ({ ...base(token), openNaming: async () => { throw new Error('GET /repos/acme/factory/issues: 502'); } });
+    const sweep = sweepOf(await run({ kind: 'schedule' }, h.deps as never));
+    assert.deepEqual(h.archives, []);
+    assert.match(sweep.kept[0]!.error, /could not read the open PRs.*502/);
+  });
+
+  test('a record write that fails sends no message, and the session stays held', async () => {
+    const h = harness({ state: { recordHeld: async () => { throw new Error('ProvisionedThroughputExceeded'); } } });
+    h.rows.push(sessionRow('cse_01OWNER'));
+    h.pages.set('cse_01OWNER', cloudSignedOff);
+    naming(h, 'session_01OWNER', [{ number: 587, pull: true }]);
+    const sweep = sweepOf(await run({ kind: 'schedule' }, h.deps as never));
+    assert.deepEqual(sweep.held, ['session_01OWNER']);
+    assert.deepEqual(h.messages, []);
+    assert.ok(h.logged.some((l) => l.decision === 'held' && l.told === false && /ProvisionedThroughputExceeded/.test(String(l.error))));
+  });
 
   test('archives each idle session in the repo whose last reply signs off, after the turn\'s own work', async () => {
     const h = harness();
@@ -6296,7 +6389,7 @@ describe('run — sessions that signed off', () => {
     h.pages.set('cse_01ELSE', cloudSignedOff);
     const result = await run(MESSAGE, h.deps as never);
     assert.deepEqual(h.archives, [{ session: 'session_01DONE', token: 'sk-ant-oat01-a' }]);
-    assert.deepEqual(sweepOf(result), { archived: ['session_01DONE'], kept: [], unsigned: 1, deferred: 0, skipped: null });
+    assert.deepEqual(sweepOf(result), { archived: ['session_01DONE'], held: [], kept: [], unsigned: 1, deferred: 0, skipped: null });
     assert.ok(h.calls.indexOf('message session_01ABC') < h.calls.indexOf('archive session_01DONE'), 'the turn\'s own work comes first');
     assert.ok(h.logged.some((l) => l.event === 'dispatch-signoff' && l.session === 'session_01DONE' && l.archived === true));
     assert.ok(!h.eventsRead.some((r) => r.id === 'cse_01ELSE'), 'a session in another repo is not read');
@@ -6421,7 +6514,7 @@ describe('run — sessions that signed off', () => {
       return sweepOf(await run(MESSAGE, h.deps as never));
     };
     for (const status of [200, 202, 204, 409]) assert.deepEqual((await outcome(async () => ({ status, body: '' }))).archived, ['session_01DONE'], String(status));
-    assert.deepEqual(await outcome(async () => ({ status: 404, body: '' })), { archived: [], kept: [], unsigned: 0, deferred: 0, skipped: null });
+    assert.deepEqual(await outcome(async () => ({ status: 404, body: '' })), { archived: [], held: [], kept: [], unsigned: 0, deferred: 0, skipped: null });
     const refused = await outcome(async () => ({ status: 401, body: '{"error":{"message":"invalid token"}}' }));
     assert.equal(refused.kept[0]!.session, 'session_01DONE');
     assert.match(refused.kept[0]!.error, /401.*invalid token/);
@@ -6786,6 +6879,29 @@ describe('realDeps: the state table', () => {
     assert.equal(await state.recordConflict('acme/factory', 804, 'a'.repeat(40)), false, 'a record standing is no fault: the PR was told');
     const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
     await assert.rejects(failing.recordConflict('acme/factory', 804, 'a'.repeat(40)), /AccessDeniedException/);
+  });
+  // The sign-off sweep tells a held session once, whatever it does next.
+  test('a session told it was held is one item per session id, under no repo, put only where none stands, and expires', async () => {
+    const sent: Array<{ name: string; input: Record<string, any> }> = [];
+    let refuse = false;
+    const client = {
+      send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
+        sent.push({ name: command.constructor.name, input: command.input });
+        if (refuse) throw Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' });
+        return {};
+      },
+    };
+    const state = dynamoState(client as never, 'T');
+    assert.equal(await state.recordHeld('https://claude.ai/code/session_01OWNER'), true);
+    const put = sent[0]!;
+    assert.equal(put.name, 'PutItemCommand', 'one conditional put, never a read then a write');
+    assert.deepEqual({ pk: put.input.Item.pk, sk: put.input.Item.sk }, { pk: { S: 'held#session_01OWNER' }, sk: { S: 'told' } });
+    assert.match(String(put.input.ConditionExpression), /attribute_not_exists\(pk\)/);
+    assert.ok(Number(put.input.Item.ttl.N) > Date.now() / 1000 + 30 * 24 * 60 * 60, 'it outlasts a PR left open for a month');
+    refuse = true;
+    assert.equal(await state.recordHeld('session_01OWNER'), false, 'a record standing is no fault: the session was told');
+    const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
+    await assert.rejects(failing.recordHeld('session_01OWNER'), /AccessDeniedException/);
   });
   // The review reads it back for every PR its session opens, so it never expires.
   test('a session governor started is one item per session id, under no repo, put with no expiry, and read consistently', async () => {

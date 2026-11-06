@@ -545,6 +545,17 @@ const hooksSchema = z.strictObject({
 });
 
 /**
+ * The `signOff` section: `enabled`, its prompt, and `heldMessage`, whether
+ * the sweep tells a session the first time it holds it from its sign-off
+ * because an open PR names it (scripts/lib/session-signoff.mjs).
+ */
+const signOffSchema = z.strictObject({
+  enabled,
+  ...promptFields('signOff'),
+  heldMessage: z.boolean().optional().meta({ description: 'Whether governor messages a session the first time the sweep holds it: its reply signed off, but an open PR\'s body names it, so it was not archived, and it stays open until governor asks it to sign off. Governor sends this once per session. Default false: every hold is only logged.' }),
+});
+
+/**
  * Each feature's section, its JSON Schema description the switch's
  * ({@link SWITCH_DESCRIPTIONS}).
  */
@@ -564,7 +575,7 @@ const sectionSchemas = {
   periodics: periodicsSchema,
   hooks: hooksSchema,
   waits: waitsSchema,
-  signOff: plainSection('signOff'),
+  signOff: signOffSchema,
 };
 
 /**
@@ -636,7 +647,7 @@ const toConfig = (file) => {
       for (const [key, kind] of Object.entries(place.prompts)) if (held.prompts?.[key] !== undefined) prompts[kind] = held.prompts[key];
     }
   }
-  const { pickup, deployMessages, prReview, heartbeat, waits, periodics, hooks, issueReviews } = file;
+  const { pickup, deployMessages, prReview, heartbeat, waits, periodics, hooks, issueReviews, signOff } = file;
   // With no ready or claim label, no feature that reads the labels is on
   // (fileSchema), so these are never read but to list no ready label.
   const labels = pickup?.ready !== undefined && pickup.claim !== undefined
@@ -659,6 +670,7 @@ const toConfig = (file) => {
   if (heartbeat?.issue !== undefined) config.heartbeat = { issue: heartbeat.issue };
   if (waits?.issue !== undefined) config.waits = { issue: waits.issue };
   if (pickup?.sweepHours !== undefined) config.pickup = { sweepHours: pickup.sweepHours };
+  if (signOff?.heldMessage === true) config.signOff = { heldMessage: true };
   if (file.trust !== undefined) config.trust = file.trust;
   if (issueReviews !== undefined) config.issueReviews = issueReviews;
   // `$schema` is for the editor: governor drops it unread.
@@ -808,7 +820,7 @@ export const configSchema = fileSchema.transform(toConfig)
  * @typedef {{ enabled?: boolean, reviews: IssueReview[] }} IssueReviews
  *   The `issueReviews` section: `enabled` as the file sets it, and each
  *   review, in the order of the file's keys.
- * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, periodics: Periodic[], hooks: Hook[], issueReviews?: IssueReviews }} RepoConfig
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, signOff?: { heldMessage: true }, periodics: Periodic[], hooks: Hook[], issueReviews?: IssueReviews }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
  *   ready labels the claim takes off, and a failed launch puts back.
@@ -825,6 +837,8 @@ export const configSchema = fileSchema.transform(toConfig)
  *   `pickup`: pickup's sweep interval, where the file sets it. The file no
  *   longer sets the retired `by`.
  *   `trust`: whose GitHub text governor acts on, where the file sets it.
+ *   `signOff`: where the file sets `heldMessage`, the sweep tells a
+ *   session the first time it holds it from its sign-off.
  *   `periodics`: the recurring sessions the schedule fire starts.
  *   `hooks`: the hooks an outside system fires.
  *   `issueReviews`: the issue reviews section, where the file has one.

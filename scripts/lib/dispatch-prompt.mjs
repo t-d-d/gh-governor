@@ -52,8 +52,9 @@ export const sessionName = (number, title) => {
  * edit the ticket's body, and to put a difference from the spec in a
  * comment and its PR description. No PR's merge or close will come to ask
  * such a session to sign off, so where the repo turns `signOff` on, the
- * default goes on to ask it, in the repo's `signOff` prompt where it sets
- * one. With the switch off it carries no ask, as the standing line does not
+ * default goes on to ask it, only where it stopped without raising a PR, in
+ * the repo's `signOff` prompt where it sets one. It first tells a session
+ * that raised a PR to stay open until governor asks it to sign off. With the switch off it carries no ask, as the standing line does not
  * (docs/constraints/session-signoff.md). A repo's own `pickup` prompt is
  * sent as it is.
  *
@@ -71,12 +72,22 @@ export const promptFor = (number, title, repo, claim, prompts = {}, { signOff = 
     lead ? `Pickup #${number} '${lead}'` : `Pickup #${number}`,
     '',
     instruction(prompts, 'pickup', { issue: number, repo, claim }),
-    ...(asks ? [`${STOPPED} ${instruction(prompts, 'signOff')}`] : []),
+    ...(asks ? [`${OPEN_PR} ${STOPPED} ${instruction(prompts, 'signOff')}`] : []),
   ].join('\n');
 };
 
-/** The default pickup prompt's lead into the ask to sign off. */
-const STOPPED = 'If you stopped at the check, no pull request will close to ask you to sign off.';
+/**
+ * What the default pickup prompt tells a session that raised a PR: the
+ * sweep holds a session an open PR names (scripts/lib/session-signoff.mjs),
+ * and governor's own message asks it to sign off once the PR is done with.
+ */
+const OPEN_PR = 'If you raised a pull request, do not sign off while it is open: this session stays open until governor asks you to sign off, once the pull request merges and its change deploys, or it closes.';
+
+/**
+ * The default pickup prompt's lead into the ask to sign off. A builder read
+ * a bare "if you stopped" as an ask to sign off once it stopped, PR or not.
+ */
+const STOPPED = 'If you stopped at the check without raising a pull request, no pull request will close to ask you to sign off:';
 
 /**
  * What one exit status of `dispatch/launch-session.py` means.

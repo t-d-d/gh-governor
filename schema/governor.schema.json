@@ -1230,6 +1230,10 @@
             }
           ],
           "description": "Replaces the default wording of the standing line's ask to sign off. It may name no fact. The text, or { \"file\": \"<path>\" }."
+        },
+        "heldMessage": {
+          "description": "Whether governor messages a session the first time the sweep holds it: its reply signed off, but an open PR's body names it, so it was not archived, and it stays open until governor asks it to sign off. Governor sends this once per session. Default false: every hold is only logged.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false

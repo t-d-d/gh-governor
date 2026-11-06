@@ -35,6 +35,25 @@ session's own last reply is current and needs nothing in the repo.
   (`signsOff`). A served repo's sessions are told the line by the standing
   line governor writes under each message, or by the repo's own `signOff`
   prompt. With the switch off, the standing line leaves the ask out.
+- A session that owns an open PR in a served repo is not archived, whatever
+  its reply says. Before it archives a signed-off session, the sweep finds
+  the open PRs in the served repos the session's row names whose body names
+  the session, from the open list the standing line reads (`openNaming`,
+  under the repo's `trust.relay`). Where one is open, the session is held:
+  the sweep logs `dispatch-signoff` with the decision `held` and the PRs'
+  numbers, and a later sweep archives it once no open PR names it and its
+  newest reply signs off. A read of the open list that fails archives
+  nothing (`holds`).
+- A message telling a session it was held goes once per session, and only
+  where a repo the session names sets `signOff.heldMessage`. Governor puts
+  the session's held record (dispatcher-state.md) before the send, only
+  where none stands, and sends nothing where one stood or the put failed.
+  Any later hold is logged only, so the session and the sweep cannot answer
+  each other in a loop (`onHeld`).
+- The default pickup prompt asks for a sign-off only where the session
+  stopped at the check without raising a PR, and tells a session with an
+  open PR that it stays open until governor asks it to sign off. A repo's
+  own `pickup` prompt is sent as it is.
 - The archive reads the session's row again after its events, and archives
   only an idle one. A session the turn messaged is decided only by a
   `result` newer than the message.
@@ -56,8 +75,11 @@ session's own last reply is current and needs nothing in the repo.
   session reads `SESSION_STATUS_BUCKET_COMPLETED` without having signed off.
 - Do not base the sweep's decision on a session archiving itself: the
   claude.ai connectors reach only a turn a person typed.
+- Do not archive a signed-off session because the open list could not be
+  read: a session archived with its PR open leaves the PR's next event to a
+  fresh session with none of its context.
 - Do not ask a served repo for a sign-off hook, or a record a session
   writes: each repo then needs the hook and a credential, and the record
   goes stale.
 
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The sweep and the standing line's ask run only where the repo's file turns the `signOff` switch on since #278.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The sweep and the standing line's ask run only where the repo's file turns the `signOff` switch on since #278. A session that owns an open PR is held from the archive, and told so once where the repo's file asks, since #594.

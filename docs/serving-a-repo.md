@@ -136,6 +136,7 @@ Governor read `.github/dispatch.json` in an older layout before this one, and re
 | `hooks.sessions` | when `hooks` is on | The sessions an outside system starts with a signed request, each keyed by its name: lower-case letters, digits and hyphens. The name ends the hook's URL, and its session is named after it. Each may cap its fires with `perHour`. At least one when on. |
 | `waits.issue` | no | The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing. |
 | `waits.prompts` | no | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `spec`, `ownerSpec`. |
+| `signOff.heldMessage` | no | Whether governor messages a session the first time the sweep holds it: its reply signed off, but an open PR's body names it, so it was not archived, and it stays open until governor asks it to sign off. Governor sends this once per session. Default false: every hold is only logged. |
 
 | Section | What it turns on |
 |---|---|
