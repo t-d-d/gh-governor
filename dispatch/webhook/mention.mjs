@@ -868,11 +868,12 @@ const dispatchFire = ({ event, payload, appId, labels, owner, state }) => {
 
 /**
  * Each issue number a body may close, roughly: a closing keyword and a
- * reference. The receiver cannot read a body as GitHub does
- * (dispatch/pr-body.mjs is the task's), so it reads too many and the task
- * reads the body again.
+ * reference, `#N`, `owner/repo#N` or an issue's URL, after a colon or a
+ * space, as `closedBy` (dispatch/pr-body.mjs) reads them. The receiver
+ * cannot import the task's grammar, so it reads every repository's
+ * references, too many, and never fewer: the task reads the body again.
  */
-const CLOSING_REF = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?[ \t]+(?:[\w.-]+\/[\w.-]+)?#(\d+)/gi;
+const CLOSING_REF = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?:\s*:\s*|\s+)(?:https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/|(?:[\w.-]+\/[\w.-]+)?#)(\d+)\b/gi;
 
 /** @param {unknown} body @returns {Set<string>} */
 const roughlyCloses = (body) => new Set([...String(body ?? '').matchAll(CLOSING_REF)].map((m) => String(m[1])));

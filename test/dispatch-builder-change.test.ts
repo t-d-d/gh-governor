@@ -18,6 +18,7 @@ import { switchOf } from '../dispatch/webhook/switches.mjs';
 import { SWITCHES, readConfig, type RepoConfig } from '../dispatch/repo-config.mjs';
 import { planClosingPr, planTicket } from '../dispatch/ticket-fire.mjs';
 import { GITHUB_SOURCE, deliveries } from '../dispatch/deliveries.mjs';
+import { sessionNamedIn } from '../dispatch/webhook/subscribe.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 const SECRET = 'whsec_test';
@@ -187,6 +188,12 @@ describe('the receiver: a PR that comes to close a ticket queues a closingPr fir
     assert.deepEqual(ofKind(await handled('pull_request', stranger), 'closingPr'), []);
     assert.deepEqual(ofKind(await handled('pull_request', pull('opened', 'Closes #7'), item(['subscribeMessages'])), 'closingPr'), []);
   });
+
+  test('every closing reference GitHub reads queues the fire: an issue URL, and a colon with or without spaces', async () => {
+    for (const body of [`Closes https://github.com/${REPO}/issues/7\n\n${OTHER}`, `Fixes:#7\n\n${OTHER}`, `Resolves : #7\n\n${OTHER}`]) {
+      assert.equal(ofKind(await handled('pull_request', pull('opened', body)), 'closingPr').length, 1, body);
+    }
+  });
 });
 
 // ── The task: relaying the comment ──────────────────────────────────────
@@ -295,11 +302,12 @@ const prContext = ({
   labels = [CLAIM],
   state = 'open',
   body = `The spec.\n\n${SPEC}${FOOTER}`,
+  prAuthor = { author: 't-d-d', association: 'OWNER' },
 } = {}) => {
   const posted: Array<{ issue: number, body: string }> = [];
   const logged: Array<Record<string, unknown>> = [];
   const reader = {
-    pull: async (n: number) => ({ number: n, body: prBody, head: 'claude/other', defaultBranch: 'main', open }),
+    pull: async (n: number) => ({ number: n, body: prBody, head: 'claude/other', defaultBranch: 'main', open, author: prAuthor.author, association: prAuthor.association }),
     ticket: async (n: number) => ({ number: n, title: 'A ticket', body, state, labels, pull: false, author: 't-d-d', association: 'OWNER' }),
     openClosing: async () => closing.map((number) => ({ number, title: `PR ${number}`, html_url: `u${number}` })),
     closure: async () => ({ pr: null }),
@@ -371,6 +379,12 @@ describe('planClosingPr: a PR by another session that closes a claimed ticket na
     }
   });
 
+  test('a PR whose author trust.relay leaves out closes no ticket here, whatever the receiver judged', async () => {
+    const { ctx, posted } = prContext({ prAuthor: { author: 'stranger', association: 'NONE' } });
+    await planClosingPr(closingPr, ctx);
+    assert.deepEqual(posted, []);
+  });
+
   test('end to end: the comment posted reaches the spec owner and asks the live displaced builder to sign off', async () => {
     const { ctx, posted } = prContext();
     await planClosingPr(closingPr, ctx);
@@ -390,14 +404,14 @@ describe('a takeover of a PR that closes a ticket posts the dispatch comment on 
   const archived = async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) });
   const accepted = (session: string) => ({ status: 0, output: JSON.stringify({ ok: true, session_id: session, url: `https://claude.ai/code/${session}` }) });
 
-  const fakes = ({ send, sessions = async () => null as string | null, prBody = PR_BODY }: { send: (m: { session: string }) => Promise<{ status: number, output: string }>, sessions?: (branch: string) => Promise<string | null>, prBody?: string }) => {
+  const fakes = ({ send, sessions = async () => null as string | null, prBody = PR_BODY, open = true }: { send: (m: { session: string }) => Promise<{ status: number, output: string }>, sessions?: (branch: string) => Promise<string | null>, prBody?: string, open?: boolean }) => {
     const comments: Array<{ issue: number, body: string }> = [];
     const edits: Array<{ pr: number, body: string }> = [];
     let body = prBody;
     const reader = {
       comments: async () => [],
       comment: async (n: number, text: string) => { comments.push({ issue: n, body: text }); },
-      pull: async (n: number) => ({ number: n, body, head: 'claude/branch-9', defaultBranch: 'main', open: true, author: 't-d-d', association: 'OWNER', bot: false, own: false }),
+      pull: async (n: number) => ({ number: n, body, head: 'claude/branch-9', defaultBranch: 'main', open, author: 't-d-d', association: 'OWNER', bot: false, own: false }),
       updatePull: async (n: number, change: { body: string }) => { edits.push({ pr: n, body: change.body }); body = change.body; },
       issue: async (n: number) => ({ number: n, body: '', pull: false }),
       updateIssue: async () => {},
@@ -442,6 +456,14 @@ describe('a takeover of a PR that closes a ticket posts the dispatch comment on 
     const f = fakes({ send: async () => accepted('session_01LIVE'), sessions: async () => LIVE, prBody: 'Closes #7\n\nThe work.' });
     await f.delivery.deliver({ pr: 9 }, 'a remark', { source: GITHUB_SOURCE } as never);
     assert.equal(f.edits.length, 1, 'the body now names the branch session');
+    assert.deepEqual(f.comments, []);
+  });
+
+  test('a branch session written into a merged PR\'s body names no builder on the tickets the merge closed', async () => {
+    const LIVE = 'https://claude.ai/code/session_01LIVE';
+    const f = fakes({ open: false, send: async (m) => (m.session === BUILDER ? archived(m) : accepted('session_01LIVE')), sessions: async (branch) => (branch === 'claude/branch-9' ? LIVE : null) });
+    await f.delivery.deliver({ session: BUILDER }, 'PR #9 merged', { source: GITHUB_SOURCE, owns: [9] } as never);
+    assert.equal(sessionNamedIn(f.edits[0]?.body ?? ''), LIVE, 'the body names the branch session');
     assert.deepEqual(f.comments, []);
   });
 

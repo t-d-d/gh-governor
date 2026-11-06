@@ -33,7 +33,7 @@ import { buildersOf } from './builders.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
-import { sameSession, sessionId } from './webhook/subscribe.mjs';
+import { relayedBody, sameSession, sessionId } from './webhook/subscribe.mjs';
 
 /** @typedef {'spec owner' | 'builder' | 'spec owner and builder'} TicketRole */
 
@@ -184,11 +184,14 @@ export const planClosingPr = async (invocation, ctx) => {
   /** @type {number[]} */
   const announced = [];
   const answer = () => ({ answer: { kind: invocation.kind, dispatched: [], announced } });
+  const relay = relayOf(config);
   const reader = await ctx.readerFor(repo);
   const pull = await reader.pull(pr);
-  const tickets = closedBy(pull.body, repo);
+  // The receiver judged the author by the hook-table item, which may lag
+  // the file: a body trust.relay leaves out closes nothing here.
+  const tickets = closedBy(relayedBody(pull, relay), repo);
   if (!pull.open || tickets.length === 0) {
-    ctx.log('dispatch-builder', { repo, pr, outcome: 'nothing announced', reason: pull.open ? 'its body closes no ticket' : 'it is closed' });
+    ctx.log('dispatch-builder', { repo, pr, outcome: 'nothing announced', reason: pull.open ? 'its body closes no ticket, or trust.relay leaves its author out' : 'it is closed' });
     return answer();
   }
   const owners = ctx.delivery();
@@ -197,7 +200,6 @@ export const planClosingPr = async (invocation, ctx) => {
     ctx.log('dispatch-builder', { repo, pr, outcome: 'nothing announced', reason: 'no session holds it' });
     return answer();
   }
-  const relay = relayOf(config);
   // The ticket's builders as they were without this PR, read from governor's own markers alone.
   const without = {
     openClosing: async (/** @type {number} */ n) => (await reader.openClosing(n)).filter((p) => p.number !== pr),

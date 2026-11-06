@@ -528,10 +528,12 @@ export const deliveries = (deps) => {
     /** The session the body named before, which the branch's session replaces. @type {string | null} */
     let before = null;
     let body = '';
+    let open = false;
     try {
       const github = await deps.reader();
       const row = await github.pull(pr);
       body = row.body;
+      open = row.open;
       before = sessionNamedIn(relayedBody(row, deps.relay));
       const after = relinkSession(body, session);
       if (after === body) return;
@@ -541,8 +543,9 @@ export const deliveries = (deps) => {
       deps.log('dispatch-relink', { level: 'warn', pr, sessionUrl: session, error: messageOf(error), reason: 'the body does not name the session on its head branch, so the next event looks it up again' });
       return;
     }
-    // A body that named another session changed hands: its tickets have a new builder.
-    if (before !== null && !sameSession(before, session)) await announce(pr, body, session);
+    // An open PR whose body named another session changed hands: its
+    // tickets have a new builder. A merged or closed one builds nothing more.
+    if (open && before !== null && !sameSession(before, session)) await announce(pr, body, session);
   };
 
   /**
