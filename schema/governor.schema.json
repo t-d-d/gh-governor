@@ -1238,6 +1238,22 @@
       },
       "additionalProperties": false
     },
+    "sessionRules": {
+      "description": "The three rules every session in the repo follows: sign what you post, only an owner edits a body or pushes to a PR's branch, and comment on what you do not own. Every session governor starts reads them in the lines governor adds to its opening prompt, in place of the signing line. Sessions a person starts read them in the block the repo copies into its `CLAUDE.md`, or the file `file` names, and the config check warns where that block is missing or old.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
+          "type": "boolean"
+        },
+        "file": {
+          "description": "The file that carries governor's session rules block, a path from the repo's root, which the config check reads at a pull request's head. Default `CLAUDE.md` at the root.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
     "issueReviews": {
       "description": "The issue reviews: `reviews`, each keyed by its name, with its selector `when`, the labels each of its `conclusions` adds, and optionally its own `prompt` and checks and labels per label (`byLabel`), and `enabled`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. Governor runs them where the file has this section, unless `enabled` is `false`.",
       "type": "object",

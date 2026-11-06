@@ -17,6 +17,7 @@ import yaml from 'js-yaml';
 import { check, restReads, run } from '../checker/config-check.mjs';
 import { HEARTBEAT_MARKER } from '../dispatch/heartbeat.mjs';
 import { readConfig } from '../dispatch/repo-config.mjs';
+import { SESSION_RULES_BLOCK } from '../dispatch/session-rules.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const WORKFLOW_PATH = join(ROOT, '.github/workflows/config-check.yml');
@@ -229,6 +230,58 @@ describe('the check warns, without failing, on a valid file that cannot work', (
     const got = await check(reads(tree(config), { ...good, labels: [] }));
     assert.equal(got.errors.length, 1);
     assert.equal(got.warnings.length, 2);
+  });
+});
+
+/**
+ * Sessions a person starts read the served repo's `CLAUDE.md`, not
+ * governor's opening prompt, so the rules reach them only through the
+ * block. The check reads that file at the head where the file turns
+ * `sessionRules` on.
+ */
+describe('the check warns where sessionRules is on and the CLAUDE.md block is missing or old', () => {
+  const OLD_BLOCK = '<!-- governor:session-rules v0 -->\nOlder rules.\n<!-- governor:session-rules-end -->';
+  const tree = (sessionRules: unknown, more: Files = {}): Files => ({ '.github/governor.json': file({ environment: 'my-env', ...(sessionRules === undefined ? {} : { sessionRules }) }), ...more });
+
+  test('a root CLAUDE.md carrying the current block warns of nothing', async () => {
+    assert.deepEqual(await check(reads(tree({}, { 'CLAUDE.md': `# Here\n\n${SESSION_RULES_BLOCK}\n` }))), { errors: [], templates: [], warnings: [] });
+  });
+
+  test('a CLAUDE.md without the block, or with none at all, warns, naming the file', async () => {
+    const without = await check(reads(tree({}, { 'CLAUDE.md': '# Here\n' })));
+    assert.deepEqual(without.errors, []);
+    assert.deepEqual(without.warnings, ['sessionRules: CLAUDE.md does not carry governor\'s session rules block, so sessions a person starts are not told the rules. Copy the block from docs/serving-a-repo.md into it']);
+    const none = await check(reads(tree({})));
+    assert.deepEqual(none.warnings, ['sessionRules: CLAUDE.md is not in the repo, so sessions a person starts are not told the rules. Add it with the block from docs/serving-a-repo.md']);
+  });
+
+  test('an old block, or one edited, warns that it is not the current one', async () => {
+    const edited = await check(reads(tree({}, { 'CLAUDE.md': SESSION_RULES_BLOCK.replace('comment on it', 'open a new issue') })));
+    assert.equal(edited.warnings.length, 1);
+    const got = await check(reads(tree({}, { 'CLAUDE.md': OLD_BLOCK })));
+    assert.deepEqual(edited.warnings, got.warnings);
+    assert.deepEqual(got.warnings, ['sessionRules: CLAUDE.md carries a session rules block that differs from governor\'s current one, v1. Replace it with the one in docs/serving-a-repo.md']);
+  });
+
+  test('sessionRules.file names the file read in place of the root CLAUDE.md', async () => {
+    const files = { 'CLAUDE.md': '# Root, no block\n', 'docs/AGENTS.md': SESSION_RULES_BLOCK };
+    assert.deepEqual((await check(reads(tree({ file: 'docs/AGENTS.md' }, files)))).warnings, []);
+    const moved = await check(reads(tree({ file: 'docs/AGENTS.md' }, { 'CLAUDE.md': SESSION_RULES_BLOCK, 'docs/AGENTS.md': OLD_BLOCK })));
+    assert.equal(moved.warnings.length, 1);
+    assert.match(moved.warnings[0]!, /^sessionRules: docs\/AGENTS\.md carries a session rules block that differs from governor's current one/);
+  });
+
+  test('says nothing about the block where the switch is off or the section absent', async () => {
+    for (const off of [undefined, { enabled: false }, { enabled: false, file: 'docs/AGENTS.md' }]) {
+      assert.deepEqual((await check(reads(tree(off, { 'CLAUDE.md': '# no block\n' })))).warnings, [], JSON.stringify(off));
+    }
+  });
+
+  test('a file it cannot read is a warning, not a failure', async () => {
+    const files = tree({});
+    const got = await check({ ...reads(files), read: async (path) => { if (path === 'CLAUDE.md') throw new Error('HTTP 403'); return files[path] ?? null; } });
+    assert.deepEqual(got.errors, []);
+    assert.deepEqual(got.warnings, ['sessionRules: could not read CLAUDE.md, so its session rules block went unchecked: HTTP 403']);
   });
 });
 

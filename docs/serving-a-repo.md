@@ -47,12 +47,6 @@ A file with `waits` on may also name a wait ticket, `"waits": { "issue": <number
 
 The next fire serves the repo. No deploy is needed. Deleting the file or uninstalling the App stops it at the next fire.
 
-Sessions should sign what they post on GitHub. Claude Code ends a session's comment with a footer that names no session, so governor cannot tell a session's own comment from another session's. It sends such a comment to every session that hears of the PR or issue, the author included, and tells each that the comment may be its own. A session that puts its own link alone on the line just above the footer is not sent its own posts. Governor tells every session it starts to do this. For sessions a person starts, add a line like this to the repo's CLAUDE.md:
-
-```
-On every comment, review and reply you post on GitHub, put this session's link, its https://claude.ai/code/session_… URL, alone on the line just above the Claude Code footer.
-```
-
 Governor reads the file from the default branch only. A file that fails the schema skips the repo and raises the `governor-config-invalid` alarm. The file holds no secret: a served repo may be public.
 
 The smallest useful file:
@@ -67,6 +61,26 @@ The smallest useful file:
 }
 ```
 
+### The session rules
+
+Every session that works in a served repo follows three rules: sign what it posts on GitHub, leave a body and a PR's branch to their owner, and comment on what it does not own. Claude Code ends a session's comment with a footer that names no session, so without the first rule governor cannot tell a session's own comment from another session's. It sends such a comment to every session that hears of the PR or issue, the author included, and tells each that the comment may be its own. A session that puts its own link alone on the line just above the footer is not sent its own posts.
+
+Turn the rules on with a `sessionRules` section, `{}`. Every session governor starts then reads the three rules in the lines governor adds to its opening prompt, before the line on waiting where `waits` is on. With the section off, governor gives its sessions only the first rule, as one line on signing posts.
+
+Sessions a person starts read the repo's `CLAUDE.md`, not governor's prompt. Copy this block into `CLAUDE.md` at the repo's root, or into the file `sessionRules.file` names, a path from the root:
+
+```
+<!-- governor:session-rules v1 -->
+Rules for every session in this repo:
+
+1. Sign everything you write on GitHub: comments, reviews, replies, and issue and PR bodies, with this session's link, its https://claude.ai/code/session_… URL, alone on the line just above the Claude Code footer. Governor reads the link there to know who wrote a post, so it does not send you your own posts.
+2. Only an issue's or a PR's owner edits its body, and only a PR's owner pushes to its branch. You own what you filed or opened, or what governor tells you that you own. Signing off gives up the issues you own. While you own an open PR, do not sign off until governor asks.
+3. To change an issue or a PR you do not own, comment on it. Where governor tells you nobody owns an issue, you may take it by editing its body so your link ends it.
+<!-- governor:session-rules-end -->
+```
+
+Copy it whole, markers included. Its first marker names the version of the rules. Where `sessionRules` is on, [the config check](#the-config-check) warns on a pull request whose `CLAUDE.md`, or the file `sessionRules.file` names, has no block, or a block that is not this one. The [starter kit](#the-starter-kit)'s `CLAUDE.md` carries it.
+
 ### The starter kit
 
 [examples/starter/](../examples/starter/) is a starter kit a new repo copies into its own `.github/`, so it gets recurring work from day one. It offers two policies, one config file each, and a repo copies one of them:
@@ -74,17 +88,18 @@ The smallest useful file:
 - **`.github/governor.json`, where the owner merges.** Pick it for a repo starting out, or one where a person reads every pull request before it merges. Sessions pick up tickets and hear their PRs, and governor reviews nothing.
 - **`.github/governor.dark-factory.json`, a dark factory.** Pick it for a repo whose CI you trust to stop a bad change, where a ticket should go from its label to a merged commit with no person. It turns on every feature but `hooks`, the PR review among them, with `merge` true.
 
-The kit holds four files:
+The kit holds five files:
 
 - `.github/governor.json` names its JSON Schema in `$schema`, at the commit the config check is pinned to, so an editor describes each key on hover. It lists every feature's section, so the file shows every feature governor has: the ones it leaves off are `{ "enabled": false }`. It turns on pickup, summons, PR messages, subscriptions, sign-off, the heartbeat and three periodics: a code review every 10 merges into the default branch, a backlog review every 5 issues opened, each also weekly when its count has counted anything, and a weekly review on its day limit alone. The backlog review checks the issues opened, then lists on the heartbeat issue the tickets left stuck: claimed ones with no open pull request, and, where issue reviews are on, open ones no issue review ran on and ones still carrying a review's `failure` or `neutral` labels. Its issue reviews are off, since its `issueReviews` section sets `"enabled": false`, and the ready labels are `mode: afk` alone: a ready label only a review adds would stop pickup with the reviews off. Each prompt is plain text that needs no skill, and acts on the window governor writes under it: the last fire's time, and what each count counted since. A repo can swap any prompt for one that calls its own skill.
 - `.github/governor.dark-factory.json` is the same file with every feature but `hooks` on. It keeps the placeholders and the three periodics, and reviews every ticket before pickup builds it. Its `triage` issue review runs on each ticket that is not claimed, when it is opened, reopened or has its body edited, and when a label that changes which of its `byLabel` entries apply is added or removed. It reads governor's default prompt, then a check of the ticket's type from its `byLabel` entries: a PRD, a bug (`type: bug` or `bug`) or an enhancement. Readiness is the review's label and the mode is a person's. The one ready label is `triage: build`. A bug that passes gets `triage: build`, so pickup builds it with no person. An enhancement that passes gets `triage: passed`, and a person readies it by adding `triage: build`. A ticket its filer must edit gets `triage: needs edit`, and one a person must decide gets `triage: needs a person`, which is among the excluded labels beside `mode: human`, so pickup never takes a ticket the review doubts. A person holds a ticket by adding `mode: human`, and no review run takes it off. A person overrules the review by adding `triage: build` by hand. Create the `triage: build` label before the file goes in, or the config check warns that no ticket can carry it. It names the CI workflow `ciMessages` reads in `workflows.ci`, and has a `prReview` section: a plain-text prompt that needs no skill, `merge` true, and a human-only list that leaves every `CLAUDE.md`, `.claude/`, `.github/workflows/`, `.github/actions/`, `.github/governor.json` itself and `infra/` to a person, each with its reason. A PR touching one of them waits for a person to merge it.
 - `.github/workflows/heartbeat.yml` calls [the heartbeat checker](#the-heartbeat-checker) every hour, pinned to a commit of this repo.
-- `.github/workflows/config-check.yml` calls [the config check](#the-config-check) on each pull request that changes `governor.json` or an issue template, pinned to a commit of this repo.
+- `.github/workflows/config-check.yml` calls [the config check](#the-config-check) on each pull request that changes `governor.json`, an issue template or `CLAUDE.md`, pinned to a commit of this repo.
+- `CLAUDE.md` carries [the session rules](#the-session-rules) block, for the repo's root. Its config files do not turn `sessionRules` on yet: the commit the kit's config check is pinned to predates the section.
 
 To use it:
 
 1. Create the heartbeat issue. Its body must carry governor's marker, `<!-- governor:heartbeat -->`, or governor writes nothing into it. Put the marker on a line of its own: governor writes its block after it. Anything else in the body stays yours.
-2. Copy the files into the repo's `.github/`, all but the policy you did not pick. For a dark factory, copy `governor.dark-factory.json` in place of `governor.json`, saved as `.github/governor.json`. Governor reads no other name.
+2. Copy the files into the repo's `.github/`, all but the policy you did not pick. For a dark factory, copy `governor.dark-factory.json` in place of `governor.json`, saved as `.github/governor.json`. Governor reads no other name. Copy the block in `CLAUDE.md` into the repo's own `CLAUDE.md` at its root, or copy the file there where the repo has none.
 3. In `governor.json`, set `environment` to the repo's cloud environment, by name, in place of the `my-env` placeholder. Set `heartbeat.issue` to the issue's number, and pickup's labels to the repo's own.
 4. Keep, edit or drop the periodics, and set the checker's labels in `heartbeat.yml`.
 5. For a dark factory, also set these before the file merges:
@@ -137,6 +152,7 @@ Governor read `.github/dispatch.json` in an older layout before this one, and re
 | `waits.issue` | no | The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing. |
 | `waits.prompts` | no | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `spec`, `ownerSpec`. |
 | `signOff.heldMessage` | no | Whether governor messages a session the first time the sweep holds it: its reply signed off, but an open PR's body names it, so it was not archived, and it stays open until governor asks it to sign off. Governor sends this once per session. Default false: every hold is only logged. |
+| `sessionRules.file` | no | The file that carries governor's session rules block, a path from the repo's root, which the config check reads at a pull request's head. Default `CLAUDE.md` at the root. |
 
 | Section | What it turns on |
 |---|---|
@@ -156,6 +172,7 @@ Governor read `.github/dispatch.json` in an older layout before this one, and re
 | `hooks` | A session on a hook's prompt when a signed request fires one of the hooks `sessions` holds. A fire while the hook's last session is open goes into that session as a message. Needs at least one hook when on. |
 | `waits` | When a ticket's `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker's close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch. |
 | `signOff` | Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off. |
+| `sessionRules` | The three rules every session in the repo follows: sign what you post, only an owner edits a body or pushes to a PR's branch, and comment on what you do not own. Every session governor starts reads them in the lines governor adds to its opening prompt, in place of the signing line. Sessions a person starts read them in the block the repo copies into its `CLAUDE.md`, or the file `file` names, and the config check warns where that block is missing or old. |
 | `issueReviews` | The issue reviews: `reviews`, each keyed by its name, with its selector `when`, the labels each of its `conclusions` adds, and optionally its own `prompt` and checks and labels per label (`byLabel`), and `enabled`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. Governor runs them where the file has this section, unless `enabled` is `false`. |
 
 `workflows`:
@@ -524,6 +541,7 @@ on:
       - ISSUE_TEMPLATE.md
       - .github/ISSUE_TEMPLATE.md
       - docs/ISSUE_TEMPLATE.md
+      - CLAUDE.md
 permissions:
   contents: read
 jobs:
@@ -533,7 +551,7 @@ jobs:
       commit: <commit>
 ```
 
-A repo whose prompts live in files adds their paths under `paths:`, so a change to a prompt file runs the check too.
+A repo whose prompts live in files adds their paths under `paths:`, so a change to a prompt file runs the check too, and so does a repo whose `sessionRules.file` names a file other than `CLAUDE.md`.
 
 The workflow fetches this repo at `commit` with git, installs the task's dependencies in `dispatch/`, and runs [checker/config-check.mjs](../checker/config-check.mjs). It reads the pull request's head: the config file and every prompt file the file names. It runs governor's own `readConfig` and `resolveFiles` over them, so the check and governor share one schema.
 
@@ -550,7 +568,8 @@ It warns, without failing, on a file governor reads but that cannot work:
 - a heartbeat issue that does not exist or lacks its marker, `<!-- governor:heartbeat -->`;
 - a `prReview.humanOnly` or `prReview.quote` glob that matches no path;
 - an issue review whose `by`, or its default, shares no value with `trust.review`: governor refuses every ticket such a review selects before it runs, so it never comments;
-- an issue template it cannot parse, or a template folder in a tree too large for GitHub to list whole, so its labels went unchecked.
+- an issue template it cannot parse, or a template folder in a tree too large for GitHub to list whole, so its labels went unchecked;
+- with `sessionRules` on, a `CLAUDE.md`, or the file `sessionRules.file` names, that is missing, has no session rules block, or has a block that is not the current one. A file the token cannot read gets a warning that the block went unchecked.
 
 It warns too, under a title of its own, where a `trust` list the file sets reaches beyond `OWNER`, `MEMBER` and `COLLABORATOR`, and says what that list opens. Such a file works, so this is not a "cannot work" warning. It adds a notice for each list the file leaves unset that governor narrowed to fit the lists it sets, `trust.task` among them ([Whose issues governor sets going by itself](#whose-issues-governor-sets-going-by-itself), [Whose issues and pull requests work may be about](#whose-issues-and-pull-requests-work-may-be-about), [Whose text reaches a running session](#whose-text-reaches-a-running-session), [Whose pull requests the PR review reads](#whose-pull-requests-the-pr-review-reads)).
 

@@ -226,7 +226,9 @@ export const UNATTENDED = 'Unattended session: nobody answers a question here. D
  * comment in a footer that names no session, and a post naming none reaches
  * every session that hears of it, its author included. The turn ends every
  * launch's prompt with it (dispatch/turn.mjs), and a message about a post
- * naming no session carries it (mention.mjs). It names no literal link: a
+ * naming no session carries it (mention.mjs). In a repo whose file turns
+ * `sessionRules` on, the three rules end the prompt in its place, the first
+ * of them this same rule (dispatch/session-rules.mjs). It names no literal link: a
  * refused message goes on, as it is, to the fresh session that takes the
  * PR over, and a cloud session knows its own link.
  */
