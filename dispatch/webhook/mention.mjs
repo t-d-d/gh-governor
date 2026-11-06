@@ -910,8 +910,9 @@ export const pullRequestFires = (payload, { relay = RELAY, bodies = relay, appId
  */
 
 /**
- * The ticket fire a comment on an issue, or an issue closed or reopened,
- * may queue (dispatch/ticket-fire.mjs): one fire for the spec owner and
+ * The ticket fire a comment on an issue, an issue closed or reopened, or
+ * its body edited ({@link bodyEdited}), may queue
+ * (dispatch/ticket-fire.mjs): one fire for the spec owner and
  * the builders together, which the task sends to each role, told which it
  * holds. The receiver cannot find the builders, so it queues this beside
  * the spec owner's own message, and settles which goes once it knows the
