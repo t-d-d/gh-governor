@@ -37,7 +37,9 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   (dispatch/builders.mjs). A session gets one
   message naming each PR and ticket it hears of and its role on each, and
   is asked to sign off where nothing else names it, whether the ticket is
-  open or closed. These sends take the turn's retries from the held cursor
+  open or closed. With `sessionRules` on as well, only an open PR, a
+  ticket it builds, or an issue it owns that carries a ready or claim
+  label holds that ask (session-signoff.md). These sends take the turn's retries from the held cursor
   and its record of who was told. The delivered record keeps the tickets
   commented on, written before the sends, so a later turn that finds the
   labels on still owes their roles the deploy. A lookup that fails fails
@@ -122,4 +124,4 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   the head is the one exception, because its end queues the review again.
 
 Judgment: that a served repo's workflows write the job-name suffix and `TICKET_LABEL_PATHS`, no check here sees: governor cannot read another repo's files at that repo's merge time.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The receiver drops a fire whose switch the repo's hook-table item says is off, the conflicts check never, since #147. The PR's own CI run at its head holds its merge, as test 8, since #398: a repo whose plan cannot require a check would otherwise merge a pass on red CI. The CI run at the head holds a merge only where `prReview.waitForCi` is not `false` since #459: a repo whose CI runs only after the merge has no run at a PR's head, so every PR waited forever. The deploy targets and tags moved from `workflows` to the `deployMessages` section, and `workflows` keeps only `ci`, since #525. The shipping turn alone tells every session that hears a green deploy, the ticket's roles included, and the receiver relays governor's deploy comment to no session, since #564, under PRD #535: two turns deciding could lose a deploy or tell it twice (#558).
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The receiver drops a fire whose switch the repo's hook-table item says is off, the conflicts check never, since #147. The PR's own CI run at its head holds its merge, as test 8, since #398: a repo whose plan cannot require a check would otherwise merge a pass on red CI. The CI run at the head holds a merge only where `prReview.waitForCi` is not `false` since #459: a repo whose CI runs only after the merge has no run at a PR's head, so every PR waited forever. The deploy targets and tags moved from `workflows` to the `deployMessages` section, and `workflows` keeps only `ci`, since #525. The shipping turn alone tells every session that hears a green deploy, the ticket's roles included, and the receiver relays governor's deploy comment to no session, since #564, under PRD #535: two turns deciding could lose a deploy or tell it twice (#558). With `sessionRules` on, an issue a session owns holds the green deploy's ask to sign off only where it carries a ready or claim label, since #612, under PRD #599.

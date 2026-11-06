@@ -317,7 +317,9 @@ const labelNames = (row) =>
  * @typedef {{ id: number, status: string, conclusion: string | null, event: string, head_branch: string | null, head_sha: string, html_url: string, created_at: string }} RunRow
  * @typedef {RunRow & { path: string, run_attempt: number }} RunDetail One run read by id: a RunRow and its workflow file.
  * @typedef {{ sha: string, message: string }} CommitRow
- * @typedef {{ number: number, title: string, html_url: string, pull: boolean }} OpenRow
+ * @typedef {{ number: number, title: string, html_url: string, pull: boolean, holds?: boolean }} OpenRow
+ *   `holds`: given the labels that hold a session, whether this row holds
+ *   its sign-off ask (`openNaming`).
  * @typedef {{ number: number, title: string, body: string, state: string, draft: boolean, base: string, headSha: string, mergeable: boolean | null, html_url: string, association: string, author: string, bot?: boolean }} PullRequestRow
  *   `author`: the login that opened it; `bot`: whether GitHub marks its account as a bot, which `trust.review` judges as `BOT`.
  * @typedef {{ filename: string, status: string, previous?: string }} FileRow `previous`: the path a rename left.
@@ -791,12 +793,18 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      * (dispatch/builders.mjs). Each such thread is read once per reader.
      * One an open PR closes counts through the PR.
      *
+     * Given the labels that hold a session (`holding`: the repo's ready
+     * labels and its claim label, where `sessionRules` is on), each row
+     * says whether it holds the session's sign-off ask (`holds`): a PR and
+     * a built ticket always do, and an issue only where it carries one of
+     * those labels. The labels come from the list already read.
+     *
      * @param {string} session
      * @param {readonly string[]} relay
-     * @param {{ claim?: string }} [options]
+     * @param {{ claim?: string, holding?: readonly string[] }} [options]
      * @returns {Promise<OpenRow[]>}
      */
-    openNaming: async (session, relay, { claim } = {}) => {
+    openNaming: async (session, relay, { claim, holding } = {}) => {
       const read = openList();
       const key = relay.join(',');
       let named = openSessions.get(key);
@@ -804,14 +812,20 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         openSessions.set(key, named = read.then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: row.pull, sessions: sessionsNamedIn(relayedBody(row, relay)) }))));
       }
       const id = sessionId(session);
-      const naming = (await named).filter((row) => row.sessions.has(id)).map(({ sessions: _sessions, ...row }) => row);
-      if (claim === undefined || claim === '') return naming;
+      const mine = (await named).filter((row) => row.sessions.has(id));
       const rows = await read;
+      const holds = (/** @type {OpenRow} */ row) => {
+        if (holding === undefined) return row;
+        const labels = rows.find((r) => r.number === row.number)?.labels ?? [];
+        return { ...row, holds: row.pull || labels.some((/** @type {string} */ l) => holding.includes(l)) };
+      };
+      const naming = mine.map(({ sessions: _sessions, ...row }) => holds(row));
+      if (claim === undefined || claim === '') return naming;
       const closed = new Set(rows.filter((row) => row.pull).flatMap((row) => closedBy(String(row.body ?? ''), repo)));
       const claimed = rows.filter((row) => !row.pull && row.labels.includes(claim) && !closed.has(row.number) && !naming.some((n) => n.number === row.number));
       const building = [];
       for (const row of claimed) {
-        if (await dispatchedOf(row.number) === id) building.push({ number: row.number, title: row.title, html_url: row.html_url, pull: false });
+        if (await dispatchedOf(row.number) === id) building.push({ number: row.number, title: row.title, html_url: row.html_url, pull: false, ...(holding === undefined ? {} : { holds: true }) });
       }
       return [...naming, ...building];
     },

@@ -443,6 +443,21 @@ const budgetedBy = (deps) => async (begin, name, until, onOver) => {
 };
 
 /**
+ * The labels by which an issue a session owns holds its sign-off ask, for a
+ * repo's deliveries: its ready labels and its claim label, where its file
+ * turns `sessionRules` on. Ownership of an issue lapses at sign-off, so an
+ * issue filed in passing, with none of them, does not hold it
+ * (docs/constraints/session-signoff.md). With the switch off, nothing: every
+ * open row holds the ask, as before.
+ *
+ * @param {import('./repo-config.mjs').RepoConfig} config
+ * @returns {{ holding?: string[] }}
+ */
+const holdingOf = (config) => (turnsOn(config, 'sessionRules')
+  ? { holding: [...config.labels.ready, config.labels.claim].filter((label) => label !== '') }
+  : {});
+
+/**
  * One turn, then the sign-off sweep (scripts/lib/session-signoff.mjs): every
  * turn but a probe archives the sessions whose last turn signed off, in the
  * repos it serves whose file turns `signOff` on, with the login as the turn
@@ -1267,7 +1282,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    */
   const delivery = (served) => {
     if (served === undefined) {
-      return (made ??= deliveriesOf({ prompts, signOff: repo !== undefined && turnsOn(configOf(repo), 'signOff'), reader: getReader, repo: fireRepo(), relay: repo === undefined ? RELAY : relayOf(configOf(repo)), ...(repo === undefined ? {} : { claim: configOf(repo).labels.claim }), launch: start }));
+      return (made ??= deliveriesOf({ prompts, signOff: repo !== undefined && turnsOn(configOf(repo), 'signOff'), reader: getReader, repo: fireRepo(), relay: repo === undefined ? RELAY : relayOf(configOf(repo)), ...(repo === undefined ? {} : { claim: configOf(repo).labels.claim, ...holdingOf(configOf(repo)) }), launch: start }));
     }
     let other = others.get(served);
     if (other === undefined) {
@@ -1279,6 +1294,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         repo: served,
         relay: relayOf(config),
         claim: config.labels.claim,
+        ...holdingOf(config),
         launch: (launch, until) => start({ ...launch, repo: served }, until),
       }));
     }

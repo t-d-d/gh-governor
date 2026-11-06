@@ -10627,7 +10627,7 @@ describe('run — a ticket fire', () => {
   });
 
   test('the standing line of a builder with no PR yet counts its open claimed ticket, so it is not asked to sign off', async () => {
-    const h = withThread();
+    const h = withThread({ configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) });
     const reader = h.deps.reader;
     const given: unknown[] = [];
     h.deps.reader = ((...args: Parameters<typeof reader>) => ({
@@ -10641,6 +10641,28 @@ describe('run — a ticket fire', () => {
     assert.deepEqual(h.messages.map((m) => m.session), [BUILDER]);
     assert.deepEqual(given, [{ claim: FACTORY_CONFIG_LABELS.claim }]);
     assert.match(h.messages[0]!.text, /Issue #9: Its other ticket/);
+  });
+
+  // With session rules on, an issue a session owns holds its sign-off ask
+  // only where it carries a ready label or the claim label (#612): the
+  // search is given those labels, and an issue without one does not hold.
+  test('with session rules on, the search is given the ready and claim labels, and an unlabelled issue the builder filed does not hold the ask', async () => {
+    const h = withThread();
+    const reader = h.deps.reader;
+    const given: unknown[] = [];
+    h.deps.reader = ((...args: Parameters<typeof reader>) => ({
+      ...reader(...args),
+      openNaming: async (_id: string, _relay: unknown, options?: { claim?: string, holding?: string[] }) => {
+        given.push(options);
+        return [{ number: 9, title: 'A follow-up it filed', html_url: `https://github.com/${REPO}/issues/9`, pull: false, holds: false }];
+      },
+    })) as typeof reader;
+    await run(ticketFire({ event: 'close', state: 'closed', closing: true, owner: undefined }), h.deps as never);
+    assert.deepEqual(h.messages.map((m) => m.session), [BUILDER]);
+    assert.deepEqual(given, [{ claim: FACTORY_CONFIG_LABELS.claim, holding: [...FACTORY_CONFIG_LABELS.ready, FACTORY_CONFIG_LABELS.claim] }]);
+    assert.match(h.messages[0]!.text, /Issue #9: A follow-up it filed/);
+    assert.match(h.messages[0]!.text, /Signing off gives up any of these issues you own/);
+    assert.ok(h.messages[0]!.text.includes(SIGN_OFF), h.messages[0]!.text);
   });
 
   test('with subscribeMessages off, the fire is refused and nobody hears', async () => {

@@ -158,6 +158,12 @@ export const fromDispatcher = (text, source) => `${relayLabel(source)}\n\n${text
  * the sweep archives it (scripts/lib/session-signoff.mjs). `open` null: the
  * search failed, and `error` says why.
  *
+ * With session rules on, a row says whether it holds the ask (`holds`,
+ * `openNaming`): ownership of an issue lapses at sign-off, so on a close
+ * where no row holds, the line lists what is open, says signing off gives
+ * those issues up, and asks. A row that says nothing holds, as every row
+ * did before.
+ *
  * @param {OpenRow[] | null} open
  * @param {{ repo: string, closing: boolean, prompts?: Record<string, string | undefined>, error?: string }} options
  * @returns {string}
@@ -165,7 +171,9 @@ export const fromDispatcher = (text, source) => `${relayLabel(source)}\n\n${text
 export const standingLine = (open, { repo, closing, prompts = {}, error }) => {
   if (open === null) return `Your standing: could not read which other open PRs or issues in ${repo} name this session (${error ?? 'no reason given'}).`;
   if (open.length > 0) {
-    return [`Also open in ${repo} and naming this session:`, ...open.map((o) => `- ${o.pull ? 'PR' : 'Issue'} #${o.number}: ${o.title} (${o.html_url})`)].join('\n');
+    const list = [`Also open in ${repo} and naming this session:`, ...open.map((o) => `- ${o.pull ? 'PR' : 'Issue'} #${o.number}: ${o.title} (${o.html_url})`)].join('\n');
+    if (!closing || open.some((o) => o.holds !== false)) return list;
+    return `${list}\nNone of these holds this session open: none is a PR, a ticket you build, or an issue with a ready or claim label. Signing off gives up any of these issues you own, and nobody owns them after. ${instruction(prompts, 'signOff')}`;
   }
   const none = `No other open PR or issue in ${repo} names this session.`;
   if (!closing) return none;
@@ -342,6 +350,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   repo: string,
  *   relay: readonly string[],
  *   claim?: string,
+ *   holding?: readonly string[],
  *   send: (message: { session: string, text: string }, until: number) => Promise<LaunchResult>,
  *   launch: (launch: Launch, until: number) => Promise<{ outcome: LaunchOutcome, sessionUrl: string | null }>,
  *   count: (message: { session: string, subject: string | null, kind: string }) => Promise<Count>,
@@ -361,6 +370,9 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   author is let in (`relayedBody`, dispatch/webhook/subscribe.mjs).
  *   `claim`: its file's claim label, by which a builder's standing counts
  *   its open claimed ticket before its PR exists (`openNaming`).
+ *   `holding`: where its file turns `sessionRules` on, its ready labels
+ *   and claim label, the only labels by which an issue the session owns
+ *   holds its sign-off ask; absent, every open row holds it, as before.
  *   `send`: the CLI's
  *   `-p --cloud <session>`, under what is left before `until`. `launch`: a
  *   session through the launcher, the same. `count`: raise the count of
@@ -504,7 +516,8 @@ export const deliveries = (deps) => {
       let found = standings.get(id);
       if (found === undefined) {
         standings.set(id, found = deps.reader().then(async (github) => {
-          const named = deps.claim === undefined ? await github.openNaming(id, deps.relay) : await github.openNaming(id, deps.relay, { claim: deps.claim });
+          const options = { ...(deps.claim === undefined ? {} : { claim: deps.claim }), ...(deps.holding === undefined ? {} : { holding: deps.holding }) };
+          const named = Object.keys(options).length === 0 ? await github.openNaming(id, deps.relay) : await github.openNaming(id, deps.relay, options);
           if (!foundOnBranch.has(id)) return named;
           const held = await branchPulls(github, session);
           return [...named, ...held.filter((p) => !named.some((n) => n.number === p.number))];
@@ -609,7 +622,7 @@ export const deliveries = (deps) => {
       const owners = await Promise.all(unnamed.map((p) => find(p.head)));
       return unnamed
         .filter((_, i) => { const owner = owners[i]; return typeof owner === 'string' && sameSession(owner, session); })
-        .map((p) => /** @type {OpenRow} */ ({ number: p.number, title: p.title, html_url: p.html_url, pull: true }));
+        .map((p) => /** @type {OpenRow} */ ({ number: p.number, title: p.title, html_url: p.html_url, pull: true, ...(deps.holding === undefined ? {} : { holds: true }) }));
     } catch (error) {
       throw new Error(`could not ask the sessions API which open PRs are ${session}'s: ${messageOf(error)}`);
     }
