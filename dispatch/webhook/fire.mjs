@@ -270,20 +270,38 @@ export const DISPATCH_MARKER = '<!-- governor:dispatched ';
 const MARKER = /<!-- governor:dispatched (\S+) -->/;
 const MARKED_SESSION = new RegExp(`Dispatched to (${SESSION_LINK.source})(?![A-Za-z0-9_-])`);
 
+const DISPLACED = new RegExp(`It takes over from (${SESSION_LINK.source})(?![A-Za-z0-9_-])`);
+
 /**
- * The comment a dispatch leaves on its issue, carrying the session URL where
- * the launcher printed one: the in-flight list lives on the ticket.
+ * The comment governor leaves on a ticket whenever its builder changes:
+ * pickup's launch, a takeover of a PR that closes it, and a PR by another
+ * session that comes to close it. It carries the new builder's session URL
+ * where the launcher printed one, and, where the change displaced a
+ * builder, that builder's, so the receiver can tell it with no read.
  *
- * @param {{ at: string, sessionUrl: string | null }} args
+ * @param {{ at: string, sessionUrl: string | null, displaced?: string | null }} args
  * @returns {string}
  */
-export const dispatchMarker = ({ at, sessionUrl }) =>
+export const dispatchMarker = ({ at, sessionUrl, displaced = null }) =>
   [
     `${DISPATCH_MARKER}${at} -->`,
     sessionUrl
       ? `Dispatched to ${sessionUrl} at ${at}.`
       : `Dispatched to a cloud session at ${at}; the launcher printed no session id.`,
+    ...(displaced === null ? [] : [`It takes over from ${displaced}, which no longer builds this ticket.`]),
   ].join('\n');
+
+/**
+ * The builder a dispatch comment names, and the builder it displaced, each
+ * null where it names none. Read only from a comment governor's App posted.
+ *
+ * @param {string} body
+ * @returns {{ builder: string | null, displaced: string | null }}
+ */
+export const dispatchedTo = (body) => ({
+  builder: MARKED_SESSION.exec(body)?.[1] ?? null,
+  displaced: DISPLACED.exec(body)?.[1] ?? null,
+});
 
 /**
  * The newest dispatch a comment records, by the time it carries, and the
@@ -390,7 +408,7 @@ export const lastDispatch = (comments) => {
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit
  *   the lane ({@link FIRE_BUDGET}).
- * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'edit', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], ownerOnly?: true }} TicketFire
+ * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], ownerOnly?: true, builder?: string, displaced?: string }} TicketFire
  *   A comment on an issue, the issue closed or reopened, or its body
  *   edited (`edit`), where the issue may be claimed: its spec owner and, on a claimed ticket, its builders
  *   hear it, each told which role it holds (dispatch/ticket-fire.mjs). The
@@ -405,7 +423,17 @@ export const lastDispatch = (comments) => {
  *   signed the comment, which hears nothing of its own post. `closing`: as
  *   a message fire's. `authors`: as a message fire's. `ownerOnly`: the
  *   builders hear of this elsewhere, so only the spec owner is sent it.
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire) & { repo?: string, counted?: Count }} Fire
+ *   A `dispatched` event is governor's own dispatch comment, a change of
+ *   builder: `builder` is the session it names, and `displaced` the
+ *   builder it took the ticket from, where it names one. It reaches the
+ *   spec owner and the displaced builder, never the builder it names, and
+ *   the task reads nothing to send it.
+ * @typedef {{ kind: 'closingPr', pr: number }} ClosingPrFire
+ *   A PR opened, reopened or edited so that its body may come to close a
+ *   ticket. The task reads the PR and each ticket it closes, and where a
+ *   claimed ticket's builder is not the PR's owner, posts the dispatch
+ *   comment naming that owner (dispatch/ticket-fire.mjs).
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire | ClosingPrFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
@@ -507,13 +535,14 @@ export const build = Object.freeze({
 
   /**
    * @param {{
-   *   issue: number, text: string, event: 'comments' | 'close' | 'edit', state: 'open' | 'closed', labels: string[],
+   *   issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[],
    *   owner?: string | null | undefined, poster?: string | null | undefined, closing?: boolean | undefined,
    *   authors?: string[] | undefined, ownerOnly?: boolean | undefined,
+   *   builder?: string | null | undefined, displaced?: string | null | undefined,
    * }} args
    * @returns {TicketFire}
    */
-  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, ownerOnly }) => ({
+  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, ownerOnly, builder, displaced }) => ({
     kind: 'ticket',
     issue,
     text,
@@ -526,8 +555,13 @@ export const build = Object.freeze({
       closing: closing === true ? /** @type {true} */ (true) : undefined,
       authors,
       ownerOnly: ownerOnly === true ? /** @type {true} */ (true) : undefined,
+      builder: builder ?? undefined,
+      displaced: displaced ?? undefined,
     }),
   }),
+
+  /** @param {{ pr: number }} args @returns {ClosingPrFire} */
+  closingPr: ({ pr }) => ({ kind: 'closingPr', pr }),
 
   /**
    * Each title on one line and at most {@link TITLE_LIMIT} characters, so
@@ -826,6 +860,10 @@ const parseKind = (event) => {
   if (kind === 'hook') return parseHook(e);
   if (kind === 'unblocked') return parseUnblocked(e);
   if (kind === 'ticket') return parseTicket(e);
+  if (kind === 'closingPr') {
+    if (!isPositiveInt(e?.pr)) throw new Error(`a closingPr invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);
+    return { kind, pr: Number(e?.pr) };
+  }
   if (kind === 'wait') {
     if (!isPositiveInt(e?.issue)) throw new Error(`a wait invocation's issue must be a positive integer, got: ${JSON.stringify(e?.issue)}`);
     return { kind, issue: Number(e?.issue) };
@@ -1069,10 +1107,10 @@ const parseTicket = (e) => {
   const refuse = (/** @type {string} */ what) => { throw new Error(`a ticket invocation's ${what}, got: ${JSON.stringify(e)?.slice(0, 300)}`); };
   if (!isPositiveInt(e?.issue)) refuse('issue must be a positive integer');
   if (typeof e?.text !== 'string' || e.text.trim() === '') refuse('text must say what happened');
-  if (e?.event !== 'comments' && e?.event !== 'close' && e?.event !== 'edit') refuse('event must be comments, close or edit');
+  if (e?.event !== 'comments' && e?.event !== 'close' && e?.event !== 'edit' && e?.event !== 'dispatched') refuse('event must be comments, close, edit or dispatched');
   if (e?.state !== 'open' && e?.state !== 'closed') refuse('state must be open or closed');
   if (!Array.isArray(e?.labels) || !e.labels.every((l) => typeof l === 'string')) refuse('labels must be label names');
-  for (const key of /** @type {const} */ (['owner', 'poster'])) {
+  for (const key of /** @type {const} */ (['owner', 'poster', 'builder', 'displaced'])) {
     if (e?.[key] !== undefined && !(typeof e[key] === 'string' && MESSAGE_SESSION.test(e[key]))) refuse(`${key} must be a session id or claude.ai/code URL`);
   }
   for (const key of /** @type {const} */ (['closing', 'ownerOnly'])) {
@@ -1084,7 +1122,7 @@ const parseTicket = (e) => {
     kind: 'ticket',
     issue: Number(t.issue),
     text: String(t.text),
-    event: /** @type {'comments' | 'close' | 'edit'} */ (t.event),
+    event: /** @type {'comments' | 'close' | 'edit' | 'dispatched'} */ (t.event),
     state: /** @type {'open' | 'closed'} */ (t.state),
     labels: [.../** @type {string[]} */ (t.labels)],
     ...(t.owner === undefined ? {} : { owner: String(t.owner) }),
@@ -1092,6 +1130,8 @@ const parseTicket = (e) => {
     ...(t.closing === true ? { closing: /** @type {true} */ (true) } : {}),
     ...(t.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (t.authors)] }),
     ...(t.ownerOnly === true ? { ownerOnly: /** @type {true} */ (true) } : {}),
+    ...(t.builder === undefined ? {} : { builder: String(t.builder) }),
+    ...(t.displaced === undefined ? {} : { displaced: String(t.displaced) }),
   };
 };
 
