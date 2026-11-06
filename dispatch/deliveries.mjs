@@ -36,6 +36,8 @@ import { instruction } from './prompts.mjs';
 import { commitSession } from './branch-run.mjs';
 import { markOwnerUnknown, ownerUnknownSince, relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
+import { closedBy } from './pr-body.mjs';
+import { dispatchMarker } from './webhook/fire.mjs';
 
 /**
  * The event a spec session logs when its link could not be written into its
@@ -523,15 +525,46 @@ export const deliveries = (deps) => {
    * @param {string} session
    */
   const nameOwner = async (pr, session) => {
+    /** The session the body named before, which the branch's session replaces. @type {string | null} */
+    let before = null;
+    let body = '';
     try {
       const github = await deps.reader();
-      const { body } = await github.pull(pr);
+      const row = await github.pull(pr);
+      body = row.body;
+      before = sessionNamedIn(relayedBody(row, deps.relay));
       const after = relinkSession(body, session);
       if (after === body) return;
       await github.updatePull(pr, { body: after });
       deps.log('dispatch-relink', { level: 'info', pr, sessionUrl: session, outcome: 'the session found on the head branch is named in the body as its owner' });
     } catch (error) {
       deps.log('dispatch-relink', { level: 'warn', pr, sessionUrl: session, error: messageOf(error), reason: 'the body does not name the session on its head branch, so the next event looks it up again' });
+      return;
+    }
+    // A body that named another session changed hands: its tickets have a new builder.
+    if (before !== null && !sameSession(before, session)) await announce(pr, body, session);
+  };
+
+  /**
+   * Post governor's dispatch comment, naming the PR's new owner, on each
+   * ticket the PR's body closes: a takeover moves the builder role with the
+   * PR, and the comment tells the ticket's spec owner. The owner it
+   * replaced refused as archived, so it displaces no live builder. A
+   * comment that fails is logged at warn: no lookup depends on it.
+   *
+   * @param {number} pr
+   * @param {string} body
+   * @param {string} sessionUrl
+   */
+  const announce = async (pr, body, sessionUrl) => {
+    const at = new Date(deps.now()).toISOString();
+    for (const issue of closedBy(body, deps.repo)) {
+      try {
+        await (await deps.reader()).comment(issue, dispatchMarker({ at, sessionUrl }));
+        deps.log('dispatch-builder', { pr, issue, session: sessionUrl, outcome: 'announced the PR\'s new owner as the ticket\'s builder' });
+      } catch (error) {
+        deps.log('dispatch-builder', { level: 'warn', pr, issue, session: sessionUrl, error: messageOf(error), reason: 'the ticket names no new builder, and its spec owner is not told' });
+      }
     }
   };
 
@@ -671,6 +704,7 @@ export const deliveries = (deps) => {
       const github = await deps.reader();
       const { body } = await github.pull(pr);
       await github.updatePull(pr, { body: relinkSession(body, sessionUrl) });
+      await announce(pr, body, sessionUrl);
       return true;
     } catch (error) {
       deps.log('dispatch-relink', { level: 'error', pr, sessionUrl, error: messageOf(error), reason });

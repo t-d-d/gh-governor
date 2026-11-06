@@ -114,7 +114,7 @@ import { RoutinesApiError } from './routines.mjs';
 import { hookFor, planHook } from './hooks.mjs';
 import { planDispatch } from './dispatch-fire.mjs';
 import { planUnblocked } from './unblocked-fire.mjs';
-import { planTicket } from './ticket-fire.mjs';
+import { planClosingPr, planTicket } from './ticket-fire.mjs';
 import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
@@ -1035,7 +1035,7 @@ const runOpen = (deps) => {
  *   unread: Array<{ repo: string, error: string }>,
  *   done?: (ran: { dispatched: Array<Dispatched & { planned: PlannedLaunch }>, left: PlannedLaunch[] }) => Promise<void>,
  *   result?: Record<string, unknown>,
- * } | { answer: { kind: import('./webhook/fire.mjs').Fire['kind'], dispatched: Dispatched[], loginStored?: boolean, messaged?: import('./deliveries.mjs').Delivery | null, row?: import('./unblocked.mjs').Row, refusal?: string, commented?: boolean } }} Plan
+ * } | { answer: { kind: import('./webhook/fire.mjs').Fire['kind'], dispatched: Dispatched[], loginStored?: boolean, messaged?: import('./deliveries.mjs').Delivery | null, row?: import('./unblocked.mjs').Row, refusal?: string, commented?: boolean, announced?: number[] } }} Plan
  *   What a planner for a fire kind that starts sessions hands the turn
  *   (`planSweep` in dispatch/sweep.mjs, `planHook` in dispatch/hooks.mjs, `planUnblocked` in
  *   dispatch/unblocked-fire.mjs, `planDispatch` in dispatch/dispatch-fire.mjs, `planTicket` in dispatch/ticket-fire.mjs). `unread`: what failed the turn, which
@@ -1579,6 +1579,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     planned = await planUnblocked(invocation, ctx);
   } else if (invocation.kind === 'ticket') {
     planned = await planTicket(invocation, ctx);
+  } else if (invocation.kind === 'closingPr') {
+    planned = await planClosingPr(invocation, ctx);
   } else if (invocation.kind === 'dispatch') {
     planned = await planDispatch(invocation, ctx);
   }
