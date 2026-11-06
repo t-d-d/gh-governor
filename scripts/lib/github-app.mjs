@@ -38,9 +38,9 @@ const API_VERSION = '2022-11-28';
  * a 422, a 403 for a missing permission or a longer rate limit, is never
  * resent here.
  *
- * A call that spends all its sends on such answers turns resends off for the
- * rest of the turn (`Resends`): a fault that outlasts two resends is an
- * outage, not a blip, and every later read would spend 3 sends and 3 seconds
+ * A call that spends all its sends on server errors or dropped connections
+ * turns resends off for the rest of the turn (`Resends`): a fault that
+ * outlasts two resends is an outage, not a blip, and every later read would spend 3 sends and 3 seconds
  * of pauses failing, which a sweep or a review would take out of its window.
  */
 const SENDS = 3;
@@ -133,22 +133,19 @@ const request = async ({ fetch, sleep, log, resends }, auth, method, path, body,
       return await send();
     } catch (error) {
       // A dropped connection leaves `resend` at its backoff: no answer came.
-      const status = /** @type {{ status?: number }} */ (error)?.status;
       if (resend === null || resends.spent) throw error;
+      const status = /** @type {{ status?: number }} */ (error)?.status;
+      const answer = status === undefined ? { error: messageOf(error) } : { status };
       if (sent >= sends) {
-        if (sends > 1) {
+        // A rate limit is the one token's, not GitHub's: the turn's other
+        // installations keep their resends.
+        if (sends > 1 && /** @type {{ rateLimited?: boolean }} */ (error)?.rateLimited !== true) {
           resends.spent = true;
-          log('dispatch-github-resends-off', { level: 'warn', method, path, ...(status === undefined ? { error: messageOf(error) } : { status }) });
+          log('dispatch-github-resends-off', { level: 'warn', method, path, ...answer });
         }
         throw error;
       }
-      log('dispatch-github-retry', {
-        level: 'info',
-        method,
-        path,
-        ...(status === undefined ? { error: messageOf(error) } : { status }),
-        try: sent,
-      });
+      log('dispatch-github-retry', { level: 'info', method, path, ...answer, try: sent });
       await sleep(resend === 'backoff' ? RESEND_PAUSE_MS * 2 ** (sent - 1) : resend);
     }
   }

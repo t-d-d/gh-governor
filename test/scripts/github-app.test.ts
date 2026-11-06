@@ -1418,6 +1418,20 @@ describe('githubApi', () => {
     assert.equal(after.calls.length, 2);
   });
 
+  // GitHub limits each installation token on its own, and the bare schedule
+  // turn reads several installations: one token's limit is no outage, and
+  // should not cost another repo its resends.
+  test('a call that spends its sends on a short rate limit leaves the turn\'s resends on', async () => {
+    const resends = turnResends();
+    const limited = answers([new Response('', { status: 429, statusText: 'Too Many Requests', headers: { 'retry-after': '1' } })]);
+    await assert.rejects(githubApi({ token: 't', ...limited.io, resends })('GET', '/repos/acme/factory/hooks'), /429/);
+    assert.equal(limited.calls.length, 3);
+    assert.deepEqual(limited.logged.map((l) => l.event), ['dispatch-github-retry', 'dispatch-github-retry']);
+    const other = answers([502, 200]);
+    assert.deepEqual(await githubApi({ token: 'u', ...other.io, resends })('GET', '/repos/acme/other/hooks'), [{ id: 1 }]);
+    assert.equal(other.calls.length, 2);
+  });
+
   test('clients without a shared switch do not stop each other\'s resends', async () => {
     await assert.rejects(githubApi({ token: 't', ...answers([503]).io })('GET', '/repos/acme/factory/hooks'), /503/);
     const other = answers([502, 200]);
