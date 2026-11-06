@@ -624,6 +624,42 @@ describe('githubReader', () => {
     assert.equal(calls.length, 2);
   });
 
+  // A ticket's builder is first the owner of an open PR that closes it
+  // (dispatch/builders.mjs), found in the list the standing line reads.
+  test('openClosing lists the open PRs whose body closes the issue, from the one list openNaming reads', async () => {
+    const row = (number: number, body: string | null, pull = true) => ({ number, title: `T${number}`, html_url: `u${number}`, body, author_association: 'OWNER', ...(pull ? { pull_request: { url: 'x' } } : {}) });
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues': () => [
+        row(20, 'Closes #7\n\nhttps://claude.ai/code/session_01ABC'),
+        row(21, 'Fixes acme/factory#7 and resolves #8'),
+        row(22, 'Mentions #7 only'),
+        row(23, 'Closes #7', false),
+        row(24, null),
+        row(25, 'Closes other/repo#7'),
+      ],
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual(await reader.openClosing(7), [
+      { number: 20, title: 'T20', html_url: 'u20' },
+      { number: 21, title: 'T21', html_url: 'u21' },
+    ]);
+    assert.deepEqual((await reader.openClosing(8)).map((r) => r.number), [21]);
+    await reader.openNaming('session_01ABC', RELAY);
+    assert.equal(calls.length, 1, 'one read of the open list serves both');
+  });
+
+  test('openClosing fails where the list read fails, and reads it again after', async () => {
+    let answered = 0;
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues': () => (answered++ === 0
+        ? new Response('boom', { status: 502, statusText: 'Bad Gateway' })
+        : [{ number: 20, title: 'T20', html_url: 'u20', body: 'Closes #7', pull_request: { url: 'x' } }]),
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    await assert.rejects(reader.openClosing(7), /502/);
+    assert.deepEqual((await reader.openClosing(7)).map((r) => r.number), [20]);
+  });
+
   test('checksAt names the App that posted each check run, and none for a status', async () => {
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/commits/abc/check-runs': { check_runs: [

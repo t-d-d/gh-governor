@@ -288,8 +288,8 @@ export const dispatchMarker = ({ at, sessionUrl }) =>
 /**
  * The newest dispatch a comment records, by the time it carries, and the
  * session it went to where the launcher printed one; null when none did.
- * On a claimed ticket it names the builder pickup started
- * (dispatch/unblocked-fire.mjs). Nothing reads a marker's age, and no
+ * Where no open PR closes the ticket, it names the builder pickup started
+ * (dispatch/builders.mjs). Nothing reads a marker's age, and no
  * message is forwarded by one: a PR's session is its body's link alone.
  *
  * @param {Array<{ body: string } & Record<string, unknown>>} comments

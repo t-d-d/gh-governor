@@ -112,6 +112,8 @@ const readerOf = (s: State, ticketAt: (n: number) => ReturnType<typeof ticketOf>
     blocking: async () => [],
     comments: async () => threadOf(s),
     allComments: async () => threadOf(s),
+    // No open PR closes the ticket.
+    openClosing: async () => [],
     comment: async (_n: number, body: string) => { sink.comments.push(body); },
     addLabels: async () => {},
     removeLabel: async () => {},
