@@ -241,6 +241,24 @@ describe('postedTo: a tool call that posted to the issue or PR', () => {
     assert.equal(postedTo({ name: 'Bash', input: { command: 'gh api repos/acme/factory/issues/70/comments -f body=x' } }, REPO, 7), null);
     assert.equal(postedTo({ name: 'Bash', input: { command: 'gh pr comment 7 -R acme/other --body x' } }, REPO, 7), null);
   });
+
+  test('a write that carries no body, inline or from a file, posted no comment', () => {
+    assert.equal(postedTo({ name: 'mcp__github__merge_pull_request', input: { owner: 'acme', repo: 'factory', pullNumber: 7 } }, REPO, 7), null);
+    assert.equal(postedTo({ name: 'mcp__github__update_pull_request_branch', input: { owner: 'acme', repo: 'factory', pullNumber: 7 } }, REPO, 7), null);
+    assert.equal(postedTo({ name: 'mcp__github__issue_write', input: { owner: 'acme', repo: 'factory', issue_number: 7, labels: ['bug'] } }, REPO, 7), null);
+    assert.equal(postedTo({ name: 'Bash', input: { command: "gh api -X POST repos/acme/factory/issues/7/labels -f 'labels[]=bug'" } }, REPO, 7), null);
+    assert.equal(postedTo({ name: 'Bash', input: { command: 'gh pr review 7 --approve' } }, REPO, 7), null);
+  });
+
+  test('a GET with fields reads, and posts nothing', () => {
+    assert.equal(postedTo({ name: 'Bash', input: { command: 'gh api -X GET repos/acme/factory/issues/7/comments -f per_page=100' } }, REPO, 7), null);
+    assert.equal(postedTo({ name: 'Bash', input: { command: 'gh api --method=GET repos/acme/factory/pulls/7/comments -F per_page=100' } }, REPO, 7), null);
+  });
+
+  test('a body the shell expands is a text the command does not carry', () => {
+    assert.deepEqual(postedTo({ name: 'Bash', input: { command: 'gh api repos/acme/factory/issues/7/comments -f body="$BODY"' } }, REPO, 7), { text: null });
+    assert.deepEqual(postedTo({ name: 'Bash', input: { command: 'gh pr comment 7 --body "$(cat /tmp/c.md)"' } }, REPO, 7), { text: null });
+  });
 });
 
 describe('candidatesOf', () => {
@@ -271,6 +289,14 @@ describe('searchAuthor', () => {
   test('a call whose input carries no text is matched by its target alone', async () => {
     const sessions = api([row('01WRITER')], { cse_01WRITER: [call(AT, 'Bash', { command: 'gh api repos/acme/factory/issues/7/comments -F body=@/tmp/c.md' })] });
     assert.equal((await search(sessions) as any).author, WRITER);
+  });
+
+  test('a body sent as JSON on stdin, its newlines escaped, still matches the post\'s words', async () => {
+    const json = JSON.stringify({ body: `## Note\n\n${UNSIGNED_BODY}` });
+    const post = { ...POST, words: postWords(`## Note\n\n${UNSIGNED_BODY}`) };
+    const sessions = api([row('01WRITER')], { cse_01WRITER: [call(AT, 'Bash', { command: `gh api repos/acme/factory/issues/7/comments --input - <<'EOF'\n${json}\nEOF` })] });
+    const found = await searchAuthor({ list: sessions.list, events: sessions.events, repo: REPO, on: 7, post });
+    assert.equal((found as any).author, WRITER);
   });
 
   test('the windows are the post\'s: a call outside them is ruled out however late the search runs', async () => {

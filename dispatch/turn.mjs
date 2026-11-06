@@ -1367,20 +1367,29 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     return other;
   };
 
+  /** The login's token for the author search, read at most once a turn. */
+  const authorToken = loginToken(deps, 'search the sessions for a post\'s author');
   /**
    * The search of the login's live sessions for the author of a session's
-   * unsigned post in the fire's repo, under the login on disk
-   * (dispatch/author.mjs). A token the turn cannot use, or a list that
-   * cannot be read, is no search.
+   * unsigned post in the fire's repo, under the login's token, refreshed
+   * once where it has expired: the search runs before any send, so no CLI
+   * has refreshed it yet, and an author fire sends nothing else
+   * (dispatch/author.mjs). A refresh that fails, or a list that cannot be
+   * read, is no search.
    *
    * @type {import('./author.mjs').FindAuthor}
    */
   const findAuthor = async (on, post) => {
-    const usable = accessToken(deps.workspace.readLogin(), deps.now());
-    if ('reason' in usable) return { searched: false, reason: usable.reason };
+    /** @type {string} */
+    let token;
+    try {
+      token = await authorToken();
+    } catch (error) {
+      return { searched: false, reason: messageOf(error) };
+    }
     return searchAuthor({
-      list: () => sessionRows((after) => deps.sessions.list(usable.token, after), { log: deps.log }),
-      events: (id, cursor) => deps.sessions.events(id, usable.token, cursor),
+      list: () => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
+      events: (id, cursor) => deps.sessions.events(id, token, cursor),
       repo: fireRepo(),
       on,
       post,

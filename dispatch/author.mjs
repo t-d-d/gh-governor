@@ -46,6 +46,7 @@ import { SESSION_RULES } from './session-rules.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { archived, reposOf } from '../scripts/lib/session-branch.mjs';
+import { EVENTS_PAGE } from '../scripts/lib/session-signoff.mjs';
 import { wordsOf } from './webhook/fire.mjs';
 import { UNSIGNED } from './webhook/mention.mjs';
 import { sameSession, sessionId } from './webhook/subscribe.mjs';
@@ -81,9 +82,6 @@ export const AUTHOR_PAGES = 5;
 /** A list row's id, `cse_…`, the session's URL `session_…`. */
 const CSE_ID = /^cse_([A-Za-z0-9]+)$/;
 
-/** A page of a session's events, as the sign-off sweep reads it. */
-const EVENTS_PAGE = z.object({ data: z.array(z.record(z.string(), z.unknown())), next_cursor: z.string().nullish() });
-
 /** An assistant message's content, where a tool call is a `tool_use` block. */
 const ASSISTANT = z.object({ message: z.object({ content: z.array(z.looseObject({ type: z.string(), name: z.string().optional(), input: z.unknown().optional() })) }) });
 
@@ -104,11 +102,13 @@ const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  *   comment` / `gh pr review`) to `repos/<repo>/issues/<on>` or
  *   `repos/<repo>/pulls/<on>`, or names `on` to the `gh` subcommand. A
  *   command that carries a body inline (`body=`, `--body`, `-b`, a here
- *   document) carries the text.
+ *   document) carries the text, unless the shell expands it (`$`). One
+ *   that reads its body from a file or stdin carries none. A write with no
+ *   body at all, a label or an approval, posted no comment.
  * - Any other tool posts there where its input names the repo's owner and
  *   name and `on` by one of {@link NUMBER_KEYS}, and its name does not read
  *   (`get`, `list`, `search`, `read`). Its `body`, where it has one, is the
- *   text.
+ *   text. Without one, only a review or comment tool may have posted.
  *
  * @param {{ name?: string | undefined, input?: unknown }} call
  * @param {string} repo `owner/name`
@@ -125,16 +125,26 @@ export const postedTo = (call, repo, on) => {
     const cli = new RegExp(`\\bgh\\s+(?:issue\\s+comment|pr\\s+comment|pr\\s+review)\\s+#?${on}(?![0-9])`);
     const named = /(?:\s-R|--repo)[=\s]+["']?([^\s"']+)/.exec(command)?.[1]?.toLowerCase();
     const viaCli = cli.test(command) && (named === undefined || named === repo.toLowerCase() || named.endsWith(`/${repo.toLowerCase()}`));
-    const writes = /\s(?:-[fFd]|--field|--raw-field|--input|--data)[\s=]/.test(command) || /\s(?:-X|--method)[\s=]*["']?(?:POST|PATCH|PUT)\b/i.test(command);
+    // `gh api -X GET` with fields sends them as a query: a read.
+    const reads = /\s(?:-X|--method)[\s=]*["']?GET\b/i.test(command);
+    const writes = !reads && (/\s(?:-[fFd]|--field|--raw-field|--input|--data)[\s=]/.test(command) || /\s(?:-X|--method)[\s=]*["']?(?:POST|PATCH|PUT)\b/i.test(command));
     if (!viaCli && !(path.test(command) && writes)) return null;
-    const inline = /body=(?!@)|--body[=\s]|\s-b\s|<</.test(command);
-    return { text: inline ? command : null };
+    // A body the shell expands, from a variable or a command, is not in the command's text.
+    if (/(?:body=|--body[=\s]+|\s-b\s+)["']?\$/.test(command)) return { text: null };
+    if (/body=(?!@)|--body[=\s]|\s-b\s|<</.test(command)) return { text: command };
+    // A body read from a file or stdin.
+    if (/body=@|--body-file[=\s]|--input[=\s]|\s-F\s+(?![\w[\]]+=)/.test(command)) return { text: null };
+    // A write that carries no body, such as a label or an approval, posted no comment.
+    return null;
   }
   const tool = String(call.name ?? '').replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '');
   if (/(?:^|_)(?:get|list|search|read)(?:_|$)/i.test(tool)) return null;
   if (String(input.owner ?? '').toLowerCase() !== owner || String(input.repo ?? '').toLowerCase() !== name) return null;
   if (!NUMBER_KEYS.some((key) => Number(input[key]) === on)) return null;
-  return { text: typeof input.body === 'string' ? input.body : null };
+  if (typeof input.body === 'string') return { text: input.body };
+  // A review submitted without a body may post the one its pending review holds;
+  // any other write without one, such as a merge or a label, posted no comment.
+  return /review|comment/i.test(tool) ? { text: null } : null;
 };
 
 /**
@@ -144,7 +154,18 @@ export const postedTo = (call, repo, on) => {
  * @param {string} text
  * @param {string} words
  */
-const holds = (text, words) => words === '' || ` ${wordsOf(text).join(' ')} `.includes(` ${words} `);
+const holds = (text, words) => words === '' || [text, unescaped(text)].some((t) => ` ${wordsOf(t).join(' ')} `.includes(` ${words} `));
+
+/**
+ * `text` with JSON's string escapes read, as a body sent as JSON (`gh api
+ * --input`) carries its newlines and quotes: `\n` would otherwise glue its
+ * `n` to the next word.
+ *
+ * @param {string} text
+ */
+const unescaped = (text) => text
+  .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+  .replace(/\\[nrtbf]/g, ' ');
 
 /**
  * What one candidate's events say of the post: `posted`, a call in the
@@ -241,11 +262,13 @@ export const searchAuthor = async ({ list, events, repo, on, post }) => {
   const posted = [];
   /** @type {string[]} */
   const unread = [];
-  for (const { id, session } of candidates) {
-    const read = await readCandidate({ events, id, repo, on, post });
-    if (read.read === 'posted') posted.push(session);
-    else if (read.read === 'unreadable') unread.push(session);
-  }
+  // Each candidate's events are read side by side.
+  const reads = await Promise.all(candidates.map(({ id }) => readCandidate({ events, id, repo, on, post })));
+  candidates.forEach(({ session }, i) => {
+    const read = reads[i]?.read;
+    if (read === 'posted') posted.push(session);
+    else if (read === 'unreadable') unread.push(session);
+  });
   const author = posted.length === 1 && unread.length === 0 ? posted[0] ?? null : null;
   return { searched: true, author, maybe: author === null ? [...posted, ...unread] : [], candidates: candidates.length, unread: unread.length };
 };

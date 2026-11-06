@@ -77,7 +77,7 @@ export const signsOff = (reply) => {
  * with its own `type`. Only the kinds the reply is read from are held to a
  * shape.
  */
-const EVENTS_PAGE = z.object({ data: z.array(z.record(z.string(), z.unknown())), next_cursor: z.string().nullish() });
+export const EVENTS_PAGE = z.object({ data: z.array(z.record(z.string(), z.unknown())), next_cursor: z.string().nullish() });
 /** An error result (`error_max_turns`, …) carries no `result`: it reads as empty. */
 const RESULT_PAYLOAD = z.object({ result: z.string().optional() });
 /** A user message: a person's prompt, or tool results handed back mid-turn. */

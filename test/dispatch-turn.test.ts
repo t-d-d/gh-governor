@@ -11045,6 +11045,23 @@ describe('run: a session\'s unsigned post relayed to a PR\'s owner, under sessio
     assert.deepEqual(h.eventsRead.filter((r) => r.id === 'cse_01WRITER'), []);
   });
 
+  test('an author fire on an expired token refreshes it once, and searches under the refreshed one', async () => {
+    const expired = LOGIN.replace(String(NOW + 3_600_000), String(NOW - 1));
+    const h = searching(WRITER, {
+      secret: { get: async () => storedLogin(expired, ACCOUNT), put: async (text: string) => { h.stored.push(text); } },
+      refreshLogin: async () => {
+        h.calls.push('refreshLogin');
+        h.setLoginOnDisk(REFRESHED);
+        return { status: 0, output: '{"result":"OK"}' };
+      },
+    });
+    const result = await run({ kind: 'author', on: 12, post, authors: ['OWNER'] }, h.deps as never) as Record<string, any>;
+    assert.equal(h.calls.filter((c) => c === 'refreshLogin').length, 1);
+    assert.deepEqual(h.eventsRead.filter((r) => r.id === 'cse_01WRITER').map((r) => r.token), ['sk-ant-oat01-b']);
+    assert.deepEqual(h.messages.map((m) => m.session), [WRITER]);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
   test('an author fire is refused in a repo whose file does not turn sessionRules on', async () => {
     const h = harness({ configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) });
     const result = await run({ kind: 'author', on: 12, post, authors: ['OWNER'] }, h.deps as never) as Record<string, any>;
