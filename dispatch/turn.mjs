@@ -106,7 +106,7 @@ import { ConditionalCheckFailedException, DeleteItemCommand, DynamoDBClient, Get
 import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
-import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
+import { ARCHIVE_TIMEOUT_MS, SIGNOFF_LATEST_START_MS, SIGNOFF_WINDOW_MS, accessToken, awaitReplies, heldMessage, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { WAIT_PROMPT, holdWait, waitLinks } from './waits.mjs';
 import { tellerFor } from './told.mjs';
@@ -131,7 +131,7 @@ import { ownerMessageId, reviewPull } from './review.mjs';
 import { reviewIssue, reviewLabelsOf } from './issue-review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { rolesOf } from './roles.mjs';
-import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
+import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, readSend, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, deployedTarget, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
 import { deployedComment } from './webhook/deployed-comment.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
@@ -263,6 +263,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   record: (repo: string, workflow: string, label: string | null, from: number | null, delivered: Delivered) => Promise<void>,
  *   recordConflict: (repo: string, pr: number, merge: string) => Promise<boolean>,
  *   recordSession: (session: string) => Promise<void>,
+ *   recordHeld: (session: string) => Promise<boolean>,
  *   startedSession: (session: string) => Promise<boolean>,
  *   verdict: (repo: string, pr: number) => Promise<(import('./review.mjs').Verdict & { at: string }) | null>,
  *   recordVerdict: (repo: string, pr: number, read: (import('./review.mjs').Verdict & { at: string }) | null, verdict: import('./review.mjs').Verdict) => Promise<boolean>,
@@ -282,6 +283,8 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   record the turn read, false where another stood.
  *   A session governor started, by URL or id: recorded, and read back by
  *   the PR review (dispatch/review.mjs), whichever repo its PR is in.
+ *   That the sign-off sweep told a session it held it: recorded, false
+ *   where a record stood (scripts/lib/session-signoff.mjs).
  *   A PR review's verdict (dispatch/review.mjs): read, and written over
  *   the item the review read, false where another stood.
  *   A read or write that fails throws.
@@ -709,6 +712,7 @@ const turnOf = async (event, deps, built) => {
     log: deps.log,
     woken,
     repos: signing,
+    ...heldBy({ ...deps, secret }, served, tokenFor, budgeted, started + SIGNOFF_LATEST_START_MS + SIGNOFF_WINDOW_MS),
     list: (token) => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
     lookup: sweepLookup(deps),
     events,
@@ -724,6 +728,62 @@ const turnOf = async (event, deps, built) => {
     ...(periodics === null ? {} : { periodics }),
     ...(heartbeatUnwritten.length === 0 ? {} : { heartbeatUnwritten }),
     signoffs,
+  };
+};
+
+/**
+ * The sweep's view of the PRs a session still owns
+ * (scripts/lib/session-signoff.mjs): `holds` reads each repo's open list
+ * once, through the reader's `openNaming` under the repo's `trust.relay`,
+ * and counts only PRs. `onHeld` tells a held session why, where a repo it
+ * names sets `signOff.heldMessage`: it puts the session's held record
+ * first, only where none stands, and sends nothing where one did or the
+ * put failed, so a session hears it once whatever it does next. The send
+ * runs the CLI after the turn stored its login, so a refresh it makes goes
+ * back to the secret here, and it ends by `until`, the sweep's own end,
+ * which keeps the sweep inside the task's deadline. With no time left
+ * before `until`, it writes no record, and a later sweep tells the session.
+ *
+ * @param {Deps} deps The turn's deps, with the turn's `secret`.
+ * @param {import('./repos.mjs').Served[]} served
+ * @param {(repo: string) => Promise<string>} tokenFor
+ * @param {import('./launcher.mjs').Budgeted} budgeted
+ * @param {number} until
+ * @returns {{ holds: import('../scripts/lib/session-signoff.mjs').Holds, onHeld: import('../scripts/lib/session-signoff.mjs').OnHeld }}
+ */
+const heldBy = (deps, served, tokenFor, budgeted, until) => {
+  /** @type {Map<string, Promise<Reader>>} */
+  const readers = new Map();
+  /** @param {string} repo The served repo's own spelling, so the turn's token for it is reused. */
+  const readerOf = (repo) => {
+    let reader = readers.get(repo);
+    if (reader === undefined) readers.set(repo, reader = (async () => deps.reader(await tokenFor(repo), await deps.appId(), repo))());
+    return reader;
+  };
+  return {
+    holds: async (session, repos) => {
+      /** @type {number[]} */
+      const prs = [];
+      for (const named of repos) {
+        const own = served.find((s) => s.repo.toLowerCase() === named.toLowerCase());
+        if (own === undefined) throw new Error(`${named} is not a repo this turn serves`);
+        for (const row of await (await readerOf(own.repo)).openNaming(session, relayOf(own.config))) if (row.pull) prs.push(row.number);
+      }
+      return prs;
+    },
+    onHeld: async (session, prs, repos) => {
+      if (!repos.some((repo) => configIn(served, repo)?.signOff?.heldMessage === true)) return {};
+      if (deps.now() >= until) return { told: false, reason: 'no time left in the sweep' };
+      // Read before the record, so a failed read leaves the session to be told later.
+      const { credentials, account } = readStoredLogin(await deps.secret.get());
+      if (!(await deps.state.recordHeld(session))) return { told: false, reason: 'told before' };
+      try {
+        const sent = readSend(await budgeted(() => deps.message({ session, text: heldMessage(prs) }), session, until));
+        return sent.ok ? { told: true } : { told: false, error: sent.error };
+      } finally {
+        await storeIfRefreshed(deps, credentials, account);
+      }
+    },
   };
 };
 
@@ -1892,6 +1952,12 @@ const DELIVERED_TTL_S = 30 * 24 * 60 * 60;
 /** How long a PR's record of a merge's conflict is kept: a merge's fire is redelivered within hours, and never a month on. */
 const CONFLICT_TTL_S = 30 * 24 * 60 * 60;
 
+/**
+ * How long a held session's record lasts: longer than a PR stays open, so a
+ * session is told once. A lost item costs one more message.
+ */
+const HELD_TTL_S = 90 * 24 * 60 * 60;
+
 /** How long past its date a wait item stays, should no fire delete it: a month. */
 const WAIT_TTL_S = 30 * 24 * 60 * 60;
 
@@ -2254,6 +2320,20 @@ export const dynamoState = (client, table) => {
     // The same put twice is one record: no condition, nothing to race.
     recordSession: async (session) => {
       await client.send(new PutItemCommand({ TableName: table, Item: { ...sessionKey(session), at: { S: new Date().toISOString() } } }));
+    },
+    // Put before the message, only where none stands: a session hears it once.
+    recordHeld: async (session) => {
+      try {
+        await client.send(new PutItemCommand({
+          TableName: table,
+          Item: { pk: { S: `held#${sessionId(session)}` }, sk: { S: 'told' }, at: { S: new Date().toISOString() }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.now() / 1000) + HELD_TTL_S) } },
+          ConditionExpression: 'attribute_not_exists(pk)',
+        }));
+        return true;
+      } catch (error) {
+        if (refused(error)) return false;
+        throw error;
+      }
     },
     startedSession: async (session) => {
       const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: sessionKey(session), ConsistentRead: true }));
@@ -2757,6 +2837,7 @@ export const realDeps = () => {
         record: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordConflict: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordHeld: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         startedSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         waits: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         wait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },

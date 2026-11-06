@@ -267,6 +267,14 @@ describe('one section per feature, in .github/governor.json', () => {
     assert.deepEqual(ok({ ...MINIMAL, pickup: { ...PICKUP, sweepHours: 3 } }).pickup, { sweepHours: 3 });
   });
 
+  test('signOff.heldMessage reads as signOff.heldMessage, false unless the file sets it, and only a boolean', () => {
+    assert.deepEqual(ok({ ...MINIMAL, signOff: { heldMessage: true } }).signOff, { heldMessage: true });
+    assert.equal(ok({ ...MINIMAL, signOff: { heldMessage: false } }).signOff, undefined);
+    assert.equal(ok({ ...MINIMAL, signOff: {} }).signOff, undefined);
+    assert.equal(ok(MINIMAL).signOff, undefined);
+    assert.match(fault({ ...MINIMAL, signOff: { heldMessage: 'yes' } }), /heldMessage/);
+  });
+
   test('every message kind has exactly one key, in the section of the feature it serves', () => {
     const keys = Object.values(PROMPT_KEYS);
     assert.deepEqual(Object.keys(PROMPT_KEYS).sort(), Object.keys(PROMPTS).sort(), 'each kind PROMPTS knows has a key, and no other');

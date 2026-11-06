@@ -229,7 +229,7 @@ const cliAnswer = (output) => {
  *
  * @param {import('./turn.mjs').LaunchResult} sent
  */
-const readSend = (sent) => {
+export const readSend = (sent) => {
   const answer = cliAnswer(sent.output);
   const ok = answer?.ok === true;
   return {

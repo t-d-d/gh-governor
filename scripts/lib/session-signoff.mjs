@@ -39,6 +39,21 @@ import { archived, newestFirst, reposOf } from './session-branch.mjs';
 export const SIGN_OFF = 'Signing off.';
 
 /**
+ * The one message a session gets the first time the sweep holds it: its
+ * reply signed off, but an open PR names it.
+ *
+ * @param {readonly number[]} prs
+ */
+export const heldMessage = (prs) => {
+  const named = prs.map((pr) => `#${pr}`).join(', ');
+  return [
+    `Governor read your sign-off, but this session was not archived: ${prs.length === 1 ? 'pull request' : 'pull requests'} ${named}, whose body names this session, ${prs.length === 1 ? 'is' : 'are'} still open.`,
+    'This session stays open until governor asks you to sign off, once the pull request merges and its change deploys, or it closes. Until then, governor sends you its reviews, conflicts and CI runs.',
+    'Governor sends this message once. You need not reply.',
+  ].join('\n\n');
+};
+
+/**
  * Whether a reply signs the session off: its last non-empty line, emphasis
  * stripped, starts SIGN_OFF's words followed by `.`, `:`, `!` or nothing.
  * A served repo's own hook that reads a reply for the sign-off should use
@@ -339,8 +354,19 @@ const CSE_ID = /^cse_([A-Za-z0-9]+)$/;
  *   The dispatcher's fire lane: how many fires are on it, queued or in
  *   flight. A read that fails throws.
  *
+ * @typedef {(session: string, repos: readonly string[]) => Promise<number[]>} Holds
+ *   The open PRs in `repos` whose body names `session` (`session_…`), by
+ *   number, from the open list the standing line reads (`openNaming`). A
+ *   read that fails throws.
+ *
+ * @typedef {(session: string, prs: readonly number[], repos: readonly string[]) => Promise<Record<string, unknown>>} OnHeld
+ *   What governor does about a hold, beyond logging it: its answer joins
+ *   the hold's line, so it names no session text. One that throws is
+ *   logged as `told: false` with its error.
+ *
  * @typedef {{
  *   archived: string[],
+ *   held: string[],
  *   kept: Array<{ session: string, error: string }>,
  *   unsigned: number,
  *   deferred: number,
@@ -380,10 +406,16 @@ export const accessToken = (login, now) => {
  * `woken` (this turn messaged it, at the time it maps to) whose newest result
  * is not newer than the message is left for a later turn: its reply has not
  * landed. An events read that fails, or an answer outside the schema,
- * archives nothing. Each candidate logs one `dispatch-signoff` line naming
+ * archives nothing. A candidate that signs off while an open PR in a served
+ * repo it names carries its link (`holds`) is held, not archived, whatever
+ * its reply says: a later conflict, review or red run on that PR needs it.
+ * The hold is logged with the PRs' numbers, and `onHeld` decides whether
+ * the session is told. A read of the open list that fails archives nothing.
+ * A later sweep archives it once no open PR names it and its newest reply
+ * signs off. Each candidate logs one `dispatch-signoff` line naming
  * the session and the decision, never the reply's text, and the sweep ends
  * with one line counting the rows listed, its candidates, and of them those
- * archived, not signed off, kept and deferred, and the rows each test turned
+ * archived, held, not signed off, kept and deferred, and the rows each test turned
  * away. The access token is
  * the one the turn leaves on disk, which the CLI has refreshed if the turn
  * ran it; an expired one sweeps nothing, and so does an empty `repos`,
@@ -398,15 +430,17 @@ export const accessToken = (login, now) => {
  *   log: (event: string, context?: Record<string, unknown>) => void,
  *   woken?: ReadonlyMap<string, number>,
  *   repos: readonly string[],
+ *   holds: Holds,
+ *   onHeld?: OnHeld | undefined,
  *   list: ListSessions,
  *   lookup: Lookup,
  *   events: Events,
  * }} args
  * @returns {Promise<Sweep>}
  */
-export const sweepSignoffs = async ({ archive, login, started, now, log, woken = new Map(), repos, list, lookup, events }) => {
+export const sweepSignoffs = async ({ archive, login, started, now, log, woken = new Map(), repos, holds, onHeld, list, lookup, events }) => {
   /** @type {Sweep} */
-  const sweep = { archived: [], kept: [], unsigned: 0, deferred: 0, skipped: null };
+  const sweep = { archived: [], held: [], kept: [], unsigned: 0, deferred: 0, skipped: null };
   /** @param {string} reason */
   const skip = (reason) => {
     log('dispatch-signoff', { skipped: reason });
@@ -418,7 +452,7 @@ export const sweepSignoffs = async ({ archive, login, started, now, log, woken =
   if ('reason' in usable) return skip(usable.reason);
   const { token } = usable;
   const served = new Set(repos.map((repo) => repo.toLowerCase()));
-  /** @type {string[]} */
+  /** Each candidate's id and the served repos its row names. @type {Array<{ id: string, named: string[] }>} */
   let candidates;
   /** @type {unknown[]} */
   let listed;
@@ -442,12 +476,12 @@ export const sweepSignoffs = async ({ archive, login, started, now, log, woken =
         return named.some((repo) => served.has(repo)) || away('unserved');
       })
       .sort(newestFirst)
-      .map((row) => /** @type {any} */ (row).id);
+      .map((row) => ({ id: /** @type {any} */ (row).id, named: reposOf(row).filter((repo) => served.has(repo)) }));
   } catch (error) {
     return skip(`could not list the sessions: ${messageOf(error)}`);
   }
   const windowStart = now();
-  for (const [i, id] of candidates.entries()) {
+  for (const [i, { id, named }] of candidates.entries()) {
     if (now() - windowStart > SIGNOFF_WINDOW_MS) {
       sweep.deferred += candidates.length - i;
       log('dispatch-signoff', { unread: candidates.length - i, reason: `out of time: past ${SIGNOFF_WINDOW_MS} ms` });
@@ -482,6 +516,30 @@ export const sweepSignoffs = async ({ archive, login, started, now, log, woken =
       log('dispatch-signoff', { session, decision: 'not signed off' });
       continue;
     }
+    /** @type {number[]} */
+    let prs;
+    try {
+      prs = await holds(session, named);
+    } catch (error) {
+      const reason = `could not read the open PRs: ${messageOf(error)}`;
+      log('dispatch-signoff', { session, decision: 'signed off', archived: false, reason });
+      sweep.kept.push({ session, error: reason });
+      continue;
+    }
+    if (prs.length > 0) {
+      sweep.held.push(session);
+      /** @type {Record<string, unknown>} */
+      let told = {};
+      if (onHeld !== undefined) {
+        try {
+          told = await onHeld(session, prs, named);
+        } catch (error) {
+          told = { told: false, error: messageOf(error) };
+        }
+      }
+      log('dispatch-signoff', { session, decision: 'held', archived: false, prs, ...told });
+      continue;
+    }
     const outcome = await archiveOne(session, id, { archive, lookup, token, log });
     if (outcome === 'archived') sweep.archived.push(session);
     if (typeof outcome === 'object') sweep.kept.push({ session, error: outcome.error });
@@ -490,6 +548,7 @@ export const sweepSignoffs = async ({ archive, login, started, now, log, woken =
     listed: listed.length,
     candidates: candidates.length,
     archived: sweep.archived.length,
+    held: sweep.held.length,
     unsigned: sweep.unsigned,
     kept: sweep.kept.length,
     deferred: sweep.deferred,
