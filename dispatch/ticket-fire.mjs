@@ -196,20 +196,23 @@ export const planTicket = async (invocation, ctx) => {
     // written back (dispatch/take.mjs).
     /** Whether the edit was a take, so the editor owns the ticket. */
     let taken = false;
-    if (moved !== null && editor !== null) {
-      ({ sent: took, took: taken } = await settleMove({
-        repo, issue, editor, moved, notice, builders,
-        github: await ctx.readerFor(repo),
-        relay: relayOf(config),
-        tellOnce: (session, kind) => ctx.state.recordTold(session, kind),
-        deliveries: ctx.delivery(),
-        log: ctx.log,
-      }));
+    try {
+      if (moved !== null && editor !== null) {
+        ({ sent: took, taken } = await settleMove({
+          repo, issue, editor, moved, notice, builders,
+          github: await ctx.readerFor(repo),
+          relay: relayOf(config),
+          tellOnce: (session, kind) => ctx.state.recordTold(session, kind),
+          deliveries: ctx.delivery(),
+          log: ctx.log,
+        }));
+      }
+    } finally {
+      // A take names the editor as the spec owner. An edit that is not one,
+      // or a settle that failed or threw, names the old owner, as the body
+      // does once governor has written it back.
+      for (const one of after) await send(one, taken ? editor : owner);
     }
-    // A take names the editor as the spec owner. An edit that is not one,
-    // or a settle that failed, names the old owner, as the body does once
-    // governor has written it back.
-    for (const one of after) await send(one, taken ? editor : owner);
     if (post !== null && found !== null) {
       nudged = await tellAuthor({ repo, on: issue, post, found, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries: ctx.delivery(), log: ctx.log });
     }

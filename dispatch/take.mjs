@@ -139,10 +139,10 @@ const rewriteOwner = async ({ github, repo, issue, editor, restore, person, rela
 
 /**
  * What {@link settleMove} made of an edit: `sent`, the take's or the
- * correction's delivery, or null where nothing was sent; `took`, whether
+ * correction's delivery, or null where nothing was sent; `taken`, whether
  * the edit was a take, so the editor now owns the issue.
  *
- * @typedef {{ sent: import('./deliveries.mjs').Delivery | null, took: boolean }} Settled
+ * @typedef {{ sent: import('./deliveries.mjs').Delivery | null, taken: boolean }} Settled
  */
 
 /**
@@ -172,20 +172,20 @@ export const settleMove = async ({ repo, issue, editor, moved, notice, builders,
   const at = { repo, issue, editor: sessionId(editor), old: moved.old, ...(moved.from === undefined ? {} : { from: sessionId(moved.from) }) };
   if (notice !== null && !notice.ok && !notice.refused) {
     log(TAKE, { ...at, outcome: 'nothing done', reason: notice.capped === true ? 'the old owner\'s notice was held at the message ceiling' : 'the old owner\'s notice was not sent' });
-    return { sent: null, took: false };
+    return { sent: null, taken: false };
   }
   const builds = builders.some((b) => sameSession(b, editor));
   const refused = notice?.refused === true;
   if (!builds && (moved.old === 'unsigned' || (moved.old === 'owned' && refused))) {
     const sent = await deliveries.deliver({ session: editor }, takeText(issue, refused ? 'archived' : 'unsigned'), { source: GITHUB_SOURCE, kind: 'take', on: [issue] });
     if (sent.capped !== true) log(TAKE, { ...at, outcome: sent.ok ? 'the take confirmed' : sent.refused ? 'the editor is archived' : 'the take not confirmed', ...(sent.ok || sent.refused ? {} : { level: 'error', error: sent.error }) });
-    return { sent, took: true };
+    return { sent, taken: true };
   }
   /** @type {Correction} */
   const kind = builds ? 'edit-builder' : moved.old === 'person' ? 'edit-person' : 'edit-owned';
   const restore = moved.from ?? null;
-  if (!await rewriteOwner({ github, repo, issue, editor, restore, person: moved.old === 'person', relay, log })) return { sent: null, took: false };
-  return { sent: await correctOnce({ at, on: issue, editor, kind, restore, tellOnce, deliveries, log }), took: false };
+  if (!await rewriteOwner({ github, repo, issue, editor, restore, person: moved.old === 'person', relay, log })) return { sent: null, taken: false };
+  return { sent: await correctOnce({ at, on: issue, editor, kind, restore, tellOnce, deliveries, log }), taken: false };
 };
 
 /**

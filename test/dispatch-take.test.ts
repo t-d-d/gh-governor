@@ -212,10 +212,11 @@ const MARKER = dispatchMarker({ at: new Date(NOW - 60_000).toISOString(), sessio
 /**
  * A `TurnContext` whose reader holds issue 7 with `body` (as it reads now),
  * its thread `comments`; `archived` the sessions that refuse, `capped`
- * those the ceiling holds back, `fails` those whose send faults.
+ * those the ceiling holds back, `fails` those whose send faults, `throws`
+ * those whose send rejects.
  */
 const context = ({
-  body = TAKEN, comments = [{ body: MARKER }] as Array<{ body: string }>, archived = [] as string[], capped = [] as string[], fails = [] as string[],
+  body = TAKEN, comments = [{ body: MARKER }] as Array<{ body: string }>, archived = [] as string[], capped = [] as string[], fails = [] as string[], throws = [] as string[],
   config = CONFIG, readFails = false, writeFails = false, told = new Set<string>(),
 } = {}) => {
   const sent: Sent[] = [];
@@ -250,6 +251,7 @@ const context = ({
       ownerOf: async () => ({ session: null }),
       deliver: async ({ session }: { session: string }, text: string, opts: Record<string, unknown>) => {
         sent.push({ session, text, opts });
+        if (throws.includes(session)) throw new Error('the sessions API could not be read');
         return answer(session);
       },
     }),
@@ -434,6 +436,15 @@ describe('planTicket: a body edit that moved the owner link, under sessionRules'
     for (const over of [{ readFails: true }, { writeFails: true }, { capped: [OWNER] }]) {
       const { ctx, sent } = context(over);
       await planTicket(editFire(), ctx);
+      assert.equal(toBuilder(sent).length, 1, JSON.stringify(over));
+      assert.ok(toBuilder(sent)[0]!.text.includes(rolesLine(OWNER)), JSON.stringify(over));
+    }
+  });
+
+  test('a settle that throws still reaches the builder, naming the old owner, and the turn rejects', async () => {
+    for (const over of [{}, { archived: [OWNER] }]) {
+      const { ctx, sent } = context({ ...over, throws: [EDITOR] });
+      await assert.rejects(planTicket(editFire(), ctx), /sessions API/);
       assert.equal(toBuilder(sent).length, 1, JSON.stringify(over));
       assert.ok(toBuilder(sent)[0]!.text.includes(rolesLine(OWNER)), JSON.stringify(over));
     }
