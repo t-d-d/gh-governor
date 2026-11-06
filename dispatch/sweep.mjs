@@ -465,7 +465,7 @@ export const planSweep = async (invocation, ctx) => {
             repo,
             issue,
             marker,
-            refusal: 'the issue\'s body has no marker, so the heartbeat is not written: fix the issue number or marker in the repo\'s .github/dispatch.json, or add the marker to the issue',
+            refusal: 'the issue\'s body has no marker, so the heartbeat is not written: fix the issue number or marker in the repo\'s .github/governor.json, or add the marker to the issue',
             stamp: (body) => stampLastRun(body, marker, ctx.now()),
             log: ctx.log,
           });

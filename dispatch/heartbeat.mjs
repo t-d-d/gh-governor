@@ -1,6 +1,6 @@
 /**
  * A served repo's heartbeat: what governor writes into the issue the repo's
- * config file names (`heartbeat` in `.github/dispatch.json`), so a check
+ * config file names (`heartbeat` in `.github/governor.json`), so a check
  * outside governor can tell a dispatcher that stopped from one that found
  * nothing to do. The rest of the issue's body stays as its owner wrote it.
  *

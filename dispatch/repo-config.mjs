@@ -2,42 +2,50 @@
  * A served repo's dispatcher config file: what the dispatcher does in a
  * repo, written and reviewed in that repo.
  *
- * The file is `.github/dispatch.json` on the repo's default branch. It names
- * the repo's cloud environment, by ID or by name, the labels that mark a ticket ready, the
- * label that claims it and the labels that keep a ticket out, turns each feature on, may replace the
- * instruction in each message kind (`prompts`, dispatch/prompts.mjs),
- * names the repo's CI workflow, its triage targets and the tag
- * each target's deploy moves (`workflows`), and holds the PR
- * review's checklist and lists (`review`), names the issue
- * governor records its fires on (`heartbeat`, dispatch/heartbeat.mjs), sets how
- * often pickup sweeps its ready tickets (`pickup`, dispatch/pickup.mjs), lists the
- * recurring sessions the schedule fire starts (`periodics`, dispatch/periodics.mjs),
- * and lists the hooks an outside system fires (`hooks`, dispatch/hooks.mjs).
- * Every feature is a switch, off unless the file turns it on (the issue
- * reviews by having their section, {@link turnsOn}), and a turn
- * refuses a fire kind its repo's file does not turn on ({@link switchOf}).
- * Every switch is generic: the schema accepts none by repo. The file holds
- * no secret: a served repo may be public.
+ * The file is `.github/governor.json` on the repo's default branch. Three
+ * keys are settings several features share: `environment`, the repo's cloud
+ * environment by ID or by name; `trust`, whose GitHub text governor acts on
+ * (dispatch/trust.mjs); and `workflows`, which names the repo's CI
+ * workflow. Every other top-level key is one feature's section, holding
+ * every setting and prompt that feature reads: pickup's labels and sweep
+ * interval (`pickup`, dispatch/pickup.mjs), the deploy messages' triage
+ * targets and tags (`deployMessages`), the PR review's prompt and lists
+ * (`prReview`), the heartbeat's issue (`heartbeat`, dispatch/heartbeat.mjs),
+ * the periodics and hooks keyed by name (`periodics.sessions`,
+ * dispatch/periodics.mjs, and `hooks.sessions`, dispatch/hooks.mjs), and
+ * the issue reviews (`issueReviews`, dispatch/issue-review.mjs). A section
+ * turns its feature on unless it sets `"enabled": false`, a feature with no
+ * section is off, and a turn refuses a fire kind its repo's file does not
+ * turn on ({@link switchOf}). Every section is generic: the schema accepts
+ * none by repo. The file holds no secret: a served repo may be public.
  *
- * Every prompt value, each in `prompts`, the review's `checklist`, each
+ * Every prompt value, a section's `prompt` or each of its `prompts`, each
  * periodic's `prompt` and each hook's, and an issue review's `prompt` and
- * each of its `byLabel` entries', is the
- * text or `{ "file": "<path>" }`, a file in the repo read from the default
- * branch beside the config file ({@link resolveFiles}).
+ * each of its `byLabel` entries', is the text or `{ "file": "<path>" }`, a
+ * file in the repo read from the default branch beside the config file
+ * ({@link resolveFiles}).
  *
- * The schema is {@link configSchema}; {@link readConfig} reads a file's text
- * against it for one repo, {@link resolveFiles} reads the prompt files it
- * names, and {@link environmentFrom} turns a name into its ID from the
- * login's environment list.
+ * The schema is {@link configSchema}, which reads the file into the shape
+ * the rest of governor's code takes ({@link toConfig}); {@link readConfig}
+ * reads a file's text against it for one repo, {@link resolveFiles} reads
+ * the prompt files it names, and {@link environmentFrom} turns a name into
+ * its ID from the login's environment list.
  */
 
 import { z } from 'zod';
 import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, SUMMONERS, WORKFLOW_PATH } from './webhook/fire.mjs';
-import { PROMPTS, RETIRED_PROMPTS, unknownFills } from './prompts.mjs';
+import { PROMPTS, unknownFills } from './prompts.mjs';
 import { BOT, START, TRUST_VALUES, autoOf, reviewOf, taskKey as taskKeyOf, taskSet } from './trust.mjs';
 
 /** Where the file lives, on the repo's default branch. */
-export const CONFIG_PATH = '.github/dispatch.json';
+export const CONFIG_PATH = '.github/governor.json';
+
+/**
+ * Where the file lived before #525. Governor reads it no more: a repo with
+ * it and no {@link CONFIG_PATH} is not served, and the log names the file to
+ * add (dispatch/repos.mjs).
+ */
+export const OLD_CONFIG_PATH = '.github/dispatch.json';
 
 /**
  * The switches any served repo may turn on: pickup, summons, PR and
@@ -48,7 +56,10 @@ export const CONFIG_PATH = '.github/dispatch.json';
  * hooks, what governor does when a ticket's wait ends (`waits`,
  * dispatch/waits.mjs), and the sign-off sweep's archive and the standing
  * line's ask to sign off (`signOff`, scripts/lib/session-signoff.mjs).
- * Every switch the `features` section holds.
+ * Each but `deployedLabels` is a section of the file, on where the file has
+ * it and its `enabled` is not `false`; `deployedLabels` is
+ * `deployMessages.deployedLabels`, on where that section is on and the key
+ * is `true`.
  */
 export const GENERIC_SWITCHES = Object.freeze([
   'pickup', 'summons', 'prMessages', 'subscribeMessages', 'redScheduledRun', 'unblocked',
@@ -57,9 +68,8 @@ export const GENERIC_SWITCHES = Object.freeze([
 ]);
 
 /**
- * The switches a section of its own holds rather than `features`: the issue
- * reviews (`issueReviews`, dispatch/issue-review.mjs), on where the file
- * has the section and its `enabled` is not `false` ({@link turnsOn}).
+ * The switches whose section holds more than the generic switches' do: the
+ * issue reviews (`issueReviews`, dispatch/issue-review.mjs).
  */
 export const SECTION_SWITCHES = Object.freeze(['issueReviews']);
 
@@ -67,66 +77,92 @@ export const SECTION_SWITCHES = Object.freeze(['issueReviews']);
 export const SWITCHES = Object.freeze([...GENERIC_SWITCHES, ...SECTION_SWITCHES]);
 
 /**
- * Switches a served file may still set, each read as the switch that took
- * its work over: the schema is strict, and a file the change made invalid
- * would stop its repo being served. The merge hand-off's work is
- * `unblocked`'s; a file setting both reads `unblocked`.
+ * The feature sections of the file, one per feature: every switch but
+ * `deployedLabels`, which is a key of `deployMessages`. Every other
+ * top-level key is a shared setting: `environment`, `trust` and
+ * `workflows`.
  */
-export const RETIRED_SWITCHES = Object.freeze({ mergeHandoff: 'unblocked' });
+export const SECTIONS = Object.freeze(SWITCHES.filter((name) => name !== 'deployedLabels'));
 
 /**
- * Switches a served file may still set in `features`, each read as nothing,
- * since its switch moved to a section of its own: the schema is strict, and
- * the starter kit's file set `ticketReviews`. The config check warns where
- * the switch went (checker/config-check.mjs).
+ * The features whose code reads pickup's labels besides pickup: a file
+ * turning one on has a `pickup` section with its labels, which may set
+ * `"enabled": false`.
  */
-export const MOVED_SWITCHES = Object.freeze({ ticketReviews: 'issueReviews.enabled' });
+export const LABEL_READERS = Object.freeze(['unblocked', 'waits', 'prReview', 'issueReviews']);
 
 /**
- * What each switch turns on, as the config file's JSON Schema describes it
- * and the switch table in docs/serving-a-repo.md says it
+ * Where each message kind's prompt sits in the file (`PROMPTS`,
+ * dispatch/prompts.mjs): the section of the feature it serves, and under
+ * it `prompt`, or `prompts` and the kind without the feature's prefix where
+ * the section has more than one. Each kind sits in one place
+ * (test/dispatch-repos.test.ts).
+ *
+ * @type {Readonly<Record<string, Readonly<{ prompt: string } | { prompts: Readonly<Record<string, string>> }>>>}
+ */
+export const SECTION_PROMPTS = Object.freeze({
+  pickup: { prompt: 'pickup' },
+  signOff: { prompt: 'signOff' },
+  redScheduledRun: { prompt: 'redScheduledRun' },
+  subscribeMessages: { prompt: 'subscribed' },
+  conflicts: { prompt: 'conflicts' },
+  unblocked: { prompts: { ready: 'unblockedReady', spec: 'unblockedSpec', ownerSpec: 'unblockedOwnerSpec', claimed: 'unblockedClaimed', notPlanned: 'unblockedNotPlanned' } },
+  waits: { prompts: { spec: 'waitEndedSpec', ownerSpec: 'waitEndedOwnerSpec' } },
+  ciMessages: { prompts: { breaker: 'ciBreaker', triage: 'ciTriage', bumpTriage: 'ciBumpTriage' } },
+  deployMessages: { prompts: { triage: 'prodTriage', green: 'deployGreen', greenMany: 'deployGreenMany', red: 'deployRed', redMany: 'deployRedMany' } },
+});
+
+/**
+ * Each message kind and its key in the file, such as `unblocked.prompts.spec`
+ * for `unblockedSpec`.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const PROMPT_KEYS = Object.freeze(Object.fromEntries(Object.entries(SECTION_PROMPTS).flatMap(([section, place]) => ('prompt' in place
+  ? [[place.prompt, `${section}.prompt`]]
+  : Object.entries(place.prompts).map(([key, kind]) => [kind, `${section}.prompts.${key}`])))));
+
+/**
+ * What each switch turns on, as the config file's JSON Schema describes its
+ * section, and the section table in docs/serving-a-repo.md says it
  * (test/config-schema.test.ts).
  *
  * @type {Readonly<Record<string, string>>}
  */
 const SWITCH_DESCRIPTIONS = Object.freeze({
-  pickup: 'A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `pickup.sweepHours` sets.',
+  pickup: 'A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `sweepHours` sets. Its labels serve the features that read them, so a file turning on `unblocked`, `waits`, `prReview` or `issueReviews` has this section, with `"enabled": false` if pickup is to stay off.',
   summons: 'A session per `@claude` remark, and a dispatch started by hand.',
   prMessages: 'Messages into the session a PR names, or the newest live session holding its branch.',
   subscribeMessages: 'Messages to sessions subscribed by a `governor:subscribe` line, and to an issue\'s filer. A filer hears of its ticket\'s first deploy to each target through governor\'s comment on its issue, which asks it to sign off where the issue is closed. It hears a `deployed:` label only through a subscribe line for `deploys`.',
   redScheduledRun: 'A fresh session on a scheduled run on the default branch that went red.',
-  unblocked: 'What a blocker\'s close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket\'s session, and the spec work on a not-ready ticket. The session whose link ends the ticket\'s body owns it and is asked to rewrite its own spec; a fresh session rewrites it only where the body names no session or that session is archived, so nobody takes a ticket from its owner. A file that still sets the older `mergeHandoff` reads as this.',
+  unblocked: 'What a blocker\'s close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket\'s session, and the spec work on a not-ready ticket. The session whose link ends the ticket\'s body owns it and is asked to rewrite its own spec; a fresh session rewrites it only where the body names no session or that session is archived, so nobody takes a ticket from its owner.',
   ciMessages: 'A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`.',
   deployMessages: 'A shipping job, or a red deploy, tells the sessions of the merges it shipped.',
   branchRunMessages: 'A run dispatched on a branch tells the session that wrote its commit.',
   conflicts: 'A merge into the default branch tells each PR it left conflicted.',
-  deployedLabels: 'A shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, so the issue\'s filer hears of the deploy. Needs `deployMessages`.',
-  prReview: 'The PR review, run from the `review` section.',
-  heartbeat: 'Governor records each fire on the issue the `heartbeat` section names: a line for pickup and one per periodic. In the older shape with a `marker`, the hourly sweep stamps the issue\'s `last-run:` line instead.',
-  periodics: 'A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached.',
-  hooks: 'A session on a hook\'s prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook\'s last session is open goes into that session as a message.',
+  deployedLabels: 'Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, so the issue\'s filer hears of the deploy. Default false.',
+  prReview: 'The PR review: its prompt, and the lists it checks a PR against. Needs `prompt` when on.',
+  heartbeat: 'Governor records each fire on the issue `issue` names: a line for pickup and one per periodic, under the `<!-- governor:heartbeat -->` marker its body must carry. Needs `issue` when on.',
+  periodics: 'A session per periodic in `sessions`, each time its day limit passes or one of its counts is reached. Needs at least one periodic when on.',
+  hooks: 'A session on a hook\'s prompt when a signed request fires one of the hooks `sessions` holds. A fire while the hook\'s last session is open goes into that session as a message. Needs at least one hook when on.',
   waits: 'When a ticket\'s `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker\'s close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.',
   signOff: 'Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off.',
 });
 
+/** A section's `enabled` key. */
+const enabled = z.boolean().optional().meta({ description: 'Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.' });
+
 /**
- * The `features` section: every generic switch, and the retired ones read
- * as theirs.
+ * Whether the file, as written, turns on the feature whose section is
+ * `name`: it has the section, and the section's `enabled` is not `false`.
+ *
+ * @param {Record<string, unknown>} file
+ * @param {string} name
  */
-const featuresSchema = z.strictObject({
-  ...Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, z.boolean().optional().meta({ description: /** @type {string} */ (SWITCH_DESCRIPTIONS[name]) })])),
-  ...Object.fromEntries(Object.entries(RETIRED_SWITCHES).map(([old, now]) => [old, z.boolean().optional().meta({ deprecated: true, description: `Retired: read as ${now}.` })])),
-  ...Object.fromEntries(Object.entries(MOVED_SWITCHES).map(([old, now]) => [old, z.boolean().optional().meta({ deprecated: true, description: `Retired and read as nothing: the switch is now \`${now}\`.` })])),
-}).transform((features) => {
-  /** @type {Record<string, boolean | undefined>} */
-  const read = { ...features };
-  for (const [old, now] of Object.entries(RETIRED_SWITCHES)) {
-    if (read[now] === undefined && read[old] !== undefined) read[now] = read[old];
-    delete read[old];
-  }
-  for (const old of Object.keys(MOVED_SWITCHES)) delete read[old];
-  return read;
-});
+const sectionOn = (file, name) => {
+  const section = file[name];
+  return section !== undefined && /** @type {{ enabled?: boolean }} */ (section).enabled !== false;
+};
 
 // GitHub's issues query splits its `labels` on commas, so a ready label
 // holding one would match nothing.
@@ -185,6 +221,24 @@ const prompt = (kind) => z.union([
   promptFile,
 ]).meta({ description: promptDescription(kind) });
 
+/**
+ * A section's prompt keys ({@link SECTION_PROMPTS}): `prompt`, or `prompts`
+ * keyed by kind without the feature's prefix; none where the feature has
+ * no message kind.
+ *
+ * @param {string} section
+ */
+const promptFields = (section) => {
+  const place = SECTION_PROMPTS[section];
+  if (place === undefined) return {};
+  if ('prompt' in place) return { prompt: prompt(place.prompt).optional() };
+  return {
+    prompts: z.strictObject(Object.fromEntries(Object.entries(place.prompts).map(([key, kind]) => [key, prompt(kind).optional()])))
+      .optional()
+      .meta({ description: `Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: ${Object.keys(place.prompts).map((k) => `\`${k}\``).join(', ')}.` }),
+  };
+};
+
 // A glob a review list matches changed paths with (dispatch/checklist.mjs's `globMatches`).
 const glob = z.string().trim().min(1);
 
@@ -199,7 +253,7 @@ const ticketRule = z.strictObject({
 });
 
 /**
- * The PR review's settings: `checklist`, the model's prompt;
+ * The PR review's section, `prReview`: `enabled`; `prompt`, the model's prompt;
  * `humanOnly`, the globs a PR may not change without a person, each with
  * its reason and the labels that waive it when every ticket the PR closes
  * carries one; `tickets`, the label rules each ticket the PR closes meets;
@@ -212,8 +266,9 @@ const ticketRule = z.strictObject({
  * run at the head; `merge`, whether a pass merges. Settings, never code: a check
  * they cannot express is the repo's CI, read as a required status check.
  */
-const reviewSchema = z.strictObject({
-  checklist: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'Required. The review model\'s system prompt, after governor\'s fixed frame and before a suffix naming what the code decided: the text, or { "file": "<path>" }.' }),
+const prReviewSchema = z.strictObject({
+  enabled,
+  prompt: z.union([z.string().trim().min(1), promptFile]).optional().meta({ description: 'Required when on. The review model\'s system prompt, after governor\'s fixed frame and before a suffix naming what the code decided: the text, or { "file": "<path>" }.' }),
   humanOnly: z.array(z.strictObject({
     glob: glob.meta({ description: 'The paths a PR may not change without a person, as a glob.' }),
     reason: z.string().trim().min(1).meta({ description: 'Why a person must see a change to these paths, which the review says.' }),
@@ -241,16 +296,26 @@ const reviewSchema = z.strictObject({
 const target = z.string().trim().min(1).max(50 - 'deployed: '.length).regex(/^[^\n,]*$/, 'a target is one line, with no comma');
 
 /**
- * What the repo's workflows are to the dispatcher: `ci`, the
- * workflow whose red run its merges' sessions hear of; `triage`, the deploy
- * targets whose failure starts one fresh session instead; `tags`, the tag a
- * target's deploy moves, which its messages name.
+ * What the repo's workflows are to governor, a setting several features
+ * read: `ci`, the workflow whose red run its merges' sessions hear of.
  */
 const workflowsSchema = z.strictObject({
-  ci: z.string().regex(WORKFLOW_PATH, 'a workflow file under .github/workflows/').optional().meta({ description: 'The CI workflow\'s file, under `.github/workflows/`. A red run of it tells the sessions of the merges it may blame. Without it, no run is CI.' }),
+  ci: z.string().regex(WORKFLOW_PATH, 'a workflow file under .github/workflows/').optional().meta({ description: 'The CI workflow\'s file, under `.github/workflows/`. A red run of it tells the sessions of the merges it may blame, and the PR review waits for its run at a PR\'s head. Without it, no run is CI.' }),
+});
+
+/**
+ * The deploy messages' section, `deployMessages`: `triage`, the deploy
+ * targets whose failure starts one fresh session instead; `tags`, the tag a
+ * target's deploy moves, which its messages name; `deployedLabels`, whether
+ * a shipping job labels the tickets it shipped.
+ */
+const deployMessagesSchema = z.strictObject({
+  enabled,
   triage: z.array(target).default([]).meta({ description: 'The deploy targets whose failure starts one fresh session, rather than messages to the sessions of the merges it shipped. Default none.' }),
   tags: z.record(target, z.string().trim().min(1).regex(/^[\w./-]+$/, 'a tag name')).default({}).meta({ description: 'The tag each deploy target\'s deploy moves, keyed by target, which deploy messages name. Default none.' }),
-}).default({ triage: [], tags: {} });
+  deployedLabels: z.boolean().optional().meta({ description: /** @type {string} */ (SWITCH_DESCRIPTIONS.deployedLabels) }),
+  ...promptFields('deployMessages'),
+});
 
 /** A repo's `workflows` when its file names none: no CI, no triage, no tags. @type {Readonly<Workflows>} */
 export const NO_WORKFLOWS = Object.freeze({ triage: [], tags: {} });
@@ -260,16 +325,15 @@ export const NO_WORKFLOWS = Object.freeze({ triage: [], tags: {} });
 export { isCi, switchOf } from './webhook/switches.mjs';
 
 /**
- * The issue governor records its fires on (dispatch/heartbeat.mjs). With a
- * `marker`, the bare schedule fire stamps `last-run` under it; without one,
- * governor keeps a line for pickup and one per periodic under its own
- * `<!-- governor:heartbeat -->`. Either marker the body must already carry
+ * The heartbeat's section: `issue`, the issue governor records its fires
+ * on (dispatch/heartbeat.mjs), a line for pickup and one per periodic under
+ * its own `<!-- governor:heartbeat -->`, which the body must already carry
  * for a write to go: a wrong number then refuses the write rather than
  * overwrite someone's ticket.
  */
 const heartbeatSchema = z.strictObject({
-  issue: z.number().int().positive().meta({ description: 'The number of the issue governor records its fires on. Its body must already carry the marker, or governor writes nothing into it.' }),
-  marker: z.string().trim().regex(/^<!--[^\n]*-->$/, 'an HTML comment on one line, `<!-- … -->`').optional().meta({ description: 'The older shape: the repo\'s own marker, an HTML comment on one line, under which the hourly sweep keeps one `last-run:` line. Without it, governor keeps a line for pickup and one per periodic under `<!-- governor:heartbeat -->`.' }),
+  enabled,
+  issue: z.number().int().positive().optional().meta({ description: 'Required when on. The number of the issue governor records its fires on. Its body must already carry the `<!-- governor:heartbeat -->` marker, or governor writes nothing into it.' }),
 });
 
 /**
@@ -279,18 +343,27 @@ const heartbeatSchema = z.strictObject({
  * display: the ticket's line holds it.
  */
 const waitsSchema = z.strictObject({
-  issue: z.number().int().positive().meta({ description: 'The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50.' }),
+  enabled,
+  issue: z.number().int().positive().optional().meta({ description: 'The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing.' }),
+  ...promptFields('waits'),
 });
 
 /**
- * Pickup's settings (dispatch/pickup.mjs). `sweepHours`: how many whole
- * hours the bare schedule fire leaves between two sweeps of the repo's ready
- * tickets, one when unset. `by`: the `author_association` values whose
- * tickets pickup may start (`PICKUP_BY` when unset).
+ * Pickup's section (dispatch/pickup.mjs): the labels governor reads and
+ * writes on tickets, which the features in {@link LABEL_READERS} read too,
+ * so `ready` and `claim` are required where pickup or one of them is on;
+ * `sweepHours`, how many whole hours the bare schedule fire leaves between
+ * two sweeps of the repo's ready tickets, one when unset; and pickup's
+ * prompt.
  */
 const pickupSchema = z.strictObject({
+  enabled,
+  ready: z.array(label).min(1).optional().meta({ description: 'Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. Every label a ready ticket carries.' }),
+  claim: label.optional().meta({ description: 'Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up.' }),
+  claimRemoves: z.array(label).default([]).meta({ description: 'The ready labels the claim takes off, and a failed launch puts back. Default none.' }),
+  exclude: z.array(label).default(['type: prd']).meta({ description: 'Labels that keep a ticket out: a ticket carrying any of them is never picked up, and a blocker\'s close starts no session for it. It cannot name a ready label. Default `["type: prd"]`. A hold label, one that marks a ticket as needing a person or staying not ready (`mode: human`, say), belongs here, or a blocker\'s close starts a session to rewrite that ticket\'s spec.' }),
   sweepHours: z.number().int().min(1).optional().meta({ description: 'How many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one. Default one, which sweeps at every fire.' }),
-  by: z.array(z.enum(ASSOCIATIONS)).min(1).optional().meta({ description: 'Retired: read as `trust.task`, and refused beside it. Whose tickets pickup may start, and whose issue or PR a summons may start a session on: the `author_association` values GitHub gives the person who opened it. Default `OWNER`, `MEMBER` and `COLLABORATOR`. Where a repo lists any other value, a ready label on such a ticket counts only when a person other than its author, or governor\'s own App, added it last.' }),
+  ...promptFields('pickup'),
 });
 
 /**
@@ -312,22 +385,23 @@ const trustSchema = z.strictObject({
   auto: z.array(z.enum(TRUST_VALUES))
     .refine((list) => !list.includes(BOT), 'BOT is refused here: governor sets nothing going by itself on a bot\'s issue or PR, which no person has read')
     .optional()
-    .meta({ description: 'Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket\'s wait ends or its blocker closes, a periodic\'s issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `task` (or `pickup.by`), `relay` and `review` where the file sets them. `BOT` is refused.' }),
+    .meta({ description: 'Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket\'s wait ends or its blocker closes, a periodic\'s issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `task`, `relay` and `review` where the file sets them. `BOT` is refused.' }),
   task: z.array(z.enum(TRUST_VALUES))
     .refine((list) => !list.includes(BOT), 'BOT is refused here: a bot\'s issue or PR is a rule firing, which no person has read, so no work may be about it')
     .optional()
-    .meta({ description: 'Whose issue or PR may become work when a person sets it going, by `author_association`: pickup starts a ready ticket, and a summons starts a session, only where its author is listed. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `relay` and `review` where the file sets them. `BOT` is refused. The older `pickup.by` is read as this list, and a file may not set both.' }),
+    .meta({ description: 'Whose issue or PR may become work when a person sets it going, by `author_association`: pickup starts a ready ticket, and a summons starts a session, only where its author is listed. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `relay` and `review` where the file sets them. `BOT` is refused.' }),
   relay: z.array(z.enum(TRUST_VALUES))
     .optional()
-    .meta({ description: 'Whose text may reach a session that is already running, by `author_association`, with `BOT` for any account GitHub marks as a bot: their comments and reviews, and a session link or `governor:subscribe` line in the body of an issue or PR they open. An event such as a label, a close or a push is judged by the author of the issue or PR it is on. Default `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`, less any of the first three a `review` the file sets leaves out. Governor\'s own App is never judged.' }),
+    .meta({ description: 'Whose text may reach a session that is already running, by `author_association`, with `BOT` for any account GitHub marks as a bot: their comments and reviews, and a session link or `governor:subscribe` line in the body of an issue or PR they open. An event such as a label, a close or a push is judged by the author of the issue or PR it is on. Default `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`, less any of the first three a `trust.review` the file sets leaves out. Governor\'s own App is never judged.' }),
   review: z.array(z.enum(TRUST_VALUES))
     .optional()
-    .meta({ description: 'Whose pull requests governor\'s PR review reads, by `author_association`, with `BOT` for any account GitHub marks as a bot. A pull request by an author it leaves out gets a `neutral` `governor` check, and a person merges it. Dependabot\'s pull requests are read by `review.dependabot` whatever it says. Default `OWNER`, `MEMBER` and `COLLABORATOR`.' }),
+    .meta({ description: 'Whose pull requests governor\'s PR review reads, by `author_association`, with `BOT` for any account GitHub marks as a bot. A pull request by an author it leaves out gets a `neutral` `governor` check, and a person merges it. Dependabot\'s pull requests are read by `prReview.dependabot` whatever it says. Default `OWNER`, `MEMBER` and `COLLABORATOR`.' }),
 });
 
 /**
- * A recurring session: `name`, unique in the file, which the session is
- * named after and its record keyed by; `prompt`, what it runs; `days`, how
+ * A recurring session, held under its name in `periodics.sessions`: the
+ * name, unique in the file, which the session is named after and its record
+ * keyed by; `prompt`, what it runs; `days`, how
  * many whole days after its last fire it comes due. `counts`, each of
  * merges into the default branch, issues opened and issues closed it names,
  * brings it due sooner, once that many have happened since its last fire.
@@ -347,8 +421,10 @@ const COUNT_DESCRIPTIONS = Object.freeze({
   issuesClosed: 'Issues closed',
 });
 
+/** A periodic's name, the key it is held under: one line, of at most 100 characters. */
+const periodicName = z.string().min(1).max(100).regex(/^\S(?:[^\n]*\S)?$/, 'a name is one line, with no space at either end');
+
 const periodicSchema = z.strictObject({
-  name: z.string().trim().min(1).max(100).regex(/^[^\n]*$/, 'a name is one line').meta({ description: 'The periodic\'s name: one line, unique in the file. Its session is named after it, and governor keys its record by it.' }),
   prompt: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'What the periodic\'s session runs: the text, or { "file": "<path>" }. Governor adds a line under it giving the last fire\'s time, and lists what each count counted since then.' }),
   days: z.number().int().min(1).meta({ description: 'Required. The day limit, in whole days, at least one: the periodic is due on the sweep nearest that many days after its last fire.' }),
   counts: z.strictObject(Object.fromEntries(COUNTS.map((kind) => [kind, z.number().int().min(1).optional().meta({ description: `${COUNT_DESCRIPTIONS[kind]} since the last fire that bring the periodic due, a whole number of at least one.` })])))
@@ -364,8 +440,8 @@ const periodicSchema = z.strictObject({
 });
 
 /**
- * A hook an outside system fires (dispatch/hooks.mjs): `name`, unique in the
- * file and safe in a URL path, which the hook's URL ends in and its session
+ * A hook an outside system fires (dispatch/hooks.mjs), held under its name
+ * in `hooks.sessions`: the name, unique in the file and safe in a URL path, which the hook's URL ends in and its session
  * is named after; `prompt`, what the session runs; `keyVersion`, the version
  * of the hook's key a fire must be signed with. Raising it revokes the key
  * before it. A version is not a secret: the key is derived from the stack's.
@@ -374,7 +450,6 @@ const periodicSchema = z.strictObject({
  * (`HOOK_PER_HOUR_MAX`).
  */
 const hookSchema = z.strictObject({
-  name: z.string().regex(HOOK_NAME, 'lower-case letters, digits and hyphens, safe in a URL path').meta({ description: 'The hook\'s name: lower-case letters, digits and hyphens, unique in the file. It ends the hook\'s URL, and its session is named after it.' }),
   prompt: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'What the hook\'s session runs: the text, or { "file": "<path>" }. Governor adds lines under it saying which hook fired and when, and quoting the caller\'s text as the caller\'s data.' }),
   // At most nine digits, as a request's `v=` and scripts/hook-key.mjs take:
   // a larger version could never be signed.
@@ -428,7 +503,7 @@ const issueReviewSchema = z.strictObject({
     success: z.array(label).default([]).meta({ description: 'The labels a `success` adds: the ticket passes. Default none.' }),
     failure: z.array(label).default([]).meta({ description: 'The labels a `failure` adds: the ticket waits for an edit by whoever filed it. Default none.' }),
     neutral: z.array(label).default([]).meta({ description: 'The labels a `neutral` adds: the ticket waits for a person. Default none.' }),
-  }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. Each label starts with the review\'s name, a colon and a space, such as `triage: build` for a review named `triage`, in any case, so a review never adds or removes a label a person uses. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `byLabel` entry matches on, a label the review\'s own `when.labels` or `when.exclude` names, or `labels.claim`.' }),
+  }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. Each label starts with the review\'s name, a colon and a space, such as `triage: build` for a review named `triage`, in any case, so a review never adds or removes a label a person uses. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `byLabel` entry matches on, a label the review\'s own `when.labels` or `when.exclude` names, or `pickup.claim`.' }),
   prompt: z.union([z.string().trim().min(1), promptFile]).optional().meta({ description: 'The review\'s own prompt, after governor\'s fixed frame: the text, or { "file": "<path>" }. Default governor\'s own checklist.' }),
   byLabel: z.array(byLabelSchema).min(1).optional().meta({ description: 'Checks and labels per label, each entry matched by label. A ticket gets the review\'s prompt and then each matching entry\'s, in list order; one matching none gets the review\'s alone. For each conclusion, the labels come from the first matching entry that names it, and otherwise from `conclusions`.' }),
 });
@@ -450,66 +525,158 @@ const issueReviewsSchema = z.strictObject({
   reviews: Object.entries(reviews).map(([name, review]) => ({ name, ...review })),
 }));
 
+/** A section whose feature has no settings but its prompts. */
+const plainSection = (/** @type {string} */ name) => z.strictObject({ enabled, ...promptFields(name) });
+
+/**
+ * The `periodics` section: `enabled`, and `sessions`, each periodic keyed by
+ * its name.
+ */
+const periodicsSchema = z.strictObject({
+  enabled,
+  sessions: z.record(periodicName, periodicSchema).optional().meta({ description: 'The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed, each keyed by its name: one line, with no space at either end. Its session is named after it, and governor keys its record by it. At least one when on.' }),
+});
+
+/** The `hooks` section: `enabled`, and `sessions`, each hook keyed by its name. */
+const hooksSchema = z.strictObject({
+  enabled,
+  sessions: z.record(z.string().regex(HOOK_NAME, 'a hook\'s name is lower-case letters, digits and hyphens, safe in a URL path'), hookSchema).optional()
+    .meta({ description: 'The sessions an outside system starts with a signed request, each keyed by its name: lower-case letters, digits and hyphens. The name ends the hook\'s URL, and its session is named after it. Each may cap its fires with `perHour`. At least one when on.' }),
+});
+
+/**
+ * Each feature's section, its JSON Schema description the switch's
+ * ({@link SWITCH_DESCRIPTIONS}).
+ */
+const sectionSchemas = {
+  pickup: pickupSchema,
+  summons: plainSection('summons'),
+  prMessages: plainSection('prMessages'),
+  subscribeMessages: plainSection('subscribeMessages'),
+  redScheduledRun: plainSection('redScheduledRun'),
+  unblocked: plainSection('unblocked'),
+  ciMessages: plainSection('ciMessages'),
+  deployMessages: deployMessagesSchema,
+  branchRunMessages: plainSection('branchRunMessages'),
+  conflicts: plainSection('conflicts'),
+  prReview: prReviewSchema,
+  heartbeat: heartbeatSchema,
+  periodics: periodicsSchema,
+  hooks: hooksSchema,
+  waits: waitsSchema,
+  signOff: plainSection('signOff'),
+};
+
+/**
+ * The file as written, before it is read into the shape governor's code
+ * takes ({@link toConfig}). Every top-level key but `$schema` and the
+ * shared settings, `environment`, `trust` and `workflows`, is one feature's
+ * section. A section turns its feature on unless it sets `"enabled":
+ * false`, and a feature with no section is off. A section that is off
+ * needs none of its required settings.
+ */
+const fileSchema = z.strictObject({
+  $schema: z.string().optional().meta({ description: 'The URL of this file\'s JSON Schema, for an editor to describe and check each key. Governor ignores it. Use the schema at the commit the config check is pinned to, and bump both together.' }),
+  environment: z.string().trim().min(1, 'a cloud environment name, or its ID (env_…)').meta({ description: 'The claude.ai cloud environment the repo\'s sessions start in: its name as `/remote-env` lists it, or its ID. A public repo should use the name.' }),
+  trust: trustSchema.optional().meta({ description: '`{ "start": [ … ], "auto": [ … ], "task": [ … ], "relay": [ … ], "review": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `start` is who may set work going, by readying a ticket or writing a summons, default `OWNER`, `MEMBER` and `COLLABORATOR`, which a repo may narrow and never widen. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`. `review` is whose pull requests the PR review reads, default the three.' }),
+  workflows: workflowsSchema.optional().meta({ description: 'What the repo\'s workflows are to governor: `ci`.' }),
+  ...Object.fromEntries(Object.entries(sectionSchemas).map(([name, schema]) => [name, schema.optional().meta({ description: /** @type {string} */ (SWITCH_DESCRIPTIONS[name]) })])),
+  issueReviews: issueReviewsSchema.optional()
+    .meta({ description: 'The issue reviews: `reviews`, each keyed by its name, with its selector `when`, the labels each of its `conclusions` adds, and optionally its own `prompt` and checks and labels per label (`byLabel`), and `enabled`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion\'s labels. Governor runs them where the file has this section, unless `enabled` is `false`.' }),
+})
+  // Each section that is on has its required settings. Pickup's labels
+  // serve every feature in LABEL_READERS, so one of them on needs them too.
+  .superRefine((file, ctx) => {
+    const raw = /** @type {Record<string, any>} */ (file);
+    const on = (/** @type {string} */ name) => sectionOn(raw, name);
+    const readers = LABEL_READERS.filter(on);
+    if (raw.pickup === undefined && readers.length > 0) {
+      ctx.addIssue({ code: 'custom', path: ['pickup'], message: `${readers.join(', ')} ${readers.length === 1 ? 'is' : 'are'} on and read${readers.length === 1 ? 's' : ''} pickup's labels, so the file needs a pickup section with ready and claim. It may set "enabled": false to keep pickup off` });
+    } else if (on('pickup') || readers.length > 0) {
+      const why = on('pickup') ? 'pickup is on' : `${readers.join(', ')} ${readers.length === 1 ? 'is' : 'are'} on and read${readers.length === 1 ? 's' : ''} pickup's labels`;
+      for (const key of ['ready', 'claim']) {
+        if (raw.pickup[key] === undefined) ctx.addIssue({ code: 'custom', path: ['pickup', key], message: `${why}, so the pickup section needs ${key}` });
+      }
+    }
+    const { pickup } = raw;
+    if (pickup?.ready !== undefined && pickup.claim !== undefined && pickup.ready.includes(pickup.claim)) ctx.addIssue({ code: 'custom', path: ['pickup'], message: 'the claim label cannot be a ready label' });
+    if (pickup !== undefined && !(pickup.claimRemoves ?? []).every((/** @type {string} */ r) => (pickup.ready ?? []).includes(r))) ctx.addIssue({ code: 'custom', path: ['pickup'], message: 'claimRemoves names only ready labels' });
+    // A ready ticket carries every ready label, so excluding one would
+    // keep every ticket out.
+    if (pickup !== undefined && (pickup.exclude ?? []).some((/** @type {string} */ e) => (pickup.ready ?? []).includes(e))) ctx.addIssue({ code: 'custom', path: ['pickup'], message: 'exclude cannot name a ready label' });
+    if (on('prReview') && raw.prReview.prompt === undefined) ctx.addIssue({ code: 'custom', path: ['prReview', 'prompt'], message: 'prReview is on, so its section needs a prompt' });
+    if (on('heartbeat') && raw.heartbeat.issue === undefined) ctx.addIssue({ code: 'custom', path: ['heartbeat', 'issue'], message: 'heartbeat is on, so its section needs the issue it records on' });
+    if (on('periodics') && Object.keys(raw.periodics.sessions ?? {}).length === 0) ctx.addIssue({ code: 'custom', path: ['periodics', 'sessions'], message: 'periodics is on, so its section lists at least one periodic' });
+    if (on('hooks') && Object.keys(raw.hooks.sessions ?? {}).length === 0) ctx.addIssue({ code: 'custom', path: ['hooks', 'sessions'], message: 'hooks is on, so its section lists at least one hook' });
+  });
+
+/** A repo's labels when its file has no pickup section, so no feature that reads them is on. */
+const NO_LABELS = Object.freeze({ ready: [], claim: '', claimRemoves: [], exclude: ['type: prd'] });
+
+/**
+ * The file as written, read into the shape governor's code takes: each
+ * switch in `features`, pickup's labels in `labels`, every prompt in
+ * `prompts` keyed by its message kind, the deploy targets and tags in
+ * `workflows`, the PR review's prompt as `review.checklist`, and the
+ * periodics and hooks as lists, each entry with its name.
+ *
+ * @param {Record<string, any>} file The file as {@link fileSchema} reads it.
+ * @returns {FileConfig}
+ */
+const toConfig = (file) => {
+  const raw = file;
+  const on = (/** @type {string} */ name) => sectionOn(raw, name);
+  /** @type {Record<string, boolean>} */
+  const features = Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, name === 'deployedLabels' ? on('deployMessages') && file.deployMessages?.deployedLabels === true : on(name)]));
+  /** @type {Record<string, string | PromptFile>} */
+  const prompts = {};
+  for (const [section, place] of Object.entries(SECTION_PROMPTS)) {
+    const held = raw[section];
+    if (held === undefined) continue;
+    if ('prompt' in place) {
+      if (held.prompt !== undefined) prompts[place.prompt] = held.prompt;
+    } else {
+      for (const [key, kind] of Object.entries(place.prompts)) if (held.prompts?.[key] !== undefined) prompts[kind] = held.prompts[key];
+    }
+  }
+  const { pickup, deployMessages, prReview, heartbeat, waits, periodics, hooks, issueReviews } = file;
+  const labels = pickup?.ready !== undefined && pickup.claim !== undefined
+    ? { ready: pickup.ready, claim: pickup.claim, claimRemoves: pickup.claimRemoves, exclude: pickup.exclude }
+    : { ...NO_LABELS, ready: [...NO_LABELS.ready], claimRemoves: [], exclude: [...NO_LABELS.exclude] };
+  /** @type {FileConfig} */
+  const config = {
+    environment: file.environment,
+    labels,
+    features,
+    prompts,
+    workflows: { ...(file.workflows?.ci === undefined ? {} : { ci: file.workflows.ci }), triage: deployMessages?.triage ?? [], tags: deployMessages?.tags ?? {} },
+    periodics: Object.entries(periodics?.sessions ?? {}).map(([name, p]) => ({ name, ...p })),
+    hooks: Object.entries(hooks?.sessions ?? {}).map(([name, h]) => ({ name, ...h })),
+  };
+  if (prReview?.prompt !== undefined) {
+    const { enabled: _on, prompt: checklist, ...lists } = prReview;
+    config.review = { ...lists, checklist };
+  }
+  if (heartbeat?.issue !== undefined) config.heartbeat = { issue: heartbeat.issue };
+  if (waits?.issue !== undefined) config.waits = { issue: waits.issue };
+  if (pickup?.sweepHours !== undefined) config.pickup = { sweepHours: pickup.sweepHours };
+  if (file.trust !== undefined) config.trust = file.trust;
+  if (issueReviews !== undefined) config.issueReviews = issueReviews;
+  // `$schema` is for the editor, and governor does nothing with it.
+  return config;
+};
+
 /**
  * The file's schema. It is the same in every repo: no switch is any one
  * repo's. Each key's description is what the exported JSON Schema shows on
  * hover, and the key table in docs/serving-a-repo.md says the same
  * (test/config-schema.test.ts). `$schema` names that JSON Schema for an
  * editor, and {@link readConfig} drops it unread; any other unknown key, and
- * `$schema` below the top, is a fault.
+ * `$schema` below the top, is a fault. A file in the layout before #525,
+ * with `labels`, `features`, `prompts` or `review`, fails on the first key
+ * it does not know.
  */
-export const configSchema = z.strictObject({
-  $schema: z.string().optional().meta({ description: 'The URL of this file\'s JSON Schema, for an editor to describe and check each key. Governor ignores it. Use the schema at the commit the config check is pinned to, and bump both together.' }),
-  environment: z.string().trim().min(1, 'a cloud environment name, or its ID (env_…)').meta({ description: 'The claude.ai cloud environment the repo\'s sessions start in: its name as `/remote-env` lists it, or its ID. A public repo should use the name.' }),
-  labels: z.strictObject({
-    ready: z.array(label).min(1).meta({ description: 'Every label a ready ticket carries.' }),
-    claim: label.meta({ description: 'The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up.' }),
-    claimRemoves: z.array(label).default([]).meta({ description: 'The ready labels the claim takes off, and a failed launch puts back. Default none.' }),
-    exclude: z.array(label).default(['type: prd']).meta({ description: 'Labels that keep a ticket out: a ticket carrying any of them is never picked up, and a blocker\'s close starts no session for it. It cannot name a ready label. Default `["type: prd"]`. A hold label, one that marks a ticket as needing a person or staying not ready (`mode: human`, say), belongs here, or a blocker\'s close starts a session to rewrite that ticket\'s spec.' }),
-  }).refine((l) => !l.ready.includes(l.claim), 'the claim label cannot be a ready label')
-    .refine((l) => l.claimRemoves.every((r) => l.ready.includes(r)), 'claimRemoves names only ready labels')
-    // A ready ticket carries every ready label, so excluding one would
-    // keep every ticket out.
-    .refine((l) => !l.exclude.some((e) => l.ready.includes(e)), 'exclude cannot name a ready label')
-    .meta({ description: 'The labels governor reads and writes on tickets: `ready`, `claim`, `claimRemoves` and `exclude`.' }),
-  features: featuresSchema.meta({ description: 'The switches that turn governor\'s features on, each `true` or `false`. A switch left out is off.' }),
-  // A retired prompt is still valid, and dropped unread: governor sends
-  // no message of its kind, so its file is never read.
-  prompts: z.strictObject({
-    ...Object.fromEntries(Object.keys(PROMPTS).map((kind) => [kind, prompt(kind).optional()])),
-    ...Object.fromEntries(RETIRED_PROMPTS.map((kind) => [kind, z.union([z.string(), promptFile]).optional().meta({ deprecated: true, description: 'Retired: governor sends no message of this kind, so it is never read.' })])),
-  }).transform((prompts) => Object.fromEntries(Object.entries(prompts).filter(([kind]) => !RETIRED_PROMPTS.includes(kind)))).default({})
-    .meta({ description: 'Replacement wording for the instruction in each kind of message, keyed by kind.' }),
-  workflows: workflowsSchema.meta({ description: 'What the repo\'s workflows are to governor: `ci`, `triage` and `tags`.' }),
-  review: reviewSchema.optional().meta({ description: 'The PR review\'s settings: its checklist, and the lists it checks a PR against. Needed when `prReview` is on.' }),
-  heartbeat: heartbeatSchema.optional().meta({ description: '`{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo\'s own marker, which the hourly sweep updates. Needed when `heartbeat` is on.' }),
-  waits: waitsSchema.optional().meta({ description: '`{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing.' }),
-  pickup: pickupSchema.optional().meta({ description: '`{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one, default one; and `by`, the retired name of `trust.task`, which governor reads as it.' }),
-  trust: trustSchema.optional().meta({ description: '`{ "start": [ … ], "auto": [ … ], "task": [ … ], "relay": [ … ], "review": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `start` is who may set work going, by readying a ticket or writing a summons, default `OWNER`, `MEMBER` and `COLLABORATOR`, which a repo may narrow and never widen. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`. `review` is whose pull requests the PR review reads, default the three.' }),
-  periodics: z.array(periodicSchema).default([])
-    .superRefine((list, ctx) => {
-      const seen = new Set();
-      for (const { name } of list) {
-        if (seen.has(name)) ctx.addIssue({ code: 'custom', message: `two periodics are named "${name}": a name is unique in the file` });
-        seen.add(name);
-      }
-    })
-    .meta({ description: 'The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on.' }),
-  hooks: z.array(hookSchema).default([])
-    .superRefine((list, ctx) => {
-      const seen = new Set();
-      for (const { name } of list) {
-        if (seen.has(name)) ctx.addIssue({ code: 'custom', message: `two hooks are named "${name}": a name is unique in the file` });
-        seen.add(name);
-      }
-    })
-    .meta({ description: 'The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on.' }),
-  issueReviews: issueReviewsSchema.optional()
-    .meta({ description: 'The issue reviews: `reviews`, each keyed by its name, with its selector `when`, the labels each of its `conclusions` adds, and optionally its own `prompt` and checks and labels per label (`byLabel`), and `enabled`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion\'s labels. Governor runs them where the file has this section, unless `enabled` is `false`.' }),
-}).refine((c) => c.features.prReview !== true || c.review !== undefined, { message: 'prReview is on, so the file needs a review section with its checklist', path: ['review'] })
-  .refine((c) => c.features.heartbeat !== true || c.heartbeat !== undefined, { message: 'heartbeat is on, so the file needs a heartbeat section naming its issue', path: ['heartbeat'] })
-  .refine((c) => c.features.periodics !== true || c.periodics.length > 0, { message: 'periodics is on, so the file lists at least one periodic', path: ['periodics'] })
-  .refine((c) => c.features.hooks !== true || c.hooks.length > 0, { message: 'hooks is on, so the file lists at least one hook', path: ['hooks'] })
+export const configSchema = fileSchema.transform(toConfig)
   // A conclusion's labels, in the review's `conclusions` and in each of its
   // `byLabel` entries: each under one conclusion of one review, so no run
   // removes a label another conclusion or review just added; none that a
@@ -570,7 +737,7 @@ export const configSchema = z.strictObject({
             if (typed !== undefined) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and a byLabel entry of the ${typed} review matches on it: applying it would change which entries the ticket matches. Give the conclusion a label no byLabel entry matches on` });
             // The claim label belongs in when.exclude, so the claim fault stands alone.
             const selector = selects.get(key);
-            if (key === claimKey) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and it is labels.claim: a run would add or take the claim off a ticket. Give the conclusion a label of its own` });
+            if (key === claimKey) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and it is pickup.claim: a run would add or take the claim off a ticket. Give the conclusion a label of its own` });
             else if (selector !== undefined) ctx.addIssue({ code: 'custom', path, message: `the ${name} review names "${l}" under ${conclusion}, and its own ${selector} names it too: applying it would change whether the review runs on the ticket again. Give the conclusion a label the review does not select on` });
             if (readyKeys.has(key) && !ready.has(l)) ready.set(l, at);
           }
@@ -583,10 +750,8 @@ export const configSchema = z.strictObject({
       }
     }
   })
-  // pickup.by is retired and read as trust.task, so a file may set one.
-  .refine((c) => c.pickup?.by === undefined || c.trust?.task === undefined, { message: 'sets both pickup.by and trust.task: pickup.by is the older name of trust.task, so keep trust.task and remove pickup.by', path: ['pickup', 'by'] })
   // The chain auto ⊆ task ⊆ relay ⊆ review, for each two lists the file sets, BOT
-  // left aside. pickup.by, where the file sets it, is the task list. A list
+  // left aside. A list
   // the file leaves unset is narrowed instead (dispatch/trust.mjs).
   .superRefine((c, ctx) => {
     const auto = c.trust?.auto;
@@ -610,6 +775,7 @@ export const configSchema = z.strictObject({
     const autoReview = outside(auto, review);
     if (autoReview.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoReview.join(', ')}, which trust.review does not: governor would set work going whose pull request the PR review may not read. Narrow trust.auto, or widen trust.review` });
   });
+
 
 /**
  * @typedef {{ ci?: string, triage: string[], tags: Record<string, string> }} Workflows
@@ -651,13 +817,14 @@ export const configSchema = z.strictObject({
  *   when the file names none.
  *   `prompts`: the repo's instruction for each message kind it replaces.
  *   `workflows`: what the repo's workflows are to the dispatcher.
- *   `review`: the PR review's settings, where the file has them.
- *   `heartbeat`: the issue governor's heartbeat goes into, and the repo's
- *   marker in the old shape.
+ *   `review`: the PR review's settings, where the file's `prReview`
+ *   section has a prompt, which is `checklist` here.
+ *   `heartbeat`: the issue governor's heartbeat goes into. The file no
+ *   longer sets the older shape's `marker`.
  *   `waits`: the wait ticket waiting tickets are linked to, where the file
  *   names one.
- *   `pickup`: pickup's sweep interval and whose tickets it starts, where the
- *   file sets them.
+ *   `pickup`: pickup's sweep interval, where the file sets it. The file no
+ *   longer sets the retired `by`.
  *   `trust`: whose GitHub text governor acts on, where the file sets it.
  *   `periodics`: the recurring sessions the schedule fire starts.
  *   `hooks`: the hooks an outside system fires.
@@ -667,6 +834,15 @@ export const configSchema = z.strictObject({
  * @typedef {Omit<RepoConfig, 'prompts' | 'review' | 'periodics' | 'hooks' | 'issueReviews'> & { prompts: Record<string, string | PromptFile | undefined>, review?: Omit<Review, 'checklist'> & { checklist: string | PromptFile }, periodics: Array<Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }>, hooks: Array<Omit<Hook, 'prompt'> & { prompt: string | PromptFile }>, issueReviews?: { enabled?: boolean, reviews: FileIssueReview[] } }} FileConfig
  *   The file as read, before {@link resolveFiles} reads the prompt files it names.
  */
+
+/**
+ * A schema fault's message, with the reason a record's key was refused,
+ * which zod keeps in the fault's own issues.
+ *
+ * @param {z.core.$ZodIssue} issue
+ * @returns {string}
+ */
+const messageOf = (issue) => (issue.code === 'invalid_key' ? `${issue.message}: ${issue.issues.map((i) => i.message).join(', ')}` : issue.message);
 
 /**
  * A config file's text, read: the config, or the fault that keeps the repo
@@ -685,11 +861,9 @@ export const readConfig = (text) => {
   }
   const result = configSchema.safeParse(parsed);
   if (!result.success) {
-    return { ok: false, fault: result.error.issues.map((i) => `${i.path.join('.') || '(file)'}: ${i.message}`).join('; ') };
+    return { ok: false, fault: result.error.issues.map((i) => `${i.path.join('.') || '(file)'}: ${messageOf(i)}`).join('; ') };
   }
-  // `$schema` is for the editor, and governor does nothing with it.
-  const { $schema: _editor, ...config } = result.data;
-  return { ok: true, config: /** @type {FileConfig} */ (config) };
+  return { ok: true, config: result.data };
 };
 
 /**
@@ -747,10 +921,10 @@ export const resolveFiles = async (config, read) => {
    */
   const optionalTextOf = async (key, value) => (value === undefined ? {} : textOf(key, value));
   const [texts, checklist, periodicTexts, hookTexts, issueTexts] = await Promise.all([
-    Promise.all(entries.map(([kind, value]) => textOf(`prompts.${kind}`, value))),
-    config.review === undefined ? null : textOf('review.checklist', config.review.checklist),
-    Promise.all(config.periodics.map((p) => textOf(`periodics.${p.name}.prompt`, p.prompt))),
-    Promise.all(config.hooks.map((h) => textOf(`hooks.${h.name}.prompt`, h.prompt))),
+    Promise.all(entries.map(([kind, value]) => textOf(PROMPT_KEYS[kind] ?? kind, value))),
+    config.review === undefined ? null : textOf('prReview.prompt', config.review.checklist),
+    Promise.all(config.periodics.map((p) => textOf(`periodics.sessions.${p.name}.prompt`, p.prompt))),
+    Promise.all(config.hooks.map((h) => textOf(`hooks.sessions.${h.name}.prompt`, h.prompt))),
     Promise.all((config.issueReviews?.reviews ?? []).map((r) => Promise.all([
       optionalTextOf(`issueReviews.reviews.${r.name}.prompt`, r.prompt),
       Promise.all((r.byLabel ?? []).map((t, i) => optionalTextOf(`issueReviews.reviews.${r.name}.byLabel.${i}.prompt`, t.prompt))),
@@ -761,7 +935,7 @@ export const resolveFiles = async (config, read) => {
     if ('fault' in got) { faults.push(got.fault); return; }
     const fault = fillsFault(kind, got.text);
     if (fault === null) prompts[kind] = got.text;
-    else faults.push(`prompts.${kind}: ${fault}`);
+    else faults.push(`${PROMPT_KEYS[kind] ?? kind}: ${fault}`);
   });
   if (checklist !== null && 'fault' in checklist) faults.push(checklist.fault);
   /** @type {Periodic[]} */
@@ -833,9 +1007,10 @@ export const environmentFrom = (environment, listed) => {
 };
 
 /**
- * Whether `config` turns `name` on: a `features` switch where it is `true`,
- * and the issue reviews where the file has their section and its `enabled`
- * is not `false`.
+ * Whether `config` turns `name` on: a switch in `features` where it is
+ * `true`, which {@link toConfig} sets from the switch's section, and the
+ * issue reviews where the file has their section and its `enabled` is not
+ * `false`.
  *
  * @param {{ features: Record<string, boolean | undefined>, issueReviews?: { enabled?: boolean | undefined } | undefined }} config
  * @param {string} name

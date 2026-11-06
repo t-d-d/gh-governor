@@ -901,7 +901,9 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      * @param {string} [path]
      * @returns {Promise<string | null>}
      */
-    configFile: async (path = '.github/dispatch.json') => {
+    // dispatch/repo-config.mjs's CONFIG_PATH, written out so this file
+    // takes no import of the schema (test/scripts/github-app.test.ts).
+    configFile: async (path = '.github/governor.json') => {
       /** @type {any} */
       let answer;
       try {
