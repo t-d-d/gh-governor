@@ -155,7 +155,7 @@ export const planHook = async (invocation, ctx) => {
     let told;
     let loginStored = false;
     try {
-      told = await ctx.delivery().deliver({ session: read.session }, hookMessage(invocation), { source: hookSource(name) });
+      told = await ctx.delivery().deliver({ session: read.session }, hookMessage(invocation), { source: hookSource(name), kind: 'hook' });
     } finally {
       loginStored = await ctx.storeLogin();
     }

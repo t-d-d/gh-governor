@@ -95,13 +95,14 @@ const waitLaunch = (ctx, { repo, config, wait, withFallback, unread }) => {
       let told = null;
       try {
         const fallback = withFallback ? { prompt: asked.prompt, sessionName: asked.sessionName, issue } : undefined;
-        told = await ctx.delivery(repo).deliver({ session: owner }, waitOwnerMessage({ issue, until, labels: config.labels, prompts: config.prompts }), { source: GITHUB_SOURCE, on: [issue], fallback, spec: true });
+        told = await ctx.delivery(repo).deliver({ session: owner }, waitOwnerMessage({ issue, until, labels: config.labels, prompts: config.prompts }), { source: GITHUB_SOURCE, kind: 'wait-ended', on: [issue], fallback, spec: true });
         const outcome = ownerOutcome(told, 'the spec session is past DispatchCap: left for the next fire');
         if (told.ok || (told.fallback !== null && WENT.has(told.fallback.outcome))) {
           await drop({ owner, outcome });
         } else {
           ctx.log('dispatch-wait', { repo, issue, read, owner, outcome, item: 'kept for the next fire' });
-          if (!told.refused) unread.push({ repo, error: `wait #${issue}: ${outcome}${told.error === null ? '' : `: ${told.error}`}` });
+          // A message held at the ceiling is no fault: the next fire asks again.
+          if (!told.refused && told.capped !== true) unread.push({ repo, error: `wait #${issue}: ${outcome}${told.error === null ? '' : `: ${told.error}`}` });
         }
       } catch (error) {
         ctx.log('dispatch-wait-unhandled', { level: 'error', repo, issue, read, owner, error: messageOf(error), reason: 'its owner could not be asked or its item deleted, so the next fire tries again' });

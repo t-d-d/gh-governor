@@ -61,6 +61,15 @@ Parameters:
       whose launches are slow stops short of it to end inside the task's
       deadline (dispatch/launch-plan.mjs SCHEDULE_LAUNCH_WINDOW_MS).
 
+  MessageCeiling:
+    Type: String
+    Default: '20'
+    Description: >
+      How many messages governor sends one session about one issue or PR
+      in a clock hour. Past it the pair is sent nothing more until the hour
+      ends, and the first held send pages (governor-session-loop). A safety
+      limit against a loop, not a feature: no repo switch turns it off.
+
   # Read from Parameter Store inside AWS on every apply, so the address never
   # passes through GitHub, whose run logs are public for this repo. The
   # operator saves it once (docs/self-hosting.md, Fork and deploy); the deploy passes none.
@@ -337,6 +346,8 @@ Resources:
               Value: !Ref DispatchOwners
             - Name: DISPATCH_CAP
               Value: !Ref DispatchCap
+            - Name: MESSAGE_CEILING
+              Value: !Ref MessageCeiling
             - Name: SESSION_LOG_SECRET_ID
               Value: governor/session-log-writer
             # Where the review's transcripts go; empty ships none.
@@ -523,6 +534,40 @@ Resources:
       AlarmDescription: '[tripwire] The dispatcher claimed a ticket (workflow: under development) and no dispatch marker names the session it launched for it, so no fire will pick the ticket again. Read /governor for the dispatch-claim-stranded line; it names the ticket. Look in the sessions list for a session named after it: if one is working, leave it; if none is, put workflow: ready for development back and take workflow: under development off.'
       Namespace: governor
       MetricName: ClaimsStranded
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # Governor counts the messages it sends each session about each issue or
+  # PR in a clock hour (dispatch/deliveries.mjs). A pair that reaches the
+  # MessageCeiling is sent nothing more about it until the hour ends, and
+  # the first held send logs `dispatch-message-capped`, naming the session,
+  # the subject and its counts by kind: a session and governor may be
+  # answering each other in a loop, which costs a turn a round. Later held
+  # sends of that pair that hour log `dispatch-message-held`, which pages
+  # nobody.
+  DispatchSessionLoopFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DispatchLogGroup
+      FilterPattern: '{ $.event = "dispatch-message-capped" }'
+      MetricTransformations:
+        - MetricNamespace: governor
+          MetricName: SessionLoops
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DispatchSessionLoopAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: governor-session-loop
+      AlarmDescription: '[tripwire] Governor sent one session the MessageCeiling''s messages about one issue or PR within a clock hour, and holds the rest until the hour ends. Read /governor for the dispatch-message-capped line; it names the session, the subject and its counts by kind. Open the session and the issue or PR: a session and governor, or two sessions through governor, answering each other is a loop to break, by telling the session to stop or archiving it. A busy subject that is no loop needs nothing; its messages go again next hour.'
+      Namespace: governor
+      MetricName: SessionLoops
       Statistic: Sum
       Period: 900
       EvaluationPeriods: 1

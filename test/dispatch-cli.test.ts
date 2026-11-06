@@ -49,6 +49,21 @@ const dispatched = (...outcomes: string[]) => ({
 });
 
 describe('exitCodeFor', () => {
+  // A send held at the ceiling pages once through governor-session-loop;
+  // a failed turn would page again for every held send.
+  test('a send held at the ceiling is no fault, of any kind of turn', () => {
+    const held = { ok: false, refused: false, capped: true as const, skipped: null, fallback: null };
+    assert.equal(exitCodeFor({ kind: 'message', ...held, error: 'held', sessionUrl: null, dropped: null, relinked: null }), 0);
+    assert.equal(exitCodeFor({ kind: 'hook', messaged: held, dispatched: [] }), 0);
+    assert.equal(exitCodeFor({ kind: 'unblocked', messaged: held, dispatched: [] }), 0);
+    assert.equal(exitCodeFor({ kind: 'ticket', messaged: held, dispatched: [] }), 0);
+    assert.equal(exitCodeFor({ kind: 'dispatch', messaged: held, dispatched: [] }), 0);
+    assert.equal(exitCodeFor({ kind: 'workflow', deliveries: [held], triage: null, labels: null, cursor: { held: 1 } }), 0);
+    assert.equal(exitCodeFor({ kind: 'branch-run', deliveries: [held] }), 0);
+    // A held send beside one that faulted still fails the turn.
+    assert.equal(exitCodeFor({ kind: 'workflow', deliveries: [held, { ok: false, refused: false, fallback: null }], triage: null, labels: null, cursor: { held: 2 } }), 1);
+  });
+
   // An unblocked fire for a claimed ticket: the message to its session is the turn.
   test('an unblocked message that failed is a fault; one a gone session refused, or a close that queued its fires, is not', () => {
     assert.equal(exitCodeFor({ kind: 'unblocked', messaged: { ok: true, refused: false }, dispatched: [] }), 0);

@@ -134,7 +134,7 @@ const tell = async ({ pr, text, fallback, record, deliver }) => {
   /** @type {import('./deliveries.mjs').Delivery} */
   let sent;
   try {
-    sent = await deliver({ pr: pr.number }, text, { source: GITHUB_SOURCE, fallback, takeover: true, on: [pr.number] });
+    sent = await deliver({ pr: pr.number }, text, { source: GITHUB_SOURCE, kind: 'conflict', fallback, takeover: true, on: [pr.number] });
   } catch (error) {
     // A send past its budget, or a GitHub read in the fallback, throws: this
     // PR's check fails, and the PRs after it are still told.

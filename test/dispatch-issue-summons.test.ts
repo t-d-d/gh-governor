@@ -81,10 +81,11 @@ type Sent = { session: string, text: string, opts: Record<string, unknown> };
 /**
  * A `TurnContext` whose reader holds ticket 7: `comments` its thread,
  * `closing` the open PRs that close it, `owners` each PR's owner.
- * `archived` sessions refuse; `faulted` ones fail without a refusal.
+ * `archived` sessions refuse; `faulted` ones fail without a refusal;
+ * `capped` ones are held at the message ceiling.
  * `fallbacks` is what a refusal's hand-off to a PR's branch did.
  */
-const context = ({ config = CONFIG, comments = [{ body: MARKER }] as Array<{ body: string }>, closing = [] as number[], owners = {} as Record<number, string>, archived = [] as string[], faulted = [] as string[], fallbacks = {} as Record<string, { outcome: string, sessionUrl: string | null }>, fails = null as string | null, body = SPEC_BODY } = {}) => {
+const context = ({ config = CONFIG, comments = [{ body: MARKER }] as Array<{ body: string }>, closing = [] as number[], owners = {} as Record<number, string>, archived = [] as string[], faulted = [] as string[], capped = [] as string[], fallbacks = {} as Record<string, { outcome: string, sessionUrl: string | null }>, fails = null as string | null, body = SPEC_BODY } = {}) => {
   const sent: Sent[] = [];
   const reads: string[] = [];
   const logged: Array<Record<string, unknown>> = [];
@@ -109,6 +110,7 @@ const context = ({ config = CONFIG, comments = [{ body: MARKER }] as Array<{ bod
       ownerOf: async (pr: number) => ({ session: owners[pr] ?? null }),
       deliver: async ({ session }: { session: string }, text: string, opts: Record<string, unknown>) => {
         sent.push({ session, text, opts });
+        if (capped.includes(session)) return { ok: false, answered: false, refused: false, sessionUrl: null, error: 'held: the ceiling', fallback: null, dropped: null, skipped: null, relinked: null, capped: true };
         const gone = archived.includes(session);
         const faults = faulted.includes(session);
         return { ok: !gone && !faults, answered: !faults, refused: gone, sessionUrl: session, error: gone ? `cloud session ${session} is archived and cannot accept new messages` : faults ? 'claude exited 1: HTTP 503' : null, fallback: fallbacks[session] ?? null, dropped: null, skipped: null, relinked: null };
@@ -323,6 +325,15 @@ describe('a summons on an issue that reaches no session', () => {
     assert.deepEqual(plan.launches, []);
     assert.equal(plan.result.messaged.ok, false);
     assert.equal(plan.result.messaged.refused, false);
+  });
+
+  test('a live role held at the message ceiling starts nothing beside it, and does not fail the turn', async () => {
+    const { ctx, started, logged } = context({ capped: [SPEC] });
+    const plan = await planDispatch(commented() as never, ctx) as any;
+    assert.deepEqual(plan.launches, []);
+    assert.deepEqual(started, []);
+    assert.equal(plan.result.messaged.capped, true);
+    assert.ok(!logged.some((l) => l.event === 'dispatch-launch' && l.level !== 'info'), JSON.stringify(logged));
   });
 
   test('a builder that refuses, whose branch session cannot be found, fails the turn naming the hand-off, not the refusal', async () => {

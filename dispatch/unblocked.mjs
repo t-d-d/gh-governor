@@ -274,13 +274,13 @@ export const ownerMessage = ({ issue, facts, kind, labels, prompts }) => `${fact
  * blocker's close (dispatch/unblocked-fire.mjs) and an ended wait
  * (dispatch/sweep.mjs) both log one.
  *
- * @param {{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }} told
+ * @param {{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }} told
  * @param {string} unstarted Why no spec session started in place of an archived owner, where none was tried.
  */
 export const ownerOutcome = (told, unstarted) => (told.ok ? 'its owner was asked to rewrite its spec'
   : told.fallback !== null ? `its owner is archived; the spec session: ${told.fallback.outcome}`
     : told.refused ? `its owner is archived, and ${unstarted}`
-      : 'its owner was not messaged');
+      : told.capped ? 'its owner is held at the message ceiling' : 'its owner was not messaged');
 
 /**
  * A not-ready ticket's owner's message on its blocker's close.

@@ -353,7 +353,7 @@ export const launchPlan = async (plan, ctx, started) => {
         if (!entry.told && row !== undefined) {
           const { owner } = await rolesOf({ issue: ticket.issue, relay: relayOf(configOf(ticket.repo)), ticket: row });
           tells.push(() => tellBuilderChange({
-            deliver: (session, text, options) => ctx.delivery(ticket.repo).deliver({ session }, text, { source: GITHUB_SOURCE, ...options }),
+            deliver: (session, text, options) => ctx.delivery(ticket.repo).deliver({ session }, text, { source: GITHUB_SOURCE, kind: 'builder-change', ...options }),
             log,
             repo: ticket.repo,
             issue: ticket.issue,

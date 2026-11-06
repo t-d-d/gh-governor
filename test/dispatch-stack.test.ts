@@ -30,6 +30,8 @@ import { OUTPUT_KEYS, START_BUDGET_MS } from '../scripts/run-turn.mjs';
 import { DEADLINE_MS } from '../dispatch/cli.mjs';
 import { STATE_TTL_ATTRIBUTE } from '../dispatch/turn.mjs';
 import { SESSION_LATE, SESSION_UNRECORDED } from '../dispatch/launcher.mjs';
+import { MESSAGE_CAPPED, MESSAGE_HELD } from '../dispatch/deliveries.mjs';
+import { MESSAGE_CEILING } from '../dispatch/turn.mjs';
 import { MAX_START_ATTEMPTS } from '../dispatch/webhook/starter.mjs';
 import { HOOK_EVENTS } from '../dispatch/webhook/route.mjs';
 import { HOOK_KEY_STALE } from '../dispatch/webhook/hook-table.mjs';
@@ -102,7 +104,7 @@ describe('infra/governor.cfn.yml — the task', () => {
 
   test('carries every setting the turn reads, and no credential in its environment', () => {
     const env = new Map<string, unknown>((container?.Environment ?? []).map((e: { Name: string; Value: unknown }) => [e.Name, e.Value]));
-    for (const name of ['CLAUDE_LOGIN_SECRET_ID', 'GITHUB_APP_SECRET_ID', 'DISPATCH_OWNERS', 'DISPATCH_CAP', 'SESSION_LOG_SECRET_ID', 'SESSION_LOG_URL']) {
+    for (const name of ['CLAUDE_LOGIN_SECRET_ID', 'GITHUB_APP_SECRET_ID', 'DISPATCH_OWNERS', 'DISPATCH_CAP', 'MESSAGE_CEILING', 'SESSION_LOG_SECRET_ID', 'SESSION_LOG_URL']) {
       assert.ok(env.has(name), `${name} missing from the container environment`);
     }
     // Every fire names its repo, and the bare schedule fire sweeps the served ones.
@@ -448,6 +450,42 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     assert.equal(alarm?.Properties?.Threshold, 1);
     assert.equal(alarm?.Properties?.TreatMissingData, 'notBreaching');
     assert.deepEqual(alarm?.Properties?.AlarmActions, template.Resources.DispatchErrorsAlarm?.Properties?.AlarmActions, 'the same action as the errors alarm');
+  });
+
+  /**
+   * A session held at the ceiling of messages about one subject may be
+   * answering governor in a loop: the first held send of the hour pages,
+   * read off its own event, and the later ones log another.
+   */
+  test('a session at the message ceiling pages, read off its own event, never off a level', () => {
+    const filter = template.Resources.DispatchSessionLoopFilter;
+    assert.equal(filter?.Type, 'AWS::Logs::MetricFilter');
+    assert.equal(filter?.Properties?.LogGroupName, '${DispatchLogGroup}');
+    assert.equal(filter?.Properties?.FilterPattern, `{ $.event = "${MESSAGE_CAPPED}" }`);
+    assert.notEqual(MESSAGE_HELD, MESSAGE_CAPPED, 'a later held send does not page');
+    const published = filter?.Properties?.MetricTransformations?.[0];
+    const others = Object.entries(template.Resources)
+      .filter(([name, r]) => name !== 'DispatchSessionLoopFilter' && (r as { Type?: string }).Type === 'AWS::Logs::MetricFilter')
+      .map(([, f]) => (f as { Properties?: { MetricTransformations?: Array<{ MetricName?: string }> } }).Properties?.MetricTransformations?.[0]?.MetricName);
+    assert.ok(published?.MetricName, 'the filter publishes a metric');
+    assert.ok(!others.includes(published?.MetricName), 'its own metric');
+    const alarm = template.Resources.DispatchSessionLoopAlarm;
+    assert.equal(alarm?.Type, 'AWS::CloudWatch::Alarm');
+    assert.equal(alarm?.Properties?.AlarmName, 'governor-session-loop');
+    assert.equal(alarm?.Properties?.Namespace, published?.MetricNamespace);
+    assert.equal(alarm?.Properties?.MetricName, published?.MetricName);
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
+    assert.ok((alarm?.Properties?.AlarmDescription ?? '').includes(MESSAGE_CAPPED), 'the page names the line to read');
+    assert.equal(alarm?.Properties?.Threshold, 1);
+    assert.equal(alarm?.Properties?.TreatMissingData, 'notBreaching');
+    assert.deepEqual(alarm?.Properties?.AlarmActions, template.Resources.DispatchErrorsAlarm?.Properties?.AlarmActions, 'the same action as the errors alarm');
+  });
+
+  test('the ceiling is a stack parameter, 20 by default, passed to the task', () => {
+    const parameter = template.Parameters?.MessageCeiling;
+    assert.equal(parameter?.Default, String(MESSAGE_CEILING));
+    const env = new Map<string, unknown>((container?.Environment ?? []).map((e: { Name: string; Value: unknown }) => [e.Name, e.Value]));
+    assert.equal(env.get('MESSAGE_CEILING'), '${MessageCeiling}');
   });
 
   /**

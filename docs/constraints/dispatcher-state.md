@@ -33,11 +33,14 @@ group.
   (`ConditionExpression`), never read then written.
 - A missing item means the use's fallback (the first turn after a deploy, a
   lost item); a read that fails means the turn refuses. Never treat a failed
-  read as a missing item. The one exception is the receiver's read of a
+  read as a missing item. There are two exceptions. The receiver's read of a
   repo's switches, ready labels, issue review labels and trust lists: a
   missing item, an item without them and a failed read all queue the fire, which leaves the task
   to decide, and judge a message by the default `trust.relay`; the failed
-  read is logged at error.
+  read is logged at error. And the count of a session's messages about one
+  subject: a count that cannot be read or raised lets the send go, logged
+  at warn, since the ceiling guards against a loop and must not stop a
+  message.
 - Every use survives a lost item: there is no point-in-time recovery. A new
   deployment starts with an empty table, and every workflow finds its
   baseline in its runs list.
@@ -99,6 +102,18 @@ group.
   costs that ticket's wait-ended comment and spec session, or for a
   hand-linked ticket one more read of it and its thread, and a failed read
   refuses the repo's ended waits for the turn (dispatch/waits.mjs).
+- One session's messages about one subject in a clock hour:
+  `messages#<session id>` / `<repo>#<number>@<hour>`, or `none@<hour>`
+  for a message about no issue or PR, in `dynamoState`. Its `count` and
+  one `kind:<kind>` count per kind are raised by one conditional
+  `UpdateItem` while `count` is under the ceiling, never read then
+  written, and the item expires by `ttl` when the hour ends. The refusal
+  returns the item, its counts by kind; a second conditional update sets
+  `capped` where none stands, so only the hour's first held send pages.
+  A message about several subjects raises each in turn, so one raised
+  before a refusal stays raised. A count that fails lets the send go,
+  logged at warn, the second exception above. A lost
+  item lets at most one more hour's ceiling through (dispatch/deliveries.mjs).
 - A ticket whose launch started nothing: `pickup-failed#<repo>` /
   `<issue>` in `dynamoState`, holding the time it holds the ticket until,
   put by the launch plan after a launch or claim that started nothing,
@@ -185,4 +200,4 @@ group.
   plus a get per object, and expiry is by prefix and age, not per record.
 
 Judgment: whether a new record belongs on GitHub because a person or session reads it, or in the table, is a judgment no check sees.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185. The hook table's item holds the repo's `trust` section, written by the task and read by the receiver, which drops a message only where the refusal is silent and reads the defaults when the item lacks the section or the read fails, since #419, under PRD #396. A PR review's verdict, which the review reads in place of its marker comment's text, was added in #416. A ticket's failed-launch record, which holds it from pickup for an hour once a launch started nothing, was added in #391. A ticket linked to the wait ticket by hand keeps a wait item twenty years out, so the bare schedule fire stops reading it, since #233, under PRD #185. The hook table's item holds the labels whose change can start an issue review, which the receiver queues an issue review fire by, under the same fallback as the ready labels, since #524. It holds the repo's claim label, by which the receiver queues a claimed ticket's events for its builders, and an item without it queues them for the task to judge, since #538, under PRD #535. A held cursor's delivered record keeps the tickets a green deploy commented on, so a later turn still tells their roles, since #564, under PRD #535. A PR review's verdict may hold an owed message, which the next review fire at the same head and body sends, since #589.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The session record was added in #13. The hook table, the receiver's own, was added in #57, under PRD #53. The receiver's hourly count of each hook's fires joined it in #58, under PRD #53, and counts each signature once since #66, with `perHour` at most 100 since #138. The hook record was added in #56. The hook table's item holds the repo's switches, which the receiver drops fires by, and a failed read of them queues the fire, since #147. It holds the repo's ready labels, which the receiver queues a selection fire by, under the same fallback, since #180. A waiting ticket's item, which the bare schedule fire reads to find the waits that have ended, was added in #187, under PRD #185. The hook table's item holds the repo's `trust` section, written by the task and read by the receiver, which drops a message only where the refusal is silent and reads the defaults when the item lacks the section or the read fails, since #419, under PRD #396. A PR review's verdict, which the review reads in place of its marker comment's text, was added in #416. A ticket's failed-launch record, which holds it from pickup for an hour once a launch started nothing, was added in #391. A ticket linked to the wait ticket by hand keeps a wait item twenty years out, so the bare schedule fire stops reading it, since #233, under PRD #185. The hook table's item holds the labels whose change can start an issue review, which the receiver queues an issue review fire by, under the same fallback as the ready labels, since #524. It holds the repo's claim label, by which the receiver queues a claimed ticket's events for its builders, and an item without it queues them for the task to judge, since #538, under PRD #535. A held cursor's delivered record keeps the tickets a green deploy commented on, so a later turn still tells their roles, since #564, under PRD #535. A PR review's verdict may hold an owed message, which the next review fire at the same head and body sends, since #589. One item per session, subject and clock hour counts governor's messages under the stack's ceiling, and a count that fails lets the send go, since #602.

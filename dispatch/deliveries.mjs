@@ -25,8 +25,13 @@
  * fallback starts. A session found on the branch that the body does not
  * name has its link written into the body, so later events route by it.
  *
+ * Every send into a session first counts against a ceiling: the messages
+ * governor sends one session about one issue or PR, its subject, in a clock
+ * hour ({@link MESSAGE_CAPPED}). A pair at the ceiling is sent nothing more
+ * until the hour ends. A launch's prompt is not a message, and is not counted.
+ *
  * Every I/O is injected: the GitHub reader, the send into a session, the
- * launcher, the sessions finder, the clock and the log. One `deliveries` is
+ * count, the launcher, the sessions finder, the clock and the log. One `deliveries` is
  * one turn's: it memoises each session's standing and remembers a rate
  * limit or a failed resend for the turn's later sends.
  */
@@ -181,6 +186,28 @@ const ARCHIVED = /\bsession \S+ is archived\b/;
  */
 const refusedBy = (sent) => !sent.ok && sent.answered && ARCHIVED.test(sent.error ?? '');
 
+/**
+ * The event the first send of an hour held at the ceiling logs, at error,
+ * naming the session, the subject and its counts by kind: a session and
+ * governor may be answering each other in a loop, and the
+ * `governor-session-loop` alarm pages on it.
+ */
+export const MESSAGE_CAPPED = 'dispatch-message-capped';
+
+/** The event each later send of that pair that hour logs, at info: the page has gone. */
+export const MESSAGE_HELD = 'dispatch-message-held';
+
+/** The event a count that could not be raised logs, at warn: the send goes. */
+export const MESSAGE_COUNT = 'dispatch-message-count';
+
+/**
+ * What one count said: raised, or refused at the ceiling, with the pair's
+ * count, its counts by kind, and whether this is the first send of the
+ * pair held this hour.
+ *
+ * @typedef {{ raised: true } | { raised: false, first: boolean, count: number, counts: Record<string, number> }} Count
+ */
+
 /** How long a send that failed without a refusal waits before it is sent again. */
 const RESEND_DELAY_MS = 5_000;
 
@@ -233,6 +260,8 @@ const readSend = (sent) => {
   const answer = cliAnswer(sent.output);
   const ok = answer?.ok === true;
   return {
+    /** @type {true | undefined} Set only on a send the ceiling held. */
+    capped: undefined,
     ok,
     answered: answer !== null,
     sessionUrl: typeof answer?.url === 'string' ? answer.url : null,
@@ -279,6 +308,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   claim?: string,
  *   send: (message: { session: string, text: string }, until: number) => Promise<LaunchResult>,
  *   launch: (launch: Launch, until: number) => Promise<{ outcome: LaunchOutcome, sessionUrl: string | null }>,
+ *   count: (message: { session: string, subject: string | null, kind: string }) => Promise<Count>,
  *   sessions: (asking: string) => (branch: string, options?: import('../scripts/lib/session-branch.mjs').FindOptions) => Promise<string | null>,
  *   now: () => number,
  *   log: (event: string, context?: Record<string, unknown>) => void,
@@ -297,7 +327,10 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   its open claimed ticket before its PR exists (`openNaming`).
  *   `send`: the CLI's
  *   `-p --cloud <session>`, under what is left before `until`. `launch`: a
- *   session through the launcher, the same. `sessions`: the sessions API's
+ *   session through the launcher, the same. `count`: raise the count of
+ *   messages to `session` about `subject` (`<repo>#<number>`, or null for
+ *   none) this clock hour, under the ceiling, by its `kind`; a refusal says
+ *   the pair is at the ceiling. `sessions`: the sessions API's
  *   finder by branch, under the turn's login; a login it cannot use throws,
  *   saying what it was `asking`. `launchTimeoutMs`: one launch budget; a
  *   delivery's send and fallback share {@link DELIVER_LAUNCHES} of
@@ -311,6 +344,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *
  * @typedef {{
  *   source: MessageSource,
+ *   kind: string,
  *   fallback?: import('./webhook/fire.mjs').Fallback | undefined,
  *   takeover?: boolean,
  *   spec?: boolean,
@@ -322,7 +356,9 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   strict?: boolean,
  * }} DeliverOptions
  *   `source`: where the text comes from, which names the line it opens
- *   with; a fallback's prompt opens with the same line. `fallback`: what a
+ *   with; a fallback's prompt opens with the same line. `kind`: what sort
+ *   of message it is (a relayed remark, a deploy note, a notice), which the
+ *   ceiling's count names it by. `fallback`: what a
  *   refusal starts. A `takeover`'s fallback owns the PR, so it starts on
  *   the PR's head branch, unless that is a fork's or the repo's default
  *   branch, and the body's link is rewritten to it, the one
@@ -354,6 +390,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   dropped: boolean | null,
  *   skipped: string | null,
  *   relinked: boolean | null,
+ *   capped?: true,
  * }} Delivery
  *   What came of it. `ok`: the session took it. `answered`: the CLI
  *   answered at all, null when nothing was sent. `refused`: it answered the
@@ -366,7 +403,10 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   fails the turn, since the body still names the archived owner. `dropped`: whether a refusal with no
  *   fallback dropped the session from what it subscribes to, null when none
  *   was tried. `skipped`: why nobody was sent to. `error`: why the send
- *   failed, or why no owner could be found.
+ *   failed, or why no owner could be found. `capped`: the send did not go,
+ *   since the session's count about a subject of the message is at the
+ *   ceiling. It is no refusal and no fault: nothing starts and nobody is
+ *   dropped, and the turn does not fail on it.
  *
  * @typedef {{
  *   deliver: (to: Recipient, text: string, options: DeliverOptions) => Promise<Delivery>,
@@ -381,6 +421,14 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   again. A read that fails throws.
  *
  * @typedef {Awaited<ReturnType<DeliveryReader['pull']>>} PullRow
+ */
+
+/**
+ * What a send is about: the numbers its standing leaves out, whether it
+ * closes, its source, its kind, and the issues and PRs the ceiling counts
+ * it against.
+ *
+ * @typedef {{ exclude: number[], closing: boolean, source: MessageSource, kind: string, subjects: number[] }} About
  */
 
 /**
@@ -452,12 +500,17 @@ export const deliveries = (deps) => {
    * (2026-09-28, the CLI answering `{"ok":false,"error":""}` with the next
    * send 46 s later accepted).
    *
+   * Before anything is sent, the message counts against the session and
+   * each of its subjects ({@link counted}); a pair at the ceiling holds it.
+   *
    * @param {string} session
    * @param {string} text
-   * @param {{ exclude: number[], closing: boolean, source: MessageSource }} about
+   * @param {About} about
    * @param {number} until When the delivery's budget runs out.
    */
   const send = async (session, text, about, until) => {
+    const held = await counted(session, about);
+    if (held !== null) return held;
     const standing = await standingFor(session, about);
     const once = async () => readSend(await deps.send({ session, text: fromDispatcher(`${text}\n\n${standing}`, about.source) }, until));
     const began = deps.now();
@@ -470,6 +523,37 @@ export const deliveries = (deps) => {
     const second = await once();
     resendFailed = !second.ok && !refusedBy(second);
     return second;
+  };
+
+  /**
+   * Count one message to `session` against each of its subjects, the
+   * issues and PRs it is about, or against the session's pair with no
+   * subject where it is about none. Null where it may go; a send result
+   * that did not go where a pair is at the ceiling. Each subject is one
+   * conditional update, so one raised before a refusal stays raised. A
+   * count that throws lets the send go, logged at warn: the ceiling guards
+   * against a loop, and a read failure must not stop a message.
+   *
+   * @param {string} session
+   * @param {About} about
+   */
+  const counted = async (session, { subjects, kind }) => {
+    const pairs = subjects.length === 0 ? [null] : [...new Set(subjects)].sort((a, b) => a - b).map((n) => `${deps.repo.toLowerCase()}#${n}`);
+    for (const subject of pairs) {
+      /** @type {Count} */
+      let count;
+      try {
+        count = await deps.count({ session, subject, kind });
+      } catch (error) {
+        deps.log(MESSAGE_COUNT, { level: 'warn', session, subject, kind, error: messageOf(error), outcome: 'sent uncounted' });
+        continue;
+      }
+      if (count.raised) continue;
+      const reason = `${session} has had ${count.count} messages about ${subject ?? 'no issue or PR'} this hour, the ceiling: nothing more about it goes to it until the hour ends`;
+      deps.log(count.first ? MESSAGE_CAPPED : MESSAGE_HELD, { level: count.first ? 'error' : 'info', session, subject, kind, count: count.count, counts: count.counts, reason });
+      return { capped: /** @type {const} */ (true), ok: false, answered: false, sessionUrl: null, error: `held: ${reason}`, status: null };
+    }
+    return null;
   };
 
   /**
@@ -590,7 +674,7 @@ export const deliveries = (deps) => {
         continue;
       }
       await tellBuilderChange({
-        deliver: (session, text, options) => deliver({ session }, text, { source: GITHUB_SOURCE, ...options }),
+        deliver: (session, text, options) => deliver({ session }, text, { source: GITHUB_SOURCE, kind: 'builder-change', ...options }),
         log: deps.log,
         repo: deps.repo,
         issue,
@@ -617,7 +701,7 @@ export const deliveries = (deps) => {
    * @param {number[]} owns
    * @param {string[]} refused
    * @param {string} text
-   * @param {{ exclude: number[], closing: boolean, source: MessageSource }} about
+   * @param {About} about
    * @param {number} until
    * @param {{ strict: boolean, commit?: string | undefined }} how
    * @returns {Promise<{ outcome: 'forwarded' | 'failed', sessionUrl: string | null, error?: string } | null>}
@@ -649,6 +733,7 @@ export const deliveries = (deps) => {
         continue;
       }
       const handed = await send(session, text, about, until);
+      if (handed.capped) continue;
       deps.log('dispatch-message', { ...(refusedBy(handed) ? { level: 'info' } : {}), session, onBranch: true, owns: prs, ok: handed.ok, sessionUrl: handed.sessionUrl, error: handed.error, status: handed.status });
       if (handed.ok) {
         for (const n of prs) await nameOwner(n, session);
@@ -756,13 +841,17 @@ export const deliveries = (deps) => {
    * @param {string} session
    * @param {string} text
    * @param {import('./webhook/fire.mjs').Fallback | undefined} withFallback
-   * @param {{ source: MessageSource, takeover: boolean, spec: boolean, on: number[], closing: boolean, dropFrom: number[], owns: number[], strict: boolean, commit: string | undefined }} how
+   * @param {{ source: MessageSource, kind: string, subjects: number[], takeover: boolean, spec: boolean, on: number[], closing: boolean, dropFrom: number[], owns: number[], strict: boolean, commit: string | undefined }} how
    * @returns {Promise<Omit<Delivery, 'skipped'> & { answered: boolean }>}
    */
-  const toSession = async (session, text, withFallback, { source, takeover, spec, on, closing, dropFrom, owns, strict, commit }) => {
-    const about = { exclude: on, closing, source };
+  const toSession = async (session, text, withFallback, { source, kind, subjects, takeover, spec, on, closing, dropFrom, owns, strict, commit }) => {
+    /** @type {About} */
+    const about = { exclude: on, closing, source, kind, subjects };
     const until = deps.now() + DELIVER_LAUNCHES * (deps.launchTimeoutMs ?? Infinity);
     const sent = await send(session, text, about, until);
+    // Held at the ceiling: no refusal, so nothing starts and nobody is
+    // dropped, and its own line has said so.
+    if (sent.capped) return { ok: false, answered: false, refused: false, sessionUrl: null, error: sent.error, fallback: null, dropped: null, relinked: null, capped: true };
     const { ok, sessionUrl, error, answered } = sent;
     const refused = refusedBy(sent);
     // A refusal is an archived session, never a fault: it pages nobody.
@@ -829,8 +918,10 @@ export const deliveries = (deps) => {
           closed = true;
         } else if (owner !== null && !sameSession(owner, session)) {
           const handed = await send(owner, text, about, until);
-          deps.log('dispatch-message', { ...(refusedBy(handed) ? { level: 'info' } : {}), session: owner, fromBody: true, ok: handed.ok, sessionUrl: handed.sessionUrl, error: handed.error, status: handed.status });
+          if (!handed.capped) deps.log('dispatch-message', { ...(refusedBy(handed) ? { level: 'info' } : {}), session: owner, fromBody: true, ok: handed.ok, sessionUrl: handed.sessionUrl, error: handed.error, status: handed.status });
           if (handed.ok) fallback = { outcome: 'forwarded', sessionUrl: owner };
+          // The live owner, held at the ceiling: no takeover starts beside it.
+          else if (handed.capped) { fallback = { outcome: 'skipped', sessionUrl: null }; reason = handed.error; }
           else if (!refusedBy(handed)) fallback = { outcome: 'failed', sessionUrl: null };
           else gone.push(owner);
         }
@@ -888,7 +979,7 @@ export const deliveries = (deps) => {
   };
 
   /** @type {Deliveries['deliver']} */
-  const deliver = async (to, text, { source, fallback, takeover = false, spec = false, on = [], closing = false, dropFrom = [], commit, owns = [], strict = false }) => {
+  const deliver = async (to, text, { source, kind, fallback, takeover = false, spec = false, on = [], closing = false, dropFrom = [], commit, owns = [], strict = false }) => {
     // Before anything is read or sent: a message with no source is refused.
     relayLabel(source);
     /** @type {Delivery} */
@@ -930,7 +1021,9 @@ export const deliveries = (deps) => {
       deps.log('dispatch-message', { session, skipped });
       return { ...nobody, skipped };
     }
-    const told = await toSession(session, text, fallback, { source, takeover, spec, on, closing, dropFrom, owns: owning, strict, commit });
+    // What the message is about, each subject the ceiling counts it against.
+    const subjects = [...on, ...owning];
+    const told = await toSession(session, text, fallback, { source, kind, subjects, takeover, spec, on, closing, dropFrom, owns: owning, strict, commit });
     if (told.ok && toName !== null) await nameOwner(toName, session);
     return { ...told, skipped: null };
   };
