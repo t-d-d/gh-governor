@@ -11,7 +11,8 @@
  *    owner, found with `closure`.
  * 3. Otherwise, the session the newest dispatch comment names
  *    (`lastDispatch`), read over the whole thread, so a thread past one
- *    page of comments still finds its newest.
+ *    page of comments still finds its newest. Only a comment governor's App
+ *    posted counts.
  * 4. Otherwise, on a claimed ticket, the session the body's owner link
  *    names, read through the repo's `trust.relay`: a spec session that
  *    claimed its own ticket builds it.
@@ -27,7 +28,7 @@ import { relayedBody, sameSession, sessionNamedIn } from './webhook/subscribe.mj
  * @typedef {{
  *   openClosing: (n: number) => Promise<Array<{ number: number }>>,
  *   closure: (n: number) => Promise<{ pr: { number: number } | null }>,
- *   allComments: (n: number) => Promise<Array<{ body: string }>>,
+ *   allComments: (n: number) => Promise<Array<{ body: string, ours: boolean }>>,
  * }} BuilderReader
  *
  * @typedef {'open PR' | 'merged PR' | 'dispatch comment' | 'owner link'} BuilderSource

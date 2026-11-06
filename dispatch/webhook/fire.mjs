@@ -292,13 +292,18 @@ export const dispatchMarker = ({ at, sessionUrl }) =>
  * (dispatch/builders.mjs). Nothing reads a marker's age, and no
  * message is forwarded by one: a PR's session is its body's link alone.
  *
- * @param {Array<{ body: string } & Record<string, unknown>>} comments
+ * Only a comment governor's App posted (`ours`) counts. Anyone who can
+ * comment could copy a marker with a later time and another session's link,
+ * and a builder named that way would hear what the ticket's builder should.
+ *
+ * @param {Array<{ body: string, ours?: boolean } & Record<string, unknown>>} comments
  * @returns {{ at: string, sessionUrl: string | null } | null}
  */
 export const lastDispatch = (comments) => {
   /** @type {{ at: string, sessionUrl: string | null, stamped: number } | null} */
   let newest = null;
   for (const comment of comments) {
+    if (comment.ours !== true) continue;
     const body = comment.body ?? '';
     const at = MARKER.exec(body)?.[1];
     if (!at) continue;
