@@ -690,14 +690,63 @@ describe('run: an owner\'s message the lane refused is owed', () => {
   });
 
   test('a review at a new head or body drops the older review\'s owed message: its own message replaces it', async () => {
-    const { item, comment } = await owedVerdict();
+    const { item } = await owedVerdict();
     const pushed = harness({ verdicts: { 767: { ...item, headSha: MOVED } }, answers: [IAM] });
     await review({ kind: 'review', pr: 767, headSha: HEAD }, pushed);
     assert.equal(ownerFires(pushed).length, 1);
     assert.match(String(ownerFires(pushed)[0]!.text), /IAM grant/, 'only the new review\'s message');
     assert.equal(pushed.verdictWrites.at(-1)!.verdict.owed, undefined);
-    // An edit in place at a new body tells nobody, and still drops the older message.
-    const edited = harness({ verdicts: { 767: { ...item, bodySha: 'f'.repeat(64) } }, answers: [{ ...COSTS, reason: 'no cost is named' }], thread: [{ id: 41, body: comment, created_at: 't', ours: true }] });
+  });
+
+  test('a review at a new head or body whose own new message the lane refuses owes that message in place of the older one', async () => {
+    const { item } = await owedVerdict();
+    const pushed = harness({ verdicts: { 767: { ...item, headSha: MOVED } }, answers: [IAM], enqueue: 'SQS refused it again' });
+    await review({ kind: 'review', pr: 767, headSha: HEAD }, pushed);
+    const owed = pushed.verdictWrites.at(-1)!.verdict.owed!;
+    assert.equal(owed.comment, pushed.comments[0]!.body, 'the newer message is owed, so the older is not lost unreplaced');
+    assert.match(String(owed.message.text), /IAM grant/);
+  });
+
+  test('an edit in place at a new head or body, while a message is owed, sends the owner the comment as it now reads and clears the owed message', async () => {
+    const { item, comment } = await owedVerdict();
+    for (const at of [{ headSha: MOVED }, { bodySha: 'f'.repeat(64) }]) {
+      const edited = harness({ verdicts: { 767: { ...item, ...at } }, answers: [{ ...COSTS, reason: 'no cost is named' }], thread: [{ id: 41, body: comment, created_at: 't', ours: true }] });
+      const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, edited);
+      assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
+      assert.equal(edited.commentEdits.length, 1);
+      const fires = ownerFires(edited);
+      assert.equal(fires.length, 1, JSON.stringify(at));
+      assert.ok(fires[0]!.text!.includes(edited.commentEdits[0]!.body.replace(/\n\n<!-- governor:pr-review [^>]* -->$/, '')), 'the comment as it now reads');
+      assert.ok(fires[0]!.text!.includes('no cost is named'));
+      assert.ok(fires[0]!.fallback, 'the fallback the review chose');
+      assert.equal(edited.verdictWrites.at(-1)!.verdict.owed, undefined);
+      assert.match(String((result.reviews[0] as { told?: string }).told), /queued/);
+      assert.equal(exitCodeFor(result as never), 0);
+    }
+  });
+
+  test('an edit in place at a new head or body whose message the lane refuses keeps it owed, as the comment now reads, with its tries carried over', async () => {
+    const { item, comment } = await owedVerdict();
+    const edited = harness({ verdicts: { 767: { ...item, headSha: MOVED } }, answers: [{ ...COSTS, reason: 'no cost is named' }], thread: [{ id: 41, body: comment, created_at: 't', ours: true }], enqueue: 'SQS refused it again' });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, edited);
+    const owed = edited.verdictWrites.at(-1)!.verdict.owed!;
+    assert.equal(owed.tries, 2);
+    assert.equal(owed.comment, edited.commentEdits[0]!.body);
+    assert.ok(owed.message.text.includes('no cost is named'));
+    assert.match(String((result.reviews[0] as { owed?: string }).owed), /refused it again/);
+    assert.equal(exitCodeFor(result as never), 0);
+    // On its last try a refusal drops it, logs at error and fails the turn.
+    const last = harness({ verdicts: { 767: { ...item, headSha: MOVED, owed: { ...item.owed!, tries: 2 } } }, answers: [{ ...COSTS, reason: 'no cost is named' }], thread: [{ id: 41, body: comment, created_at: 't', ours: true }], enqueue: 'SQS refused it a third time' });
+    const three = await review({ kind: 'review', pr: 767, headSha: HEAD }, last);
+    assert.equal(last.verdictWrites.at(-1)!.verdict.owed, undefined);
+    assert.match(String((three.reviews[0] as { untold?: string }).untold), /third time/);
+    assert.equal(exitCodeFor(three as never), 1);
+  });
+
+  test('an edit in place at a new head or body with no message owed tells nobody', async () => {
+    const { item, comment } = await owedVerdict();
+    const { owed: _, ...none } = item;
+    const edited = harness({ verdicts: { 767: { ...none, headSha: MOVED } }, answers: [{ ...COSTS, reason: 'no cost is named' }], thread: [{ id: 41, body: comment, created_at: 't', ours: true }] });
     const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, edited);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(edited.queued, []);

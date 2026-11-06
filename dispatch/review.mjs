@@ -78,7 +78,8 @@
  * (`asksOwner`), a fail an edit, a claim or a push meets and a conflict,
  * carries the fallback that takes a gone session's PR over; a pass or a
  * wait on a person reaches a live owner and starts nobody. A comment
- * edited in place tells nobody again.
+ * edited in place tells nobody again, unless a message is owed: at a new
+ * head or body it then sends the comment as it now reads in its place.
  *
  * `reviewPull` reads and writes through the injected reader.
  */
@@ -648,14 +649,19 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     said = true;
     // A new comment's owner hears it from this turn, which knows its
     // verdict: the relay sends governor's comment to nobody. An edit in
-    // place tells nobody again. The hand-off goes before the verdict's
-    // write, so a write that fails still leaves the owner told, and one the
-    // lane refuses is owed on the verdict for the next review turn. A new
-    // message replaces one owed at this head and body; an edit in place
-    // keeps it, and at a new head or body it is dropped.
-    const owed = !saidAlready
-      ? await handOff(body, ownerMessage({ pull, text, acts }), 0)
-      : sameHead ? verdict?.owed ?? null : null;
+    // place tells nobody again, unless a message is owed. The hand-off goes
+    // before the verdict's write, so a write that fails still leaves the
+    // owner told, and one the lane refuses is owed on the verdict for the
+    // next review turn. An owed message goes only once a newer one is
+    // queued or owed in its place: a new comment's own message replaces
+    // it, and an edit in place at a new head or body sends the comment as
+    // it now reads in its place, with its tries. An edit in place at this
+    // head and body keeps it.
+    const prior = verdict?.owed ?? null;
+    const message = ownerMessage({ pull, text, acts });
+    const owed = !saidAlready ? await handOff(body, message, 0)
+      : prior === null || sameHead ? prior
+        : await handOff(body, message, prior.tries);
     // After the comment: one GitHub refused leaves no verdict, so the next
     // fire reads the PR again. Another review's item standing is its own
     // verdict, as good as this one.
