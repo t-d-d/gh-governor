@@ -176,6 +176,29 @@ export const settleMove = async ({ repo, issue, editor, moved, notice, builders,
   const kind = builds ? 'edit-builder' : moved.old === 'person' ? 'edit-person' : 'edit-owned';
   const restore = moved.from ?? null;
   if (!await rewriteOwner({ github, repo, issue, editor, restore, person: moved.old === 'person', relay, log })) return null;
+  return correctOnce({ at, on: issue, editor, kind, restore, tellOnce, deliveries, log });
+};
+
+/**
+ * Tell `editor` of a correction of `kind` on `on` once its write has
+ * landed, where no record says it was told of `kind` before
+ * ({@link TellOnce}). Returns the correction's delivery, or null where
+ * nothing was sent. A record that cannot be put is logged at error and
+ * sends nothing.
+ *
+ * @param {{
+ *   at: Record<string, unknown>,
+ *   on: number,
+ *   editor: string,
+ *   kind: Correction,
+ *   restore: string | null,
+ *   tellOnce: TellOnce,
+ *   deliveries: Pick<import('./deliveries.mjs').Deliveries, 'deliver'>,
+ *   log: Log,
+ * }} args
+ * @returns {Promise<import('./deliveries.mjs').Delivery | null>}
+ */
+const correctOnce = async ({ at, on, editor, kind, restore, tellOnce, deliveries, log }) => {
   let first = false;
   try {
     first = await tellOnce(editor, kind);
@@ -187,7 +210,7 @@ export const settleMove = async ({ repo, issue, editor, moved, notice, builders,
     log(TAKE, { ...at, kind, outcome: 'the editor not told', reason: 'it was told of this before' });
     return null;
   }
-  const sent = await deliveries.deliver({ session: editor }, correctionText(issue, kind, restore), { source: GITHUB_SOURCE, kind: 'correction', on: [issue] });
+  const sent = await deliveries.deliver({ session: editor }, correctionText(on, kind, restore), { source: GITHUB_SOURCE, kind: 'correction', on: [on] });
   if (sent.capped !== true) log(TAKE, { ...at, kind, outcome: sent.ok ? 'the editor told' : sent.refused ? 'the editor is archived' : 'the editor not told', ...(sent.ok || sent.refused ? {} : { level: 'error', error: sent.error }) });
   return sent;
 };
@@ -228,7 +251,7 @@ export const takeAfterNotice = async ({ repo, issue, editor, moved, notice, conf
  */
 export const prEditText = (pr, editor) => [
   `The body of PR #${pr} was edited, and its session link moved from this session to ${editor}.`,
-  `You still own PR #${pr}: governor writes this session's link back and tells that session to comment instead.`,
+  `You still own PR #${pr}: where the body still names that session, governor writes this session's link back and asks that session to comment instead.`,
   'Read the body to check the rest of the edit says what you mean.',
 ].join(' ');
 
@@ -305,18 +328,5 @@ const relinkPr = async ({ repo, pr, from, to, at, relay, ctx, deliveries }) => {
     ctx.log('dispatch-relink', { level: 'error', ...at, error: messageOf(error), reason: 'the body still names the editor as the PR\'s session' });
     return null;
   }
-  let first = false;
-  try {
-    first = await ctx.state.recordTold(to, 'edit-pr');
-  } catch (error) {
-    ctx.log(TAKE, { level: 'error', ...at, kind: 'edit-pr', error: messageOf(error), outcome: 'the editor not told', reason: 'the record that it was told could not be put' });
-    return null;
-  }
-  if (!first) {
-    ctx.log(TAKE, { ...at, kind: 'edit-pr', outcome: 'the editor not told', reason: 'it was told of this before' });
-    return null;
-  }
-  const sent = await deliveries.deliver({ session: to }, correctionText(pr, 'edit-pr', from), { source: GITHUB_SOURCE, kind: 'correction', on: [pr] });
-  if (sent.capped !== true) ctx.log(TAKE, { ...at, kind: 'edit-pr', outcome: sent.ok ? 'the editor told' : sent.refused ? 'the editor is archived' : 'the editor not told', ...(sent.ok || sent.refused ? {} : { level: 'error', error: sent.error }) });
-  return sent;
+  return correctOnce({ at, on: pr, editor: to, kind: 'edit-pr', restore: from, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries, log: ctx.log });
 };

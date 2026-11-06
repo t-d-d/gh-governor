@@ -132,6 +132,7 @@ describe('a prEdit fire', () => {
     assert.deepEqual(parseFire(JSON.parse(JSON.stringify(fire))), fire);
     assert.throws(() => parseFire({ ...fire, pr: 0 }), /pr/);
     assert.throws(() => parseFire({ ...fire, from: 'nobody' }), /from/);
+    assert.throws(() => parseFire({ ...fire, from: 'session_01OWNER' }), /from/, 'a bare id would write no link into the body');
     assert.throws(() => parseFire({ ...fire, to: undefined }), /to/);
   });
 

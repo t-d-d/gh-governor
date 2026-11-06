@@ -905,8 +905,9 @@ const parseKind = (event) => {
   if (kind === 'prEdit') {
     if (!isPositiveInt(e?.pr)) throw new Error(`a prEdit invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);
     for (const key of ['from', 'to']) {
+      // A URL, not a bare id: `from` is written into the PR body as its link.
       const value = e?.[key];
-      if (!(typeof value === 'string' && MESSAGE_SESSION.test(value))) throw new Error(`a prEdit invocation's ${key} must be a session id or claude.ai/code URL, got: ${JSON.stringify(e?.[key])}`);
+      if (!(typeof value === 'string' && value.startsWith('https://claude.ai/code/') && MESSAGE_SESSION.test(value))) throw new Error(`a prEdit invocation's ${key} must be a claude.ai/code session URL, got: ${JSON.stringify(e?.[key])}`);
     }
     if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) throw new Error(`a prEdit invocation's authors are trust values, got: ${JSON.stringify(e.authors)}`);
     return { kind, pr: Number(e?.pr), from: String(e?.from), to: String(e?.to), ...(e?.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (e.authors)] }) };
