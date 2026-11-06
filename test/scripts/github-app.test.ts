@@ -615,11 +615,11 @@ describe('githubReader', () => {
     let answered = 0;
     const { fetch, calls } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues': () => (answered++ === 0
-        ? new Response('boom', { status: 502, statusText: 'Bad Gateway' })
+        ? new Response('boom', { status: 404, statusText: 'Not Found' })
         : [{ number: 7, author_association: 'OWNER', title: 'T7', html_url: 'u7', body: 'Filed.\n\nhttps://claude.ai/code/session_01ABC' }]),
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    await assert.rejects(reader.openNaming('session_01ABC', RELAY), /502/);
+    await assert.rejects(reader.openNaming('session_01ABC', RELAY), /404/);
     assert.deepEqual(await reader.openNaming('session_01ABC', RELAY), [{ number: 7, title: 'T7', html_url: 'u7', pull: false }]);
     assert.equal(calls.length, 2);
   });
@@ -697,11 +697,11 @@ describe('githubReader', () => {
     let answered = 0;
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues': () => (answered++ === 0
-        ? new Response('boom', { status: 502, statusText: 'Bad Gateway' })
+        ? new Response('boom', { status: 404, statusText: 'Not Found' })
         : [{ number: 20, title: 'T20', html_url: 'u20', body: 'Closes #7', pull_request: { url: 'x' } }]),
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
-    await assert.rejects(reader.openClosing(7), /502/);
+    await assert.rejects(reader.openClosing(7), /404/);
     assert.deepEqual((await reader.openClosing(7)).map((r) => r.number), [20]);
   });
 
@@ -1208,7 +1208,7 @@ describe('githubApi', () => {
   // say it, and a secondary limit's body where they do not.
   test('a refusal says whether it is a rate limit, so a caller never reads the text', async () => {
     const refusal = async (response: Response) => {
-      const api = githubApi({ token: 't', fetch: (async () => response) as unknown as typeof globalThis.fetch });
+      const api = githubApi({ token: 't', fetch: (async () => response) as unknown as typeof globalThis.fetch, sleep: async () => {} });
       return api('GET', '/repos/acme/factory/hooks').then(() => assert.fail('no refusal'), (e: { rateLimited?: unknown }) => e.rateLimited);
     };
     const forbidden = (headers: Record<string, string>) => new Response('{"message":"Access restricted"}', { status: 403, statusText: 'Forbidden', headers });
@@ -1236,15 +1236,143 @@ describe('githubApi', () => {
     assert.equal(await refusal(answer(404, 'Upgrade to GitHub Pro or make this repository public to enable this feature.')), false, 'a 404, whatever it says');
   });
 
-  test('a refusal is an answer, not a dropped connection: it is not sent again', async () => {
-    let calls = 0;
-    const fetch = (async () => {
-      calls += 1;
-      return new Response('{}', { status: 502, statusText: 'Bad Gateway' });
+  // An answer that shows nothing changed, a server error or a short rate
+  // limit, is a blip the next send clears, as a dropped connection is.
+  // Before these, one 502 failed a whole dispatcher turn.
+  const answers = (statuses: Array<number | Response>) => {
+    const calls: string[] = [];
+    const fetch = (async (url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? 'GET'} ${url}`);
+      const next = statuses[Math.min(calls.length, statuses.length) - 1]!;
+      if (next instanceof Response) return next;
+      return next === 200 ? new Response('[{"id":1}]', { status: 200 }) : new Response('{"message":"boom"}', { status: next, statusText: 'Refused' });
     }) as unknown as typeof globalThis.fetch;
-    const api = githubApi({ token: 't', fetch, sleep: async () => {} });
-    await assert.rejects(api('GET', '/repos/acme/factory/hooks'), /502/);
-    assert.equal(calls, 1);
+    const waits: number[] = [];
+    const logged: Array<{ event: string, context: Record<string, unknown> }> = [];
+    const io = {
+      fetch,
+      sleep: async (ms: number) => { waits.push(ms); },
+      log: (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, context }); },
+    };
+    return { calls, waits, logged, io };
+  };
+
+  test('a GET answered with a server error and then a 200 succeeds, and logs one resend', async () => {
+    const { calls, waits, logged, io } = answers([502, 200]);
+    const api = githubApi({ token: 't', ...io });
+    assert.deepEqual(await api('GET', '/repos/acme/factory/hooks'), [{ id: 1 }]);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(waits, [1_000]);
+    assert.deepEqual(logged, [{ event: 'dispatch-github-retry', context: { level: 'info', method: 'GET', path: '/repos/acme/factory/hooks', status: 502, try: 1 } }]);
+  });
+
+  test('a GET is resent after each server error, 500, 502, 503 and 504, pausing longer each time', async () => {
+    for (const status of [500, 502, 503, 504]) {
+      const { calls, waits, io } = answers([status, status, 200]);
+      assert.deepEqual(await githubApi({ token: 't', ...io })('GET', '/repos/acme/factory/hooks'), [{ id: 1 }], String(status));
+      assert.equal(calls.length, 3, String(status));
+      assert.deepEqual(waits, [1_000, 2_000], String(status));
+    }
+  });
+
+  test('a server error that gives a retry-after waits it, and one asking for more than 10 seconds is not resent', async () => {
+    const after = (seconds: string) => new Response('{}', { status: 503, statusText: 'Service Unavailable', headers: { 'retry-after': seconds } });
+    const short = answers([after('5'), 200]);
+    assert.deepEqual(await githubApi({ token: 't', ...short.io })('GET', '/repos/acme/factory/hooks'), [{ id: 1 }]);
+    assert.deepEqual(short.waits, [5_000]);
+    const long = answers([after('30'), 200]);
+    await assert.rejects(githubApi({ token: 't', ...long.io })('GET', '/repos/acme/factory/hooks'), /503/);
+    assert.equal(long.calls.length, 1);
+  });
+
+  test('a GET answered 503 on all 3 sends fails as today, with its status', async () => {
+    const { calls, logged, io } = answers([503]);
+    await assert.rejects(githubApi({ token: 't', ...io })('GET', '/repos/acme/factory/hooks'), (e: { status?: unknown, rateLimited?: unknown }) => {
+      assert.equal(e.status, 503);
+      assert.equal(e.rateLimited, false);
+      return true;
+    });
+    assert.equal(calls.length, 3);
+    assert.equal(logged.length, 2, 'one line per resend, none for the last failure');
+  });
+
+  test('a GET rate limited for 10 seconds or less waits what GitHub asks and is sent again; a longer limit fails at once', async () => {
+    const limited = (status: number, after: string) => new Response('{"message":"You have exceeded a secondary rate limit."}', { status, statusText: 'Refused', headers: { 'retry-after': after } });
+    const short = answers([limited(429, '2'), 200]);
+    assert.deepEqual(await githubApi({ token: 't', ...short.io })('GET', '/repos/acme/factory/hooks'), [{ id: 1 }]);
+    assert.equal(short.calls.length, 2);
+    assert.deepEqual(short.waits, [2_000]);
+    assert.equal(short.logged[0]?.context['status'], 429);
+
+    const forbidden = answers([limited(403, '10'), 200]);
+    assert.deepEqual(await githubApi({ token: 't', ...forbidden.io })('GET', '/repos/acme/factory/hooks'), [{ id: 1 }], 'a 403 the reader classes as rate limited, at the 10-second edge');
+    assert.deepEqual(forbidden.waits, [10_000]);
+
+    const long = answers([limited(429, '60'), 200]);
+    await assert.rejects(githubApi({ token: 't', ...long.io })('GET', '/repos/acme/factory/hooks'), (e: { status?: unknown, rateLimited?: unknown }) => {
+      assert.equal(e.status, 429);
+      assert.equal(e.rateLimited, true);
+      return true;
+    });
+    assert.equal(long.calls.length, 1);
+    assert.deepEqual(long.waits, []);
+
+    // A limit that names no wait does not say a short one will do.
+    const unsaid = answers([new Response('', { status: 429, statusText: 'Too Many Requests' }), 200]);
+    await assert.rejects(githubApi({ token: 't', ...unsaid.io })('GET', '/repos/acme/factory/hooks'), /429/);
+    assert.equal(unsaid.calls.length, 1);
+  });
+
+  test('a write not marked safe to repeat is sent once, whether answered with a server error or dropped', async () => {
+    const answered = answers([502, 200]);
+    await assert.rejects(githubApi({ token: 't', ...answered.io })('POST', '/repos/acme/factory/hooks', {}), /502/);
+    assert.equal(answered.calls.length, 1);
+    assert.deepEqual(answered.logged, []);
+    const limited = answers([new Response('', { status: 429, headers: { 'retry-after': '1' } }), 200]);
+    await assert.rejects(githubApi({ token: 't', ...limited.io })('PATCH', '/repos/acme/factory/issues/1', {}), /429/);
+    assert.equal(limited.calls.length, 1);
+  });
+
+  test('any other answer is sent once: a 404, a 422, and a 403 for a missing permission', async () => {
+    const permission = new Response('{"message":"Resource not accessible by integration"}', { status: 403, statusText: 'Forbidden' });
+    for (const answer of [404, 422, permission]) {
+      const { calls, logged, io } = answers([answer, 200]);
+      await assert.rejects(githubApi({ token: 't', ...io })('GET', '/repos/acme/factory/hooks'), /40[34]|422/);
+      assert.equal(calls.length, 1, String(answer instanceof Response ? answer.status : answer));
+      assert.deepEqual(logged, []);
+    }
+  });
+
+  test('a dropped connection that is resent logs its error and the try', async () => {
+    let sent = 0;
+    const logged: Array<Record<string, unknown>> = [];
+    const fetch = (async () => {
+      sent += 1;
+      if (sent === 1) throw new TypeError('fetch failed');
+      return new Response('[]', { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const api = githubApi({ token: 't', fetch, sleep: async () => {}, log: (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); } });
+    assert.deepEqual(await api('GET', '/repos/acme/factory/hooks'), []);
+    assert.deepEqual(logged, [{ event: 'dispatch-github-retry', level: 'info', method: 'GET', path: '/repos/acme/factory/hooks', error: 'fetch failed', try: 1 }]);
+  });
+
+  test('the token mint resends a server error too', async () => {
+    const { fetch: answer } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/installation': { id: 7 },
+      'https://api.github.com/app/installations/7/access_tokens': { token: 'ghs_x' },
+    });
+    const failed = new Set<string>();
+    const logged: string[] = [];
+    const fetch = (async (url: string, init?: RequestInit) => {
+      if (!failed.has(url)) {
+        failed.add(url);
+        return new Response('{}', { status: 503, statusText: 'Service Unavailable' });
+      }
+      return answer(url, init);
+    }) as unknown as typeof globalThis.fetch;
+    const token = await installationToken({ appId: '1', privateKeyPem: PEM, repo: 'acme/factory', fetch, sleep: async () => {}, log: (event: string) => { logged.push(event); } });
+    assert.equal(token, 'ghs_x');
+    assert.deepEqual(logged, ['dispatch-github-retry', 'dispatch-github-retry']);
   });
 
   test('the reader and the token mint resend a dropped call', async () => {
