@@ -8,8 +8,10 @@
  * 1 is the signing rule. A session a person starts reads the served repo's
  * `CLAUDE.md`, or the file `sessionRules.file` names, so the repo copies
  * {@link SESSION_RULES_BLOCK} into it. The block's marker carries a
- * version, so the config check (checker/config-check.mjs) can tell a file
- * with no block from one with an older block once the rules change.
+ * version, so the config check (checker/config-check.mjs), on a pull
+ * request, and the bare schedule fire (dispatch/turn.mjs), on the default
+ * branch, can tell a file with no block from one with an older block once
+ * the rules change.
  *
  * Pure, and a leaf: the task image copies it (dispatch/Dockerfile), and the
  * config check imports it from a fetch of this repo.

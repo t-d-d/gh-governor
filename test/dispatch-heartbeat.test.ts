@@ -165,6 +165,39 @@ describe('the governor block: a line for pickup and one per periodic', () => {
   });
 });
 
+describe('the session rules line: which file lacks the current block (#611)', () => {
+  test('a missing block and an old one each get a line naming the file, and read back', () => {
+    const missing = stampHeartbeat(BODY, { rules: { file: 'CLAUDE.md', block: 'missing' } });
+    assert.match(missing, /^- session rules: "CLAUDE\.md" has no session rules block$/m);
+    assert.deepEqual(readHeartbeat(missing).rules, { file: 'CLAUDE.md', block: 'missing' });
+    const old = stampHeartbeat(BODY, { rules: { file: 'docs/AGENTS.md', block: 'old' } });
+    assert.match(old, /^- session rules: "docs\/AGENTS\.md" has an old session rules block$/m);
+    assert.deepEqual(readHeartbeat(old).rules, { file: 'docs/AGENTS.md', block: 'old' });
+  });
+
+  test('a later pickup or periodic write keeps the line, after the others', () => {
+    let body = stampHeartbeat(BODY, { rules: { file: 'CLAUDE.md', block: 'missing' } });
+    body = stampHeartbeat(body, { pickup: { at: AT, started: 1 } });
+    body = stampHeartbeat(body, { periodics: [{ name: 'A', at: AT, by: { days: 1 }, session: SESSION, state: 'open' }], signedOff: ['session_01RUN'] });
+    assert.deepEqual(readHeartbeat(body).rules, { file: 'CLAUDE.md', block: 'missing' });
+    const block = body.slice(body.indexOf(HEARTBEAT_MARKER), body.indexOf(HEARTBEAT_END));
+    assert.deepEqual(block.split('\n').slice(1, -1).map((l) => l.split(':')[0]), ['- pickup', '- periodic "A"', '- session rules']);
+  });
+
+  test('a current block, given as null, clears the line, and a body with none has nothing to clear', () => {
+    const body = stampHeartbeat(BODY, { pickup: { at: AT, started: 1 }, rules: { file: 'CLAUDE.md', block: 'old' } });
+    const cleared = stampHeartbeat(body, { rules: null });
+    assert.equal(readHeartbeat(cleared).rules, undefined);
+    assert.ok(!cleared.includes('session rules'), cleared);
+    assert.deepEqual(readHeartbeat(cleared).pickup, { at: AT, started: 1 });
+    assert.deepEqual(readHeartbeat(stampHeartbeat(BODY, { rules: null })), { periodics: [] });
+  });
+
+  test('a body with no rules line reads with no rules key', () => {
+    assert.equal('rules' in readHeartbeat(stampHeartbeat(BODY, { pickup: { at: AT, started: 0 } })), false);
+  });
+});
+
 describe('writing a heartbeat issue: one helper reads it, checks its marker and writes it', () => {
   const MARKER = '<!-- factory:routine-heartbeat -->';
   /** A reader over one issue body, recording each write. */

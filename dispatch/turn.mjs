@@ -133,7 +133,7 @@ import { sessionId } from './webhook/subscribe.mjs';
 import { rolesOf } from './roles.mjs';
 import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, countAgainst, deliveries as turnDeliveries, fromDispatcher, readSend, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, deployedTarget, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
-import { SESSION_RULES } from './session-rules.mjs';
+import { SESSION_RULES, blockIn, rulesFile } from './session-rules.mjs';
 import { deployedComment } from './webhook/deployed-comment.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, writeHeartbeatIssue } from './heartbeat.mjs';
@@ -723,10 +723,13 @@ const turnOf = async (event, deps, built) => {
     deps: { ...deps, secret, githubToken: tokenFor, launch: launches.start },
   });
   const eventBeats = checked?.beats ?? [];
+  // The bare fire checks each served repo's session rules block, after its
+  // own work, so a slow or failed read never holds a launch.
+  const rulesBeats = bare ? await checkRules(deps, tokenFor, served) : [];
   const periodics = checked === null ? null : { dispatched: checked.dispatched, unread: checked.unread };
   // The fires' lines go before the replies and the sweep, which may run
   // into the deadline; the sign-offs' marks after the sweep.
-  const beaten = await writeBeats(deps, tokenFor, served, [...turnBeats, ...eventBeats]);
+  const beaten = await writeBeats(deps, tokenFor, served, [...turnBeats, ...eventBeats, ...rulesBeats]);
   // Read when called: a turn whose sweep skips never touches `sessions`.
   /** @type {import('../scripts/lib/session-signoff.mjs').Events} */
   const events = (id, token, cursor) => deps.sessions.events(id, token, cursor);
@@ -845,6 +848,50 @@ const unrelayed = (fire, relay) => {
  *   What a turn changes in one repo's governor heartbeat block.
  */
 
+/** A served repo whose file lacks the current session rules block. Logged at warn. */
+export const SESSION_RULES_STALE = 'dispatch-session-rules';
+
+/** A served repo whose session rules file could not be read. Logged at warn. */
+export const SESSION_RULES_UNREAD = 'dispatch-session-rules-unread';
+
+/**
+ * The bare schedule fire's check of each served repo's session rules block
+ * (dispatch/session-rules.mjs): where the repo's file turns `sessionRules`
+ * on, the file `rulesFile` names, read from the default branch, side by
+ * side. A missing or old block logs {@link SESSION_RULES_STALE} at warn and
+ * sets the heartbeat's line; a current block clears it, and so does the
+ * switch turned off, with no read. A read that fails logs
+ * {@link SESSION_RULES_UNREAD} at warn and changes nothing. None of it
+ * stops the repo being served or fails the turn, and it pages nobody.
+ *
+ * @param {Deps} deps
+ * @param {(repo: string) => Promise<string>} tokenFor
+ * @param {import('./repos.mjs').Served[]} served
+ * @returns {Promise<RepoBeat[]>} A line or a clear for each repo whose
+ *   heartbeat is on; `writeBeats` writes only where the line changes.
+ */
+const checkRules = async (deps, tokenFor, served) => {
+  const checked = await Promise.all(served.map(async ({ repo, config }) => {
+    /** @type {import('./heartbeat.mjs').RulesLine | null} */
+    let rules = null;
+    if (turnsOn(config, 'sessionRules')) {
+      const file = rulesFile(config);
+      try {
+        const block = blockIn(await deps.configFile(repo, await tokenFor(repo), file) ?? '');
+        if (block !== 'current') {
+          deps.log(SESSION_RULES_STALE, { level: 'warn', repo, file, block, reason: 'sessions a person starts in this repo are not given the session rules: copy the current block into the file (docs/serving-a-repo.md, The session rules)' });
+          rules = { file, block };
+        }
+      } catch (error) {
+        deps.log(SESSION_RULES_UNREAD, { level: 'warn', repo, file, error: messageOf(error), reason: 'the session rules block was not checked, and the heartbeat\'s line stays as it was' });
+        return [];
+      }
+    }
+    return turnsOn(config, 'heartbeat') ? [{ repo, beat: { rules } }] : [];
+  }));
+  return checked.flat();
+};
+
 /**
  * Write each repo's changes into its governor heartbeat block
  * (dispatch/heartbeat.mjs), one read and at most one write a repo: only in a
@@ -875,6 +922,7 @@ const writeBeats = async (deps, tokenFor, served, beats) => {
       ...own.reduce((/** @type {{ pickup?: import('./heartbeat.mjs').PickupLine }} */ p, b) => (b.pickup === undefined ? p : { pickup: b.pickup }), {}),
       periodics: own.flatMap((b) => b.periodics ?? []),
       signedOff: own.flatMap((b) => b.signedOff ?? []),
+      ...own.reduce((/** @type {{ rules?: import('./heartbeat.mjs').RulesLine | null }} */ r, b) => (b.rules === undefined ? r : { rules: b.rules }), {}),
     };
     const { issue } = heartbeat;
     const outcome = await writeHeartbeatIssue({

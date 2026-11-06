@@ -79,7 +79,7 @@ Rules for every session in this repo:
 <!-- governor:session-rules-end -->
 ```
 
-Copy it whole, markers included. Its first marker names the version of the rules. Where `sessionRules` is on, [the config check](#the-config-check) warns on a pull request whose `CLAUDE.md`, or the file `sessionRules.file` names, has no block, or a block that is not this one. The [starter kit](#the-starter-kit)'s `CLAUDE.md` carries it.
+Copy it whole, markers included. Its first marker names the version of the rules. Where `sessionRules` is on, [the config check](#the-config-check) warns on a pull request whose `CLAUDE.md`, or the file `sessionRules.file` names, has no block, or a block that is not this one. Governor's hourly fire reads the same file on the default branch. A missing or old block there logs a warning naming the repo and the file, and, where the heartbeat is on, puts a line on the heartbeat issue saying the same, until the block is current or the section is off ([The heartbeat](how-it-works.md#the-heartbeat)). Neither stops governor serving the repo. The [starter kit](#the-starter-kit)'s `CLAUDE.md` carries it.
 
 ### The starter kit
 
@@ -152,7 +152,7 @@ Governor read `.github/dispatch.json` in an older layout before this one, and re
 | `waits.issue` | no | The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing. |
 | `waits.prompts` | no | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `spec`, `ownerSpec`. |
 | `signOff.heldMessage` | no | Whether governor messages a session the first time the sweep holds it: its reply signed off, but an open PR's body names it, so it was not archived, and it stays open until governor asks it to sign off. Governor sends this once per session. Default false: every hold is only logged. |
-| `sessionRules.file` | no | The file that carries governor's session rules block, a path from the repo's root, which the config check reads at a pull request's head. Default `CLAUDE.md` at the root. |
+| `sessionRules.file` | no | The file that carries governor's session rules block, a path from the repo's root, which the config check reads at a pull request's head, and governor's hourly fire on the default branch. Default `CLAUDE.md` at the root. |
 
 | Section | What it turns on |
 |---|---|
@@ -508,7 +508,7 @@ jobs:
 What it reads:
 
 - `.github/governor.json` from the default branch. It reads only the `heartbeat`, `pickup` and `periodics` sections, each on unless it sets `"enabled": false`, and in them `heartbeat.issue`, `pickup.sweepHours` and each periodic's name and `days`, and ignores every other key. A file using a key added after the pinned commit still reads.
-- The heartbeat issue the file names, and the lines governor keeps under its `<!-- governor:heartbeat -->` marker.
+- The heartbeat issue the file names, and the lines governor keeps under its `<!-- governor:heartbeat -->` marker. The session rules line, which says the repo's `CLAUDE.md` lacks the current block, is read and opens no issue. A checker pinned to a commit older than the line skips it.
 - When `.github/governor.json` last changed on the default branch, only for a pickup sweep or periodic that has no line yet. A change brought in by a merge commit counts from the merge, not from when its branch commit was made. It reads up to 1,000 commits of the branch's history for this, and past that uses the commit's own date.
 
 The inputs:

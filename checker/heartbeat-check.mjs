@@ -11,8 +11,11 @@
  * and one per periodic (dispatch/heartbeat.mjs). Each line whose last fire
  * is older than its limit (pickup's sweep interval, a periodic's day limit)
  * plus the caller's tolerance gets one open issue, which closes once the
- * line is fresh again. A periodic governor has read but not fired yet has a
- * line at its first read, and its day limit runs from then. A check that
+ * line is fresh again. The session rules line, which says the repo's
+ * `CLAUDE.md` lacks governor's current block, is read and raises nothing:
+ * it reports the repo's file, not a stopped dispatcher. A periodic governor
+ * has read but not fired yet has a line at its first read, and its day
+ * limit runs from then. A check that
  * cannot read the file or the issue keeps one issue open saying why, so a
  * broken check is never silence.
  *
@@ -45,7 +48,8 @@ const DAY_MS = 24 * HOUR_MS;
  * @typedef {'open' | 'signed off' | 'held' | 'nothing to do' | 'not fired'} RunState
  * @typedef {{ at: string, started: number }} PickupLine
  * @typedef {{ name: string, at: string, by?: Limit, session: string | null, state: RunState }} PeriodicLine
- * @typedef {{ pickup?: PickupLine, periodics: PeriodicLine[] }} Heartbeat
+ * @typedef {{ file: string, block: 'missing' | 'old' }} RulesLine
+ * @typedef {{ pickup?: PickupLine, periodics: PeriodicLine[], rules?: RulesLine }} Heartbeat
  */
 
 // The line format is governor's, in dispatch/heartbeat.mjs. A test runs
@@ -67,22 +71,34 @@ const STATES = /** @type {Record<RunState, string>} */ ({
   'not fired': 'not fired yet',
 });
 
+/** What the session rules line says of each block that is not current. */
+const RULES_BLOCKS = /** @type {Record<RulesLine['block'], string>} */ ({
+  missing: 'has no session rules block',
+  old: 'has an old session rules block',
+});
+
 const PICKUP = /^- pickup: last sweep (\S+), started (\d+) sessions?$/;
 const PERIODIC = new RegExp([
   '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (last fire|first read) (\\S+)',
   '(?:, by (?:its day limit of (\\d+) days?|(\\d+) (merges?|issues? opened|issues? closed)))?',
   `, session (\\S+), (${Object.values(STATES).join('|')})$`,
 ].join(''));
+const RULES = new RegExp(`^- session rules: ("(?:[^"\\\\]|\\\\.)*") (${Object.values(RULES_BLOCKS).join('|')})$`);
 
 /**
  * One line of the block, read; null for a line governor did not write.
  *
  * @param {string} text
- * @returns {{ pickup: PickupLine } | { periodic: PeriodicLine } | null}
+ * @returns {{ pickup: PickupLine } | { periodic: PeriodicLine } | { rules: RulesLine } | null}
  */
 const lineOf = (text) => {
   const pickup = PICKUP.exec(text);
   if (pickup !== null) return { pickup: { at: String(pickup[1]), started: Number(pickup[2]) } };
+  const rules = RULES.exec(text);
+  if (rules !== null) {
+    const block = /** @type {RulesLine['block']} */ (Object.keys(RULES_BLOCKS).find((k) => RULES_BLOCKS[/** @type {RulesLine['block']} */ (k)] === rules[2]));
+    return { rules: { file: JSON.parse(String(rules[1])), block } };
+  }
   const m = PERIODIC.exec(text);
   if (m === null) return null;
   const [, name, read, at, days, number, counted, session, state] = m;
@@ -123,6 +139,7 @@ export const readHeartbeat = (body) => {
     const line = lineOf(l);
     if (line === null) continue;
     if ('pickup' in line) beat.pickup = line.pickup;
+    else if ('rules' in line) beat.rules = line.rules;
     else beat.periodics = [...beat.periodics.filter((p) => p.name !== line.periodic.name), line.periodic];
   }
   return beat;
