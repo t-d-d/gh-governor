@@ -164,6 +164,8 @@ const harness = (over: Record<string, unknown> = {}) => {
   const conflictsTold = new Set<string>();
   // Each session governor told it was held from its sign-off.
   const heldTold = new Set<string>();
+  // Each correction governor told a session of, keyed `<session>#<kind>`.
+  const correctionsTold = new Set<string>();
   // Each periodic's record, keyed `<repo>#<name>`, and every write to one.
   const periodics = new Map<string, { at: string; session: string | null; baseline: boolean }>();
   const periodicWrites: Array<{ repo: string; name: string; record: { at: string; session: string | null; baseline: boolean } }> = [];
@@ -421,6 +423,12 @@ const harness = (over: Record<string, unknown> = {}) => {
         heldTold.add(session);
         return true;
       },
+      // A conditional write, as the table's: false where the record stood.
+      recordTold: async (session: string, kind: string) => {
+        if (correctionsTold.has(`${session}#${kind}`)) return false;
+        correctionsTold.add(`${session}#${kind}`);
+        return true;
+      },
       startedSession: async (session: string) => recorded.includes(session),
       verdict: async () => null,
       recordVerdict: async () => true,
@@ -456,7 +464,7 @@ const harness = (over: Record<string, unknown> = {}) => {
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, heldTold, countsAsked, messageCounts, failedLaunches, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, publishedClaim, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, heldTold, correctionsTold, countsAsked, messageCounts, failedLaunches, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, publishedClaim, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -4765,6 +4773,80 @@ describe('run: an issue\'s owner refuses as archived, and the session that comme
     const result = await run({ kind: 'offer', issue: 7, session: COMMENTER }, h.deps as never) as Record<string, any>;
     assert.match(String(result.refusal), /sessionRules/);
     assert.deepEqual(h.messages, []);
+  });
+});
+
+describe('run: an issue owner\'s message of a body edit that moved its owner link (#614)', () => {
+  const OWNER = 'https://claude.ai/code/session_01OLD';
+  const EDITOR = 'https://claude.ai/code/session_01EDITOR';
+  const TAKEN = `The spec, changed.\n\n${EDITOR}`;
+  const fire = { kind: 'message', session: EDITOR, text: 'The body of issue #7 was edited.', on: 7, event: 'comments', subscribed: true, moved: { old: 'owned', from: OWNER } };
+  /** A harness whose issue 7 reads `body`, whose CLI answers `archived` sessions archived. */
+  const edited = ({ body = TAKEN, archived = [] as string[], configFile = undefined as unknown } = {}) => {
+    const sent: Array<{ session: string; text: string }> = [];
+    const h = harness({
+      ...(configFile === undefined ? {} : { configFile }),
+      message: async (m: { session: string; text: string }) => {
+        sent.push(m);
+        if (archived.includes(m.session)) return { status: 1, output: JSON.stringify({ ok: false, session_id: m.session.slice(m.session.lastIndexOf('/') + 1), error: `cloud session ${m.session.slice(m.session.lastIndexOf('/') + 1)} is archived and cannot accept new messages` }) };
+        return { status: 0, output: JSON.stringify({ ok: true, session_id: m.session.slice(m.session.lastIndexOf('/') + 1), url: m.session }) };
+      },
+    });
+    const reader = h.deps.reader;
+    h.deps.reader = ((...a: unknown[]) => {
+      const base = (reader as (...b: unknown[]) => Record<string, any>)(...a);
+      return {
+        ...base,
+        ticket: async (n: number) => ({ number: n, id: 9000 + n, title: `Issue ${n}`, body, state: 'open', labels: ['mode: afk'], pull: false, association: 'MEMBER' }),
+        issue: async (n: number) => ({ number: n, body, pull: false }),
+      };
+    }) as never;
+    return { h, sent };
+  };
+
+  test('the notice goes to the old owner, not the editor; a live owner\'s link is written back and the editor told once', async () => {
+    const { h, sent } = edited();
+    const result = await run(fire, h.deps as never) as Record<string, any>;
+    assert.equal(sent[0]!.session, OWNER);
+    assert.match(sent[0]!.text, /body of issue #7 was edited/);
+    assert.deepEqual(h.issueEdits.map((e) => [e.issue, sessionNamedIn(e.body)]), [[7, OWNER]]);
+    assert.deepEqual(sent.slice(1).map((m) => m.session), [EDITOR]);
+    assert.match(sent[1]!.text, /you do not own #7/);
+    assert.equal(exitCodeFor(result as never), 0);
+    const again = edited();
+    for (const key of h.correctionsTold) again.h.correctionsTold.add(key);
+    await run(fire, again.h.deps as never);
+    assert.equal(again.h.issueEdits.length, 1, 'the link is written back again');
+    assert.deepEqual(again.sent.map((m) => m.session), [OWNER], 'and the editor is told nothing');
+  });
+
+  test('an archived old owner: the editor is told it owns the issue, and nothing is written', async () => {
+    const { h, sent } = edited({ archived: [OWNER] });
+    const result = await run(fire, h.deps as never);
+    assert.deepEqual(sent.map((m) => m.session), [OWNER, EDITOR]);
+    assert.match(sent[1]!.text, /You now own #7/);
+    assert.deepEqual(h.issueEdits, []);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('an old body a session filed unsigned is a take with no notice; a person\'s issue has the editor\'s link removed', async () => {
+    const unsigned = edited();
+    await run({ ...fire, moved: { old: 'unsigned' } }, unsigned.h.deps as never);
+    assert.deepEqual(unsigned.sent.map((m) => m.session), [EDITOR]);
+    assert.match(unsigned.sent[0]!.text, /You now own #7/);
+    const person = edited();
+    const result = await run({ ...fire, moved: { old: 'person' } }, person.h.deps as never);
+    assert.deepEqual(person.h.issueEdits, [{ issue: 7, body: 'The spec, changed.' }]);
+    assert.deepEqual(person.sent.map((m) => m.session), [EDITOR]);
+    assert.match(person.sent[0]!.text, /a person filed and owns/);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('with sessionRules off, the editor hears the edit as before, and nothing is written', async () => {
+    const { h, sent } = edited({ configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) });
+    await run(fire, h.deps as never);
+    assert.deepEqual(sent.map((m) => m.session), [EDITOR]);
+    assert.deepEqual(h.issueEdits, []);
   });
 });
 

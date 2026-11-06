@@ -365,7 +365,15 @@ export const lastDispatch = (comments) => {
  *   (dispatch/dispatch-fire.mjs). A summons on a PR carries none, and so
  *   does one queued before the receiver named it.
  * @typedef {{ state: 'open' | 'closed', labels: string[], owner?: string }} SummonedTicket
- * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[], offer?: string }
+ * @typedef {{ old: 'owned' | 'unsigned' | 'person', from?: string }} MovedLink
+ *   A body edit that moved an issue's owner link to the session the new
+ *   body names: what the old body was, a session's that named `from` as
+ *   owner (`owned`), a session's unsigned post (`unsigned`), or a
+ *   person's (`person`). `from` is there only for `owned`. Under
+ *   `sessionRules` the task sends the edit's notice to `from` in place of
+ *   the new owner, and confirms the take or writes the old link back
+ *   (dispatch/take.mjs).
+ * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[], offer?: string, moved?: MovedLink }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
  *   `subscribed`: the session hears by subscription, a `governor:subscribe`
@@ -381,6 +389,9 @@ export const lastDispatch = (comments) => {
  *   `offer`: on an issue owner's message of a comment a session signed,
  *   that session. Where the owner refuses as archived, the task offers it
  *   the issue under `sessionRules` (dispatch/offer.mjs).
+ *   `moved`: on an issue owner's message of a body edit that moved its
+ *   owner link, where it was before ({@link MovedLink}). `session` is the
+ *   session the new body names.
  * @typedef {{ kind: 'offer', issue: number, session: string, authors?: string[] }} OfferFire
  *   A session's signed comment on an issue whose body is a session's
  *   unsigned post, which names no owner: the task offers `session` the
@@ -417,7 +428,7 @@ export const lastDispatch = (comments) => {
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit
  *   the lane ({@link FIRE_BUDGET}).
- * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], builder?: string, displaced?: string }} TicketFire
+ * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], builder?: string, displaced?: string, moved?: MovedLink }} TicketFire
  *   A comment on an issue, the issue closed or reopened, or its body
  *   edited (`edit`), where the issue may be claimed: its spec owner and, on a claimed ticket, its builders
  *   hear it, each told which role it holds (dispatch/ticket-fire.mjs). The
@@ -436,6 +447,9 @@ export const lastDispatch = (comments) => {
  *   builder it took the ticket from, where it names one. It reaches the
  *   spec owner and the displaced builder, never the builder it names, and
  *   the task reads nothing to send it.
+ *   `moved`: on an `edit`, where the edit moved the owner link, where it
+ *   was before ({@link MovedLink}); `owner` is the session the new body
+ *   names.
  * @typedef {{ kind: 'closingPr', pr: number }} ClosingPrFire
  *   A PR opened, reopened or edited so that its body may come to close a
  *   ticket. The task reads the PR and each ticket it closes, and where a
@@ -486,11 +500,11 @@ export const build = Object.freeze({
    * @param {({ session: string, byBranch?: undefined, poster?: undefined } | { session?: undefined, byBranch: true, poster?: string | undefined }) & {
    *   text: string, on?: number | undefined, event?: SubscriptionEvent | undefined, commit?: string | undefined,
    *   closing?: boolean | undefined, subscribed?: boolean | undefined, fallback?: Fallback | undefined,
-   *   authors?: string[] | undefined, offer?: string | null | undefined,
+   *   authors?: string[] | undefined, offer?: string | null | undefined, moved?: MovedLink | undefined,
    * }} args
    * @returns {MessageFire}
    */
-  message: ({ session, byBranch, poster, text, on, event, commit, closing, subscribed, fallback, authors, offer }) => /** @type {MessageFire} */ ({
+  message: ({ session, byBranch, poster, text, on, event, commit, closing, subscribed, fallback, authors, offer, moved }) => /** @type {MessageFire} */ ({
     kind: 'message',
     ...(byBranch === true ? { byBranch, ...present({ poster }) } : { session }),
     text,
@@ -503,6 +517,7 @@ export const build = Object.freeze({
       authors,
       fallback: fallback && present(fallback),
       offer: offer ?? undefined,
+      moved,
     }),
   }),
 
@@ -547,11 +562,11 @@ export const build = Object.freeze({
    *   issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[],
    *   owner?: string | null | undefined, poster?: string | null | undefined, closing?: boolean | undefined,
    *   authors?: string[] | undefined,
-   *   builder?: string | null | undefined, displaced?: string | null | undefined,
+   *   builder?: string | null | undefined, displaced?: string | null | undefined, moved?: MovedLink | undefined,
    * }} args
    * @returns {TicketFire}
    */
-  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, builder, displaced }) => ({
+  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, builder, displaced, moved }) => ({
     kind: 'ticket',
     issue,
     text,
@@ -565,6 +580,7 @@ export const build = Object.freeze({
       authors,
       builder: builder ?? undefined,
       displaced: displaced ?? undefined,
+      moved,
     }),
   }),
 
@@ -949,6 +965,7 @@ const parseMessage = (e, event) => {
   if (e.offer !== undefined && !(typeof e.offer === 'string' && MESSAGE_SESSION.test(e.offer))) {
     throw new Error(`a message invocation's offer must be a session id or claude.ai/code URL, got: ${JSON.stringify(e.offer)}`);
   }
+  const moved = e.moved === undefined ? undefined : parseMoved(e.moved, 'a message invocation');
   const to = e.byBranch === true
     ? { byBranch: /** @type {true} */ (true), on: Number(e.on), ...(typeof e.poster === 'string' ? { poster: e.poster } : {}) }
     : { session: /** @type {string} */ (e.session) };
@@ -964,7 +981,25 @@ const parseMessage = (e, event) => {
     ...(e.subscribed === true ? { subscribed: /** @type {true} */ (true) } : {}),
     ...(e.authors === undefined ? {} : { authors: /** @type {string[]} */ ([...e.authors]) }),
     ...(e.offer === undefined ? {} : { offer: /** @type {string} */ (e.offer) }),
+    ...(moved === undefined ? {} : { moved }),
   };
+};
+
+/**
+ * A fire's `moved`, refused unless it says what the old body was, and
+ * names the old owner where, and only where, a session owned it.
+ *
+ * @param {unknown} raw
+ * @param {string} what the fire, for the error
+ * @returns {MovedLink}
+ */
+const parseMoved = (raw, what) => {
+  const m = /** @type {Record<string, unknown> | null} */ (raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : null);
+  if (m?.old !== 'owned' && m?.old !== 'unsigned' && m?.old !== 'person') throw new Error(`${what}'s moved must say whether the old body was owned, unsigned or a person's, got: ${JSON.stringify(raw)}`);
+  if (m.old === 'owned' ? !(typeof m.from === 'string' && MESSAGE_SESSION.test(m.from)) : m.from !== undefined) {
+    throw new Error(`${what}'s moved names the old owner as a session where, and only where, the old body was owned, got: ${JSON.stringify(raw)}`);
+  }
+  return m.old === 'owned' ? { old: 'owned', from: String(m.from) } : { old: m.old };
 };
 
 /**
@@ -1136,6 +1171,8 @@ const parseTicket = (e) => {
   }
   if (e?.closing !== undefined && e.closing !== true) refuse('closing must be true or absent');
   if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) refuse('authors must be trust values');
+  if (e?.moved !== undefined && e.event !== 'edit') refuse('moved goes only on an edit');
+  const moved = e?.moved === undefined ? undefined : parseMoved(e.moved, 'a ticket invocation');
   const t = /** @type {Record<string, unknown>} */ (e);
   return {
     kind: 'ticket',
@@ -1150,6 +1187,7 @@ const parseTicket = (e) => {
     ...(t.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (t.authors)] }),
     ...(t.builder === undefined ? {} : { builder: String(t.builder) }),
     ...(t.displaced === undefined ? {} : { displaced: String(t.displaced) }),
+    ...(moved === undefined ? {} : { moved }),
   };
 };
 

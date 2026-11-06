@@ -117,6 +117,7 @@ import { planDispatch } from './dispatch-fire.mjs';
 import { planUnblocked } from './unblocked-fire.mjs';
 import { planClosingPr, planTicket } from './ticket-fire.mjs';
 import { offerAfterRefusal, planOffer } from './offer.mjs';
+import { takeAfterNotice } from './take.mjs';
 import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken, turnResends } from '../scripts/lib/github-app.mjs';
@@ -267,6 +268,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   recordConflict: (repo: string, pr: number, merge: string) => Promise<boolean>,
  *   recordSession: (session: string) => Promise<void>,
  *   recordHeld: (session: string) => Promise<boolean>,
+ *   recordTold: (session: string, kind: string) => Promise<boolean>,
  *   startedSession: (session: string) => Promise<boolean>,
  *   verdict: (repo: string, pr: number) => Promise<(import('./review.mjs').Verdict & { at: string }) | null>,
  *   recordVerdict: (repo: string, pr: number, read: (import('./review.mjs').Verdict & { at: string }) | null, verdict: import('./review.mjs').Verdict) => Promise<boolean>,
@@ -289,6 +291,8 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   the PR review (dispatch/review.mjs), whichever repo its PR is in.
  *   That the sign-off sweep told a session it held it: recorded, false
  *   where a record stood (scripts/lib/session-signoff.mjs).
+ *   That governor told a session of a correction of one kind: recorded,
+ *   false where a record stood (dispatch/take.mjs).
  *   A PR review's verdict (dispatch/review.mjs): read, and written over
  *   the item the review read, false where another stood.
  *   One session's count of messages about one subject (`<repo>#<number>`,
@@ -1363,9 +1367,17 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     let loginStored = false;
     /** The offer of the issue to the session that commented, where its owner refused. @type {import('./deliveries.mjs').Delivery | null} */
     let offered = null;
+    // A body edit that moved the issue's owner link, under sessionRules: the
+    // notice goes to the old owner, not to the session the new body names,
+    // which made the edit (dispatch/take.mjs).
+    const moved = invocation.moved !== undefined && 'session' in invocation && on !== undefined && repo !== undefined && turnsOn(configOf(repo), 'sessionRules') ? invocation.moved : null;
+    /** The take's confirmation or the correction. @type {import('./deliveries.mjs').Delivery | null} */
+    let took = null;
     try {
-      told = await delivery().deliver(
-        'byBranch' in invocation ? { pr: invocation.on, ...(invocation.poster === undefined ? {} : { poster: invocation.poster }) } : { session: invocation.session },
+      if (moved !== null && moved.from === undefined) {
+        told = { ...told, skipped: 'the old body named no owner to tell of the edit' };
+      } else told = await delivery().deliver(
+        'byBranch' in invocation ? { pr: invocation.on, ...(invocation.poster === undefined ? {} : { poster: invocation.poster }) } : { session: moved?.from ?? invocation.session },
         text,
         {
           source: GITHUB_SOURCE,
@@ -1387,6 +1399,20 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       if (told.refused && invocation.offer !== undefined && on !== undefined && repo !== undefined) {
         offered = await offerAfterRefusal({ repo, issue: on, session: invocation.offer, config: configOf(repo), reader: getReader, deliveries: delivery(), log: deps.log });
       }
+      if (moved !== null && 'session' in invocation && on !== undefined && repo !== undefined) {
+        took = await takeAfterNotice({
+          repo,
+          issue: on,
+          editor: invocation.session,
+          moved,
+          notice: moved.from === undefined ? null : told,
+          config: configOf(repo),
+          reader: getReader,
+          tellOnce: (session, kind) => deps.state.recordTold(session, kind),
+          deliveries: delivery(),
+          log: deps.log,
+        });
+      }
     } finally {
       loginStored = await storeIfRefreshed(deps, original, account);
     }
@@ -1395,7 +1421,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // dispatcher failure (dispatch/cli.mjs). Any other answer with ok:false
     // (a revoked login, a 5xx), or a fallback that was tried, stays one.
     const archived = told.refused && told.fallback === null;
-    return { kind: 'message', ...told, archived, loginStored, ...(offered === null ? {} : { offered }) };
+    return { kind: 'message', ...told, archived, loginStored, ...(offered === null ? {} : { offered }), ...(took === null ? {} : { took }) };
   }
 
   // A red run on the default branch, or a shipping job that succeeded there: the PR(s)
@@ -2080,6 +2106,9 @@ const CONFLICT_TTL_S = 30 * 24 * 60 * 60;
  */
 const HELD_TTL_S = 90 * 24 * 60 * 60;
 
+/** How long a correction's record lasts, three months, as a held session's: a session is told once. */
+const TOLD_TTL_S = 90 * 24 * 60 * 60;
+
 /** How long past its date a wait item stays, should no fire delete it: a month. */
 const WAIT_TTL_S = 30 * 24 * 60 * 60;
 
@@ -2452,6 +2481,20 @@ export const dynamoState = (client, table) => {
         await client.send(new PutItemCommand({
           TableName: table,
           Item: { pk: { S: `held#${sessionId(session)}` }, sk: { S: 'told' }, at: { S: new Date().toISOString() }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.now() / 1000) + HELD_TTL_S) } },
+          ConditionExpression: 'attribute_not_exists(pk)',
+        }));
+        return true;
+      } catch (error) {
+        if (refused(error)) return false;
+        throw error;
+      }
+    },
+    // Put before the correction, only where none stands: a session hears each kind once.
+    recordTold: async (session, kind) => {
+      try {
+        await client.send(new PutItemCommand({
+          TableName: table,
+          Item: { pk: { S: `told#${sessionId(session)}` }, sk: { S: kind }, at: { S: new Date().toISOString() }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.now() / 1000) + TOLD_TTL_S) } },
           ConditionExpression: 'attribute_not_exists(pk)',
         }));
         return true;
@@ -3009,6 +3052,7 @@ export const realDeps = () => {
         recordConflict: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordHeld: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordTold: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         startedSession: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         waits: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         wait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },

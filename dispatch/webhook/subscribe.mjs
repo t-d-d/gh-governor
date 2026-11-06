@@ -433,6 +433,32 @@ export const relinkSession = (body, sessionUrl) => {
 };
 
 /**
+ * The body with its owner link, as {@link sessionNamedIn} reads it,
+ * removed, and every other character kept: a link alone on its line goes
+ * with its line and the blank line before it. A body that names no owner
+ * is returned as it is. Governor removes the link of a session that may
+ * not own an issue, a builder or a session that edited a person's issue
+ * (dispatch/take.mjs). Throws for a body {@link pastReadingBound}.
+ *
+ * @param {unknown} body
+ * @returns {string}
+ */
+export const unlinkSession = (body) => {
+  const text = String(body ?? '');
+  if (pastReadingBound(text)) throw new Error('the body is too long or too deeply nested to read for its session link');
+  const owner = ownerLink(ownerText(text));
+  if (!owner) return text;
+  const start = text.lastIndexOf('\n', owner.at - 1) + 1;
+  const newline = text.indexOf('\n', owner.at);
+  const end = newline === -1 ? text.length : newline;
+  if (text.slice(start, end).trim() !== owner.link) return `${text.slice(0, owner.at)}${text.slice(owner.at + owner.link.length)}`;
+  const before = text.slice(0, start).replace(/\s+$/, '');
+  const after = text.slice(end).replace(/^\s*\n/, '');
+  if (after.trim() === '') return before;
+  return before === '' ? after : `${before}\n\n${after}`;
+};
+
+/**
  * Whether `body`, an issue's, is a session's unsigned post: its last line
  * with text on it, past any rule, outside any quote and subscribe line, is
  * the Claude Code footer, and it names no session ({@link sessionNamedIn}). A session

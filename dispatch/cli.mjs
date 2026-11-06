@@ -69,7 +69,7 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * written (`heartbeatUnwritten`), and no repo's part of the turn failed
  * (`unread`), refusal or not.
  *
- * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string }, untold?: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, capped?: boolean, skipped?: string | null, fallback?: { outcome: string } | null } | null, offered?: { ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }, capped?: boolean }} result
+ * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string }, untold?: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, capped?: boolean, skipped?: string | null, fallback?: { outcome: string } | null } | null, offered?: { ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }, took?: { ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }, capped?: boolean }} result
  * @returns {0 | 1}
  */
 export const exitCodeFor = (result) => {
@@ -131,6 +131,8 @@ export const exitCodeFor = (result) => {
     if (result.relinked === false) return 1;
     // The offer that followed an issue owner's refusal faulted.
     if (result.offered !== undefined && faultedSend(result.offered)) return 1;
+    // The take's confirmation or the correction that followed a body edit faulted.
+    if (result.took !== undefined && faultedSend(result.took)) return 1;
     return result.ok || result.capped === true || result.skipped != null || result.dropped != null
       || (result.fallback != null && result.fallback.outcome !== 'failed') ? 0 : 1;
   }
