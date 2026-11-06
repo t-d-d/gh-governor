@@ -3,10 +3,11 @@
  * its dispatch comment on a ticket whenever the builder changes: at pickup's
  * launch, at a takeover of a PR that closes the ticket, and when a PR by a
  * session other than the builder comes to close a claimed ticket. The
- * comment reaches the ticket's spec owner, and the builder it displaced
- * where that session is live and is not the new one, which is asked to stop
- * and sign off. It never reaches the builder it names. Only a comment
- * governor's App posted counts: a marker anyone else writes reaches nobody.
+ * comment is a record for people, which the relay sends to nobody (#565):
+ * the turn that posts it tells the ticket's spec owner, and the builder it
+ * displaced where that is not the new one, which is asked to stop and sign
+ * off. It never tells the builder it names. Only a comment governor's App
+ * posted names a builder: a marker anyone else writes displaces nobody.
  */
 
 import { test, describe } from 'node:test';
@@ -126,25 +127,14 @@ describe('the dispatch comment says who builds the ticket, and whom it displaced
   });
 });
 
-describe('the receiver: governor\'s dispatch comment is relayed', () => {
-  test('pickup\'s launch comment queues a ticket fire naming the builder, for the spec owner, claimed or not', async () => {
-    for (const labels of [[CLAIM, 'mode: afk'], ['mode: afk'], []]) {
-      const fires = await handled('issue_comment', commented(labels, { ...app, body: dispatchMarker({ at: stamp(), sessionUrl: BUILDER }) }));
-      assert.deepEqual(ofKind(fires, 'message'), [], JSON.stringify(labels));
-      const [ticket, ...more] = ofKind(fires, 'ticket');
-      assert.deepEqual(more, []);
-      assert.equal(ticket!.event, 'dispatched');
-      assert.equal(ticket!.builder, BUILDER);
-      assert.equal(ticket!.displaced, undefined);
-      assert.equal(ticket!.owner, SPEC);
-      assert.match(ticket!.text, /#7/);
-      assert.deepEqual(parseFire(ticket), ticket);
+describe('the receiver: governor\'s dispatch comment is relayed to nobody', () => {
+  test('pickup\'s launch comment, and a change of builder\'s, queue nothing, claimed or not', async () => {
+    for (const body of [dispatchMarker({ at: stamp(), sessionUrl: BUILDER }), dispatchMarker({ at: stamp(), sessionUrl: OTHER, displaced: BUILDER })]) {
+      for (const labels of [[CLAIM, 'mode: afk'], ['mode: afk'], []]) {
+        const fires = await handled('issue_comment', commented(labels, { ...app, body }));
+        assert.deepEqual([ofKind(fires, 'message'), ofKind(fires, 'ticket')], [[], []], JSON.stringify(labels));
+      }
     }
-  });
-
-  test('a change of builder\'s comment names the session it displaced', async () => {
-    const fires = await handled('issue_comment', commented([CLAIM], { ...app, body: dispatchMarker({ at: stamp(), sessionUrl: OTHER, displaced: BUILDER }) }));
-    assert.deepEqual(ofKind(fires, 'ticket').map((f) => [f.builder, f.displaced]), [[OTHER, BUILDER]]);
   });
 
   test('a dispatch marker in a comment governor\'s App did not post queues nothing for anyone', async () => {
@@ -153,11 +143,6 @@ describe('the receiver: governor\'s dispatch comment is relayed', () => {
       const fires = await handled('issue_comment', commented([CLAIM], { ...by, body: forged }));
       assert.deepEqual(fires, [], JSON.stringify(by));
     }
-  });
-
-  test('with subscribeMessages off, the dispatch comment is relayed to nobody', async () => {
-    const fires = await handled('issue_comment', commented([CLAIM], { ...app, body: dispatchMarker({ at: stamp(), sessionUrl: BUILDER }) }), item(['subscribeMessages']));
-    assert.deepEqual(fires, []);
   });
 });
 
@@ -196,7 +181,7 @@ describe('the receiver: a PR that comes to close a ticket queues a closingPr fir
   });
 });
 
-// ── The task: relaying the comment ──────────────────────────────────────
+// ── The task: a dispatch comment's fire queued before #565 ──────────────
 
 type Sent = { session: string, text: string, opts: Record<string, unknown> };
 
@@ -224,7 +209,7 @@ const relayContext = ({ archived = [] as string[] } = {}) => {
   return { ctx: ctx as never, sent, reads };
 };
 
-describe('planTicket: governor\'s dispatch comment reaches the spec owner and the displaced builder', () => {
+describe('planTicket: a dispatch comment\'s fire queued before the relay dropped it still reaches the spec owner and the displaced builder', () => {
   test('pickup\'s launch comment reaches the spec owner, naming the builder, and not the builder; nothing is read', async () => {
     const { ctx, sent, reads } = relayContext();
     await planTicket(dispatched(), ctx);
@@ -303,12 +288,14 @@ const prContext = ({
   state = 'open',
   body = `The spec.\n\n${SPEC}${FOOTER}`,
   prAuthor = { author: 't-d-d', association: 'OWNER' },
+  ticketAuthor = { author: 't-d-d', association: 'OWNER' },
 } = {}) => {
   const posted: Array<{ issue: number, body: string }> = [];
   const logged: Array<Record<string, unknown>> = [];
+  const sent: Sent[] = [];
   const reader = {
     pull: async (n: number) => ({ number: n, body: prBody, head: 'claude/other', defaultBranch: 'main', open, author: prAuthor.author, association: prAuthor.association }),
-    ticket: async (n: number) => ({ number: n, title: 'A ticket', body, state, labels, pull: false, author: 't-d-d', association: 'OWNER' }),
+    ticket: async (n: number) => ({ number: n, title: 'A ticket', body, state, labels, pull: false, ...ticketAuthor }),
     openClosing: async () => closing.map((number) => ({ number, title: `PR ${number}`, html_url: `u${number}` })),
     closure: async () => ({ pr: null }),
     allComments: async () => thread.map((c, i) => ({ id: i, created_at: stamp(), ...c })),
@@ -317,11 +304,18 @@ const prContext = ({
   const ctx = {
     readerFor: async () => reader,
     configOf: () => CONFIG,
-    delivery: () => ({ ownerOf: async (pr: number) => ({ session: owners[pr] ?? null, branch: '', linked: true }) }),
+    delivery: () => ({
+      ownerOf: async (pr: number) => ({ session: owners[pr] ?? null, branch: '', linked: true }),
+      deliver: async ({ session }: { session: string }, text: string, opts: Record<string, unknown>) => {
+        sent.push({ session, text, opts });
+        return { ok: true, answered: true, refused: false, sessionUrl: session, error: null, fallback: null, dropped: null, skipped: null, relinked: null };
+      },
+    }),
+    storeLogin: async () => true,
     now: () => NOW,
     log: (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); },
   };
-  return { ctx: ctx as never, posted, logged };
+  return { ctx: ctx as never, posted, logged, sent };
 };
 
 const closingPr = { kind: 'closingPr', repo: REPO, pr: 9 } as never;
@@ -385,15 +379,39 @@ describe('planClosingPr: a PR by another session that closes a claimed ticket na
     assert.deepEqual(posted, []);
   });
 
-  test('end to end: the comment posted reaches the spec owner and asks the live displaced builder to sign off', async () => {
-    const { ctx, posted } = prContext();
+  test('the turn that posts the comment tells the spec owner, and asks the displaced builder to stop and sign off', async () => {
+    const { ctx, sent } = prContext();
     await planClosingPr(closingPr, ctx);
-    const fires = await handled('issue_comment', commented([CLAIM], { ...app, body: posted[0]!.body }));
-    const [ticket] = ofKind(fires, 'ticket');
-    const relay = relayContext();
-    await planTicket(parseFire(ticket) as never, relay.ctx);
-    assert.deepEqual(relay.sent.map((s) => s.session), [SPEC, BUILDER]);
-    assert.match(relay.sent[1]!.text, /sign off unless you know a reason not to/);
+    assert.deepEqual(sent.map((m) => m.session), [SPEC, BUILDER]);
+    assert.match(sent[0]!.text, new RegExp(`has a new builder: ${OTHER}`));
+    assert.match(sent[0]!.text, /You are its spec owner\./);
+    assert.doesNotMatch(sent[0]!.text, /sign off/);
+    assert.match(sent[1]!.text, new RegExp(`no longer build #7: ${OTHER} does`));
+    assert.match(sent[1]!.text, /sign off unless you know a reason not to/);
+    assert.equal(sent[1]!.opts.closing, true);
+    assert.deepEqual(sent.map((m) => m.opts.on), [[7], [7]]);
+  });
+
+  test('where nobody is displaced only the spec owner hears; a spec owner that built it hears both in one message', async () => {
+    const beside = prContext({ closing: [8, 9], owners: { 8: BUILDER, 9: OTHER } });
+    await planClosingPr(closingPr, beside.ctx);
+    assert.deepEqual(beside.sent.map((m) => m.session), [SPEC]);
+    const own = prContext({ thread: [] });
+    await planClosingPr(closingPr, own.ctx);
+    assert.deepEqual(own.sent.map((m) => m.session), [SPEC]);
+    assert.match(own.sent[0]!.text, /remain its spec owner/);
+  });
+
+  test('a ticket body trust.relay leaves out names no spec owner: only the displaced builder hears', async () => {
+    const { ctx, sent } = prContext({ ticketAuthor: { author: 'stranger', association: 'NONE' } });
+    await planClosingPr(closingPr, ctx);
+    assert.deepEqual(sent.map((m) => m.session), [BUILDER]);
+  });
+
+  test('nothing is posted, nobody is told', async () => {
+    const { ctx, sent } = prContext({ owners: { 9: BUILDER } });
+    await planClosingPr(closingPr, ctx);
+    assert.deepEqual(sent, []);
   });
 });
 
@@ -414,6 +432,7 @@ describe('a takeover of a PR that closes a ticket posts the dispatch comment on 
       pull: async (n: number) => ({ number: n, body, head: 'claude/branch-9', defaultBranch: 'main', open, author: 't-d-d', association: 'OWNER', bot: false, own: false }),
       updatePull: async (n: number, change: { body: string }) => { edits.push({ pr: n, body: change.body }); body = change.body; },
       issue: async (n: number) => ({ number: n, body: '', pull: false }),
+      ticket: async (n: number) => ({ number: n, title: 'A ticket', body: `The spec.\n\n${SPEC}${FOOTER}`, author: 't-d-d', association: 'OWNER' }),
       updateIssue: async () => {},
       openNaming: async () => [],
       openPulls: async () => [],
@@ -436,12 +455,15 @@ describe('a takeover of a PR that closes a ticket posts the dispatch comment on 
   };
   const fallback = { prompt: 'Take the PR over.', sessionName: 'PR 9', issue: 9 };
 
-  test('a takeover that starts a session names it on each ticket the PR closes', async () => {
-    const f = fakes({ send: archived });
+  test('a takeover that starts a session names it on each ticket the PR closes, and tells the ticket\'s spec owner', async () => {
+    const sent: Array<{ session: string, text: string }> = [];
+    const f = fakes({ send: async (m) => { sent.push(m as { session: string, text: string }); return m.session === SPEC ? accepted('session_01SPECOWNER') : archived(m); } });
     await f.delivery.deliver({ session: BUILDER }, 'a remark', { source: GITHUB_SOURCE, fallback, takeover: true } as never);
     assert.equal(f.edits.length, 1, 'the PR body is relinked');
     assert.deepEqual(f.comments.map((c) => c.issue), [7]);
     assert.deepEqual(dispatchedTo(f.comments[0]!.body), { builder: OTHER, displaced: null });
+    assert.deepEqual(sent.map((m) => m.session), [BUILDER, SPEC]);
+    assert.match(sent[1]!.text, new RegExp(`#7: A ticket \\(https://github.com/${REPO}/issues/7\\) has a new builder: ${OTHER}`));
   });
 
   test('a branch session written into the PR body in place of an archived owner is named on the ticket', async () => {

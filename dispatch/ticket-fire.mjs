@@ -11,8 +11,8 @@
  * (dispatch/builders.mjs) are sent it, each told who holds both roles and
  * which it holds. A session never hears its own signed post. A builder
  * whose PR's merge closed the ticket hears the close through its PR, and
- * not again from the ticket. Governor's deploy comment is no ticket fire:
- * the shipping turn tells both roles of a deploy itself (dispatch/turn.mjs).
+ * not again from the ticket. A comment governor's App posted is no ticket
+ * fire: the turn that posted it tells the roles itself (dispatch/told.mjs).
  *
  * Every message is a notice: it asks nothing beyond the recipient's own
  * part. The spec owner acts on a remark that changes what counts as done,
@@ -20,12 +20,13 @@
  * never edits the body. A body edit tells the spec owner the edit may be
  * its own, and the builder that the spec changed.
  *
- * Governor's own dispatch comment, a change of builder, is a ticket fire
- * too (`dispatched`). It reaches the spec owner, and the builder it
- * displaced, which is asked to stop and sign off; never the builder it
- * names. Nothing is read to send it. A `closingPr` fire is a PR that may
- * have come to close a ticket: where a claimed ticket's builder is another
- * session, governor posts that dispatch comment ({@link planClosingPr}).
+ * A `dispatched` ticket fire, governor's dispatch comment queued before
+ * the relay dropped governor's comments, still reaches the spec owner and
+ * the builder it displaced, as the posting turn now tells them
+ * (`builderChangeSends`, dispatch/told.mjs). A `closingPr` fire is a PR
+ * that may have come to close a ticket: where a claimed ticket's builder is
+ * another session, governor posts that dispatch comment and tells both
+ * itself ({@link planClosingPr}).
  */
 
 import { GITHUB_SOURCE } from './deliveries.mjs';
@@ -36,29 +37,11 @@ import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 import { relayedBody, sameSession, sessionId } from './webhook/subscribe.mjs';
 import { EDIT_BUILDER, EDIT_SPEC_OWNER } from './webhook/mention.mjs';
+import { builderChangeSends, rolesText, specOwnerOf, tellBuilderChange } from './told.mjs';
 
-/** @typedef {'spec owner' | 'builder' | 'spec owner and builder'} TicketRole */
+/** @typedef {import('./told.mjs').TicketRole} TicketRole */
 
-/** Items joined as a sentence lists them: `a, b and c`. @param {string[]} items */
-export const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
 
-/**
- * What a message about a ticket adds under what happened: who holds each
- * role, which one the recipient holds, and what that role does with it.
- *
- * @param {{ issue: number, owner: string | null, builders: readonly string[], role: TicketRole }} args
- * @returns {string}
- */
-export const rolesText = ({ issue, owner, builders, role }) => {
-  const spec = owner === null ? 'a person, as no session link ends its body' : owner;
-  const built = builders.length === 0 ? 'none governor can find' : listed([...builders]);
-  const lines = [
-    `Roles on #${issue}: its spec owner is ${spec}; its builder is ${built}. You are its ${role === 'spec owner and builder' ? 'spec owner and its builder' : role}. This is a notice: it asks nothing of you beyond your own role's part.`,
-  ];
-  if (role !== 'builder') lines.push('As its spec owner you write its body: where a remark changes what counts as done, edit the body to say so.');
-  if (role !== 'spec owner') lines.push('As its builder you build it, on its branch and PR, and do not edit its body: act on what bears on the build, and record where your work differs from the body in your PR description.');
-  return lines.join('\n');
-};
 
 /**
  * A ticket fire's answer: the turn starts nothing.
@@ -85,29 +68,13 @@ export const planTicket = async (invocation, ctx) => {
     ...(role === 'spec owner' ? [] : [EDIT_BUILDER]),
   ].join('\n')}`);
   if (event === 'dispatched') {
-    // Governor's dispatch comment: the builder it names never hears it.
+    // A dispatch comment's fire queued before the relay dropped governor's
+    // comments: the builder it names never hears it.
     const builder = invocation.builder ?? null;
     const displaced = invocation.displaced ?? null;
-    const named = (/** @type {string | null} */ session) => session !== null && builder !== null && sameSession(session, builder);
-    const gone = displaced !== null && !named(displaced) ? displaced : null;
-    const instead = builder ?? 'another session';
-    const stops = `You no longer build #${issue}: ${instead} does.`;
-    if (owner !== null && named(owner)) {
-      skipped.push(`${sessionId(owner)}, the builder it names`);
-    } else if (owner !== null) {
-      const ownerBuilt = gone !== null && sameSession(gone, owner);
-      const lines = [text, '', rolesText({ issue, owner, builders: builder === null ? [] : [builder], role: 'spec owner' })];
-      if (ownerBuilt) lines.push(`${stops} Stop building it, and leave its branch and PR to that session; you remain its spec owner.`);
-      sends.push({ session: owner, text: lines.join('\n'), role: 'spec owner', owns: [] });
-    }
-    if (gone !== null && !(owner !== null && sameSession(gone, owner))) {
-      sends.push({
-        session: gone,
-        text: `${text}\n\n${stops} Stop your work on it, and sign off unless you know a reason not to. You hear nothing more from the ticket.`,
-        role: 'builder',
-        owns: [],
-      });
-    }
+    const change = builderChangeSends({ issue, text, owner, builder, displaced });
+    skipped.push(...change.skipped);
+    for (const send of change.sends) sends.push({ session: send.session, text: send.text, role: send.role, owns: [] });
     Object.assign(about, { builder, displaced });
   } else if (!claimed) {
     // The spec owner's message as the receiver queued it before, with no read.
@@ -173,7 +140,9 @@ export const planTicket = async (invocation, ctx) => {
  * is not among the ticket's builders without this PR, governor posts its
  * dispatch comment naming the owner. Where the builder it replaces was
  * found by the newest dispatch comment or the owner link, the comment names
- * that builder as displaced, and the relay asks it to stop. Where another
+ * that builder as displaced. The turn then tells the spec owner, and the
+ * displaced builder, which is asked to stop ({@link tellBuilderChange}),
+ * since the relay sends governor's comment to nobody. Where another
  * open PR closes the ticket, both owners build it, and nobody is displaced.
  * Only a dispatch comment governor's App posted names a builder, as the
  * lookup reads it. A read or a comment that fails fails the turn.
@@ -228,6 +197,23 @@ export const planClosingPr = async (invocation, ctx) => {
     await reader.comment(issue, dispatchMarker({ at: new Date(ctx.now()).toISOString(), sessionUrl: session, displaced }));
     announced.push(issue);
     ctx.log('dispatch-builder', { ...at, displaced, outcome: 'announced the new builder on the ticket' });
+    // The comment is a record for people: this turn tells the spec owner,
+    // and the builder it displaced, itself.
+    try {
+      await tellBuilderChange({
+        deliver: (target, text, { closing }) => owners.deliver({ session: target }, text, { source: GITHUB_SOURCE, on: [issue], closing }),
+        log: ctx.log,
+        repo,
+        issue,
+        title: ticket.title,
+        url: `https://github.com/${repo}/issues/${issue}`,
+        owner: specOwnerOf(ticket, relay),
+        builder: session,
+        displaced,
+      });
+    } finally {
+      await ctx.storeLogin();
+    }
   }
   return answer();
 };

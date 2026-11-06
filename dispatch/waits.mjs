@@ -77,18 +77,30 @@ export const waitUnreadableComment = (value) => {
 };
 
 /**
+ * @typedef {(issue: number, comment: string) => Promise<void>} Tell
+ *   The message to the ticket's spec owner of a comment governor just
+ *   posted on it (`specOwnerTeller`, dispatch/told.mjs). The comment is a
+ *   record for people, which the relay sends to nobody, so the turn that
+ *   posts a warning only the spec owner can act on tells it. It never
+ *   throws: a send that fails is logged, and the comment stands.
+ */
+
+/**
  * Say something once on a ticket: nothing where its thread carries `marker`.
+ * With `tell`, the spec owner hears the comment once, when it is posted.
  *
  * @param {Pick<RelativeReader, 'allComments' | 'comment'>} reader
  * @param {number} issue
  * @param {string} marker
  * @param {string} text
+ * @param {Tell | undefined} [tell]
  * @returns {Promise<'commented' | 'already told'>}
  */
-export const sayOnce = async (reader, issue, marker, text) => {
+export const sayOnce = async (reader, issue, marker, text, tell) => {
   const thread = await reader.allComments(issue);
   if (thread.some((c) => String(c.body ?? '').includes(marker))) return 'already told';
   await reader.comment(issue, text);
+  if (tell !== undefined) await tell(issue, text);
   return 'commented';
 };
 
@@ -105,13 +117,15 @@ export const sayOnce = async (reader, issue, marker, text) => {
  *   issue: number,
  *   value: string,
  *   log: (event: string, context?: Record<string, unknown>) => void,
- * }} args
+ *   tell?: Tell | undefined,
+ * }} args `tell`: the spec owner's message of the comment, under the
+ *   switch of the feature whose turn posts it.
  * @returns {Promise<'commented' | 'already told' | 'failed'>}
  */
-export const reportUnreadable = async ({ reader, repo, issue, value, log }) => {
+export const reportUnreadable = async ({ reader, repo, issue, value, log, tell }) => {
   log(WAIT_UNREADABLE, { level: 'warn', repo, issue, value, reason: 'its `Blocked until:` line holds no date governor can read, so the ticket is held' });
   try {
-    return await sayOnce(reader, issue, WAIT_UNREADABLE_MARKER, waitUnreadableComment(value));
+    return await sayOnce(reader, issue, WAIT_UNREADABLE_MARKER, waitUnreadableComment(value), tell);
   } catch (error) {
     log(WAIT_UNREADABLE, { level: 'error', repo, issue, value, error: messageOf(error), reason: 'the ticket is held, and governor could not say so on it this turn' });
     return 'failed';
@@ -317,10 +331,14 @@ const atCap = (error) => /** @type {{ status?: number }} */ (error)?.status === 
  * The wait ticket's links for one repo's turn, or undefined where its file
  * names no wait ticket: then governor links nothing.
  *
- * @param {{ reader: LinkReader, repo: string, board: number | undefined, log: Log }} args
+ * With `tell`, a ticket linked with no line, a fix only its spec owner can
+ * make, tells its spec owner when it is told. The full wait ticket's
+ * comment is for people, and tells no session.
+ *
+ * @param {{ reader: LinkReader, repo: string, board: number | undefined, log: Log, tell?: Tell | undefined }} args
  * @returns {WaitLinks | undefined}
  */
-export const waitLinks = ({ reader, repo, board, log }) => {
+export const waitLinks = ({ reader, repo, board, log, tell }) => {
   if (board === undefined) return undefined;
   /** @type {Promise<{ id: number, state: string }> | undefined} */
   let read;
@@ -369,7 +387,7 @@ export const waitLinks = ({ reader, repo, board, log }) => {
       return 'removed';
     },
     unlined: async (issue) => {
-      const told = await sayOnce(reader, issue, WAIT_UNLINED_MARKER, waitUnlinedComment(board));
+      const told = await sayOnce(reader, issue, WAIT_UNLINED_MARKER, waitUnlinedComment(board), tell);
       log(WAIT_LINK, { repo, issue, board, outcome: `linked with no line: ${told}` });
       return told;
     },
@@ -429,10 +447,12 @@ const holdsBy = (ticket, labels, now, hold) => {
  * the schedule fire. A ticket linked with no line where no item stood was
  * linked by hand: it is told once, and its link stays.
  *
- * @param {{ reader: WaitReader & RelativeReader, state: WaitState, repo: string, issue: number, labels: import('../scripts/lib/ready-work.mjs').Labels, now: number, log: Log, prompts?: Record<string, string | undefined>, links?: WaitLinks }} args
+ * With `tell`, each warning the turn posts tells the ticket's spec owner.
+ *
+ * @param {{ reader: WaitReader & RelativeReader, state: WaitState, repo: string, issue: number, labels: import('../scripts/lib/ready-work.mjs').Labels, now: number, log: Log, prompts?: Record<string, string | undefined>, links?: WaitLinks, tell?: Tell | undefined }} args
  * @returns {Promise<string>} What came of it, as logged.
  */
-export const holdWait = async ({ reader, state, repo, issue, labels, now, log, prompts = {}, links }) => {
+export const holdWait = async ({ reader, state, repo, issue, labels, now, log, prompts = {}, links, tell }) => {
   const found = await ticketOf(reader, issue);
   const ticket = found ?? { state: 'gone or moved', labels: [], wait: undefined };
   const wait = ticket.state === 'open' ? ticket.wait : undefined;
@@ -443,7 +463,7 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
     // wait ticket's link comes off, before any item goes.
     if (links !== undefined && found !== null) await links.hide(issue);
     const dropped = read === null ? null : await state.dropWait(repo, issue, read.until);
-    const settled = holdsBy({ state: ticket.state, labels: ticket.labels, wait }, labels, now, 'line') ? await repairRelative({ reader, repo, issue, after: wait.after, link: true, prompts, now, log }) : 'not settled: the ticket is not held from anyone';
+    const settled = holdsBy({ state: ticket.state, labels: ticket.labels, wait }, labels, now, 'line') ? await repairRelative({ reader, repo, issue, after: wait.after, link: true, prompts, now, log, tell }) : 'not settled: the ticket is not held from anyone';
     const outcome = `relative: ${settled}`;
     log(WAIT, { ...about, after: wait.after, outcome, ...(dropped === null ? {} : { item: dropped ? 'dropped' : 'not dropped: it changed since it was read' }) });
     return outcome;
@@ -469,7 +489,7 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
     else await softly(links, 'hide', repo, issue, log, 'its item stands, so the schedule fire takes the link off once the wait has ended');
     return outcome;
   }
-  if (wait !== undefined && 'unreadable' in wait && holdsBy({ state: ticket.state, labels: ticket.labels, wait }, labels, now, 'unreadable')) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
+  if (wait !== undefined && 'unreadable' in wait && holdsBy({ state: ticket.state, labels: ticket.labels, wait }, labels, now, 'unreadable')) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log, tell });
   if (links !== undefined && found !== null) {
     if (wait === undefined && read === null) {
       // No line and no item: governor never linked it, so a link is a
@@ -544,10 +564,15 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  * link that ends a ticket's body names its owner only where the body's
  * author is let in (`relayedBody`, dispatch/webhook/subscribe.mjs).
  *
- * @param {{ reader: WaitReader, state: WaitState, repo: string, labels: import('../scripts/lib/ready-work.mjs').Labels, spec: boolean, now: number, log: Log, links?: WaitLinks, blocking?: LinkReader['blocking'], auto?: readonly string[], relay?: readonly string[] }} args
+ * The wait-ended comment is a record for people: the relay sends it to
+ * nobody, so the spec owner hears the ended wait once, in the schedule
+ * fire's message asking it to rewrite its spec. With `tell`, an unreadable
+ * line's comment tells the spec owner.
+ *
+ * @param {{ reader: WaitReader, state: WaitState, repo: string, labels: import('../scripts/lib/ready-work.mjs').Labels, spec: boolean, now: number, log: Log, links?: WaitLinks, blocking?: LinkReader['blocking'], auto?: readonly string[], relay?: readonly string[], tell?: Tell | undefined }} args
  * @returns {Promise<{ specs: WaitSpec[], unread: Array<{ repo: string, error: string }> }>}
  */
-export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, links, blocking, auto = AUTO, relay = RELAY }) => {
+export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, links, blocking, auto = AUTO, relay = RELAY, tell }) => {
   /** @type {WaitSpec[]} */
   const specs = [];
   /** @type {Array<{ repo: string, error: string }>} */
@@ -588,7 +613,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
         return;
       }
       if ('unreadable' in wait) {
-        if (holdsBy(ticket, labels, now, 'unreadable')) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log });
+        if (holdsBy(ticket, labels, now, 'unreadable')) await reportUnreadable({ reader, repo, issue, value: wait.unreadable, log, tell });
         await drop(item, { outcome: 'its line cannot be read' });
         return;
       }
@@ -810,16 +835,20 @@ export const waitRelativeComment = (ref) => [
  * does (`holds`, true where unset), and that another open issue still
  * blocks it where one does (`blocked`).
  *
- * @param {{ reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>, repo: string, issue: number, closed: { repo: string, number: number, reason?: string | null, closedAt: string }, facts: string, prompts: Record<string, string | undefined>, log: Log, holds?: boolean, blocked?: boolean }} args
- * @returns {Promise<{ outcome: string, wait?: { until: string } }>}
+ * `said`: the comment, where this call posted it. With `tell`, the spec
+ * owner hears it.
+ *
+ * @param {{ reader: Pick<RelativeReader, 'issue' | 'updateIssue' | 'allComments' | 'comment'>, repo: string, issue: number, closed: { repo: string, number: number, reason?: string | null, closedAt: string }, facts: string, prompts: Record<string, string | undefined>, log: Log, holds?: boolean, blocked?: boolean, tell?: Tell | undefined }} args
+ * @returns {Promise<{ outcome: string, wait?: { until: string }, said?: string }>}
  */
-const settle = async ({ reader, repo, issue, closed, facts, prompts, log, holds = true, blocked = false }) => {
+const settle = async ({ reader, repo, issue, closed, facts, prompts, log, holds = true, blocked = false, tell }) => {
   const ref = refOf(repo, closed);
   const about = { repo, issue, closed: ref, reason: closed.reason ?? null };
   if (closed.reason !== undefined && closed.reason !== null && closed.reason !== 'completed') {
-    const outcome = await sayOnce(reader, issue, waitNotPlannedMarker(ref), waitNotPlannedComment({ facts, issue, ref, prompts, holds, blocked }));
+    const said = waitNotPlannedComment({ facts, issue, ref, prompts, holds, blocked });
+    const outcome = await sayOnce(reader, issue, waitNotPlannedMarker(ref), said, tell);
     log(WAIT_RELATIVE, { ...about, outcome: outcome === 'commented' ? 'held: commented on a close that was not completed' : 'held: already told of a close that was not completed' });
-    return { outcome };
+    return outcome === 'commented' ? { outcome, said } : { outcome };
   }
   const { body } = await reader.issue(issue);
   const { wait } = waitOf(body);
@@ -856,7 +885,10 @@ const settle = async ({ reader, repo, issue, closed, facts, prompts, log, holds 
  *   holds?: boolean,
  *   blocked?: boolean,
  * }} args
- * @returns {Promise<{ outcome: string, wait?: { until: string } } | null>}
+ * Its comment's `said` comes back, and the unblocked turn tells the roles
+ * itself, as the ticket is claimed or not.
+ *
+ * @returns {Promise<{ outcome: string, wait?: { until: string }, said?: string } | null>}
  */
 export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now, log, holds = true, blocked = false }) => {
   if (ticket.state !== 'open' || (ticket.number !== undefined && ticket.number !== fire.issue) || !waitsOnClose(ticket.wait, repo, fire.blocker)) return null;
@@ -884,10 +916,13 @@ export const relativeAtClose = async ({ reader, repo, ticket, fire, prompts, now
  * - An issue that is gone or moved, a pull request, or the ticket itself,
  *   none of which can be its blocker: one comment.
  *
- * @param {{ reader: RelativeReader, repo: string, issue: number, after: import('../scripts/lib/ready-work.mjs').After, openBlockers?: number, link: boolean, prompts: Record<string, string | undefined>, now?: number, log: Log }} args
+ * With `tell`, each comment tells the ticket's spec owner: the ticket is
+ * ready or not ready, so it has no builder.
+ *
+ * @param {{ reader: RelativeReader, repo: string, issue: number, after: import('../scripts/lib/ready-work.mjs').After, openBlockers?: number, link: boolean, prompts: Record<string, string | undefined>, now?: number, log: Log, tell?: Tell | undefined }} args
  * @returns {Promise<string>} What came of it.
  */
-export const repairRelative = async ({ reader, repo, issue, after, openBlockers, link, prompts, now = Date.now(), log }) => {
+export const repairRelative = async ({ reader, repo, issue, after, openBlockers, link, prompts, now = Date.now(), log, tell }) => {
   const named = { repo: after.repo ?? repo, number: after.issue };
   const ref = refOf(repo, named);
   /** @type {Array<{ number: number, state: string, repo?: string }> | null} */
@@ -898,7 +933,7 @@ export const repairRelative = async ({ reader, repo, issue, after, openBlockers,
     if (rows.some((r) => r.state === 'open')) return 'held by an open blocker';
   }
   const cannot = async (/** @type {string} */ why) => {
-    const outcome = await sayOnce(reader, issue, waitRelativeMarker(ref), waitRelativeComment(ref));
+    const outcome = await sayOnce(reader, issue, waitRelativeMarker(ref), waitRelativeComment(ref), tell);
     log(WAIT_RELATIVE, { level: 'warn', repo, issue, after, reason: why, outcome: outcome === 'commented' ? 'held: commented that it cannot be settled' : 'held: already told it cannot be settled' });
     return outcome;
   };
@@ -918,7 +953,7 @@ export const repairRelative = async ({ reader, repo, issue, after, openBlockers,
     const reason = read.reason ?? 'completed';
     const facts = `${ref} (\`${read.title.replace(/`/g, "'")}\`) closed as ${reason.replace(/_/g, ' ')}. It blocked #${issue}.`;
     const closed = { ...named, reason: read.reason, closedAt: read.closedAt ?? new Date(now).toISOString() };
-    return (await settle({ reader, repo, issue, closed, facts, prompts, log })).outcome;
+    return (await settle({ reader, repo, issue, closed, facts, prompts, log, tell })).outcome;
   }
   rows ??= await reader.blockers(issue);
   const linked = rows.some((r) => r.number === after.issue && sameRepo(r.repo ?? repo, repo));

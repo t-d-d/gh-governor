@@ -109,6 +109,7 @@ import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogi
 import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { WAIT_PROMPT, holdWait, waitLinks } from './waits.mjs';
+import { tellerFor } from './told.mjs';
 import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { RoutinesApiError } from './routines.mjs';
 import { hookFor, planHook } from './hooks.mjs';
@@ -1019,13 +1020,17 @@ const runOpen = (deps) => {
  *   periodic?: string,
  *   started?: (outcome: import('./launcher.mjs').Started, firedAt: string) => Promise<void>,
  *   ask?: () => Promise<{ outcome: import('./deliveries.mjs').LaunchOutcome, sessionUrl: string | null } | null>,
+ *   told?: boolean,
  * }} PlannedLaunch
  *   One session a planner wants started, on `asked`, which the launcher's
  *   `start` takes with the repo. `claim`: the ticket is claimed
  *   before the launch and released on a failure (a picked-up ticket, not a
  *   spec session). A claimed ticket's launch leaves a dispatch comment
  *   naming its builder; an unclaimed one, a spec session, is written into
- *   the ticket's body as its owner instead. `holdsRepo`: a failed launch skips the repo's later
+ *   the ticket's body as its owner instead, and the turn that posts the
+ *   comment tells the ticket's spec owner of its new builder, unless `told`:
+ *   the plan's own `done` sends the spec owner one message naming it.
+ *   `holdsRepo`: a failed launch skips the repo's later
  *   launches (a ticket's or a periodic's). `periodic`: the periodic's name,
  *   which its launch line and a repo skip's line carry. `started`: the
  *   record this launch moves, called after the launch line with what the
@@ -1543,6 +1548,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         run: (request, label) => budgeted(() => deps.review(request), label),
         transcript: deps.transcript,
         log: deps.log,
+        tell: tellerFor({ readerFor: () => getReader(), configOf, delivery: () => delivery(), log: deps.log }, fireRepo(), GITHUB_SOURCE),
       });
     } finally {
       loginStored = await storeIfRefreshed(deps, original, account);
@@ -1555,10 +1561,21 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // put, rewritten or deleted to match (dispatch/waits.mjs).
     // With the file's `waits.issue`, the ticket's link to the wait ticket
     // follows its line too, for its sidebar.
+    // A warning it posts, a fix only the spec owner can make, tells the
+    // ticket's spec owner from this turn: the relay sends governor's
+    // comment to nobody.
     const reader = await getReader();
-    const links = waitLinks({ reader, repo: fireRepo(), board: configOf(fireRepo()).waits?.issue, log: deps.log });
-    const outcome = await holdWait({ reader, state: deps.state, repo: fireRepo(), issue: invocation.issue, labels: configOf(fireRepo()).labels, prompts, now: deps.now(), log: deps.log, ...(links === undefined ? {} : { links }) });
-    return { kind: invocation.kind, issue: invocation.issue, outcome };
+    const tell = tellerFor({ readerFor: async () => reader, configOf, delivery: () => delivery(), log: deps.log }, fireRepo(), GITHUB_SOURCE);
+    const links = waitLinks({ reader, repo: fireRepo(), board: configOf(fireRepo()).waits?.issue, log: deps.log, tell });
+    /** @type {string} */
+    let outcome;
+    let loginStored = false;
+    try {
+      outcome = await holdWait({ reader, state: deps.state, repo: fireRepo(), issue: invocation.issue, labels: configOf(fireRepo()).labels, prompts, now: deps.now(), log: deps.log, tell, ...(links === undefined ? {} : { links }) });
+    } finally {
+      loginStored = await storeIfRefreshed(deps, original, account);
+    }
+    return { kind: invocation.kind, issue: invocation.issue, outcome, loginStored };
   }
 
   // A close: one `unblocked` fire for each open ticket the issue blocked,

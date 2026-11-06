@@ -13,10 +13,11 @@ import { outsiderReason, strangerReason } from '../scripts/lib/dispatch-router.m
 import { byOf, PICKUP_FAILED_HOLD_MS, PICKUP_FAILED_UNRECORDED } from './pickup.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted } from './uncounted.mjs';
 import { judgeReady } from './start.mjs';
-import { startOf } from './trust.mjs';
+import { relayOf, startOf } from './trust.mjs';
+import { specOwnerOf, tellBuilderChange, tellerFor } from './told.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { reportUnreadable } from './waits.mjs';
-import { OUTPUT_TAIL, nameSpecSession } from './deliveries.mjs';
+import { GITHUB_SOURCE, OUTPUT_TAIL, nameSpecSession } from './deliveries.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 
 /**
@@ -130,7 +131,7 @@ export const routineFault = (deps, repo, periodic, launched) => {
  * and `claims` is cleared.
  *
  * @param {Pick<LaunchablePlan, 'launches' | 'done'>} plan
- * @param {Pick<TurnContext, 'readerFor' | 'configOf' | 'start' | 'claims' | 'now' | 'log'> & { state: Pick<TurnContext['state'], 'recordFailedLaunch'> }} ctx
+ * @param {Pick<TurnContext, 'readerFor' | 'configOf' | 'start' | 'claims' | 'now' | 'log' | 'delivery'> & { state: Pick<TurnContext['state'], 'recordFailedLaunch'> }} ctx
  * @param {number} started When the turn started, before its planner ran.
  * @returns {Promise<Array<Dispatched & { planned: PlannedLaunch }>>} The launches that ran, a failed claim's included.
  */
@@ -146,6 +147,8 @@ export const launchPlan = async (plan, ctx, started) => {
   const keyOf = ({ repo, issue }) => `${repo}#${issue}`;
   /** The repos whose claim label is known to exist this turn. @type {Set<string>} */
   const labelled = new Set();
+  /** Each claimed ticket's row as its claim read it, for its spec owner. @type {Map<string, import('../scripts/lib/github-app.mjs').TicketRow>} */
+  const ticketRows = new Map();
 
   /**
    * Put the ticket's failed-launch record, which holds it from pickup for
@@ -208,6 +211,7 @@ export const launchPlan = async (plan, ctx, started) => {
     try {
       const github = await readerFor(repo);
       const read = await github.ticket(issue);
+      ticketRows.set(keyOf(ticket), read);
       const { state, labels: on, wait } = read;
       const at = now();
       const first = ticketStatus(read, { labels, now: at });
@@ -224,7 +228,7 @@ export const launchPlan = async (plan, ctx, started) => {
         // Said only on a ticket still ready by its labels: one claimed or
         // unreadied since is someone else's.
         const unread = ready && status.open && status.holds.includes('unreadable') ? unreadableOf(read) : undefined;
-        if (unread !== undefined) await reportUnreadable({ reader: github, repo, issue, value: unread, log });
+        if (unread !== undefined) await reportUnreadable({ reader: github, repo, issue, value: unread, log, tell: tellerFor(ctx, repo, GITHUB_SOURCE, read) });
         return 'taken';
       }
       // Pickup starts only tickets whose author the repo's `by` lists.
@@ -335,6 +339,22 @@ export const launchPlan = async (plan, ctx, started) => {
         const at = new Date(now()).toISOString();
         await (await readerFor(ticket.repo)).comment(ticket.issue, dispatchMarker({ at, sessionUrl }));
         if (sessionUrl !== null) claims.delete(keyOf(ticket));
+        // The comment is a record for people: this turn tells the spec
+        // owner of its new builder, unless the plan's own message does.
+        const row = ticketRows.get(keyOf(ticket));
+        if (!entry.told && row !== undefined) {
+          await tellBuilderChange({
+            deliver: (session, text, { closing }) => ctx.delivery(ticket.repo).deliver({ session }, text, { source: GITHUB_SOURCE, on: [ticket.issue], closing }),
+            log,
+            repo: ticket.repo,
+            issue: ticket.issue,
+            title: row.title,
+            url: `https://github.com/${ticket.repo}/issues/${ticket.issue}`,
+            owner: specOwnerOf(row, relayOf(configOf(ticket.repo))),
+            builder: sessionUrl,
+            displaced: null,
+          });
+        }
       } else if (ticket !== null && outcome !== 'failed') {
         // A spec session is the ticket's owner, named in its body, where its
         // next spec work finds it. It leaves no dispatch comment. A launch

@@ -28,6 +28,7 @@ import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from
 import { byOf, failedLaunchesOf, failedReason } from './pickup.mjs';
 import { authorKind, autoOf, lets, relayOf, startOf } from './trust.mjs';
 import { buildersOf } from './builders.mjs';
+import { specOwnerTeller, tellerFor, unmarked } from './told.mjs';
 import { relayedBody, sameSession, sessionNamedIn } from './webhook/subscribe.mjs';
 
 /** @typedef {import('./turn.mjs').Reader} Reader */
@@ -140,8 +141,28 @@ export const planUnblocked = async (invocation, ctx) => {
   // the not-planned row's, which a claimed ticket's session still hears.
   const lineSaid = settled !== null && settled.wait === undefined && !changed;
   const status = statusOf(ticket, blockers);
+  // The spec owner's message of a comment this turn posted on a ticket
+  // nobody builds: governor's comment is a record for people, which the
+  // relay sends to nobody. A send that fails is logged, and the comment
+  // stands.
+  const tell = specOwnerTeller({
+    read: async () => ticket,
+    relay: relayOf(config),
+    deliver: (n) => (session, text, { closing }) => ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [n], closing }),
+    log: ctx.log,
+    repo,
+  });
+  /** Tell the spec owner `comment`, and store the login the send refreshed. @param {string} comment */
+  const tellOwner = async (comment) => {
+    try {
+      await tell(issue, comment);
+    } finally {
+      await ctx.storeLogin();
+    }
+  };
   if (lineSaid && status.open && status.holds.includes('line')) {
     ctx.log('dispatch-unblocked', { repo, issue, blocker: `${blocker.repo}#${blocker.number}`, row: 'blocked', reads, outcome: `held by its relative line: ${settled.outcome}` });
+    if (settled.said !== undefined) await tellOwner(settled.said);
     return { answer: { kind: invocation.kind, row: 'blocked', dispatched: [] } };
   }
   const row = rowOf(status, invocation);
@@ -150,7 +171,7 @@ export const planUnblocked = async (invocation, ctx) => {
   // by its labels, which reads as blocked, and is said once on it whatever
   // the repo's switches say. A claimed or excluded ticket is not held.
   const unread = status.open && status.holds.includes('unreadable') ? unreadableOf(ticket) : undefined;
-  if (unread !== undefined) await reportUnreadable({ reader, repo, issue, value: unread, log: ctx.log });
+  if (unread !== undefined) await reportUnreadable({ reader, repo, issue, value: unread, log: ctx.log, tell: tellerFor(ctx, repo, GITHUB_SOURCE, ticket) });
   // A not-planned close takes a ready, unclaimed ticket's ready labels off
   // under pickup, the switch that could start it before anyone decides.
   const takeOff = row === 'not-planned' && turnsOn(config, 'pickup') ? readyToTakeOff(ticket.labels, config.labels) : [];
@@ -172,8 +193,10 @@ export const planUnblocked = async (invocation, ctx) => {
   }
   if (row === 'not-planned' || row === 'claimed') {
     // The line's comment, where this turn posted it, is the row's comment.
+    /** What this turn posted on the ticket, if anything. @type {string | undefined} */
+    let posted = lineSaid ? settled.said : undefined;
     /** @type {boolean} */
-    let commented = lineSaid && settled.outcome === 'commented';
+    let commented = posted !== undefined;
     /** @type {{ removed: string[], failed: string[] } | undefined} */
     let unreadied = earlier;
     if (takeOff.length > 0) {
@@ -198,20 +221,17 @@ export const planUnblocked = async (invocation, ctx) => {
     const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, ctx.prompts, { blocked: status.open && status.holds.includes('blocker'), ...(unreadied === undefined ? {} : { unreadied }) }) : null;
     if (notPlanned !== null && !lineSaid) {
       await reader.comment(issue, notPlanned);
+      posted = notPlanned;
       commented = true;
     }
+    // Governor's comment is a record for people, which the relay sends to
+    // nobody: this turn tells the roles itself. An unclaimed ticket's spec
+    // owner hears the comment; a claimed ticket's builders are asked below,
+    // and its spec owner gets a notice.
     if (!ticket.labels.includes(config.labels.claim)) {
       ctx.log('dispatch-unblocked', { ...about, outcome: lineSaid ? `the line's comment stands for the row's: ${settled?.outcome}` : 'commented', ...(unreadied === undefined ? {} : { unreadied }) });
+      if (posted !== undefined) await tellOwner(posted);
       return { answer: { kind: invocation.kind, row, commented, dispatched: [] } };
-    }
-    // Governor's comment on a claimed ticket reaches its builders as any
-    // comment does (dispatch/ticket-fire.mjs), under subscribeMessages, so
-    // a builder hears the close once, in the comment's words. That fire is
-    // judged by the ticket's author under trust.relay, so where the relay
-    // leaves the author out, the builders are messaged here instead.
-    if (commented && turnsOn(config, 'subscribeMessages') && lets(relayOf(config), ticket)) {
-      ctx.log('dispatch-unblocked', { ...about, outcome: "commented: the ticket's spec owner and builders hear governor's comment", ...(unreadied === undefined ? {} : { unreadied }) });
-      return { answer: { kind: invocation.kind, row, commented, messaged: null, dispatched: [] } };
     }
     // The claimed ticket's builders, found one way (dispatch/builders.mjs):
     // the owner of each open PR that closes it, else the session the newest
@@ -228,7 +248,8 @@ export const planUnblocked = async (invocation, ctx) => {
     // also a builder it gets the ask alone; otherwise a notice.
     const owner = sessionNamedIn(relayedBody(ticket, relay));
     const noticed = owner !== null && !found.sessions.some((s) => sameSession(s, owner)) ? owner : null;
-    const text = notPlanned ?? unblockedMessage(invocation, ctx.prompts);
+    // The builders are asked in the words of what this turn posted, markers out.
+    const text = posted !== undefined ? unmarked(posted) : notPlanned ?? unblockedMessage(invocation, ctx.prompts);
     /** @type {import('./deliveries.mjs').Delivery[]} */
     const sent = [];
     /** @type {{ asked: string[], archived: string[], unreached: string[] }} */
@@ -345,7 +366,9 @@ export const planUnblocked = async (invocation, ctx) => {
     const failed = await failedLaunchesOf(ctx.state, repo, now);
     const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, by: byOf(config), start: startOf(config), prompts: ctx.prompts, signOff: turnsOn(config, 'signOff'), failed }], cap: 1, now, only: [issue], outsiders, strangers, unstarted, unlooked, heldFailed });
     for (const held of heldFailed) ctx.log('dispatch-pickup', { level: 'info', repo: held.repo, issue: held.issue, outcome: 'skipped', reason: failedReason(held.until) });
-    for (const d of planned) launches.push({ repo: d.repo, issue, claim: true, holdsRepo: true, asked: { prompt: readyPrompt(d.prompt, invocation, ctx.prompts), sessionName: d.sessionName, model: DEFAULT_MODEL } });
+    // Where the spec owner's notice below names the builder, it is the spec
+    // owner's one message of the launch: the dispatch comment tells nobody.
+    for (const d of planned) launches.push({ repo: d.repo, issue, claim: true, holdsRepo: true, told: specOwner !== null, asked: { prompt: readyPrompt(d.prompt, invocation, ctx.prompts), sessionName: d.sessionName, model: DEFAULT_MODEL } });
     const [outsider] = outsiders;
     const [stranger] = strangers;
     const [refused] = unstarted;

@@ -17,7 +17,7 @@
 import { test, describe } from 'node:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import assert from 'node:assert/strict';
-import { CONFIG_PATH, GENERIC_SWITCHES, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, GENERIC_SWITCHES, SWITCHES, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
 import { repoServed, servedRepos } from '../dispatch/repos.mjs';
 import { run } from '../dispatch/turn.mjs';
 import { githubReader } from '../scripts/lib/github-app.mjs';
@@ -27,10 +27,14 @@ import { HOOK_EVENTS, handle, routeEvent } from '../dispatch/webhook/route.mjs';
 import { PROMPTS, instruction } from '../dispatch/prompts.mjs';
 import { planWorkflow, redRunPrompt } from '../dispatch/workflow.mjs';
 import { notPlannedComment, ownerSpecMessage, readyPrompt, specPrompt, unblockedMessage } from '../dispatch/unblocked.mjs';
-import { waitOwnerMessage, waitSpecPrompt } from '../dispatch/waits.mjs';
+import { waitEndedComment, waitFullComment, waitNotPlannedComment, waitOwnerMessage, waitRelativeComment, waitSpecPrompt, waitUnlinedComment, waitUnreadableComment } from '../dispatch/waits.mjs';
+import { uncountedReadyComment, untaskedComment } from '../dispatch/uncounted.mjs';
+import { issueComment, loopComment } from '../dispatch/issue-review.mjs';
+import { deployedComment } from '../dispatch/webhook/deployed-comment.mjs';
+import { reviewMarker } from '../dispatch/pr-body.mjs';
 import { standingLine } from '../dispatch/deliveries.mjs';
 import { promptFor } from '../scripts/lib/dispatch-prompt.mjs';
-import { DEPENDABOT, UNATTENDED } from '../dispatch/webhook/fire.mjs';
+import { DEPENDABOT, UNATTENDED, dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { conflictMessage } from '../dispatch/conflicts.mjs';
 import { MESSAGE_RUN_URL as RUN_URL, MESSAGE_SHA as SHA, FACTORY_WORKFLOWS, coverageOver as coverageOf, mergedPull as pull } from './helpers/dispatch-workflows.ts';
 import { factoryFile } from './helpers/factory.ts';
@@ -470,5 +474,89 @@ describe('fitness: a body names a session to route by only through relayedBody (
     assert.match(text, /const onBody = relayedBody\(/);
     assert.match(text, /body: relayedBody\(\{ body: issue\?\.body/);
     assert.match(text, /body: relayedBody\(\{ body: pr\?\.body/);
+  });
+});
+
+describe('fitness: the receiver relays no comment governor\'s App posts on an issue (dispatcher-repos.md)', () => {
+  const SECRET = 'whsec_fitness';
+  const APP_ID = 5075844;
+  const CLAIM = 'claimed';
+  const SPEC = 'https://claude.ai/code/session_01SPECOWNER';
+  const WATCHER = 'https://claude.ai/code/session_01WATCHES';
+  const BUILDER = 'https://claude.ai/code/session_01BUILDER';
+  const GONE = 'https://claude.ai/code/session_01OLDBUILDER';
+  const member = { login: 't-d-d', type: 'User' };
+  const app = { user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE', performed_via_github_app: { id: APP_ID } };
+  const at = '2026-11-06T12:00:00.000Z';
+  const fire = { kind: 'unblocked' as const, issue: 7, repo: FACTORY, blocker: { repo: FACTORY, number: 3, title: 'The blocker', reason: 'not_planned' } };
+  /** Every kind of comment governor posts on an issue, and one it has not written yet. */
+  const COMMENTS: Array<[string, string]> = [
+    ['a dispatch comment', dispatchMarker({ at, sessionUrl: BUILDER })],
+    ['a dispatch comment displacing a builder', dispatchMarker({ at, sessionUrl: BUILDER, displaced: GONE })],
+    ['a not-planned close', notPlannedComment(fire, {})],
+    ['a relative line on a close that was not completed', waitNotPlannedComment({ facts: 'The blocker closed.', issue: 7, ref: '#3', prompts: {} })],
+    ['a relative line it cannot settle', waitRelativeComment('#3')],
+    ['an unreadable line', waitUnreadableComment('soon')],
+    ['an ended wait', waitEndedComment('2026-11-01')],
+    ['a wait link with no line', waitUnlinedComment(9)],
+    ['the wait ticket full', waitFullComment(9)],
+    ['a trust refusal', untaskedComment({ author: 'someone', association: 'NONE', what: 'readied' })],
+    ['an uncounted ready label', uncountedReadyComment({ author: 'someone', addedBy: [{ label: 'mode: afk', actor: 'labeller[bot]', bot: true }] })],
+    ['an issue review', issueComment({ name: 'spec', conclusion: 'edit', text: 'Say what done means.', key: 'k' })],
+    ['an issue review\'s loop guard', loopComment('spec', 3)],
+    ['a deploy', deployedComment({ target: 'prod', workflow: 'Deliver', url: `https://github.com/${FACTORY}/actions/runs/1/job/2`, commit: 'a'.repeat(40) })],
+    ['a kind not written yet, mentioning @claude', '@claude governor says something new here.'],
+  ];
+  const issue = (labels: string[]) => ({
+    number: 7,
+    title: 'A ticket',
+    state: 'open',
+    labels: labels.map((name) => ({ name })),
+    html_url: `https://github.com/${FACTORY}/issues/7`,
+    body: `The spec.\n\n<!-- governor:subscribe ${WATCHER} -->\n\n${SPEC}`,
+    user: member,
+    author_association: 'OWNER',
+    assignees: [],
+  });
+  const delivered = async (labels: string[], body: string) => {
+    const queued: Array<Record<string, any>> = [];
+    const raw = JSON.stringify({ action: 'created', issue: issue(labels), comment: { id: 70, html_url: `https://github.com/${FACTORY}/issues/7#issuecomment-70`, ...app, body }, repository: { full_name: FACTORY, default_branch: 'main' }, sender: app.user });
+    await handle({
+      headers: { 'x-github-event': 'issue_comment', 'x-github-delivery': 'd-1', 'x-hub-signature-256': `sha256=${createHmac('sha256', SECRET).update(raw).digest('hex')}` },
+      body: raw,
+    } as never, {
+      secret: async () => SECRET,
+      hookSecret: async () => SECRET,
+      listedHooks: async () => null,
+      countFire: async () => 'counted' as const,
+      repoItem: async () => ({ switches: new Map(SWITCHES.map((name) => [name, true])), ready: ['mode: afk'], claim: CLAIM }),
+      owners: ['acme'],
+      appId: APP_ID,
+      enqueue: async (message: Record<string, any>) => { queued.push(message); return 'm'; },
+      log: () => {},
+    } as never);
+    return queued.map((q) => q.fire.kind);
+  };
+
+  for (const [what, body] of COMMENTS) {
+    test(`${what}: no message, ticket or summons fire, on a claimed ticket or an unclaimed one`, async () => {
+      for (const labels of [[CLAIM], ['mode: afk'], []]) {
+        const kinds = await delivered(labels, body);
+        assert.deepEqual(kinds.filter((k) => k === 'message' || k === 'ticket' || k === 'dispatch'), [], `labelled ${JSON.stringify(labels)}: ${JSON.stringify(kinds)}`);
+      }
+    });
+  }
+
+  test('a person\'s comment on the same ticket still reaches its roles, so the check above is not empty', async () => {
+    const queued: Array<Record<string, any>> = [];
+    const routed = routeEvent({ event: 'issue_comment', payload: { action: 'created', issue: issue([]), comment: { id: 71, html_url: 'x', user: member, author_association: 'OWNER', body: 'A remark.' }, repository: { full_name: FACTORY, default_branch: 'main' }, sender: member }, owners: ['acme'], appId: APP_ID });
+    queued.push(...routed.fires);
+    assert.ok(queued.some((q) => q.fire.kind === 'message'), routed.reason);
+  });
+
+  test('the PR review\'s comment on a PR is out of the rule: it still reaches the PR\'s owner', () => {
+    const pr = { number: 12, title: 'A change', html_url: `https://github.com/${FACTORY}/pull/12`, body: `The change.\n\n${SPEC}`, pull_request: { url: 'x' }, user: member, author_association: 'OWNER' };
+    const routed = routeEvent({ event: 'issue_comment', payload: { action: 'created', issue: pr, comment: { id: 72, html_url: 'x', ...app, body: `Passes the PR review: closes #7 as written.\n\n${reviewMarker('a'.repeat(40), 'b'.repeat(64))}` }, repository: { full_name: FACTORY, default_branch: 'main' }, sender: app.user }, owners: ['acme'], appId: APP_ID });
+    assert.deepEqual(routed.fires.map((f) => [f.fire.kind, (f.fire as { session?: string }).session]), [['message', SPEC]]);
   });
 });

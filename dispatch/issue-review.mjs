@@ -557,10 +557,14 @@ export const applyLabels = async ({ reader, ticket, name, conclusions, every = [
  *   run: (request: { system: string, prompt: string, schema: object }, label: string) => Promise<{ output: string }>,
  *   transcript: (t: { sessionId: string, key: string }) => Promise<object>,
  *   log: (event: string, context: Record<string, unknown>) => void,
- * }} args
+ *   tell?: (issue: number, comment: string) => Promise<void>,
+ * }} args `tell`: the spec owner's message of a review's comment. The
+ *   comment is a record for people, which the relay sends to nobody, so
+ *   this turn tells the spec owner, whose body the review reads. The loop
+ *   guard's comment asks a person, and tells no session.
  * @returns {Promise<{ reviews: Reviewed[], skipped?: string }>}
  */
-export const reviewIssue = async ({ repo, issue, reader, config, run, transcript, log }) => {
+export const reviewIssue = async ({ repo, issue, reader, config, run, transcript, log, tell }) => {
   const reviews = config.issueReviews?.reviews ?? [];
   const passed = (/** @type {string} */ skipped) => {
     log('dispatch-issue-review', { level: 'info', repo, issue, skipped });
@@ -630,8 +634,10 @@ export const reviewIssue = async ({ repo, issue, reader, config, run, transcript
       ({ sessionId, usage } = answer);
       const labelled = await applyLabels({ reader, ticket, name, conclusions: conclusionsFor(review, ticket), every: [review.conclusions, ...(review.byLabel ?? []).map((t) => t.conclusions)], conclusion: answer.conclusion });
       if (labelled.removed.length + labelled.added.length > 0) log('dispatch-issue-review-labels', { level: 'info', ...about, conclusion: answer.conclusion, ...labelled });
-      await reader.comment(issue, issueComment({ name, conclusion: answer.conclusion, text: answer.text, key }));
+      const comment = issueComment({ name, conclusion: answer.conclusion, text: answer.text, key });
+      await reader.comment(issue, comment);
       log('dispatch-issue-review', { ...about, outcome: 'commented', conclusion: answer.conclusion, round, ...(usage === undefined ? {} : { usage }) });
+      if (tell !== undefined) await tell(issue, comment);
       /** @type {Reviewed} */
       const done = { name, outcome: 'commented', conclusion: answer.conclusion };
       out.push(done);

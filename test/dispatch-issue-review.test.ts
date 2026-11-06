@@ -144,7 +144,7 @@ const harness = (over: {
   };
   const transcript = async (t: { sessionId: string, key: string }) => { transcripts.push(t); return { key: t.key }; };
   const log = (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); };
-  const review = () => reviewIssue({ repo: REPO, issue: 501, reader, config: config as never, run, transcript, log });
+  const review = (tell?: (issue: number, comment: string) => Promise<void>) => reviewIssue({ repo: REPO, issue: 501, reader, config: config as never, run, transcript, log, ...(tell === undefined ? {} : { tell }) });
   /** A person or session edits the ticket's body, or its labels. */
   const edit = (change: { body?: string, labels?: string[] }) => { if (change.body !== undefined) live.body = change.body; if (change.labels !== undefined) live.labels = [...change.labels]; };
   return { review, comments, runs, transcripts, logged, openReads, threadReads: () => threadReads, ops, live, edit, reader };
@@ -1264,5 +1264,24 @@ describe('run: an issueReview fire through the turn', () => {
     assert.match(String(result.refusal), /issueReviews/);
     assert.deepEqual(comments, []);
     assert.deepEqual(runs, []);
+  });
+});
+
+describe('a review\'s comment is a record for people: the turn that posts it tells the spec owner (#565)', () => {
+  const rounds = (n: number) => Array.from({ length: n }, (_, i) => posted('triage', 'failure', `a${i}`, true, i + 1));
+
+  test('each review comment is told once, as posted; the loop guard\'s, which asks a person, is told to nobody', async () => {
+    const told: Array<{ issue: number, comment: string }> = [];
+    const h = harness({ thread: rounds(4), answers: [GAPS] });
+    await h.review(async (issue, comment) => { told.push({ issue, comment }); });
+    assert.equal(h.comments.length, 2, 'the review comment and the guard');
+    assert.deepEqual(told, [{ issue: 501, comment: h.comments[0]!.body }]);
+  });
+
+  test('a run that fails posts nothing and tells nobody', async () => {
+    const told: string[] = [];
+    const h = harness({ answers: ['not json'] });
+    await h.review(async (_issue, comment) => { told.push(comment); });
+    assert.deepEqual([h.comments, told], [[], []]);
   });
 });
