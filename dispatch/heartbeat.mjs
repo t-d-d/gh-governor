@@ -88,6 +88,8 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
  * undefined changes nothing and writes nothing. A reader, read or write that
  * fails is logged under {@link HEARTBEAT_UNWRITTEN} and comes back as the
  * line the caller fails its turn with, once every other repo has gone.
+ * `level` sets both logs' level, `error` unless the caller says otherwise:
+ * a write that only changes a line which must page nobody logs at warn.
  *
  * @param {{
  *   reader: () => Promise<IssueWriter>,
@@ -97,15 +99,16 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
  *   refusal: string,
  *   stamp: (body: string) => string | undefined,
  *   log: (event: string, fields: Record<string, unknown>) => void,
+ *   level?: 'error' | 'warn',
  * }} args
  * @returns {Promise<'written' | 'refused' | 'unchanged' | { unwritten: string }>}
  */
-export const writeHeartbeatIssue = async ({ reader, repo, issue, marker, refusal, stamp, log }) => {
+export const writeHeartbeatIssue = async ({ reader, repo, issue, marker, refusal, stamp, log, level = 'error' }) => {
   try {
     const github = await reader();
     const { body } = await github.issue(issue);
     if (!body.includes(marker)) {
-      log(HEARTBEAT_REFUSED, { level: 'error', repo, issue, marker, reason: refusal });
+      log(HEARTBEAT_REFUSED, { level, repo, issue, marker, reason: refusal });
       return 'refused';
     }
     const next = stamp(body);
@@ -113,7 +116,7 @@ export const writeHeartbeatIssue = async ({ reader, repo, issue, marker, refusal
     await github.updateIssue(issue, { body: next });
     return 'written';
   } catch (error) {
-    log(HEARTBEAT_UNWRITTEN, { level: 'error', repo, issue, error: messageOf(error) });
+    log(HEARTBEAT_UNWRITTEN, { level, repo, issue, error: messageOf(error) });
     return { unwritten: `${repo}#${issue}: ${messageOf(error)}` };
   }
 };
@@ -173,6 +176,9 @@ const RULES_BLOCKS = /** @type {Record<RulesLine['block'], string>} */ ({
   old: 'has an old session rules block',
 });
 
+/** Each block's text, back to its key. */
+const RULES_BLOCK_OF = /** @type {Record<string, RulesLine['block']>} */ (Object.fromEntries(Object.entries(RULES_BLOCKS).map(([k, v]) => [v, k])));
+
 /** @param {number} n @param {string} one @param {string} many */
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
@@ -207,10 +213,7 @@ const lineOf = (text) => {
   const pickup = PICKUP.exec(text);
   if (pickup !== null) return { pickup: { at: String(pickup[1]), started: Number(pickup[2]) } };
   const rules = RULES.exec(text);
-  if (rules !== null) {
-    const block = /** @type {RulesLine['block']} */ (Object.keys(RULES_BLOCKS).find((k) => RULES_BLOCKS[/** @type {RulesLine['block']} */ (k)] === rules[2]));
-    return { rules: { file: JSON.parse(String(rules[1])), block } };
-  }
+  if (rules !== null) return { rules: { file: JSON.parse(String(rules[1])), block: /** @type {RulesLine['block']} */ (RULES_BLOCK_OF[String(rules[2])]) } };
   const m = PERIODIC.exec(text);
   if (m === null) return null;
   const [, name, read, at, days, number, counted, session, state] = m;

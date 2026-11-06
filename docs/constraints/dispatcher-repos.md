@@ -491,7 +491,9 @@ spends the one claude.ai login.
   line, and a checker that does not know it skips it, as any line it does
   not know. A read that fails logs `dispatch-session-rules-unread` at warn
   and changes nothing, the line included. None of it stops the repo being
-  served, fails the turn, or pages anyone. The
+  served, fails the turn, or pages anyone: a heartbeat read or write whose
+  only change is that line logs at warn, not error, and does not fail the
+  turn. The
   body outside the block keeps its owner's words.
 - The heartbeat's older shape, `heartbeat: { issue, marker }`, with its one
   `last-run:` line under the repo's own marker, is gone: the schema refuses

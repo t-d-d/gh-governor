@@ -9231,6 +9231,7 @@ describe('fitness: the hourly sweep checks each served repo\'s session rules blo
     assert.deepEqual(h.rulesLogs(), [{ event: 'dispatch-session-rules', level: 'warn', repo: REPO, file: 'CLAUDE.md', block: 'missing', reason: 'sessions a person starts in this repo are not given the session rules: copy the current block into the file (docs/serving-a-repo.md, The session rules)' }]);
     assert.deepEqual(readHeartbeat(h.beat.body).rules, { file: 'CLAUDE.md', block: 'missing' });
     assert.deepEqual(readHeartbeat(h.beat.body).pickup, { at: AT, started: 0 }, 'the repo is served as before');
+    assert.deepEqual(h.logged.find((l) => l.event === 'dispatch-heartbeat')?.rules, { file: 'CLAUDE.md', block: 'missing' }, 'the write\'s log names the line it set');
   });
 
   test('no file at all reads as a missing block', async () => {
@@ -9270,6 +9271,29 @@ describe('fitness: the hourly sweep checks each served repo\'s session rules blo
     assert.deepEqual(readHeartbeat(h.beat.body).pickup, { at: AT, started: 0 });
     assert.equal(result.heartbeat, true);
     assert.equal('unread' in result, false, 'a failed read fails nothing');
+  });
+
+  test('a heartbeat read that fails on a fire changing only the session rules line logs at warn and fails nothing', async () => {
+    // No periodics, and pickup's sweep not due: the rules line is the fire's one change.
+    const file = JSON.parse(FACTORY_FILE);
+    delete file.periodics;
+    const h = swept({ file: JSON.stringify(file), rules: '# Working here\n' });
+    h.deps.state.sweep = async () => AT;
+    const reader = h.deps.reader;
+    h.deps.reader = ((...args: Parameters<typeof reader>) => ({ ...reader(...args), issue: async () => { throw new Error('GET /repos/acme/factory/issues/412 failed: 502 Bad Gateway'); } })) as typeof reader;
+    const result = turn(await run({ source: 'aws.events' }, h.deps as never));
+    assert.equal('heartbeatUnwritten' in result, false, JSON.stringify(result));
+    const unwritten = h.logged.filter((l) => l.event === 'dispatch-heartbeat-unwritten');
+    assert.deepEqual(unwritten.map((l) => l.level), ['warn']);
+  });
+
+  test('a heartbeat read that fails on a fire writing pickup\'s line still fails the turn, as before', async () => {
+    const h = swept({ rules: '# Working here\n' });
+    const reader = h.deps.reader;
+    h.deps.reader = ((...args: Parameters<typeof reader>) => ({ ...reader(...args), issue: async () => { throw new Error('GET /repos/acme/factory/issues/412 failed: 502 Bad Gateway'); } })) as typeof reader;
+    const result = await run({ source: 'aws.events' }, h.deps as never);
+    assert.ok('heartbeatUnwritten' in result, JSON.stringify(result));
+    assert.deepEqual(h.logged.filter((l) => l.event === 'dispatch-heartbeat-unwritten').map((l) => l.level), ['error']);
   });
 
   test('with the heartbeat off, a missing block still logs at warn, and nothing is written', async () => {

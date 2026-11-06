@@ -683,6 +683,10 @@ const turnOf = async (event, deps, built) => {
   built.launcher = launches;
   /** What the turn changes in each repo's governor heartbeat block, written below. @type {RepoBeat[]} */
   const turnBeats = [];
+  // The bare fire checks each served repo's session rules block beside the
+  // turn's own work, so a slow read holds neither a launch nor the sweep.
+  // It catches its own failures, so it never rejects.
+  const rulesChecked = bare ? checkRules(deps, tokenFor, served) : Promise.resolve([]);
   /** @type {Awaited<ReturnType<typeof turnFor>>} */
   let turned;
   try {
@@ -723,9 +727,7 @@ const turnOf = async (event, deps, built) => {
     deps: { ...deps, secret, githubToken: tokenFor, launch: launches.start },
   });
   const eventBeats = checked?.beats ?? [];
-  // The bare fire checks each served repo's session rules block, after its
-  // own work, so a slow or failed read never holds a launch.
-  const rulesBeats = bare ? await checkRules(deps, tokenFor, served) : [];
+  const rulesBeats = await rulesChecked;
   const periodics = checked === null ? null : { dispatched: checked.dispatched, unread: checked.unread };
   // The fires' lines go before the replies and the sweep, which may run
   // into the deadline; the sign-offs' marks after the sweep.
@@ -925,6 +927,9 @@ const writeBeats = async (deps, tokenFor, served, beats) => {
       ...own.reduce((/** @type {{ rules?: import('./heartbeat.mjs').RulesLine | null }} */ r, b) => (b.rules === undefined ? r : { rules: b.rules }), {}),
     };
     const { issue } = heartbeat;
+    // A write that only changes the session rules line pages nobody and
+    // fails nothing: that line reports the repo's CLAUDE.md, not governor.
+    const rulesOnly = own.every((b) => Object.keys(b).every((k) => k === 'rules'));
     const outcome = await writeHeartbeatIssue({
       reader: async () => deps.reader(await tokenFor(repo), await deps.appId(), repo),
       repo,
@@ -936,10 +941,11 @@ const writeBeats = async (deps, tokenFor, served, beats) => {
         return JSON.stringify(readHeartbeat(next)) === JSON.stringify(readHeartbeat(body)) ? undefined : next;
       },
       log: deps.log,
+      level: rulesOnly ? 'warn' : 'error',
     });
-    if (typeof outcome === 'object') unwritten.push(outcome.unwritten);
+    if (typeof outcome === 'object' && !rulesOnly) unwritten.push(outcome.unwritten);
     if (outcome !== 'written') continue;
-    deps.log('dispatch-heartbeat', { repo, issue, ...(beat.pickup === undefined ? {} : { pickup: beat.pickup }), periodics: beat.periodics?.map((p) => p.name), signedOff: beat.signedOff });
+    deps.log('dispatch-heartbeat', { repo, issue, ...(beat.pickup === undefined ? {} : { pickup: beat.pickup }), periodics: beat.periodics?.map((p) => p.name), signedOff: beat.signedOff, ...(beat.rules === undefined ? {} : { rules: beat.rules }) });
     written.push(repo);
   }
   return { written, unwritten };

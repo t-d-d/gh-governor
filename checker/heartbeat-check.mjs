@@ -77,6 +77,9 @@ const RULES_BLOCKS = /** @type {Record<RulesLine['block'], string>} */ ({
   old: 'has an old session rules block',
 });
 
+/** Each block's text, back to its key. */
+const RULES_BLOCK_OF = /** @type {Record<string, RulesLine['block']>} */ (Object.fromEntries(Object.entries(RULES_BLOCKS).map(([k, v]) => [v, k])));
+
 const PICKUP = /^- pickup: last sweep (\S+), started (\d+) sessions?$/;
 const PERIODIC = new RegExp([
   '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (last fire|first read) (\\S+)',
@@ -95,10 +98,7 @@ const lineOf = (text) => {
   const pickup = PICKUP.exec(text);
   if (pickup !== null) return { pickup: { at: String(pickup[1]), started: Number(pickup[2]) } };
   const rules = RULES.exec(text);
-  if (rules !== null) {
-    const block = /** @type {RulesLine['block']} */ (Object.keys(RULES_BLOCKS).find((k) => RULES_BLOCKS[/** @type {RulesLine['block']} */ (k)] === rules[2]));
-    return { rules: { file: JSON.parse(String(rules[1])), block } };
-  }
+  if (rules !== null) return { rules: { file: JSON.parse(String(rules[1])), block: /** @type {RulesLine['block']} */ (RULES_BLOCK_OF[String(rules[2])]) } };
   const m = PERIODIC.exec(text);
   if (m === null) return null;
   const [, name, read, at, days, number, counted, session, state] = m;
