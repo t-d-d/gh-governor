@@ -1007,7 +1007,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
 
     /**
      * Create `name` in the repo unless it has it: the claim label, or a
-     * ticket review's conclusion label, in a repo that lacks it.
+     * issue review's conclusion label, in a repo that lacks it.
      *
      * @param {string} name
      * @param {string} [description] What the label is for; the claim's by default.

@@ -138,13 +138,14 @@
           "description": "Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off.",
           "type": "boolean"
         },
-        "ticketReviews": {
-          "description": "Each review the `ticketReviews` list holds comments on a ticket it selects, when the ticket is opened, reopened or has its body edited: whether it passes, waits for an edit, or waits for a person.",
-          "type": "boolean"
-        },
         "mergeHandoff": {
           "deprecated": true,
           "description": "Retired: read as unblocked.",
+          "type": "boolean"
+        },
+        "ticketReviews": {
+          "deprecated": true,
+          "description": "Retired and read as nothing: the switch is now `issueReviews.enabled`.",
           "type": "boolean"
         }
       },
@@ -1244,230 +1245,232 @@
         "additionalProperties": false
       }
     },
-    "ticketReviews": {
-      "description": "The ticket reviews governor runs, in file order, each with its `name`, its selector `when`, the labels each of its `conclusions` adds, and optionally its own `checklist` and checks and labels per ticket type (`types`). Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. At least one when the `ticketReviews` switch is on.",
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "name": {
+    "issueReviews": {
+      "description": "The issue reviews: `reviews`, each keyed by its name, with its selector `when`, the labels each of its `conclusions` adds, and optionally its own `prompt` and checks and labels per label (`byLabel`), and `enabled`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. Governor runs them where the file has this section, unless `enabled` is `false`.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether governor runs the reviews. Default on: only `false` turns them off.",
+          "type": "boolean"
+        },
+        "reviews": {
+          "type": "object",
+          "propertyNames": {
             "type": "string",
-            "pattern": "^[a-z0-9-]{1,64}$",
-            "description": "The review's name: lower-case letters, digits and hyphens, unique in the list. It goes into every comment and marker the review writes, so renaming a review starts its rounds afresh."
+            "pattern": "^[a-z0-9-]{1,64}$"
           },
-          "when": {
+          "additionalProperties": {
             "type": "object",
             "properties": {
-              "on": {
-                "type": "string",
-                "const": "opened",
-                "description": "The event that runs the review. Only `\"opened\"`: an open issue opened, reopened or with its body edited."
+              "when": {
+                "default": {},
+                "description": "The review's selector: the labels and authors a ticket must meet. Default every issue its default `by` lets in.",
+                "type": "object",
+                "properties": {
+                  "labels": {
+                    "description": "Labels the ticket must carry, every one of them, in any case. Default none.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50,
+                      "pattern": "^[^,]*$"
+                    }
+                  },
+                  "exclude": {
+                    "description": "Labels the ticket must not carry, any of them, in any case. Default none.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50,
+                      "pattern": "^[^,]*$"
+                    }
+                  },
+                  "by": {
+                    "description": "Who may have opened the ticket, as GitHub's `author_association` values. Default `OWNER`, `MEMBER` and `COLLABORATOR`. The repo's `trust.review` bounds every review.",
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "OWNER",
+                        "MEMBER",
+                        "COLLABORATOR",
+                        "CONTRIBUTOR",
+                        "FIRST_TIME_CONTRIBUTOR",
+                        "FIRST_TIMER",
+                        "MANNEQUIN",
+                        "NONE"
+                      ]
+                    }
+                  }
+                },
+                "additionalProperties": false
               },
-              "labels": {
-                "description": "Labels the ticket must carry, every one of them, in any case. Default none.",
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 50,
-                  "pattern": "^[^,]*$"
-                }
+              "conclusions": {
+                "default": {
+                  "success": [],
+                  "failure": [],
+                  "neutral": []
+                },
+                "description": "The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion's labels and removes the ones the other two name, and touches no other label. Each label starts with the review's name, a colon and a space, such as `triage: build` for a review named `triage`, in any case, so a review never adds or removes a label a person uses. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `byLabel` entry matches on, a label the review's own `when.labels` or `when.exclude` names, or `labels.claim`.",
+                "type": "object",
+                "properties": {
+                  "success": {
+                    "default": [],
+                    "description": "The labels a `success` adds: the ticket passes. Default none.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50,
+                      "pattern": "^[^,]*$"
+                    }
+                  },
+                  "failure": {
+                    "default": [],
+                    "description": "The labels a `failure` adds: the ticket waits for an edit by whoever filed it. Default none.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50,
+                      "pattern": "^[^,]*$"
+                    }
+                  },
+                  "neutral": {
+                    "default": [],
+                    "description": "The labels a `neutral` adds: the ticket waits for a person. Default none.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50,
+                      "pattern": "^[^,]*$"
+                    }
+                  }
+                },
+                "additionalProperties": false
               },
-              "exclude": {
-                "description": "Labels the ticket must not carry, any of them, in any case. Default none.",
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 50,
-                  "pattern": "^[^,]*$"
-                }
+              "prompt": {
+                "description": "The review's own prompt, after governor's fixed frame: the text, or { \"file\": \"<path>\" }. Default governor's own checklist.",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "file": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
+                      }
+                    },
+                    "required": [
+                      "file"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
               },
-              "by": {
-                "description": "Who may have opened the ticket, as GitHub's `author_association` values. Default `OWNER`, `MEMBER` and `COLLABORATOR`. The repo's `trust.review` bounds every review.",
+              "byLabel": {
+                "description": "Checks and labels per label, each entry matched by label. A ticket gets the review's prompt and then each matching entry's, in list order; one matching none gets the review's alone. For each conclusion, the labels come from the first matching entry that names it, and otherwise from `conclusions`.",
                 "minItems": 1,
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "enum": [
-                    "OWNER",
-                    "MEMBER",
-                    "COLLABORATOR",
-                    "CONTRIBUTOR",
-                    "FIRST_TIME_CONTRIBUTOR",
-                    "FIRST_TIMER",
-                    "MANNEQUIN",
-                    "NONE"
-                  ]
-                }
-              }
-            },
-            "required": [
-              "on"
-            ],
-            "additionalProperties": false,
-            "description": "The review's selector: `on`, the event, and the labels and authors a ticket must meet."
-          },
-          "conclusions": {
-            "default": {
-              "success": [],
-              "failure": [],
-              "neutral": []
-            },
-            "description": "The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion's labels and removes the ones the other two name, and touches no other label. Each label starts with the review's name, a colon and a space, such as `triage: build` for a review named `triage`, in any case, so a review never adds or removes a label a person uses. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `types` entry matches on, a label the review's own `when.labels` or `when.exclude` names, or `labels.claim`.",
-            "type": "object",
-            "properties": {
-              "success": {
-                "default": [],
-                "description": "The labels a `success` adds: the ticket passes. Default none.",
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 50,
-                  "pattern": "^[^,]*$"
-                }
-              },
-              "failure": {
-                "default": [],
-                "description": "The labels a `failure` adds: the ticket waits for an edit by whoever filed it. Default none.",
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 50,
-                  "pattern": "^[^,]*$"
-                }
-              },
-              "neutral": {
-                "default": [],
-                "description": "The labels a `neutral` adds: the ticket waits for a person. Default none.",
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 50,
-                  "pattern": "^[^,]*$"
+                  "type": "object",
+                  "properties": {
+                    "labels": {
+                      "minItems": 1,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 50,
+                        "pattern": "^[^,]*$"
+                      },
+                      "description": "The labels that match a ticket carrying any of them, in any case. At least one."
+                    },
+                    "prompt": {
+                      "description": "Checks a matching ticket gets after the review's own prompt: the text, or { \"file\": \"<path>\" }. Default none.",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "file": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
+                            }
+                          },
+                          "required": [
+                            "file"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "conclusions": {
+                      "description": "The conclusions whose labels this entry overrides, each a list, each label starting with the review's name, a colon and a space. A conclusion it leaves out takes its labels from an entry later in the list that matches, or from the review's `conclusions`.",
+                      "type": "object",
+                      "properties": {
+                        "success": {
+                          "description": "The labels a `success` adds on a matching ticket, in place of the review's.",
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 50,
+                            "pattern": "^[^,]*$"
+                          }
+                        },
+                        "failure": {
+                          "description": "The labels a `failure` adds on a matching ticket, in place of the review's.",
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 50,
+                            "pattern": "^[^,]*$"
+                          }
+                        },
+                        "neutral": {
+                          "description": "The labels a `neutral` adds on a matching ticket, in place of the review's.",
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 50,
+                            "pattern": "^[^,]*$"
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "labels"
+                  ],
+                  "additionalProperties": false
                 }
               }
             },
             "additionalProperties": false
           },
-          "checklist": {
-            "description": "The review's base checklist, after governor's fixed frame: the text, or { \"file\": \"<path>\" }. Default governor's own checklist.",
-            "anyOf": [
-              {
-                "type": "string",
-                "minLength": 1
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "file": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
-                  }
-                },
-                "required": [
-                  "file"
-                ],
-                "additionalProperties": false
-              }
-            ]
-          },
-          "types": {
-            "description": "Checks and labels per ticket type, each entry matched by label. A ticket gets the base checklist and then each matching entry's, in file order; one matching none gets the base alone. For each conclusion, the labels come from the first matching entry that names it, and otherwise from `conclusions`.",
-            "minItems": 1,
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "labels": {
-                  "minItems": 1,
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 50,
-                    "pattern": "^[^,]*$"
-                  },
-                  "description": "The labels that match a ticket carrying any of them, in any case. At least one."
-                },
-                "checklist": {
-                  "description": "Checks a matching ticket gets after the review's base checklist: the text, or { \"file\": \"<path>\" }. Default none.",
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "file": {
-                          "type": "string",
-                          "minLength": 1,
-                          "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
-                        }
-                      },
-                      "required": [
-                        "file"
-                      ],
-                      "additionalProperties": false
-                    }
-                  ]
-                },
-                "conclusions": {
-                  "description": "The conclusions whose labels this entry overrides, each a list, each label starting with the review's name, a colon and a space. A conclusion it leaves out takes its labels from an entry later in the file that matches, or from the review's `conclusions`.",
-                  "type": "object",
-                  "properties": {
-                    "success": {
-                      "description": "The labels a `success` adds on a matching ticket, in place of the review's.",
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 50,
-                        "pattern": "^[^,]*$"
-                      }
-                    },
-                    "failure": {
-                      "description": "The labels a `failure` adds on a matching ticket, in place of the review's.",
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 50,
-                        "pattern": "^[^,]*$"
-                      }
-                    },
-                    "neutral": {
-                      "description": "The labels a `neutral` adds on a matching ticket, in place of the review's.",
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 50,
-                        "pattern": "^[^,]*$"
-                      }
-                    }
-                  },
-                  "additionalProperties": false
-                }
-              },
-              "required": [
-                "labels"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "name",
-          "when"
-        ],
-        "additionalProperties": false
-      }
+          "description": "The issue reviews, each keyed by its name: lower-case letters, digits and hyphens. The name goes into every comment and marker the review writes, so renaming a review starts its rounds afresh. Reviews run in the order of their keys. At least one."
+        }
+      },
+      "required": [
+        "reviews"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [

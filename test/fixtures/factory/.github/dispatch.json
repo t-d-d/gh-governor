@@ -27,8 +27,7 @@
     "periodics": true,
     "hooks": true,
     "waits": true,
-    "signOff": true,
-    "ticketReviews": true
+    "signOff": true
   },
   "heartbeat": {
     "issue": 412,
@@ -73,25 +72,26 @@
       "keyVersion": 1
     }
   ],
-  "ticketReviews": [
-    {
-      "name": "triage",
-      "when": { "on": "opened", "exclude": ["workflow: under development"] },
-      "conclusions": {
-        "success": ["triage: passed"],
-        "failure": ["triage: needs edit"],
-        "neutral": ["triage: needs a person"]
-      },
-      "checklist": { "file": ".github/ticket-review/triage.md" },
-      "types": [
-        {
-          "labels": ["type: bug"],
-          "checklist": { "file": ".github/ticket-review/bug.md" },
-          "conclusions": { "failure": ["triage: needs repro"] }
-        }
-      ]
+  "issueReviews": {
+    "reviews": {
+      "triage": {
+        "when": { "exclude": ["workflow: under development"] },
+        "conclusions": {
+          "success": ["triage: passed"],
+          "failure": ["triage: needs edit"],
+          "neutral": ["triage: needs a person"]
+        },
+        "prompt": { "file": ".github/issue-review/triage.md" },
+        "byLabel": [
+          {
+            "labels": ["type: bug"],
+            "prompt": { "file": ".github/issue-review/bug.md" },
+            "conclusions": { "failure": ["triage: needs repro"] }
+          }
+        ]
+      }
     }
-  ],
+  },
   "workflows": {
     "ci": ".github/workflows/ci.yml",
     "triage": [

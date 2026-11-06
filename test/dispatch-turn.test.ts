@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { DEADLINE_MS, exitCodeFor } from '../dispatch/cli.mjs';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { CONFIG_PATH, GENERIC_SWITCHES } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, SWITCHES } from '../dispatch/repo-config.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { STALE_RUNS_PAUSES_MS } from '../dispatch/runs.mjs';
@@ -162,7 +162,7 @@ const harness = (over: Record<string, unknown> = {}) => {
   // Each session the turn recorded as governor's own.
   const recorded: string[] = [];
   // Each write to the receiver's hook table: a repo's hooks, switches and ready labels as its file was read.
-  const published: Array<{ repo: string; hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; at: string }> = [];
+  const published: Array<{ repo: string; hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; reviewLabels?: { labeled: string[]; unlabeled: string[] }; at: string }> = [];
   const publishedTrust: Array<{ repo: string; trust: { relay: string[] } | undefined }> = [];
   let loginOnDisk: string | null = null;
   const accounts: unknown[] = [];
@@ -314,8 +314,8 @@ const harness = (over: Record<string, unknown> = {}) => {
     }),
     uuid: () => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
     hookTable: {
-      publish: async (repo: string, { hooks, switches, ready, trust }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; trust?: { relay: string[] } }, at: string) => {
-        published.push({ repo, hooks, switches, ready, at });
+      publish: async (repo: string, { hooks, switches, ready, reviewLabels, trust }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; reviewLabels?: { labeled: string[]; unlabeled: string[] }; trust?: { relay: string[] } }, at: string) => {
+        published.push({ repo, hooks, switches, ready, ...(reviewLabels === undefined ? {} : { reviewLabels }), at });
         publishedTrust.push({ repo, trust });
         return true;
       },
@@ -4373,7 +4373,7 @@ describe('realDeps().message', () => {
 
 /**
  * The real review runner puts governor's system prompt in place of Claude
- * Code's own, for the PR review and the ticket reviews alike: the default
+ * Code's own, for the PR review and the issue reviews alike: the default
  * prompt is written for a coding agent with tools, and a review has none. A
  * fake `claude` on PATH answers with its arguments and the text of the
  * file it was given as the system prompt, read before the runner removes it.
@@ -8995,7 +8995,27 @@ describe('run: the hook table', () => {
   test('a fire naming its repo writes that repo\'s hooks, their key versions and their caps, stamped with the turn\'s time', async () => {
     const h = harness();
     await run(hookFire, h.deps as never);
-    assert.deepEqual(h.published, [{ repo: REPO, hooks: FACTORY_HOOKS, switches: Object.fromEntries(GENERIC_SWITCHES.map((n) => [n, true])), ready: JSON.parse(FACTORY_FILE).labels.ready, at: new Date(NOW).toISOString() }]);
+    assert.deepEqual(h.published, [{
+      repo: REPO, hooks: FACTORY_HOOKS, switches: Object.fromEntries(SWITCHES.map((n) => [n, true])), ready: JSON.parse(FACTORY_FILE).labels.ready,
+      reviewLabels: { labeled: ['type: bug'], unlabeled: ['type: bug', 'workflow: under development'] }, at: new Date(NOW).toISOString(),
+    }]);
+  });
+
+  // The receiver queues a label change's issue review fire only for a label
+  // the item lists for that change (dispatch/webhook/route.mjs), so the item
+  // holds the labels each review selects on or keys on, lower-cased, and
+  // none where the reviews are off.
+  test('the item holds the labels whose change can start an issue review, and none with the reviews off', async () => {
+    const issueReviews = { reviews: {
+      triage: { when: { labels: ['Incoming'], exclude: ['claimed'] }, conclusions: { success: ['triage: go'] }, byLabel: [{ labels: ['type: bug', 'Bug'] }] },
+      community: { when: { exclude: ['mode: human'] } },
+    } };
+    const on = harness({ configFile: fileWith({ issueReviews }) });
+    await run({ kind: 'schedule' }, on.deps as never);
+    assert.deepEqual(on.published.map((p) => p.reviewLabels), [{ labeled: ['bug', 'incoming', 'type: bug'], unlabeled: ['bug', 'claimed', 'mode: human', 'type: bug'] }]);
+    const off = harness({ configFile: fileWith({ issueReviews: { ...issueReviews, enabled: false } }) });
+    await run({ kind: 'schedule' }, off.deps as never);
+    assert.deepEqual(off.published.map((p) => [p.switches.issueReviews, p.reviewLabels]), [[false, { labeled: [], unlabeled: [] }]]);
   });
 
   // The receiver queues a selection fire only for a label the item lists
@@ -9016,7 +9036,7 @@ describe('run: the hook table', () => {
     const h = harness({ configFile: fileWith({ features: { ...rest, conflicts: false, mergeHandoff: true } }) });
     await run({ kind: 'schedule' }, h.deps as never);
     const switches = h.published[0]!.switches;
-    assert.deepEqual(Object.keys(switches).sort(), [...GENERIC_SWITCHES].sort());
+    assert.deepEqual(Object.keys(switches).sort(), [...SWITCHES].sort());
     assert.equal(switches.prReview, false, 'left out');
     assert.equal(switches.conflicts, false, 'turned off');
     assert.equal(switches.unblocked, true, 'mergeHandoff reads as unblocked');

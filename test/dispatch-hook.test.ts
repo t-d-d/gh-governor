@@ -642,7 +642,7 @@ describe('the hook table', () => {
   test('no item is null; an item written before it held switches or ready labels reads each one it lacks as null', async () => {
     assert.equal(await hookTable(client(() => ({})) as never, 'T').item(REPO), null);
     const { switches: _s, ready: _r, ...older } = ITEM;
-    assert.deepEqual(await hookTable(client(() => ({ Item: older })) as never, 'T').item(REPO), { switches: null, ready: null });
+    assert.deepEqual(await hookTable(client(() => ({ Item: older })) as never, 'T').item(REPO), { switches: null, ready: null, reviewLabels: null });
     const { ready: _r2, ...switchesOnly } = ITEM;
     const read = await hookTable(client(() => ({ Item: switchesOnly })) as never, 'T').item(REPO);
     assert.equal(read?.ready, null);
@@ -664,6 +664,27 @@ describe('the hook table', () => {
       await assert.rejects(hookTable(client(() => ({ Item: { ...ITEM, ready } })) as never, 'T').item(REPO), /malformed/, JSON.stringify(ready));
     }
     await assert.rejects(hookTable(client(() => { throw new Error('AccessDeniedException'); }) as never, 'T').item(REPO), /AccessDeniedException/);
+  });
+
+  // The labels whose change can start an issue review, beside the ready
+  // labels: the receiver queues a label change's issueReview fire only
+  // where the item names its label, or cannot say (route.mjs).
+  test('the issue reviews\' labels are written beside the ready labels, and read back from the same item', async () => {
+    const c = client(() => ({}));
+    const at = '2026-09-21T12:00:00.000Z';
+    const reviewLabels = { labeled: ['triage: go', 'type: bug'], unlabeled: ['claimed', 'type: bug'] };
+    assert.equal(await hookTable(c as never, 'T').publish(REPO, { hooks: [], switches: {}, ready: READY, reviewLabels }, at), true);
+    const written = c.sent[0]!.input.Item as Record<string, unknown>;
+    assert.deepEqual(written.reviewLabels, { M: { labeled: { L: [{ S: 'triage: go' }, { S: 'type: bug' }] }, unlabeled: { L: [{ S: 'claimed' }, { S: 'type: bug' }] } } });
+    const read = await hookTable(client(() => ({ Item: written })) as never, 'T').item(REPO);
+    assert.deepEqual(read?.reviewLabels, reviewLabels);
+  });
+
+  test('an item written before it held the review labels reads them as null; malformed ones throw', async () => {
+    assert.equal((await hookTable(client(() => ({ Item: ITEM })) as never, 'T').item(REPO))?.reviewLabels, null);
+    for (const reviewLabels of [{ L: [] }, { M: { labeled: { L: [{ S: 'a' }] } } }, { M: { labeled: { L: [{ N: '1' }] }, unlabeled: { L: [] } } }]) {
+      await assert.rejects(hookTable(client(() => ({ Item: { ...ITEM, reviewLabels } })) as never, 'T').item(REPO), /malformed/, JSON.stringify(reviewLabels));
+    }
   });
 
   const SIG = 'a'.repeat(64);
@@ -784,7 +805,7 @@ describe('the config file\'s hooks', () => {
   test('a hook\'s prompt file is read from the default branch, and a missing one is the file\'s fault', async () => {
     const read = readConfig(withHooks({ hooks: true }, [{ name: 'operator-prod', prompt: { file: 'ops/alarm.md' }, keyVersion: 1 }]));
     assert.ok(read.ok);
-    const files: Record<string, string> = Object.fromEntries([...['.claude/skills/pr-review/SKILL.md', '.github/ticket-review/triage.md', '.github/ticket-review/bug.md'].map((path) => [path, factoryFile(path)]), ['ops/alarm.md', 'Look into the alarm.\n']]);
+    const files: Record<string, string> = Object.fromEntries([...['.claude/skills/pr-review/SKILL.md', '.github/issue-review/triage.md', '.github/issue-review/bug.md'].map((path) => [path, factoryFile(path)]), ['ops/alarm.md', 'Look into the alarm.\n']]);
     const resolved = await resolveFiles(read.config, async (path) => files[path] ?? null);
     assert.ok(resolved.ok);
     assert.deepEqual(resolved.config.hooks, [{ name: 'operator-prod', prompt: 'Look into the alarm.', keyVersion: 1 }]);

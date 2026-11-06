@@ -34,8 +34,8 @@
  * a PR by an author it leaves out gets a `neutral` check, and a person
  * merges it ({@link reviewOf}). It defaults to the authors with a say
  * ({@link REVIEW}). Dependabot's bumps are read by the Dependabot list
- * whatever it says. The ticket reviews read a ticket only where its author
- * is in it (dispatch/ticket-review.mjs).
+ * whatever it says. The issue reviews read a ticket only where its author
+ * is in it (dispatch/issue-review.mjs).
  *
  * The lists form a chain, `auto` within `task` within `relay` within
  * `review`, `BOT` left aside. A list the file leaves unset is narrowed to

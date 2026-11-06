@@ -34,8 +34,8 @@ export const isCi = (run, workflows) => workflows.ci !== undefined && run.path =
  * A close needs none: it starts nothing, and queues an `unblocked` fire per
  * ticket it blocked, whose switch the ticket's own state picks in its own
  * repo, `pickup` or `unblocked` (dispatch/unblocked.mjs). A ticket's `wait`
- * fire needs `waits` (dispatch/waits.mjs), and a `ticketReview` fire
- * `ticketReviews` (dispatch/ticket-review.mjs).
+ * fire needs `waits` (dispatch/waits.mjs), and an `issueReview` fire
+ * `issueReviews` (dispatch/issue-review.mjs).
  *
  * @param {import('./fire.mjs').Fire} fire
  * @param {{ ci?: string | undefined }} [workflows] The repo's config file's.
@@ -54,7 +54,7 @@ export const switchOf = (fire, workflows = {}) => {
     case 'periodics': return 'periodics';
     case 'hook': return 'hooks';
     case 'wait': return 'waits';
-    case 'ticketReview': return 'ticketReviews';
+    case 'issueReview': return 'issueReviews';
     default: return null;
   }
 };

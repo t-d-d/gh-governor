@@ -2,7 +2,7 @@
  * What governor's two reviews share in reading a `claude -p --output-format
  * json` run: the result line, what the run spent, and its error and
  * usage-limit handling. The PR review (dispatch/checklist.mjs) and the
- * ticket reviews (dispatch/ticket-review.mjs) each check the answer against
+ * issue reviews (dispatch/issue-review.mjs) each check the answer against
  * their own schema.
  *
  * Pure: no I/O.

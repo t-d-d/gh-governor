@@ -55,8 +55,10 @@
  * until:` line queues a `wait` fire naming it, whose turn keeps the
  * ticket's wait item to match its line (dispatch/waits.mjs).
  * An issue opened, reopened, or edited with its body changed by anyone but
- * a bot, queues a `ticketReview` fire naming it, whose turn runs the
- * repo's ticket reviews on it (dispatch/ticket-review.mjs).
+ * a bot, queues an `issueReview` fire naming it, whose turn runs the
+ * repo's issue reviews on it (dispatch/issue-review.mjs). So does a label
+ * added or removed, by anyone, where the repo's hook-table item lists the
+ * label as one whose change can start a review, or cannot say.
  * An issue closed queues a `schedule` fire naming it as `freed`. Its turn
  * starts nothing: it queues one `unblocked` fire for each open ticket the
  * issue directly blocked, in whichever listed owner's repo the ticket is,
@@ -200,10 +202,13 @@ export const verifySignature = (secret, body, signature) => {
 /**
  * @typedef {import('./fire.mjs').Fire} Fire
  * @typedef {import('./fire.mjs').FireMessage} FireMessage
- * @typedef {{ fire: Fire, reason: string, key?: string, ready?: readonly string[] }} Queued One fire, and the key that tells it from the delivery's others.
+ * @typedef {{ fire: Fire, reason: string, key?: string, ready?: readonly string[], reviewLabel?: { label: string, change: 'labeled' | 'unlabeled' } }} Queued One fire, and the key that tells it from the delivery's others.
  *   `ready`: a selection fire's ticket's labels, one of which must be a
  *   ready label for the fire to queue; the receiver names the first the
  *   repo's hook-table item lists as the fire's label ({@link switchedOn}).
+ *   `reviewLabel`: an issue review fire's label change, which the repo's
+ *   hook-table item must list for the change for the fire to queue
+ *   ({@link switchedOn}).
  * @typedef {{ fires: Queued[], reason: string }} Decision
  */
 
@@ -538,26 +543,50 @@ const waitFire = (payload) => {
 
 /**
  * An issue opened, reopened, or edited with its body changed: a
- * `ticketReview` fire naming it, so its turn runs each of the repo's ticket
- * reviews the issue calls for (dispatch/ticket-review.mjs). A title-only
+ * `issueReview` fire naming it, so its turn runs each of the repo's issue
+ * reviews the issue calls for (dispatch/issue-review.mjs). A title-only
  * edit changes nothing a review reads. A body edit a bot made is governor's
  * own (a spec session's link written, a relative wait line rewritten), and must
  * not spend a review's round; a session edits as the owner's account, so
  * its edits still run one. Judged from the payload alone; the fire needs
- * `ticketReviews`, so {@link handle} drops it where the repo's item says
+ * `issueReviews`, so {@link handle} drops it where the repo's item says
  * that switch is off, and the task judges the author by `trust.review`.
  *
  * @param {any} payload
  * @returns {Decision}
  */
-const ticketReviewFire = (payload) => {
+const issueReviewFire = (payload) => {
   const number = payload?.issue?.number;
   const action = payload?.action;
   if (!Number.isInteger(number) || number <= 0) return nothing('');
   if (action === 'edited' && payload?.changes?.body === undefined) return nothing('');
   if (action === 'edited' && payload?.sender?.type === 'Bot') return nothing('');
   if (action !== 'opened' && action !== 'reopened' && action !== 'edited') return nothing('');
-  return one({ fire: build.ticketReview({ issue: number }), reason: `issue #${number} ${action}: run its ticket reviews`, key: 'ticketReview' });
+  return one({ fire: build.issueReview({ issue: number }), reason: `issue #${number} ${action}: run its issue reviews`, key: 'issueReview' });
+};
+
+/**
+ * A label added to or removed from an issue: an `issueReview` fire naming
+ * it, carrying the label and the change, whoever made it, as a ready
+ * label's selection fire is queued. A label added can bring the issue into
+ * a review's `when.labels` or change a `byLabel` entry it matches, and one
+ * removed can take it out of a `when.exclude` or change a `byLabel` entry.
+ * Routing reads only the payload: {@link handle} drops the fire where the
+ * repo's hook-table item says no review names the label for that change,
+ * so a review's conclusion labels and the claim label start nothing, and
+ * where it says `issueReviews` is off. The turn reads the issue's labels as
+ * they are now, and skips a review whose newest marker carries its key.
+ *
+ * @param {any} payload
+ * @returns {Decision}
+ */
+const labelReviewFire = (payload) => {
+  const number = payload?.issue?.number;
+  const action = payload?.action;
+  const label = payload?.label?.name;
+  if (!Number.isInteger(number) || number <= 0) return nothing('');
+  if ((action !== 'labeled' && action !== 'unlabeled') || typeof label !== 'string' || label === '') return nothing('');
+  return one({ fire: build.issueReview({ issue: number }), reason: `issue #${number} ${action} ${label}: run its issue reviews if a review names the label`, key: 'issueReview', reviewLabel: { label, change: action } });
 };
 
 /**
@@ -684,7 +713,7 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
     /** @type {Decision | null} */
     let selection = null;
     // A label queues the selection whoever added it: a ready label governor
-    // puts back after a launch that started nothing, or one a ticket review
+    // puts back after a launch that started nothing, or one an issue review
     // adds, is read as a person's. The task keeps such a launch from
     // starting again at once by its state-table record (dispatch/pickup.mjs),
     // and judges who added the label (`judgeReady`). Subscribers hear it below.
@@ -700,14 +729,15 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
         ? counting(one({ fire: build.schedule({ freed: number }), reason: `issue #${number} closed: queue what it blocked` }), 'issuesClosed', 'schedule')
         : nothing('issue closed with no number: nothing to free');
     }
-    // The selection's fire, where there is one, beside each subscriber's.
-    if (selection !== null) return both(selection, issueEventFires(payload, trust));
-    if (action === 'reopened') return both(both(issueEventFires(payload, trust), waitFire(payload)), ticketReviewFire(payload));
-    if (action === 'labeled' || action === 'unlabeled') return issueEventFires(payload, trust);
+    // The selection's fire, where there is one, beside each subscriber's,
+    // and a label's issue review fire.
+    if (selection !== null) return both(both(selection, issueEventFires(payload, trust)), labelReviewFire(payload));
+    if (action === 'reopened') return both(both(issueEventFires(payload, trust), waitFire(payload)), issueReviewFire(payload));
+    if (action === 'labeled' || action === 'unlabeled') return both(issueEventFires(payload, trust), labelReviewFire(payload));
     const mentioned = mentionFires({ event, payload, ...trust }) ?? nothing(`issues ${action}: nothing to select from`);
     // An issue opened is counted on its summons, or on a fire of its own.
     const counted = action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened', 'dispatch') : mentioned;
-    return both(both(counted, waitFire(payload)), ticketReviewFire(payload));
+    return both(both(counted, waitFire(payload)), issueReviewFire(payload));
   }
   if (event === 'issue_dependencies') return unlinkedFire(payload);
   if (event === 'pull_request') {
@@ -927,10 +957,11 @@ const judged = async (route, delivery, deps) => {
  * A delivery's fires less those the repo's item in the hook table drops: a
  * selection fire for a label the item's ready labels do not list, or for a
  * ticket whose labels hold none of them (`ready`, which names the first that
- * does as the fire's label), and each
+ * does as the fire's label), an issue review fire for a label change the
+ * item's review labels do not list (`reviewLabel`), and each
  * fire whose switch the item says is off ({@link droppedBy}). An item
- * without ready labels drops no selection fire, and one without switches
- * drops nothing by switch. A dropped fire's reason names the label or the
+ * without ready labels drops no selection fire, one without review labels
+ * no issue review fire, and one without switches drops nothing by switch. A dropped fire's reason names the label or the
  * switch, so the App's Recent Deliveries says why it went nowhere.
  *
  * @param {Decision} decision
@@ -954,6 +985,11 @@ const switchedOn = (decision, item, delivery, deps) => {
     }
     const queued = picked === undefined ? listed : { ...listed, fire: { ...listed.fire, label: picked } };
     const { fire } = queued;
+    if (listed.reviewLabel !== undefined && item?.reviewLabels && !item.reviewLabels[listed.reviewLabel.change].includes(listed.reviewLabel.label.toLowerCase())) {
+      const { label, change } = listed.reviewLabel;
+      dropped.push(`its ${fire.kind} fire, as ${label} ${change === 'labeled' ? 'added' : 'removed'} starts no issue review in ${repo}`);
+      continue;
+    }
     const label = fire.kind === 'schedule' ? fire.label : undefined;
     if (label !== undefined && item?.ready && !item.ready.includes(label)) {
       dropped.push(`its ${fire.kind} fire, as ${label} is not one of ${repo}'s ready labels`);

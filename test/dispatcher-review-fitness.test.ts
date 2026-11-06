@@ -113,7 +113,7 @@ const codeEvaluators = (root: string, ...entries: string[]) => [...importClosure
 });
 
 /** The modules a review reads and judges with. */
-const REVIEW_MODULES = ['dispatch/review.mjs', 'dispatch/ticket-review.mjs', 'dispatch/checklist.mjs', 'dispatch/cli-answer.mjs', 'dispatch/repo-config.mjs', 'dispatch/pr-body.mjs', 'dispatch/webhook/review-comment.mjs'];
+const REVIEW_MODULES = ['dispatch/review.mjs', 'dispatch/issue-review.mjs', 'dispatch/checklist.mjs', 'dispatch/cli-answer.mjs', 'dispatch/repo-config.mjs', 'dispatch/pr-body.mjs', 'dispatch/webhook/review-comment.mjs'];
 
 describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)', () => {
   test('the task image copies no .claude/ path: each review reads the repo\'s own', () => {
