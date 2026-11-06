@@ -28,7 +28,9 @@ export const isCi = (run, workflows) => workflows.ci !== undefined && run.path =
  * The switch a fire kind needs, or null for one that needs none (a probe).
  * A message to a PR's owner needs PR messages, one heard by subscription
  * (a `governor:subscribe` line, an issue's filer) subscribe messages, as
- * does a ticket fire, which reaches an issue's spec owner and builders; a
+ * does a ticket fire, which reaches an issue's spec owner and builders, and
+ * a `closingPr` fire, which announces a PR's session as a ticket's new
+ * builder; a
  * dispatch is a summons unless it is the red scheduled run's. A red run of
  * the repo's CI needs CI messages; a red deploy, like a green shipping job,
  * deploy messages. The bare schedule fire's heartbeat is read on its own.
@@ -48,6 +50,7 @@ export const switchOf = (fire, workflows = {}) => {
     case 'dispatch': return fire.scheduled === undefined ? 'summons' : 'redScheduledRun';
     case 'message': return fire.subscribed === true ? 'subscribeMessages' : 'prMessages';
     case 'ticket': return 'subscribeMessages';
+    case 'closingPr': return 'subscribeMessages';
     case 'workflow': return isCi(fire, workflows) ? 'ciMessages' : 'deployMessages';
     case 'job': return 'deployMessages';
     case 'branch-run': return 'branchRunMessages';
