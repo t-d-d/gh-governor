@@ -303,13 +303,15 @@ const sessionName = (number, title) => oneLine(`${MENTION} #${number} ${title}`)
  * It names who set it going too, for the task to judge by the repo's
  * `trust.start`: the writer's association (`writer`), which the receiver
  * has already held to the three, or, for an assignment, which carries no
- * association, the assigner's login (`assigner`).
+ * association, the assigner's login (`assigner`). A summons on an issue
+ * names the ticket too ({@link summonedTicket}), so the task can hand it to
+ * a live spec owner or builder in place of starting anyone.
  *
  * @param {string} prompt
  * @param {any} on
  * @param {string} reason
  * @param {number | undefined} appId
- * @param {{ writer?: string, assigner?: string }} by
+ * @param {{ writer?: string, assigner?: string, ticket?: import('./fire.mjs').SummonedTicket }} by
  * @returns {Queued}
  */
 const summons = (prompt, on, reason, appId, by) => {
@@ -322,8 +324,29 @@ const summons = (prompt, on, reason, appId, by) => {
       author: author.own === true ? undefined : authorKind(author),
       writer: by.writer,
       assigner: by.assigner,
+      ticket: by.ticket,
     }),
     reason,
+  };
+};
+
+/**
+ * What a summons on an issue, or a ticket fire ({@link ticketFires}), says
+ * of its ticket: its state and labels, and the spec owner its body names,
+ * read only where `bodies` lets the body's author in.
+ *
+ * @param {any} issue
+ * @param {readonly string[]} bodies
+ * @param {number | undefined} appId
+ * @returns {import('./fire.mjs').SummonedTicket}
+ */
+const summonedTicket = (issue, bodies, appId) => {
+  const ticketBody = relayedBody({ body: issue?.body, ...authorOf(issue, appId) }, bodies);
+  const owner = sessionNamedIn(ticketBody);
+  return {
+    state: issue?.state === 'closed' ? 'closed' : 'open',
+    labels: (issue?.labels ?? []).map((/** @type {{ name?: unknown }} */ l) => l?.name).filter((/** @type {unknown} */ n) => typeof n === 'string' && n !== ''),
+    ...(owner === null ? {} : { owner }),
   };
 };
 
@@ -695,7 +718,9 @@ const writtenFires = (written, event, payload, appId, relay, bodies) => {
   const parts = [];
   let summoned = false;
   // A mention summons a fresh session where no session owns the PR: the
-  // owner, where there is one, is messaged instead.
+  // owner, where there is one, is messaged instead. On an issue the summons
+  // always queues, naming the ticket, and the task hands it to a live spec
+  // owner or builder before it starts anyone (dispatch/dispatch-fire.mjs).
   if ((pr ? sessionNamedIn(onBody) : null) === null && mentions(body)) {
     if (action !== wanted) {
       parts.push({ fires: [], reason: `${event} ${action}: only a ${wanted} ${what} summons a session` });
@@ -703,7 +728,7 @@ const writtenFires = (written, event, payload, appId, relay, bodies) => {
       const refused = notASummons({ body, user: by?.user, association: by?.author_association });
       const reason = `${what} ${by?.id} on #${on?.number} mentioned ${MENTION}`;
       summoned = refused === null;
-      parts.push(refused ? { fires: [], reason: refused } : { fires: [summons(prompt(payload), on, reason, appId, { writer: String(by?.author_association) })], reason });
+      parts.push(refused ? { fires: [], reason: refused } : { fires: [summons(prompt(payload), on, reason, appId, { writer: String(by?.author_association), ...(pr ? {} : { ticket: summonedTicket(on, bodies, appId) }) })], reason });
     }
   }
   // A PR naming no session is its head branch's session's, unless a mention summoned one.
@@ -789,7 +814,7 @@ export const mentionFires = ({ event, payload, appId, relay = RELAY, bodies = re
       if (payload?.sender?.type === 'Bot') return { fires: [], reason: `a bot (${payload.sender.login ?? 'unnamed'}) cannot summon a session` };
       const reason = `issue #${issue?.number} assigned to claude`;
       const assigner = typeof payload?.sender?.login === 'string' && LOGIN.test(payload.sender.login) ? payload.sender.login : undefined;
-      return { fires: [summons(issuePrompt(payload), issue, reason, appId, { assigner })], reason };
+      return { fires: [summons(issuePrompt(payload), issue, reason, appId, { assigner, ticket: summonedTicket(issue, bodies, appId) })], reason };
     }
     if (action !== 'opened' || !mentions(issue?.body)) return null;
     // Opened already assigned to claude: GitHub sends the assignment too,
@@ -800,7 +825,7 @@ export const mentionFires = ({ event, payload, appId, relay = RELAY, bodies = re
     const refused = notASummons({ body: issue?.body, user: issue?.user, association: issue?.author_association, issue: true });
     if (refused) return { fires: [], reason: refused };
     const reason = `issue #${issue?.number} opened mentioning ${MENTION}`;
-    return { fires: [summons(issuePrompt(payload), issue, reason, appId, { writer: String(issue?.author_association) })], reason };
+    return { fires: [summons(issuePrompt(payload), issue, reason, appId, { writer: String(issue?.author_association), ticket: summonedTicket(issue, bodies, appId) })], reason };
   }
   return null;
 };
@@ -1001,12 +1026,9 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
   const none = { fires: [], reason: '' };
   const issue = payload?.issue;
   if (!Number.isInteger(issue?.number) || issue.number <= 0 || issue?.pull_request) return none;
-  const labels = (issue?.labels ?? []).map((/** @type {{ name?: unknown }} */ l) => l?.name).filter((/** @type {unknown} */ n) => typeof n === 'string' && n !== '');
   const onAuthor = authorOf(issue, appId);
   // The spec owner the body names, read only where `bodies` lets its author in.
-  const ticketBody = relayedBody({ body: issue?.body, ...onAuthor }, bodies);
-  const owner = sessionNamedIn(ticketBody);
-  const state = issue?.state === 'closed' ? 'closed' : 'open';
+  const { state, labels, owner = null } = summonedTicket(issue, bodies, appId);
   const dispatched = dispatchFire({ event, payload, appId, labels, owner, state });
   if (dispatched !== null) return dispatched;
   if (labels.length === 0) return none;
