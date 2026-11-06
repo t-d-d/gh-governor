@@ -592,9 +592,11 @@ spends the one claude.ai login.
   pages where a pair reaches it. Every message into a running session
   counts, of any kind: a relayed remark or event, a notice, an ask, a CI
   or deploy note, the PR review's message to a PR's owner. A launch's
-  prompt does not. Every send goes through one check, the delivery's
-  `send` (dispatch/deliveries.mjs), and each caller names its message's
-  kind. A message about several subjects counts against each and is held
+  prompt does not. Every send goes through one check, `countAgainst`
+  (dispatch/deliveries.mjs): a delivery's `send`, where each caller names
+  its message's kind, and the sign-off sweep's held message, which counts
+  after its held record is put, so a session held again is not counted
+  again. A message about several subjects counts against each and is held
   where any is at the ceiling; one about none counts against the
   session's pair with no subject. A held send is no refusal and no fault:
   it starts nothing, drops no subscriber and does not fail the turn. The

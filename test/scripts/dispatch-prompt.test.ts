@@ -103,15 +103,27 @@ describe('promptFor: the check before building', () => {
     assert.doesNotMatch(promptFor(700, 'T', 'o/r', CLAIM, { signOff: 'Say goodbye.' }, { signOff: false }), /goodbye/);
   });
 
-  test('asks the session that stopped to sign off where the switch is on', () => {
+  test('asks for sign-off only where the session stopped at the check without raising a PR, where the switch is on', () => {
     const prompt = promptFor(700, 'T', 'o/r', CLAIM, {}, { signOff: true });
-    assert.match(prompt, /If you stopped at the check, no pull request will close to ask you to sign off\. Sign this session off unless you know otherwise/);
+    assert.match(prompt, /If you stopped at the check without raising a pull request, no pull request will close to ask you to sign off: Sign this session off unless you know otherwise/);
     assert.match(prompt, /`Signing off\.`/);
+    assert.doesNotMatch(prompt, /If you stopped at the check, no pull request/, 'the ask no longer reads as one for any session that stopped');
+  });
+
+  // A builder read the bare ask as one to sign off once it stopped, and
+  // signed off with its PR open: the sweep archived it, and a conflict
+  // later went to a fresh session with none of its context.
+  test('tells a session with an open PR to stay open until governor asks it to sign off', () => {
+    for (const prompts of [{}, { signOff: 'End with `Signing off.` and nothing after it.' }]) {
+      const prompt = promptFor(700, 'T', 'o/r', CLAIM, prompts, { signOff: true });
+      assert.match(prompt, /If you raised a pull request, do not sign off while it is open: this session stays open until governor asks you to sign off, once the pull request merges and its change deploys, or it closes\./);
+      assert.ok(prompt.indexOf('If you raised a pull request') < prompt.indexOf('If you stopped at the check'), 'the ask stays last');
+    }
   });
 
   test("asks in the repo's signOff prompt where it sets one", () => {
     const prompt = promptFor(700, 'T', 'o/r', CLAIM, { signOff: 'End with `Signing off.` and nothing after it.' }, { signOff: true });
-    assert.match(prompt, /If you stopped at the check, no pull request will close to ask you to sign off\. End with `Signing off\.` and nothing after it\.$/);
+    assert.match(prompt, /If you stopped at the check without raising a pull request, no pull request will close to ask you to sign off: End with `Signing off\.` and nothing after it\.$/);
     assert.doesNotMatch(prompt, /unless you know otherwise/);
   });
 

@@ -208,6 +208,42 @@ export const MESSAGE_COUNT = 'dispatch-message-count';
  * @typedef {{ raised: true } | { raised: false, first: boolean, count: number, counts: Record<string, number> }} Count
  */
 
+/**
+ * Count one message to `session` against each of `subjects`
+ * (`<repo>#<number>`, lower-cased repo), or against the session's pair
+ * with no subject where there are none. Null where it may go; why not,
+ * where a pair is at the ceiling, logged as {@link MESSAGE_CAPPED} at error
+ * for the hour's first held send and {@link MESSAGE_HELD} at info after.
+ * Each subject is one conditional update, so one raised before a refusal
+ * stays raised. A count that throws lets the send go, logged at warn: the
+ * ceiling guards against a loop, and a read failure must not stop a message.
+ * Every send into a running session goes through it: a delivery's `send`,
+ * and the sign-off sweep's held message (dispatch/turn.mjs).
+ *
+ * @param {{ count: DeliveryDeps['count'], log: DeliveryDeps['log'] }} deps
+ * @param {string} session
+ * @param {readonly string[]} subjects
+ * @param {string} kind
+ * @returns {Promise<string | null>}
+ */
+export const countAgainst = async ({ count: raise, log }, session, subjects, kind) => {
+  for (const subject of subjects.length === 0 ? [null] : subjects) {
+    /** @type {Count} */
+    let count;
+    try {
+      count = await raise({ session, subject, kind });
+    } catch (error) {
+      log(MESSAGE_COUNT, { level: 'warn', session, subject, kind, error: messageOf(error), outcome: 'sent uncounted' });
+      continue;
+    }
+    if (count.raised) continue;
+    const reason = `${session} has had ${count.count} messages about ${subject ?? 'no issue or PR'} this hour, the ceiling: nothing more about it goes to it until the hour ends`;
+    log(count.first ? MESSAGE_CAPPED : MESSAGE_HELD, { level: count.first ? 'error' : 'info', session, subject, kind, count: count.count, counts: count.counts, reason });
+    return reason;
+  }
+  return null;
+};
+
 /** How long a send that failed without a refusal waits before it is sent again. */
 const RESEND_DELAY_MS = 5_000;
 
@@ -256,7 +292,7 @@ const cliAnswer = (output) => {
  *
  * @param {import('./turn.mjs').LaunchResult} sent
  */
-const readSend = (sent) => {
+export const readSend = (sent) => {
   const answer = cliAnswer(sent.output);
   const ok = answer?.ok === true;
   return {
@@ -528,33 +564,16 @@ export const deliveries = (deps) => {
 
   /**
    * Count one message to `session` against each of its subjects, the
-   * issues and PRs it is about, or against the session's pair with no
-   * subject where it is about none. Null where it may go; a send result
-   * that did not go where a pair is at the ceiling. Each subject is one
-   * conditional update, so one raised before a refusal stays raised. A
-   * count that throws lets the send go, logged at warn: the ceiling guards
-   * against a loop, and a read failure must not stop a message.
+   * issues and PRs it is about ({@link countAgainst}). Null where it may
+   * go; a send result that did not go where a pair is at the ceiling.
    *
    * @param {string} session
    * @param {About} about
    */
   const counted = async (session, { subjects, kind }) => {
-    const pairs = subjects.length === 0 ? [null] : [...new Set(subjects)].sort((a, b) => a - b).map((n) => `${deps.repo.toLowerCase()}#${n}`);
-    for (const subject of pairs) {
-      /** @type {Count} */
-      let count;
-      try {
-        count = await deps.count({ session, subject, kind });
-      } catch (error) {
-        deps.log(MESSAGE_COUNT, { level: 'warn', session, subject, kind, error: messageOf(error), outcome: 'sent uncounted' });
-        continue;
-      }
-      if (count.raised) continue;
-      const reason = `${session} has had ${count.count} messages about ${subject ?? 'no issue or PR'} this hour, the ceiling: nothing more about it goes to it until the hour ends`;
-      deps.log(count.first ? MESSAGE_CAPPED : MESSAGE_HELD, { level: count.first ? 'error' : 'info', session, subject, kind, count: count.count, counts: count.counts, reason });
-      return { capped: /** @type {const} */ (true), ok: false, answered: false, sessionUrl: null, error: `held: ${reason}`, status: null };
-    }
-    return null;
+    const pairs = [...new Set(subjects)].sort((a, b) => a - b).map((n) => `${deps.repo.toLowerCase()}#${n}`);
+    const reason = await countAgainst(deps, session, pairs, kind);
+    return reason === null ? null : { capped: /** @type {const} */ (true), ok: false, answered: false, sessionUrl: null, error: `held: ${reason}`, status: null };
   };
 
   /**
