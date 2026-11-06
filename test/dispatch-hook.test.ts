@@ -687,6 +687,28 @@ describe('the hook table', () => {
     }
   });
 
+  // The claim label, beside the ready labels: the receiver tells from an
+  // issue's labels whether a comment, close or reopen also goes to the
+  // ticket's builders (route.mjs), and queues the ticket fire where the
+  // item cannot say.
+  test('the claim label is written beside the ready labels, and read back from the same item', async () => {
+    const c = client(() => ({}));
+    const at = '2026-09-21T12:00:00.000Z';
+    assert.equal(await hookTable(c as never, 'T').publish(REPO, { hooks: [], switches: {}, ready: READY, claim: 'workflow: under development' }, at), true);
+    const written = c.sent[0]!.input.Item as Record<string, unknown>;
+    assert.deepEqual(written.claim, { S: 'workflow: under development' });
+    const read = await hookTable(client(() => ({ Item: written })) as never, 'T').item(REPO);
+    assert.equal(read?.claim, 'workflow: under development');
+  });
+
+  test('an item written before it held the claim label reads none; a malformed one throws; an empty one, from a file with no claim label, reads empty', async () => {
+    assert.equal((await hookTable(client(() => ({ Item: { ...ITEM, claim: { S: '' } } })) as never, 'T').item(REPO))?.claim, '');
+    assert.equal((await hookTable(client(() => ({ Item: ITEM })) as never, 'T').item(REPO))?.claim, undefined);
+    for (const claim of [{ L: [] }, { N: '1' }, { BOOL: true }]) {
+      await assert.rejects(hookTable(client(() => ({ Item: { ...ITEM, claim } })) as never, 'T').item(REPO), /malformed/, JSON.stringify(claim));
+    }
+  });
+
   const SIG = 'a'.repeat(64);
   const refused = (item?: Record<string, unknown>) => client(() => {
     throw Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException', ...(item === undefined ? {} : { Item: item }) });
