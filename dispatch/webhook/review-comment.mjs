@@ -1,8 +1,9 @@
 /**
- * The PR review's comment (dispatch/review.mjs): its words, and what the
- * receiver reads from them. It lives beside the receiver because the
- * receiver's Lambda ships this directory alone, and it must tell a comment
- * the owner session can act on from one it cannot.
+ * The PR review's comment (dispatch/review.mjs): its words, and the marker
+ * the receiver reads to tell a person quoting it from governor. It lives
+ * beside the receiver because the receiver's Lambda ships this directory
+ * alone. The receiver reads no verdict from the words: the review turn
+ * messages the PR's owner itself, from its own answer ({@link asksOwner}).
  *
  * Pure: no I/O.
  */
@@ -175,31 +176,18 @@ export const commentKey = (text) => {
 };
 
 /**
- * Whether the owner session can act on the comment: a fail an edit
- * meets, a ticket to claim, either of those beside a later test
- * only a person meets, a red required check its push meets, or
- * a conflict, the review's or a merge to main's. A pass, and a fail
- * with nothing but a person's part, ask nothing of it. Only a comment it
- * can act on carries the fallback that takes a gone session's PR over,
- * and only such a fail is the `governor` check's `failure` rather than
- * `neutral` (dispatch/review.mjs).
+ * Whether the review's answer asks the owner session for work: a fail an
+ * edit meets, a ticket to claim, either of those beside a later test only
+ * a person meets, a red required check its push meets, or a pass that
+ * conflicts. A pass, and a fail with nothing but a person's part, ask
+ * nothing of it. Only an answer that asks carries the fallback that takes
+ * a gone session's PR over, and only such a fail is the `governor`
+ * check's `failure` rather than `neutral` (dispatch/review.mjs). It reads
+ * the answer, never the comment's words.
  *
- * @param {string} text
+ * @param {import('../checklist.mjs').Answer} answer
+ * @param {{ conflict: boolean }} options
  */
-export const ownerActs = (text) => {
-  const key = commentKey(text.trim());
-  return key !== null && (['conflict', 'claim', 'claim, then a person', 'push'].includes(key) || key.includes(', an edit meets it'));
-};
-
-/**
- * The comment's words without its marker: what the owner session is told.
- * The marker is the PR review's unless another of governor's comments
- * (the deploy comment, deployed-comment.mjs) names its own.
- *
- * @param {string} body
- * @param {string} [marker]
- */
-export const withoutMarker = (body, marker = REVIEW_MARKER) => {
-  const at = body.indexOf(marker);
-  return (at === -1 ? body : body.slice(0, at)).trim();
-};
+export const asksOwner = (answer, { conflict }) => (answer.answer === 'pass'
+  ? conflict
+  : answer.claim === true || answer.push === true || answer.person !== undefined || answer.editable);

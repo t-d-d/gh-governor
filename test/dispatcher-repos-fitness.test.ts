@@ -477,7 +477,7 @@ describe('fitness: a body names a session to route by only through relayedBody (
   });
 });
 
-describe('fitness: the receiver relays no comment governor\'s App posts on an issue (dispatcher-repos.md)', () => {
+describe('fitness: the receiver relays no comment governor\'s App posts (dispatcher-repos.md)', () => {
   const SECRET = 'whsec_fitness';
   const APP_ID = 5075844;
   const CLAIM = 'claimed';
@@ -554,10 +554,31 @@ describe('fitness: the receiver relays no comment governor\'s App posts on an is
     assert.ok(queued.some((q) => q.fire.kind === 'message'), routed.reason);
   });
 
-  test('the PR review\'s comment on a PR is out of the rule: it still reaches the PR\'s owner', () => {
-    const pr = { number: 12, title: 'A change', html_url: `https://github.com/${FACTORY}/pull/12`, body: `The change.\n\n${SPEC}`, pull_request: { url: 'x' }, user: member, author_association: 'OWNER' };
-    const routed = routeEvent({ event: 'issue_comment', payload: { action: 'created', issue: pr, comment: { id: 72, html_url: 'x', ...app, body: `Passes the PR review: closes #7 as written.\n\n${reviewMarker('a'.repeat(40), 'b'.repeat(64))}` }, repository: { full_name: FACTORY, default_branch: 'main' }, sender: app.user }, owners: ['acme'], appId: APP_ID });
-    assert.deepEqual(routed.fires.map((f) => [f.fire.kind, (f.fire as { session?: string }).session]), [['message', SPEC]]);
+  /** Every kind of comment governor posts on a PR: the PR review's, each verdict, and the trust refusal. */
+  const marker = reviewMarker('a'.repeat(40), 'b'.repeat(64));
+  const ON_PRS: Array<[string, string]> = [
+    ['a pass', `Passes the PR review: closes #7 as written.\n\n${marker}`],
+    ['a pass the owner merges', `Passes the PR review: closes #7 as written. The repo's owner merges it.\n\n${marker}`],
+    ['a fail an edit meets', `Waits for a description edit: name the criterion (test 2). An edit to the description meets it, and the review runs again on the edit.\n\n${marker}`],
+    ['a fail a person meets', `Waits for a person: the change adds an IAM grant (test 7). No edit to the description makes it pass. A person merges it.\n\n${marker}`],
+    ['a conflict', `Passes the PR review, but conflicts with its base: merging the base branch in is the author session's to push, and the review runs again on the push. Closes #7.\n\n${marker}`],
+    ['a trust refusal of a summons', untaskedComment({ author: 'someone', association: 'NONE', what: 'summoned' })],
+    ...COMMENTS,
+  ];
+  const pr = { number: 12, title: 'A change', html_url: `https://github.com/${FACTORY}/pull/12`, body: `The change.\n\n<!-- governor:subscribe ${WATCHER} -->\n\n${SPEC}`, pull_request: { url: 'x' }, user: member, author_association: 'OWNER' };
+  const onPr = (body: string) => routeEvent({ event: 'issue_comment', payload: { action: 'created', issue: pr, comment: { id: 72, html_url: 'x', ...app, body }, repository: { full_name: FACTORY, default_branch: 'main' }, sender: app.user }, owners: ['acme'], appId: APP_ID });
+
+  for (const [what, body] of ON_PRS) {
+    test(`${what} on a PR: no message or summons fire, to its owner or a subscriber`, () => {
+      const routed = onPr(body);
+      assert.deepEqual(routed.fires.map((f) => f.fire.kind), [], routed.reason);
+      assert.match(routed.reason, /record for people/);
+    });
+  }
+
+  test('a person\'s comment on the same PR still reaches its owner and subscriber, so the check above is not empty', () => {
+    const routed = routeEvent({ event: 'issue_comment', payload: { action: 'created', issue: pr, comment: { id: 73, html_url: 'x', user: member, author_association: 'OWNER', body: 'A remark.' }, repository: { full_name: FACTORY, default_branch: 'main' }, sender: member }, owners: ['acme'], appId: APP_ID });
+    assert.deepEqual(routed.fires.map((f) => [f.fire.kind, (f.fire as { session?: string }).session]), [['message', SPEC], ['message', WATCHER]]);
   });
 });
 

@@ -905,37 +905,24 @@ describe('routeEvent — subscribers', () => {
   });
 
   /**
-   * The PR review's comment is the record, and the owner hears every one
-   * as its own message fire, without the marker; a subscriber reads the
-   * comment. Only what the owner can act on, a fail an edit meets and a
-   * conflict, carries the fallback any comment carries: a pass or a fail
-   * no edit meets would start a session with nothing to do.
+   * The PR review's comment is a record for people. The review turn
+   * messages the PR's owner itself (dispatch/review.mjs), so the relay
+   * sends the comment to nobody, whatever it says, as it does every
+   * comment governor's App posts.
    */
-  test('the PR review\'s comment reaches the owner alone, whatever it says, with the fallback only where it can act on it', () => {
+  test('the PR review\'s comment reaches no session through the relay, whatever it says', () => {
     const bot = { user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE', performed_via_github_app: { id: APP_ID } };
     const marker = reviewMarker('a'.repeat(40), 'b'.repeat(64));
     for (const text of [
       'Passes the PR review: closes #717 as written.',
       'Passes the PR review: closes #717 as written. The repo\'s owner merges it.',
       'Waits for a person: the change adds an IAM grant (test 7). No edit to the description makes it pass. A person merges it.',
-    ]) {
-      const review = messages('issue_comment', commentEvent({ issue: prIssue() }, { ...bot, body: `${text}\n\n${marker}` }));
-      assert.deepEqual(review.sent.map((m) => [m.session, m.on, m.event]), [[OWNER, 724, 'comments']], text);
-      assert.equal(review.sent[0]!.fallback, undefined, text);
-      assert.ok(review.sent[0]!.text.includes(text));
-      assert.doesNotMatch(review.sent[0]!.text, /governor:pr-review/, 'the marker is the receiver\'s, not the session\'s to quote');
-    }
-    for (const text of [
       'Waits for a description edit: name the criterion (test 2). An edit to the description meets it, and the review runs again on the edit.',
       'Passes the PR review, but conflicts with its base: merging the base branch in is the author session\'s to push, and the review runs again on the push. Closes #717.',
       `Conflicts with its base since main moved to ${'c'.repeat(40)} (after #793 merged): merging the base branch in is the author session's to push, and the review runs again on the push.`,
     ]) {
       const review = messages('issue_comment', commentEvent({ issue: prIssue() }, { ...bot, body: `${text}\n\n${marker}` }));
-      assert.deepEqual(review.sent.map((m) => [m.session, m.on, m.event]), [[OWNER, 724, 'comments']], text);
-      assert.ok(review.sent[0]!.fallback, 'the owner is answered either way');
-      assert.ok(review.sent[0]!.text.includes(text));
-      assert.doesNotMatch(review.sent[0]!.text, /governor:pr-review/, 'the marker is the receiver\'s, not the session\'s to quote');
-      assert.doesNotMatch(review.sent[0]!.fallback!.prompt, /governor:pr-review/);
+      assert.deepEqual(review.all, [], text);
     }
   });
 
@@ -1583,7 +1570,7 @@ describe('handle', () => {
     assert.equal(queued[0]!.dedupId, 'd-1');
   });
 
-  test('the PR review\'s comment is told apart by the App ID the receiver is configured with', async () => {
+  test('governor\'s own comment on a PR is told apart by the App ID the receiver is configured with', async () => {
     const OWNER = 'https://claude.ai/code/session_01OWNERAAA';
     const REVIEWER = 'https://claude.ai/code/session_01REVIEWER';
     const payload = commentEvent({
@@ -1597,7 +1584,7 @@ describe('handle', () => {
       await handle(delivery('issue_comment', payload), deps);
       return queued.map((q) => (q.message.fire as { session: string }).session);
     };
-    assert.deepEqual(await sessions(APP_ID), [OWNER]);
+    assert.deepEqual(await sessions(APP_ID), [], 'governor\'s own comment is a record: the review turn told the owner');
     assert.deepEqual(await sessions(APP_ID + 1), [OWNER, REVIEWER]);
   });
 
@@ -2543,7 +2530,7 @@ describe('fitness: only text from an author trust.relay lets in reaches a runnin
     assert.deepEqual(relayed.map((m) => [m.session, m.authors]), [[OWNER, ['NONE', 'OWNER']]], 'the fire names whom it was judged by, for the task to judge again');
   });
 
-  test('a review bot\'s comment is relayed by default; governor\'s own review comment reaches the owner where relay drops BOT', () => {
+  test('a review bot\'s comment is relayed by default; governor\'s own review comment reaches no session either way', () => {
     const reviewBot = { user: { login: 'coderabbitai[bot]', type: 'Bot' }, author_association: 'NONE' };
     const byBot = sent(routed('issue_comment', commentEvent({ issue: sessionPr }, { body: 'Two findings.', ...reviewBot })));
     assert.deepEqual(byBot.map((m) => [m.session, m.authors]), [[OWNER, ['BOT', 'OWNER']]]);
@@ -2551,7 +2538,7 @@ describe('fitness: only text from an author trust.relay lets in reaches a runnin
     assert.deepEqual(sent(routed('issue_comment', commentEvent({ issue: sessionPr }, { body: 'Two findings.', ...reviewBot }), noBots)), []);
     const own = { user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE', performed_via_github_app: { id: APP_ID } };
     const review = sent(routed('issue_comment', commentEvent({ issue: sessionPr }, { body: `Waits for a person.\n\n${reviewMarker('a'.repeat(40), 'b'.repeat(64))}`, ...own }), noBots));
-    assert.deepEqual(review.map((m) => [m.session, m.authors]), [[OWNER, ['OWNER']]], 'governor\'s own App is never judged, nor named among the authors');
+    assert.deepEqual(review, [], 'governor\'s own comment is a record: the review turn told the owner');
   });
 
   test('a comment on a PR naming no session reaches the session on its head branch judged by the comment\'s author alone', () => {

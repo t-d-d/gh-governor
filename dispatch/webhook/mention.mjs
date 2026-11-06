@@ -16,8 +16,8 @@
  * last claude.ai/code link in its body (the attribution footer Claude Code
  * tells every session to end a PR description with), and a message wakes a
  * session whether its container is warm or gone. Such a PR is the
- * session's to keep, so every comment, review comment and review on it is
- * a `message` fire, mention or not, carrying the `dispatch` it would
+ * session's to keep, so every comment, review comment and review on it,
+ * but one governor's App posted, is a `message` fire, mention or not, carrying the `dispatch` it would
  * otherwise have been as its fallback, which the task starts only if the
  * session refuses (archived) and the PR is still open. A session's post
  * carries none: the owner's own is an echo, and another session's remark is
@@ -77,7 +77,7 @@
 
 import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
 import { closingNumbers } from './closing.mjs';
-import { REVIEW_MARKER, ownerActs, postedByApp, withoutMarker } from './review-comment.mjs';
+import { REVIEW_MARKER, postedByApp } from './review-comment.mjs';
 import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
 
 export const MENTION = '@claude';
@@ -218,34 +218,22 @@ const notASummons = ({ body, user, association, issue = false }) => {
 };
 
 /**
- * Whether `written` is the PR review's comment: it carries the review's
- * marker and the dispatcher's own App (`appId`) posted it as its bot.
- * Another App's, or a workflow's, is any bot's remark, and a
- * receiver that knows no App ID takes none for the review's.
- *
- * @param {Written | undefined} written
- * @param {number | undefined} appId
- */
-const reviewComment = (written, appId) => String(written?.body ?? '').includes(REVIEW_MARKER) && postedByApp(written, appId);
-
-/**
- * Whether `written` is a comment governor's App posted on an issue. On an
- * issue every such comment is a record for people, and the relay sends it
- * to nobody: the turn that posted it messaged the roles that should hear
- * it, so one turn decides who hears each fact governor states. That holds
- * for a dispatch comment, a blocker's close, a wait's comments, a trust
- * refusal, an issue review and a deploy alike, and for any kind written
- * later. A person's comment quoting governor's marker is a remark like any
- * other. A comment on a PR is out of the rule: the PR review's comment
- * still reaches the PR's owner here.
+ * Whether `written` is a comment governor's App posted, on an issue or a
+ * PR. Every such comment is a record for people, and the relay sends it
+ * to nobody: the turn that posted it messaged the sessions that should
+ * hear it, so one turn decides who hears each fact governor states. That
+ * holds for a dispatch comment, a blocker's close, a wait's comments, a
+ * trust refusal, an issue review, a deploy and the PR review's comment
+ * alike, and for any kind written later. A person's comment quoting
+ * governor's marker is a remark like any other.
  *
  * @param {Written | undefined} written
  * @param {number | undefined} appId
  */
 const governorComment = (written, appId) => postedByApp(written, appId);
 
-/** Why governor's own comment on issue `n` queued nothing. @param {unknown} n */
-const governorDropped = (n) => `governor's comment on #${n} is a record for people: the turn that posted it told the roles that should hear it`;
+/** Why governor's own comment on issue or PR `n` queued nothing. @param {unknown} n */
+const governorDropped = (n) => `governor's comment on #${n} is a record for people: the turn that posted it told the sessions that should hear it`;
 
 /**
  * The author of an issue, a PR or a remark in a payload, as a trust list
@@ -286,8 +274,8 @@ const kindsOf = (authors) => [...new Set(authors.filter((a) => a !== null && a.o
  * may: a review bot's findings are what a session waits for. A stranger's
  * may not, nor the dispatcher's own marker, nor a person quoting the PR
  * review's marker. Whose post it is decides only who is skipped
- * ({@link fanOut}); the PR review's comment reaches only the owner,
- * whatever it says.
+ * ({@link fanOut}). Governor's own comments never get here: the relay
+ * drops every one ({@link governorComment}).
  *
  * @param {{ written: Written | undefined, relay: readonly string[], appId: number | undefined }} args
  * @returns {string | null}
@@ -442,7 +430,6 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   fallback?: boolean,
  *   commit?: string,
  *   closing?: boolean,
- *   ownerOnly?: boolean,
  *   byBranch?: boolean,
  *   sessionPost?: boolean,
  *   unsigned?: boolean,
@@ -453,7 +440,6 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   carries no text; `onAuthor`: who opened `on`. A fire to a session the
  *   body names is judged by both, a fire to the live session on a PR's
  *   head branch by what was written alone, or by `onAuthor` for an event.
- *   `ownerOnly`: the PR's owner hears it, and no subscriber.
  *   `issue`: `on` is an issue, whose owner hears `deploys` only by a line.
  *   `byBranch`: `on` is a PR, and with no session its body names, the
  *   live session on its head branch is the owner; `sessionPost`, what was
@@ -464,7 +450,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   ({@link UNSIGNED}).
  * @returns {Fanout}
  */
-const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = false, commit, closing = false, ownerOnly = false, byBranch = false, sessionPost = false, unsigned = false, issue = false, reason }) => {
+const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = false, commit, closing = false, byBranch = false, sessionPost = false, unsigned = false, issue = false, reason }) => {
   /** @type {Queued[]} */
   const fires = [];
   /** @type {string[]} */
@@ -476,7 +462,6 @@ const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = fals
     else fires.push(messageFire({ prompt, subscriber: { session: null, owner: true }, poster, on, event, fallback, commit, closing, authors: kindsOf([by ?? onAuthor]), reason }));
   }
   for (const subscriber of subscribers) {
-    if (ownerOnly && !subscriber.owner) continue;
     if (poster !== null && sameSession(poster, subscriber.session)) {
       skipped.push(`${sessionId(poster)}'s own post`);
       continue;
@@ -730,7 +715,7 @@ const writtenFires = (written, event, payload, appId, relay, bodies) => {
   const action = payload?.action;
   const { on, pr, by, wanted, what, event: subscribed, prompt } = written(payload ?? {});
   const body = String(by?.body ?? '');
-  if (!pr && governorComment(by, appId)) return { fires: [], reason: governorDropped(on?.number) };
+  if (governorComment(by, appId)) return { fires: [], reason: governorDropped(on?.number) };
   const onAuthor = authorOf(on, appId);
   // The sessions `on` names, read only where `bodies` lets its author in.
   const onBody = relayedBody({ body: on?.body, ...onAuthor }, bodies);
@@ -761,17 +746,7 @@ const writtenFires = (written, event, payload, appId, relay, bodies) => {
     // comments, each of which arrives as an event of its own.
     parts.push({ fires: [], reason: `review ${by?.id} on #${on?.number} carries no text and no verdict: its comments arrive as their own events` });
   } else {
-    // The PR review's comment reaches the PR's owner alone, whatever it
-    // says: a subscriber reads it on the PR. The owner's fire carries the
-    // fallback only where the comment asks something of the session, so a
-    // gone session is replaced whenever in the review turn the comment was
-    // posted, and a pass or a person's wait starts no session with nothing
-    // to do.
-    const ownerOnly = reviewComment(by, appId);
     const refused = notAnUpdate({ written: by, relay, appId });
-    // The PR review's marker is the receiver's to read, not the session's
-    // to quote: a reply quoting it would be refused as a person's.
-    const told = ownerOnly ? { ...payload, comment: { ...payload?.comment, body: withoutMarker(body) } } : payload;
     parts.push(refused ? { fires: [], reason: refused } : fanOut({
       on,
       body: onBody,
@@ -779,15 +754,14 @@ const writtenFires = (written, event, payload, appId, relay, bodies) => {
       onAuthor,
       event: subscribed,
       poster: postedBy(body),
-      prompt: (role, limit) => prompt(told, role, limit),
+      prompt: (role, limit) => prompt(payload, role, limit),
       // An issue's owner, its filer, has nothing to hand over. Nor does a
       // session's post: the owner's own is an echo, and another session's
       // remark is not worth a takeover. A fresh session started on one
       // tends to post and sign off, and its post would start the next. A
       // person's reply quoting a session's post is the person's remark.
-      fallback: pr && !ownSessionPost(body) && (!ownerOnly || ownerActs(withoutMarker(body))),
+      fallback: pr && !ownSessionPost(body),
       issue: !pr,
-      ownerOnly,
       byBranch,
       sessionPost: ownSessionPost(body),
       unsigned: unsignedPost(body),
