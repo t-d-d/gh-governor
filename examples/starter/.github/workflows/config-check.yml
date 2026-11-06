@@ -10,8 +10,9 @@
 #
 # If your prompts live in files ({ "file": "<path>" } in governor.json),
 # add their paths under `paths:` too, so a change to one runs the check.
-# Likewise, if governor.json sets `sessionRules.file`, add that path under
-# `paths:`, so a change to the file that carries the block runs the check.
+# Likewise, if governor.json sets `sessionRules.file` to a file other than
+# CLAUDE.md, add that path under `paths:`, so a change to the file that
+# carries the block runs the check.
 name: config check
 
 on:

@@ -318,8 +318,9 @@ describe('the starter kit\'s config check', () => {
 
   test('runs on pull requests that change CLAUDE.md, and tells a repo that sets sessionRules.file to add its path', () => {
     assert.ok(workflow.on.pull_request?.paths?.includes('CLAUDE.md'), JSON.stringify(workflow.on.pull_request?.paths));
-    const header = text.slice(0, text.indexOf('\nname:'));
-    assert.match(header, /`?sessionRules\.file`?[\s\S]*paths|paths[\s\S]*`?sessionRules\.file`?/, header);
+    const end = text.indexOf('\nname:');
+    assert.ok(end > 0, 'the workflow opens with a comment header before name:');
+    assert.match(text.slice(0, end), /# .*sessionRules\.file[\s\S]*paths/, text.slice(0, end));
   });
 });
 
