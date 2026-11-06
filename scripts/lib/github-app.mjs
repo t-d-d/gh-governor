@@ -814,9 +814,10 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       const id = sessionId(session);
       const mine = (await named).filter((row) => row.sessions.has(id));
       const rows = await read;
+      const labelsOf = holding === undefined ? null : new Map(rows.map((r) => [r.number, r.labels]));
       const holds = (/** @type {OpenRow} */ row) => {
-        if (holding === undefined) return row;
-        const labels = rows.find((r) => r.number === row.number)?.labels ?? [];
+        if (labelsOf === null || holding === undefined) return row;
+        const labels = labelsOf.get(row.number) ?? [];
         return { ...row, holds: row.pull || labels.some((/** @type {string} */ l) => holding.includes(l)) };
       };
       const naming = mine.map(({ sessions: _sessions, ...row }) => holds(row));

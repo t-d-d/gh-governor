@@ -333,7 +333,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   ticket: (n: number) => Promise<{ title: string, body: string, pull?: boolean, author?: string, association?: string, app?: boolean }>,
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
  *   openPulls: () => Promise<import('../scripts/lib/github-app.mjs').OpenPullRow[]>,
- *   openNaming: (session: string, relay: readonly string[], options?: { claim?: string }) => Promise<OpenRow[]>,
+ *   openNaming: (session: string, relay: readonly string[], options?: { claim?: string, holding?: readonly string[] }) => Promise<OpenRow[]>,
  *   commit: (sha: string) => Promise<{ sha: string, message: string, parents?: string[] }>,
  * }} DeliveryReader
  *   The GitHub reads and writes a delivery makes.
@@ -622,7 +622,7 @@ export const deliveries = (deps) => {
       const owners = await Promise.all(unnamed.map((p) => find(p.head)));
       return unnamed
         .filter((_, i) => { const owner = owners[i]; return typeof owner === 'string' && sameSession(owner, session); })
-        .map((p) => /** @type {OpenRow} */ ({ number: p.number, title: p.title, html_url: p.html_url, pull: true, ...(deps.holding === undefined ? {} : { holds: true }) }));
+        .map((p) => /** @type {OpenRow} */ ({ number: p.number, title: p.title, html_url: p.html_url, pull: true }));
     } catch (error) {
       throw new Error(`could not ask the sessions API which open PRs are ${session}'s: ${messageOf(error)}`);
     }
