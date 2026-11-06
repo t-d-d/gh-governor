@@ -68,14 +68,18 @@
  * starts is told in its opening prompt (`SIGN_POSTS`, fire.mjs). A
  * session's post naming no session may be any subscriber's, so it reaches
  * every one, and the message says so ({@link UNSIGNED}). An author that
- * reads its own post back posts nothing and signs the next one. Skipping
+ * reads its own post back posts nothing and signs the next one. Under
+ * `sessionRules` each fire carries the post, and the task searches the
+ * login's live sessions for its author before it relays, so it drops the
+ * line and skips the author (dispatch/author.mjs); a post no fire relays
+ * queues an `author` fire ({@link authorFires}). Skipping
  * the owner instead would lose a reviewer session's remark, and an owner
  * that nothing wakes leaves its PR idle.
  *
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
-import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
+import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets, postWords } from './fire.mjs';
 import { closingNumbers } from './closing.mjs';
 import { REVIEW_MARKER, postedByApp } from './review-comment.mjs';
 import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, unsignedSessionBody, withoutQuotes } from './subscribe.mjs';
@@ -376,6 +380,7 @@ const summonedTicket = (issue, bodies, appId) => {
  *   closing?: boolean,
  *   issue?: boolean,
  *   unsigned?: boolean,
+ *   post?: import('./fire.mjs').UnsignedPost | null,
  *   offer?: string | null,
  *   moved?: import('./fire.mjs').MovedLink | undefined,
  *   authors: string[],
@@ -383,7 +388,9 @@ const summonedTicket = (issue, bodies, appId) => {
  * }} args `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
  *   `authors`: the kinds the fire was judged by, which the task judges again.
  *   `unsigned`: a session's post naming no session, which the message says
- *   ({@link UNSIGNED}). A session's post carries no fallback.
+ *   ({@link UNSIGNED}). A session's post carries no fallback. `post`: the
+ *   unsigned post, which the fire carries so the task can search for its
+ *   author before it relays ({@link unsignedOf}).
  *   `offer`: the session that signed a comment on an issue, which the
  *   owner's fire names, so the task offers it the issue should the owner
  *   refuse as archived (dispatch/offer.mjs).
@@ -391,7 +398,7 @@ const summonedTicket = (issue, bodies, appId) => {
  *   moved the owner link from (dispatch/take.mjs).
  * @returns {Queued}
  */
-const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, offer = null, moved, authors, reason }) => {
+const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, post = null, offer = null, moved, authors, reason }) => {
   const role = owner ? 'owner' : 'subscriber';
   const number = Number.isInteger(on?.number) ? on.number : undefined;
   /** @param {string} text @returns {MessageFire} */
@@ -406,6 +413,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
     authors,
     offer: owner && issue && event === 'comments' ? offer : null,
     moved: owner && issue ? moved : undefined,
+    unsigned: unsigned ? post : null,
     fallback: owner && fallback
       ? { prompt: `${text}\n${HANDOFF}\n${UNATTENDED}`, sessionName: sessionName(on?.number, on?.title), issue: number }
       : undefined,
@@ -442,6 +450,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   byBranch?: boolean,
  *   sessionPost?: boolean,
  *   unsigned?: boolean,
+ *   post?: import('./fire.mjs').UnsignedPost | null,
  *   issue?: boolean,
  *   reason: string,
  * }} args `body`: `on`'s body as {@link relayedBody} lets sessions be read
@@ -456,10 +465,10 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   is that session's own. `unsigned`: a
  *   session posted it and did not sign it (`unsignedPost`), so any
  *   subscriber may have written it, and each hears of it, told so
- *   ({@link UNSIGNED}).
+ *   ({@link UNSIGNED}). `post`: that post, as each fire carries it.
  * @returns {Fanout}
  */
-const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = false, commit, closing = false, byBranch = false, sessionPost = false, unsigned = false, issue = false, reason }) => {
+const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = false, commit, closing = false, byBranch = false, sessionPost = false, unsigned = false, post = null, issue = false, reason }) => {
   /** @type {Queued[]} */
   const fires = [];
   /** @type {string[]} */
@@ -475,7 +484,7 @@ const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = fals
       skipped.push(`${sessionId(poster)}'s own post`);
       continue;
     }
-    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, issue, unsigned, offer: poster, authors: named, reason }));
+    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, issue, unsigned, post, offer: poster, authors: named, reason }));
   }
   const heard = fires.length === 0 && skipped.length === 0 ? [`${reason}: nobody subscribes to ${event}`] : [];
   return { fires, reason: [...fires.map((f) => f.reason), ...skipped, ...heard].join('; ') };
@@ -801,6 +810,7 @@ const writtenFires = (written, event, payload, appId, relay, bodies) => {
       byBranch,
       sessionPost: ownSessionPost(body),
       unsigned: unsignedPost(body),
+      post: unsignedOf(by),
       reason: `${what} ${by?.id} on #${on?.number}`,
     }));
   }
@@ -1050,7 +1060,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
   // The spec owner the body names, read only where `bodies` lets its author in.
   const { state, labels, owner = null } = summonedTicket(issue, bodies, appId);
   if (labels.length === 0) return none;
-  /** @type {{ text: (limit: number) => string, event: 'comments' | 'close' | 'edit', poster: string | null, closing: boolean, authors: string[], what: string, moved?: import('./fire.mjs').MovedLink | undefined }} */
+  /** @type {{ text: (limit: number) => string, event: 'comments' | 'close' | 'edit', poster: string | null, closing: boolean, authors: string[], what: string, moved?: import('./fire.mjs').MovedLink | undefined, unsigned?: import('./fire.mjs').UnsignedPost | null }} */
   let about;
   if (event === 'issue_comment') {
     const comment = payload?.comment;
@@ -1066,6 +1076,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
       closing: false,
       authors: kindsOf([authorOf(comment, appId), onAuthor]),
       what: `comment ${comment?.id} on #${issue.number}`,
+      unsigned: unsigned ? unsignedOf(comment) : null,
     };
   } else if (event === 'issues' && (payload?.action === 'closed' || payload?.action === 'reopened')) {
     if (!lets(relay, onAuthor)) return none;
@@ -1092,7 +1103,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
     return none;
   }
   /** @param {string} text */
-  const fire = (text) => build.ticket({ issue: issue.number, text, event: about.event, state, labels, owner, poster: about.poster, closing: about.closing, authors: about.authors, moved: about.moved });
+  const fire = (text) => build.ticket({ issue: issue.number, text, event: about.event, state, labels, owner, poster: about.poster, closing: about.closing, authors: about.authors, moved: about.moved, unsigned: about.unsigned });
   let limit = EXCERPT_CHARS;
   let built = fire(about.text(limit));
   while (fireWeight(built) > FIRE_BUDGET && limit > 1) {
@@ -1132,4 +1143,59 @@ export const offerFires = ({ event, payload, appId, relay = RELAY, bodies = rela
   if (!unsignedSessionBody(relayedBody({ body: issue?.body, ...onAuthor }, bodies))) return none;
   const reason = `comment ${comment?.id} on #${issue.number}, whose body a session filed unsigned: offer the issue to ${sessionId(session)}`;
   return { fires: [{ fire: build.offer({ issue: issue.number, session, authors: kindsOf([authorOf(comment, appId), onAuthor]) }), reason, key: 'offer' }], reason };
+};
+
+/**
+ * A session's unsigned post as a fire carries it (`UnsignedPost`,
+ * fire.mjs): when it was posted, from the payload, its page, and its first
+ * words. Null where `written` is not a session's unsigned post
+ * (`unsignedPost`), or where the payload names no time or no github.com
+ * page for it, so there is nothing to search by.
+ *
+ * @param {Written | undefined} written a comment, a review or a review comment
+ * @returns {import('./fire.mjs').UnsignedPost | null}
+ */
+export const unsignedOf = (written) => {
+  const body = String(written?.body ?? '');
+  if (!unsignedPost(body)) return null;
+  const at = /** @type {any} */ (written)?.created_at ?? /** @type {any} */ (written)?.submitted_at;
+  const url = /** @type {any} */ (written)?.html_url;
+  if (typeof at !== 'string' || at.length > 40 || !Number.isFinite(Date.parse(at))) return null;
+  if (typeof url !== 'string' || url.length > 300 || !/^https:\/\/github\.com\/\S+$/.test(url)) return null;
+  return { at, url, words: postWords(body) };
+};
+
+/**
+ * The `author` fire a session's unsigned post may queue: a comment, a
+ * review or a review comment, on an issue or a PR, that ends in the Claude
+ * Code footer and names no session (`unsignedPost`). The task searches the
+ * login's live sessions for its author and tells it (dispatch/author.mjs),
+ * under `sessionRules` alone.
+ *
+ * The receiver queues it beside the delivery's other fires, and keeps it
+ * only where none of them relays the post (`settleAuthor`, route.mjs): a
+ * relay's own turn runs the search. So a post no role hears, because
+ * nobody holds a role or the repo's file turns the relay's switch off, is
+ * still searched. A post on a PR whose body names no session is taken for
+ * the head branch's local session's own, which cannot sign, and queues
+ * none. What reaches no session queues none either: an edited post,
+ * governor's own, a stranger's.
+ *
+ * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[], bodies?: readonly string[] }} args
+ * @returns {{ fires: Array<{ fire: import('./fire.mjs').AuthorFire, reason: string, key: string }>, reason: string }}
+ */
+export const authorFires = ({ event, payload, appId, relay = RELAY, bodies = relay }) => {
+  const none = { fires: [], reason: '' };
+  const written = WRITTEN[String(event)];
+  if (written === undefined) return none;
+  const { on, pr, by, wanted, what } = written(payload ?? {});
+  if (payload?.action !== wanted || !Number.isInteger(on?.number) || on.number <= 0) return none;
+  if (governorComment(by, appId) || notAnUpdate({ written: by, relay, appId }) !== null) return none;
+  const post = unsignedOf(by);
+  if (post === null) return none;
+  const onAuthor = authorOf(on, appId);
+  const onBody = relayedBody({ body: on?.body, ...onAuthor }, bodies);
+  if (pr && sessionNamedIn(onBody) === null) return none;
+  const reason = `${what} ${by?.id} on #${on.number} names no session: search the live sessions for its author`;
+  return { fires: [{ fire: build.author({ on: on.number, post, authors: kindsOf([authorOf(by, appId), onAuthor]) }), reason, key: 'author' }], reason };
 };

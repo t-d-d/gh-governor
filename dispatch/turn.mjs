@@ -118,6 +118,7 @@ import { planUnblocked } from './unblocked-fire.mjs';
 import { planClosingPr, planTicket } from './ticket-fire.mjs';
 import { offerAfterRefusal, planOffer } from './offer.mjs';
 import { planPrEdit, takeAfterNotice } from './take.mjs';
+import { planAuthor, relayedText, searchAuthor, tellAuthor, wroteIt } from './author.mjs';
 import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken, turnResends } from '../scripts/lib/github-app.mjs';
@@ -644,7 +645,7 @@ const turnOf = async (event, deps, built) => {
     // The first switch the fire needs that the file does not turn on: a
     // `prEdit` fire needs two (switchesOf).
     const name = switchesOf(invocation, one.config.workflows).find((needed) => !turnsOn(one.config, needed)) ?? null;
-    const relayed = invocation.kind === 'message' || invocation.kind === 'ticket' || invocation.kind === 'offer' || invocation.kind === 'prEdit';
+    const relayed = invocation.kind === 'message' || invocation.kind === 'ticket' || invocation.kind === 'offer' || invocation.kind === 'prEdit' || invocation.kind === 'author';
     const unheard = relayed ? unrelayed(invocation, relayOf(one.config)) : null;
     // An unblocked fire's switch is its ticket's state's (dispatch/unblocked.mjs):
     // with both off, no row acts. Its turn still reads the ticket once, for a
@@ -660,7 +661,7 @@ const turnOf = async (event, deps, built) => {
       // may lag the file, and dropped only an author outside the three. A
       // refusal here is as silent: no comment, no page.
       refusal = unheard;
-      deps.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, session: 'session' in invocation ? invocation.session : null, on: invocation.kind === 'message' ? invocation.on ?? null : invocation.kind === 'prEdit' ? invocation.pr : invocation.issue, reason: refusal });
+      deps.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, session: 'session' in invocation ? invocation.session : null, on: invocation.kind === 'message' ? invocation.on ?? null : invocation.kind === 'prEdit' ? invocation.pr : invocation.kind === 'author' ? invocation.on : invocation.issue, reason: refusal });
     } else if (invocation.kind === 'hook') {
       // The receiver read no file: a hook it lists no more, or a key version
       // it has moved past, is refused here (dispatch/hooks.mjs).
@@ -859,7 +860,7 @@ const heldBy = (deps, served, tokenFor, budgeted, until) => {
  * queued before the receiver judged by them names none, and was judged by
  * the defaults (dispatch/webhook/fire.mjs).
  *
- * @param {import('./webhook/fire.mjs').MessageFire | import('./webhook/fire.mjs').TicketFire | import('./webhook/fire.mjs').OfferFire | import('./webhook/fire.mjs').PrEditFire} fire
+ * @param {import('./webhook/fire.mjs').MessageFire | import('./webhook/fire.mjs').TicketFire | import('./webhook/fire.mjs').OfferFire | import('./webhook/fire.mjs').PrEditFire | import('./webhook/fire.mjs').AuthorFire} fire
  * @param {readonly string[]} relay
  * @returns {string | null}
  */
@@ -1173,6 +1174,7 @@ const runOpen = (deps) => {
  *   log: Deps['log'],
  *   sleep: Deps['sleep'],
  *   cap: number,
+ *   findAuthor: import('./author.mjs').FindAuthor,
  * }} TurnContext
  *   `readerFor`: a repo's reader, one a turn. `configOf`: a served repo's
  *   config. `prompts`: the fire's repo's, none for the bare schedule fire.
@@ -1182,7 +1184,9 @@ const runOpen = (deps) => {
  *   whether a periodic's or a hook's last session is still open, under a
  *   token refreshed once a turn. `claims`: the tickets the turn claimed that
  *   no marker covers yet ({@link Deps}). `beats`: where the bare fire adds
- *   its heartbeat lines, for `run` to write.
+ *   its heartbeat lines, for `run` to write. `findAuthor`: the search of
+ *   the login's live sessions for a session's unsigned post in the fire's
+ *   repo (dispatch/author.mjs).
  */
 
 /**
@@ -1363,8 +1367,45 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     return other;
   };
 
+  /** The login's token for the author search, read at most once a turn. */
+  const authorToken = loginToken(deps, 'search the sessions for a post\'s author');
+  /**
+   * The search of the login's live sessions for the author of a session's
+   * unsigned post in the fire's repo, under the login's token, refreshed
+   * once where it has expired: the search runs before any send, so no CLI
+   * has refreshed it yet, and an author fire sends nothing else
+   * (dispatch/author.mjs). A refresh that fails, or a list that cannot be
+   * read, is no search.
+   *
+   * @type {import('./author.mjs').FindAuthor}
+   */
+  const findAuthor = async (on, post) => {
+    /** @type {string} */
+    let token;
+    try {
+      token = await authorToken();
+    } catch (error) {
+      return { searched: false, reason: messageOf(error) };
+    }
+    return searchAuthor({
+      list: () => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
+      events: (id, cursor) => deps.sessions.events(id, token, cursor),
+      repo: fireRepo(),
+      on,
+      post,
+    });
+  };
+
   if (invocation.kind === 'message') {
     const { on, event, commit, closing, text, fallback } = invocation;
+    // A session's unsigned post, under sessionRules: its author is searched
+    // for before the relay, which then drops its UNSIGNED line, and is not
+    // relayed its own post (dispatch/author.mjs).
+    const post = invocation.unsigned !== undefined && on !== undefined && repo !== undefined && turnsOn(configOf(repo), 'sessionRules') ? invocation.unsigned : null;
+    /** @type {import('./author.mjs').Found | null} */
+    let found = null;
+    /** The author's nudge, or each candidate's. @type {import('./deliveries.mjs').Delivery[]} */
+    let nudged = [];
     /** @type {import('./deliveries.mjs').Delivery} */
     let told = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: null, relinked: null };
     let loginStored = false;
@@ -1377,11 +1418,14 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     /** The take's confirmation or the correction. @type {import('./deliveries.mjs').Delivery | null} */
     let took = null;
     try {
+      if (post !== null && on !== undefined) found = await findAuthor(on, post);
       if (moved !== null && moved.from === undefined) {
         told = { ...told, skipped: 'the old body named no owner to tell of the edit' };
+      } else if ('session' in invocation && wroteIt(found, invocation.session)) {
+        told = { ...told, skipped: 'the session wrote the post, unsigned: it is told to sign it instead' };
       } else told = await delivery().deliver(
         'byBranch' in invocation ? { pr: invocation.on, ...(invocation.poster === undefined ? {} : { poster: invocation.poster }) } : { session: moved?.from ?? invocation.session },
-        text,
+        relayedText(text, found),
         {
           source: GITHUB_SOURCE,
           kind: 'relay',
@@ -1416,6 +1460,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           log: deps.log,
         });
       }
+      if (post !== null && found !== null && on !== undefined && repo !== undefined) {
+        nudged = await tellAuthor({ repo, on, post, found, tellOnce: (session, kind) => deps.state.recordTold(session, kind), deliveries: delivery(), log: deps.log });
+      }
     } finally {
       loginStored = await storeIfRefreshed(deps, original, account);
     }
@@ -1424,7 +1471,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // dispatcher failure (dispatch/cli.mjs). Any other answer with ok:false
     // (a revoked login, a 5xx), or a fallback that was tried, stays one.
     const archived = told.refused && told.fallback === null;
-    return { kind: 'message', ...told, archived, loginStored, ...(offered === null ? {} : { offered }), ...(took === null ? {} : { took }) };
+    return { kind: 'message', ...told, archived, loginStored, ...(offered === null ? {} : { offered }), ...(took === null ? {} : { took }), ...(nudged.length === 0 ? {} : { nudged }) };
   }
 
   // A red run on the default branch, or a shipping job that succeeded there: the PR(s)
@@ -1864,6 +1911,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     log: deps.log,
     sleep: deps.sleep,
     cap: deps.cap,
+    findAuthor,
   };
   const started = deps.now();
   /** The plan a kind's planner returned. @type {Plan | undefined} */
@@ -1882,6 +1930,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     planned = await planOffer(invocation, ctx);
   } else if (invocation.kind === 'prEdit') {
     planned = await planPrEdit(invocation, ctx);
+  } else if (invocation.kind === 'author') {
+    planned = await planAuthor(invocation, ctx);
   } else if (invocation.kind === 'dispatch') {
     planned = await planDispatch(invocation, ctx);
   }
