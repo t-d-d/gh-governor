@@ -131,12 +131,125 @@ export const shellBody = (command) => {
 };
 
 /**
+ * The commands of a shell line, each as its own text: the line split on
+ * `;`, `&&`, `||` and newlines that stand outside quotes, a backslash
+ * escape, a command substitution `$(…)` and a here document. A here
+ * document's lines stay with the command that opened it. Parts that hold
+ * nothing but blanks are dropped, and each part is trimmed.
+ *
+ * @param {string} line
+ * @returns {string[]}
+ */
+export const shellCommands = (line) => {
+  /** @type {string[]} */
+  const parts = [];
+  let part = '';
+  /** The here documents opened on the current line, each with the index its command takes among `parts`. */
+  /** @type {Array<{ word: string, tabs: boolean, owner: number }>} */
+  let docs = [];
+  /** How deep in `$(…)` the reader stands. */
+  let depth = 0;
+  const cut = () => {
+    if (part.trim() !== '') parts.push(part.trim());
+    part = '';
+  };
+  let i = 0;
+  while (i < line.length) {
+    const c = line[i] ?? '';
+    const rest = line.slice(i);
+    if (c === '\\') {
+      part += rest.slice(0, 2);
+      i += 2;
+    } else if (c === "'") {
+      const end = line.indexOf("'", i + 1);
+      const to = end === -1 ? line.length : end + 1;
+      part += line.slice(i, to);
+      i = to;
+    } else if (c === '"') {
+      let j = i + 1;
+      while (j < line.length && line[j] !== '"') j += line[j] === '\\' ? 2 : 1;
+      const to = Math.min(j + 1, line.length);
+      part += line.slice(i, to);
+      i = to;
+    } else if (rest.startsWith('$(')) {
+      depth += 1;
+      part += '$(';
+      i += 2;
+    } else if (c === '(' && depth > 0) {
+      depth += 1;
+      part += c;
+      i += 1;
+    } else if (c === ')' && depth > 0) {
+      depth -= 1;
+      part += c;
+      i += 1;
+    } else if (rest.startsWith('<<') && !rest.startsWith('<<<')) {
+      // A here document: its delimiter, quoted or not, ends it on a line of its own.
+      const opener = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()]+))/.exec(rest);
+      if (opener === null) {
+        part += '<<';
+        i += 2;
+      } else {
+        docs.push({ word: opener[2] ?? opener[3] ?? opener[4] ?? '', tabs: opener[1] === '-', owner: parts.length });
+        part += opener[0];
+        i += opener[0].length;
+      }
+    } else if (c === '\n' && docs.length > 0) {
+      // The here documents opened on this line run from the next line, each
+      // to its delimiter, and each joins the command that opened it.
+      let at = i + 1;
+      for (const { word, tabs, owner } of docs) {
+        const from = at;
+        while (at < line.length) {
+          const eol = line.indexOf('\n', at);
+          const text = line.slice(at, eol === -1 ? line.length : eol);
+          at = eol === -1 ? line.length : eol + 1;
+          if ((tabs ? text.replace(/^\t+/, '') : text) === word) break;
+        }
+        const body = `\n${line.slice(from, at).replace(/\n$/, '')}`;
+        if (owner < parts.length) parts[owner] += body;
+        else part += body;
+      }
+      docs = [];
+      i = at;
+      if (depth === 0) cut();
+    } else if (depth === 0 && (c === '\n' || c === ';' || rest.startsWith('&&') || rest.startsWith('||'))) {
+      cut();
+      i += c === '\n' || c === ';' ? 1 : 2;
+    } else {
+      part += c;
+      i += 1;
+    }
+  }
+  cut();
+  return parts;
+};
+
+/**
+ * The first match `judge` finds among a shell line's commands
+ * ({@link shellCommands}), each judged on its own, or null where none
+ * matches: two commands joined on one line are two calls.
+ *
+ * @param {string} line
+ * @param {(command: string) => { text: string | null } | null} judge
+ * @returns {{ text: string | null } | null}
+ */
+export const firstCommand = (line, judge) => {
+  for (const command of shellCommands(line)) {
+    const found = judge(command);
+    if (found !== null) return found;
+  }
+  return null;
+};
+
+/**
  * Whether a tool call posted to `repo`'s issue or PR `on`, and the text its
  * input carries, if any: `{ text }`, with `text` null where the input names
  * the target but not the post's text (a body read from a file), or null
  * where the call did not post there.
  *
- * - A shell command posts there where it writes (`gh api` with a field or
+ * - A shell command, each command of its line judged on its own
+ *   ({@link shellCommands}), posts there where it writes (`gh api` with a field or
  *   `--input`, a method other than GET, or `gh issue comment` / `gh pr
  *   comment` / `gh pr review`) to `repos/<repo>/issues/<on>` or
  *   `repos/<repo>/pulls/<on>`, or names `on` to the `gh` subcommand. A
@@ -158,8 +271,7 @@ export const postedTo = (call, repo, on) => {
   const input = /** @type {Record<string, unknown> | null} */ (call.input !== null && typeof call.input === 'object' ? call.input : null);
   if (input === null) return null;
   const [owner = '', name = ''] = repo.toLowerCase().split('/');
-  if (typeof input.command === 'string') {
-    const command = input.command;
+  if (typeof input.command === 'string') return firstCommand(input.command, (command) => {
     const path = new RegExp(`repos/(?:${escaped(owner)}/${escaped(name)}|\\{owner\\}/\\{repo\\})/(?:issues|pulls)/${on}(?![0-9])`, 'i');
     const cli = new RegExp(`\\bgh\\s+(?:issue\\s+comment|pr\\s+comment|pr\\s+review)\\s+#?${on}(?![0-9])`);
     const viaCli = cli.test(command) && repoNamedIn(command, repo);
@@ -167,7 +279,7 @@ export const postedTo = (call, repo, on) => {
     if (!viaCli && !(path.test(command) && writes)) return null;
     // A write that carries no body, such as a label or an approval, posted no comment.
     return shellBody(command);
-  }
+  });
   const tool = String(call.name ?? '').replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '');
   if (/(?:^|_)(?:get|list|search|read)(?:_|$)/i.test(tool)) return null;
   if (String(input.owner ?? '').toLowerCase() !== owner || String(input.repo ?? '').toLowerCase() !== name) return null;

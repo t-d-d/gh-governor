@@ -35,7 +35,7 @@
  * event.
  */
 
-import { NUMBER_KEYS, escaped, readCandidate, readsOnly, repoNamedIn, searchAuthor, shellBody, tellFound } from './author.mjs';
+import { NUMBER_KEYS, escaped, firstCommand, readCandidate, readsOnly, repoNamedIn, searchAuthor, shellBody, tellFound } from './author.mjs';
 import { SESSION_RULES } from './session-rules.mjs';
 import { EDIT_SPEC_OWNER } from './webhook/mention.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
@@ -61,7 +61,8 @@ export const EDITOR = 'dispatch-editor';
  * names the issue but not the body (a body read from a file), or null
  * where the call made no body edit there.
  *
- * - A shell command edits it where it writes to `repos/<repo>/issues/<on>`
+ * - A shell command, each command of its line judged on its own
+ *   ({@link import('./author.mjs').shellCommands}), edits it where it writes to `repos/<repo>/issues/<on>`
  *   itself, not a path under it such as its comments, with `gh api` and a
  *   method other than GET, or runs `gh issue edit <on>`, and carries a
  *   body: inline (`body=`, `--body`, `-b`, a here document), unless the
@@ -78,8 +79,7 @@ export const editedBody = (call, repo, on) => {
   const input = /** @type {Record<string, unknown> | null} */ (call.input !== null && typeof call.input === 'object' ? call.input : null);
   if (input === null) return null;
   const [owner = '', name = ''] = repo.toLowerCase().split('/');
-  if (typeof input.command === 'string') {
-    const command = input.command;
+  if (typeof input.command === 'string') return firstCommand(input.command, (command) => {
     const path = new RegExp(`repos/(?:${escaped(owner)}/${escaped(name)}|\\{owner\\}/\\{repo\\})/issues/${on}(?![0-9/])`, 'i');
     // The issue may follow flags, such as `-R <repo>`, or be named by its page.
     const cli = new RegExp(`\\bgh\\s+issue\\s+edit\\s+(?:-\\S+(?:\\s+[^-\\s]\\S*)?\\s+)*(?:#?|https://github\\.com/${escaped(owner)}/${escaped(name)}/issues/)${on}(?![0-9])`, 'i');
@@ -87,7 +87,7 @@ export const editedBody = (call, repo, on) => {
     if (!viaCli && !(path.test(command) && !readsOnly(command))) return null;
     // A write with no body, a title or a label, made no body edit.
     return shellBody(command);
-  }
+  });
   const tool = String(call.name ?? '').replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '');
   if (/(?:^|_)(?:get|list|search|read)(?:_|$)/i.test(tool) || /comment|review|pull/i.test(tool)) return null;
   if (String(input.owner ?? '').toLowerCase() !== owner || String(input.repo ?? '').toLowerCase() !== name) return null;

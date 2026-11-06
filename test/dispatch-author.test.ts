@@ -25,7 +25,7 @@ import { build, parseFire, postWords } from '../dispatch/webhook/fire.mjs';
 import { droppedBy, switchesOf } from '../dispatch/webhook/switches.mjs';
 import { UNSIGNED } from '../dispatch/webhook/mention.mjs';
 import { SWITCHES, readConfig, type RepoConfig } from '../dispatch/repo-config.mjs';
-import { AUTHOR_AFTER_MS, AUTHOR_BEFORE_MS, candidatesOf, maybeText, nudgeText, planAuthor, postedTo, relayedText, searchAuthor, tellAuthor } from '../dispatch/author.mjs';
+import { AUTHOR_AFTER_MS, AUTHOR_BEFORE_MS, candidatesOf, maybeText, shellCommands, nudgeText, planAuthor, postedTo, relayedText, searchAuthor, tellAuthor } from '../dispatch/author.mjs';
 import { planTicket } from '../dispatch/ticket-fire.mjs';
 import { SESSION_RULES } from '../dispatch/session-rules.mjs';
 import { exitCodeFor } from '../dispatch/cli.mjs';
@@ -258,6 +258,41 @@ describe('postedTo: a tool call that posted to the issue or PR', () => {
   test('a body the shell expands is a text the command does not carry', () => {
     assert.deepEqual(postedTo({ name: 'Bash', input: { command: 'gh api repos/acme/factory/issues/7/comments -f body="$BODY"' } }, REPO, 7), { text: null });
     assert.deepEqual(postedTo({ name: 'Bash', input: { command: 'gh pr comment 7 --body "$(cat /tmp/c.md)"' } }, REPO, 7), { text: null });
+  });
+
+  test('a shell line that comments on one issue and edits another names each to its own target', () => {
+    const comment = 'gh issue comment 7 --body "A note on seven"';
+    const edit = 'gh api -X PATCH repos/acme/factory/issues/8 -f body="The new body of eight"';
+    const line = `${comment}; ${edit}`;
+    assert.deepEqual(postedTo({ name: 'Bash', input: { command: line } }, REPO, 7), { text: comment });
+    assert.deepEqual(postedTo({ name: 'Bash', input: { command: line } }, REPO, 8), { text: edit });
+  });
+
+  test('a shell line that reads the issue and then writes elsewhere posted nothing to it', () => {
+    assert.equal(postedTo({ name: 'Bash', input: { command: 'gh api repos/acme/factory/issues/7 --jq .body || gh api repos/acme/factory/issues/8/comments -f body=x' } }, REPO, 7), null);
+  });
+
+  test('a here document that holds a semicolon or a newline is still one command', () => {
+    const post = "gh api repos/acme/factory/issues/7/comments --input - <<-EOF\n\t{\"body\": \"One; two\nthree || four\"}\n\tEOF";
+    assert.deepEqual(postedTo({ name: 'Bash', input: { command: `${post}\ngh issue comment 8 --body later` } }, REPO, 7), { text: post });
+  });
+});
+
+describe('shellCommands: the commands of a shell line', () => {
+  test('a line splits on ;, &&, || and newlines', () => {
+    assert.deepEqual(shellCommands('a 1; b 2 && c 3 || d 4\ne 5'), ['a 1', 'b 2', 'c 3', 'd 4', 'e 5']);
+  });
+
+  test('quotes, a backslash, a substitution and a redirect keep their marks', () => {
+    assert.deepEqual(shellCommands(`gh issue comment 7 --body "one; two && three" 2>&1; echo 'x || y'`), ['gh issue comment 7 --body "one; two && three" 2>&1', "echo 'x || y'"]);
+    assert.deepEqual(shellCommands('echo a\\; b'), ['echo a\\; b']);
+    assert.deepEqual(shellCommands('gh pr comment 7 --body "$(cat a; cat b)" && true'), ['gh pr comment 7 --body "$(cat a; cat b)"', 'true']);
+    assert.deepEqual(shellCommands('x=$(date; whoami) && y'), ['x=$(date; whoami)', 'y']);
+  });
+
+  test('a here document stays with the command that opened it', () => {
+    const doc = 'cat > b.md <<"END" && gh api x\nOne; two\nEND';
+    assert.deepEqual(shellCommands(`${doc}\nnext`), ['cat > b.md <<"END"\nOne; two\nEND', 'gh api x', 'next']);
   });
 });
 

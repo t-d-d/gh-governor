@@ -149,6 +149,26 @@ describe('editedBody: a tool call that edited the issue\'s body', () => {
     assert.equal(editedBody({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/issues/71 -f body=x' } }, REPO, 7), null);
     assert.equal(editedBody({ name: 'mcp__github__issue_write', input: { method: 'update', owner: 'acme', repo: 'factory', issue_number: 8, body: 'b' } }, REPO, 7), null);
   });
+
+  test('a shell line that reads the issue and then comments on it is no body edit', () => {
+    const line = `gh api repos/acme/factory/issues/7 --jq .body; gh issue comment 7 --body "${NEW_BODY}"`;
+    assert.equal(editedBody({ name: 'Bash', input: { command: line } }, REPO, 7), null);
+    assert.equal(editedBody({ name: 'Bash', input: { command: `gh api repos/acme/factory/issues/7 --jq .body && gh issue comment 7 --body "${NEW_BODY}"` } }, REPO, 7), null);
+    assert.equal(editedBody({ name: 'Bash', input: { command: `gh api repos/acme/factory/issues/7 --jq .body\ngh issue comment 7 --body "${NEW_BODY}"` } }, REPO, 7), null);
+  });
+
+  test('a shell line that comments on one issue and edits another names each to its own target', () => {
+    const comment = 'gh issue comment 7 --body "A note on seven"';
+    const edit = 'gh api -X PATCH repos/acme/factory/issues/8 -f body="The new body of eight"';
+    const line = `${comment} && ${edit}`;
+    assert.equal(editedBody({ name: 'Bash', input: { command: line } }, REPO, 7), null);
+    assert.deepEqual(editedBody({ name: 'Bash', input: { command: line } }, REPO, 8), { text: edit });
+  });
+
+  test('a here document that holds a semicolon or a newline is still one command', () => {
+    const line = "gh api -X PATCH repos/acme/factory/issues/7 --input - <<'EOF'\n{\"body\": \"One; two\\nthree && four\"}\nEOF";
+    assert.deepEqual(editedBody({ name: 'Bash', input: { command: line } }, REPO, 7), { text: line });
+  });
 });
 
 /** A tool call event at `when` (ms). */
