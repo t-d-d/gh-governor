@@ -105,6 +105,13 @@ describe('the check fails on a file governor refuses', () => {
     assert.match(String(got.warnings[0]), /no \.github\/governor\.json, so governor will not serve this repo once it merges\. Governor no longer reads \.github\/dispatch\.json: add \.github\/governor\.json/);
   });
 
+  test('a failed read of the older .github/dispatch.json only loses the hint, as in governor: the plain warning stands', async () => {
+    const base = reads({});
+    const got = await check({ ...base, read: async (path) => { if (path === '.github/dispatch.json') throw new Error('HTTP 500'); return base.read(path); } });
+    assert.deepEqual(got.errors, []);
+    assert.deepEqual(got.warnings, ['the pull request leaves no .github/governor.json, so governor will not serve this repo once it merges']);
+  });
+
   test('a read that fails throws rather than reading as a missing file', async () => {
     await assert.rejects(check({ ...reads({}), read: async () => { throw new Error('HTTP 500'); } }), /HTTP 500/);
   });

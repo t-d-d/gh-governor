@@ -92,11 +92,10 @@ const warningsOf = async (config, reads) => {
   const heartbeat = async () => {
     if (config.features.heartbeat !== true || config.heartbeat === undefined) return [];
     const { issue } = config.heartbeat;
-    const marker = HEARTBEAT_MARKER;
     try {
       const body = await reads.issueBody(issue);
       if (body === null) return [`heartbeat.issue: #${issue} is not an issue in the repo`];
-      return body.includes(marker) ? [] : [`heartbeat.issue: #${issue} does not carry ${marker}, so governor writes nothing into it`];
+      return body.includes(HEARTBEAT_MARKER) ? [] : [`heartbeat.issue: #${issue} does not carry ${HEARTBEAT_MARKER}, so governor writes nothing into it`];
     } catch (error) {
       return [`heartbeat.issue: could not read #${issue}, so its marker went unchecked: ${messageOf(error)}`];
     }
@@ -258,7 +257,9 @@ const templateFaults = async (ready, reads) => {
 export const check = async (reads) => {
   const text = await reads.read(CONFIG_PATH);
   if (text === null) {
-    const old = await reads.read(OLD_CONFIG_PATH) !== null;
+    // A failed read of the old file only loses the hint, as in governor
+    // (dispatch/repos.mjs): the pull request leaves no file either way.
+    const old = await reads.read(OLD_CONFIG_PATH).catch(() => null) !== null;
     return { errors: [], templates: [], warnings: [old
       ? `the pull request leaves no ${CONFIG_PATH}, so governor will not serve this repo once it merges. Governor no longer reads ${OLD_CONFIG_PATH}: add ${CONFIG_PATH} in its layout, one section per feature`
       : `the pull request leaves no ${CONFIG_PATH}, so governor will not serve this repo once it merges`] };
