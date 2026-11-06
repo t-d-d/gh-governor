@@ -48,16 +48,38 @@ spends the one claude.ai login.
   (`failedLaunchesOf`, dispatch/pickup.mjs). The label webhook, the sweep
   and a blocker's ready row all read it. A missing record means pick up as
   before; a read that fails refuses the repo's pickup for the turn.
-- The config file is `.github/dispatch.json` (`CONFIG_PATH`), read from the
+- The config file is `.github/governor.json` (`CONFIG_PATH`), read from the
   repo's default branch only, never from a PR head or another branch. With
-  no file, the repo is not served, logged at info as `not served`. A file
+  no file, the repo is not served, logged at info as `not served`, or at
+  warn naming the file to add where the repo still has the older
+  `.github/dispatch.json` (`OLD_CONFIG_PATH`), which governor no longer
+  reads. A file
   that fails its schema (`configSchema`) skips the repo with an alarmed
   `dispatch-config-invalid` error naming the repo and the fault. A read that
   fails refuses that repo's part of the turn and is never taken for a
   missing file.
-- The file names the repo's cloud environment, by name or ID, its ready
-  labels, its claim label and the labels that keep a ticket out
-  (`labels.exclude`, `type: prd` when unset). The dispatcher claims a ticket with that label
+- The file has one rule for where a setting lives. `environment`, `trust`
+  and `workflows` are the settings several features share, and `workflows`
+  holds only `ci`. Every other top-level key is one feature's section
+  (`SECTIONS`), holding every setting and prompt that feature reads. A
+  section turns its feature on unless it sets `"enabled": false`; a feature
+  with no settings is `{}`, and a feature with no section is off. A section
+  that is off needs none of its required settings. A section's named
+  entries are an object keyed by name, under a key beside `enabled`
+  (`issueReviews.reviews`, `periodics.sessions`, `hooks.sessions`), and an
+  entry does not set `name`; lists with no names stay arrays. A field
+  holding text or `{ "file": "<path>" }` is `prompt`, and a section with
+  more than one has `prompts`, keyed by kind with the feature's prefix
+  dropped (`SECTION_PROMPTS`). The code reads the file into one shape
+  (`toConfig`), so no feature reads the file's layout itself.
+- The file names the repo's cloud environment, by name or ID, and pickup's
+  section names its ready labels, its claim label and the labels that keep
+  a ticket out (`pickup.exclude`, `type: prd` when unset). Those labels
+  serve every feature whose code reads them (`LABEL_READERS`: `unblocked`,
+  `waits`, `prReview`, `issueReviews`), so a file turning one of those on
+  with no `pickup` section is invalid, and one with a `pickup` section needs
+  `ready` and `claim` where pickup or one of them is on. That section may
+  set `"enabled": false` to keep pickup itself off. The dispatcher claims a ticket with that label
   before it launches its session, and creates the label in a repo that
   lacks it. The file holds no secret: a served repo may be public.
 - What keeps a ticket out of the selection, the claim's second read and the
@@ -66,7 +88,7 @@ spends the one claude.ai login.
   checks. Two read one check alone: the PR review's test 1
   (dispatch/checklist.mjs) reads `labelRow`, and wait end
   (dispatch/waits.mjs) reads `isWaiting`. The checks are the claim label,
-  `labels.exclude`, an open blocker, and the ticket's own `Blocked until: <YYYY-MM-DD>` line,
+  `pickup.exclude`, an open blocker, and the ticket's own `Blocked until: <YYYY-MM-DD>` line,
   when it is the body's first non-empty line, in any case, and the date is
   still to come (`isWaiting`, scripts/lib/ready-work.mjs). The wait ends at
   00:00 UTC on that date. Text after the date is a reason and changes
@@ -134,7 +156,7 @@ spends the one claude.ai login.
   info; an ended wait's comment still goes. The schema refuses `BOT` in
   `auto`. The rule: an issue review whose `by`, narrowed by `trust.review`
   as `reviewOf` reads it, reaches beyond `auto`, read and narrowed as
-  `autoOf` reads it, names no ready label (`labels.ready`)
+  `autoOf` reads it, names no ready label (`pickup.ready`)
   in any conclusion, or the file is invalid (`configSchema`,
   dispatch/repo-config.mjs). It reads no `trust.task`. Governor's own
   config read refuses such a file, and the config check with it: a
@@ -142,7 +164,7 @@ spends the one claude.ai login.
   going by itself. The file is also invalid where one label appears
   under two conclusions of one review, or in two reviews' conclusions, or
   where a conclusion names a label a `byLabel` entry matches on, a label the
-  same review's `when.labels` or `when.exclude` names, or `labels.claim`,
+  same review's `when.labels` or `when.exclude` names, or `pickup.claim`,
   or a label that does not start with the review's name, a colon and a space, in
   any case (dispatcher-review.md). Each rule reads a review's `conclusions` with every `byLabel` entry's.
 - `trust.task` is whose issue or PR may become work when a person sets it
@@ -159,9 +181,8 @@ spends the one claude.ai login.
   that session, judged by `trust.relay`, the session's link goes into the
   PR body, and no fresh session starts. `trust.task` judges a summons only
   where nobody owns the PR, or it is on an issue. The receiver is
-  unchanged. The schema refuses `BOT` in it.
-  `pickup.by` is a retired key read as `trust.task`, and a file that sets
-  both is invalid.
+  unchanged. The schema refuses `BOT` in it, and refuses the older
+  `pickup.by`.
 - `trust.start` is who may set work going (`startOf`), `OWNER`, `MEMBER`
   and `COLLABORATOR` when unset (`START`). The schema refuses any other
   value, `BOT` among them, and an empty list: a repo may narrow it, never
@@ -218,8 +239,7 @@ spends the one claude.ai login.
   nothing above it, is never narrowed. The config check warns, under
   its own title and wording, where a list the file sets reaches beyond
   the three (`trustExposures`), `BOT` in a `relay` among them, and notes
-  each unset list it narrowed. A wide `pickup.by` gets no such warning,
-  as before this rule.
+  each unset list it narrowed.
 - A ready label counts only when its latest `labeled` event was by
   someone in the repo's `trust.start`, or by governor's own App
   (`postedByApp`); one a bot, a person `start` leaves out, or no event
@@ -274,23 +294,22 @@ spends the one claude.ai login.
   unblocked (what a blocker's close does to a ticket that is not ready to
   pick up), CI and deploy messages, branch-run messages, the
   conflicts check, deployed-label job fires, the PR review, the heartbeat,
-  periodics, hooks, waits and sign-off (`GENERIC_SWITCHES`), each in
-  `features`, and the issue reviews (`SECTION_SWITCHES`), whose switch is
-  the `issueReviews` section itself: on where the file has the section and
-  its `enabled` is not `false` (`turnsOn`). The section's `reviews` holds
+  periodics, hooks, waits and sign-off (`GENERIC_SWITCHES`), and the issue
+  reviews (`SECTION_SWITCHES`). Each is its own section, on where the file
+  has it and its `enabled` is not `false` (`turnsOn`), but deployed-label
+  job fires, which are `deployMessages.deployedLabels`, on where the deploy
+  messages are on and it is `true`. The issue reviews' `reviews` holds
   at least one review, each keyed by a name safe in a marker; an issue
   opened, reopened or with its body edited, or a label change a review
   names, queues its `issueReview` fire (dispatcher-review.md). `waits` adds only
   governor's actions when a ticket's wait ends, the comment and the spec
   session, the prompt line, and, where the file names a wait ticket
   (`waits: { issue }`), the link that shows a wait in its ticket's sidebar;
-  the hold on a ticket's line needs none. A retired switch a file still
-  sets stays valid and reads as the switch that took its work over
-  (`RETIRED_SWITCHES`): `mergeHandoff` reads as `unblocked`. A switch
-  that moved to a section of its own stays valid in `features` and reads
-  as nothing (`MOVED_SWITCHES`): `ticketReviews` turns nothing on or off,
-  and the config check warns that the switch is now
-  `issueReviews.enabled`. What CI and a deploy are in a repo is
+  the hold on a ticket's line needs none. A key the file no longer has is
+  invalid like any unknown key: `features` and its retired
+  `mergeHandoff` and `ticketReviews`, `labels`, `prompts` and its retired
+  `mergeHandoff` and `mergeHandoffUnread`, `review`, `pickup.by`, and the
+  heartbeat's own `marker`. What CI and a deploy are in a repo is
   dispatcher-workflows.md's, and the review's settings dispatcher-review.md's.
   The schema accepts no switch by repo.
 - A fire that counts an event for the periodics (`counted`: a merge into the
@@ -316,14 +335,18 @@ spends the one claude.ai login.
   run's start, and a fire whose launches all failed leaves it where it was. The sign-off sweep, on any turn,
   may mark a line's session signed off, but never moves its fire time. The
   body outside the block keeps its owner's words.
-- A file in the older shape, `heartbeat: { issue, marker }`, keeps its one
-  `last-run: <ISO time>` line (`stampLastRun`), which only the bare schedule
-  fire writes, after a sweep in which not every claim or launch failed, and
-  only into a body already carrying the marker. That marker is the repo's,
-  whatever its prefix.
-- The file may carry a `prompts` map, keyed by message kind (`PROMPTS`,
-  dispatch/prompts.mjs). Each key replaces the instruction in that kind of
-  message, or the opening prompt of that kind of session. Every kind has a
+- The heartbeat's older shape, `heartbeat: { issue, marker }`, with its one
+  `last-run:` line under the repo's own marker, is gone: the schema refuses
+  a `marker`.
+- Each message kind (`PROMPTS`, dispatch/prompts.mjs) has one prompt key,
+  in the section of the feature that sends it (`PROMPT_KEYS`): `pickup`,
+  `signOff`, `redScheduledRun`, `subscribeMessages` (`subscribed`) and
+  `conflicts` each have a `prompt`; `unblocked.prompts` has `ready`,
+  `spec`, `ownerSpec`, `claimed` and `notPlanned`; `waits.prompts` has
+  `spec` and `ownerSpec`; `ciMessages.prompts` has `breaker`, `triage` and
+  `bumpTriage`; `deployMessages.prompts` has `triage` (`prodTriage`),
+  `green`, `greenMany`, `red` and `redMany`. Each key replaces the
+  instruction in that kind of message, or the opening prompt of that kind of session. Every kind has a
   generic default, and a kind the file leaves out gets it. A key the schema
   does not know makes the file invalid (`dispatch-config-invalid`), so a
   typo pages rather than falling back quietly.
@@ -355,15 +378,16 @@ spends the one claude.ai login.
   periodics in the fire still go. A fire is refused when it answers a 4xx
   other than 408 and 429, or throws before its request is sent; any other
   failed fire may have started a run.
-- A file turning hooks on lists at least one hook, or is a schema fault.
-  Each hook has a name unique in the file and safe in a URL path, a prompt,
+- A file turning hooks on lists at least one hook in `hooks.sessions`, or
+  is a schema fault. Each hook is keyed by its name, safe in a URL path,
+  and has a prompt
   and a `keyVersion`. A hook's key is derived from one stack secret, its
   repo, its name and that version, so the file holds no key and governor
   stores none. The task refuses a hook fire whose hook the file does not
   list, at warn, and one signed with another key version, as an alarmed
   `hook-key-stale` error (dispatch/hooks.mjs).
-- Every prompt value, each in `prompts`, the review's `checklist`, each
-  periodic's `prompt` and each hook's, and an issue review's `prompt`
+- Every prompt value, a section's `prompt` and each of its `prompts`, the
+  PR review's `prompt`, each periodic's `prompt` and each hook's, and an issue review's `prompt`
   and each of its `byLabel` entries' `prompt`, is the
   text or `{ "file": "<path>" }`: a file in the repo, from its root, read
   from the default branch with the config file (`resolveFiles`). A missing
@@ -425,7 +449,7 @@ spends the one claude.ai login.
 - A hook: `handleHook` in dispatch/webhook/route.mjs checks the signature
   and queues the fire; `hookFor` in dispatch/hooks.mjs checks it against the
   file; `HookKeyStaleAlarm` in infra/governor.cfn.yml pages on a stale key.
-- A full config file, every feature on: test/fixtures/factory/.github/dispatch.json.
+- A full config file, every feature on: test/fixtures/factory/.github/governor.json.
 - A blocker's close: `closingFires` and `ticketRow` in dispatch/unblocked.mjs;
   `fitness: a turn calls GitHub only for its fire's repo` covers a close
   that blocks another repo's ticket, and an `unblocked` fire.
@@ -494,4 +518,4 @@ spends the one claude.ai login.
   a session would hold connectors its file never named.
 
 Judgment: that a new per-repo table record keys on its repo, and that a config file holds no secret, no check sees: a key is a string no schema reads, and a secret has no shape the schema can refuse.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28. A hook fire arrives at the receiver on its own path, signed with its hook key, and the switch list gains hooks, since #55, under PRD #53. A turn may queue a fire naming another repo, a blocker's close is handled in each blocked ticket's own repo, and `unblocked` replaces the merge hand-off, since #72. A periodic's baseline adds its heartbeat line, in the `not fired yet` state, where it has none, since #52. A periodic may name the claude.ai connectors its session needs, and then starts as a run of its own routine, since #89. A routine the routines API refuses before the fire stops only its periodic, and only a failed `claude --cloud` launch skips its repo, since #91. The schedule fire runs hourly, and the sweep interval is one hour when the file sets none, since #190. The receiver judges a label against the repo's ready labels in its hook-table item, and `SelectLabels` is gone, since #180. A fire the routines API refuses with a 4xx other than 408 and 429, or that throws before its request is sent, is a refusal, since #148. A ticket's own `Blocked until:` line holds it whatever the file says, the one behaviour behind no switch, and joins what keeps a ticket out of the selection, since #186, under PRD #185. The `waits` switch, the ended wait's marker and the per-repo wait record joined in #187, under PRD #185. A relative line, rewritten once into its date at its blocker's close whatever the switches say, and its two markers, joined in #189, under PRD #185. The wait ticket's sidebar link and its two markers joined in #188, under PRD #185. The cannot-settle marker names the issue the line waits on since #234, under PRD #185. The unreadied ticket's marker joined in #208: a later close starts no spec session for that ticket until a person answers. In the `unblocked` row the line holds only a ticket ready or not ready by its labels, so a claimed ticket's session still hears its blocker close, since #212, under PRD #185. Sign-off joined the switch list in #278, off unless the file turns it on. A periodic's routine is kept disabled on a valid cron that fires once a year, since the routines API refuses a cron with no firing time, and governor still fires it with `/run`, since #373. A ready label counts only where someone with a say in the repo added it, so an outsider's issue template cannot make a ticket ready, since #380. Pickup starts only tickets whose author `pickup.by` lists, `OWNER`, `MEMBER` and `COLLABORATOR` by default; a ready label a bot other than governor's App added does not count; an uncounted ready label logs at warn and comments once under its own marker; and the config check fails an issue template that names a ready label, since #392. A repo's `trust.auto` decides whose issues and PRs governor sets going by itself, a spec session or owner message after a blocker's close or an ended wait, a periodic's issue counts and listings, and the conflicts check, in place of no check or the fixed set, since #418, under PRD #396. A repo's `trust.relay` decides whose comments and reviews reach a running session, and whose body's session link or subscribe line names a session, in place of the fixed set, and the lists form the chain `auto` ⊆ `task` ⊆ `relay`, since #419, under PRD #396. A repo's `trust.task` decides whose issue or PR pickup and a summons may start work on, `pickup.by` is a retired key read as it, and a refused readying or summons by someone with a say gets the one refusal comment under the uncounted-ready marker, since #420, under PRD #396. A repo's `trust.start` decides who may set work going, by readying a ticket or writing a summons; a narrowed one looks the adder or assigner up, and a refusal for it gets the same one comment, since #421, under PRD #396. A repo's `trust.review` decides whose PRs the PR review reads, in place of the fixed set, and tops the chain `auto` ⊆ `task` ⊆ `relay` ⊆ `review`, since #422, under PRD #396. The ticket reviews joined the switch list, with their `ticketReviews` list, their `ticketReview` fire and their `governor:ticket-review` marker, and read `trust.review`, since #426, under PRD #390. The loop guard's `governor:ticket-review-loop` marker joined in #427, under PRD #390. A ticket review whose `by` reaches beyond `trust.auto` names no ready label in its conclusions, and a conclusion label belongs to one conclusion of one review, since #428, under PRD #390. Governor writes a new spec session's link into a ticket's body as its owner link, a spec session posts no dispatch marker, and no dispatch marker's age holds a ticket from pickup or spec work, since #442. A message to an archived owner with no fallback leaves the owner link, so a ticket names the last session that owned it, since #447. A ticket review's `checklist` and each `types` entry's are prompt values, and the conclusion rules read each entry's `conclusions` with the review's and refuse a conclusion naming a type label, since #429, under PRD #390. The ready-label rule reads a review's `by` narrowed by `trust.review`, and a conclusion may not name a label its own review's `when` selects on or the claim label, since #449, under PRD #390. A readied ticket both `trust.task` and `trust.start` refuse gets the `start` comment, judged first as on a summons, since #437. A ready label queues a selection fire whoever added it, governor's own App included, and a ticket whose launch started nothing is held from pickup for an hour by its failed-launch record instead, since #391. A summons `trust.task` refuses on a PR whose body names no session goes to the live session on the PR's head branch, and is refused on the PR only where none takes it, since #435. A ticket review's conclusion labels start with the review's name, a colon and a space since #512, closing #448: a run removed a label a person also used, such as a `mode: human` hold. A PR's owner is the live session its body links, else the most recently updated live session, local or cloud, holding its head branch, written into the body once found; a summons `trust.start` lets in goes to a PR's live owner without reading `trust.task`, and one `trust.start` refuses reaches no session, since #515. A "blocked by" link removed from a ticket carrying a ready label queues its selection fire, as a ready label does, since #519. A shipping job comments once on each ticket it first labels `deployed: <target>`, under the `governor:deployed` marker, and the issue's owner hears the comment, since #518. Ticket reviews became issue reviews since #524: a review's text is its `prompt` and its per-label entries `byLabel`, the `issueReviews` section and its `enabled` turn the reviews on in place of a switch in `features`, `features.ticketReviews` is a retired key read as nothing, and the markers are `governor:issue-review` and `governor:issue-review-loop`.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The periodics switch joined the list in #18, under PRD #17. A counted event's periodic check runs under the periodics switch on any turn since #19, under PRD #17. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. A ready label `SelectLabels` does not list waits for the repo's pickup sweep, at the interval its file sets, since #22, under PRD #17. The file names the labels that keep a ticket out, and no type label orders the selection, since #28. A hook fire arrives at the receiver on its own path, signed with its hook key, and the switch list gains hooks, since #55, under PRD #53. A turn may queue a fire naming another repo, a blocker's close is handled in each blocked ticket's own repo, and `unblocked` replaces the merge hand-off, since #72. A periodic's baseline adds its heartbeat line, in the `not fired yet` state, where it has none, since #52. A periodic may name the claude.ai connectors its session needs, and then starts as a run of its own routine, since #89. A routine the routines API refuses before the fire stops only its periodic, and only a failed `claude --cloud` launch skips its repo, since #91. The schedule fire runs hourly, and the sweep interval is one hour when the file sets none, since #190. The receiver judges a label against the repo's ready labels in its hook-table item, and `SelectLabels` is gone, since #180. A fire the routines API refuses with a 4xx other than 408 and 429, or that throws before its request is sent, is a refusal, since #148. A ticket's own `Blocked until:` line holds it whatever the file says, the one behaviour behind no switch, and joins what keeps a ticket out of the selection, since #186, under PRD #185. The `waits` switch, the ended wait's marker and the per-repo wait record joined in #187, under PRD #185. A relative line, rewritten once into its date at its blocker's close whatever the switches say, and its two markers, joined in #189, under PRD #185. The wait ticket's sidebar link and its two markers joined in #188, under PRD #185. The cannot-settle marker names the issue the line waits on since #234, under PRD #185. The unreadied ticket's marker joined in #208: a later close starts no spec session for that ticket until a person answers. In the `unblocked` row the line holds only a ticket ready or not ready by its labels, so a claimed ticket's session still hears its blocker close, since #212, under PRD #185. Sign-off joined the switch list in #278, off unless the file turns it on. A periodic's routine is kept disabled on a valid cron that fires once a year, since the routines API refuses a cron with no firing time, and governor still fires it with `/run`, since #373. A ready label counts only where someone with a say in the repo added it, so an outsider's issue template cannot make a ticket ready, since #380. Pickup starts only tickets whose author `pickup.by` lists, `OWNER`, `MEMBER` and `COLLABORATOR` by default; a ready label a bot other than governor's App added does not count; an uncounted ready label logs at warn and comments once under its own marker; and the config check fails an issue template that names a ready label, since #392. A repo's `trust.auto` decides whose issues and PRs governor sets going by itself, a spec session or owner message after a blocker's close or an ended wait, a periodic's issue counts and listings, and the conflicts check, in place of no check or the fixed set, since #418, under PRD #396. A repo's `trust.relay` decides whose comments and reviews reach a running session, and whose body's session link or subscribe line names a session, in place of the fixed set, and the lists form the chain `auto` ⊆ `task` ⊆ `relay`, since #419, under PRD #396. A repo's `trust.task` decides whose issue or PR pickup and a summons may start work on, `pickup.by` is a retired key read as it, and a refused readying or summons by someone with a say gets the one refusal comment under the uncounted-ready marker, since #420, under PRD #396. A repo's `trust.start` decides who may set work going, by readying a ticket or writing a summons; a narrowed one looks the adder or assigner up, and a refusal for it gets the same one comment, since #421, under PRD #396. A repo's `trust.review` decides whose PRs the PR review reads, in place of the fixed set, and tops the chain `auto` ⊆ `task` ⊆ `relay` ⊆ `review`, since #422, under PRD #396. The ticket reviews joined the switch list, with their `ticketReviews` list, their `ticketReview` fire and their `governor:ticket-review` marker, and read `trust.review`, since #426, under PRD #390. The loop guard's `governor:ticket-review-loop` marker joined in #427, under PRD #390. A ticket review whose `by` reaches beyond `trust.auto` names no ready label in its conclusions, and a conclusion label belongs to one conclusion of one review, since #428, under PRD #390. Governor writes a new spec session's link into a ticket's body as its owner link, a spec session posts no dispatch marker, and no dispatch marker's age holds a ticket from pickup or spec work, since #442. A message to an archived owner with no fallback leaves the owner link, so a ticket names the last session that owned it, since #447. A ticket review's `checklist` and each `types` entry's are prompt values, and the conclusion rules read each entry's `conclusions` with the review's and refuse a conclusion naming a type label, since #429, under PRD #390. The ready-label rule reads a review's `by` narrowed by `trust.review`, and a conclusion may not name a label its own review's `when` selects on or the claim label, since #449, under PRD #390. A readied ticket both `trust.task` and `trust.start` refuse gets the `start` comment, judged first as on a summons, since #437. A ready label queues a selection fire whoever added it, governor's own App included, and a ticket whose launch started nothing is held from pickup for an hour by its failed-launch record instead, since #391. A summons `trust.task` refuses on a PR whose body names no session goes to the live session on the PR's head branch, and is refused on the PR only where none takes it, since #435. A ticket review's conclusion labels start with the review's name, a colon and a space since #512, closing #448: a run removed a label a person also used, such as a `mode: human` hold. A PR's owner is the live session its body links, else the most recently updated live session, local or cloud, holding its head branch, written into the body once found; a summons `trust.start` lets in goes to a PR's live owner without reading `trust.task`, and one `trust.start` refuses reaches no session, since #515. A "blocked by" link removed from a ticket carrying a ready label queues its selection fire, as a ready label does, since #519. A shipping job comments once on each ticket it first labels `deployed: <target>`, under the `governor:deployed` marker, and the issue's owner hears the comment, since #518. Ticket reviews became issue reviews since #524: a review's text is its `prompt` and its per-label entries `byLabel`, the `issueReviews` section and its `enabled` turn the reviews on in place of a switch in `features`, `features.ticketReviews` is a retired key read as nothing, and the markers are `governor:issue-review` and `governor:issue-review-loop`. The config file is `.github/governor.json` since #525, one section per feature: a section turns its feature on unless it sets `"enabled": false`, `features` is gone, each setting and prompt sits in the section of the feature it serves, the periodics and hooks are keyed by name, pickup's labels serve the features that read them, and governor no longer reads `.github/dispatch.json`.

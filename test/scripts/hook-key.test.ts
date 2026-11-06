@@ -15,7 +15,7 @@ import { HOOK_SECRET_ID, hookUrl, keyLine, parseArgs, run, saveCommands } from '
 import { hookKey } from '../../dispatch/webhook/hook.mjs';
 import { CONFIG_PATH } from '../../dispatch/repo-config.mjs';
 
-const FACTORY_CONFIG = readFileSync(new URL('../fixtures/factory/.github/dispatch.json', import.meta.url), 'utf8');
+const FACTORY_CONFIG = readFileSync(new URL('../fixtures/factory/.github/governor.json', import.meta.url), 'utf8');
 const BASE = 'https://abc123.lambda-url.us-east-1.on.aws/';
 const URL_OPERATOR_PROD = `${BASE}hooks/acme/factory/operator-prod`;
 const SECRET = 'hook-secret-test';
@@ -204,7 +204,7 @@ describe('scripts/hook-key.mjs', () => {
 
     test('a config file with hooks off fails the run', () => {
       const config = JSON.parse(FACTORY_CONFIG);
-      config.features.hooks = false;
+      config.hooks.enabled = false;
       noVersion(JSON.stringify(config));
     });
 

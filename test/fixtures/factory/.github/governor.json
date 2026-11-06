@@ -1,6 +1,9 @@
 {
   "environment": "env_fakefactory",
-  "labels": {
+  "workflows": {
+    "ci": ".github/workflows/ci.yml"
+  },
+  "pickup": {
     "ready": [
       "workflow: ready for development",
       "mode: afk"
@@ -8,102 +11,48 @@
     "claim": "workflow: under development",
     "claimRemoves": [
       "workflow: ready for development"
-    ]
+    ],
+    "sweepHours": 2
   },
-  "features": {
-    "pickup": true,
-    "summons": true,
-    "prMessages": true,
-    "subscribeMessages": true,
-    "prReview": true,
-    "ciMessages": true,
-    "deployMessages": true,
-    "redScheduledRun": true,
-    "branchRunMessages": true,
-    "conflicts": true,
-    "deployedLabels": true,
-    "unblocked": true,
-    "heartbeat": true,
-    "periodics": true,
-    "hooks": true,
-    "waits": true,
-    "signOff": true
+  "summons": {},
+  "prMessages": {},
+  "subscribeMessages": {},
+  "redScheduledRun": {
+    "prompt": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. Read the docs/constraints/ files that name the workflow file before re-running it: some tiers limit how soon one run may follow another. First search the open issues and PRs for it: if one already covers this failure, comment this run on it and stop. If the fix is in the repo, push it on a new branch from origin/main with a new PR. If it is not (a lapsed credential, a third-party outage), raise an issue saying what failed and what it needs."
   },
-  "heartbeat": {
-    "issue": 412,
-    "marker": "<!-- factory:routine-heartbeat:auto-develop -->"
-  },
-  "waits": {
-    "issue": 413
-  },
-  "pickup": {
-    "sweepHours": 2,
-    "by": ["OWNER", "MEMBER", "COLLABORATOR"]
-  },
-  "periodics": [
-    {
-      "name": "Weekly retro",
-      "prompt": "Run a retro over the week's merged pull requests and closed issues. Raise an issue for each lesson worth acting on.",
-      "days": 7
-    },
-    {
-      "name": "Ticket review",
-      "prompt": "Review the open tickets labelled ready for development. Fix any whose spec the code has overtaken, and send a short summary of what changed to the owner's feed.",
-      "days": 3,
-      "connectors": [
-        "feed_prod"
-      ]
-    },
-    {
-      "name": "Code review",
-      "prompt": "Review the pull requests merged since the last review, and the issues closed. Raise an issue for each defect or drift worth fixing.",
-      "days": 7,
-      "counts": {
-        "merges": 20,
-        "issuesClosed": 10
-      },
-      "gapHours": 4
-    }
-  ],
-  "hooks": [
-    {
-      "name": "operator-prod",
-      "prompt": "A prod alarm fired. Read the alarm's text below, find the cause in the logs, and fix it or raise an issue saying what broke.",
-      "keyVersion": 1
-    }
-  ],
-  "issueReviews": {
-    "reviews": {
-      "triage": {
-        "when": { "exclude": ["workflow: under development"] },
-        "conclusions": {
-          "success": ["triage: passed"],
-          "failure": ["triage: needs edit"],
-          "neutral": ["triage: needs a person"]
-        },
-        "prompt": { "file": ".github/issue-review/triage.md" },
-        "byLabel": [
-          {
-            "labels": ["type: bug"],
-            "prompt": { "file": ".github/issue-review/bug.md" },
-            "conclusions": { "failure": ["triage: needs repro"] }
-          }
-        ]
-      }
+  "unblocked": {
+    "prompts": {
+      "spec": "Rewrite #{issue}'s spec from what merged (CLAUDE.md § After your PR merges). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it {ready} and stop, or add `{claim}` to it first and take it through to a PR, `Closes #{issue}`."
     }
   },
-  "workflows": {
-    "ci": ".github/workflows/ci.yml",
+  "ciMessages": {
+    "prompts": {
+      "breaker": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If the cause is in your change, push the fix on a new branch from origin/main with a new PR: PR #{pr} is merged and its branch is done. If it is not, comment on PR #{pr} with what you found instead.",
+      "triage": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. Work out which merge caused it, and push the fix on a new branch from origin/main with a new PR naming that PR. Then comment on the culprit PR with what broke and a link to your fix.",
+      "bumpTriage": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If the bump caused it, push the fix on a new branch from origin/main with a new PR naming PR #{pr}: the change the new version needs. Where none is in reach, revert the bump in that PR instead and raise an issue naming the bump and what broke, since Dependabot raises it again. Then comment on PR #{pr} with what broke and a link to your fix. If the bump did not cause it, comment on PR #{pr} with what you found instead."
+    }
+  },
+  "deployMessages": {
     "triage": [
       "prod"
     ],
     "tags": {
       "dev": "deploy/dev",
       "prod": "deploy/prod"
+    },
+    "deployedLabels": true,
+    "prompts": {
+      "triage": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If a merge caused it, push the fix on a new branch from origin/main with a new PR naming that PR, and comment on it with what broke and a link to your fix. If none did (a prod-only secret, store or quota), raise an issue saying what broke and what the operator must do.",
+      "green": "Run what your PR's Verification table promised at `{target} deploy`, if anything, and report the result on PR #{pr}. If it promised nothing there, nothing is owed.",
+      "greenMany": "Run what their Verification tables promised at `{target} deploy`, if anything, and report the results in one comment on PR #{pr}, the newest. If none promised anything there, nothing is owed.",
+      "red": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If your change caused it, push the fix on a new branch from origin/main with a new PR. If it did not, nothing is owed; say what you found on PR #{pr}.",
+      "redMany": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If one of your changes caused it, push the fix on a new branch from origin/main with a new PR. If none did, nothing is owed; say what you found in one comment on PR #{pr}, the newest."
     }
   },
-  "review": {
-    "checklist": {
+  "branchRunMessages": {},
+  "conflicts": {},
+  "prReview": {
+    "prompt": {
       "file": ".claude/skills/pr-review/SKILL.md"
     },
     "humanOnly": [
@@ -392,7 +341,7 @@
         ]
       },
       {
-        "glob": ".github/dispatch.json",
+        "glob": ".github/governor.json",
         "reason": "the dispatcher's config: these lists, the review's checklist and what the dispatcher may do here",
         "unless": [
           "mode: hitl",
@@ -445,18 +394,88 @@
     ],
     "merge": true
   },
-  "prompts": {
-    "signOff": "Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make `Signing off.` the last line of your reply, and the dispatcher archives the session. Above it, write any `Lesson:` lines CLAUDE.md § Lessons calls for; usually there are none.",
-    "unblockedSpec": "Rewrite #{issue}'s spec from what merged (CLAUDE.md § After your PR merges). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it {ready} and stop, or add `{claim}` to it first and take it through to a PR, `Closes #{issue}`.",
-    "waitEndedSpec": "Rewrite #{issue}'s spec from what its wait was for (CLAUDE.md § After a wait ends). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it {ready} and stop, or add `{claim}` to it first and take it through to a PR, `Closes #{issue}`.",
-    "redScheduledRun": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. Read the docs/constraints/ files that name the workflow file before re-running it: some tiers limit how soon one run may follow another. First search the open issues and PRs for it: if one already covers this failure, comment this run on it and stop. If the fix is in the repo, push it on a new branch from origin/main with a new PR. If it is not (a lapsed credential, a third-party outage), raise an issue saying what failed and what it needs.",
-    "ciBreaker": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If the cause is in your change, push the fix on a new branch from origin/main with a new PR: PR #{pr} is merged and its branch is done. If it is not, comment on PR #{pr} with what you found instead.",
-    "ciTriage": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. Work out which merge caused it, and push the fix on a new branch from origin/main with a new PR naming that PR. Then comment on the culprit PR with what broke and a link to your fix.",
-    "ciBumpTriage": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If the bump caused it, push the fix on a new branch from origin/main with a new PR naming PR #{pr}: the change the new version needs. Where none is in reach, revert the bump in that PR instead and raise an issue naming the bump and what broke, since Dependabot raises it again. Then comment on PR #{pr} with what broke and a link to your fix. If the bump did not cause it, comment on PR #{pr} with what you found instead.",
-    "prodTriage": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If a merge caused it, push the fix on a new branch from origin/main with a new PR naming that PR, and comment on it with what broke and a link to your fix. If none did (a prod-only secret, store or quota), raise an issue saying what broke and what the operator must do.",
-    "deployGreen": "Run what your PR's Verification table promised at `{target} deploy`, if anything, and report the result on PR #{pr}. If it promised nothing there, nothing is owed.",
-    "deployGreenMany": "Run what their Verification tables promised at `{target} deploy`, if anything, and report the results in one comment on PR #{pr}, the newest. If none promised anything there, nothing is owed.",
-    "deployRed": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If your change caused it, push the fix on a new branch from origin/main with a new PR. If it did not, nothing is owed; say what you found on PR #{pr}.",
-    "deployRedMany": "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause. If one of your changes caused it, push the fix on a new branch from origin/main with a new PR. If none did, nothing is owed; say what you found in one comment on PR #{pr}, the newest."
+  "heartbeat": {
+    "issue": 412
+  },
+  "periodics": {
+    "sessions": {
+      "Weekly retro": {
+        "prompt": "Run a retro over the week's merged pull requests and closed issues. Raise an issue for each lesson worth acting on.",
+        "days": 7
+      },
+      "Ticket review": {
+        "prompt": "Review the open tickets labelled ready for development. Fix any whose spec the code has overtaken, and send a short summary of what changed to the owner's feed.",
+        "days": 3,
+        "connectors": [
+          "feed_prod"
+        ]
+      },
+      "Code review": {
+        "prompt": "Review the pull requests merged since the last review, and the issues closed. Raise an issue for each defect or drift worth fixing.",
+        "days": 7,
+        "counts": {
+          "merges": 20,
+          "issuesClosed": 10
+        },
+        "gapHours": 4
+      }
+    }
+  },
+  "hooks": {
+    "sessions": {
+      "operator-prod": {
+        "prompt": "A prod alarm fired. Read the alarm's text below, find the cause in the logs, and fix it or raise an issue saying what broke.",
+        "keyVersion": 1
+      }
+    }
+  },
+  "waits": {
+    "issue": 413,
+    "prompts": {
+      "spec": "Rewrite #{issue}'s spec from what its wait was for (CLAUDE.md § After a wait ends). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it {ready} and stop, or add `{claim}` to it first and take it through to a PR, `Closes #{issue}`."
+    }
+  },
+  "signOff": {
+    "prompt": "Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make `Signing off.` the last line of your reply, and the dispatcher archives the session. Above it, write any `Lesson:` lines CLAUDE.md § Lessons calls for; usually there are none."
+  },
+  "issueReviews": {
+    "reviews": {
+      "triage": {
+        "when": {
+          "exclude": [
+            "workflow: under development"
+          ]
+        },
+        "conclusions": {
+          "success": [
+            "triage: passed"
+          ],
+          "failure": [
+            "triage: needs edit"
+          ],
+          "neutral": [
+            "triage: needs a person"
+          ]
+        },
+        "prompt": {
+          "file": ".github/issue-review/triage.md"
+        },
+        "byLabel": [
+          {
+            "labels": [
+              "type: bug"
+            ],
+            "prompt": {
+              "file": ".github/issue-review/bug.md"
+            },
+            "conclusions": {
+              "failure": [
+                "triage: needs repro"
+              ]
+            }
+          }
+        ]
+      }
+    }
   }
 }

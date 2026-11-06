@@ -13,9 +13,12 @@ import { DAY_MS, HOUR_MS, LISTED_MAX, SWEEP_GRACE_MS, duePeriodics, logNotStarte
 import { factoryFile } from './helpers/factory.ts';
 import { githubReader } from '../scripts/lib/github-app.mjs';
 
-const BASE = { environment: 'env_01ASK', labels: { ready: ['mode: afk'], claim: 'claimed' } };
+const BASE = { environment: 'env_01ASK' };
 const RETRO = { name: 'Weekly retro', prompt: 'Run a retro over the week.', days: 7 };
-const file = (over: Record<string, unknown>) => JSON.stringify({ ...BASE, features: { periodics: true }, periodics: [RETRO], ...over });
+/** Periodics as the file holds them: each keyed by its name, which the entry no longer sets. */
+const keyed = (list: Array<Record<string, unknown>>) => Object.fromEntries(list.map(({ name, ...entry }) => [name, entry]));
+/** A file turning periodics on: `periodics` a list of periodics, each with its name, or the section itself. */
+const file = ({ periodics = [RETRO], ...over }: Record<string, unknown>) => JSON.stringify({ ...BASE, periodics: Array.isArray(periodics) ? { sessions: keyed(periodics) } : periodics, ...over });
 const NOW = Date.parse('2026-10-27T12:00:00Z');
 const REPO = 'acme/factory';
 
@@ -24,30 +27,43 @@ describe('the config file\'s periodics', () => {
     assert.ok(GENERIC_SWITCHES.includes('periodics'));
   });
 
-  test('a periodic has a name, a prompt and a day limit', () => {
+  test('a periodic has a name, its key in periodics.sessions, a prompt and a day limit', () => {
     const read = readConfig(file({}));
     assert.ok(read.ok, JSON.stringify(read));
     assert.deepEqual(read.config.periodics, [RETRO]);
   });
 
-  test('with the switch on, the file lists at least one periodic', () => {
-    for (const over of [{ periodics: undefined }, { periodics: [] }]) {
-      const read = readConfig(file(over));
-      assert.ok(!read.ok, JSON.stringify(over));
-      assert.match(read.fault, /periodics/);
+  test('with the section on, the file lists at least one periodic', () => {
+    for (const periodics of [{}, { sessions: {} }]) {
+      const read = readConfig(file({ periodics }));
+      assert.ok(!read.ok, JSON.stringify(periodics));
+      assert.match(read.fault, /periodics\.sessions: periodics is on/);
     }
   });
 
-  test('with the switch off, the file needs none, and a file valid today stays valid', () => {
-    const read = readConfig(JSON.stringify({ ...BASE, features: { pickup: true } }));
-    assert.ok(read.ok, JSON.stringify(read));
-    assert.deepEqual(read.config.periodics, []);
+  test('with the section off or missing, the file needs none', () => {
+    for (const over of [{}, { periodics: { enabled: false } }]) {
+      const read = readConfig(JSON.stringify({ ...BASE, ...over }));
+      assert.ok(read.ok, JSON.stringify(read));
+      assert.equal(read.config.features.periodics, false);
+      assert.deepEqual(read.config.periodics, []);
+    }
   });
 
-  test('names are unique in the file', () => {
-    const read = readConfig(file({ periodics: [RETRO, { ...RETRO, prompt: 'Another.' }] }));
-    assert.ok(!read.ok);
-    assert.match(read.fault, /Weekly retro/);
+  test('periodics are keyed by name, in the order of their keys, and an entry that sets name is refused', () => {
+    const daily = { name: 'Daily', prompt: 'x', days: 1 };
+    const read = readConfig(file({ periodics: [RETRO, daily] }));
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.config.periodics, [RETRO, daily]);
+    const named = readConfig(file({ periodics: { sessions: { 'Weekly retro': RETRO } } }));
+    assert.ok(!named.ok);
+    assert.match(named.fault, /periodics\.sessions\.Weekly retro: Unrecognized key: "name"/);
+  });
+
+  test('a periodic may still be named Code review, as the kind of name keeps its rules', () => {
+    const read = readConfig(file({ periodics: [{ ...RETRO, name: 'Code review' }] }));
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.equal(read.config.periodics[0]?.name, 'Code review');
   });
 
   test('a day limit is whole days, at least one, and required', () => {
@@ -70,8 +86,8 @@ describe('the config file\'s periodics', () => {
     }
   });
 
-  test('a name is one line, and the prompt is text or a file', () => {
-    for (const periodic of [{ ...RETRO, name: '' }, { ...RETRO, name: 'Weekly\nretro' }, { ...RETRO, prompt: '' }, { ...RETRO, prompt: { path: 'x.md' } }, { ...RETRO, prompt: { file: '../x.md' } }, { ...RETRO, extra: true }]) {
+  test('a name is one line, with no space at either end, and the prompt is text or a file', () => {
+    for (const periodic of [{ ...RETRO, name: '' }, { ...RETRO, name: 'Weekly\nretro' }, { ...RETRO, name: ' Weekly retro' }, { ...RETRO, name: 'x'.repeat(101) }, { ...RETRO, prompt: '' }, { ...RETRO, prompt: { path: 'x.md' } }, { ...RETRO, prompt: { file: '../x.md' } }, { ...RETRO, extra: true }]) {
       assert.ok(!readConfig(file({ periodics: [periodic] })).ok, JSON.stringify(periodic));
     }
     assert.ok(readConfig(file({ periodics: [{ ...RETRO, prompt: { file: '.claude/retro.md' } }] })).ok);
@@ -88,7 +104,7 @@ describe('the config file\'s periodics', () => {
       files['.claude/retro.md'] = text;
       const bad = await resolveFiles(read.config, async (path) => files[path] ?? null);
       assert.ok(!bad.ok);
-      assert.match(bad.fault, /periodics\.Weekly retro\.prompt: \.claude\/retro\.md is (not on the default branch|empty)/);
+      assert.match(bad.fault, /periodics\.sessions\.Weekly retro\.prompt: \.claude\/retro\.md is (not on the default branch|empty)/);
     }
   });
 

@@ -76,12 +76,12 @@ Tools such as GitHub's Copilot coding agent and the Claude Code GitHub Action wr
 
 - **It finds the work.** It takes tickets from the backlog unasked, and holds one while its blockers are open or its date has not come.
 - **One session per ticket, for the ticket's whole life.** The agent that wrote the code also hears when the default branch goes red after its merge, when another merge conflicts with its branch, and when its change ships.
-- **Policy in one place.** Each repo keeps its rules in one file, `.github/dispatch.json`: the features it runs, the labels that mark a ticket ready, the review's checklist, the paths that need a person, the recurring sessions, and the prompts governor gives its sessions. Whose issues governor acts on by itself is policy too: by default only an owner's, a member's or a collaborator's, so a stranger's issue on a public repo starts nothing. So is who may set work going, by readying a ticket or summoning a session: by default an owner, a member or a collaborator, and a repo may narrow that to its owners alone, never widen it. So is whose issue or pull request work may be about when a person sets it going: by default the same three, so readying a stranger's issue, or summoning a session on it, starts nothing and says why once on the issue. So is whose text reaches a running session: by default those three and bots, so a stranger's comment, or a session link a stranger copies into an issue, reaches no session. So is whose pull requests the PR review reads, and whose issues the issue reviews read: by default the same three, so a stranger's pull request gets a `neutral` check and waits for a person, and a stranger's issue gets no review. A change to policy is a pull request, which the config check can validate before it merges. A new repo copies a policy into that file, and governor picks it up with no deploy.
+- **Policy in one place.** Each repo keeps its rules in one file, `.github/governor.json`, one section per feature: the features it runs, the labels that mark a ticket ready, the review's checklist, the paths that need a person, the recurring sessions, and the prompts governor gives its sessions. Whose issues governor acts on by itself is policy too: by default only an owner's, a member's or a collaborator's, so a stranger's issue on a public repo starts nothing. So is who may set work going, by readying a ticket or summoning a session: by default an owner, a member or a collaborator, and a repo may narrow that to its owners alone, never widen it. So is whose issue or pull request work may be about when a person sets it going: by default the same three, so readying a stranger's issue, or summoning a session on it, starts nothing and says why once on the issue. So is whose text reaches a running session: by default those three and bots, so a stranger's comment, or a session link a stranger copies into an issue, reaches no session. So is whose pull requests the PR review reads, and whose issues the issue reviews read: by default the same three, so a stranger's pull request gets a `neutral` check and waits for a person, and a stranger's issue gets no review. A change to policy is a pull request, which the config check can validate before it merges. A new repo copies a policy into that file, and governor picks it up with no deploy.
 - **Your own accounts.** It runs on your Claude subscription, your AWS account, and your GitHub accounts and organisations. A free GitHub plan is enough.
 
 ## What it does
 
-A repo turns each feature on with a switch in its `.github/dispatch.json`.
+A repo turns each feature on with a section in its `.github/governor.json`.
 
 | Feature | What happens |
 |---|---|
@@ -106,7 +106,7 @@ A dark factory runs with the lights off, because nobody works on the floor. Each
 | The PR review, with `merge` off | Merge the pull requests the model passed. This repo runs this way. |
 | The PR review, with `merge` on | Only what the review cannot pass, such as a change to a human-only path. Podstow's repo runs this way, and most of its pull requests merge with no person. |
 
-The rules for what a person keeps are plain config. [The test fixture's file](test/fixtures/factory/.github/dispatch.json) shows what they look like for a repo with the merge on: 37 human-only paths, each with its reason. They cover the architectural rules, the agents' own instructions and skills, the infrastructure, and the deploy and promotion gates.
+The rules for what a person keeps are plain config. [The test fixture's file](test/fixtures/factory/.github/governor.json) shows what they look like for a repo with the merge on: 37 human-only paths, each with its reason. They cover the architectural rules, the agents' own instructions and skills, the infrastructure, and the deploy and promotion gates.
 
 ## Under the hood
 
@@ -131,7 +131,7 @@ Some of the problems it solves, for engineers building something similar:
 - **A Fargate task, not a Lambda.** `claude --cloud` will not run without a terminal, and Lambda has no pseudo-terminal. The task starts when a fire is queued and exits after a minute idle, so the AWS bill is a fraction of a cent a fire.
 - **One login, one lane.** Every turn refreshes a single stored claude.ai login, and each refresh rotates the token, so two turns at once would leave one holding a dead login. Every fire goes through one FIFO queue to one task, one turn at a time.
 - **Code decides before the model does.** The PR review checks the tickets a pull request closes, its human-only paths and its required checks in code, before any model call. The model has no tools, answers in a fixed JSON shape, and judges only what code cannot.
-- **Code review is the repo's, not governor's.** Governor does not decide where code gets reviewed. This repo reviews it before every push: the `pre-push` skill has a clean-room sub-agent, with a fresh context and no part in writing the code, review the diff at high effort, and each finding ends fixed, filed as an issue, or dismissed only after the session has traced it through the code or run it. The PR review's model reads no diff. It reads the description, the tickets and the list of changed files, and judges whether the change does what its tickets ask. The only file text it reads is a rule file the repo lists in `review.quote`, whole before and after the change, to judge whether a rule changed. The code itself is judged by the repo's CI and required checks, which the review will not pass while red.
+- **Code review is the repo's, not governor's.** Governor does not decide where code gets reviewed. This repo reviews it before every push: the `pre-push` skill has a clean-room sub-agent, with a fresh context and no part in writing the code, review the diff at high effort, and each finding ends fixed, filed as an issue, or dismissed only after the session has traced it through the code or run it. The PR review's model reads no diff. It reads the description, the tickets and the list of changed files, and judges whether the change does what its tickets ask. The only file text it reads is a rule file the repo lists in `prReview.quote`, whole before and after the change, to judge whether a rule changed. The code itself is judged by the repo's CI and required checks, which the review will not pass while red.
 - **Relayed text names who wrote it, a check on prompt injection.** Every message governor relays into a session opens with a line saying it came from GitHub, not from the operator, so the session weighs each quoted remark by who wrote it. The line does not tell the session to ignore the text, since a remark from the pull request's owner is work to do. Only people with a say in the repo can summon a session. A hook's prompt lives in the repo, where a pull request reviews it, and the caller's text is quoted as data.
 - **Hook keys governor never stores.** Each hook's key is derived from one secret, the repo, the hook and a version, so revoking a key is a one-line pull request. A per-hour cap stops a leaked key flooding the shared queue, and a test checks that a signed request expires before the queue forgets it.
 - **A heartbeat that runs somewhere else.** Governor cannot report that it has stopped, so a served repo can run a checker on GitHub Actions that opens an issue when a sweep or a recurring session is overdue.
@@ -171,12 +171,14 @@ Each deployment is one person's factory: it serves the GitHub accounts on its ow
    ```json
    {
      "environment": "my-env",
-     "labels": { "ready": ["mode: afk"], "claim": "claimed" },
-     "features": { "pickup": true, "summons": true, "prMessages": true, "subscribeMessages": true }
+     "pickup": { "ready": ["mode: afk"], "claim": "claimed" },
+     "summons": {},
+     "prMessages": {},
+     "subscribeMessages": {}
    }
    ```
 
-   For a dark factory, copy [the kit's dark-factory file](examples/starter/.github/dispatch.dark-factory.json) in place of `dispatch.json`. It turns on every feature but hooks, with the PR review merging each pass, and leaves CLAUDE.md, the skills, the workflows, the config file and the infrastructure to a person. [The starter kit](docs/serving-a-repo.md#the-starter-kit) says which values to set before it merges.
+   For a dark factory, copy [the kit's dark-factory file](examples/starter/.github/governor.dark-factory.json) in place of `governor.json`. It turns on every feature but hooks, with the PR review merging each pass, and leaves CLAUDE.md, the skills, the workflows, the config file and the infrastructure to a person. [The starter kit](docs/serving-a-repo.md#the-starter-kit) says which values to set before it merges.
 
 3. **Label a ticket `mode: afk`.** Governor starts a session on it, and comments the session's link on the ticket.
 
@@ -196,7 +198,7 @@ Thomas Dickinson · [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/
 
 | Page | Read it to |
 |---|---|
-| [Serving a repo](docs/serving-a-repo.md) | Opt a repo in, and look up every key and switch in `dispatch.json`. |
+| [Serving a repo](docs/serving-a-repo.md) | Opt a repo in, and look up every key and section in `governor.json`. |
 | [Running your own governor](docs/self-hosting.md) | Deploy governor to your own AWS account. |
 | [Hooks](docs/hooks.md) | Start a session from outside GitHub with a signed request. |
 | [How governor works](docs/how-it-works.md) | See what each fire does, what each message says, and what each alarm means. |

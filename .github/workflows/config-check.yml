@@ -5,7 +5,7 @@
 #   with:
 #     commit: <commit>
 #
-# It reads the pull request's .github/dispatch.json and the prompt files it
+# It reads the pull request's .github/governor.json and the prompt files it
 # names, and runs governor's own readConfig and resolveFiles over them
 # (checker/config-check.mjs). It fails with governor's fault text, and warns
 # on a file that is valid but cannot work. It runs in the served repo on the
@@ -55,7 +55,7 @@ jobs:
           # dispatch/ and scripts/lib/ find them.
           mv node_modules ..
 
-      - name: Check .github/dispatch.json
+      - name: Check .github/governor.json
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CONFIG_CHECK_REF: ${{ github.event.pull_request.head.sha || github.sha }}

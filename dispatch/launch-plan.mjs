@@ -92,7 +92,7 @@ export const SCHEDULE_LAUNCH_WINDOW_MS = 7 * 60 * 1000;
  * @param {string[]} missing
  */
 const connectorMissing = ({ log }, repo, periodic, missing) => {
-  log(CONNECTOR_MISSING, { level: 'error', repo, periodic, connectors: missing, reason: `its .github/dispatch.json names ${missing.length === 1 ? 'a connector' : 'connectors'} the claude.ai account has not connected, so its session was not started: connect ${missing.join(', ')} on the account, or take ${missing.length === 1 ? 'it' : 'them'} out of the file` });
+  log(CONNECTOR_MISSING, { level: 'error', repo, periodic, connectors: missing, reason: `its .github/governor.json names ${missing.length === 1 ? 'a connector' : 'connectors'} the claude.ai account has not connected, so its session was not started: connect ${missing.join(', ')} on the account, or take ${missing.length === 1 ? 'it' : 'them'} out of the file` });
 };
 
 /**

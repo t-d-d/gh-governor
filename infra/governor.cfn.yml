@@ -584,7 +584,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-config-invalid
-      AlarmDescription: '[tripwire] A served repo''s .github/dispatch.json fails its schema, so the dispatcher skips the repo: no pickup, no messages, no archiving. Read /governor for the dispatch-config-invalid line; it names the repo and the fault. Fix the file on the repo''s default branch (dispatch/repo-config.mjs holds the schema); the next fire serves the repo again.'
+      AlarmDescription: '[tripwire] A served repo''s .github/governor.json fails its schema, so the dispatcher skips the repo: no pickup, no messages, no archiving. Read /governor for the dispatch-config-invalid line; it names the repo and the fault. Fix the file on the repo''s default branch (dispatch/repo-config.mjs holds the schema); the next fire serves the repo again.'
       Namespace: governor
       MetricName: ConfigInvalid
       Statistic: Sum
@@ -631,7 +631,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-hook-key-stale
-      AlarmDescription: '[tripwire] A hook fire was signed with a key version its repo''s .github/dispatch.json has moved past, so it started nothing. Read /governor, or /aws/lambda/governor-webhook if the receiver refused it, for the hook-key-stale line; it names the repo, the hook and the version. Whoever sent it holds an old key: if the owner did not raise the version for a caller still to be moved, treat that key as leaked.'
+      AlarmDescription: '[tripwire] A hook fire was signed with a key version its repo''s .github/governor.json has moved past, so it started nothing. Read /governor, or /aws/lambda/governor-webhook if the receiver refused it, for the hook-key-stale line; it names the repo, the hook and the version. Whoever sent it holds an old key: if the owner did not raise the version for a caller still to be moved, treat that key as leaked.'
       Namespace: governor
       MetricName: HookKeysStale
       Statistic: Sum
@@ -662,7 +662,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-repo-skipped
-      AlarmDescription: '[tripwire] A launch in a served repo started nothing, so the fire skipped the rest of that repo''s ready tickets. Read /governor for the dispatch-repo-skipped line; it names the repo, and the dispatch-launcher-output line before it says why. A wrong environment in the repo''s .github/dispatch.json is the repo''s to fix; a login refused is a re-mint (scripts/mint-claude-login.mjs).'
+      AlarmDescription: '[tripwire] A launch in a served repo started nothing, so the fire skipped the rest of that repo''s ready tickets. Read /governor for the dispatch-repo-skipped line; it names the repo, and the dispatch-launcher-output line before it says why. A wrong environment in the repo''s .github/governor.json is the repo''s to fix; a login refused is a re-mint (scripts/mint-claude-login.mjs).'
       Namespace: governor
       MetricName: ReposSkipped
       Statistic: Sum
@@ -693,7 +693,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-connector-missing
-      AlarmDescription: '[tripwire] A periodic names a claude.ai connector the account has not connected, so its session did not start. Read /governor for the dispatch-connector-missing line; it names the repo, the periodic and the connector. Connect it on the claude.ai account under the name the file gives, or take it out of the repo''s .github/dispatch.json; the next fire the periodic comes due starts it.'
+      AlarmDescription: '[tripwire] A periodic names a claude.ai connector the account has not connected, so its session did not start. Read /governor for the dispatch-connector-missing line; it names the repo, the periodic and the connector. Connect it on the claude.ai account under the name the file gives, or take it out of the repo''s .github/governor.json; the next fire the periodic comes due starts it.'
       Namespace: governor
       MetricName: ConnectorsMissing
       Statistic: Sum

@@ -1,6 +1,6 @@
 /**
  * The config check. It runs in a served repo, never in governor: governor
- * reads `.github/dispatch.json` from the default branch only, so a bad file
+ * reads `.github/governor.json` from the default branch only, so a bad file
  * shows up only once it merges, when the repo goes unserved. The repo calls
  * the reusable workflow .github/workflows/config-check.yml on its pull
  * requests, pinned to a commit of this repo. That workflow fetches this repo
@@ -13,8 +13,7 @@
  * failing, on a file that is valid but cannot work: a ready label the repo
  * lacks, a `workflows.ci` file that is not there, a heartbeat issue without
  * its marker, a review glob that matches no path, an issue review whose
- * `by` the repo's `trust.review` lets none of in, or a switch the file
- * still sets in `features` that moved to a section of its own. Only governor can check
+ * `by` the repo's `trust.review` lets none of in. Only governor can check
  * that `environment` resolves, because that needs the claude.ai login. It
  * warns too, in wording of its own, where a `trust` list reaches beyond
  * owners, members and collaborators, and notes each unset list governor
@@ -35,7 +34,7 @@ import { pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 import { globMatches } from '../dispatch/checklist.mjs';
 import { HEARTBEAT_MARKER } from '../dispatch/heartbeat.mjs';
-import { CONFIG_PATH, ISSUE_REVIEW_BY, MOVED_SWITCHES, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, ISSUE_REVIEW_BY, OLD_CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
 import { fitsInside, narrowedLists, reviewOf, trustExposures } from '../dispatch/trust.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
@@ -79,9 +78,9 @@ const warningsOf = async (config, reads) => {
     try {
       const have = new Set((await reads.labels()).map((l) => l.toLowerCase()));
       return config.labels.ready.filter((ready) => !have.has(ready.toLowerCase()))
-        .map((ready) => `labels.ready: the repo has no label "${ready}", so no ticket can carry it and pickup finds nothing`);
+        .map((ready) => `pickup.ready: the repo has no label "${ready}", so no ticket can carry it and pickup finds nothing`);
     } catch (error) {
-      return [`labels.ready: could not read the repo's labels, so the ready labels went unchecked: ${messageOf(error)}`];
+      return [`pickup.ready: could not read the repo's labels, so the ready labels went unchecked: ${messageOf(error)}`];
     }
   };
   /** @returns {Promise<string[]>} */
@@ -92,11 +91,11 @@ const warningsOf = async (config, reads) => {
   /** @returns {Promise<string[]>} */
   const heartbeat = async () => {
     if (config.features.heartbeat !== true || config.heartbeat === undefined) return [];
-    const { issue, marker = HEARTBEAT_MARKER } = config.heartbeat;
+    const { issue } = config.heartbeat;
     try {
       const body = await reads.issueBody(issue);
       if (body === null) return [`heartbeat.issue: #${issue} is not an issue in the repo`];
-      return body.includes(marker) ? [] : [`heartbeat.issue: #${issue} does not carry ${marker}, so governor writes nothing into it`];
+      return body.includes(HEARTBEAT_MARKER) ? [] : [`heartbeat.issue: #${issue} does not carry ${HEARTBEAT_MARKER}, so governor writes nothing into it`];
     } catch (error) {
       return [`heartbeat.issue: could not read #${issue}, so its marker went unchecked: ${messageOf(error)}`];
     }
@@ -106,12 +105,12 @@ const warningsOf = async (config, reads) => {
     const { review } = config;
     if (review === undefined || (review.humanOnly.length === 0 && review.quote.length === 0)) return [];
     const { paths, truncated } = await reads.paths();
-    if (truncated) return ['review: the repo\'s tree is too large for GitHub to list whole, so the humanOnly and quote globs went unchecked'];
+    if (truncated) return ['prReview: the repo\'s tree is too large for GitHub to list whole, so the humanOnly and quote globs went unchecked'];
     /** @param {string} glob */
     const none = (glob) => !paths.some((p) => globMatches(glob, p));
     return [
-      ...review.humanOnly.filter(({ glob }) => none(glob)).map(({ glob }) => `review.humanOnly: ${glob} matches no path in the repo`),
-      ...review.quote.filter((entry) => none(entry.replace(/^!/, ''))).map((entry) => `review.quote: ${entry} matches no path in the repo`),
+      ...review.humanOnly.filter(({ glob }) => none(glob)).map(({ glob }) => `prReview.humanOnly: ${glob} matches no path in the repo`),
+      ...review.quote.filter((entry) => none(entry.replace(/^!/, ''))).map((entry) => `prReview.quote: ${entry} matches no path in the repo`),
     ];
   };
   // Independent reads, run together; the warnings keep this order.
@@ -207,7 +206,7 @@ const templateLabels = (path, text) => {
  * could not read, or for a template folder it could not list. A template's
  * `labels:` adds its labels whoever opens the issue, so one naming a ready
  * label readies every ticket of its kind before anyone has read it. That
- * holds whoever may open issues, so this reads no `pickup.by`. Labels match
+ * holds whoever may open issues, so this reads no trust list. Labels match
  * in any case, as GitHub's do.
  *
  * @param {readonly string[]} ready The file's ready labels.
@@ -248,21 +247,6 @@ const templateFaults = async (ready, reads) => {
 };
 
 /**
- * A warning for each switch the file still sets in `features` that moved
- * to a section of its own ({@link MOVED_SWITCHES}): governor reads the key
- * as nothing, so a file setting it alone turns nothing on or off. Read from
- * the file's text, since governor's read drops the key.
- *
- * @param {string} text A file `readConfig` accepted.
- * @returns {string[]}
- */
-const movedSwitches = (text) => {
-  const features = JSON.parse(text)?.features ?? {};
-  return Object.entries(MOVED_SWITCHES).filter(([old]) => features[old] !== undefined)
-    .map(([old, now]) => `features.${old}: the switch moved to ${now}, so governor reads this key as nothing. Remove it, and turn the feature on or off with ${now}`);
-};
-
-/**
  * One check of the pull request's config file, and of its issue templates.
  * A read that fails, other than a file that is not there, throws, so the
  * run goes red rather than pass a file it could not read.
@@ -272,7 +256,14 @@ const movedSwitches = (text) => {
  */
 export const check = async (reads) => {
   const text = await reads.read(CONFIG_PATH);
-  if (text === null) return { errors: [], templates: [], warnings: [`the pull request leaves no ${CONFIG_PATH}, so governor will not serve this repo once it merges`] };
+  if (text === null) {
+    // A failed read of the old file only loses the hint, as in governor
+    // (dispatch/repos.mjs): the pull request leaves no file either way.
+    const old = await reads.read(OLD_CONFIG_PATH).catch(() => null) !== null;
+    return { errors: [], templates: [], warnings: [old
+      ? `the pull request leaves no ${CONFIG_PATH}, so governor will not serve this repo once it merges. Governor no longer reads ${OLD_CONFIG_PATH}: add ${CONFIG_PATH} in its layout, one section per feature`
+      : `the pull request leaves no ${CONFIG_PATH}, so governor will not serve this repo once it merges`] };
+  }
   const parsed = readConfig(text);
   if (!parsed.ok) return { errors: [parsed.fault], templates: [], warnings: [] };
   // The globs and the templates both read the tree: list it once.
@@ -285,7 +276,7 @@ export const check = async (reads) => {
   return {
     errors: resolved.ok ? [] : [resolved.fault],
     templates: found.templates,
-    warnings: [...movedSwitches(text), ...warnings, ...found.warnings],
+    warnings: [...warnings, ...found.warnings],
     ...(exposures.length === 0 ? {} : { exposures }),
     ...(narrowed.length === 0 ? {} : { narrowed }),
   };

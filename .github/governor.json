@@ -1,0 +1,15 @@
+{
+  "environment": "askme",
+  "pickup": { "ready": ["mode: afk"], "claim": "claimed", "claimRemoves": [], "exclude": ["type: prd", "mode: human"] },
+  "summons": {},
+  "prMessages": {},
+  "subscribeMessages": {},
+  "unblocked": {},
+  "conflicts": {},
+  "prReview": {
+    "prompt": { "file": ".claude/skills/pr-review/SKILL.md" },
+    "tickets": { "forbid": [{ "labels": ["type: prd"] }] },
+    "merge": false
+  },
+  "signOff": {}
+}

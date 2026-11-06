@@ -8,7 +8,8 @@
  * names its repo reads that one repo ({@link repoServed}). A listing or a
  * token mint that fails refuses the turn. A contents read that fails refuses
  * that repo's part of the turn, and is never taken for a missing file. No
- * file is `not served`, at info. A file that fails its schema, or names an
+ * file is `not served`, at info, or at warn naming the file to add where
+ * the repo still has the older `.github/dispatch.json`. A file that fails its schema, or names an
  * environment no one environment in the login's list has, is an alarmed
  * `dispatch-config-invalid` naming the repo and the fault. An environment
  * list read that fails refuses the repo's part as a failed contents read does.
@@ -16,7 +17,7 @@
  * missing or empty is `dispatch-config-invalid`, naming the key and path.
  */
 
-import { CONFIG_PATH, environmentFrom, namesEnvironment, readConfig, resolveFiles } from './repo-config.mjs';
+import { CONFIG_PATH, OLD_CONFIG_PATH, environmentFrom, namesEnvironment, readConfig, resolveFiles } from './repo-config.mjs';
 import { ownerListed } from './webhook/fire.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
@@ -63,7 +64,12 @@ const judge = async ({ token: mint, config, environments, log }, repo) => {
     return { unread: messageOf(error), what: `${repo}'s ${CONFIG_PATH}` };
   }
   if (text === null) {
-    log('dispatch-not-served', { level: 'info', repo, reason: `no ${CONFIG_PATH} on its default branch` });
+    // A repo still on the file before #525 is told which file to add. A
+    // failed read of the old file is only a lost hint: the repo is unserved
+    // either way.
+    const old = await config(repo, token, OLD_CONFIG_PATH).catch(() => null);
+    if (old !== null) log('dispatch-not-served', { level: 'warn', repo, reason: `no ${CONFIG_PATH} on its default branch, and governor no longer reads ${OLD_CONFIG_PATH}: add ${CONFIG_PATH}, one section per feature (docs/serving-a-repo.md)` });
+    else log('dispatch-not-served', { level: 'info', repo, reason: `no ${CONFIG_PATH} on its default branch` });
     return { notServed: true };
   }
   const parsed = readConfig(text);

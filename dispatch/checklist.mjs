@@ -233,8 +233,8 @@ export const dependabotAnswer = ({ files, commits, list }) => {
   const off = files.find((f) => f.status !== 'modified' || !list.some((glob) => globMatches(glob, f.filename)));
   if (off) {
     return person(off.status === 'modified'
-      ? `\`${off.filename}\` is not on the Dependabot list (\`review.dependabot\` in \`.github/dispatch.json\`)`
-      : `\`${off.filename}\` is ${off.status}, and a bump only modifies a manifest on the Dependabot list (\`review.dependabot\` in \`.github/dispatch.json\`)`);
+      ? `\`${off.filename}\` is not on the Dependabot list (\`prReview.dependabot\` in \`.github/governor.json\`)`
+      : `\`${off.filename}\` is ${off.status}, and a bump only modifies a manifest on the Dependabot list (\`prReview.dependabot\` in \`.github/governor.json\`)`);
   }
   return { answer: 'pass', reason: `Dependabot's bump of ${files.map((f) => `\`${f.filename}\``).join(', ')}, every file on the Dependabot list and every commit Dependabot's own` };
 };

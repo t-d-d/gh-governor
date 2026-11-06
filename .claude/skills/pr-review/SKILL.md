@@ -38,7 +38,7 @@ its sections.
    loose end with no issue number fails.
 
 7. **No changed file is on the human-only list.** The list is
-   `review.humanOnly` in `.github/dispatch.json`, and it is empty here. Governor
+   `prReview.humanOnly` in `.github/governor.json`, and it is empty here. Governor
    checks this in code.
 
 8. **No required status check is red on its head.** Governor checks this in
@@ -47,7 +47,7 @@ its sections.
 ## Dependabot
 
 A pull request `dependabot[bot]` opened is held to test 7 alone, with the
-Dependabot list (`review.dependabot` in `.github/dispatch.json`) in place of
+Dependabot list (`prReview.dependabot` in `.github/governor.json`) in place of
 the human-only list. That list is empty here, so every Dependabot pull request
 waits for a person.
 

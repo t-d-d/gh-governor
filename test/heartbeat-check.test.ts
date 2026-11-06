@@ -20,6 +20,7 @@ import yaml from 'js-yaml';
 import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat } from '../dispatch/heartbeat.mjs';
 import { readConfig as governorReadConfig } from '../dispatch/repo-config.mjs';
 import { SWEEP_HOURS as PICKUP_SWEEP_HOURS } from '../dispatch/pickup.mjs';
+import { switched } from './helpers/governor-file.ts';
 
 const WORKFLOW_PATH = new URL('../.github/workflows/heartbeat-check.yml', import.meta.url);
 const SOURCE_PATH = new URL('../checker/heartbeat-check.mjs', import.meta.url);
@@ -66,9 +67,9 @@ const OTHER = 'https://claude.ai/code/session_01OTHER';
 const BODY = `Governor records its fires here.\n\n${HEARTBEAT_MARKER}\n\nKeep this issue open.\n`;
 const REPO = 'acme/factory';
 
-/** The fixture repo's full config file, in the heartbeat's `{ issue }` shape. */
-const factory = () => {
-  const file = JSON.parse(readFileSync(new URL('./fixtures/factory/.github/dispatch.json', import.meta.url), 'utf8'));
+/** The fixture repo's full config file, its heartbeat on issue 412. */
+const factory = (): Record<string, any> => {
+  const file = JSON.parse(readFileSync(new URL('./fixtures/factory/.github/governor.json', import.meta.url), 'utf8'));
   return { ...file, heartbeat: { issue: 412 } };
 };
 
@@ -172,17 +173,21 @@ describe('reading the config file', () => {
   test('pickup\'s interval is one hour when the file sets none, pickup\'s own default, and nothing is checked for a feature left off', () => {
     assert.equal(checker.SWEEP_HOURS, PICKUP_SWEEP_HOURS, 'the checker cannot import dispatch/pickup.mjs, so it keeps a copy of the default');
     const file = factory();
-    delete file.pickup;
-    file.features = { ...file.features, periodics: false };
+    delete file.pickup.sweepHours;
+    switched(file, { periodics: false });
     assert.deepEqual(checker.readConfig(JSON.stringify(file)), { ok: true, config: { issue: 412, pickupHours: 1, periodics: [] } });
-    file.features = { ...file.features, pickup: false, periodics: true };
+    switched(file, { pickup: false, periodics: true });
     assert.equal((checker.readConfig(JSON.stringify(file)) as { config: { pickupHours: unknown } }).config.pickupHours, null);
+    // A feature with no section is off, as one with `"enabled": false` is.
+    delete file.pickup;
+    delete file.periodics;
+    assert.deepEqual(checker.readConfig(JSON.stringify(file)), { ok: true, config: { issue: 412, pickupHours: null, periodics: [] } });
   });
 
   // A file with a key added after the caller's pinned commit still reads:
   // the checker reads only the keys it needs, without governor's schema.
   test('a key the checker does not know, which governor\'s schema refuses, still reads', () => {
-    const file = { ...factory(), aKeyFromLater: { anything: true }, pickup: { sweepHours: 4, later: 1 } };
+    const file = { ...factory(), aKeyFromLater: { anything: true }, pickup: { ...factory().pickup, sweepHours: 4, later: 1 } };
     assert.equal(governorReadConfig(JSON.stringify(file)).ok, false);
     const read = checker.readConfig(JSON.stringify(file));
     assert.ok(read.ok, JSON.stringify(read));
@@ -193,14 +198,13 @@ describe('reading the config file', () => {
     const faults: Array<[string, RegExp]> = [
       ['{ not json', /parse/i],
       ['[]', /object/],
-      [JSON.stringify({ ...factory(), features: { pickup: true } }), /heartbeat/],
+      [JSON.stringify({ ...factory(), heartbeat: { enabled: false, issue: 412 } }), /heartbeat/],
       [JSON.stringify({ ...factory(), heartbeat: undefined }), /heartbeat/],
       [JSON.stringify({ ...factory(), heartbeat: { issue: 'x' } }), /heartbeat\.issue/],
-      [JSON.stringify({ ...factory(), heartbeat: { issue: 412, marker: '<!-- factory:hb -->' } }), /older shape/],
-      [JSON.stringify({ ...factory(), pickup: { sweepHours: 'two' } }), /sweepHours/],
-      [JSON.stringify({ ...factory(), periodics: 'none' }), /periodics/],
-      [JSON.stringify({ ...factory(), periodics: [{ name: 'A' }] }), /days/],
-      [JSON.stringify({ ...factory(), periodics: [{ days: 3 }] }), /name/],
+      [JSON.stringify({ ...factory(), pickup: { ...factory().pickup, sweepHours: 'two' } }), /sweepHours/],
+      [JSON.stringify({ ...factory(), periodics: { sessions: 'none' } }), /periodics\.sessions/],
+      [JSON.stringify({ ...factory(), periodics: { sessions: [{ name: 'A', days: 3 }] } }), /periodics\.sessions/],
+      [JSON.stringify({ ...factory(), periodics: { sessions: { A: {} } } }), /"A" has no days/],
     ];
     for (const [text, why] of faults) {
       const read = checker.readConfig(text);
@@ -234,7 +238,7 @@ const github = (over: { config?: unknown, configStatus?: number, heartbeat?: unk
     calls.push({ method, path, ...(body === undefined ? {} : { body }) });
     const url = new URL(path, 'https://api.invalid');
     const p = url.pathname;
-    if (method === 'GET' && p === `/repos/${REPO}/contents/.github/dispatch.json`) {
+    if (method === 'GET' && p === `/repos/${REPO}/contents/.github/governor.json`) {
       assert.equal(url.searchParams.get('ref'), null, 'the default branch');
       if (over.configStatus !== undefined) throw fail(over.configStatus);
       const text = typeof over.config === 'string' ? over.config : JSON.stringify(over.config ?? factory());
@@ -246,7 +250,7 @@ const github = (over: { config?: unknown, configStatus?: number, heartbeat?: unk
       const per = Number(url.searchParams.get('per_page') ?? '30');
       const path = url.searchParams.get('path');
       if (path !== null) {
-        assert.equal(path, '.github/dispatch.json');
+        assert.equal(path, '.github/governor.json');
         assert.ok(touched !== undefined, 'the fake names the commit that touched the file');
         return [listed(touched)].slice((page - 1) * per, page * per);
       }
@@ -419,10 +423,12 @@ describe('checking the heartbeat', () => {
     assert.ok(old.open().every((i) => /no line/.test(String(i.body))), JSON.stringify(old.open()));
   });
 
-  test('a periodic name with spaces around it is matched trimmed, as governor stores it', async () => {
+  test('a periodic is matched by the key it is held under, which governor refuses with a space at either end', async () => {
     const file = factory();
-    file.periodics = file.periodics.map((p: { name: string }) => (p.name === 'Ticket review' ? { ...p, name: ' Ticket review ' } : p));
-    const gh = github({ config: file, heartbeat: fresh() });
+    const { 'Ticket review': ticket, ...rest } = file.periodics.sessions;
+    file.periodics.sessions = { ...rest, ' Ticket review ': ticket };
+    assert.equal(governorReadConfig(JSON.stringify(file)).ok, false, 'governor never stores a padded name');
+    const gh = github({ heartbeat: fresh() });
     await run(gh);
     assert.deepEqual(gh.open(), []);
   });
@@ -431,8 +437,7 @@ describe('checking the heartbeat', () => {
     const gh = github({ heartbeat: stampHeartbeat(fresh(), { pickup: { at: iso(NOW - 6 * HOUR), started: 1 } }) });
     await run(gh);
     assert.equal(gh.open().length, 1);
-    const file = factory();
-    file.features = { ...file.features, pickup: false };
+    const file = switched(factory(), { pickup: false });
     const off = github({ config: file, heartbeat: fresh(), issues: gh.issues });
     await run(off);
     assert.deepEqual(off.open(), []);
@@ -447,9 +452,10 @@ describe('checking the heartbeat', () => {
   });
 
   test('a periodic the file lists twice gets one issue', async () => {
-    const file = factory();
-    file.periodics = [...file.periodics, file.periodics[0]];
-    const gh = github({ config: file, heartbeat: stampHeartbeat(fresh(), { periodics: [{ name: 'Weekly retro', at: iso(NOW - 9 * DAY), session: null, state: 'nothing to do' }] }) });
+    // A JSON object may repeat a key, and the last one wins, as in governor.
+    const text = JSON.stringify(factory()).replace('"sessions":{', `"sessions":{"Weekly retro":${JSON.stringify(factory().periodics.sessions['Weekly retro'])},`);
+    assert.equal((text.match(/"Weekly retro"/g) ?? []).length, 2);
+    const gh = github({ config: text, heartbeat: stampHeartbeat(fresh(), { periodics: [{ name: 'Weekly retro', at: iso(NOW - 9 * DAY), session: null, state: 'nothing to do' }] }) });
     await run(gh);
     assert.equal(gh.open().length, 1);
   });
@@ -553,14 +559,14 @@ describe('a check that cannot read opens an issue too, never silence', () => {
     return gh;
   };
 
-  test('no config file on the default branch', async () => { await faulted({ configStatus: 404 }, /\.github\/dispatch\.json/); });
+  test('no config file on the default branch', async () => { await faulted({ configStatus: 404 }, /\.github\/governor\.json/); });
   test('a config file read that fails', async () => { await faulted({ configStatus: 500 }, /HTTP 500/); });
   test('a config file that does not parse', async () => { await faulted({ config: '{ "heartbeat": ' }, /parse/i); });
   test('a heartbeat issue read that fails', async () => { await faulted({ heartbeat: fresh(), heartbeatStatus: 404 }, /#412/); });
   test('a heartbeat issue without governor\'s marker', async () => { await faulted({ heartbeat: 'Someone\'s ticket.' }, /governor:heartbeat/); });
 
   test('the fault\'s issue is kept, not duplicated, and closes once the check reads again', async () => {
-    const gh = await faulted({ configStatus: 404 }, /dispatch\.json/);
+    const gh = await faulted({ configStatus: 404 }, /governor\.json/);
     const again = github({ configStatus: 404, issues: gh.issues });
     await run(again);
     assert.equal(again.open().length, 1);

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/9c5c1ca576777b6c8a3e4d26e96cb534c7dfca1c/schema/dispatch.schema.json",
+  "environment": "my-env",
+  "workflows": { "ci": ".github/workflows/ci.yml" },
+  "pickup": {
+    "ready": ["triage: build"],
+    "claim": "claimed",
+    "claimRemoves": [],
+    "exclude": ["type: prd", "mode: human", "triage: needs a person"],
+    "sweepHours": 1
+  },
+  "summons": {},
+  "prMessages": {},
+  "subscribeMessages": {},
+  "redScheduledRun": {},
+  "unblocked": {},
+  "ciMessages": {},
+  "deployMessages": { "deployedLabels": true },
+  "branchRunMessages": {},
+  "conflicts": {},
+  "prReview": {
+    "prompt": "Review the pull request from its description and the tickets it closes. Answer each test in order.\n\n1. Every ticket it closes is open and ready, and the PR is the only open one closing it.\n2. It says what the change does, and that is what the tickets it closes asked for.\n3. It says what the change costs, and the cost is nothing a person should decide: a new paid service, a wider permission or a dropped safety check fails.\n4. Where it departs from a ticket it closes, it does less, never more.\n5. It answers every acceptance criterion of every ticket it closes, each with a test or a check.\n6. It leaves no loose end: anything it found and did not do is an issue it names.\n7. It changes no path on the human-only list.\n\nAnswer pass, or fail with the number of the first test that failed and one sentence saying what the PR would need to meet it.",
+    "humanOnly": [
+      {
+        "glob": "CLAUDE.md",
+        "reason": "the instructions every session follows, at the root or in any folder"
+      },
+      { "glob": ".claude/**", "reason": "the skills, hooks and settings every session runs" },
+      {
+        "glob": ".github/workflows/**",
+        "reason": "the workflows: CI, which this review reads as a required check, and every deploy"
+      },
+      { "glob": ".github/actions/**", "reason": "the actions the workflows call, CI's steps among them" },
+      {
+        "glob": ".github/governor.json",
+        "reason": "this file: what governor may do here, and the lists this review checks against"
+      },
+      { "glob": "infra/**", "reason": "infrastructure: accounts, roles, permissions and what they cost" }
+    ],
+    "merge": true
+  },
+  "heartbeat": { "issue": 1 },
+  "periodics": {
+    "sessions": {
+      "Code review": {
+        "prompt": "Review the pull requests merged into the default branch that governor lists below, which are the ones merged since the time it gives. Where it says there are more than it lists, find the rest yourself. Read each one's change against the code as it stands now. Raise one issue for each defect, missing test or piece of drift worth fixing, after searching the open issues so you raise none twice. Change no code yourself. When you are done, make `Signing off.` the last line of your reply.",
+        "days": 7,
+        "counts": { "merges": 10 },
+        "gapHours": 4
+      },
+      "Backlog review": {
+        "prompt": "Review the issues opened that governor lists below, which are the ones opened since the time it gives. Where it says there are more than it lists, find the rest yourself. For each one still open, check it against the code: whether it says what done looks like, whether the code already does it, and whether another open issue already covers it. Comment on one that needs work, saying what it lacks. Close a duplicate, or one the code already settles, with a comment saying why. Leave alone the issues the heartbeat check opens, which close themselves. Then list the open tickets left stuck, whenever they were opened, reading the labels from the pickup section of .github/governor.json: claimed ones, carrying the claim label, with no open pull request, and, only where the file turns issue reviews on, open ones no issue review ran on and ones still carrying the labels an issue review's `failure` or `neutral` conclusion adds. Leave out the heartbeat issue, the wait ticket and the issues the heartbeat check opens, which no issue review reads. Post the list as one comment on the heartbeat issue, each ticket with a line on why it is stuck, and change none of them. Change no code yourself. When you are done, make `Signing off.` the last line of your reply.",
+        "days": 7,
+        "counts": { "issuesOpened": 5 }
+      },
+      "Weekly review": {
+        "prompt": "Look back over the repo since the last fire time governor gives below, or over the past week if this is the first run: the pull requests merged, the issues opened and closed, and the default branch's workflow runs that failed. Raise one issue for each lesson worth acting on, such as a failure that keeps coming back, a slow or flaky check, or work that had to be redone. Search the open issues first so you raise none twice. Change no code yourself. When you are done, make `Signing off.` the last line of your reply.",
+        "days": 7
+      }
+    }
+  },
+  "hooks": { "enabled": false },
+  "waits": {},
+  "signOff": {},
+  "issueReviews": {
+    "reviews": {
+      "triage": {
+        "when": { "exclude": ["claimed"] },
+        "byLabel": [
+          {
+            "labels": ["type: prd"],
+            "prompt": "A PRD states the problem, who has it, the solution in outline, and its non-goals. It is many pull requests' work, which its tickets split up, so it is not judged as one."
+          },
+          {
+            "labels": ["type: bug", "bug"],
+            "prompt": "A bug says how to reproduce it, what happened, and what should have happened. It is one pull request's work.",
+            "conclusions": { "success": ["triage: build"] }
+          },
+          {
+            "labels": ["type: enhancement"],
+            "prompt": "An enhancement is one pull request's work, and says how a reviewer checks it is done."
+          }
+        ],
+        "conclusions": {
+          "success": ["triage: passed"],
+          "failure": ["triage: needs edit"],
+          "neutral": ["triage: needs a person"]
+        }
+      }
+    }
+  }
+}

@@ -168,15 +168,6 @@ export const PROMPTS = Object.freeze({
   },
 });
 
-/**
- * Prompt keys a served file may still set, though governor sends no
- * message of their kind: the schema is strict, and a file the change made
- * invalid would stop its repo being served (dispatch/repo-config.mjs).
- * The merge hand-off's two went when a blocker's close came to be handled
- * in each blocked ticket's own repo (dispatch/unblocked.mjs).
- */
-export const RETIRED_PROMPTS = Object.freeze(['mergeHandoff', 'mergeHandoffUnread']);
-
 /** A fact a prompt names. */
 const PLACEHOLDER = /\{([A-Za-z]+)\}/g;
 

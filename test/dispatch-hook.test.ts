@@ -17,7 +17,7 @@ import { handle } from '../dispatch/webhook/route.mjs';
 import { hookTable, type Counted } from '../dispatch/webhook/hook-table.mjs';
 import { HOOK_KEY_STALE } from '../dispatch/hooks.mjs';
 import { HOOK_PER_HOUR_MAX, FIRE_BUDGET, fireWeight, parseFire } from '../dispatch/webhook/fire.mjs';
-import { configSchema, readConfig, resolveFiles, switchOf } from '../dispatch/repo-config.mjs';
+import { SECTIONS, readConfig, resolveFiles, switchOf } from '../dispatch/repo-config.mjs';
 import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
 import { factoryFile } from './helpers/factory.ts';
 import { loadTemplate, resourcesOfType } from './helpers/cfn.ts';
@@ -761,49 +761,60 @@ describe('the hook fire', () => {
 
 describe('the config file\'s hooks', () => {
   const base = JSON.parse(factoryFile(CONFIG_PATH));
-  const withHooks = (features: Record<string, boolean>, hooks?: unknown) => JSON.stringify({ ...base, features: { ...base.features, ...features }, ...(hooks === undefined ? { hooks: undefined } : { hooks }) });
+  /** Hooks as the file holds them: each keyed by its name, which the entry no longer sets. */
+  const keyed = (list: Array<Record<string, unknown>>) => Object.fromEntries(list.map(({ name, ...entry }) => [name, entry]));
+  /** The factory's file with its hooks section replaced: a list of hooks, each with its name, turns hooks on with them. */
+  const withHooks = (section: unknown) => JSON.stringify({ ...base, hooks: Array.isArray(section) ? { sessions: keyed(section) } : section });
   const fault = (text: string) => {
     const read = readConfig(text);
     return read.ok ? null : read.fault;
   };
 
-  test('hooks is a switch, and the factory turns it on with one hook', () => {
+  test('hooks is a section, and the factory turns it on with one hook', () => {
     const read = readConfig(factoryFile(CONFIG_PATH));
     assert.ok(read.ok);
     assert.equal(read.config.features.hooks, true);
     assert.equal(read.config.hooks.length, 1);
-    assert.ok(configSchema.shape.features.in.shape.hooks);
+    assert.ok(SECTIONS.includes('hooks'));
   });
 
-  test('with the switch on, the file lists at least one hook', () => {
-    assert.match(String(fault(withHooks({ hooks: true }, []))), /hooks/);
-    assert.match(String(fault(withHooks({ hooks: true }))), /hooks/);
-    assert.equal(fault(withHooks({ hooks: false })), null);
+  test('with the section on, the file lists at least one hook; off or missing, it needs none', () => {
+    assert.match(String(fault(withHooks([]))), /hooks\.sessions: hooks is on/);
+    assert.match(String(fault(withHooks({}))), /hooks\.sessions: hooks is on/);
+    assert.equal(fault(withHooks({ enabled: false })), null);
+    assert.equal(fault(withHooks(undefined)), null);
   });
 
   test('a hook may set perHour, a positive whole number up to the most an hour\'s item can hold; a hook without it stays valid', () => {
     const hook = { name: 'operator-prod', prompt: 'Look into the alarm.', keyVersion: 1 };
-    assert.equal(fault(withHooks({ hooks: true }, [hook])), null);
-    assert.equal(fault(withHooks({ hooks: true }, [{ ...hook, perHour: 5 }])), null);
-    assert.equal(fault(withHooks({ hooks: true }, [{ ...hook, perHour: HOOK_PER_HOUR_MAX }])), null);
+    assert.equal(fault(withHooks([hook])), null);
+    assert.equal(fault(withHooks([{ ...hook, perHour: 5 }])), null);
+    assert.equal(fault(withHooks([{ ...hook, perHour: HOOK_PER_HOUR_MAX }])), null);
     for (const perHour of [0, -1, 1.5, '20', null, HOOK_PER_HOUR_MAX + 1]) {
-      assert.notEqual(fault(withHooks({ hooks: true }, [{ ...hook, perHour }])), null, JSON.stringify(perHour));
+      assert.notEqual(fault(withHooks([{ ...hook, perHour }])), null, JSON.stringify(perHour));
     }
   });
 
-  test('each hook has a URL-safe name unique in the file, a prompt and a positive whole key version', () => {
+  test('each hook is keyed by a URL-safe name, and has a prompt and a positive whole key version', () => {
     const hook = { name: 'operator-prod', prompt: 'Look into the alarm.', keyVersion: 1 };
-    assert.equal(fault(withHooks({ hooks: true }, [hook, { ...hook, name: 'operator-dev', prompt: { file: 'ops/alarm.md' } }])), null);
-    assert.match(String(fault(withHooks({ hooks: true }, [hook, hook]))), /operator-prod/);
+    const two = readConfig(withHooks([hook, { ...hook, name: 'operator-dev', prompt: { file: 'ops/alarm.md' } }]));
+    assert.ok(two.ok, JSON.stringify(two));
+    assert.deepEqual(two.config.hooks.map((h) => h.name), ['operator-prod', 'operator-dev']);
     for (const bad of [{ name: 'Operator' }, { name: 'op prod' }, { name: 'op_prod' }, { name: 'op/prod' }, { name: '' }, { prompt: '' }, { prompt: { file: '../x' } }, { keyVersion: 0 }, { keyVersion: 1.5 }, { keyVersion: '1' }, { keyVersion: 1_000_000_000 }, { perhour: 20 }]) {
-      assert.notEqual(fault(withHooks({ hooks: true }, [{ ...hook, ...bad }])), null, JSON.stringify(bad));
+      assert.notEqual(fault(withHooks([{ ...hook, ...bad }])), null, JSON.stringify(bad));
     }
+    assert.match(String(fault(withHooks([{ ...hook, name: 'Operator' }]))), /hooks\.sessions\.Operator: Invalid key in record: a hook's name is lower-case letters/);
     const { keyVersion: _v, ...unversioned } = hook;
-    assert.notEqual(fault(withHooks({ hooks: true }, [unversioned])), null);
+    assert.notEqual(fault(withHooks([unversioned])), null);
+  });
+
+  test('an entry that sets name is refused: the key is the name', () => {
+    const { name, ...entry } = { name: 'operator-prod', prompt: 'Look into the alarm.', keyVersion: 1 };
+    assert.match(String(fault(withHooks({ sessions: { [name]: { ...entry, name } } }))), /hooks\.sessions\.operator-prod: Unrecognized key: "name"/);
   });
 
   test('a hook\'s prompt file is read from the default branch, and a missing one is the file\'s fault', async () => {
-    const read = readConfig(withHooks({ hooks: true }, [{ name: 'operator-prod', prompt: { file: 'ops/alarm.md' }, keyVersion: 1 }]));
+    const read = readConfig(withHooks([{ name: 'operator-prod', prompt: { file: 'ops/alarm.md' }, keyVersion: 1 }]));
     assert.ok(read.ok);
     const files: Record<string, string> = Object.fromEntries([...['.claude/skills/pr-review/SKILL.md', '.github/issue-review/triage.md', '.github/issue-review/bug.md'].map((path) => [path, factoryFile(path)]), ['ops/alarm.md', 'Look into the alarm.\n']]);
     const resolved = await resolveFiles(read.config, async (path) => files[path] ?? null);
@@ -811,7 +822,7 @@ describe('the config file\'s hooks', () => {
     assert.deepEqual(resolved.config.hooks, [{ name: 'operator-prod', prompt: 'Look into the alarm.', keyVersion: 1 }]);
     const missing = await resolveFiles(read.config, async (path) => (path === 'ops/alarm.md' ? null : files[path] ?? null));
     assert.ok(!missing.ok);
-    assert.match(missing.fault, /hooks\.operator-prod\.prompt: ops\/alarm\.md/);
+    assert.match(missing.fault, /hooks\.sessions\.operator-prod\.prompt: ops\/alarm\.md/);
   });
 });
 

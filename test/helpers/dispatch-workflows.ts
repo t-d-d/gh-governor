@@ -4,7 +4,7 @@
  * test/dispatch-coverage.test.ts).
  */
 
-/** The factory's `workflows` section (.github/dispatch.json): its CI, its triage target and its tags. */
+/** The factory's workflows as governor reads them from .github/governor.json: its CI from `workflows`, and its triage target and tags from `deployMessages`. */
 export const FACTORY_WORKFLOWS = { ci: '.github/workflows/ci.yml', triage: ['prod'], tags: { dev: 'deploy/dev', prod: 'deploy/prod' } };
 
 /** The commit and run the message fixtures below name. */

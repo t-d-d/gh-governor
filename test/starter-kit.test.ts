@@ -1,8 +1,8 @@
 /**
  * The starter kit a new repo copies into its own `.github/` (examples/starter/):
- * a config file that names its JSON Schema, lists every switch, and turns on
+ * a config file that names its JSON Schema, lists every feature's section, and turns on
  * pickup, the heartbeat and three periodics; a dark-factory file a repo copies
- * in its place, with every switch but hooks on and the review's merge on; the
+ * in its place, with every feature but hooks on and the review's merge on; the
  * workflow that calls the heartbeat checker; and the workflow that calls the
  * config check on pull requests. Its prompts are plain text that
  * works without any skill, and each acts on the window governor writes under
@@ -13,15 +13,21 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
-import { CONFIG_PATH, GENERIC_SWITCHES, namesEnvironment, readConfig, turnsOn } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, GENERIC_SWITCHES, SECTIONS, namesEnvironment, readConfig, turnsOn } from '../dispatch/repo-config.mjs';
 import { readConfig as checkerReadConfig } from '../checker/heartbeat-check.mjs';
 import { globMatches } from '../dispatch/checklist.mjs';
 
 const STARTER = 'examples/starter/';
 const CONFIG_FILE = `${STARTER}${CONFIG_PATH}`;
-const DARK_FILE = `${STARTER}.github/dispatch.dark-factory.json`;
+const DARK_FILE = `${STARTER}.github/governor.dark-factory.json`;
 const WORKFLOW_FILE = `${STARTER}.github/workflows/heartbeat.yml`;
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+
+/** The feature sections a file lists, in the file's order, each on unless it sets `"enabled": false`. */
+const sectionsOf = (text: string) => {
+  const file = JSON.parse(text) as Record<string, unknown>;
+  return Object.fromEntries(SECTIONS.filter((name) => name in file).map((name) => [name, (file[name] as { enabled?: unknown }).enabled !== false]));
+};
 
 /** The commit the starter kit's config check is pinned to. */
 const checkPin = () => {
@@ -51,13 +57,18 @@ describe('the starter kit\'s config file', () => {
     assert.equal(features.periodics, true);
     assert.ok(heartbeat !== undefined && Number.isInteger(heartbeat.issue));
     assert.equal(heartbeat.marker, undefined, 'the older shape keeps only a last-run line, not a line per fire');
+    assert.deepEqual(Object.keys((JSON.parse(text) as { heartbeat: object }).heartbeat), ['issue']);
   });
 
-  test('lists every switch, the seven it turns on true and the rest false', () => {
-    const { features } = JSON.parse(text) as { features: Record<string, unknown> };
-    assert.deepEqual(Object.keys(features).sort(), [...GENERIC_SWITCHES].sort(), 'a new switch is added to the starter file');
+  test('lists every feature\'s section, the seven it turns on with no enabled and the rest with "enabled": false', () => {
+    const sections = sectionsOf(text);
+    assert.deepEqual(Object.keys(sections).sort(), [...SECTIONS].sort(), 'a new feature\'s section is added to the starter file');
     const on = ['pickup', 'summons', 'prMessages', 'subscribeMessages', 'heartbeat', 'periodics', 'signOff'];
-    for (const name of GENERIC_SWITCHES) assert.equal(features[name], on.includes(name), name);
+    for (const name of SECTIONS) assert.equal(sections[name], on.includes(name), name);
+    const file = JSON.parse(text) as Record<string, Record<string, unknown>>;
+    for (const name of on) assert.equal('enabled' in (file[name] ?? {}), false, `${name}: a section is on by being there`);
+    assert.ok(got.ok);
+    for (const name of GENERIC_SWITCHES) assert.equal(turnsOn(got.config, name), on.includes(name), name);
   });
 
   test('names its JSON Schema at the commit the config check is pinned to', () => {
@@ -92,17 +103,18 @@ describe('the starter kit\'s config file', () => {
     assert.match(prompt, /claimed[^.]*no open pull request/);
   });
 
-  test('keeps issue reviews off by having no section, sets no moved switch, and keeps its ready and exclude labels', () => {
+  test('keeps issue reviews off with "enabled": false, keeps no features section, and keeps its ready and exclude labels in pickup', () => {
     assert.ok(got.ok);
-    assert.equal(got.config.issueReviews, undefined);
+    assert.deepEqual((JSON.parse(text) as Record<string, unknown>).issueReviews, { enabled: false });
     assert.equal(turnsOn(got.config, 'issueReviews'), false);
-    assert.equal('ticketReviews' in (JSON.parse(text) as { features: Record<string, unknown> }).features, false, 'the switch moved to the section');
+    const file = JSON.parse(text) as Record<string, unknown>;
+    for (const gone of ['features', 'labels', 'prompts', 'review']) assert.equal(gone in file, false, `${gone} is not in the layout`);
     assert.deepEqual(got.config.labels, { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [], exclude: ['type: prd'] });
   });
 
   test('its prompts are plain text, call no skill, act on the window governor lists, and sign off', () => {
-    const file = JSON.parse(text) as { periodics: Array<{ name: string, prompt: unknown }> };
-    for (const { name, prompt } of file.periodics) {
+    const file = JSON.parse(text) as { periodics: { sessions: Record<string, { prompt: unknown }> } };
+    for (const [name, { prompt }] of Object.entries(file.periodics.sessions)) {
       assert.equal(typeof prompt, 'string', `${name}: a prompt file is the repo's own`);
       const p = String(prompt);
       assert.doesNotMatch(p, /skill|CLAUDE\.md/i, `${name}: the starter kit ships no skills`);
@@ -127,10 +139,13 @@ describe('the starter kit\'s dark-factory config file', () => {
     assert.ok(got.ok, JSON.stringify(got));
   });
 
-  test('lists every switch, with every one but hooks on', () => {
-    const { features } = JSON.parse(text) as { features: Record<string, unknown> };
-    assert.deepEqual(Object.keys(features).sort(), [...GENERIC_SWITCHES].sort(), 'a new switch is added to the dark-factory file');
-    for (const name of GENERIC_SWITCHES) assert.equal(features[name], name !== 'hooks', name);
+  test('lists every feature\'s section, with every one but hooks on', () => {
+    const sections = sectionsOf(text);
+    assert.deepEqual(Object.keys(sections).sort(), [...SECTIONS].sort(), 'a new feature\'s section is added to the dark-factory file');
+    for (const name of SECTIONS) assert.equal(sections[name], name !== 'hooks', name);
+    assert.deepEqual((JSON.parse(text) as Record<string, unknown>).hooks, { enabled: false });
+    assert.ok(got.ok);
+    for (const name of GENERIC_SWITCHES) assert.equal(turnsOn(got.config, name), name !== 'hooks', name);
   });
 
   test('names its JSON Schema at the commit the config check is pinned to', () => {
@@ -211,7 +226,7 @@ describe('the starter kit\'s dark-factory config file', () => {
   test('leaves CLAUDE.md, the skills, the workflows, this file and the infrastructure to a person, each with its reason', () => {
     assert.ok(got.ok);
     const humanOnly = got.config.review?.humanOnly ?? [];
-    for (const path of ['CLAUDE.md', 'src/CLAUDE.md', '.claude/settings.json', '.github/workflows/ci.yml', '.github/actions/test/action.yml', '.github/dispatch.json', 'infra/main.tf']) {
+    for (const path of ['CLAUDE.md', 'src/CLAUDE.md', '.claude/settings.json', '.github/workflows/ci.yml', '.github/actions/test/action.yml', '.github/governor.json', 'infra/main.tf']) {
       assert.ok(humanOnly.some((e) => globMatches(e.glob, path)), `${path} waits for a person`);
     }
     for (const entry of humanOnly) assert.ok(entry.reason.length > 0, entry.glob);
@@ -312,12 +327,13 @@ test('docs/serving-a-repo.md\'s "How a repo opts in" points at the starter kit a
   assert.match(section, /<!-- governor:heartbeat -->/);
 });
 
-test('docs/serving-a-repo.md\'s starter kit section says the file names its schema and lists every switch', () => {
+test('docs/serving-a-repo.md\'s starter kit section says the file names its schema and lists every feature\'s section', () => {
   const readme = read('docs/serving-a-repo.md');
   const at = readme.indexOf('### The starter kit');
   const section = readme.slice(at, readme.indexOf('\n### ', at + 1));
   assert.match(section, /`\$schema`/);
-  assert.match(section, /every switch/);
+  assert.match(section, /every feature's section/);
+  assert.match(section, /`\{ "enabled": false \}`/);
 });
 
 test('docs/serving-a-repo.md\'s starter kit section says the kit has two policies and when to pick each', () => {
@@ -325,7 +341,7 @@ test('docs/serving-a-repo.md\'s starter kit section says the kit has two policie
   const at = doc.indexOf('### The starter kit');
   const section = doc.slice(at, doc.indexOf('\n### ', at + 1));
   assert.match(section, /two policies/);
-  assert.match(section, /`\.github\/dispatch\.dark-factory\.json`/);
+  assert.match(section, /`\.github\/governor\.dark-factory\.json`/);
   assert.match(section, /`merge`/);
   assert.match(section, /hook/i, 'says how to add a hook');
 });
@@ -334,7 +350,7 @@ test('the README\'s "Run your own" step points at the dark-factory file, not the
   const readme = read('README.md');
   const at = readme.indexOf('## Run your own');
   const section = readme.slice(at, readme.indexOf('\n## ', at + 1));
-  assert.match(section, /\(examples\/starter\/\.github\/dispatch\.dark-factory\.json\)/);
+  assert.match(section, /\(examples\/starter\/\.github\/governor\.dark-factory\.json\)/);
   assert.doesNotMatch(section, /test\/fixtures/);
 });
 
@@ -346,7 +362,7 @@ test('docs/serving-a-repo.md\'s starter kit section describes the triage review 
   for (const label of ['triage: build', 'triage: passed', 'triage: needs edit', 'triage: needs a person', 'mode: human']) assert.ok(section.includes(`\`${label}\``), label);
   assert.match(section, /a backlog review every 5 issues opened/);
   assert.match(section, /where issue reviews are on, open ones no issue review ran on/);
-  assert.match(section, /issue reviews are off[^.]*no `issueReviews` section/);
+  assert.match(section, /issue reviews are off[^.]*`issueReviews` section sets `"enabled": false`/);
   assert.match(section, /adding `mode: human`, and no review run takes it off/);
   assert.match(section, /claimed ones with no open pull request/);
   assert.doesNotMatch(section, /issue review every/);

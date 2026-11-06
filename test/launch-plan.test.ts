@@ -24,7 +24,7 @@ const REPO = 'acme/factory';
 const OTHER = 'acme/other';
 const NOW = Date.parse('2026-09-25T12:00:00Z');
 const CONFIG = (() => {
-  const read = readConfig(factoryFile('.github/dispatch.json'));
+  const read = readConfig(factoryFile('.github/governor.json'));
   assert.ok(read.ok);
   return read.config;
 })();

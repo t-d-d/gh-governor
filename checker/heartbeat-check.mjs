@@ -31,7 +31,7 @@ export const HEARTBEAT_MARKER = '<!-- governor:heartbeat -->';
 export const HEARTBEAT_END = '<!-- governor:heartbeat-end -->';
 
 /** The served repo's config file, read from its default branch. */
-export const CONFIG_PATH = '.github/dispatch.json';
+export const CONFIG_PATH = '.github/governor.json';
 
 /** Pickup's sweep interval when the file sets none: dispatch/pickup.mjs's, copied, since this runs in another repo. */
 export const SWEEP_HOURS = 1;
@@ -155,28 +155,33 @@ export const readConfig = (text) => {
     return { ok: false, fault: `${CONFIG_PATH} does not parse as JSON: ${error instanceof Error ? error.message : String(error)}` };
   }
   if (!isObject(file)) return { ok: false, fault: `${CONFIG_PATH} is not a JSON object` };
-  const features = isObject(file.features) ? file.features : {};
-  if (features.heartbeat !== true || !isObject(file.heartbeat)) return { ok: false, fault: `${CONFIG_PATH} does not turn the heartbeat on with a heartbeat section naming its issue` };
-  const { issue, marker } = file.heartbeat;
+  // A section turns its feature on unless it sets `"enabled": false`.
+  /** @param {string} name @returns {Record<string, unknown> | null} The section, where it is on. */
+  const on = (name) => {
+    const section = file[name];
+    return isObject(section) && section.enabled !== false ? section : null;
+  };
+  const heartbeat = on('heartbeat');
+  if (heartbeat === null) return { ok: false, fault: `${CONFIG_PATH} does not turn the heartbeat on with a heartbeat section naming its issue` };
+  const { issue } = heartbeat;
   if (!Number.isInteger(issue) || !positive(issue)) return { ok: false, fault: `${CONFIG_PATH}'s heartbeat.issue is not an issue number` };
-  if (marker !== undefined) return { ok: false, fault: `${CONFIG_PATH}'s heartbeat section is in the older shape, with its own marker. Governor keeps a line per fire only for \`"heartbeat": { "issue": <number> }\`, under its own ${HEARTBEAT_MARKER} marker` };
   /** @type {number | null} */
   let pickupHours = null;
-  if (features.pickup === true) {
-    const hours = isObject(file.pickup) ? file.pickup.sweepHours : undefined;
+  const pickup = on('pickup');
+  if (pickup !== null) {
+    const hours = pickup.sweepHours;
     if (hours !== undefined && !positive(hours)) return { ok: false, fault: `${CONFIG_PATH}'s pickup.sweepHours is not a number of hours` };
     pickupHours = /** @type {number | undefined} */ (hours) ?? SWEEP_HOURS;
   }
   /** @type {CheckConfig['periodics']} */
   const periodics = [];
-  if (features.periodics === true) {
-    if (!Array.isArray(file.periodics)) return { ok: false, fault: `${CONFIG_PATH}'s periodics is not a list` };
-    for (const [i, p] of file.periodics.entries()) {
-      // Governor trims a periodic's name, and keys its line by the trimmed name.
-      const name = typeof p?.name === 'string' ? p.name.trim() : '';
-      if (!isObject(p) || name === '') return { ok: false, fault: `${CONFIG_PATH}'s periodics[${i}] has no name` };
-      if (!positive(p.days)) return { ok: false, fault: `${CONFIG_PATH}'s periodic "${name}" has no days` };
-      if (!periodics.some((q) => q.name === name)) periodics.push({ name, days: /** @type {number} */ (p.days) });
+  const periodic = on('periodics');
+  if (periodic !== null) {
+    if (!isObject(periodic.sessions)) return { ok: false, fault: `${CONFIG_PATH}'s periodics.sessions is not an object keyed by name` };
+    // Governor keys each periodic's line by its name, the key it is held under.
+    for (const [name, p] of Object.entries(periodic.sessions)) {
+      if (!isObject(p) || !positive(p.days)) return { ok: false, fault: `${CONFIG_PATH}'s periodic "${name}" has no days` };
+      periodics.push({ name, days: /** @type {number} */ (p.days) });
     }
   }
   return { ok: true, config: { issue: /** @type {number} */ (issue), pickupHours, periodics } };

@@ -26,15 +26,15 @@ in order.
 
 6. **Every loose end is closed.**
 
-7. **No file is on the human-only list.** The list is `review.humanOnly` in
-   `.github/dispatch.json`: each entry a glob and the reason its paths wait
+7. **No file is on the human-only list.** The list is `prReview.humanOnly` in
+   `.github/governor.json`: each entry a glob and the reason its paths wait
    for a person. A changed file matching any entry fails, whatever the
    description says, and so does a rename away from one.
 
 ## Dependabot
 
 A PR `dependabot[bot]` opened is held to test 7 alone, with the Dependabot
-list (`review.dependabot` in `.github/dispatch.json`) in place of the
+list (`prReview.dependabot` in `.github/governor.json`) in place of the
 human-only list.
 
 ## The answer
@@ -46,5 +46,5 @@ the description can make the PR pass.
 ## By hand
 
 `/pr-review <number>` reads the PR and reports the answer in the chat.
-It posts nothing. For test 7, read `review.humanOnly` in
-`.github/dispatch.json` and match every changed path against its globs.
+It posts nothing. For test 7, read `prReview.humanOnly` in
+`.github/governor.json` and match every changed path against its globs.

@@ -777,7 +777,7 @@ const writeBeats = async (deps, tokenFor, served, beats) => {
       repo,
       issue,
       marker: HEARTBEAT_MARKER,
-      refusal: `the issue's body has no ${HEARTBEAT_MARKER} marker, so the heartbeat is not written: fix the issue number in the repo's .github/dispatch.json, or add the marker to the issue`,
+      refusal: `the issue's body has no ${HEARTBEAT_MARKER} marker, so the heartbeat is not written: fix the issue number in the repo's ${CONFIG_PATH}, or add the marker to the issue`,
       stamp: (body) => {
         const next = stampHeartbeat(body, beat);
         return JSON.stringify(readHeartbeat(next)) === JSON.stringify(readHeartbeat(body)) ? undefined : next;
@@ -1425,7 +1425,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const { review, labels, workflows } = config;
       const trusted = reviewOf(config);
       // The schema holds a section wherever prReview is on, and the switch was checked.
-      if (review === undefined) throw new Error(`${fireRepo()}'s ${CONFIG_PATH} has no review section`);
+      if (review === undefined) throw new Error(`${fireRepo()}'s ${CONFIG_PATH} has no prReview section with a prompt`);
       const base = await github.defaultBranch();
       // A fire naming the PR reviews it; one carrying a commit alone, from a
       // check run, a status or a run whose payload may list no PR, reviews
