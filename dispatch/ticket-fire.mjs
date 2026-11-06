@@ -20,6 +20,11 @@
  * never edits the body. A body edit tells the spec owner the edit may be
  * its own, and the builder that the spec changed.
  *
+ * Where the spec owner refuses a comment as archived, nobody owns the
+ * ticket, so with `sessionRules` on the session that signed the comment is
+ * offered it once the roles have heard it, unless it builds the ticket
+ * (dispatch/offer.mjs).
+ *
  * A `dispatched` ticket fire, governor's dispatch comment queued before
  * the relay dropped governor's comments, still reaches the spec owner and
  * the builder it displaced, as the posting turn now tells them
@@ -38,6 +43,8 @@ import { dispatchMarker } from './webhook/fire.mjs';
 import { relayedBody, sameSession, sessionId } from './webhook/subscribe.mjs';
 import { EDIT_BUILDER, EDIT_SPEC_OWNER } from './webhook/mention.mjs';
 import { builderChangeSends, tellBuilderChange } from './told.mjs';
+import { offerIssue } from './offer.mjs';
+import { turnsOn } from './repo-config.mjs';
 
 /** @typedef {import('./roles.mjs').TicketRole} TicketRole */
 
@@ -61,6 +68,8 @@ export const planTicket = async (invocation, ctx) => {
   const sends = [];
   /** The sessions left out, and why, for the log. @type {string[]} */
   const skipped = [];
+  /** The ticket's builders, none on an unclaimed ticket. @type {string[]} */
+  let builders = [];
   const own = (/** @type {string} */ session) => poster !== undefined && sameSession(session, poster);
   // What a body edit tells each role, under what happened.
   const edit = (/** @type {TicketRole} */ role) => (event !== 'edit' ? '' : `\n\n${[
@@ -85,7 +94,7 @@ export const planTicket = async (invocation, ctx) => {
     const reader = await ctx.readerFor(repo);
     // A read that fails fails the turn: it never reads as no builder.
     const roles = await rolesOf({ issue, relay, claim: config.labels.claim, ticket: { state, labels }, owner, reader, ownerOf: (pr) => ctx.delivery().ownerOf(pr) });
-    const { builders } = roles;
+    ({ builders } = roles);
     // A builder whose PR's merge closed the ticket heard the merge through its PR.
     const throughPr = event === 'close' && state === 'closed' && roles.by === 'merged PR';
     for (const holder of roles.holders) {
@@ -102,6 +111,10 @@ export const planTicket = async (invocation, ctx) => {
   }
   /** @type {import('./deliveries.mjs').Delivery[]} */
   const sent = [];
+  /** The offer made to the session that commented, if one was sent. @type {import('./deliveries.mjs').Delivery | null} */
+  let offered = null;
+  /** Whether the spec owner refused as archived. */
+  let ownerGone = false;
   let loginStored = false;
   try {
     for (const { session, text: told, role, owns } of sends) {
@@ -118,7 +131,13 @@ export const planTicket = async (invocation, ctx) => {
         owns,
       });
       sent.push(delivered);
+      if (role !== 'builder' && delivered.refused) ownerGone = true;
       ctx.log('dispatch-ticket', { ...about, session, role: role ?? 'spec owner', ...(owns.length === 0 ? {} : { prs: owns }), outcome: delivered.ok ? 'messaged' : delivered.refused ? 'its session is archived' : delivered.capped ? 'held at the message ceiling' : 'not messaged', ...(skipped.length === 0 ? {} : { skipped }) });
+    }
+    // The spec owner refused as archived: nobody owns the ticket, so the
+    // session that signed the comment is offered it (dispatch/offer.mjs).
+    if (ownerGone && event === 'comments' && poster !== undefined && turnsOn(config, 'sessionRules')) {
+      offered = await offerIssue({ repo, issue, session: poster, why: 'archived', builders, deliveries: ctx.delivery(), log: ctx.log });
     }
   } finally {
     loginStored = await ctx.storeLogin();
@@ -126,7 +145,7 @@ export const planTicket = async (invocation, ctx) => {
   // The turn's answer: a send that failed, so the turn says so, else one
   // that took it, else the last refusal.
   // A send held at the ceiling is no fault, so one that faulted goes first.
-  const messaged = sent.find((t) => !t.ok && !t.refused && t.capped !== true) ?? sent.find((t) => t.ok) ?? /** @type {import('./deliveries.mjs').Delivery} */ (sent.at(-1));
+  const messaged = [...sent, ...(offered === null ? [] : [offered])].find((t) => !t.ok && !t.refused && t.capped !== true) ?? sent.find((t) => t.ok) ?? /** @type {import('./deliveries.mjs').Delivery} */ (sent.at(-1));
   return { answer: { kind: invocation.kind, messaged, dispatched: [], loginStored } };
 };
 

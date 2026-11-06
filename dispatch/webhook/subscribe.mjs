@@ -433,6 +433,33 @@ export const relinkSession = (body, sessionUrl) => {
 };
 
 /**
+ * Whether `body`, an issue's, is a session's unsigned post: its last line
+ * with text on it, past any rule, outside any quote and subscribe line, is
+ * the Claude Code footer, and it names no session ({@link sessionNamedIn}). A session
+ * filed it without signing it, so the issue has no owner. A body with no
+ * footer and no session is a person's, and the person owns it.
+ *
+ * @param {unknown} body
+ * @returns {boolean}
+ */
+export const unsignedSessionBody = (body) => {
+  const masked = ownerText(String(body ?? ''));
+  if (ownerLink(masked) !== undefined) return false;
+  const last = masked.split('\n').map((line) => line.trim()).filter((line) => !RULE_OR_BLANK.test(line)).at(-1) ?? '';
+  return FOOTER_LINE.test(last);
+};
+
+/** A line with nothing on it but a rule, or nothing at all. */
+const RULE_OR_BLANK = /^[\s*_-]*$/;
+
+/**
+ * The whole of a Claude Code footer line, in either shape a session's body
+ * ends with: the comment footer, or a PR body's attribution line. A line
+ * that only mentions Claude Code is a person's words.
+ */
+const FOOTER_LINE = /^(?:🤖\s*)?_?Generated (?:by|with) \[Claude Code\]\([^)\s]*\)_?$/u;
+
+/**
  * Whether a session posted `body`: the footer, or a session link under the
  * Claude Code attribution.
  *
