@@ -463,6 +463,7 @@ A file in the older shape, `"heartbeat": { "issue": <number>, "marker": "<!-- â€
 | A periodic's record, or its last run's session, could not be read, or its baseline written | `dispatch-periodic-unread` or `dispatch-periodic-unrecorded`; that periodic waits and the turn exits 1 | `governor-errors` |
 | The installation list or a token mint failed | `dispatch-failed` | `governor-errors` |
 | A GitHub read, or a write safe to repeat, met a dropped connection, a 500, 502, 503 or 504, or a rate limit asking for 10 seconds or less | `dispatch-github-retry`, at info, with the method, the path, the status or the error, and the try; the call is sent again, at most 3 times, and the last failure fails the call as before | none |
+| A GitHub call spent all 3 sends on such answers | `dispatch-github-resends-off`, at warn, with the method, the path, and the status or the error; the call fails as before, and every later GitHub call in the turn is sent once | none |
 
 ## The webhook
 
