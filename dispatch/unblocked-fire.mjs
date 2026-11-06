@@ -28,7 +28,7 @@ import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from
 import { byOf, failedLaunchesOf, failedReason } from './pickup.mjs';
 import { authorKind, autoOf, lets, relayOf, startOf } from './trust.mjs';
 import { buildersOf } from './builders.mjs';
-import { specOwnerOf, specOwnerTeller, unmarked } from './told.mjs';
+import { specOwnerTeller, unmarked } from './told.mjs';
 import { relayedBody, sameSession, sessionNamedIn } from './webhook/subscribe.mjs';
 
 /** @typedef {import('./turn.mjs').Reader} Reader */
@@ -127,7 +127,7 @@ export const planUnblocked = async (invocation, ctx) => {
   // record for people, which the relay sends to nobody. A send that fails
   // is logged, and the comment stands. The login a send may refresh is
   // stored, since the answers below store none.
-  /** @param {Parameters<typeof specOwnerOf>[0]} row @param {string} comment */
+  /** @param {{ body?: unknown, author?: string, association?: string, app?: boolean }} row @param {string} comment */
   const tellOwnerOf = async (row, comment) => {
     try {
       await specOwnerTeller({
