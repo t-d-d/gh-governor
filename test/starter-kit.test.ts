@@ -35,10 +35,16 @@ const checkPin = () => {
   return Object.values(check.jobs).map((j) => /^t-d-d\/gh-governor\/\.github\/workflows\/config-check\.yml@([0-9a-f]{40})$/.exec(String(j.uses))?.[1]);
 };
 
+/** The commit the starter kit's heartbeat workflow is pinned to. */
+const heartbeatPin = () => {
+  const beat = yaml.load(read(WORKFLOW_FILE)) as { jobs: Record<string, { uses?: string }> };
+  return Object.values(beat.jobs).map((j) => /^t-d-d\/gh-governor\/\.github\/workflows\/heartbeat-check\.yml@([0-9a-f]{40})$/.exec(String(j.uses))?.[1]);
+};
+
 /** The commit a config file's `$schema` names, or null when it names no schema of this repo's. */
 const schemaCommit = (text: string) => {
   const { $schema } = JSON.parse(text) as { $schema?: unknown };
-  return /^https:\/\/raw\.githubusercontent\.com\/t-d-d\/gh-governor\/([0-9a-f]{40})\/schema\/dispatch\.schema\.json$/.exec(String($schema))?.[1] ?? null;
+  return /^https:\/\/raw\.githubusercontent\.com\/t-d-d\/gh-governor\/([0-9a-f]{40})\/schema\/governor\.schema\.json$/.exec(String($schema))?.[1] ?? null;
 };
 
 describe('the starter kit\'s config file', () => {
@@ -75,6 +81,7 @@ describe('the starter kit\'s config file', () => {
     const commit = schemaCommit(text);
     assert.ok(commit !== null, text);
     assert.deepEqual(checkPin(), [commit], 'bump $schema and the config check together');
+    assert.deepEqual(heartbeatPin(), [commit], 'bump the heartbeat checker with them');
   });
 
   test('names its environment by a placeholder name, never an id', () => {
