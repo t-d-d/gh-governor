@@ -38,6 +38,7 @@
  */
 
 import { GITHUB_SOURCE, SPEC_OWNER } from './deliveries.mjs';
+import { turnsOn } from './repo-config.mjs';
 import { relayOf, ticketAuthor } from './trust.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { rolesOf } from './roles.mjs';
@@ -277,11 +278,59 @@ export const prEditText = (pr, editor) => [
  * sent, and one that faults fails the turn: either way nothing more is
  * done.
  *
+ * A fire marked `closing`, an edit that also made the body close an issue,
+ * then runs `closing` (`planClosingPr`, dispatch/ticket-fire.mjs) on the
+ * body as it now reads, under `subscribeMessages`, so its dispatch comment
+ * names whoever owns the PR once the owner step is done: A where its link
+ * was written back, B where A refused as archived. The check runs whatever
+ * that step did, and where it threw, before the throw fails the turn: a
+ * failed turn is not retried, and a body nothing was written back to still
+ * names B, which owns the PR by its link.
+ *
  * @param {import('./webhook/fire.mjs').PrEditFire & { repo?: string }} invocation
  * @param {import('./turn.mjs').TurnContext} ctx
+ * @param {{ closing?: ((fire: import('./webhook/fire.mjs').ClosingPrFire & { repo?: string }, ctx: import('./turn.mjs').TurnContext) => Promise<import('./turn.mjs').Plan>) | null }} [checks]
+ * The closing check, passed in since dispatch/ticket-fire.mjs imports this module.
  * @returns {Promise<import('./turn.mjs').Plan>}
  */
-export const planPrEdit = async (invocation, ctx) => {
+export const planPrEdit = async (invocation, ctx, { closing = null } = {}) => {
+  if (invocation.closing !== true || closing === null) return movePr(invocation, ctx);
+  const repo = fireRepoOf(invocation);
+  const { pr } = invocation;
+  /** @type {Awaited<ReturnType<typeof movePr>> | null} */
+  let moved = null;
+  /** @type {{ error: unknown } | null} */
+  let failed = null;
+  try {
+    moved = await movePr(invocation, ctx);
+  } catch (error) {
+    failed = { error };
+  }
+  /** @type {number[]} */
+  let announced = [];
+  let loginStored = false;
+  if (!turnsOn(ctx.configOf(repo), 'subscribeMessages')) {
+    ctx.log('dispatch-builder', { repo, pr, outcome: 'nothing announced', reason: `${repo}'s file does not turn subscribeMessages on` });
+  } else {
+    const checked = await closing({ kind: 'closingPr', pr, repo }, ctx);
+    if ('answer' in checked) {
+      announced = checked.answer.announced ?? [];
+      loginStored = checked.answer.loginStored === true;
+    }
+  }
+  if (failed !== null) throw failed.error;
+  const answer = /** @type {{ answer: NonNullable<Extract<import('./turn.mjs').Plan, { answer: unknown }>['answer']> }} */ (moved).answer;
+  return { answer: { ...answer, loginStored: answer.loginStored === true || loginStored, announced } };
+};
+
+/**
+ * The owner step of a `prEdit` fire, as {@link planPrEdit} describes it.
+ *
+ * @param {import('./webhook/fire.mjs').PrEditFire & { repo?: string }} invocation
+ * @param {import('./turn.mjs').TurnContext} ctx
+ * @returns {Promise<{ answer: { kind: 'prEdit', messaged: import('./deliveries.mjs').Delivery | null, dispatched: [], loginStored: boolean } }>}
+ */
+const movePr = async (invocation, ctx) => {
   const repo = fireRepoOf(invocation);
   const { pr, from, to } = invocation;
   const at = { repo, pr, owner: sessionId(from), editor: sessionId(to) };
@@ -307,7 +356,7 @@ export const planPrEdit = async (invocation, ctx) => {
   // A send that faulted goes first, so the turn fails on it.
   const sent = [notice, told].filter((d) => d !== null);
   const messaged = sent.find((d) => !d.ok && !d.refused && d.capped !== true) ?? told ?? notice;
-  return { answer: { kind: invocation.kind, messaged, dispatched: [], loginStored } };
+  return { answer: { kind: 'prEdit', messaged, dispatched: [], loginStored } };
 };
 
 /**

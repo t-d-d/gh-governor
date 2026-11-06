@@ -87,7 +87,7 @@ With `subscribeMessages` on as well, a session that edits an issue's body to end
 
 With `subscribeMessages` on as well, governor also looks for who made a body edit that leaves the owner link in place, reading the owner's own events first. The owner is not told of its own edit. Where another session made it, that session is told once to post its change as a comment instead, and the owner is told someone else edited its issue. Where the owner's events cannot be read, the owner hears the edit as before ([Who made a body edit](how-it-works.md#who-a-pr-or-issue-belongs-to)).
 
-With `prMessages` on as well, a session that edits a PR's body to move its session link to itself is answered the same way. Governor tells the PR's owner. Where the owner is live, governor writes its link back and tells the editor once to comment instead. Where the owner is archived, the editor owns the PR by its link ([A PR body edit that moves the session link](how-it-works.md#who-a-pr-or-issue-belongs-to)).
+With `prMessages` on as well, a session that edits a PR's body to move its session link to itself is answered the same way. Governor tells the PR's owner. Where the owner is live, governor writes its link back and tells the editor once to comment instead. Where the owner is archived, the editor owns the PR by its link ([A PR body edit that moves the session link](how-it-works.md#who-a-pr-or-issue-belongs-to)). Where the same edit adds a closing reference such as `Closes #40`, governor settles who owns the PR first, so the dispatch comment on #40 names the owner and not the editor.
 
 ### The starter kit
 

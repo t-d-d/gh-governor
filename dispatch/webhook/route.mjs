@@ -205,7 +205,7 @@ export const verifySignature = (secret, body, signature) => {
 /**
  * @typedef {import('./fire.mjs').Fire} Fire
  * @typedef {import('./fire.mjs').FireMessage} FireMessage
- * @typedef {{ fire: Fire, reason: string, key?: string, ready?: readonly string[], reviewLabel?: { label: string, change: 'labeled' | 'unlabeled' }, claimed?: { labels: string[], replaces: string | null } }} Queued One fire, and the key that tells it from the delivery's others.
+ * @typedef {{ fire: Fire, reason: string, key?: string, ready?: readonly string[], reviewLabel?: { label: string, change: 'labeled' | 'unlabeled' }, claimed?: { labels: string[], replaces: string | null }, fallback?: Queued }} Queued One fire, and the key that tells it from the delivery's others. `fallback`: the fire queued in its place where the item's switches drop it.
  *   `claimed`: a ticket fire's issue's labels, and the key of the spec
  *   owner's message it replaces ({@link settleClaims}).
  *   `ready`: a selection fire's ticket's labels, one of which must be a
@@ -277,6 +277,28 @@ const both = (first, then) => ({
   fires: [...first.fires, ...then.fires],
   reason: [first.reason, then.reason].filter(Boolean).join('; '),
 });
+
+/**
+ * One `pull_request` `edited` delivery's `closingPr` and `prEdit` fires as
+ * one ordered turn. Where the edit both moved the session link and made the
+ * body close an issue, only the `prEdit` fire is queued, marked `closing`:
+ * its turn settles the PR's owner first and then runs the closing check, so
+ * the dispatch comment names whoever owns the PR (dispatch/take.mjs). Two
+ * fires would race, and a closing check that ran first would name the
+ * editor. The `closingPr` fire rides along as `fallback`, queued in its
+ * place where the item's switches drop the `prEdit` fire
+ * ({@link switchedOn}). Either alone is queued as it is.
+ *
+ * @param {Decision} closing
+ * @param {Decision} moved
+ * @returns {Decision}
+ */
+const orderedEdit = (closing, moved) => {
+  const [check] = closing.fires;
+  const [edit] = moved.fires;
+  if (check === undefined || edit === undefined || edit.fire.kind !== 'prEdit') return both(closing, moved);
+  return { fires: [{ ...edit, fire: { ...edit.fire, closing: true }, fallback: check }], reason: [moved.reason, closing.reason].filter(Boolean).join('; ') };
+};
 
 /**
  * The conclusions of a run on the default branch a fire is queued for, whatever its
@@ -805,7 +827,7 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
   if (event === 'issue_dependencies') return unlinkedFire(payload);
   if (event === 'pull_request') {
     // A body edit that moved the session link: the owner hears it (dispatch/take.mjs).
-    const reviewed = both(both(both(pullRequestFires(payload, trust), closingPrFires(payload, trust)), prEditFires(payload, trust)), reviewFire(payload));
+    const reviewed = both(both(pullRequestFires(payload, trust), orderedEdit(closingPrFires(payload, trust), prEditFires(payload, trust))), reviewFire(payload));
     return main === null ? reviewed : both(reviewed, mergedFire(payload, main));
   }
   if (event === 'workflow_run' || event === 'workflow_job') {
@@ -1065,8 +1087,18 @@ const switchedOn = (decision, item, delivery, deps) => {
       continue;
     }
     const off = droppedBy(fire, item?.switches ?? null);
-    if (off === null) kept.push(queued);
-    else dropped.push(`its ${fire.kind} fire, as ${repo}'s file turns ${off.join(' and ')} off`);
+    if (off === null) {
+      kept.push(queued);
+      continue;
+    }
+    dropped.push(`its ${fire.kind} fire, as ${repo}'s file turns ${off.join(' and ')} off`);
+    // A fire with a fallback, the closing check of a PR edit that also moved
+    // its link, has that fire judged in its place.
+    if (queued.fallback === undefined) continue;
+    const instead = fire.repo === undefined ? queued.fallback : { ...queued.fallback, fire: { ...queued.fallback.fire, repo: fire.repo } };
+    const blocked = droppedBy(instead.fire, item?.switches ?? null);
+    if (blocked === null) kept.push(instead);
+    else dropped.push(`its ${instead.fire.kind} fire, as ${repo}'s file turns ${blocked.join(' and ')} off`);
   }
   if (dropped.length === 0) return { ...decision, fires: kept };
   const reason = `${decision.reason}; dropped ${dropped.join(', and ')}`;
