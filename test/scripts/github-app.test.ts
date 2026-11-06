@@ -670,6 +670,37 @@ describe('githubReader', () => {
     assert.deepEqual((await reader.openNaming(BUILDER, RELAY, { claim: 'claimed' })).map((r) => r.number), [40]);
   });
 
+  // With session rules on, ownership of an issue lapses at sign-off (#612):
+  // an issue a session owns holds its sign-off ask only where it carries a
+  // ready label or the claim label. An owned PR and a built ticket always
+  // hold it. The labels come from the list already read: no new call.
+  test('openNaming given the labels that hold marks each row: a PR, a built ticket and a ready or claimed issue hold, an unlabelled issue does not', async () => {
+    const SESSION = 'https://claude.ai/code/session_01ABC';
+    const APP = { user: { type: 'Bot', login: 'governor-app[bot]' }, performed_via_github_app: { id: 9 } };
+    const row = (number: number, labels: string[], body = `Filed.\n\n${SESSION}`, pull = false) => ({ number, title: `T${number}`, html_url: `u${number}`, body, author_association: 'OWNER', labels: labels.map((name) => ({ name })), ...(pull ? { pull_request: { url: 'x' } } : {}) });
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues': () => [
+        row(1, [], `Done.\n\n${SESSION}`, true),
+        row(2, []),
+        row(3, ['mode: afk']),
+        row(4, ['ready']),
+        row(5, ['claimed']),
+        row(6, ['type: bug']),
+        row(7, ['claimed'], 'A ticket another session specced.'),
+      ],
+      'https://api.github.com/repos/acme/factory/issues/7/comments': () => [{ id: 1, body: `<!-- governor:dispatched 2026-11-02T00:00:00Z -->\nDispatched to ${SESSION} at 2026-11-02T00:00:00Z.`, ...APP }],
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', appId: 9, fetch });
+    const holding = ['ready', 'mode: afk', 'claimed'];
+    assert.deepEqual((await reader.openNaming(SESSION, RELAY, { claim: 'claimed', holding })).map((r) => [r.number, r.holds]), [
+      [1, true], [2, false], [3, true], [4, true], [5, true], [6, false], [7, true],
+    ]);
+    assert.deepEqual((await reader.openNaming(SESSION, RELAY, { holding })).map((r) => [r.number, r.holds]), [
+      [1, true], [2, false], [3, true], [4, true], [5, true], [6, false],
+    ], 'without the claim label, the labels still decide');
+    assert.equal(calls.filter((c) => new URL(c.url).pathname === '/repos/acme/factory/issues').length, 1, 'the labels come from the one list');
+  });
+
   // A ticket's builder is first the owner of an open PR that closes it
   // (dispatch/builders.mjs), found in the list the standing line reads.
   test('openClosing lists the open PRs whose body closes the issue, from the one list openNaming reads', async () => {
