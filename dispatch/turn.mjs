@@ -1267,7 +1267,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       /** @type {import('./workflow.mjs').TargetPlan} */
       const plan = await planWorkflow({ invocation, coverage, prompts, workflows, heard });
       reason = plan.reason;
-      if ((plan.heard ?? []).length > 0) deps.log('dispatch-workflow', { ...about, heard: plan.heard, reason: "each hears the deploy from governor's comment on a ticket its PRs closed, so its PR message leaves those PRs out" });
+      const heardBy = plan.heard ?? [];
+      if (heardBy.length > 0) deps.log('dispatch-workflow', { ...about, heard: heardBy, reason: "each hears the deploy from governor's comment on a ticket its PRs closed, so its PR message leaves those PRs out" });
       // What the range covers, before anything is sent: a wrong baseline is
       // read off this line. A refusal to plan from a stale runs list
       // is its own event, which governor-stale-runs pages on.
@@ -1317,7 +1318,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         // told, so a turn from a held cursor, which finds the label already
         // on and comments again on nothing, does not message it either.
         /** @type {Delivered} */
-        const now = { told: (plan.heard ?? []).flatMap(toldOf), failed: [] };
+        const now = { told: heardBy.flatMap(toldOf), failed: [] };
         let untold = 0;
         for (const [i, note] of owed.entries()) {
           if (deps.now() - started > WORKFLOW_SEND_WINDOW_MS) {

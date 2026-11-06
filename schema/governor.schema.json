@@ -228,7 +228,7 @@
       "additionalProperties": false
     },
     "subscribeMessages": {
-      "description": "Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. On a claimed ticket, a comment, a close and a reopen also reach the sessions building it, and each message names the ticket's spec owner and builders. A ticket's spec owner, and its builders where it is claimed, hear of its first deploy to each target through governor's comment on it, which asks them to sign off where the issue is closed, and then get no PR deploy message for it. It hears a `deployed:` label only through a subscribe line for `deploys`.",
+      "description": "Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. On a claimed ticket, a comment, a close and a reopen also reach the sessions building it, and each message names the ticket's spec owner and builders. A ticket's spec owner, and its builders where it is claimed, hear of its first deploy to each target through governor's comment on it, which asks them to sign off where the issue is closed, and then get no PR deploy message for it. A session hears a `deployed:` label only through a subscribe line for `deploys`.",
       "type": "object",
       "properties": {
         "enabled": {

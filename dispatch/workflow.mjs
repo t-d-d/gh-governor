@@ -535,8 +535,10 @@ const planTarget = async (run, coverage, prompts, workflows, heard) => {
   }
 
   const { sessions, owned, unnamed } = await coverage.sessions(pulls, 'deploys');
+  /** @type {Array<{ session: string, prs: number[] }>} */
+  const heardBy = [];
   /** @type {TargetPlan} */
-  const plan = { reason: null, notes: [], unnamed, triage: null, range, stale: null, advance, heard: [] };
+  const plan = { reason: null, notes: [], unnamed, triage: null, range, stale: null, advance, heard: heardBy };
   for (const entry of sessions.values()) {
     const { session } = entry;
     // A session that holds a role on a ticket the turn commented on hears
@@ -545,7 +547,7 @@ const planTarget = async (run, coverage, prompts, workflows, heard) => {
     const own = entry.own.filter(unheard);
     const subscribed = entry.subscribed.filter(unheard);
     const left = [...entry.own, ...entry.subscribed].filter((p) => !unheard(p));
-    if (left.length > 0) plan.heard?.push({ session, prs: left.sort(byMerge).map((p) => p.number) });
+    if (left.length > 0) heardBy.push({ session, prs: left.sort(byMerge).map((p) => p.number) });
     const prs = [...own, ...subscribed].sort(byMerge);
     if (prs.length === 0) continue;
     const told = subscribed.filter((p) => owned.has(p.number));
