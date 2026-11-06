@@ -424,9 +424,10 @@ export const sessionNamedIn = (body) => ownerLink(ownerText(String(body ?? '')))
  * person reads, then the time in a comment the takeover reads back. The
  * sentence comes first: a line that opens with a comment is an HTML block,
  * and GitHub would show the sentence after it raw. The whole line is
- * governor's, and goes with the marker, newline and all.
+ * governor's, and goes with the marker, line ending and all. A line ends at
+ * a carriage return too, as the reader's lines do ({@link lineSpans}).
  */
-const OWNER_UNKNOWN = /[^\n]*<!--[ \t]*governor:owner-unknown[ \t]+(\S+)[ \t]*-->[^\n]*(?:\n|$)/g;
+const OWNER_UNKNOWN = /[^\r\n]*<!--[ \t]*governor:owner-unknown[ \t]+(\S+)[ \t]*-->[^\r\n]*(?:\r\n|\r|\n|$)/g;
 
 /**
  * The body with every owner-unknown line removed.
@@ -466,7 +467,7 @@ export const markOwnerUnknown = (body, at) => {
   const line = `_Governor took this PR over at ${at}, but the launch printed no session link, so this PR's session is not known._ <!-- governor:owner-unknown ${at} -->`;
   const owner = ownerLink(ownerText(text));
   if (!owner) return `${text.trimEnd()}${text.trim() ? '\n\n' : ''}${line}`;
-  const start = text.lastIndexOf('\n', owner.at) + 1;
+  const [start] = /** @type {[number, number]} */ (lineSpans(text).find(([from, end]) => from <= owner.at && owner.at <= end));
   return `${text.slice(0, start)}${line}\n${text.slice(start)}`;
 };
 
