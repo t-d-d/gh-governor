@@ -43,9 +43,13 @@
 # previous template's receiver code is the previous deploy's package in the
 # build bucket, which nothing expires; if it is gone the rollback fails, and
 # says so. The bootstrap stack is never rolled back.
+# Once the rollback applies, the App's webhook is pointed at the receiver's
+# URL again, as after the apply: a rollback that replaced the URL would
+# otherwise leave the App delivering to one that no longer exists.
 # The deploy stays red either way. A rollback that does not bring the task
 # back, because its apply or its probe failed, pages the operator through the
-# stack's alerts topic: governor is then down. So does a run cancelled, by
+# stack's alerts topic: governor is then down. So does a rollback that could
+# not point the App's webhook. So does a run cancelled, by
 # hand or by its timeout, after the rollback started and before its probe
 # passed. A first apply, with no stack before it, has nothing to roll back
 # to, and nor does an apply that changed nothing. A probe-only run applies
@@ -323,6 +327,7 @@ jobs:
       # delivers through it. The keys reach the script through the
       # environment and never an argument list.
       - name: Point the App's webhook at the receiver
+        id: point
         if: ${{ !inputs.probe_only }}
         run: |
           WEBHOOK_URL=$(aws cloudformation describe-stacks --stack-name governor \
@@ -412,6 +417,34 @@ jobs:
             --parameter-overrides \
               "${PREVIOUS_PARAMETERS[@]}"
 
+      # A rollback that replaced the receiver's URL, or the function it
+      # targets, leaves the App delivering to a URL that no longer exists, and
+      # the rollback's probe cannot see that. So the App's webhook follows the
+      # stack after the rollback as it does after the apply, with the same
+      # lines (test/dispatch-stack.test.ts holds the two steps together). A
+      # rollback that kept the URL writes the same config again. The task is
+      # probed whatever this step did, and a red one pages the operator.
+      - name: Point the App's webhook at the receiver the rollback left
+        id: repoint
+        if: ${{ failure() && steps.rollback.outcome == 'success' }}
+        run: |
+          WEBHOOK_URL=$(aws cloudformation describe-stacks --stack-name governor \
+            --query "Stacks[0].Outputs[?OutputKey=='WebhookUrl'].OutputValue" --output text)
+          WEBHOOK_SECRET=$(aws secretsmanager get-secret-value --secret-id governor/webhook-secret \
+            --query SecretString --output text)
+          echo "::add-mask::${WEBHOOK_SECRET}"
+          APP=$(aws secretsmanager get-secret-value --secret-id governor/github-app \
+            --query SecretString --output text)
+          APP_ID=$(jq -r '.appId // empty' <<<"$APP")
+          APP_PRIVATE_KEY=$(jq -r '.privateKey // empty' <<<"$APP")
+          while IFS= read -r line; do [[ -n "$line" ]] && echo "::add-mask::${line}"; done <<<"$APP_PRIVATE_KEY"
+          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error::governor/github-app holds no App key yet: save it with scripts/save-secret.mjs github-app"
+            exit 1
+          fi
+          export WEBHOOK_URL WEBHOOK_SECRET APP_ID APP_PRIVATE_KEY
+          node scripts/point-app-webhook.mjs
+
       - name: Probe the task on the stack it rolled back to
         id: reprobe
         if: ${{ failure() && steps.rollback.outcome == 'success' }}
@@ -432,9 +465,10 @@ jobs:
       # deploy role's one-hour session, which leaves the page time to publish.
       - name: Page the operator, since the rollback did not bring the task back
         id: page
-        if: ${{ always() && steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && steps.reprobe.outcome != 'success' }}
+        if: ${{ always() && steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && !(steps.repoint.outcome == 'success' && steps.reprobe.outcome == 'success') }}
         env:
           ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
+          REPOINT_OUTCOME: ${{ steps.repoint.outcome }}
           REPROBE_OUTCOME: ${{ steps.reprobe.outcome }}
         run: |
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -442,6 +476,10 @@ jobs:
             echo "::error::the rollback did not bring the task back; governor is down. Paging the operator."
             SUBJECT="[governor] A deploy's probe failed, and so did its rollback"
             MESSAGE="Governor is down. The deploy at ${GITHUB_SHA} failed its probe, and rolling the main stack back to what it ran before did not bring the task back: the rollback's apply or its probe failed. Read the run: ${RUN_URL}"
+          elif [ "$REPOINT_OUTCOME" = failure ]; then
+            echo "::error::the rollback brought the task back, but could not point the App's webhook at the receiver it left; GitHub's deliveries may fail. Paging the operator."
+            SUBJECT="[governor] A deploy's probe failed, and its rollback could not point the App's webhook"
+            MESSAGE="Governor may be deaf. The deploy at ${GITHUB_SHA} failed its probe, and the main stack was rolled back to what it ran before, but pointing the App's webhook at the receiver the rollback left failed. If the rollback moved the receiver's URL, every GitHub delivery fails until the webhook points at it. Read the run: ${RUN_URL}"
           else
             echo "::error::the run was cancelled mid-rollback, before the rollback's probe passed; governor may be down. Paging the operator."
             SUBJECT="[governor] A deploy's probe failed, and the run was cancelled mid-rollback"

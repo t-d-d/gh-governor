@@ -1251,9 +1251,9 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
 
   test('holds the order: read what the stack runs, apply, probe, and on a red probe apply what it ran before and probe again', () => {
     const { ran, failed } = runDeploy({ outcomes: { probe: 'failure' } });
-    const order = ['previous', 'apply', 'probe', 'rollback', 'reprobe'];
+    const order = ['previous', 'apply', 'probe', 'rollback', 'repoint', 'reprobe'];
     assert.deepEqual(ran.filter((id) => order.includes(id)), order);
-    assert.deepEqual(after(ran, 'probe'), ['rollback', 'reprobe'], 'a rollback whose probe passed pages no one');
+    assert.deepEqual(after(ran, 'probe'), ['rollback', 'repoint', 'reprobe'], 'a rollback whose probe passed pages no one');
     assert.ok(failed, 'a deploy that rolled back is still red');
   });
 
@@ -1299,7 +1299,7 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
 
   test('a rollback whose probe also fails pages the operator through the stack\'s alerts topic', () => {
     const { ran, failed } = runDeploy({ outcomes: { probe: 'failure', reprobe: 'failure' } });
-    assert.deepEqual(after(ran, 'probe'), ['rollback', 'reprobe', 'page']);
+    assert.deepEqual(after(ran, 'probe'), ['rollback', 'repoint', 'reprobe', 'page']);
     assert.ok(failed);
     const page = steps.find(withId('page'));
     assert.match(page?.run ?? '', /describe-stack-resource --stack-name governor --logical-resource-id AlertsTopic/);
@@ -1308,9 +1308,39 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     assert.equal(template.Resources?.AlertsTopic?.Properties?.Subscription?.[0]?.Protocol, 'email');
   });
 
+  // A rollback that replaces the receiver's URL, or the function it targets,
+  // leaves the App delivering to a URL that no longer exists. So once the
+  // rollback applies, the App's webhook is pointed again, by the same lines
+  // the deploy points it with after its apply, at the URL the stack now holds.
+  test('points the App\'s webhook at the URL the stack holds once the rollback applied, as the deploy does after its apply', () => {
+    const point = steps.find(withId('point'));
+    const repoint = steps.find(withId('repoint'));
+    assert.ok(point, 'the step that points the App\'s webhook after the apply has no id');
+    assert.ok(repoint, 'no step points the App\'s webhook after the rollback');
+    assert.ok(runsScript('scripts/point-app-webhook.mjs')(repoint));
+    assert.equal(repoint.run, point.run, 'the rollback points the webhook differently from the deploy');
+    assert.equal(repoint.env, point.env);
+    assert.equal(repoint.if, "${{ failure() && steps.rollback.outcome == 'success' }}");
+    const index = (id: string) => steps.findIndex(withId(id));
+    assert.ok(index('rollback') < index('repoint') && index('repoint') < index('reprobe'));
+  });
+
+  // The task may be back while every GitHub delivery fails, and the
+  // rollback's probe cannot see that. So the rollback probes the task
+  // whatever the webhook did, and a webhook it could not point pages the
+  // operator.
+  test('a rollback that cannot point the App\'s webhook still probes, and pages the operator', () => {
+    const { ran, failed } = runDeploy({ outcomes: { probe: 'failure', repoint: 'failure' } });
+    assert.deepEqual(after(ran, 'probe'), ['rollback', 'repoint', 'reprobe', 'page']);
+    assert.ok(failed);
+    const run = steps.find(withId('page'))?.run ?? '';
+    assert.match(run, /elif \[ "\$REPOINT_OUTCOME" = failure \]/);
+    assert.match(run, /webhook/);
+  });
+
   test('a rollback that cannot apply pages the operator, and probes nothing', () => {
     const { ran } = runDeploy({ outcomes: { probe: 'failure', rollback: 'failure' } });
-    assert.deepEqual(after(ran, 'probe'), ['rollback', 'page']);
+    assert.deepEqual(after(ran, 'probe'), ['rollback', 'page'], 'a rollback that did not apply points the webhook or probes');
   });
 
   // A cancel by hand or by the job's timeout comes after the red probe, so
@@ -1319,11 +1349,12 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
   // governor may be down until the rollback's probe passes.
   test('pages the operator when the run is cancelled after the rollback started and before its probe passed', () => {
     const page = steps.find(withId('page'));
-    assert.equal(page?.if, "${{ always() && steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && steps.reprobe.outcome != 'success' }}");
+    assert.equal(page?.if, "${{ always() && steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && !(steps.repoint.outcome == 'success' && steps.reprobe.outcome == 'success') }}");
     for (const cancelKeepsFailure of [false, true]) {
       const reading = cancelKeepsFailure ? 'the job still read as failed' : 'the job read as cancelled';
       assert.deepEqual(after(runDeploy({ cancelKeepsFailure, outcomes: { probe: 'failure', rollback: 'cancelled' } }).ran, 'probe'), ['rollback', 'page'], `a run cancelled during the rollback's apply pages no one, with ${reading}`);
-      assert.deepEqual(after(runDeploy({ cancelKeepsFailure, outcomes: { probe: 'failure', reprobe: 'cancelled' } }).ran, 'probe'), ['rollback', 'reprobe', 'page'], `a run cancelled during the rollback's probe pages no one, with ${reading}`);
+      assert.deepEqual(after(runDeploy({ cancelKeepsFailure, outcomes: { probe: 'failure', repoint: 'cancelled' } }).ran, 'probe'), ['rollback', 'repoint', ...(cancelKeepsFailure ? ['reprobe'] : []), 'page'], `a run cancelled while the rollback points the webhook pages no one, with ${reading}`);
+      assert.deepEqual(after(runDeploy({ cancelKeepsFailure, outcomes: { probe: 'failure', reprobe: 'cancelled' } }).ran, 'probe'), ['rollback', 'repoint', 'reprobe', 'page'], `a run cancelled during the rollback's probe pages no one, with ${reading}`);
       assert.deepEqual(after(runDeploy({ cancelKeepsFailure, outcomes: { probe: 'failure', rollback: 'failure', page: 'cancelled' } }).ran, 'probe'), ['rollback', 'page']);
     }
   });
@@ -1341,6 +1372,7 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     const page = steps.find(withId('page'));
     assert.equal(page?.env?.ROLLBACK_OUTCOME, '${{ steps.rollback.outcome }}');
     assert.equal(page?.env?.REPROBE_OUTCOME, '${{ steps.reprobe.outcome }}');
+    assert.equal(page?.env?.REPOINT_OUTCOME, '${{ steps.repoint.outcome }}');
     assert.equal(page?.env?.JOB_STATUS, undefined, 'the page reads job.status, which may say failure after a cancel');
     const run = page?.run ?? '';
     assert.match(run, /if \[ "\$ROLLBACK_OUTCOME" = failure \] \|\| \[ "\$REPROBE_OUTCOME" = failure \]/);
@@ -1371,7 +1403,7 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
   // changed only the receiver still rolls back.
   test('a deploy that kept the image but changed the stack rolls back', () => {
     const { ran } = runDeploy({ outcomes: { probe: 'failure' }, previousImage: 'governor@sha256:same', newImage: 'governor@sha256:same' });
-    assert.deepEqual(after(ran, 'probe'), ['rollback', 'reprobe']);
+    assert.deepEqual(after(ran, 'probe'), ['rollback', 'repoint', 'reprobe']);
   });
 
   test('a red apply probes nothing and rolls nothing back', () => {
@@ -1396,7 +1428,7 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     for (const step of between) {
       const key = step.id ?? step.name ?? '';
       const red = runDeploy({ outcomes: { [key]: 'failure', probe: 'failure' } });
-      assert.deepEqual(after(red.ran, key), ['probe', 'rollback', 'reprobe'], `a red '${key}' does not probe and roll back a red probe`);
+      assert.deepEqual(after(red.ran, key), ['probe', 'rollback', 'repoint', 'reprobe'], `a red '${key}' does not probe and roll back a red probe`);
       const green = runDeploy({ outcomes: { [key]: 'failure' } });
       assert.equal(green.ran.at(-1), 'probe', `a red '${key}' rolls back after a green probe`);
       assert.ok(green.failed, `a red '${key}' leaves the deploy green`);
