@@ -99,14 +99,16 @@ export const correctionText = (issue, kind, restored) => {
 /**
  * Read `issue`'s body again and, where its owner link, read through
  * `relayedBody` under `relay`, still names `editor`, write `restore`'s link
- * back in its place, or remove it where `restore` is null. Returns whether
+ * back in its place, or remove it where `restore` is null. On a person's
+ * issue (`person`) the footer the editor signed with goes too, so the body
+ * is not left a session's unsigned post, which any session may take. Returns whether
  * the write landed. A read or write that fails is logged at error
  * ({@link SPEC_OWNER}) and writes nothing.
  *
- * @param {{ github: BodyWriter, repo: string, issue: number, editor: string, restore: string | null, relay: readonly string[], log: Log }} args
+ * @param {{ github: BodyWriter, repo: string, issue: number, editor: string, restore: string | null, person: boolean, relay: readonly string[], log: Log }} args
  * @returns {Promise<boolean>}
  */
-const rewriteOwner = async ({ github, repo, issue, editor, restore, relay, log }) => {
+const rewriteOwner = async ({ github, repo, issue, editor, restore, person, relay, log }) => {
   const at = { repo, issue, editor: sessionId(editor), restore };
   try {
     const row = await github.ticket(issue);
@@ -116,7 +118,7 @@ const rewriteOwner = async ({ github, repo, issue, editor, restore, relay, log }
       log(TAKE, { ...at, outcome: 'nothing written', reason: 'the body\'s owner link no longer names the editor' });
       return false;
     }
-    await github.updateIssue(issue, { body: restore === null ? unlinkSession(body) : relinkSession(body, restore) });
+    await github.updateIssue(issue, { body: restore === null ? unlinkSession(body, { footer: person }) : relinkSession(body, restore) });
     log(SPEC_OWNER, { ...at, outcome: restore === null ? 'the editor\'s link removed from the body' : 'the owner\'s link written back' });
     return true;
   } catch (error) {
@@ -163,7 +165,7 @@ export const settleMove = async ({ repo, issue, editor, moved, notice, builders,
   /** @type {Correction} */
   const kind = builds ? 'edit-builder' : moved.old === 'person' ? 'edit-person' : 'edit-owned';
   const restore = moved.from ?? null;
-  if (!await rewriteOwner({ github, repo, issue, editor, restore, relay, log })) return null;
+  if (!await rewriteOwner({ github, repo, issue, editor, restore, person: moved.old === 'person', relay, log })) return null;
   let first = false;
   try {
     first = await tellOnce(editor, kind);

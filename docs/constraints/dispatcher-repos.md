@@ -121,8 +121,8 @@ spends the one claude.ai login.
   body edit that moved an issue's owner link and is not a take (below), it
   makes two more: it writes a live owner's link back, and it removes the
   link of a session that may not own the issue, a builder or a session
-  that edited a person's issue. Governor makes no other rewrite in a
-  ticket's body.
+  that edited a person's issue, and on a person's issue the footer that
+  link signed. Governor makes no other rewrite in a ticket's body.
 - Governor posts its dispatch comment on a ticket at each change of
   builder: pickup's launch; a takeover of a PR that closes the ticket,
   where governor starts a session on it or writes a branch session's link
@@ -317,8 +317,9 @@ spends the one claude.ai login.
   time. Where B is one of the ticket's builders (`rolesOf`), or the old
   body was a person's (no footer and no session), there is no take:
   governor writes A's link back where the old body named A, else removes
-  B's link, and tells B once that a builder does not edit the body, or
-  that the issue is a person's. A body read or write that fails logs
+  B's link, and on a person's issue the footer B signed with, so the body
+  does not read as a session's unsigned post. B is told once that a
+  builder does not edit the body, or that the issue is a person's. A body read or write that fails logs
   `dispatch-spec-owner` at error and changes nothing else; B is told of a
   write only once it lands. A notice to A the ceiling holds back counts as
   not sent, and governor then does nothing more. A person who moves the

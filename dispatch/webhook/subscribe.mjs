@@ -438,12 +438,28 @@ export const relinkSession = (body, sessionUrl) => {
  * with its line and the blank line before it. A body that names no owner
  * is returned as it is. Governor removes the link of a session that may
  * not own an issue, a builder or a session that edited a person's issue
- * (dispatch/take.mjs). Throws for a body {@link pastReadingBound}.
+ * (dispatch/take.mjs). With `footer`, a Claude Code footer left signing
+ * nothing goes too, with the rules above it: a person's issue the editor
+ * signed would otherwise read as a session's unsigned post
+ * ({@link unsignedSessionBody}), which any session may take. Throws for a
+ * body {@link pastReadingBound}.
+ *
+ * @param {unknown} body
+ * @param {{ footer?: boolean }} [options]
+ * @returns {string}
+ */
+export const unlinkSession = (body, { footer = false } = {}) => {
+  const unlinked = unlinkOwner(body);
+  return footer ? withoutUnsignedFooter(unlinked) : unlinked;
+};
+
+/**
+ * The body with its owner link removed ({@link unlinkSession}).
  *
  * @param {unknown} body
  * @returns {string}
  */
-export const unlinkSession = (body) => {
+const unlinkOwner = (body) => {
   const text = String(body ?? '');
   if (pastReadingBound(text)) throw new Error('the body is too long or too deeply nested to read for its session link');
   const owner = ownerLink(ownerText(text));
@@ -477,6 +493,23 @@ export const unsignedSessionBody = (body) => {
 
 /** A line with nothing on it but a rule, or nothing at all. */
 const RULE_OR_BLANK = /^[\s*_-]*$/;
+
+/**
+ * `text` without the footer that ends a session's unsigned post, nor the
+ * rules and blank lines above it. Any other body is returned as it is.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+const withoutUnsignedFooter = (text) => {
+  if (!unsignedSessionBody(text)) return text;
+  const lines = ownerText(text).split('\n');
+  let last = lines.length - 1;
+  while (last > 0 && RULE_OR_BLANK.test((lines[last] ?? '').trim())) last -= 1;
+  let kept = text.split('\n').slice(0, last);
+  while (kept.length > 0 && RULE_OR_BLANK.test((kept.at(-1) ?? '').trim())) kept = kept.slice(0, -1);
+  return kept.join('\n');
+};
 
 /**
  * The whole of a Claude Code footer line, in either shape a session's body

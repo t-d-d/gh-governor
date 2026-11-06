@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { handle } from '../dispatch/webhook/route.mjs';
 import { build, parseFire } from '../dispatch/webhook/fire.mjs';
-import { sessionNamedIn, unlinkSession } from '../dispatch/webhook/subscribe.mjs';
+import { sessionNamedIn, unlinkSession, unsignedSessionBody } from '../dispatch/webhook/subscribe.mjs';
 import { SWITCHES, readConfig, type RepoConfig } from '../dispatch/repo-config.mjs';
 import { planTicket } from '../dispatch/ticket-fire.mjs';
 import { correctionText, takeText } from '../dispatch/take.mjs';
@@ -345,6 +345,15 @@ describe('planTicket: a body edit that moved the owner link, under sessionRules'
     await planTicket(editFire({ labels: ['mode: afk'], moved: { old: 'person' } }), ctx);
     assert.deepEqual(writes, [{ issue: 7, body: 'A person\'s spec, changed.' }]);
     assert.deepEqual(sent.map((s) => [s.session, s.text]), [[EDITOR, correctionText(7, 'edit-person', null)]]);
+  });
+
+  test('an edit that signed a person\'s issue with a footer and a link loses both, so the issue stays the person\'s and is no session\'s unsigned post', async () => {
+    for (const editor of [EDITOR, BUILDER]) {
+      const { ctx, writes } = context({ body: `A person's spec, changed.\n\n${editor}${FOOTER}` });
+      await planTicket(editFire({ owner: editor, moved: { old: 'person' } }), ctx);
+      assert.deepEqual(writes, [{ issue: 7, body: 'A person\'s spec, changed.' }], editor);
+      assert.equal(unsignedSessionBody(writes[0]!.body), false, editor);
+    }
   });
 
   test('where the body no longer names the editor, or the read or the write fails, nothing is written and the editor is told nothing', async () => {
