@@ -254,9 +254,9 @@ jobs:
           fi
           PREVIOUS=""
           if [[ -n "$STACK" ]]; then
-            PREVIOUS=$(jq -r '.Parameters[]? | select(.ParameterKey == "ImageUri") | .ParameterValue' <<<"$STACK")
+            PREVIOUS=$(jq -r '.Parameters[]? | select(.ParameterKey == "ImageUri") | .ParameterValue // empty' <<<"$STACK")
           fi
-          if [[ -z "$PREVIOUS" || "$PREVIOUS" == None ]]; then
+          if [[ -z "$PREVIOUS" ]]; then
             echo "::notice::the stack runs no image yet, so a red probe has nothing to roll back to"
             echo "image_uri=" >> "$GITHUB_OUTPUT"
             exit 0
@@ -389,13 +389,20 @@ jobs:
           echo "::error::the probe failed; rolling the main stack back to the template, receiver code and parameters it ran before this deploy, with ${PREVIOUS_IMAGE_URI}"
           # The previous template's receiver code is the previous deploy's
           # package in the build bucket. Nothing expires it, but a missing one
-          # fails here, by name, and not halfway through CloudFormation.
+          # fails here, by name, and not halfway through CloudFormation. A
+          # template that names no package fails too: the check found nothing
+          # to check, so it proves nothing.
+          PACKAGES=$(awk '/S3Bucket:/ { gsub(/["\047]/, "", $2); bucket = $2 } /S3Key:/ { gsub(/["\047]/, "", $2); print bucket, $2 }' "$RUNNER_TEMP/governor.previous.yml" | sort -u)
+          if [[ -z "$PACKAGES" ]]; then
+            echo "::error::the template the stack ran before names no receiver package, so the rollback cannot check it is still there"
+            exit 1
+          fi
           while read -r BUCKET KEY; do
-            if ! aws s3api head-object --bucket "$BUCKET" --key "$KEY" > /dev/null; then
-              echo "::error::the previous deploy's receiver package s3://${BUCKET}/${KEY} is gone, so the rollback cannot restore the receiver"
+            if ! aws s3api head-object --bucket "$BUCKET" --key "$KEY" > /dev/null 2>"$RUNNER_TEMP/head.err"; then
+              echo "::error::the previous deploy's receiver package s3://${BUCKET}/${KEY} is gone or cannot be read, so the rollback cannot restore the receiver: $(cat "$RUNNER_TEMP/head.err")"
               exit 1
             fi
-          done < <(awk '/S3Bucket:/ { gsub(/["\047]/, "", $2); bucket = $2 } /S3Key:/ { gsub(/["\047]/, "", $2); print bucket, $2 }' "$RUNNER_TEMP/governor.previous.yml" | sort -u)
+          done <<<"$PACKAGES"
           mapfile -t PREVIOUS_PARAMETERS < "$RUNNER_TEMP/governor.previous.parameters"
           aws cloudformation deploy \
             --stack-name governor \
@@ -434,11 +441,11 @@ jobs:
           if [ "$ROLLBACK_OUTCOME" = failure ] || [ "$REPROBE_OUTCOME" = failure ]; then
             echo "::error::the rollback did not bring the task back; governor is down. Paging the operator."
             SUBJECT="[governor] A deploy's probe failed, and so did its rollback"
-            MESSAGE="Governor is down. The deploy at ${GITHUB_SHA} failed its probe, and rolling the stack back to the image it ran before did not bring the task back: the rollback's apply or its probe failed. Read the run: ${RUN_URL}"
+            MESSAGE="Governor is down. The deploy at ${GITHUB_SHA} failed its probe, and rolling the main stack back to what it ran before did not bring the task back: the rollback's apply or its probe failed. Read the run: ${RUN_URL}"
           else
             echo "::error::the run was cancelled mid-rollback, before the rollback's probe passed; governor may be down. Paging the operator."
             SUBJECT="[governor] A deploy's probe failed, and the run was cancelled mid-rollback"
-            MESSAGE="Governor may be down. The deploy at ${GITHUB_SHA} failed its probe, and the run was cancelled mid-rollback, by hand or by the job's timeout, before the probe of the image it rolled back to passed. Check the task, and read the run: ${RUN_URL}"
+            MESSAGE="Governor may be down. The deploy at ${GITHUB_SHA} failed its probe, and the run was cancelled mid-rollback, by hand or by the job's timeout, before the probe of the stack it rolled back to passed. Check the task, and read the run: ${RUN_URL}"
           fi
           TOPIC_ARN=$(aws cloudformation describe-stack-resource --stack-name governor --logical-resource-id AlertsTopic \
             --query StackResourceDetail.PhysicalResourceId --output text)
