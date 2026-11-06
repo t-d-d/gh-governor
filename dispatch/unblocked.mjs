@@ -21,8 +21,8 @@
  * | still blocked by another open issue | nothing: that blocker's close sends its own fire | |
  * | ready or not ready by its labels, and held by its own `Blocked until:` line | nothing, but one comment on a line governor cannot read, whatever the switches say | |
  * | carries an `exclude` label | nothing | |
- * | is claimed | messages the session its dispatch marker names | `unblocked` |
- * | is ready | picks it up as pickup does, the close's facts in the prompt | `pickup` |
+ * | is claimed | asks its builders, and sends its spec owner a notice naming them | `unblocked` |
+ * | is ready | picks it up as pickup does, the close's facts in the prompt, and sends its spec owner a notice naming the builder | `pickup`, and `unblocked` for the notice |
  * | is not ready, and its body names a session | messages that session, its owner, to rewrite its own spec, and starts the spec session only if it refuses as archived; held as the next row is | `unblocked` |
  * | is not ready | starts a spec session with a marker and no claim, unless governor unreadied it on a not-planned close and nobody has answered since | `unblocked` |
  *
@@ -299,6 +299,46 @@ export const ownerSpecMessage = (fire, prompts, labels) => ownerMessage({ issue:
  */
 export const unblockedMessage = (fire, prompts) => `${unblockedFacts(fire)}\n\n${instruction(prompts, 'unblockedClaimed', { issue: fire.issue })}`;
 
+/** @param {readonly string[]} items */
+const joined = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
+
+/**
+ * Who a blocker's close asked to act on a ready or claimed ticket, for the
+ * spec owner's notice. `started`: the builder pickup started for a ready
+ * ticket, its link, or null where the launch gave none. `asked`: the
+ * builders of a claimed ticket that took the ask. `archived`: those that
+ * refused as archived, which leaves the role vacant. `unreached`: those a
+ * send failed to reach. `what`: what the builders were asked to check
+ * their work against.
+ *
+ * @typedef {{ started: string | null } | { asked: readonly string[], archived: readonly string[], unreached: readonly string[], what: string }} NoticeAsk
+ */
+
+/**
+ * A ready or claimed ticket's spec owner's notice of its blocker's close:
+ * the close's facts, that the notice asks nothing, and which role was
+ * asked. The spec owner may still edit its own body. It carries no
+ * instruction, so it has no prompt key: every line is a fact.
+ *
+ * @param {UnblockedFire & { repo?: string }} fire
+ * @param {NoticeAsk} ask
+ */
+export const unblockedNotice = (fire, ask) => {
+  const { issue } = fire;
+  let who;
+  if ('started' in ask) {
+    who = `Governor started a builder for #${issue}${ask.started === null ? '' : `, ${ask.started},`} and asked it to check the spec against ${fire.pr === undefined ? 'this close' : 'what merged'} before it builds.`;
+  } else {
+    const one = (/** @type {readonly string[]} */ s) => (s.length === 1 ? `Its builder, ${s[0]},` : `Its builders, ${joined(s)},`);
+    const asked = ask.asked.length === 0 ? '' : `${one(ask.asked)} ${ask.asked.length === 1 ? 'was' : 'were'} asked to check its work against ${ask.what}.`;
+    const so = ask.asked.length === 0 ? ', so nobody was asked' : '';
+    const archived = ask.archived.length === 0 ? '' : `${one(ask.archived)} ${ask.archived.length === 1 ? 'is' : 'are'} archived${ask.unreached.length === 0 ? so : ''}.`;
+    const unreached = ask.unreached.length === 0 ? '' : `Governor could not reach ${ask.unreached.length === 1 ? 'its builder' : 'its builders'}, ${joined(ask.unreached)}${so}.`;
+    who = [asked, archived, unreached].filter((t) => t !== '').join(' ');
+  }
+  return `${unblockedFacts(fire)}\n\nThis is a notice: it asks nothing of you. You are #${issue}'s spec owner, and may still edit its body where what counts as done has moved. ${who}`;
+};
+
 /**
  * The ready labels a not-planned close takes off a ticket: every one of the
  * repo's, where pickup reads the ticket as ready by its labels, and
@@ -347,10 +387,7 @@ export const unreadiedSince = (on, removals, labels, since) => {
 export const mayBeUnreadied = (on, labels) => labels.ready.some((l) => !on.includes(l)) && labelsSay([...on, ...labels.ready], labels) === 'ready';
 
 /** @param {readonly string[]} names */
-const listed = (names) => {
-  const quoted = names.map((n) => `\`${n}\``);
-  return quoted.length <= 1 ? quoted.join('') : `${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)}`;
-};
+const listed = (names) => joined(names.map((n) => `\`${n}\``));
 
 /**
  * What became of a ticket's ready labels, for its comment. Fixed text, not
