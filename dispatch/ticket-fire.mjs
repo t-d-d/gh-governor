@@ -20,13 +20,22 @@
  * by editing the body. The builder acts on a remark about the build, and
  * never edits the body. A body edit tells the spec owner the edit may be
  * its own, and the builder that the spec changed.
+ *
+ * Governor's own dispatch comment, a change of builder, is a ticket fire
+ * too (`dispatched`). It reaches the spec owner, and the builder it
+ * displaced, which is asked to stop and sign off; never the builder it
+ * names. Nothing is read to send it. A `closingPr` fire is a PR that may
+ * have come to close a ticket: where a claimed ticket's builder is another
+ * session, governor posts that dispatch comment ({@link planClosingPr}).
  */
 
 import { GITHUB_SOURCE } from './deliveries.mjs';
 import { relayOf } from './trust.mjs';
 import { buildersOf } from './builders.mjs';
 import { fireRepoOf } from './repos.mjs';
-import { sameSession, sessionId } from './webhook/subscribe.mjs';
+import { closedBy } from './pr-body.mjs';
+import { dispatchMarker } from './webhook/fire.mjs';
+import { relayedBody, sameSession, sessionId } from './webhook/subscribe.mjs';
 import { EDIT_BUILDER, EDIT_SPEC_OWNER } from './webhook/mention.mjs';
 
 /** @typedef {'spec owner' | 'builder' | 'spec owner and builder'} TicketRole */
@@ -76,7 +85,32 @@ export const planTicket = async (invocation, ctx) => {
     ...(role === 'builder' ? [] : [EDIT_SPEC_OWNER]),
     ...(role === 'spec owner' ? [] : [EDIT_BUILDER]),
   ].join('\n')}`);
-  if (!claimed) {
+  if (event === 'dispatched') {
+    // Governor's dispatch comment: the builder it names never hears it.
+    const builder = invocation.builder ?? null;
+    const displaced = invocation.displaced ?? null;
+    const named = (/** @type {string | null} */ session) => session !== null && builder !== null && sameSession(session, builder);
+    const gone = displaced !== null && !named(displaced) ? displaced : null;
+    const instead = builder ?? 'another session';
+    const stops = `You no longer build #${issue}: ${instead} does.`;
+    if (owner !== null && named(owner)) {
+      skipped.push(`${sessionId(owner)}, the builder it names`);
+    } else if (owner !== null) {
+      const ownerBuilt = gone !== null && sameSession(gone, owner);
+      const lines = [text, '', rolesText({ issue, owner, builders: builder === null ? [] : [builder], role: 'spec owner' })];
+      if (ownerBuilt) lines.push(`${stops} Stop building it, and leave its branch and PR to that session; you remain its spec owner.`);
+      sends.push({ session: owner, text: lines.join('\n'), role: 'spec owner', owns: [] });
+    }
+    if (gone !== null && !(owner !== null && sameSession(gone, owner))) {
+      sends.push({
+        session: gone,
+        text: `${text}\n\n${stops} Stop your work on it, and sign off unless you know a reason not to. You hear nothing more from the ticket.`,
+        role: 'builder',
+        owns: [],
+      });
+    }
+    Object.assign(about, { builder, displaced });
+  } else if (!claimed) {
     // The spec owner's message as the receiver queued it before, with no read.
     if (owner !== null && own(owner)) skipped.push(`${sessionId(owner)}'s own post`);
     else if (owner !== null) sends.push({ session: owner, text: `${text}${edit('spec owner')}`, role: null, owns: [] });
@@ -114,7 +148,9 @@ export const planTicket = async (invocation, ctx) => {
       const delivered = await ctx.delivery().deliver({ session }, told, {
         source: GITHUB_SOURCE,
         on: [issue],
-        closing: closing === true,
+        // A displaced builder has nothing left on the ticket: its standing
+        // line asks it to sign off where nothing else of its is open.
+        closing: closing === true || (event === 'dispatched' && role === 'builder'),
         // The spec owner hears the ticket as its filer does, so an
         // archived one with no fallback is dropped from its subscribe line.
         dropFrom: role === 'builder' ? [] : [issue],
@@ -130,4 +166,69 @@ export const planTicket = async (invocation, ctx) => {
   // that took it, else the last refusal.
   const messaged = sent.find((t) => !t.ok && !t.refused) ?? sent.find((t) => t.ok) ?? /** @type {import('./deliveries.mjs').Delivery} */ (sent.at(-1));
   return { answer: { kind: invocation.kind, messaged, dispatched: [], loginStored } };
+};
+
+/**
+ * A PR that may have come to close a ticket (`closingPr`): for each claimed
+ * open ticket its body closes, where the PR's owner, as `ownerOf` finds it,
+ * is not among the ticket's builders without this PR, governor posts its
+ * dispatch comment naming the owner. Where the builder it replaces was
+ * found by the newest dispatch comment or the owner link, the comment names
+ * that builder as displaced, and the relay asks it to stop. Where another
+ * open PR closes the ticket, both owners build it, and nobody is displaced.
+ * Only a dispatch comment governor's App posted names a builder, as the
+ * lookup reads it. A read or a comment that fails fails the turn.
+ *
+ * @param {import('./webhook/fire.mjs').ClosingPrFire & { repo?: string }} invocation
+ * @param {import('./turn.mjs').TurnContext} ctx
+ * @returns {Promise<import('./turn.mjs').Plan>}
+ */
+export const planClosingPr = async (invocation, ctx) => {
+  const repo = fireRepoOf(invocation);
+  const { pr } = invocation;
+  const config = ctx.configOf(repo);
+  const claim = config.labels.claim;
+  /** @type {number[]} */
+  const announced = [];
+  const answer = () => ({ answer: { kind: invocation.kind, dispatched: [], announced } });
+  const relay = relayOf(config);
+  const reader = await ctx.readerFor(repo);
+  const pull = await reader.pull(pr);
+  // The receiver judged the author by the hook-table item, which may lag
+  // the file: a body trust.relay leaves out closes nothing here.
+  const tickets = closedBy(relayedBody(pull, relay), repo);
+  if (!pull.open || tickets.length === 0) {
+    ctx.log('dispatch-builder', { repo, pr, outcome: 'nothing announced', reason: pull.open ? 'its body closes no ticket, or trust.relay leaves its author out' : 'it is closed' });
+    return answer();
+  }
+  const owners = ctx.delivery();
+  const { session } = await owners.ownerOf(pr);
+  if (session === null) {
+    ctx.log('dispatch-builder', { repo, pr, outcome: 'nothing announced', reason: 'no session holds it' });
+    return answer();
+  }
+  // The ticket's builders as they were without this PR.
+  const without = {
+    openClosing: async (/** @type {number} */ n) => (await reader.openClosing(n)).filter((p) => p.number !== pr),
+    closure: (/** @type {number} */ n) => reader.closure(n),
+    allComments: (/** @type {number} */ n) => reader.allComments(n),
+  };
+  for (const issue of tickets) {
+    const ticket = await reader.ticket(issue);
+    const at = { repo, pr, issue, session };
+    if (ticket.pull || ticket.state !== 'open' || claim === '' || !ticket.labels.includes(claim)) {
+      ctx.log('dispatch-builder', { ...at, outcome: 'nothing announced', reason: 'the ticket is not an open claimed issue' });
+      continue;
+    }
+    const found = await buildersOf({ reader: without, ownerOf: (n) => owners.ownerOf(n), issue, ticket: { ...ticket, association: ticket.association ?? 'NONE' }, claim, relay });
+    if (found.sessions.some((s) => sameSession(s, session))) {
+      ctx.log('dispatch-builder', { ...at, outcome: 'nothing announced', reason: `it builds the ticket already, by its ${found.by}` });
+      continue;
+    }
+    const displaced = found.by === 'dispatch comment' || found.by === 'owner link' ? found.sessions[0] ?? null : null;
+    await reader.comment(issue, dispatchMarker({ at: new Date(ctx.now()).toISOString(), sessionUrl: session, displaced }));
+    announced.push(issue);
+    ctx.log('dispatch-builder', { ...at, displaced, outcome: 'announced the new builder on the ticket' });
+  }
+  return answer();
 };

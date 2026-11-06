@@ -26,7 +26,7 @@ import { ownerSpecMessage, specPrompt } from '../dispatch/unblocked.mjs';
 import { ownerUnknownSince, sessionNamedIn, subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { promptFor, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
-import { SIGN_POSTS, UNATTENDED, dispatchMarker, parseFire } from '../dispatch/webhook/fire.mjs';
+import { SIGN_POSTS, UNATTENDED, dispatchMarker, lastDispatch, parseFire } from '../dispatch/webhook/fire.mjs';
 import { WORKFLOW_PATHS, headMerge, workflowFile, workflowFile as workflowFixture } from './helpers/dispatch-workflows.ts';
 import { SIGN_OFF, SIGNOFF_LATEST_START_MS, SIGNOFF_PAGES, SIGNOFF_REPLY_POLL_MS, SIGNOFF_REPLY_WAIT_MS, SIGNOFF_WINDOW_MS, ARCHIVE_TIMEOUT_MS } from '../scripts/lib/session-signoff.mjs';
 import { LOGIN_EXPIRY_WARNING_MS, storedLogin } from '../scripts/lib/claude-login.mjs';
@@ -2466,7 +2466,10 @@ describe('run — an unblocked fire', () => {
     const result = await run(fire(), h.deps as never) as Record<string, unknown>;
     assert.deepEqual(sent, [PR_A, BRANCH_OWNER, SPEC]);
     assert.equal(sessionNamedIn(edits.find((e) => e.pr === 60)?.body ?? ''), BRANCH_OWNER);
-    assert.deepEqual([h.launches, h.comments], [[], []]);
+    assert.deepEqual(h.launches, []);
+    // The PR changed hands, so the builder did too (#540): governor names
+    // the branch's session on the ticket the PR closes.
+    assert.deepEqual(h.comments.map((c: { issue: number, body: string }) => [c.issue, lastDispatch([{ ...c, ours: true }])?.sessionUrl]), [[7, BRANCH_OWNER]]);
     assert.equal(exitCodeFor(result as never), 0);
   });
 
