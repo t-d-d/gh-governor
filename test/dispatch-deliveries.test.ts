@@ -70,6 +70,7 @@ const fakes = (over: {
   repo?: string;
   signOff?: boolean;
   relay?: readonly string[];
+  claim?: string;
 } = {}) => {
   const sent: Message[] = [];
   const untils: number[] = [];
@@ -100,6 +101,7 @@ const fakes = (over: {
     reader: async () => { readers += 1; return reader as never; },
     repo: over.repo ?? REPO,
     relay: over.relay ?? RELAY,
+    ...(over.claim === undefined ? {} : { claim: over.claim }),
     send: async (m: Message, until: number) => {
       sent.push(m);
       untils.push(until);
@@ -611,6 +613,17 @@ describe('deliver — a session\'s standing', () => {
     const f = fakes({ relay: narrow, reader: { openNaming: async (_id: string, relay: unknown) => { lists.push(relay); return []; } } });
     await f.deliver({ session: OWNER }, 'A comment.', { on: [724] });
     assert.deepEqual(lists, [narrow]);
+  });
+
+  // A builder is not asked to sign off while its claimed ticket is open
+  // (#538): the search counts that ticket where given the claim label.
+  test('the search is given the repo\'s claim label, so a builder\'s open claimed ticket counts', async () => {
+    const options: unknown[] = [];
+    const f = fakes({ claim: 'workflow: under development', reader: { openNaming: async (_id: string, _relay: unknown, given: unknown) => { options.push(given); return [open(7, false)]; } } });
+    await f.deliver({ session: OWNER }, 'A comment.', { on: [724], closing: true });
+    assert.deepEqual(options, [{ claim: 'workflow: under development' }]);
+    assert.match(f.sent[0]!.text, /Issue #7: Open 7/);
+    assert.ok(!f.sent[0]!.text.includes(SIGN_OFF));
   });
 
   test('with nothing else open, it says so; a close asks it to sign off; something open asks nothing', async () => {

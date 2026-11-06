@@ -255,7 +255,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   issue: (n: number) => Promise<{ number: number, body: string, pull: boolean }>,
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
  *   openPulls: () => Promise<import('../scripts/lib/github-app.mjs').OpenPullRow[]>,
- *   openNaming: (session: string, relay: readonly string[]) => Promise<OpenRow[]>,
+ *   openNaming: (session: string, relay: readonly string[], options?: { claim?: string }) => Promise<OpenRow[]>,
  *   commit: (sha: string) => Promise<{ sha: string, message: string, parents?: string[] }>,
  * }} DeliveryReader
  *   The GitHub reads and writes a delivery makes.
@@ -271,6 +271,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   reader: () => Promise<DeliveryReader>,
  *   repo: string,
  *   relay: readonly string[],
+ *   claim?: string,
  *   send: (message: { session: string, text: string }, until: number) => Promise<LaunchResult>,
  *   launch: (launch: Launch, until: number) => Promise<{ outcome: LaunchOutcome, sessionUrl: string | null }>,
  *   sessions: (asking: string) => (branch: string, options?: import('../scripts/lib/session-branch.mjs').FindOptions) => Promise<string | null>,
@@ -287,6 +288,8 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   (dispatch/trust.mjs): a PR or issue body names a session to a
  *   delivery, the owner's standing and the owner by branch, only where its
  *   author is let in (`relayedBody`, dispatch/webhook/subscribe.mjs).
+ *   `claim`: its file's claim label, by which a builder's standing counts
+ *   its open claimed ticket before its PR exists (`openNaming`).
  *   `send`: the CLI's
  *   `-p --cloud <session>`, under what is left before `until`. `launch`: a
  *   session through the launcher, the same. `sessions`: the sessions API's
@@ -408,7 +411,7 @@ export const deliveries = (deps) => {
       let found = standings.get(id);
       if (found === undefined) {
         standings.set(id, found = deps.reader().then(async (github) => {
-          const named = await github.openNaming(id, deps.relay);
+          const named = deps.claim === undefined ? await github.openNaming(id, deps.relay) : await github.openNaming(id, deps.relay, { claim: deps.claim });
           if (!foundOnBranch.has(id)) return named;
           const held = await branchPulls(github, session);
           return [...named, ...held.filter((p) => !named.some((n) => n.number === p.number))];

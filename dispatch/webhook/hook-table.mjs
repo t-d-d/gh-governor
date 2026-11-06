@@ -9,8 +9,8 @@
  * `keyVersion`, empty when the file turns hooks off or lists none, beside
  * it a map from each name to its `perHour`, a map from each of the repo's
  * switches to whether the file turns it on, the file's ready labels, the
- * labels whose change can start an issue review, and its `trust` section, each list governor reads as the file sets or
- * narrows it (dispatch/trust.mjs).
+ * labels whose change can start an issue review, its `trust` section, each list governor reads as the file sets or
+ * narrows it (dispatch/trust.mjs), and its claim label.
  * Each list is an attribute of its own, so another can join the item
  * without reshaping it. The
  * receiver reads the item after
@@ -26,7 +26,8 @@
  * says is off (switches.mjs), a selection fire for a label that is not one
  * of the ready labels, an issue review fire for a label change no review
  * names, and a message an author outside the three and `trust.relay`
- * wrote or is judged by (route.mjs). There a missing item, one written
+ * wrote or is judged by (route.mjs). By the claim label it tells whether
+ * an issue's comment, close or reopen goes to the ticket's builders too. There a missing item, one written
  * before it held them, and a read that fails all queue the fire by switch
  * and label, which leaves the task to decide, as it did before the item
  * held them, and judge by the default `trust.relay`.
@@ -143,6 +144,23 @@ const relayOf = (repo, value) => {
   return /** @type {string[]} */ (list);
 };
 
+/**
+ * The item's claim label (`labels.claim`), read only where the item holds
+ * one (an item written before it held one has none), and empty for a file whose features read no labels,
+ * where no ticket is claimed. A malformed one is a failed read, never a
+ * missing one.
+ *
+ * @param {string} repo
+ * @param {import('@aws-sdk/client-dynamodb').AttributeValue} value
+ * @returns {string}
+ */
+const claimOf = (repo, value) => {
+  if (typeof value.S !== 'string') {
+    throw new Error(`the hook table's claim label for ${repo} is malformed: ${JSON.stringify(value)}`);
+  }
+  return value.S;
+};
+
 /** Every value a trust list may name. */
 const TRUST = /** @type {ReadonlySet<string>} */ (new Set(TRUST_VALUES));
 
@@ -155,17 +173,18 @@ const TRUST = /** @type {ReadonlySet<string>} */ (new Set(TRUST_VALUES));
  *   `labels` names; `unlabeled`, each a review's `when.exclude` or a
  *   `byLabel` entry's `labels` names (`reviewLabelsOf`,
  *   dispatch/issue-review.mjs).
- * @typedef {{ hooks: ReadonlyArray<{ name: string } & Listed>, switches: Readonly<Record<string, boolean>>, ready: readonly string[], reviewLabels?: ReviewLabels, trust?: { relay: readonly string[] } }} Listing
+ * @typedef {{ hooks: ReadonlyArray<{ name: string } & Listed>, switches: Readonly<Record<string, boolean>>, ready: readonly string[], reviewLabels?: ReviewLabels, trust?: { relay: readonly string[] }, claim?: string }} Listing
  *   What the task writes of a repo's file: its hooks, each switch as
  *   `turnsOn` reads it, its ready labels (`labels.ready`), its issue
  *   review labels, and its trust lists as governor reads them (`relayOf`,
- *   dispatch/trust.mjs). The turn always writes the review labels and the
- *   trust lists; an item without them reads as unknown and the defaults.
- * @typedef {{ switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null, reviewLabels?: ReviewLabels | null, relay?: readonly string[] }} Known
+ *   dispatch/trust.mjs), and its claim label (`labels.claim`). The turn
+ *   always writes the review labels, the trust lists and the claim label;
+ *   an item without them reads as unknown and the defaults.
+ * @typedef {{ switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null, reviewLabels?: ReviewLabels | null, relay?: readonly string[], claim?: string }} Known
  *   What the receiver reads of a repo's item for a GitHub delivery: each
- *   switch, on or off, the ready labels, the issue review labels, and
- *   `trust.relay`, each null or absent where the item was written before it
- *   held them.
+ *   switch, on or off, the ready labels, the issue review labels,
+ *   `trust.relay` and the claim label, each null or absent where the item
+ *   was written before it held them.
  * @typedef {{
  *   listed: (repo: string) => Promise<ReadonlyMap<string, Listed> | null>,
  *   item: (repo: string) => Promise<Known | null>,
@@ -222,11 +241,11 @@ export const hookTable = (client, table) => {
     item: async (repo) => {
       const item = await read(repo);
       if (item === undefined) return null;
-      return { switches: switchesOf(repo, item.switches), ready: readyOf(repo, item.ready), reviewLabels: reviewLabelsOf(repo, item.reviewLabels), ...(item.trust === undefined ? {} : { relay: relayOf(repo, item.trust) }) };
+      return { switches: switchesOf(repo, item.switches), ready: readyOf(repo, item.ready), reviewLabels: reviewLabelsOf(repo, item.reviewLabels), ...(item.trust === undefined ? {} : { relay: relayOf(repo, item.trust) }), ...(item.claim === undefined ? {} : { claim: claimOf(repo, item.claim) }) };
     },
     // Only over an item from an earlier read: two turns racing cannot put an
     // older file's list back.
-    publish: async (repo, { hooks, switches, ready, reviewLabels, trust }, at) => {
+    publish: async (repo, { hooks, switches, ready, reviewLabels, trust, claim }, at) => {
       try {
         await client.send(new PutItemCommand({
           TableName: table,
@@ -239,6 +258,7 @@ export const hookTable = (client, table) => {
             ready: { L: ready.map((label) => ({ S: label })) },
             ...(reviewLabels === undefined ? {} : { reviewLabels: { M: { labeled: { L: reviewLabels.labeled.map((label) => ({ S: label })) }, unlabeled: { L: reviewLabels.unlabeled.map((label) => ({ S: label })) } } } }),
             ...(trust === undefined ? {} : { trust: { M: { relay: { L: trust.relay.map((value) => ({ S: value })) } } } }),
+            ...(claim === undefined ? {} : { claim: { S: claim } }),
           },
           ConditionExpression: 'attribute_not_exists(pk) OR #at <= :at',
           ExpressionAttributeNames: { '#at': 'at' },

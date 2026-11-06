@@ -77,12 +77,16 @@ const ownersOf = async (prs, ownerOf) => {
  *   ticket: { state: string, labels: readonly string[], body?: string } & import('./webhook/fire.mjs').Author,
  *   claim: string,
  *   relay: readonly string[],
+ *   owner?: string | null,
  * }} args
- *   `ticket`: the ticket as just read. `claim`: the repo's claim label.
- *   `relay`: its `trust.relay`.
+ *   `ticket`: the ticket as just read, or as a delivery carried it.
+ *   `claim`: the repo's claim label. `relay`: its `trust.relay`. `owner`:
+ *   the session the body's owner link names, where the caller already
+ *   read it under `relay`, as the receiver does for a ticket fire
+ *   (dispatch/ticket-fire.mjs); the body is then not read.
  * @returns {Promise<Builders>}
  */
-export const buildersOf = async ({ reader, ownerOf, issue, ticket, claim, relay }) => {
+export const buildersOf = async ({ reader, ownerOf, issue, ticket, claim, relay, owner: named }) => {
   const open = (await reader.openClosing(issue)).map((p) => p.number);
   if (open.length > 0) {
     const found = await ownersOf(open, ownerOf);
@@ -97,7 +101,7 @@ export const buildersOf = async ({ reader, ownerOf, issue, ticket, claim, relay 
   }
   const marked = lastDispatch(await reader.allComments(issue))?.sessionUrl ?? null;
   if (marked !== null) return { sessions: [marked], by: 'dispatch comment', prs: [], owns: {} };
-  const owner = ticket.labels.includes(claim) ? sessionNamedIn(relayedBody(ticket, relay)) : null;
+  const owner = !ticket.labels.includes(claim) ? null : named === undefined ? sessionNamedIn(relayedBody(ticket, relay)) : named;
   if (owner !== null) return { sessions: [owner], by: 'owner link', prs: [], owns: {} };
   return { sessions: [], by: null, prs: [], owns: {} };
 };

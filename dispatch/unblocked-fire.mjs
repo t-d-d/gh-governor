@@ -183,6 +183,13 @@ export const planUnblocked = async (invocation, ctx) => {
       ctx.log('dispatch-unblocked', { ...about, outcome: lineSaid ? `the line's comment stands for the row's: ${settled?.outcome}` : 'commented', ...(unreadied === undefined ? {} : { unreadied }) });
       return { answer: { kind: invocation.kind, row, commented, dispatched: [] } };
     }
+    // Governor's comment on a claimed ticket reaches its builders as any
+    // comment does (dispatch/ticket-fire.mjs), under subscribeMessages, so
+    // a builder hears the close once, in the comment's words.
+    if (commented && turnsOn(config, 'subscribeMessages')) {
+      ctx.log('dispatch-unblocked', { ...about, outcome: "commented: the ticket's spec owner and builders hear governor's comment", ...(unreadied === undefined ? {} : { unreadied }) });
+      return { answer: { kind: invocation.kind, row, commented, messaged: null, dispatched: [] } };
+    }
     // The claimed ticket's builders, found one way (dispatch/builders.mjs):
     // the owner of each open PR that closes it, else the session the newest
     // dispatch comment names, else the body's owner link, which counts only

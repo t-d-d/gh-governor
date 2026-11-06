@@ -174,6 +174,8 @@ const harness = (over: Record<string, unknown> = {}) => {
   // Each write to the receiver's hook table: a repo's hooks, switches and ready labels as its file was read.
   const published: Array<{ repo: string; hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; reviewLabels?: { labeled: string[]; unlabeled: string[] }; at: string }> = [];
   const publishedTrust: Array<{ repo: string; trust: { relay: string[] } | undefined }> = [];
+  // Each write's claim label, which the receiver tells a claimed ticket by.
+  const publishedClaim: Array<{ repo: string; claim: string | undefined }> = [];
   let loginOnDisk: string | null = null;
   const accounts: unknown[] = [];
   const deps = {
@@ -328,9 +330,10 @@ const harness = (over: Record<string, unknown> = {}) => {
     }),
     uuid: () => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
     hookTable: {
-      publish: async (repo: string, { hooks, switches, ready, reviewLabels, trust }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; reviewLabels?: { labeled: string[]; unlabeled: string[] }; trust?: { relay: string[] } }, at: string) => {
+      publish: async (repo: string, { hooks, switches, ready, reviewLabels, trust, claim }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; reviewLabels?: { labeled: string[]; unlabeled: string[] }; trust?: { relay: string[] }; claim?: string }, at: string) => {
         published.push({ repo, hooks, switches, ready, ...(reviewLabels === undefined ? {} : { reviewLabels }), at });
         publishedTrust.push({ repo, trust });
+        publishedClaim.push({ repo, claim });
         return true;
       },
     },
@@ -412,7 +415,7 @@ const harness = (over: Record<string, unknown> = {}) => {
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, failedLaunches, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, failedLaunches, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, publishedClaim, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -2191,20 +2194,34 @@ describe('run — an unblocked fire', () => {
     assert.match(h.comments[0]!.body, /still blocked by another open issue[\s\S]*took its ready labels/);
   });
 
-  test('not planned, claimed and carrying the ready labels: its labels stay, and its session hears it', async () => {
+  // Governor's comment on a claimed ticket reaches its builders as any
+  // comment does (dispatch/ticket-fire.mjs), so under subscribeMessages the
+  // turn sends them nothing more: each hears the close once (#538).
+  test('not planned, claimed and carrying the ready labels: its labels stay, and its session hears it through the comment', async () => {
     const h = ticketTurn({ labels: [...READY, CLAIM], comments: [{ body: OLD_MARKER }] });
     await run(fire(dropped), h.deps as never);
     assert.deepEqual(labelCalls(h.calls), []);
-    assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK']);
+    assert.deepEqual(h.comments.map((c) => c.issue), [7]);
+    assert.deepEqual(h.messages, []);
   });
 
-  test('not planned, and claimed: the comment, and its session hears it too', async () => {
+  test('not planned, and claimed: the comment, which its session hears, and no second message', async () => {
     const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }] });
+    const result = await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never) as Record<string, unknown>;
+    assert.deepEqual(h.comments.map((c) => c.issue), [7]);
+    assert.match(h.comments[0]!.body, /closed as not planned/);
+    assert.deepEqual(h.messages, []);
+    assert.equal(result.commented, true);
+    assert.deepEqual(h.launches, []);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-unblocked' && /hear governor's comment/.test(String(l.outcome))), JSON.stringify(h.logged.filter((l) => l.event === 'dispatch-unblocked')));
+  });
+
+  test('not planned, and claimed, with subscribeMessages off: the comment, and its session is messaged the same text', async () => {
+    const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }], features: { subscribeMessages: false } });
     await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never);
     assert.deepEqual(h.comments.map((c) => c.issue), [7]);
     assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK']);
-    assert.match(h.messages[0]!.text, /closed as not planned/);
-    assert.deepEqual(h.launches, []);
+    assert.ok(h.messages[0]!.text.includes(h.comments[0]!.body), h.messages[0]!.text);
   });
 
   test('not planned, and still blocked by another open issue: the comment says it is still blocked, and nothing starts', async () => {
@@ -2217,12 +2234,12 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual([h.launches, h.messages, labelCalls(h.calls)], [[], [], []]);
   });
 
-  test('not planned, claimed, and still blocked by a blocker only the summary counts: its session hears it, still blocked', async () => {
+  test('not planned, claimed, and still blocked by a blocker only the summary counts: the comment its session hears says it is still blocked', async () => {
     const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }], openBlockers: 1 });
     await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never);
     assert.deepEqual(h.comments.map((c) => c.issue), [7]);
-    assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK']);
-    assert.match(h.messages[0]!.text, /closed as not planned[\s\S]*still blocked by another open issue/);
+    assert.match(h.comments[0]!.body, /closed as not planned[\s\S]*still blocked by another open issue/);
+    assert.deepEqual(h.messages, []);
     assert.deepEqual(h.launches, []);
   });
 
@@ -9124,6 +9141,16 @@ describe('run: the hook table', () => {
     assert.deepEqual(off.published.map((p) => [p.switches.issueReviews, p.reviewLabels]), [[false, { labeled: [], unlabeled: [] }]]);
   });
 
+  // The receiver tells from an issue's labels whether its comment, close or
+  // reopen goes to the ticket's builders too (dispatch/webhook/route.mjs),
+  // so the item holds the repo's claim label as its file reads now.
+  test('the item holds the repo\'s claim label', async () => {
+    const { pickup } = JSON.parse(FACTORY_FILE);
+    const h = harness({ configFile: fileWith({ pickup: { ...pickup, claim: 'building' } }) });
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.publishedClaim, [{ repo: REPO, claim: 'building' }]);
+  });
+
   // The receiver queues a selection fire only for a label the item lists
   // as ready (dispatch/webhook/route.mjs), so a ready label added to the
   // file reaches it at the repo's next turn, with no deploy.
@@ -9318,7 +9345,9 @@ describe('run: a relative wait on a declared blocker', () => {
   const SESSION = 'https://claude.ai/code/session_01WORK';
   const MARKER = dispatchMarker({ at: new Date(NOW - 3 * 24 * 60 * 60 * 1000).toISOString(), sessionUrl: SESSION });
 
-  test('claimed, and a close that is not completed: one comment, and its session hears the close', async () => {
+  // The line's comment reaches the claimed ticket's session as any comment
+  // does (dispatch/ticket-fire.mjs), so it is sent no second message (#538).
+  test('claimed, and a close that is not completed: one comment, which its session hears, and no second message', async () => {
     for (const [reason, row] of [['not_planned', 'not-planned'], ['duplicate', 'claimed']] as const) {
       const h = relativeTurn({ labels: [CLAIM], thread: [{ body: MARKER }] });
       const result = await run(fire({ blocker: { ...blocker, reason } }), h.deps as never) as Record<string, unknown>;
@@ -9328,8 +9357,8 @@ describe('run: a relative wait on a declared blocker', () => {
       assert.ok(h.comments[0]!.body.includes(waitNotPlannedMarker('#41')), reason);
       assert.equal(result.commented, true, reason);
       assert.doesNotMatch(h.comments[0]!.body, /stays held/, reason);
-      assert.deepEqual(h.messages.map((m) => m.session), [SESSION], reason);
-      assert.match(h.messages[0]!.text, new RegExp(`closed as ${reason.replace(/_/g, ' ')}`), reason);
+      assert.match(h.comments[0]!.body, new RegExp(`closed as ${reason.replace(/_/g, ' ')}`), reason);
+      assert.deepEqual(h.messages, [], reason);
       assert.deepEqual([h.launches, h.calls.filter((c) => c.startsWith('label '))], [[], []], reason);
     }
   });
@@ -9731,5 +9760,65 @@ describe('fitness: a message fire reaches its session only where the file\'s tru
     const narrow = harness({ configFile: withRelay(['OWNER', 'MEMBER', 'COLLABORATOR']) });
     await run(message(['OWNER']), narrow.deps as never);
     assert.deepEqual(narrow.publishedTrust, [{ repo: REPO, trust: { relay: ['OWNER', 'MEMBER', 'COLLABORATOR'] } }]);
+  });
+});
+
+// A claimed ticket's comment, close or reopen reaches its builder too
+// (#538, under PRD #535): the receiver queues a ticket fire, and the turn
+// finds the builders and messages both roles (dispatch/ticket-fire.mjs).
+describe('run — a ticket fire', () => {
+  const SPEC = 'https://claude.ai/code/session_01SPECOWNER';
+  const BUILDER = 'https://claude.ai/code/session_01BUILDER';
+  const MARKER = dispatchMarker({ at: new Date(NOW - 60_000).toISOString(), sessionUrl: BUILDER });
+  const ticketFire = (over: Record<string, unknown> = {}) => ({ kind: 'ticket', repo: REPO, issue: 7, text: 'A comment on an issue you subscribe to.', event: 'comments', state: 'open', labels: [FACTORY_CONFIG_LABELS.claim], owner: SPEC, authors: ['MEMBER'], ...over });
+  const withThread = (over: Record<string, unknown> = {}) => {
+    const h = harness(over);
+    const reader = h.deps.reader;
+    // No merge closed the ticket.
+    h.deps.reader = ((...args: Parameters<typeof reader>) => ({ ...reader(...args), allComments: async () => [{ body: MARKER, ours: true }], closure: async () => ({ pr: null }) })) as unknown as typeof reader;
+    return h;
+  };
+
+  test('a claimed ticket\'s comment reaches its spec owner and its builder, each told its role, and the turn exits 0', async () => {
+    const h = withThread();
+    const result = await run(ticketFire(), h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.messages.map((m) => m.session), [SPEC, BUILDER]);
+    assert.match(h.messages[0]!.text, /You are its spec owner\./);
+    assert.match(h.messages[1]!.text, /You are its builder\./);
+    assert.equal(result.kind, 'ticket');
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('the standing line of a builder with no PR yet counts its open claimed ticket, so it is not asked to sign off', async () => {
+    const h = withThread();
+    const reader = h.deps.reader;
+    const given: unknown[] = [];
+    h.deps.reader = ((...args: Parameters<typeof reader>) => ({
+      ...reader(...args),
+      openNaming: async (_id: string, _relay: unknown, options?: { claim?: string }) => {
+        given.push(options);
+        return options?.claim === FACTORY_CONFIG_LABELS.claim ? [{ number: 9, title: 'Its other ticket', html_url: `https://github.com/${REPO}/issues/9`, pull: false }] : [];
+      },
+    })) as typeof reader;
+    await run(ticketFire({ event: 'close', state: 'closed', closing: true, owner: undefined }), h.deps as never);
+    assert.deepEqual(h.messages.map((m) => m.session), [BUILDER]);
+    assert.deepEqual(given, [{ claim: FACTORY_CONFIG_LABELS.claim }]);
+    assert.match(h.messages[0]!.text, /Issue #9: Its other ticket/);
+  });
+
+  test('with subscribeMessages off, the fire is refused and nobody hears', async () => {
+    const file = JSON.parse(FACTORY_FILE);
+    switched(file, { subscribeMessages: false });
+    const h = withThread({ configFile: async (repo: string) => (repo === REPO ? JSON.stringify(file) : null) });
+    const result = await run(ticketFire(), h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.messages, []);
+    assert.match(String(result.refusal), /subscribeMessages/);
+  });
+
+  test('a fire judged by an author the file\'s relay leaves out is refused, and nobody hears', async () => {
+    const h = withThread({ configFile: async (repo: string) => (repo === REPO ? JSON.stringify({ ...JSON.parse(FACTORY_FILE), trust: { relay: ['OWNER'] } }) : null) });
+    const result = await run(ticketFire(), h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.messages, []);
+    assert.match(String(result.refusal), /trust\.relay/);
   });
 });

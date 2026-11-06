@@ -114,6 +114,7 @@ import { RoutinesApiError } from './routines.mjs';
 import { hookFor, planHook } from './hooks.mjs';
 import { planDispatch } from './dispatch-fire.mjs';
 import { planUnblocked } from './unblocked-fire.mjs';
+import { planTicket } from './ticket-fire.mjs';
 import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
@@ -160,7 +161,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   updateIssue: (n: number, change: { body: string }) => Promise<void>,
  *   openPulls: () => Promise<import('../scripts/lib/github-app.mjs').OpenPullRow[]>,
  *   branchHead: (branch: string) => Promise<string>,
- *   openNaming: (session: string, relay: readonly string[]) => Promise<OpenRow[]>,
+ *   openNaming: (session: string, relay: readonly string[], options?: { claim?: string }) => Promise<OpenRow[]>,
  *   openClosing: (n: number) => Promise<Array<{ number: number, title: string, html_url: string }>>,
  *   commit: (sha: string) => Promise<{ sha: string, message: string, parents?: string[] }>,
  *   addLabels: (n: number, labels: string[]) => Promise<void>,
@@ -548,7 +549,7 @@ const turnOf = async (event, deps, built) => {
       const hooks = turnsOn(config, 'hooks') ? config.hooks.map(({ name, keyVersion, perHour }) => ({ name, keyVersion, perHour: perHour ?? HOOK_PER_HOUR })) : [];
       const switches = Object.fromEntries(SWITCHES.map((name) => [name, turnsOn(config, name)]));
       try {
-        await deps.hookTable.publish(served, { hooks, switches, ready: config.labels.ready, reviewLabels: reviewLabelsOf(config), trust: { relay: relayOf(config) } }, readAt);
+        await deps.hookTable.publish(served, { hooks, switches, ready: config.labels.ready, reviewLabels: reviewLabelsOf(config), trust: { relay: relayOf(config) }, claim: config.labels.claim }, readAt);
         return null;
       } catch (error) {
         deps.log('hook-table-unwritten', { level: 'error', repo: served, error: messageOf(error) });
@@ -586,7 +587,7 @@ const turnOf = async (event, deps, built) => {
     }
     served = [one];
     const name = switchOf(invocation, one.config.workflows);
-    const unheard = invocation.kind === 'message' ? unrelayed(invocation, relayOf(one.config)) : null;
+    const unheard = invocation.kind === 'message' || invocation.kind === 'ticket' ? unrelayed(invocation, relayOf(one.config)) : null;
     // An unblocked fire's switch is its ticket's state's (dispatch/unblocked.mjs):
     // with both off, no row acts. Its turn still reads the ticket once, for a
     // relative `Blocked until:` line on the close, and refuses after
@@ -596,12 +597,12 @@ const turnOf = async (event, deps, built) => {
       // A hook fired into a repo that turned hooks off is a caller someone
       // forgot: worth a look, not a page.
       deps.log('dispatch-refused', { level: invocation.kind === 'hook' ? 'warn' : 'info', repo, kind: invocation.kind, reason: refusal });
-    } else if (invocation.kind === 'message' && unheard !== null) {
+    } else if ((invocation.kind === 'message' || invocation.kind === 'ticket') && unheard !== null) {
       // The receiver judged the fire by the repo's hook-table item, which
       // may lag the file, and dropped only an author outside the three. A
       // refusal here is as silent: no comment, no page.
       refusal = unheard;
-      deps.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, session: 'session' in invocation ? invocation.session : null, on: invocation.on ?? null, reason: refusal });
+      deps.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, session: 'session' in invocation ? invocation.session : null, on: invocation.kind === 'ticket' ? invocation.issue : invocation.on ?? null, reason: refusal });
     } else if (invocation.kind === 'hook') {
       // The receiver read no file: a hook it lists no more, or a key version
       // it has moved past, is refused here (dispatch/hooks.mjs).
@@ -727,7 +728,7 @@ const turnOf = async (event, deps, built) => {
  * queued before the receiver judged by them names none, and was judged by
  * the defaults (dispatch/webhook/fire.mjs).
  *
- * @param {import('./webhook/fire.mjs').MessageFire} fire
+ * @param {import('./webhook/fire.mjs').MessageFire | import('./webhook/fire.mjs').TicketFire} fire
  * @param {readonly string[]} relay
  * @returns {string | null}
  */
@@ -1037,7 +1038,7 @@ const runOpen = (deps) => {
  * } | { answer: { kind: import('./webhook/fire.mjs').Fire['kind'], dispatched: Dispatched[], loginStored?: boolean, messaged?: import('./deliveries.mjs').Delivery | null, row?: import('./unblocked.mjs').Row, refusal?: string, commented?: boolean } }} Plan
  *   What a planner for a fire kind that starts sessions hands the turn
  *   (`planSweep` in dispatch/sweep.mjs, `planHook` in dispatch/hooks.mjs, `planUnblocked` in
- *   dispatch/unblocked-fire.mjs, `planDispatch` in dispatch/dispatch-fire.mjs). `unread`: what failed the turn, which
+ *   dispatch/unblocked-fire.mjs, `planDispatch` in dispatch/dispatch-fire.mjs, `planTicket` in dispatch/ticket-fire.mjs). `unread`: what failed the turn, which
  *   `started` and `done` may add to. `done`: called after every launch, with
  *   the launches that ran, a failed claim's included, and what the launch
  *   window or a repo skip left unstarted. `result`: the
@@ -1133,7 +1134,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    * One repo's deliveries: its prompts, sign-off, reader and repo, with the
    * turn's send, launcher and sessions finder.
    *
-   * @param {Pick<import('./deliveries.mjs').DeliveryDeps, 'prompts' | 'signOff' | 'reader' | 'repo' | 'relay' | 'launch'>} own
+   * @param {Pick<import('./deliveries.mjs').DeliveryDeps, 'prompts' | 'signOff' | 'reader' | 'repo' | 'relay' | 'claim' | 'launch'>} own
    */
   const deliveriesOf = (own) => turnDeliveries({
     ...own,
@@ -1158,7 +1159,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    */
   const delivery = (served) => {
     if (served === undefined) {
-      return (made ??= deliveriesOf({ prompts, signOff: repo !== undefined && turnsOn(configOf(repo), 'signOff'), reader: getReader, repo: fireRepo(), relay: repo === undefined ? RELAY : relayOf(configOf(repo)), launch: start }));
+      return (made ??= deliveriesOf({ prompts, signOff: repo !== undefined && turnsOn(configOf(repo), 'signOff'), reader: getReader, repo: fireRepo(), relay: repo === undefined ? RELAY : relayOf(configOf(repo)), ...(repo === undefined ? {} : { claim: configOf(repo).labels.claim }), launch: start }));
     }
     let other = others.get(served);
     if (other === undefined) {
@@ -1169,6 +1170,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         reader: () => readerFor(served),
         repo: served,
         relay: relayOf(config),
+        claim: config.labels.claim,
         launch: (launch, until) => start({ ...launch, repo: served }, until),
       }));
     }
@@ -1575,6 +1577,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     planned = await planHook(invocation, ctx);
   } else if (invocation.kind === 'unblocked') {
     planned = await planUnblocked(invocation, ctx);
+  } else if (invocation.kind === 'ticket') {
+    planned = await planTicket(invocation, ctx);
   } else if (invocation.kind === 'dispatch') {
     planned = await planDispatch(invocation, ctx);
   }
