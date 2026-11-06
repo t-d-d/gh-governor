@@ -356,6 +356,23 @@ describe('planTicket: a body edit that moved the owner link, under sessionRules'
     }
   });
 
+  // #622: the write-back finds the editor's link by the rule sessionNamedIn reads it.
+  test('an editor\'s link governor reads above the PR-style footer, however written, is the one written back or removed', async () => {
+    const PR_FOOTER = '\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)';
+    for (const written of [EDITOR, `Session: <${EDITOR}>.`, `_[this session](${EDITOR})_`]) {
+      const body = `The spec, with the empty case.\n\n${written}${PR_FOOTER}`;
+      assert.equal(sessionNamedIn(body), EDITOR, written);
+      const live = context({ body });
+      await planTicket(editFire(), live.ctx);
+      assert.equal(live.writes.length, 1, written);
+      assert.equal(sessionNamedIn(live.writes[0]!.body), OWNER, written);
+      assert.ok(!live.writes[0]!.body.includes(EDITOR), written);
+      const person = context({ body: `A person's spec, changed.\n\n${written}${PR_FOOTER}` });
+      await planTicket(editFire({ moved: { old: 'person' } }), person.ctx);
+      assert.deepEqual(person.writes, [{ issue: 7, body: 'A person\'s spec, changed.' }], written);
+    }
+  });
+
   test('where the body no longer names the editor, or the read or the write fails, nothing is written and the editor is told nothing', async () => {
     const cases: Array<[string, Parameters<typeof context>[0]]> = [
       ['moved on', { body: `The spec, again.\n\n${BUILDER}${FOOTER}` }],

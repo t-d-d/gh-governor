@@ -311,43 +311,103 @@ const withoutToolFooters = (masked) => {
 const footerLink = (kept) => lastLinkFrom(kept, kept.lastIndexOf(CLAUDE_CODE));
 
 /**
- * A session link that is the whole of a line, with nothing below it but
- * rules and blank lines.
+ * A label a session may write before its link on its signature line, once
+ * emphasis is left out, in any case: `Session:`, `Claude-Session:`,
+ * `Claude Code session:` or `Session link:`.
  */
-const CLOSING_LINK = new RegExp(`(?:^|\\n)[ \\t\\r]*(${LINK.source})[ \\t\\r]*(?:\\n[\\s*_-]*)?$`);
+const LABEL = /^(?:claude[- ]?(?:code[- ]?)?)?session(?:[- ]?link)?:$/i;
 
 /**
- * The session link that is the whole of the last line of `text` with more
- * than a rule on it, with its index, or undefined.
- *
- * @param {string} text
+ * A line holding a session link: the text before it, the link as a
+ * Markdown link's target, in angle brackets or bare, and the text after it.
+ * A bare link may end in an underscore that closes emphasis, but not one
+ * glued to more id characters.
  */
-const closingLink = (text) => {
-  const match = CLOSING_LINK.exec(text);
-  const link = match?.[1];
-  return match === null || link === undefined ? undefined : { link, at: match.index + match[0].indexOf(link) };
+const LINKED_LINE = new RegExp(`^(.*?)(?:\\[[^\\]\\n]*\\]\\((${LINK.source})\\)|<(${LINK.source})>|(${LINK.source})(?![A-Za-z0-9-]|_[A-Za-z0-9]))(.*)$`);
+
+/**
+ * The session link `line` is a signature of, or undefined: a link alone on
+ * its line, which may also carry whitespace, angle brackets, a Markdown
+ * link whose target is the link, emphasis, a trailing full stop, or a
+ * {@link LABEL} before it. A link with other words around it is a citation.
+ *
+ * @param {string} line
+ * @returns {string | undefined}
+ */
+const signedLine = (line) => {
+  const match = LINKED_LINE.exec(line);
+  if (match === null) return undefined;
+  const before = String(match[1]).replace(/[*_]/g, '').trim();
+  const after = String(match[5]).replace(/[*_]/g, '').trim();
+  if ((before !== '' && !LABEL.test(before)) || (after !== '' && after !== '.')) return undefined;
+  return match[2] ?? match[3] ?? match[4];
 };
 
 /**
- * The owner link of an issue's or a PR's body: the link under its footer,
- * or, with none there, a link that is the whole of its last line. A
- * trailing footer of the GitHub tool is passed over.
- * `mcp__github__issue_write` strips the footer from an issue body and puts
- * none back, which leaves the filer's link on the last line alone.
+ * The signature line of `text`: the last line with more on it than a rule
+ * or a Claude Code footer line ({@link FOOTER_LINE}), where that line is a
+ * {@link signedLine}. Its link, the link's index, and the line's span; or
+ * undefined. So a session's link is read just above either footer, just
+ * under it, between two footers, and on the last line.
+ *
+ * @param {string} text the body, subscribe lines blanked and quotes filled
+ * @returns {Owner | undefined}
+ */
+const signatureLink = (text) => {
+  const lines = lineSpans(text);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const [start, end] = /** @type {[number, number]} */ (lines[i]);
+    const line = text.slice(start, end);
+    const bare = line.trim();
+    if (RULE_OR_BLANK.test(bare) || FOOTER_LINE.test(bare)) continue;
+    const link = signedLine(line);
+    return link === undefined ? undefined : { link, at: start + line.indexOf(link), line: [start, end] };
+  }
+  return undefined;
+};
+
+/**
+ * `found` with the span of its line where that line is a signature
+ * ({@link signedLine}) of the link, so a writer replaces or removes the
+ * line as written, not just the URL in it.
+ *
+ * @param {string} text
+ * @param {{ link: string, at: number }} found
+ * @returns {Owner}
+ */
+const withLine = (text, found) => {
+  const span = lineSpans(text).find(([start, end]) => start <= found.at && found.at < end);
+  return span !== undefined && signedLine(text.slice(...span)) === found.link ? { ...found, line: span } : found;
+};
+
+/**
+ * @typedef {{ link: string, at: number, line?: [number, number] }} Owner
+ * An owner link, its index, and, where it is a signature line, that line's span.
+ */
+
+/**
+ * The owner link of an issue's or a PR's body: the last link under its last
+ * Claude Code footer, or, with none there, its signature line
+ * ({@link signatureLink}). A trailing footer of the GitHub tool is passed
+ * over. `mcp__github__issue_write` strips the footer from an issue body and
+ * puts none back, which leaves the filer's link on the last line alone.
  *
  * @param {string} masked the body, subscribe lines blanked
+ * @returns {Owner | undefined}
  */
 const ownerLink = (masked) => {
   const kept = withoutToolFooters(masked);
-  return footerLink(kept) ?? closingLink(kept);
+  const under = footerLink(kept);
+  return under === undefined ? signatureLink(kept) : withLine(kept, under);
 };
 
 /**
- * The session a body names: its last session link, under the Claude Code
- * footer, or, with no link there, one that is the whole of the body's last
- * line; or null. A subscribe line names a subscriber, not this. Last, because a body that cites an earlier session
+ * The session a body names: its last session link under the last Claude
+ * Code footer, or, with no link there, its signature line: a link alone on
+ * its line, with nothing below it but blank lines, rules and footer lines
+ * in either shape ({@link signatureLink}); or null. A subscribe line names a subscriber, not this. Last, because a body that cites an earlier session
  * ("supersedes …") still ends in its own footer; under the footer or alone
- * on the last line, because a person's PR that cites a session in its text
+ * on a line at the end, because a person's PR that cites a session in its text
  * is not that session's. A link or footer inside a quote is never read: a
  * member's body quoting a session's post is not that session's. On a PR or
  * an issue it is the owner.
@@ -410,7 +470,7 @@ export const markOwnerUnknown = (body, at) => {
 
 /**
  * The body with `sessionUrl` where {@link sessionNamedIn} reads it: in place
- * of the last session link under the Claude Code footer; under a footer
+ * of the owner link, on a signature line however it is written; under a footer
  * naming none, appended; with no footer, in one appended. Any owner-unknown
  * line goes ({@link markOwnerUnknown}). A fallback's handoff
  * (dispatch/deliveries.mjs). Throws for a body {@link pastReadingBound},
@@ -426,6 +486,10 @@ export const relinkSession = (body, sessionUrl) => {
   if (pastReadingBound(text)) throw new Error('the body is too long or too deeply nested to read for its session link, so no link written into it would name a session');
   const masked = ownerText(text);
   const owner = ownerLink(masked);
+  if (owner?.line) {
+    const [start, end] = owner.line;
+    return `${text.slice(0, start)}${text.slice(start, end).split(owner.link).join(sessionUrl)}${text.slice(end)}`;
+  }
   if (owner) return `${text.slice(0, owner.at)}${sessionUrl}${text.slice(owner.at + owner.link.length)}`;
   const kept = text.trimEnd();
   if (masked.includes(CLAUDE_CODE)) return `${kept}\n\n${sessionUrl}`;
@@ -434,8 +498,8 @@ export const relinkSession = (body, sessionUrl) => {
 
 /**
  * The body with its owner link, as {@link sessionNamedIn} reads it,
- * removed, and every other character kept: a link alone on its line goes
- * with its line and the blank line before it. A body that names no owner
+ * removed, and every other character kept: a signature line goes whole,
+ * however it is written, with the blank line before it. A body that names no owner
  * is returned as it is. Governor removes the link of a session that may
  * not own an issue, a builder or a session that edited a person's issue
  * (dispatch/take.mjs). With `footer`, a Claude Code footer left signing
@@ -464,10 +528,8 @@ const unlinkOwner = (body) => {
   if (pastReadingBound(text)) throw new Error('the body is too long or too deeply nested to read for its session link');
   const owner = ownerLink(ownerText(text));
   if (!owner) return text;
-  const start = text.lastIndexOf('\n', owner.at - 1) + 1;
-  const newline = text.indexOf('\n', owner.at);
-  const end = newline === -1 ? text.length : newline;
-  if (text.slice(start, end).trim() !== owner.link) return `${text.slice(0, owner.at)}${text.slice(owner.at + owner.link.length)}`;
+  if (owner.line === undefined) return `${text.slice(0, owner.at)}${text.slice(owner.at + owner.link.length)}`;
+  const [start, end] = owner.line;
   const before = text.slice(0, start).replace(/\s+$/, '');
   const after = text.slice(end).replace(/^\s*\n/, '');
   if (after.trim() === '') return before;
@@ -526,27 +588,25 @@ const FOOTER_LINE = /^(?:🤖\s*)?_?Generated (?:by|with) \[Claude Code\]\([^)\s
  */
 export const isSessionPost = (body) => String(body ?? '').includes(SESSION_FOOTER) || footerLink(withoutToolFooters(withoutLines(String(body ?? '')))) !== undefined;
 
-/** Nothing but a rule and blank lines between a session's URL and the footer below it. */
-const ADJACENT = /^[\s*_-]*$/;
-
 /**
- * The session that posted `body`, or null: its URL under the footer, or
- * directly above it, since the posting tool strips a footer it finds and
- * appends its own. A session cited in the text, or a post quoted in a
- * reply, is not the poster.
+ * The session that posted `body`, or null: its URL under the last Claude
+ * Code footer, or its signature line, read as a body's is
+ * ({@link signatureLink}), on a post that carries a footer line in either
+ * shape. The posting tool strips a footer it finds and appends its own, so
+ * a session signs just above it. A post with no footer is a person's,
+ * though a session link ends it: a person pasting a session's link is
+ * still heard by that session. A session cited in the text, or a post
+ * quoted in a reply, is not the poster.
  *
  * @param {unknown} body
  * @returns {string | null}
  */
 export const postedBy = (body) => {
-  const text = withoutLines(withoutQuotes(String(body ?? '')));
+  const text = ownerText(String(body ?? ''));
   const under = lastLinkFrom(text, text.lastIndexOf(CLAUDE_CODE));
   if (under) return under.link;
-  const footer = text.lastIndexOf(SESSION_FOOTER);
-  if (footer === -1) return null;
-  const above = [...text.slice(0, footer).matchAll(SESSION_LINK)].at(-1);
-  if (above?.index === undefined) return null;
-  return ADJACENT.test(text.slice(above.index + above[0].length, footer)) ? above[0] : null;
+  if (!text.split(/\r\n|\r|\n/).some((line) => FOOTER_LINE.test(line.trim()))) return null;
+  return signatureLink(text)?.link ?? null;
 };
 
 /**
