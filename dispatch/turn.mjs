@@ -1309,10 +1309,19 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       if (before !== null && ticketed) {
         // Recorded before any send: a turn that dies sending still leaves
         // the next one the tickets it commented on, which it finds labelled.
+        // With no cursor, the range's baseline is pinned first, or the next
+        // run's range would start past this one and never read the record.
         if (commented.length > 0) {
           try {
+            if (pin !== null) {
+              await deps.state.advance(fireRepo(), workflow, label, pin);
+              pin = null;
+            }
             await deps.state.record(fireRepo(), workflow, label, from?.runId ?? null, { told: [], failed: [], tickets: commented.map((c) => c.ticket) });
           } catch (error) {
+            // The sends still go, and the hold path records the tickets
+            // again; the turn fails, since a death before then loses them.
+            for (const { ticket } of commented) (labels ??= { label: coverage.label ?? '', added: [], failed: [] }).failed.push({ ticket, error: `could not record it before the sends: ${messageOf(error)}` });
             deps.log('dispatch-labels', { ...about, tickets: commented.map((c) => c.ticket), error: `could not record the tickets commented on before the sends: ${messageOf(error)}` });
           }
         }
@@ -1327,6 +1336,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           (labels ??= { label: coverage.label ?? '', added: [], failed: [] }).failed.push({ ticket, error });
           deps.log('dispatch-labels', { ...about, ticket, error: `could not find its roles, so they are ${gaveUp ? `given up on after ${WORKFLOW_SEND_TRIES} turns` : 'owed the deploy by the next turn'}: ${error}` });
         }
+        if (looked.skipped.length > 0) deps.log('dispatch-labels', { ...about, tickets: looked.skipped, reason: 'owed the deploy by the record, but no PR this range shipped closes them: nobody to tell of them' });
         plan = withTickets(plan, looked.found);
       }
       if (before !== null) {
@@ -1352,7 +1362,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
             deps.log('dispatch-workflow', { ...about, untold: owed.slice(i).map((n) => ({ session: n.session, prs: n.prs })), reason: `out of time: past ${WORKFLOW_SEND_WINDOW_MS} ms, another delivery might outrun the deadline` });
             break;
           }
-          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, fallback: note.fallback, on: [...note.prs, ...(note.tickets ?? [])], closing: note.closing, dropFrom: note.subscribed, owns: note.owns ?? note.prs.filter((n) => !note.subscribed.includes(n)) });
+          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, fallback: note.fallback, on: [...note.prs, ...(note.about ?? []), ...(note.tickets ?? [])], closing: note.closing, dropFrom: note.subscribed, owns: note.owns ?? note.prs.filter((n) => !note.subscribed.includes(n)) });
           deliveries.push({ prs: note.prs, session: note.session, ok, answered, refused, error, fallback });
           // As dispatch/cli.mjs counts a fault: a refusal with no fallback is a gone session, told enough.
           if (ok || (refused && fallback?.outcome !== 'failed')) {
@@ -1795,20 +1805,26 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
  *
  * @param {number[]} tickets
  * @param {{ invocation: import('./webhook/fire.mjs').WorkflowFire | import('./webhook/fire.mjs').JobFire, coverage: import('./coverage.mjs').Coverage, commented: Commented[], reader: Reader, config: import('./repo-config.mjs').RepoConfig, ownerOf: (pr: number) => Promise<{ session: string | null }> }} ctx
- * @returns {Promise<{ found: import('./workflow.mjs').TicketRoles[], failed: Array<{ ticket: number, error: string }> }>}
+ * @returns {Promise<{ found: import('./workflow.mjs').TicketRoles[], failed: Array<{ ticket: number, error: string }>, skipped: number[] }>}
+ *   `skipped`: each ticket no PR of the range closes, which names nobody.
  */
 const rolesOf = async (tickets, { invocation, coverage, commented, reader, config, ownerOf }) => {
   /** @type {import('./workflow.mjs').TicketRoles[]} */
   const found = [];
   /** @type {Array<{ ticket: number, error: string }>} */
   const failed = [];
-  if (tickets.length === 0) return { found, failed };
+  /** @type {number[]} */
+  const skipped = [];
+  if (tickets.length === 0) return { found, failed, skipped };
   const relay = relayOf(config);
   const { claim } = config.labels;
   const shipped = new Map(ticketsOf(invocation, coverage).tickets.map((t) => [t.ticket, t.prs]));
   for (const ticket of tickets) {
     const prs = shipped.get(ticket) ?? commented.find((c) => c.ticket === ticket)?.prs ?? [];
-    if (prs.length === 0) continue;
+    if (prs.length === 0) {
+      skipped.push(ticket);
+      continue;
+    }
     try {
       const read = commented.find((c) => c.ticket === ticket)?.row ?? await reader.ticket(ticket);
       const row = { ...read, own: read.app === true };
@@ -1821,7 +1837,7 @@ const rolesOf = async (tickets, { invocation, coverage, commented, reader, confi
       failed.push({ ticket, error: messageOf(error) });
     }
   }
-  return { found, failed };
+  return { found, failed, skipped };
 };
 
 /**

@@ -67,6 +67,7 @@ import { short } from './runs.mjs';
 import { DEPENDABOT, FAILED, LABEL_PREFIX, UNATTENDED } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { sameSession } from './webhook/subscribe.mjs';
+import { listed } from './ticket-fire.mjs';
 import { instruction } from './prompts.mjs';
 
 /**
@@ -93,12 +94,14 @@ import { instruction } from './prompts.mjs';
  *   fileAt: (path: string, ref: string) => Promise<string>,
  *   pullFiles: (n: number) => Promise<import('../scripts/lib/github-app.mjs').FileRow[]>,
  * }} WorkflowReader
- * @typedef {{ prs: number[], subscribed: number[], session: string, closing: boolean, text: string, fallback?: { prompt: string, sessionName: string, issue: number }, tickets?: number[], owns?: number[] }} Note
+ * @typedef {{ prs: number[], subscribed: number[], session: string, closing: boolean, text: string, fallback?: { prompt: string, sessionName: string, issue: number }, tickets?: number[], owns?: number[], about?: number[] }} Note
  *   `prs`: every PR the message is about, oldest merge first; `subscribed`:
  *   those of them the session did not write, which a refusal drops it from.
  *   `tickets`: the tickets it is told of as a role holder ({@link withTickets}),
  *   which the message is about too. `owns`: the PRs the session owns, where
- *   that is not every PR in `prs` it does not subscribe to.
+ *   that is not every PR in `prs` it does not subscribe to. `about`: a
+ *   ticket's other PRs the message names, outside `prs`, which keys what
+ *   the session was told.
  * @typedef {import('./coverage.mjs').Range} Range
  * @typedef {import('./coverage.mjs').Coverage} Coverage
  * @typedef {{ newest: { id: number, created: string } | null }} Stale
@@ -558,15 +561,12 @@ const planTarget = async (run, coverage, prompts, workflows) => {
  *   own PRs.
  */
 
-/** @param {string[]} items */
-const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
-
 /**
  * One line naming a ticket, the PRs that closed it, who holds each role,
  * and which `role` the recipient holds.
  *
  * @param {TicketRoles} roles
- * @param {'spec owner' | 'builder' | 'spec owner and builder'} role
+ * @param {import('./ticket-fire.mjs').TicketRole} role
  */
 const ticketLine = ({ ticket, title, prs, owner, builders }, role) => [
   `- Issue #${ticket}: ${oneLine(title)}, which ${prs.length === 1 ? `PR #${prs[0]}` : `PRs ${prs.map((n) => `#${n}`).join(', ')}`} closed.`,
@@ -604,7 +604,7 @@ export const withTickets = (plan, tickets) => {
   };
   for (const roles of tickets) {
     const { owner, builders } = roles;
-    /** @type {Array<[string, 'spec owner' | 'builder' | 'spec owner and builder']>} */
+    /** @type {Array<[string, import('./ticket-fire.mjs').TicketRole]>} */
     const hearers = [];
     const both = owner !== null && builders.some((b) => sameSession(b, owner));
     if (owner !== null) hearers.push([owner, both ? 'spec owner and builder' : 'spec owner']);
@@ -618,7 +618,11 @@ export const withTickets = (plan, tickets) => {
         const key = Object.keys(roles.owns).find((s) => sameSession(s, session));
         for (const n of key === undefined ? [] : roles.owns[key] ?? []) if (!note.owns.includes(n)) note.owns.push(n);
       }
-      for (const n of roles.prs) if (!note.prs.includes(n)) note.prs.push(n);
+      // A PR's session keeps the PRs it was planned with, which its told
+      // record is keyed by: a ticket's other PRs are named to it, not news
+      // of its own, so a later turn does not tell it the deploy again.
+      const into = entry.added ? note.prs : (note.about ??= []);
+      for (const n of roles.prs) if (!note.prs.includes(n) && !into.includes(n)) into.push(n);
       note.tickets = [...(note.tickets ?? []), roles.ticket];
       entry.lines.push(ticketLine(roles, role));
     }

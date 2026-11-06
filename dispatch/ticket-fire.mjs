@@ -39,8 +39,8 @@ import { EDIT_BUILDER, EDIT_SPEC_OWNER } from './webhook/mention.mjs';
 
 /** @typedef {'spec owner' | 'builder' | 'spec owner and builder'} TicketRole */
 
-/** @param {string[]} items */
-const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
+/** Items joined as a sentence lists them: `a, b and c`. @param {string[]} items */
+export const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
 
 /**
  * What a message about a ticket adds under what happened: who holds each

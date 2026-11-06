@@ -5482,6 +5482,19 @@ describe('run — a workflow run on main', () => {
           assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 500);
         });
 
+        test('a record of the commented tickets that fails before the sends fails the turn, and the sends still go', async () => {
+          const made = shipped({ 736: { body: `The spec.${footer(SPEC)}` } });
+          const sent: string[] = [];
+          const h = harness({ reader: made.reader, message: async (m: { session: string }) => { sent.push(m.session); return { status: 0, output: JSON.stringify({ ok: true }) }; }, sleep: async () => {} });
+          const state = h.deps.state as Record<string, unknown>;
+          h.deps.state = { ...state, record: async () => { throw new Error('ProvisionedThroughputExceededException'); } } as never;
+          h.cursors.set(DEV_CURSOR, { runId: 498, commit: 'shaB', created: at(498) });
+          const r = await run(jobFire(DEV), h.deps as never);
+          assert.equal(exitCodeFor(r as never), 1);
+          assert.deepEqual(sent.sort(), [REFUSED, SPEC, SESSION].sort());
+          assert.ok(h.logged.some((l) => l.event === 'dispatch-labels' && /ProvisionedThroughput/.test(String(l.error))), JSON.stringify(h.logged));
+        });
+
         test('a builder lookup that fails holds the cursor and is logged, and the next turn tells the builder', async () => {
           const broken = { closure: async () => { throw new Error('GET /issues/730/timeline failed: 502'); } };
           const made = shipped({ 730: { labels: [CLAIM] }, 736: { body: `The spec.${footer(SPEC)}` } }, broken);
@@ -5500,6 +5513,36 @@ describe('run — a workflow run on main', () => {
           await run(jobFire(DEV), h.deps as never);
           assert.deepEqual(sent, [], 'the builder is the PR\'s session, which the first turn told');
           assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 500);
+        });
+
+        test('a builder told of its PR before its ticket\'s lookup came back is not told again for the ticket\'s other PRs', async () => {
+          // #799 (SESSION) and #804 (REFUSED) both close #730, whose builder is SESSION.
+          const both = { pullsForCommit: async (sha: string) => (sha === SHA ? [pr(799, { body: `Closes #730\n\nThe change.${footer(SESSION)}` })] : sha === MERGE_R ? [pr(804, { merge_commit_sha: MERGE_R, merged_at: '2026-09-25T10:00:00Z', body: `Closes #730\n\nThe other.${footer(REFUSED)}` })] : []) };
+          const broken = { ...both, closure: async () => { throw new Error('GET /issues/730/timeline failed: 502'); } };
+          const made = shipped({ 730: { labels: [CLAIM] } }, broken);
+          const sent: string[] = [];
+          const h = harness({ reader: made.reader, message: async (m: { session: string }) => { sent.push(m.session); return { status: 0, output: JSON.stringify({ ok: true }) }; }, sleep: async () => {} });
+          h.cursors.set(DEV_CURSOR, { runId: 498, commit: 'shaB', created: at(498) });
+          await run(jobFire(DEV), h.deps as never);
+          assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 498);
+          assert.deepEqual(sent.sort(), [REFUSED, SESSION].sort());
+
+          sent.length = 0;
+          const again = shipped({ 730: { labels: [CLAIM, DEV] } }, both);
+          (h.deps as { reader: unknown }).reader = again.reader;
+          await run(jobFire(DEV), h.deps as never);
+          assert.deepEqual(sent, [], 'SESSION heard the deploy in the first turn: #804 is no news of its own');
+          assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 500);
+        });
+
+        test('with no cursor, the tickets recorded before the sends are recorded where the next turn reads: the baseline is pinned first', async () => {
+          // With no cursor the range runs from run 499, so it ships #799, which closes #730.
+          const made = shipped({ 730: { body: `The spec.${footer(SPEC)}` } });
+          const h = harness({ reader: made.reader, message: async () => { throw new Error('the task was stopped'); }, sleep: async () => {} });
+          await run(jobFire(DEV), h.deps as never).catch(() => null);
+          const pinned = h.cursors.get(DEV_CURSOR);
+          assert.ok(pinned !== undefined, 'a turn that dies sending leaves the range\'s baseline as its cursor');
+          assert.deepEqual((await (h.deps as { state: { delivered: (...a: unknown[]) => Promise<{ tickets?: number[] }> } }).state.delivered(REPO, 'deliver.yml', DEV, pinned.runId)).tickets, [730]);
         });
       });
     });
