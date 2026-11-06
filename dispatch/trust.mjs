@@ -247,3 +247,15 @@ export const trustExposures = (config) => {
   if (review.length > 0) lines.push(`trust.review: lets in ${named(review)} authors, beyond owners, members and collaborators: ${OPENS.review}`);
   return lines;
 };
+
+/**
+ * A ticket's author as a trust list judges it: as the receiver judges it,
+ * with a ticket governor's own App filed (`app`, as the reader returns it)
+ * let in as the App (`own`). Every place that judges a ticket's author
+ * against a trust list reads it through this.
+ *
+ * @template {import('./webhook/fire.mjs').Author & { app?: boolean }} T
+ * @param {T} row
+ * @returns {T & { own: boolean }}
+ */
+export const ticketAuthor = (row) => ({ ...row, own: row.own === true || row.app === true });

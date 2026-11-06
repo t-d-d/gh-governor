@@ -63,7 +63,7 @@
 import { bodyDigest } from './pr-body.mjs';
 import { cliResult } from './cli-answer.mjs';
 import { ISSUE_REVIEW_BY, turnsOn } from './repo-config.mjs';
-import { authorKind, lets, reviewOf } from './trust.mjs';
+import { authorKind, lets, reviewOf, ticketAuthor } from './trust.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** The start of the marker every issue review comment ends with. */
@@ -140,7 +140,7 @@ Rules on the conclusion:
 
 /**
  * @typedef {import('./repo-config.mjs').IssueReview} IssueReview
- * @typedef {{ number: number, title: string, body: string, state: string, labels: string[], pull: boolean, author?: string, association?: string }} Ticket
+ * @typedef {{ number: number, title: string, body: string, state: string, labels: string[], pull: boolean, author?: string, association?: string, app?: boolean }} Ticket
  * @typedef {{ id: number, body: string, created_at: string, ours: boolean }} ThreadRow
  * @typedef {{
  *   ticket: (n: number) => Promise<Ticket>,
@@ -341,7 +341,7 @@ export const selects = (when, ticket) => {
   const excluded = (when.exclude ?? []).filter((l) => carried.has(keyOf(l)));
   if (excluded.length > 0) return `it carries ${excluded.join(', ')}`;
   const by = when.by ?? ISSUE_REVIEW_BY;
-  if (!lets(by, ticket)) return `its author is ${authorKind(ticket)}, and the review reads only ${by.join(', ')}`;
+  if (!lets(by, ticketAuthor(ticket))) return `its author is ${authorKind(ticket)}, and the review reads only ${by.join(', ')}`;
   return null;
 };
 
@@ -557,7 +557,7 @@ export const applyLabels = async ({ reader, ticket, name, conclusions, every = [
  *   run: (request: { system: string, prompt: string, schema: object }, label: string) => Promise<{ output: string }>,
  *   transcript: (t: { sessionId: string, key: string }) => Promise<object>,
  *   log: (event: string, context: Record<string, unknown>) => void,
- *   tell?: (issue: number, comment: string) => Promise<void>,
+ *   tell?: (issue: number, comment: string, row?: Ticket) => Promise<void>,
  * }} args `tell`: the spec owner's message of a review's comment. The
  *   comment is a record for people, which the relay sends to nobody, so
  *   this turn tells the spec owner, whose body the review reads. The loop
@@ -583,7 +583,7 @@ export const reviewIssue = async ({ repo, issue, reader, config, run, transcript
   if (ticket.pull) return passed(`#${issue} is a pull request`);
   if (ticket.state !== 'open') return passed(`#${issue} is ${ticket.state}`);
   const trusted = reviewOf(config);
-  if (!lets(trusted, ticket)) return passed(`#${issue} is by a ${authorKind(ticket)} author, whom the repo's trust.review does not let in`);
+  if (!lets(trusted, ticketAuthor(ticket))) return passed(`#${issue} is by a ${authorKind(ticket)} author, whom the repo's trust.review does not let in`);
   // The thread is read only where some review selects the ticket.
   const unmet = new Map(reviews.map(({ name, when }) => [name, selects(when, ticket)]));
   const thread = [...unmet.values()].some((u) => u === null) ? await reader.allComments(issue) : [];
@@ -637,7 +637,7 @@ export const reviewIssue = async ({ repo, issue, reader, config, run, transcript
       const comment = issueComment({ name, conclusion: answer.conclusion, text: answer.text, key });
       await reader.comment(issue, comment);
       log('dispatch-issue-review', { ...about, outcome: 'commented', conclusion: answer.conclusion, round, ...(usage === undefined ? {} : { usage }) });
-      if (tell !== undefined) await tell(issue, comment);
+      if (tell !== undefined) await tell(issue, comment, ticket);
       /** @type {Reviewed} */
       const done = { name, outcome: 'commented', conclusion: answer.conclusion };
       out.push(done);

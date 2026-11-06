@@ -31,15 +31,15 @@
 
 import { GITHUB_SOURCE } from './deliveries.mjs';
 import { relayOf } from './trust.mjs';
-import { buildersOf } from './builders.mjs';
+import { rolesOf, rolesText } from './roles.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 import { relayedBody, sameSession, sessionId } from './webhook/subscribe.mjs';
 import { EDIT_BUILDER, EDIT_SPEC_OWNER } from './webhook/mention.mjs';
-import { builderChangeSends, rolesText, specOwnerOf, tellBuilderChange } from './told.mjs';
+import { builderChangeSends, tellBuilderChange } from './told.mjs';
 
-/** @typedef {import('./told.mjs').TicketRole} TicketRole */
+/** @typedef {import('./roles.mjs').TicketRole} TicketRole */
 
 
 
@@ -84,23 +84,17 @@ export const planTicket = async (invocation, ctx) => {
     const relay = relayOf(config);
     const reader = await ctx.readerFor(repo);
     // A read that fails fails the turn: it never reads as no builder.
-    const found = await buildersOf({ reader, ownerOf: (pr) => ctx.delivery().ownerOf(pr), issue, ticket: { state, labels }, claim: config.labels.claim, relay, owner });
-    const builders = found.sessions;
-    const both = owner !== null && builders.some((b) => sameSession(b, owner));
+    const roles = await rolesOf({ issue, relay, claim: config.labels.claim, ticket: { state, labels }, owner, reader, ownerOf: (pr) => ctx.delivery().ownerOf(pr) });
+    const { builders } = roles;
     // A builder whose PR's merge closed the ticket heard the merge through its PR.
-    const throughPr = event === 'close' && state === 'closed' && found.by === 'merged PR';
-    const say = (/** @type {TicketRole} */ role) => `${text}${edit(role)}\n\n${rolesText({ issue, owner, builders, role })}`;
-    if (owner !== null) {
-      if (own(owner)) skipped.push(`${sessionId(owner)}'s own post`);
-      else sends.push({ session: owner, text: say(both ? 'spec owner and builder' : 'spec owner'), role: both ? 'spec owner and builder' : 'spec owner', owns: [] });
+    const throughPr = event === 'close' && state === 'closed' && roles.by === 'merged PR';
+    for (const holder of roles.holders) {
+      const { session, role, owns } = holder;
+      if (role === 'builder' && throughPr) skipped.push(`${sessionId(session)}, which heard the merge that closed it through its PR`);
+      else if (own(session)) skipped.push(`${sessionId(session)}'s own post`);
+      else sends.push({ session, text: `${text}${edit(role)}\n\n${rolesText(roles, holder)}`, role, owns });
     }
-    for (const builder of builders) {
-      if (owner !== null && sameSession(builder, owner)) continue;
-      if (throughPr) skipped.push(`${sessionId(builder)}, which heard the merge that closed it through its PR`);
-      else if (own(builder)) skipped.push(`${sessionId(builder)}'s own post`);
-      else sends.push({ session: builder, text: say('builder'), role: 'builder', owns: found.owns[builder] ?? [] });
-    }
-    Object.assign(about, { builders, builder: found.by });
+    Object.assign(about, { builders, builder: roles.by });
   }
   if (sends.length === 0) {
     ctx.log('dispatch-ticket', { ...about, outcome: 'nobody told', ...(skipped.length === 0 ? { reason: 'no role on the ticket is held by a session' } : { skipped }) });
@@ -192,12 +186,12 @@ export const planClosingPr = async (invocation, ctx) => {
         ctx.log('dispatch-builder', { ...at, outcome: 'nothing announced', reason: 'the ticket is not an open claimed issue' });
         continue;
       }
-      const found = await buildersOf({ reader: without, ownerOf: (n) => owners.ownerOf(n), issue, ticket: { ...ticket, association: ticket.association ?? 'NONE' }, claim, relay });
-      if (found.sessions.some((s) => sameSession(s, session))) {
+      const found = await rolesOf({ issue, relay, claim, ticket: { ...ticket, association: ticket.association ?? 'NONE' }, reader: without, ownerOf: (n) => owners.ownerOf(n) });
+      if (found.builders.some((s) => sameSession(s, session))) {
         ctx.log('dispatch-builder', { ...at, outcome: 'nothing announced', reason: `it builds the ticket already, by its ${found.by}` });
         continue;
       }
-      const displaced = found.by === 'dispatch comment' || found.by === 'owner link' ? found.sessions[0] ?? null : null;
+      const displaced = found.by === 'dispatch comment' || found.by === 'owner link' ? found.builders[0] ?? null : null;
       await reader.comment(issue, dispatchMarker({ at: new Date(ctx.now()).toISOString(), sessionUrl: session, displaced }));
       announced.push(issue);
       ctx.log('dispatch-builder', { ...at, displaced, outcome: 'announced the new builder on the ticket' });
@@ -210,7 +204,7 @@ export const planClosingPr = async (invocation, ctx) => {
         issue,
         title: ticket.title,
         url: `https://github.com/${repo}/issues/${issue}`,
-        owner: specOwnerOf(ticket, relay),
+        owner: found.owner,
         builder: session,
         displaced,
       });

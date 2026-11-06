@@ -129,8 +129,8 @@ import { closingFires } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { reviewIssue, reviewLabelsOf } from './issue-review.mjs';
-import { relayedBody, sessionId, sessionNamedIn } from './webhook/subscribe.mjs';
-import { buildersOf } from './builders.mjs';
+import { sessionId } from './webhook/subscribe.mjs';
+import { rolesOf } from './roles.mjs';
 import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, deployedTarget, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
 import { deployedComment } from './webhook/deployed-comment.mjs';
@@ -1332,7 +1332,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         }
         owedTickets = [...new Set([...(before.tickets ?? []), ...commented.map((c) => c.ticket)])].sort((a, b) => a - b);
         const tried = before.failed.map(sessionId);
-        const looked = await rolesOf(owedTickets.filter((t) => tried.filter((f) => f === `#${t}`).length < WORKFLOW_SEND_TRIES), {
+        const looked = await shippedRolesOf(owedTickets.filter((t) => tried.filter((f) => f === `#${t}`).length < WORKFLOW_SEND_TRIES), {
           invocation, coverage, commented, reader, config, ownerOf: (pr) => delivery().ownerOf(pr),
         });
         for (const { ticket, error } of looked.failed) {
@@ -1811,22 +1811,22 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
  */
 
 /**
- * The roles of each ticket a green deploy owes its news (`tickets`): the
+ * The roles of each ticket a green deploy owes its news (`tickets`), found
+ * as every path finds a ticket's roles (`rolesOf`, dispatch/roles.mjs): the
  * spec owner its body names, read under the repo's `trust.relay` with a
- * ticket governor's App filed let in as the PR route lets in its PRs, and
- * on a claimed ticket each builder the one lookup finds
- * (dispatch/builders.mjs). Each ticket is looked up once a turn. A ticket
+ * ticket governor's App filed let in as the receiver lets it in, and on a
+ * claimed ticket each builder the one lookup finds. Each ticket is looked up once a turn. A ticket
  * the turn commented on is read as it was before its label; any other is
  * read again. A read that fails names nobody: it is returned as failed, so
  * the turn holds its cursor and the next turn looks again.
  *
  * @param {number[]} tickets
  * @param {{ invocation: import('./webhook/fire.mjs').WorkflowFire | import('./webhook/fire.mjs').JobFire, coverage: import('./coverage.mjs').Coverage, commented: Commented[], reader: Reader, config: import('./repo-config.mjs').RepoConfig, ownerOf: (pr: number) => Promise<{ session: string | null }> }} ctx
- * @returns {Promise<{ found: import('./workflow.mjs').TicketRoles[], failed: Array<{ ticket: number, error: string }>, skipped: number[] }>}
+ * @returns {Promise<{ found: import('./workflow.mjs').ShippedTicket[], failed: Array<{ ticket: number, error: string }>, skipped: number[] }>}
  *   `skipped`: each ticket no PR of the range closes, which names nobody.
  */
-const rolesOf = async (tickets, { invocation, coverage, commented, reader, config, ownerOf }) => {
-  /** @type {import('./workflow.mjs').TicketRoles[]} */
+const shippedRolesOf = async (tickets, { invocation, coverage, commented, reader, config, ownerOf }) => {
+  /** @type {import('./workflow.mjs').ShippedTicket[]} */
   const found = [];
   /** @type {Array<{ ticket: number, error: string }>} */
   const failed = [];
@@ -1843,13 +1843,9 @@ const rolesOf = async (tickets, { invocation, coverage, commented, reader, confi
       continue;
     }
     try {
-      const read = commented.find((c) => c.ticket === ticket)?.row ?? await reader.ticket(ticket);
-      const row = { ...read, own: read.app === true };
-      const owner = sessionNamedIn(relayedBody(row, relay));
-      const builders = claim !== '' && row.labels.includes(claim)
-        ? await buildersOf({ reader, ownerOf, issue: ticket, ticket: row, claim, relay, owner })
-        : { sessions: [], owns: {} };
-      found.push({ ticket, title: row.title, prs, owner, builders: builders.sessions, owns: builders.owns });
+      const row = commented.find((c) => c.ticket === ticket)?.row ?? await reader.ticket(ticket);
+      const roles = await rolesOf({ issue: ticket, relay, claim, ticket: row, reader, ownerOf });
+      found.push({ ticket, title: row.title, prs, roles });
     } catch (error) {
       failed.push({ ticket, error: messageOf(error) });
     }

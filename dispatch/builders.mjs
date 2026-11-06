@@ -1,5 +1,7 @@
 /**
- * A ticket's builders, found one way wherever governor looks for them. The
+ * A ticket's builders, found one way wherever governor looks for them, and
+ * called from `rolesOf` alone (dispatch/roles.mjs), which finds every role
+ * on a ticket. The
  * builder is the session building the ticket. It holds the branch and the
  * PR, and never writes the issue body.
  *

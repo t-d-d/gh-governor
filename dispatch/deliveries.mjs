@@ -38,7 +38,8 @@ import { markOwnerUnknown, ownerUnknownSince, relayedBody, relinkSession, sameSe
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
-import { TOLD, specOwnerOf, tellBuilderChange } from './told.mjs';
+import { TOLD, tellBuilderChange } from './told.mjs';
+import { rolesOf } from './roles.mjs';
 
 /**
  * The event a spec session logs when its link could not be written into its
@@ -577,7 +578,7 @@ export const deliveries = (deps) => {
       let read;
       try {
         const row = await (await deps.reader()).ticket(issue);
-        read = { title: row.title, owner: specOwnerOf(row, deps.relay) };
+        read = { title: row.title, owner: (await rolesOf({ issue, relay: deps.relay, ticket: row })).owner };
       } catch (error) {
         deps.log(TOLD, { repo: deps.repo, issue, change: 'dispatched', level: 'error', outcome: 'nobody told', error: messageOf(error), reason: 'the ticket could not be read for its spec owner; the comment stands' });
         continue;

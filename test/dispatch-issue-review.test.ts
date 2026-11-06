@@ -32,7 +32,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BODY = '## Problem\n\nThe retry budget is spent twice.\n\n## Done when\n\n- The budget is spent once.\n\nParent PRD: #390';
 const KEY = bodyDigest(BODY);
 
-type Ticket = { number: number, title: string, body: string, state: string, labels: string[], pull: boolean, author: string, association: string };
+type Ticket = { number: number, title: string, body: string, state: string, labels: string[], pull: boolean, author: string, association: string, app?: boolean };
 type Thread = { id: number, body: string, created_at: string, ours: boolean };
 type Conclusion = { conclusion: string, text: string };
 
@@ -144,7 +144,7 @@ const harness = (over: {
   };
   const transcript = async (t: { sessionId: string, key: string }) => { transcripts.push(t); return { key: t.key }; };
   const log = (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); };
-  const review = (tell?: (issue: number, comment: string) => Promise<void>) => reviewIssue({ repo: REPO, issue: 501, reader, config: config as never, run, transcript, log, ...(tell === undefined ? {} : { tell }) });
+  const review = (tell?: (issue: number, comment: string, row?: Record<string, unknown>) => Promise<void>) => reviewIssue({ repo: REPO, issue: 501, reader, config: config as never, run, transcript, log, ...(tell === undefined ? {} : { tell }) });
   /** A person or session edits the ticket's body, or its labels. */
   const edit = (change: { body?: string, labels?: string[] }) => { if (change.body !== undefined) live.body = change.body; if (change.labels !== undefined) live.labels = [...change.labels]; };
   return { review, comments, runs, transcripts, logged, openReads, threadReads: () => threadReads, ops, live, edit, reader };
@@ -1278,10 +1278,38 @@ describe('a review\'s comment is a record for people: the turn that posts it tel
     assert.deepEqual(told, [{ issue: 501, comment: h.comments[0]!.body }]);
   });
 
+  // #573: the tell is handed the row the review read, so the spec owner is
+  // found with no further read of the ticket.
+  test('each review comment is told with the ticket the review read, not a fresh read', async () => {
+    const rows: Array<Record<string, unknown> | undefined> = [];
+    const h = harness({ answers: [GAPS] });
+    await h.review(async (_issue, _comment, row) => { rows.push(row); });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.number, 501);
+  });
+
   test('a run that fails posts nothing and tells nobody', async () => {
     const told: string[] = [];
     const h = harness({ answers: ['not json'] });
     await h.review(async (_issue, comment) => { told.push(comment); });
     assert.deepEqual([h.comments, told], [[], []]);
+  });
+});
+
+// #568: a ticket governor's own App filed is judged as the receiver judges
+// it, not as any bot, wherever the review judges a ticket's author.
+describe('a ticket governor\'s App filed is judged as the receiver judges it', () => {
+  const app = { author: 'governor-app[bot]', association: 'NONE', app: true };
+
+  test('trust.review and a review\'s default by, which leave out bots, still read it', async () => {
+    const h = harness({ ticket: app, answers: [GAPS] });
+    await h.review();
+    assert.equal(h.runs.length, 1, JSON.stringify(h.logged));
+  });
+
+  test('another bot\'s ticket is still left out', async () => {
+    const h = harness({ ticket: { author: 'other[bot]', association: 'NONE' }, answers: [GAPS] });
+    await h.review();
+    assert.equal(h.runs.length, 0);
   });
 });
