@@ -127,7 +127,7 @@ import { planBranchRun } from './branch-run.mjs';
 import { checkConflicts } from './conflicts.mjs';
 import { closingFires } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
-import { reviewPull } from './review.mjs';
+import { ownerMessageId, reviewPull } from './review.mjs';
 import { reviewIssue, reviewLabelsOf } from './issue-review.mjs';
 import { relayedBody, sessionId, sessionNamedIn } from './webhook/subscribe.mjs';
 import { buildersOf } from './builders.mjs';
@@ -1510,6 +1510,18 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         log: deps.log,
         spent: (pr, usage) => { spent.set(pr, usage); },
       });
+      // Each new comment's owner hears it from this turn: its message goes
+      // onto the lane as a `message` fire, which runs as a turn of its own,
+      // so the send and any takeover have their own deadline however late in
+      // a sweep the comment was posted. The relay sends the comment itself
+      // to nobody. With prMessages off, nobody is told, as before.
+      /** @type {import('./review.mjs').Tell} */
+      const tell = async (n, comment, message) => {
+        if (!turnsOn(config, 'prMessages')) return `${fireRepo()}'s ${CONFIG_PATH} does not turn prMessages on: no session is told`;
+        if (deps.enqueue === undefined) throw new Error(`this turn has no fire lane to queue #${n}'s message to its owner on`);
+        await deps.enqueue({ fire: { ...message, repo: fireRepo() }, reason: `the PR review commented on ${fireRepo()}#${n}: its message to the PR's owner` }, ownerMessageId(fireRepo(), n, comment));
+        return "queued for the PR's owner";
+      };
       for (const [i, target] of targets.entries()) {
         // Past the window no review starts: each PR left gets a `failure`
         // check, through the review's usual skips, so a ruleset requiring
@@ -1521,7 +1533,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           break;
         }
         const outOfTime = spentMs > REVIEW_WINDOW_MS;
-        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, verdicts: { read: (n) => deps.state.verdict(fireRepo(), n), record: (n, read, verdict) => deps.state.recordVerdict(fireRepo(), n, read, verdict) }, trusted, outOfTime, ...(workflows.ci === undefined || !review.waitForCi ? {} : { ci: workflows.ci }) });
+        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, verdicts: { read: (n) => deps.state.verdict(fireRepo(), n), record: (n, read, verdict) => deps.state.recordVerdict(fireRepo(), n, read, verdict) }, trusted, outOfTime, tell, ...(workflows.ci === undefined || !review.waitForCi ? {} : { ci: workflows.ci }) });
         const usage = spent.get(reviewed.pr);
         deps.log('dispatch-review', { ...reviewed, ...(usage === undefined ? {} : { usage }) });
         reviews.push(reviewed);

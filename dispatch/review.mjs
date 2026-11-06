@@ -66,19 +66,27 @@
  * passes a PR. A head and body the verdict names are not read twice. A
  * pass at an earlier head is reused at a new one where the digest is the
  * same: the tests decided in code run again, and only the model's answer
- * is kept. A fail is never reused. A missing item reuses nothing. The
- * comment is the
- * record, and also how the session the PR body names hears the review:
- * the receiver queues that session a message fire for each new comment
- * (webhook/mention.mjs). Only one the session can act on, a fail an edit,
- * a claim or a push meets and a conflict, carries the fallback that takes
- * a gone session's PR over. A comment edited in place is no new delivery.
+ * is kept. A fail is never reused. A missing item reuses nothing.
+ *
+ * The comment and the check are the record people read, and the relay
+ * sends the comment to no session (webhook/mention.mjs). The review
+ * messages the PR's owner itself: each new comment hands the turn the
+ * owner's message (`tell`, {@link ownerMessage}), which the turn queues as
+ * a `message` fire for the PR's owner as `ownerOf` finds it
+ * (dispatch/deliveries.mjs), so the send and any takeover run under a turn
+ * of their own. Only a verdict that asks the session for work
+ * (`asksOwner`), a fail an edit, a claim or a push meets and a conflict,
+ * carries the fallback that takes a gone session's PR over; a pass or a
+ * wait on a person reaches a live owner and starts nobody. A comment
+ * edited in place tells nobody again.
  *
  * `reviewPull` reads and writes through the injected reader.
  */
 
-import { DEPENDABOT, authorKind, lets } from './webhook/fire.mjs';
-import { commentKey, commentText, ownerActs, sentence } from './webhook/review-comment.mjs';
+import { createHash } from 'node:crypto';
+import { DEPENDABOT, UNATTENDED, authorKind, build, lets } from './webhook/fire.mjs';
+import { asksOwner, commentKey, commentText, sentence } from './webhook/review-comment.mjs';
+import { HANDOFF, oneLine } from './webhook/mention.mjs';
 import { checkLabel, checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
 import { bodyDigest, closedBy, closingTickets, foreignClosings, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
@@ -132,10 +140,65 @@ import { RED_CONCLUSIONS } from '../scripts/lib/github-app.mjs';
  *   write that fails throws.
  * @typedef {'in_progress' | 'success' | 'failure' | 'neutral'} CheckState
  * @typedef {'merged' | 'passed' | 'conflict' | 'commented' | 'marker-moved' | 'skipped' | 'limited' | 'failed' | 'out-of-time'} Outcome
- * @typedef {{ pr: number, outcome: Outcome, reason: string | null, headSha: string | null, answer: Answer | null, error: string | null, check: string | null }} Reviewed
+ * @typedef {{ pr: number, outcome: Outcome, reason: string | null, headSha: string | null, answer: Answer | null, error: string | null, check: string | null, told?: string, untold?: string }} Reviewed
  *   `check`: the state of the check the review posted, `refused: <why>` where
- *   GitHub refused it with a 403, or null where it posted none.
+ *   GitHub refused it with a 403, or null where it posted none. `told`: what
+ *   came of the owner's message of a new comment, as the turn's `tell` says;
+ *   `untold`: why it was not queued, which fails the turn.
+ * @typedef {(pr: number, comment: string, message: import('./webhook/fire.mjs').MessageFire) => Promise<string>} Tell
+ *   The turn's hand-off of the owner's message of comment `comment` on PR
+ *   `pr`: what came of it, or a throw where it could not be queued.
  */
+
+/** What a message from the review says under the comment, where it asks the owner for work. */
+const ASKS = 'This is your pull request, and the review asks this of you. Do it on its branch: push, edit its description, or claim its ticket, as the comment says. Do not open a new branch or PR.';
+
+/** What a message from the review says under the comment, where it asks nothing. */
+const NOTICE = 'This is your pull request. This is a notice: the review asks nothing of you. Do not open a new branch or PR.';
+
+/**
+ * The PR's owner's message of a review comment, as a `message` fire for the
+ * owner the PR's body or head branch names when it runs (`byBranch`,
+ * dispatch/deliveries.mjs): the comment's words without the marker, and
+ * whether the review asks the session for work. Only where it asks
+ * (`acts`) does it carry the fallback that takes a gone session's PR over,
+ * on the PR's head branch. It is governor's own text, so it names no
+ * author for `trust.relay` to judge; the owner lookup reads the body's
+ * link only where `trust.relay` lets the PR's author in.
+ *
+ * @param {{ pull: Pick<PullRequestRow, 'number' | 'title' | 'html_url'>, text: string, acts: boolean }} args
+ * @returns {import('./webhook/fire.mjs').MessageFire}
+ */
+export const ownerMessage = ({ pull, text, acts }) => {
+  const said = [
+    'Governor\'s PR review commented on your pull request.',
+    '',
+    `PR #${pull.number}: ${oneLine(pull.title)} (${pull.html_url})`,
+    '',
+    text,
+  ].join('\n');
+  return build.message({
+    byBranch: true,
+    text: `${said}\n\n${acts ? ASKS : NOTICE}`,
+    on: pull.number,
+    authors: [],
+    fallback: acts
+      ? { prompt: [said, '', HANDOFF, ASKS, UNATTENDED].join('\n'), sessionName: oneLine(`PR review #${pull.number} ${pull.title}`).slice(0, 100), issue: pull.number }
+      : undefined,
+  });
+};
+
+/**
+ * The lane's deduplication id for the owner's message of one comment:
+ * the repo, the PR and the comment with its marker, hashed, since SQS takes
+ * 128 characters. A turn that queues the same comment twice queues it once;
+ * a new comment, a new id.
+ *
+ * @param {string} repo
+ * @param {number} pr
+ * @param {string} comment
+ */
+export const ownerMessageId = (repo, pr, comment) => createHash('sha256').update(`pr-review:${repo.toLowerCase()}#${pr}:${comment}`).digest('hex');
 
 /** The check run the review posts its verdict as. It is named for governor, not the review: it is a gate, and approves nothing. */
 export const CHECK = 'governor';
@@ -347,16 +410,19 @@ const bumpAnswer = async (reader, pull, list, red, redCi) => {
  *   ci?: string,
  *   outOfTime?: boolean,
  *   byCommit?: boolean,
+ *   tell?: Tell,
  * }} args `review.checklist`: the checklist the model reads, part of the digest a pass is reused by. `started`: whether governor started a session, from its state table. `verdicts`: the PR's last verdict, in the same table. `trusted`: the repo's `trust.review`, whose authors' PRs it reads. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads, left out where `review.waitForCi` is false.
  *   `outOfTime`: the turn ran out of time for this PR. It goes through the
  *   usual skips, then posts a `failure` check in place of reading the facts
  *   and asking the model. `byCommit`: the fire carried the commit and not
  *   the PR, a check's end at that head. A PR whose author `trusted` leaves
  *   out got its `neutral` check at that head from the push's own fire,
- *   so it is skipped without another.
+ *   so it is skipped without another. `tell`: the turn's hand-off of the
+ *   owner's message of each new comment ({@link ownerMessage}); without
+ *   it, nobody is told.
  * @returns {Promise<Reviewed>}
  */
-export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, verdicts, trusted, ci, outOfTime = false, byCommit = false }) => {
+export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, verdicts, trusted, ci, outOfTime = false, byCommit = false, tell }) => {
   /** @type {import('./checklist.mjs').Rules} */
   const rules = { humanOnly: review.humanOnly, tickets: review.tickets, quote: review.quote, decides: review.decides, labels };
   /** @type {Reviewed} */
@@ -484,9 +550,10 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     let outcome = /** @type {Outcome} */ (answer.answer === 'pass' ? (conflict ? 'conflict' : review.merge ? 'merged' : 'passed') : 'commented');
     const text = commentText(answer, { conflict, merge: review.merge });
     const marker = reviewMarker(pull.headSha, bodySha, readSha);
+    const acts = asksOwner(answer, { conflict });
     // A fail only a person meets is `neutral`, which passes a required
     // check: never one the author session can act on.
-    await check(answer.answer === 'pass' && !conflict ? 'success' : ownerActs(text) ? 'failure' : 'neutral', firstSentence(text), text);
+    await check(answer.answer === 'pass' && !conflict ? 'success' : acts ? 'failure' : 'neutral', firstSentence(text), text);
     if (outcome === 'merged') {
       const done = await reader.merge(number, { sha: pull.headSha });
       if (!done.merged) throw new Error(`GitHub did not merge #${number}`);
@@ -503,6 +570,17 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
       await reader.comment(number, body);
     }
     said = true;
+    // A new comment's owner hears it from this turn, which knows its
+    // verdict: the relay sends governor's comment to nobody. An edit in
+    // place tells nobody again. The hand-off goes before the verdict's
+    // write, so a write that fails still leaves the owner told.
+    if (!saidAlready && tell !== undefined) {
+      try {
+        reviewed.told = await tell(number, body, ownerMessage({ pull, text, acts }));
+      } catch (error) {
+        reviewed.untold = messageOf(error);
+      }
+    }
     // After the comment: one GitHub refused leaves no verdict, so the next
     // fire reads the PR again. Another review's item standing is its own
     // verdict, as good as this one.
