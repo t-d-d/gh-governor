@@ -54,7 +54,8 @@ export const sessionName = (number, title) => {
  * such a session to sign off, so where the repo turns `signOff` on, the
  * default goes on to ask it, only where it stopped without raising a PR, in
  * the repo's `signOff` prompt where it sets one. It first tells a session
- * that raised a PR to stay open until governor asks it to sign off. With the switch off it carries no ask, as the standing line does not
+ * that raised a PR to stay open until governor asks it to sign off. With
+ * the switch off it carries no ask, as the standing line does not
  * (docs/constraints/session-signoff.md). A repo's own `pickup` prompt is
  * sent as it is.
  *

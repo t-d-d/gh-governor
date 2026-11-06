@@ -6381,6 +6381,41 @@ describe('run — sessions that signed off', () => {
     assert.ok(h.logged.some((l) => l.decision === 'held' && l.told === false && /ProvisionedThroughputExceeded/.test(String(l.error))));
   });
 
+  test('a login the held message\'s CLI refreshes goes back to the secret: the turn stored its login before the sweep', async () => {
+    const h = harness();
+    h.rows.push(sessionRow('cse_01OWNER'));
+    h.pages.set('cse_01OWNER', cloudSignedOff);
+    naming(h, 'session_01OWNER', [{ number: 587, pull: true }]);
+    const send = h.deps.message;
+    h.deps.message = async (message: { session: string; text: string }) => {
+      const sent = await send(message);
+      h.setLoginOnDisk(REFRESHED);
+      return sent;
+    };
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.messages.map((m) => m.session), ['session_01OWNER']);
+    assert.equal(h.stored.at(-1), SECRET_REFRESHED, 'the rotated refresh token is not lost');
+  });
+
+  test('a hold with no budget left before the sweep\'s end writes no record and sends nothing, so a later sweep tells it', async () => {
+    let now = NOW;
+    const h = harness({ now: () => now, launchTimeoutMs: LAUNCH_TIMEOUT_MS });
+    h.rows.push(sessionRow('cse_01OWNER'));
+    h.pages.set('cse_01OWNER', cloudSignedOff);
+    naming(h, 'session_01OWNER', [{ number: 587, pull: true }]);
+    const events = h.deps.sessions.events;
+    h.deps.sessions.events = async (id: string, token: string) => {
+      const page = await events(id, token);
+      now = NOW + SIGNOFF_LATEST_START_MS + SIGNOFF_WINDOW_MS;
+      return page;
+    };
+    const sweep = sweepOf(await run({ kind: 'schedule' }, h.deps as never));
+    assert.deepEqual(sweep.held, ['session_01OWNER']);
+    assert.deepEqual(h.messages, []);
+    assert.deepEqual([...h.heldTold], []);
+    assert.ok(h.logged.some((l) => l.decision === 'held' && l.told === false), JSON.stringify(h.logged.filter((l) => l.event === 'dispatch-signoff')));
+  });
+
   test('archives each idle session in the repo whose last reply signs off, after the turn\'s own work', async () => {
     const h = harness();
     h.rows.push(sessionRow('cse_01DONE'), sessionRow('cse_01BUSY'), sessionRow('cse_01ELSE', { repo: 't-d-d/askme-mcp' }));

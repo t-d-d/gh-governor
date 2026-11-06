@@ -106,7 +106,7 @@ import { ConditionalCheckFailedException, DeleteItemCommand, DynamoDBClient, Get
 import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
-import { ARCHIVE_TIMEOUT_MS, accessToken, awaitReplies, heldMessage, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
+import { ARCHIVE_TIMEOUT_MS, SIGNOFF_LATEST_START_MS, SIGNOFF_WINDOW_MS, accessToken, awaitReplies, heldMessage, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { WAIT_PROMPT, holdWait, waitLinks } from './waits.mjs';
 import { tellerFor } from './told.mjs';
@@ -712,7 +712,7 @@ const turnOf = async (event, deps, built) => {
     log: deps.log,
     woken,
     repos: signing,
-    ...heldBy(deps, served, tokenFor, budgeted),
+    ...heldBy({ ...deps, secret }, served, tokenFor, budgeted, started + SIGNOFF_LATEST_START_MS + SIGNOFF_WINDOW_MS),
     list: (token) => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
     lookup: sweepLookup(deps),
     events,
@@ -738,18 +738,23 @@ const turnOf = async (event, deps, built) => {
  * and counts only PRs. `onHeld` tells a held session why, where a repo it
  * names sets `signOff.heldMessage`: it puts the session's held record
  * first, only where none stands, and sends nothing where one did or the
- * put failed, so a session hears it once whatever it does next.
+ * put failed, so a session hears it once whatever it does next. The send
+ * runs the CLI after the turn stored its login, so a refresh it makes goes
+ * back to the secret here, and it ends by `until`, the sweep's own end,
+ * which keeps the sweep inside the task's deadline. With no time left
+ * before `until`, it writes no record, and a later sweep tells the session.
  *
- * @param {Deps} deps
+ * @param {Deps} deps The turn's deps, with the turn's `secret`.
  * @param {import('./repos.mjs').Served[]} served
  * @param {(repo: string) => Promise<string>} tokenFor
  * @param {import('./launcher.mjs').Budgeted} budgeted
+ * @param {number} until
  * @returns {{ holds: import('../scripts/lib/session-signoff.mjs').Holds, onHeld: import('../scripts/lib/session-signoff.mjs').OnHeld }}
  */
-const heldBy = (deps, served, tokenFor, budgeted) => {
+const heldBy = (deps, served, tokenFor, budgeted, until) => {
   /** @type {Map<string, Promise<Reader>>} */
   const readers = new Map();
-  /** @param {string} repo */
+  /** @param {string} repo The served repo's own spelling, so the turn's token for it is reused. */
   const readerOf = (repo) => {
     let reader = readers.get(repo);
     if (reader === undefined) readers.set(repo, reader = (async () => deps.reader(await tokenFor(repo), await deps.appId(), repo))());
@@ -759,17 +764,25 @@ const heldBy = (deps, served, tokenFor, budgeted) => {
     holds: async (session, repos) => {
       /** @type {number[]} */
       const prs = [];
-      for (const repo of repos) {
-        const config = servedConfig(served, repo);
-        for (const row of await (await readerOf(repo)).openNaming(session, relayOf(config))) if (row.pull) prs.push(row.number);
+      for (const named of repos) {
+        const own = served.find((s) => s.repo.toLowerCase() === named.toLowerCase());
+        if (own === undefined) throw new Error(`${named} is not a repo this turn serves`);
+        for (const row of await (await readerOf(own.repo)).openNaming(session, relayOf(own.config))) if (row.pull) prs.push(row.number);
       }
       return prs;
     },
     onHeld: async (session, prs, repos) => {
       if (!repos.some((repo) => configIn(served, repo)?.signOff?.heldMessage === true)) return {};
+      if (deps.now() >= until) return { told: false, reason: 'no time left in the sweep' };
+      // Read before the record, so a failed read leaves the session to be told later.
+      const { credentials, account } = readStoredLogin(await deps.secret.get());
       if (!(await deps.state.recordHeld(session))) return { told: false, reason: 'told before' };
-      const sent = readSend(await budgeted(() => deps.message({ session, text: heldMessage(prs) }), session));
-      return sent.ok ? { told: true } : { told: false, error: sent.error };
+      try {
+        const sent = readSend(await budgeted(() => deps.message({ session, text: heldMessage(prs) }), session, until));
+        return sent.ok ? { told: true } : { told: false, error: sent.error };
+      } finally {
+        await storeIfRefreshed(deps, credentials, account);
+      }
     },
   };
 };
