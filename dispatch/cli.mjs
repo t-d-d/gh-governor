@@ -69,7 +69,7 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * written (`heartbeatUnwritten`), and no repo's part of the turn failed
  * (`unread`), refusal or not.
  *
- * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string }, untold?: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, skipped?: string | null, fallback?: { outcome: string } | null } | null }} result
+ * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string }, untold?: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, capped?: boolean, skipped?: string | null, fallback?: { outcome: string } | null } | null, capped?: boolean }} result
  * @returns {0 | 1}
  */
 export const exitCodeFor = (result) => {
@@ -83,8 +83,15 @@ export const exitCodeFor = (result) => {
   // write, fails the turn of any kind, refused or not.
   if ((result.unread?.length ?? 0) > 0) return 1;
   if (typeof result.refusal === 'string') return 0;
-  /** A send's fault: the CLI never answered, answered anything but the session gone, or its fallback started nothing. @param {{ ok: boolean, refused?: boolean, fallback?: { outcome: string } | null }} d */
-  const faultedSend = (d) => !d.ok && (!d.refused || d.fallback?.outcome === 'failed');
+  /**
+   * A send's fault: the CLI never answered, answered anything but the
+   * session gone, or its fallback started nothing. A send held at the
+   * ceiling is none: its first logs `dispatch-message-capped`, which pages
+   * once, and a failed turn would page again for each held send.
+   *
+   * @param {{ ok: boolean, refused?: boolean, capped?: boolean, fallback?: { outcome: string } | null }} d
+   */
+  const faultedSend = (d) => !d.ok && d.capped !== true && (!d.refused || d.fallback?.outcome === 'failed');
   // A refusal with no fallback is a gone session, which owes a deploy check
   // nothing and waits on no branch run.
   if (result.kind === 'workflow' || result.kind === 'job' || result.kind === 'branch-run') {
@@ -102,7 +109,7 @@ export const exitCodeFor = (result) => {
     return outcomes.some((r) => r.outcome === 'failed' || /** @type {{ loop?: { error?: string } }} */ (r).loop?.error !== undefined || /** @type {{ untold?: string }} */ (r).untold !== undefined) ? 1 : 0;
   }
   // A hook fire sent into its open session: the send is the turn.
-  if (result.kind === 'hook' && result.messaged != null) return result.messaged.ok ? 0 : 1;
+  if (result.kind === 'hook' && result.messaged != null) return result.messaged.ok || result.messaged.capped === true ? 0 : 1;
   // An unblocked fire's message to a claimed ticket's session, or to a
   // not-ready ticket's owner: a gone session is told enough, unless the spec
   // session in its place started nothing.
@@ -119,7 +126,7 @@ export const exitCodeFor = (result) => {
     // A takeover's session whose link the PR body did not take: the body
     // still names the archived owner, so the operator is told.
     if (result.relinked === false) return 1;
-    return result.ok || result.skipped != null || result.dropped != null
+    return result.ok || result.capped === true || result.skipped != null || result.dropped != null
       || (result.fallback != null && result.fallback.outcome !== 'failed') ? 0 : 1;
   }
   const dispatched = result.dispatched ?? [];

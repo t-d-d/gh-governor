@@ -107,6 +107,7 @@ export const planTicket = async (invocation, ctx) => {
     for (const { session, text: told, role, owns } of sends) {
       const delivered = await ctx.delivery().deliver({ session }, told, {
         source: GITHUB_SOURCE,
+        kind: 'ticket',
         on: [issue],
         // A displaced builder has nothing left on the ticket: its standing
         // line asks it to sign off where nothing else of its is open.
@@ -117,14 +118,15 @@ export const planTicket = async (invocation, ctx) => {
         owns,
       });
       sent.push(delivered);
-      ctx.log('dispatch-ticket', { ...about, session, role: role ?? 'spec owner', ...(owns.length === 0 ? {} : { prs: owns }), outcome: delivered.ok ? 'messaged' : delivered.refused ? 'its session is archived' : 'not messaged', ...(skipped.length === 0 ? {} : { skipped }) });
+      ctx.log('dispatch-ticket', { ...about, session, role: role ?? 'spec owner', ...(owns.length === 0 ? {} : { prs: owns }), outcome: delivered.ok ? 'messaged' : delivered.refused ? 'its session is archived' : delivered.capped ? 'held at the message ceiling' : 'not messaged', ...(skipped.length === 0 ? {} : { skipped }) });
     }
   } finally {
     loginStored = await ctx.storeLogin();
   }
   // The turn's answer: a send that failed, so the turn says so, else one
   // that took it, else the last refusal.
-  const messaged = sent.find((t) => !t.ok && !t.refused) ?? sent.find((t) => t.ok) ?? /** @type {import('./deliveries.mjs').Delivery} */ (sent.at(-1));
+  // A send held at the ceiling is no fault, so one that faulted goes first.
+  const messaged = sent.find((t) => !t.ok && !t.refused && t.capped !== true) ?? sent.find((t) => t.ok) ?? /** @type {import('./deliveries.mjs').Delivery} */ (sent.at(-1));
   return { answer: { kind: invocation.kind, messaged, dispatched: [], loginStored } };
 };
 
@@ -199,7 +201,7 @@ export const planClosingPr = async (invocation, ctx) => {
       // The comment is a record for people: this turn tells the spec owner,
       // and the builder it displaced, itself.
       await tellBuilderChange({
-        deliver: (target, text, options) => owners.deliver({ session: target }, text, { source: GITHUB_SOURCE, ...options }),
+        deliver: (target, text, options) => owners.deliver({ session: target }, text, { source: GITHUB_SOURCE, kind: 'builder-change', ...options }),
         log: ctx.log,
         repo,
         issue,

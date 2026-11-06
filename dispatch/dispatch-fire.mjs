@@ -205,17 +205,17 @@ const toRoles = async ({ repo, on, writer, assigner, ticket, prompt }, ctx) => {
   const taken = (/** @type {import('./deliveries.mjs').Delivery} */ t) => t.ok || t.fallback?.outcome === 'forwarded';
   // A send that failed with no refusal, or a branch lookup after one that
   // failed, says nothing of the session: it may be live.
-  const faults = (/** @type {import('./deliveries.mjs').Delivery} */ t) => !taken(t) && (!t.refused || t.fallback !== null);
+  const faults = (/** @type {import('./deliveries.mjs').Delivery} */ t) => !taken(t) && t.capped !== true && (!t.refused || t.fallback !== null);
   /** @type {import('./deliveries.mjs').Delivery[]} */
   const sent = [];
   try {
     for (const holder of sends) {
       const { session, role, owns } = holder;
-      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner, remark })}\n\n${rolesText(roles, holder)}`, { source: GITHUB_SOURCE, on: [on], owns, strict: true });
+      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner, remark })}\n\n${rolesText(roles, holder)}`, { source: GITHUB_SOURCE, kind: 'summons-notice', on: [on], owns, strict: true });
       // A refusal is no fault: what failed is handing the notice on.
       if (told.refused && faults(told)) told = { ...told, error: `${session} is archived, and the live session on the head branch of PR ${owns.map((n) => `#${n}`).join(', ')} could not be found or did not take the notice` };
       sent.push(told);
-      const outcome = told.ok ? 'forwarded' : taken(told) ? 'handed to the live session on its PR\'s head branch' : faults(told) ? 'not forwarded' : 'its session is archived';
+      const outcome = told.ok ? 'forwarded' : taken(told) ? 'handed to the live session on its PR\'s head branch' : told.capped ? 'held at the message ceiling' : faults(told) ? 'not forwarded' : 'its session is archived';
       ctx.log('dispatch-launch', { ...(faults(told) ? {} : { level: 'info' }), repo, issue: on, session, role, outcome, ...(faults(told) ? { error: told.error } : {}) });
     }
   } catch (error) {
@@ -224,7 +224,8 @@ const toRoles = async ({ repo, on, writer, assigner, ticket, prompt }, ctx) => {
   }
   const faulted = sent.find(faults);
   if (faulted !== undefined) return { kind: 'told', told: faulted };
-  const took = sent.find(taken);
+  // A role held at the ceiling is live: nothing fresh starts beside it.
+  const took = sent.find(taken) ?? sent.find((t) => t.capped === true);
   return took === undefined ? { kind: 'none' } : { kind: 'told', told: took };
 };
 
@@ -272,7 +273,7 @@ const toOwner = async ({ repo, on, writer, prompt }, ctx) => {
     // Strict: a branch lookup that fails after a linked owner answers
     // archived fails the delivery, so no fresh session starts beside a
     // session that may be live.
-    told = await ctx.delivery().deliver({ pr: on }, ownerText(prompt), { source: GITHUB_SOURCE, on: [on], strict: true });
+    told = await ctx.delivery().deliver({ pr: on }, ownerText(prompt), { source: GITHUB_SOURCE, kind: 'summons', on: [on], strict: true });
   } catch (error) {
     await ctx.storeLogin();
     throw error;
@@ -326,7 +327,8 @@ export const planDispatch = async (invocation, ctx) => {
       // on the branch took it, and the refusal is no error.
       const handed = !told.ok && told.fallback?.outcome === 'forwarded';
       const error = told.ok || handed ? null : told.error;
-      ctx.log('dispatch-launch', { ...(error === null ? { level: 'info' } : {}), repo, issue: on, outcome: told.ok || handed ? 'forwarded' : 'not forwarded', sessionUrl: handed ? told.fallback?.sessionUrl : told.sessionUrl, ...(error === null ? {} : { error }), reason: onIssue ? `a summons on an issue with a spec owner or builder ${error === null ? 'that took the notice' : 'that may be live'}: no fresh session starts` : 'a summons on a PR a live session owns: it went to that session, and no fresh session starts' });
+      // Held at the ceiling: its own line has said so, and nothing starts beside the session.
+      ctx.log('dispatch-launch', { ...(error === null || told.capped ? { level: 'info' } : {}), repo, issue: on, outcome: told.ok || handed ? 'forwarded' : 'not forwarded', sessionUrl: handed ? told.fallback?.sessionUrl : told.sessionUrl, ...(error === null ? {} : { error }), reason: onIssue ? `a summons on an issue with a spec owner or builder ${error === null ? 'that took the notice' : 'that may be live'}: no fresh session starts` : 'a summons on a PR a live session owns: it went to that session, and no fresh session starts' });
       return { launches: [], unread: [], result: { messaged: told } };
     }
   }

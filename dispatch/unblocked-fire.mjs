@@ -28,7 +28,7 @@ import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from
 import { byOf, failedLaunchesOf, failedReason } from './pickup.mjs';
 import { authorKind, autoOf, lets, relayOf, startOf, ticketAuthor } from './trust.mjs';
 import { mergedNote, rolesOf } from './roles.mjs';
-import { specOwnerTeller, unmarked } from './told.mjs';
+import { outcomeOf, specOwnerTeller, unmarked } from './told.mjs';
 import { sameSession } from './webhook/subscribe.mjs';
 
 /** @typedef {import('./turn.mjs').Reader} Reader */
@@ -65,9 +65,6 @@ const readUnblocked = async (reader, issue, sleep, statusOf) => {
   }
 };
 
-/** What came of a send, for the log. @param {import('./deliveries.mjs').Delivery} told */
-const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged');
-
 /**
  * A ready or claimed ticket's spec owner's notice of its blocker's close,
  * sent and logged. A notice that fails logs at error and does not fail the
@@ -80,8 +77,8 @@ const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session 
  * @param {import('./unblocked.mjs').NoticeAsk} ask
  */
 const sendNotice = async (ctx, invocation, about, session, ask) => {
-  const told = await ctx.delivery().deliver({ session }, unblockedNotice(invocation, ask), { source: GITHUB_SOURCE, on: [invocation.issue] });
-  ctx.log('dispatch-unblocked', { ...about, session, role: 'spec owner', notice: true, ...(told.ok || told.refused ? {} : { level: 'error' }), outcome: outcomeOf(told), ...(told.error === null ? {} : { error: told.error }) });
+  const told = await ctx.delivery().deliver({ session }, unblockedNotice(invocation, ask), { source: GITHUB_SOURCE, kind: 'unblocked', on: [invocation.issue] });
+  ctx.log('dispatch-unblocked', { ...about, session, role: 'spec owner', notice: true, ...(told.ok || told.refused ? {} : { level: told.capped ? 'info' : 'error' }), outcome: outcomeOf(told), ...(told.error === null ? {} : { error: told.error }) });
 };
 
 /**
@@ -133,7 +130,7 @@ export const planUnblocked = async (invocation, ctx) => {
       await specOwnerTeller({
         read: async () => row,
         relay: relayOf(config),
-        deliver: (session, text, options) => ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, ...options }),
+        deliver: (session, text, options) => ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, kind: 'told', ...options }),
         log: ctx.log,
         repo,
       })(issue, comment);
@@ -272,7 +269,7 @@ export const planUnblocked = async (invocation, ctx) => {
         // A PR's builder that answers archived hands the message to the live
         // session on its PRs' head branches, as a PR's owner does. One whose
         // PR has merged is told so.
-        const told = await ctx.delivery().deliver({ session }, merged ? `${text}\n\n${mergedNote(issue)}` : text, { source: GITHUB_SOURCE, on: [issue], owns });
+        const told = await ctx.delivery().deliver({ session }, merged ? `${text}\n\n${mergedNote(issue)}` : text, { source: GITHUB_SOURCE, kind: 'unblocked', on: [issue], owns });
         sent.push(told);
         // A refusal whose ask the live session on the branch failed to take
         // reached nobody, which is no vacant role. A session asked twice,
@@ -298,7 +295,8 @@ export const planUnblocked = async (invocation, ctx) => {
     }
     // The turn's answer: a send to a builder that failed, so the turn says
     // so, else one that took it, else the last refusal.
-    const messaged = sent.find((t) => !t.ok && !t.refused) ?? sent.find((t) => t.ok) ?? /** @type {import('./deliveries.mjs').Delivery} */ (sent.at(-1));
+    // A send held at the ceiling is no fault, so one that faulted goes first.
+    const messaged = sent.find((t) => !t.ok && !t.refused && t.capped !== true) ?? sent.find((t) => t.ok) ?? /** @type {import('./deliveries.mjs').Delivery} */ (sent.at(-1));
     return { answer: { kind: invocation.kind, row, commented, messaged, dispatched: [], loginStored } };
   }
   // A not-ready ticket's spec work starts with no person choosing the
@@ -334,7 +332,7 @@ export const planUnblocked = async (invocation, ctx) => {
     let told;
     let loginStored = false;
     try {
-      told = await ctx.delivery().deliver({ session: owner }, ownerSpecMessage(invocation, ctx.prompts, config.labels), { source: GITHUB_SOURCE, on: [issue], fallback, spec: true });
+      told = await ctx.delivery().deliver({ session: owner }, ownerSpecMessage(invocation, ctx.prompts, config.labels), { source: GITHUB_SOURCE, kind: 'unblocked-spec', on: [issue], fallback, spec: true });
     } finally {
       loginStored = await ctx.storeLogin();
     }

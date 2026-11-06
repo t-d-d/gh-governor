@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { STALE_RUNS_PAUSES_MS } from '../dispatch/runs.mjs';
 import { RUNS_PER_PAGE } from '../scripts/lib/github-app.mjs';
-import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed } from '../dispatch/turn.mjs';
+import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, MESSAGE_CEILING, messageCeiling, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed } from '../dispatch/turn.mjs';
 import { DEFAULT_SESSION_NAME, DISPATCHER_LABEL, GITHUB_SOURCE, fromDispatcher, hookLabel, standingLine } from '../dispatch/deliveries.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { ownerSpecMessage, specPrompt } from '../dispatch/unblocked.mjs';
@@ -166,6 +166,10 @@ const harness = (over: Record<string, unknown> = {}) => {
   const waitItems = new Map<string, string>();
   const failedLaunches = new Map<string, string>();
   const waitWrites: Array<{ repo: string; issue: number; until: string | null }> = [];
+  // Each session's messages about each subject this hour, by kind, as the
+  // table's conditional count keeps them, and every count asked for.
+  const messageCounts = new Map<string, { count: number; counts: Record<string, number>; capped: boolean }>();
+  const countsAsked: Array<{ session: string; subject: string | null; kind: string; at: number; ceiling: number }> = [];
   // The login's sessions, as the sessions list answers them, and each one's
   // events page, by `cse_` id; and every events read, with its token.
   const rows: Array<Record<string, unknown>> = [];
@@ -422,10 +426,24 @@ const harness = (over: Record<string, unknown> = {}) => {
         waitWrites.push({ repo, issue, until: null });
         return true;
       },
+      countMessage: async (session: string, subject: string | null, kind: string, at: number, ceiling: number) => {
+        countsAsked.push({ session, subject, kind, at, ceiling });
+        const key = `${session} ${subject ?? 'none'} ${Math.floor(at / 3_600_000)}`;
+        const held = messageCounts.get(key) ?? { count: 0, counts: {}, capped: false };
+        messageCounts.set(key, held);
+        if (held.count >= ceiling) {
+          const first = !held.capped;
+          held.capped = true;
+          return { raised: false, first, count: held.count, counts: { ...held.counts } };
+        }
+        held.count += 1;
+        held.counts[kind] = (held.counts[kind] ?? 0) + 1;
+        return { raised: true };
+      },
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, heldTold, failedLaunches, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, publishedClaim, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, heldTold, countsAsked, messageCounts, failedLaunches, waitItems, waitWrites, routineCalls, routinesHeld, recorded, published, publishedTrust, publishedClaim, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -4606,6 +4624,61 @@ describe('run — periodics an event brings due', () => {
   });
 });
 
+describe('run: the ceiling on one session\'s messages about one subject in an hour', () => {
+  test('a message counts against its session and subject under the stack\'s ceiling; past it nothing is sent, and the turn does not fail', async () => {
+    const h = harness({ messageCeiling: 2 });
+    const fire = { kind: 'message', session: 'session_01ABC', text: 'a remark', on: 7, event: 'comments', subscribed: true };
+    const results = [];
+    for (let i = 0; i < 3; i += 1) results.push(await run(fire, h.deps as never));
+    assert.equal(h.messages.length, 2);
+    assert.deepEqual(h.countsAsked.map((c) => [c.session, c.subject, c.kind, c.ceiling]), Array(3).fill(['session_01ABC', 'acme/factory#7', 'relay', 2]));
+    const last = results[2] as { ok: boolean, capped?: boolean, refused: boolean, dropped: boolean | null, archived: boolean };
+    assert.deepEqual([last.ok, last.capped, last.refused, last.dropped, last.archived], [false, true, false, null, false]);
+    assert.equal(exitCodeFor(last as never), 0, 'a held message pages through its own alarm, not a failed turn');
+    assert.deepEqual(h.edits, [], 'no subscriber dropped');
+    assert.deepEqual(h.issueEdits, [], 'no subscriber dropped');
+    const capped = h.logged.filter((l) => l.event === 'dispatch-message-capped');
+    assert.equal(capped.length, 1);
+    assert.equal(capped[0]?.level, 'error');
+    assert.deepEqual(capped[0]?.counts, { relay: 2 });
+  });
+
+  test('messages about another subject still go', async () => {
+    const h = harness({ messageCeiling: 1 });
+    await run({ kind: 'message', session: 'session_01ABC', text: 'one', on: 7 }, h.deps as never);
+    await run({ kind: 'message', session: 'session_01ABC', text: 'two', on: 7 }, h.deps as never);
+    await run({ kind: 'message', session: 'session_01ABC', text: 'three', on: 9 }, h.deps as never);
+    assert.equal(h.messages.length, 2);
+    assert.match(h.messages[1]!.text, /three/);
+  });
+
+  test('with no ceiling given, the default is 20', async () => {
+    const h = harness();
+    await run({ kind: 'message', session: 'session_01ABC', text: 'hi' }, h.deps as never);
+    assert.equal(h.countsAsked[0]?.ceiling, MESSAGE_CEILING);
+    assert.equal(MESSAGE_CEILING, 20);
+    assert.equal(h.countsAsked[0]?.subject, null);
+  });
+
+  test('a launch\'s opening prompt is not a message, and is not counted', async () => {
+    const h = harness();
+    await run({ kind: 'dispatch', prompt: 'build #7' }, h.deps as never);
+    assert.equal(h.launches.length, 1);
+    assert.deepEqual(h.countsAsked, []);
+  });
+});
+
+describe('messageCeiling', () => {
+  test('reads the stack parameter, 20 when unset, and refuses a value that is not a positive count', () => {
+    assert.equal(messageCeiling(undefined), 20);
+    assert.equal(messageCeiling(''), 20);
+    assert.equal(messageCeiling('5'), 5);
+    assert.throws(() => messageCeiling('0'), /MESSAGE_CEILING/);
+    assert.throws(() => messageCeiling('ten'), /MESSAGE_CEILING/);
+    assert.throws(() => messageCeiling('2.5'), /MESSAGE_CEILING/);
+  });
+});
+
 describe('run — a message into a session', () => {
   test('restores the login, sends the text to the session, and reports the CLI\'s answer', async () => {
     const { deps, calls, messages, launches, comments, logged } = harness();
@@ -5046,6 +5119,18 @@ describe('run — a workflow run on main', () => {
     const r = await run(jobFire(DEV), deps as never);
     assert.deepEqual(launches, []);
     assert.equal(exitCodeFor(r as never), 1);
+  });
+
+  // The ceiling pages once through governor-session-loop; a failed turn
+  // would page again for each held note.
+  test('a deploy note held at the message ceiling starts nothing, says so in its delivery, and does not fail the turn', async () => {
+    const { reader } = delivered();
+    const { deps, launches, messages } = harness({ reader, state: { countMessage: async () => ({ raised: false, first: true, count: 20, counts: { deploy: 20 } }) } });
+    const r = await run(jobFire(DEV), deps as never) as { deliveries: Array<{ capped?: boolean }> };
+    assert.deepEqual(messages, []);
+    assert.deepEqual(launches, []);
+    assert.ok(r.deliveries.length > 0 && r.deliveries.every((d) => d.capped === true), JSON.stringify(r.deliveries));
+    assert.equal(exitCodeFor(r as never), 0);
   });
 
   // Whether a note closes is planWorkflow's; the turn sends it with the standing that says so, less the PRs it is about.
@@ -6114,6 +6199,19 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     assert.equal(exitCodeFor(r as never), 0);
   });
 
+  // The ceiling pages once through governor-session-loop; a failed check
+  // would page again for each held send.
+  test('an owner held at the message ceiling is skipped, not failed, and the turn does not fail', async () => {
+    const r0 = conflictReader({ pulls: [open(804)], reads: { 804: [false] } });
+    const { deps, messages, launches } = harness({ reader: r0.reader, sleep, state: { countMessage: async () => ({ raised: false, first: true, count: 20, counts: { conflict: 20 } }) } });
+    const r = await run(fire, deps as never) as Result;
+    assert.deepEqual(messages, []);
+    assert.deepEqual(launches, []);
+    assert.deepEqual(r.checks.map((c) => c.outcome), ['skipped']);
+    assert.match(String(r.checks[0]!.reason), /ceiling/);
+    assert.equal(exitCodeFor(r as never), 0);
+  });
+
   test('a takeover whose PR body GitHub refuses to relink fails the PR\'s check: the turn exits 1', async () => {
     const r0 = conflictReader({ pulls: [open(804)], reads: { 804: [false] }, refuseEdits: true });
     const { deps, messages, launches, logged } = harness({ reader: r0.reader, sleep, message: async (m: { session: string; text: string }) => { messages.push(m); return archived(m); } });
@@ -6332,6 +6430,24 @@ describe('run — sessions that signed off', () => {
     assert.deepEqual(second.held, ['session_01OWNER']);
     assert.deepEqual(h.messages, [], 'no second message, whatever the session does next');
     assert.deepEqual(h.archives, []);
+  });
+
+  test('the held message counts against the session and its PRs, and is not sent where a pair is at the ceiling', async () => {
+    const h = harness();
+    h.rows.push(sessionRow('cse_01OWNER'));
+    h.pages.set('cse_01OWNER', cloudSignedOff);
+    naming(h, 'session_01OWNER', [{ number: 587, pull: true }]);
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.countsAsked.map((c) => [c.session, c.subject, c.kind]), [['session_01OWNER', 'acme/factory#587', 'signoff-held']]);
+
+    const capped = harness({ messageCeiling: 1 });
+    capped.rows.push(sessionRow('cse_01OWNER'));
+    capped.pages.set('cse_01OWNER', cloudSignedOff);
+    naming(capped, 'session_01OWNER', [{ number: 587, pull: true }]);
+    capped.messageCounts.set(`session_01OWNER acme/factory#587 ${Math.floor(NOW / 3_600_000)}`, { count: 1, counts: { relay: 1 }, capped: false });
+    await run({ kind: 'schedule' }, capped.deps as never);
+    assert.deepEqual(capped.messages, []);
+    assert.ok(capped.logged.some((l) => l.event === 'dispatch-message-capped' && l.subject === 'acme/factory#587'), JSON.stringify(capped.logged.filter((l) => String(l.event).startsWith('dispatch-message'))));
   });
 
   test('with heldMessage unset, a hold sends no message and writes no record', async () => {
@@ -7198,6 +7314,48 @@ describe('realDeps: the state table', () => {
     const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
     await assert.rejects(failing.failedLaunches(REPO), /AccessDeniedException/);
     await assert.rejects(failing.recordFailedLaunch(REPO, 7, UNTIL), /AccessDeniedException/);
+  });
+
+  // One item per session, subject and clock hour, raised by one conditional
+  // update under the ceiling and expired when the hour ends.
+  test('a session\'s count about one subject this hour is raised by one conditional update under the ceiling, by kind', async () => {
+    const AT = Date.parse('2026-11-06T18:42:00Z');
+    const sent: Array<{ name: string; input: Record<string, any> }> = [];
+    const state = dynamoState({ send: async (command: { constructor: { name: string }; input: Record<string, any> }) => { sent.push({ name: command.constructor.name, input: command.input }); return {}; } } as never, 'T');
+    assert.deepEqual(await state.countMessage('https://claude.ai/code/session_01ABC', 'acme/factory#7', 'relay', AT, 20), { raised: true });
+    assert.equal(sent[0]?.name, 'UpdateItemCommand');
+    const input = sent[0]!.input;
+    assert.deepEqual(input.Key, { pk: { S: 'messages#session_01ABC' }, sk: { S: 'acme/factory#7@2026-11-06T18' } });
+    assert.match(input.UpdateExpression, /ADD #count :one, #kind :one/);
+    assert.equal(input.ExpressionAttributeNames['#kind'], 'kind:relay');
+    assert.match(input.ConditionExpression, /attribute_not_exists\(#count\) OR #count < :ceiling/);
+    assert.equal(input.ExpressionAttributeValues[':ceiling'].N, '20');
+    assert.equal(input.ExpressionAttributeValues[':ttl'].N, String(Date.parse('2026-11-06T19:00:00Z') / 1000));
+    assert.equal(input.ReturnValuesOnConditionCheckFailure, 'ALL_OLD');
+    await state.countMessage('session_01ABC', null, 'hook', AT, 20);
+    assert.deepEqual(sent[1]?.input.Key, { pk: { S: 'messages#session_01ABC' }, sk: { S: 'none@2026-11-06T18' } });
+  });
+
+  test('at the ceiling the refusal returns the counts by kind, and the first refusal of the hour marks the item', async () => {
+    const AT = Date.parse('2026-11-06T18:42:00Z');
+    const OLD = { pk: { S: 'messages#session_01ABC' }, sk: { S: 'acme/factory#7@2026-11-06T18' }, count: { N: '20' }, 'kind:relay': { N: '14' }, 'kind:told': { N: '6' }, ttl: { N: '1' } };
+    let marked = false;
+    const sent: Array<Record<string, any>> = [];
+    const refusal = (item: unknown) => Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException', Item: item });
+    const state = dynamoState({
+      send: async (command: { input: Record<string, any> }) => {
+        sent.push(command.input);
+        if (String(command.input.UpdateExpression).startsWith('ADD')) throw refusal(marked ? { ...OLD, capped: { BOOL: true } } : OLD);
+        if (marked) throw refusal(undefined);
+        marked = true;
+        return {};
+      },
+    } as never, 'T');
+    assert.deepEqual(await state.countMessage('session_01ABC', 'acme/factory#7', 'relay', AT, 20), { raised: false, first: true, count: 20, counts: { relay: 14, told: 6 } });
+    assert.match(String(sent[1]?.ConditionExpression), /attribute_not_exists\(#capped\)/);
+    assert.deepEqual(await state.countMessage('session_01ABC', 'acme/factory#7', 'relay', AT, 20), { raised: false, first: false, count: 20, counts: { relay: 14, told: 6 } });
+    const failing = dynamoState({ send: async () => { throw new Error('AccessDeniedException'); } } as never, 'T');
+    await assert.rejects(failing.countMessage('session_01ABC', null, 'hook', AT, 20), /AccessDeniedException/);
   });
 
   // A day limit with nothing to do is its fire, and opens no minimum gap:

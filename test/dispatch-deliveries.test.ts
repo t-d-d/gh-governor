@@ -38,6 +38,8 @@ type Message = { session: string; text: string };
 type Launch = { prompt: string; sessionName: string; model: string; branch?: string };
 type Answer = { status: number | null; output: string };
 type Started = { outcome: 'dispatched' | 'unconfirmed' | 'failed'; sessionUrl: string | null };
+type Counted = { session: string; subject: string | null; kind: string };
+type Count = { raised: true } | { raised: false; first: boolean; count: number; counts: Record<string, number> };
 type Find = (branch: string, options?: { bridgeOnly?: boolean }) => Promise<string | null>;
 type Told = {
   ok: boolean;
@@ -71,8 +73,10 @@ const fakes = (over: {
   signOff?: boolean;
   relay?: readonly string[];
   claim?: string;
+  count?: (m: Counted) => Promise<Count>;
 } = {}) => {
   const sent: Message[] = [];
+  const counted: Counted[] = [];
   const untils: number[] = [];
   const launches: Launch[] = [];
   const comments: Array<{ issue: number; body: string }> = [];
@@ -116,12 +120,16 @@ const fakes = (over: {
     now: over.now ?? (() => NOW),
     log: (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); },
     sleep: async (ms: number) => { slept.push(ms); },
+    count: async (m: Counted) => {
+      counted.push(m);
+      return over.count ? over.count(m) : { raised: true };
+    },
     ...(over.launchTimeoutMs === undefined ? {} : { launchTimeoutMs: over.launchTimeoutMs }),
   });
   // Every send names its source; these tests relay GitHub activity unless one says otherwise.
   const deliver = (to: { session: string } | { pr: number; poster?: string }, text: string, options: Record<string, unknown> = {}) =>
-    delivery.deliver(to, text, { source: GITHUB_SOURCE, ...options } as never) as Promise<Told>;
-  return { delivery, deliver, sent, untils, launches, comments, edits, issueEdits, searches, asked, logged, slept, readers: () => readers };
+    delivery.deliver(to, text, { source: GITHUB_SOURCE, kind: 'relay', ...options } as never) as Promise<Told>;
+  return { delivery, deliver, counted, sent, untils, launches, comments, edits, issueEdits, searches, asked, logged, slept, readers: () => readers };
 };
 
 describe('deliver — a message into a session', () => {
@@ -1134,5 +1142,125 @@ describe('deliver: a PR whose body links an archived session', () => {
     assert.deepEqual(f.sent.map((m) => m.session), [OLD, LIVE]);
     assert.deepEqual(f.launches, []);
     assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: LIVE });
+  });
+
+  // The live session on the branch held at the ceiling is still live: a
+  // takeover beside it would start a second session on its branch.
+  const heldLive = async (m: Counted): Promise<Count> => (m.session === LIVE ? { raised: false, first: true, count: 20, counts: { relay: 20 } } : { raised: true });
+
+  test('a live session on the branch held at the ceiling starts no takeover beside it, and the delivery is held', async () => {
+    const f = fakes({ send: goneOld, reader: reader(), sessions: onBranch({ [BRANCH]: LIVE }), count: heldLive });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'Why?', { fallback: takeover, takeover: true, on: [PR] });
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD']);
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(f.edits, []);
+    assert.deepEqual(told.fallback, { outcome: 'skipped', sessionUrl: null });
+    assert.equal((told as Told & { capped?: boolean }).capped, true);
+  });
+
+  test('an event with no fallback whose branch session is held at the ceiling is held, not a gone session', async () => {
+    const f = fakes({ send: goneOld, reader: reader(), sessions: onBranch({ [BRANCH]: LIVE }), count: heldLive });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'A summons.', { owns: [PR], on: [PR], strict: true });
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(told.fallback, { outcome: 'skipped', sessionUrl: null });
+    assert.equal((told as Told & { capped?: boolean }).capped, true);
+  });
+});
+
+describe('deliver: the ceiling on one session\'s messages about one subject in an hour', () => {
+  const capped = (first: boolean): Count => ({ raised: false, first, count: 20, counts: { relay: 14, told: 6 } });
+
+  test('every send counts once against its session and each issue or PR it is about, by its kind', async () => {
+    const f = fakes();
+    await f.deliver({ session: 'session_01ABC' }, 'a remark', { on: [7, 9, 7], kind: 'deploy' });
+    assert.deepEqual(f.counted, [
+      { session: 'session_01ABC', subject: 'acme/factory#7', kind: 'deploy' },
+      { session: 'session_01ABC', subject: 'acme/factory#9', kind: 'deploy' },
+    ]);
+    assert.equal(f.sent.length, 1);
+  });
+
+  test('a message about no issue or PR counts against the session\'s pair with no subject', async () => {
+    const f = fakes();
+    await f.deliver({ session: 'session_01ABC' }, 'a hook\'s text', { kind: 'hook' });
+    assert.deepEqual(f.counted, [{ session: 'session_01ABC', subject: null, kind: 'hook' }]);
+  });
+
+  test('a message to a PR\'s owner counts against that PR', async () => {
+    const f = fakes({
+      reader: { pull: async (n: number) => ({ number: n, body: 'no link', head: 'claude/x', defaultBranch: 'main', open: true }) },
+      sessions: () => async () => 'session_01LIVE',
+    });
+    await f.deliver({ pr: 12 }, 'the review', { kind: 'review' });
+    assert.deepEqual(f.counted, [{ session: 'session_01LIVE', subject: 'acme/factory#12', kind: 'review' }]);
+  });
+
+  test('a resend after a blip is the same message, and counts once', async () => {
+    let first = true;
+    const f = fakes({ send: async (m) => { if (first) { first = false; return { status: 1, output: '{"ok":false,"error":""}' }; } return accepted(m.session); } });
+    const told = await f.deliver({ session: 'session_01ABC' }, 'hi', { on: [7] });
+    assert.equal(told.ok, true);
+    assert.equal(f.sent.length, 2);
+    assert.equal(f.counted.length, 1);
+  });
+
+  test('a pair at the ceiling is sent nothing: not a refusal, so no takeover starts and no subscriber is dropped', async () => {
+    const f = fakes({ count: async () => capped(true) });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'a remark', {
+      on: [12], kind: 'relay', takeover: true, dropFrom: [12], owns: [12],
+      fallback: { issue: 12, prompt: 'take PR #12 over' },
+    });
+    assert.deepEqual(f.sent, []);
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(f.edits, []);
+    assert.deepEqual(f.issueEdits, []);
+    assert.equal(told.ok, false);
+    assert.equal(told.refused, false);
+    assert.equal(told.fallback, null);
+    assert.equal(told.dropped, null);
+    assert.equal((told as Told & { capped?: boolean }).capped, true);
+    assert.match(told.error ?? '', /ceiling/);
+  });
+
+  test('a message about several subjects is held where any of them is at the ceiling', async () => {
+    const f = fakes({ count: async (m) => (m.subject === 'acme/factory#9' ? capped(true) : { raised: true }) });
+    const told = await f.deliver({ session: 'session_01ABC' }, 'a deploy note', { on: [7, 9], kind: 'deploy' });
+    assert.deepEqual(f.sent, []);
+    assert.equal((told as Told & { capped?: boolean }).capped, true);
+  });
+
+  test('the first capped send of a pair in an hour logs dispatch-message-capped at error with its counts by kind; later ones log at info', async () => {
+    let first = true;
+    const f = fakes({ count: async () => { const c = capped(first); first = false; return c; } });
+    await f.deliver({ session: 'session_01ABC' }, 'one', { on: [7] });
+    await f.deliver({ session: 'session_01ABC' }, 'two', { on: [7] });
+    const capLines = f.logged.filter((l) => l.event === 'dispatch-message-capped');
+    assert.equal(capLines.length, 1, JSON.stringify(f.logged));
+    assert.deepEqual(
+      { level: capLines[0]!.level, session: capLines[0]!.session, subject: capLines[0]!.subject, count: capLines[0]!.count, counts: capLines[0]!.counts },
+      { level: 'error', session: 'session_01ABC', subject: 'acme/factory#7', count: 20, counts: { relay: 14, told: 6 } },
+    );
+    const held = f.logged.filter((l) => l.event === 'dispatch-message-held');
+    assert.equal(held.length, 1, JSON.stringify(f.logged));
+    assert.equal(held[0]!.level, 'info');
+    // Nothing else about the held sends logs at error or warn.
+    assert.ok(!f.logged.some((l) => l.event !== 'dispatch-message-capped' && (l.level === undefined || l.level === 'error' || l.level === 'warn') && l.event === 'dispatch-message'), JSON.stringify(f.logged));
+  });
+
+  test('a count that cannot be raised lets the send go, logged at warn', async () => {
+    const f = fakes({ count: async () => { throw new Error('ProvisionedThroughputExceededException'); } });
+    const told = await f.deliver({ session: 'session_01ABC' }, 'hi', { on: [7] });
+    assert.equal(told.ok, true);
+    assert.equal(f.sent.length, 1);
+    const line = f.logged.find((l) => l.event === 'dispatch-message-count');
+    assert.equal(line?.level, 'warn');
+    assert.match(String(line?.error), /ProvisionedThroughputExceededException/);
+  });
+
+  test('a fallback\'s launch prompt is not a message, and is not counted', async () => {
+    const f = fakes({ send: archived });
+    await f.deliver({ session: 'session_01OLD' }, 'a remark', { on: [12], takeover: true, fallback: { issue: 12, prompt: 'take PR #12 over' } });
+    assert.equal(f.launches.length, 1);
+    assert.equal(f.counted.length, 1, 'only the send into the archived session counted');
   });
 });

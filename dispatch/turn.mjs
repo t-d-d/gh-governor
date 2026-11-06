@@ -131,7 +131,7 @@ import { ownerMessageId, reviewPull } from './review.mjs';
 import { reviewIssue, reviewLabelsOf } from './issue-review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { rolesOf } from './roles.mjs';
-import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, readSend, refusedAsArchived } from './deliveries.mjs';
+import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, countAgainst, deliveries as turnDeliveries, fromDispatcher, readSend, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, deployedTarget, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
 import { deployedComment } from './webhook/deployed-comment.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
@@ -188,6 +188,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   environments: (token: string, organization: string | null) => Promise<unknown>,
  *   refreshLogin: () => Promise<LaunchResult>,
  *   cap: number,
+ *   messageCeiling?: number,
  *   now: () => number,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  *   secret: { get: () => Promise<string>, put: (text: string) => Promise<void> },
@@ -267,6 +268,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   startedSession: (session: string) => Promise<boolean>,
  *   verdict: (repo: string, pr: number) => Promise<(import('./review.mjs').Verdict & { at: string }) | null>,
  *   recordVerdict: (repo: string, pr: number, read: (import('./review.mjs').Verdict & { at: string }) | null, verdict: import('./review.mjs').Verdict) => Promise<boolean>,
+ *   countMessage: (session: string, subject: string | null, kind: string, at: number, ceiling: number) => Promise<import('./deliveries.mjs').Count>,
  * } & import('./periodics.mjs').PeriodicState & import('./pickup.mjs').PickupState & import('./hooks.mjs').HookState & import('./waits.mjs').WaitState} DispatchState
  *   Each label's cursor, by its repo, its workflow's file name and the
  *   label (null for CI's, which earns none): read (null when it has none),
@@ -287,6 +289,10 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   where a record stood (scripts/lib/session-signoff.mjs).
  *   A PR review's verdict (dispatch/review.mjs): read, and written over
  *   the item the review read, false where another stood.
+ *   One session's count of messages about one subject (`<repo>#<number>`,
+ *   or null for none) in the clock hour holding `at`: raised by `kind`
+ *   while under `ceiling`, or refused at it with the counts by kind and
+ *   whether this is the hour's first refusal (dispatch/deliveries.mjs).
  *   A read or write that fails throws.
  *
  * @typedef {{ told: string[], failed: string[], tickets?: number[] }} Delivered
@@ -315,6 +321,26 @@ export const dispatchCap = (raw) => {
   const cap = Number(raw);
   if (!Number.isInteger(cap) || cap < 0) throw new Error(`DISPATCH_CAP needs a non-negative integer, got: ${raw}`);
   return cap;
+};
+
+/** The stack's MessageCeiling when unset: messages one session hears about one subject in a clock hour. */
+export const MESSAGE_CEILING = 20;
+
+/**
+ * How many messages governor sends one session about one issue or PR in a
+ * clock hour: the stack's MessageCeiling, {@link MESSAGE_CEILING} when
+ * unset. It is a safety limit against a loop, so it is at least one, and
+ * anything else is a misconfiguration, said so rather than read as the
+ * default.
+ *
+ * @param {string | undefined} raw
+ * @returns {number}
+ */
+export const messageCeiling = (raw) => {
+  if (raw === undefined || raw === '') return MESSAGE_CEILING;
+  const ceiling = Number(raw);
+  if (!Number.isInteger(ceiling) || ceiling < 1) throw new Error(`MESSAGE_CEILING needs a positive integer, got: ${raw}`);
+  return ceiling;
 };
 
 /**
@@ -777,6 +803,14 @@ const heldBy = (deps, served, tokenFor, budgeted, until) => {
       // Read before the record, so a failed read leaves the session to be told later.
       const { credentials, account } = readStoredLogin(await deps.secret.get());
       if (!(await deps.state.recordHeld(session))) return { told: false, reason: 'told before' };
+      // Counted after the record, which a sweep that holds the session
+      // again would otherwise count each time. One the ceiling holds is not
+      // told later: the session already hears plenty about its PR, and the
+      // ceiling's page has gone. PRs read from more than one repo carry no
+      // repo, so they count against the session's pair with no subject.
+      const subjects = repos.length === 1 ? prs.map((n) => `${repos[0]?.toLowerCase()}#${n}`) : [];
+      const capped = await countAgainst({ count: ({ subject, kind }) => deps.state.countMessage(session, subject, kind, deps.now(), deps.messageCeiling ?? MESSAGE_CEILING), log: deps.log }, session, subjects, 'signoff-held');
+      if (capped !== null) return { told: false, reason: `held: ${capped}` };
       try {
         const sent = readSend(await budgeted(() => deps.message({ session, text: heldMessage(prs) }), session, until));
         return sent.ok ? { told: true } : { told: false, error: sent.error };
@@ -1208,6 +1242,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   const deliveriesOf = (own) => turnDeliveries({
     ...own,
     send: (message, until) => budgeted(() => deps.message(message), message.session, until),
+    count: ({ session, subject, kind }) => deps.state.countMessage(session, subject, kind, deps.now(), deps.messageCeiling ?? MESSAGE_CEILING),
     sessions: sessionsFinder,
     now: deps.now,
     log: deps.log,
@@ -1257,6 +1292,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         text,
         {
           source: GITHUB_SOURCE,
+          kind: 'relay',
           fallback,
           takeover: true,
           on: on === undefined ? [] : [on],
@@ -1427,8 +1463,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
             deps.log('dispatch-workflow', { ...about, untold: owed.slice(i).map((n) => ({ session: n.session, prs: n.prs })), reason: `out of time: past ${WORKFLOW_SEND_WINDOW_MS} ms, another delivery might outrun the deadline` });
             break;
           }
-          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, fallback: note.fallback, on: [...note.prs, ...(note.about ?? []), ...(note.tickets ?? [])], closing: note.closing, dropFrom: note.subscribed, owns: note.owns ?? note.prs.filter((n) => !note.subscribed.includes(n)) });
-          deliveries.push({ prs: note.prs, session: note.session, ok, answered, refused, error, fallback });
+          const { ok, answered, refused, error, fallback, capped } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, kind: invocation.kind === 'job' ? 'deploy' : 'ci', fallback: note.fallback, on: [...note.prs, ...(note.about ?? []), ...(note.tickets ?? [])], closing: note.closing, dropFrom: note.subscribed, owns: note.owns ?? note.prs.filter((n) => !note.subscribed.includes(n)) });
+          // A note held at the ceiling is no fault (dispatch/cli.mjs), and stays owed to a later run.
+          deliveries.push({ prs: note.prs, session: note.session, ok, answered, refused, error, fallback, ...(capped ? { capped } : {}) });
           // As dispatch/cli.mjs counts a fault: a refusal with no fallback is a gone session, told enough.
           if (ok || (refused && fallback?.outcome !== 'failed')) {
             now.told.push(...toldOf(note));
@@ -1486,8 +1523,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       reason = plan.reason;
       deps.log('dispatch-branch-run', { ...about, session: plan.session, reason });
       if (plan.session !== null && plan.text !== null) {
-        const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: plan.session }, plan.text, { source: GITHUB_SOURCE });
-        deliveries.push({ prs: [], session: plan.session, ok, answered, refused, error, fallback });
+        const { ok, answered, refused, error, fallback, capped } = await delivery().deliver({ session: plan.session }, plan.text, { source: GITHUB_SOURCE, kind: 'branch-run' });
+        deliveries.push({ prs: [], session: plan.session, ok, answered, refused, error, fallback, ...(capped ? { capped } : {}) });
       }
     } finally {
       loginStored = await storeIfRefreshed(deps, original, account);
@@ -1963,6 +2000,9 @@ const WAIT_TTL_S = 30 * 24 * 60 * 60;
 
 /** The attribute the state table's TTL expires on (infra/governor.cfn.yml). */
 export const STATE_TTL_ATTRIBUTE = 'ttl';
+
+/** One clock hour, the window a session's count of messages about one subject covers. */
+const HOUR_MS = 60 * 60 * 1000;
 
 /**
  * How long into a review turn a review may still start: one more `claude
@@ -2542,6 +2582,51 @@ export const dynamoState = (client, table) => {
       } while (after !== undefined);
       return found;
     },
+    // Raised in one conditional update, never read then written: two turns
+    // racing cannot both take the last place. The refusal returns the item,
+    // its counts by kind; a second conditional update marks the hour's
+    // first refusal, so only that one pages.
+    countMessage: async (session, subject, kind, at, ceiling) => {
+      const hour = Math.floor(at / HOUR_MS) * HOUR_MS;
+      const Key = { pk: { S: `messages#${sessionId(session)}` }, sk: { S: `${subject ?? 'none'}@${new Date(hour).toISOString().slice(0, 13)}` } };
+      try {
+        await client.send(new UpdateItemCommand({
+          TableName: table,
+          Key,
+          UpdateExpression: 'ADD #count :one, #kind :one SET #ttl = :ttl',
+          ConditionExpression: 'attribute_not_exists(#count) OR #count < :ceiling',
+          ExpressionAttributeNames: { '#count': 'count', '#kind': `kind:${kind}`, '#ttl': STATE_TTL_ATTRIBUTE },
+          ExpressionAttributeValues: { ':one': { N: '1' }, ':ceiling': { N: String(ceiling) }, ':ttl': { N: String((hour + HOUR_MS) / 1000) } },
+          ReturnValuesOnConditionCheckFailure: 'ALL_OLD',
+        }));
+        return { raised: true };
+      } catch (error) {
+        if (!refused(error)) throw error;
+        const item = /** @type {Record<string, { N?: string, BOOL?: boolean }> | undefined} */ (/** @type {any} */ (error).Item) ?? {};
+        /** @type {Record<string, number>} */
+        const counts = {};
+        for (const [name, value] of Object.entries(item)) if (name.startsWith('kind:') && value.N !== undefined) counts[name.slice('kind:'.length)] = Number(value.N);
+        const count = Number(item.count?.N ?? ceiling);
+        let first = item.capped?.BOOL !== true;
+        if (first) {
+          try {
+            await client.send(new UpdateItemCommand({
+              TableName: table,
+              Key,
+              UpdateExpression: 'SET #capped = :true',
+              ConditionExpression: 'attribute_exists(#count) AND attribute_not_exists(#capped)',
+              ExpressionAttributeNames: { '#count': 'count', '#capped': 'capped' },
+              ExpressionAttributeValues: { ':true': { BOOL: true } },
+            }));
+          } catch (marking) {
+            // Another turn marked it first. Any other failure pages again
+            // rather than not at all.
+            if (refused(marking)) first = false;
+          }
+        }
+        return { raised: false, first, count, counts };
+      }
+    },
     // A later failure moves the record on: the same put again, nothing to race.
     recordFailedLaunch: async (repo, issue, until) => {
       await client.send(new PutItemCommand({
@@ -2678,6 +2763,7 @@ export const realDeps = () => {
       return response.json();
     },
     cap: dispatchCap(env.DISPATCH_CAP),
+    messageCeiling: messageCeiling(env.MESSAGE_CEILING),
     now: () => Date.now(),
     log,
     secret: {
@@ -2843,6 +2929,7 @@ export const realDeps = () => {
         wait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordWait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         dropWait: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        countMessage: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
       },
     // No table named: every write fails and is logged at error, and the
     // turn goes on, its own checks on a hook fire unchanged.

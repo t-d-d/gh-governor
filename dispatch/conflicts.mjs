@@ -134,7 +134,7 @@ const tell = async ({ pr, text, fallback, record, deliver }) => {
   /** @type {import('./deliveries.mjs').Delivery} */
   let sent;
   try {
-    sent = await deliver({ pr: pr.number }, text, { source: GITHUB_SOURCE, fallback, takeover: true, on: [pr.number] });
+    sent = await deliver({ pr: pr.number }, text, { source: GITHUB_SOURCE, kind: 'conflict', fallback, takeover: true, on: [pr.number] });
   } catch (error) {
     // A send past its budget, or a GitHub read in the fallback, throws: this
     // PR's check fails, and the PRs after it are still told.
@@ -145,6 +145,8 @@ const tell = async ({ pr, text, fallback, record, deliver }) => {
   // owner: the operator is told, and the next remark takes it over again.
   if (sent.relinked === false) return { ...checked, outcome: 'failed', error: `the owner was archived and ${sent.fallback?.sessionUrl ?? 'a fresh session'} took the PR over, but PR #${pr.number}'s body could not be relinked to it` };
   if (sent.ok) return { ...checked, outcome: 'told' };
+  // Held at the ceiling: no fault, and nothing started beside a live session. Its own line has paged.
+  if (sent.capped === true) return { ...checked, outcome: 'skipped', reason: sent.error };
   if (sent.refused && sent.fallback !== null && sent.fallback.outcome !== 'failed') return { ...checked, outcome: 'fallback', reason: `the owner was archived: ${sent.fallback.outcome}` };
   return { ...checked, outcome: 'failed', error: sent.error ?? `the owner was archived, and its fallback ${sent.fallback?.outcome ?? 'never ran'}` };
 };

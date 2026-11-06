@@ -67,7 +67,7 @@ export const specOwnerNote = (issue, comment) => [
  */
 
 /** What came of a send, for the log. @param {import('./deliveries.mjs').Delivery} told */
-const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged');
+export const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session is archived' : told.capped ? 'held at the message ceiling' : 'not messaged');
 
 /**
  * Send each of `sends`, in turn, logging each under {@link TOLD}. A send
@@ -83,7 +83,7 @@ export const sendAll = async ({ deliver, log, issue, about, sends }) => {
     try {
       const told = await deliver(session, text, { on: [issue], closing, dropFrom: role === 'builder' ? [] : [issue] });
       sent.push(told);
-      log(TOLD, { ...about, session, role, ...(told.ok || told.refused ? {} : { level: 'error' }), outcome: outcomeOf(told), ...(told.error === null || told.error === undefined ? {} : { error: told.error }) });
+      log(TOLD, { ...about, session, role, ...(told.ok || told.refused ? {} : { level: told.capped ? 'info' : 'error' }), outcome: outcomeOf(told), ...(told.error === null || told.error === undefined ? {} : { error: told.error }) });
     } catch (error) {
       log(TOLD, { ...about, session, role, level: 'error', outcome: 'not messaged', error: messageOf(error) });
     }
@@ -214,7 +214,7 @@ export const tellerFor = (ctx, repo, source, row) => {
   const tell = specOwnerTeller({
     read: async (issue) => row ?? (await ctx.readerFor(repo)).ticket(issue),
     relay: relayOf(ctx.configOf(repo)),
-    deliver: (session, text, options) => ctx.delivery(repo).deliver({ session }, text, { source, ...options }),
+    deliver: (session, text, options) => ctx.delivery(repo).deliver({ session }, text, { source, kind: 'told', ...options }),
     log: ctx.log,
     repo,
   });

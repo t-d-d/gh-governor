@@ -155,11 +155,11 @@ export const planHook = async (invocation, ctx) => {
     let told;
     let loginStored = false;
     try {
-      told = await ctx.delivery().deliver({ session: read.session }, hookMessage(invocation), { source: hookSource(name) });
+      told = await ctx.delivery().deliver({ session: read.session }, hookMessage(invocation), { source: hookSource(name), kind: 'hook' });
     } finally {
       loginStored = await ctx.storeLogin();
     }
-    ctx.log('dispatch-hook', { repo, hook: name, session: read.session, outcome: told.ok ? 'messaged' : told.refused ? 'archived since it was read' : 'not messaged' });
+    ctx.log('dispatch-hook', { repo, hook: name, session: read.session, outcome: told.ok ? 'messaged' : told.refused ? 'archived since it was read' : told.capped ? 'held at the message ceiling' : 'not messaged' });
     // Archived between the read and the send: a new session starts below.
     // Any other failure says nothing of the session, which may be live, so
     // nothing starts beside it and the turn fails.
