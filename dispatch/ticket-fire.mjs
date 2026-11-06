@@ -11,8 +11,9 @@
  * (dispatch/builders.mjs) are sent it, each told who holds both roles and
  * which it holds. A session never hears its own signed post. A builder
  * whose PR's merge closed the ticket hears the close through its PR, and
- * not again from the ticket. Where the fire is `ownerOnly`, the builders
- * hear of it elsewhere, and only the spec owner is sent it.
+ * not again from the ticket. Governor's deploy comment reaches both roles
+ * like any comment, and the shipping turn sends no PR deploy message to a
+ * session that holds a role on the ticket (dispatch/turn.mjs).
  *
  * Every message is a notice: it asks nothing beyond the recipient's own
  * part. The spec owner acts on a remark that changes what counts as done,
@@ -129,8 +130,7 @@ export const planTicket = async (invocation, ctx) => {
     }
     for (const builder of builders) {
       if (owner !== null && sameSession(builder, owner)) continue;
-      if (invocation.ownerOnly === true) skipped.push(`${sessionId(builder)}, which hears of it elsewhere`);
-      else if (throughPr) skipped.push(`${sessionId(builder)}, which heard the merge that closed it through its PR`);
+      if (throughPr) skipped.push(`${sessionId(builder)}, which heard the merge that closed it through its PR`);
       else if (own(builder)) skipped.push(`${sessionId(builder)}'s own post`);
       else sends.push({ session: builder, text: say('builder'), role: 'builder', owns: found.owns[builder] ?? [] });
     }

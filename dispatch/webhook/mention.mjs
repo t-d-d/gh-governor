@@ -1015,8 +1015,9 @@ export const closingPrFires = (payload, { relay = RELAY, appId } = {}) => {
  * none. What reaches no session today reaches none here either: a PR's
  * comment, an edited one, the dispatcher's marker, a stranger's comment.
  *
- * Governor's deploy comment reaches the spec owner alone (`ownerOnly`):
- * a builder hears the deploy through its PR.
+ * Governor's deploy comment reaches both roles, as any comment does. The
+ * shipping turn sends no PR deploy message to a session that holds a role
+ * on the ticket, so it hears the deploy once (dispatch/turn.mjs).
  *
  * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[], bodies?: readonly string[] }} args
  * @returns {{ fires: TicketQueued[], reason: string }}
@@ -1031,7 +1032,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
   const dispatched = dispatchFire({ event, payload, appId, labels, owner, state });
   if (dispatched !== null) return dispatched;
   if (labels.length === 0) return none;
-  /** @type {{ text: (limit: number) => string, event: 'comments' | 'close' | 'edit', poster: string | null, closing: boolean, authors: string[], ownerOnly: boolean, what: string }} */
+  /** @type {{ text: (limit: number) => string, event: 'comments' | 'close' | 'edit', poster: string | null, closing: boolean, authors: string[], what: string }} */
   let about;
   if (event === 'issue_comment') {
     const comment = payload?.comment;
@@ -1047,7 +1048,6 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
       poster: postedBy(body),
       closing: deployed && state === 'closed',
       authors: kindsOf([authorOf(comment, appId), onAuthor]),
-      ownerOnly: deployed,
       what: `comment ${comment?.id} on #${issue.number}`,
     };
   } else if (event === 'issues' && (payload?.action === 'closed' || payload?.action === 'reopened')) {
@@ -1058,7 +1058,6 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
       poster: null,
       closing: payload.action === 'closed',
       authors: kindsOf([onAuthor]),
-      ownerOnly: false,
       what: `issue #${issue.number} ${payload.action}`,
     };
   } else if (event === 'issues' && bodyEdited(payload)) {
@@ -1069,20 +1068,19 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
       poster: null,
       closing: false,
       authors: kindsOf([onAuthor]),
-      ownerOnly: false,
       what: `issue #${issue.number} body edited`,
     };
   } else {
     return none;
   }
   /** @param {string} text */
-  const fire = (text) => build.ticket({ issue: issue.number, text, event: about.event, state, labels, owner, poster: about.poster, closing: about.closing, authors: about.authors, ownerOnly: about.ownerOnly });
+  const fire = (text) => build.ticket({ issue: issue.number, text, event: about.event, state, labels, owner, poster: about.poster, closing: about.closing, authors: about.authors });
   let limit = EXCERPT_CHARS;
   let built = fire(about.text(limit));
   while (fireWeight(built) > FIRE_BUDGET && limit > 1) {
     limit = Math.floor(limit / 2);
     built = fire(about.text(limit));
   }
-  const reason = `${about.what}: for its spec owner${about.ownerOnly ? '' : ' and, on a claimed ticket, its builders'}, in place of the spec owner's own message`;
+  const reason = `${about.what}: for its spec owner and, on a claimed ticket, its builders, in place of the spec owner's own message`;
   return { fires: [{ fire: built, reason, key: 'ticket', claimed: { labels, replaces: owner === null ? null : sessionId(owner) } }], reason: '' };
 };

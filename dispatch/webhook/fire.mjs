@@ -408,7 +408,7 @@ export const lastDispatch = (comments) => {
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit
  *   the lane ({@link FIRE_BUDGET}).
- * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], ownerOnly?: true, builder?: string, displaced?: string }} TicketFire
+ * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], builder?: string, displaced?: string }} TicketFire
  *   A comment on an issue, the issue closed or reopened, or its body
  *   edited (`edit`), where the issue may be claimed: its spec owner and, on a claimed ticket, its builders
  *   hear it, each told which role it holds (dispatch/ticket-fire.mjs). The
@@ -421,8 +421,7 @@ export const lastDispatch = (comments) => {
  *   session the body's owner link names, read under the repo's
  *   `trust.relay`, absent where it names none. `poster`: the session that
  *   signed the comment, which hears nothing of its own post. `closing`: as
- *   a message fire's. `authors`: as a message fire's. `ownerOnly`: the
- *   builders hear of this elsewhere, so only the spec owner is sent it.
+ *   a message fire's. `authors`: as a message fire's.
  *   A `dispatched` event is governor's own dispatch comment, a change of
  *   builder: `builder` is the session it names, and `displaced` the
  *   builder it took the ticket from, where it names one. It reaches the
@@ -537,12 +536,12 @@ export const build = Object.freeze({
    * @param {{
    *   issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[],
    *   owner?: string | null | undefined, poster?: string | null | undefined, closing?: boolean | undefined,
-   *   authors?: string[] | undefined, ownerOnly?: boolean | undefined,
+   *   authors?: string[] | undefined,
    *   builder?: string | null | undefined, displaced?: string | null | undefined,
    * }} args
    * @returns {TicketFire}
    */
-  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, ownerOnly, builder, displaced }) => ({
+  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, builder, displaced }) => ({
     kind: 'ticket',
     issue,
     text,
@@ -554,7 +553,6 @@ export const build = Object.freeze({
       poster: poster ?? undefined,
       closing: closing === true ? /** @type {true} */ (true) : undefined,
       authors,
-      ownerOnly: ownerOnly === true ? /** @type {true} */ (true) : undefined,
       builder: builder ?? undefined,
       displaced: displaced ?? undefined,
     }),
@@ -1113,9 +1111,7 @@ const parseTicket = (e) => {
   for (const key of /** @type {const} */ (['owner', 'poster', 'builder', 'displaced'])) {
     if (e?.[key] !== undefined && !(typeof e[key] === 'string' && MESSAGE_SESSION.test(e[key]))) refuse(`${key} must be a session id or claude.ai/code URL`);
   }
-  for (const key of /** @type {const} */ (['closing', 'ownerOnly'])) {
-    if (e?.[key] !== undefined && e[key] !== true) refuse(`${key} must be true or absent`);
-  }
+  if (e?.closing !== undefined && e.closing !== true) refuse('closing must be true or absent');
   if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) refuse('authors must be trust values');
   const t = /** @type {Record<string, unknown>} */ (e);
   return {
@@ -1129,7 +1125,6 @@ const parseTicket = (e) => {
     ...(t.poster === undefined ? {} : { poster: String(t.poster) }),
     ...(t.closing === true ? { closing: /** @type {true} */ (true) } : {}),
     ...(t.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (t.authors)] }),
-    ...(t.ownerOnly === true ? { ownerOnly: /** @type {true} */ (true) } : {}),
     ...(t.builder === undefined ? {} : { builder: String(t.builder) }),
     ...(t.displaced === undefined ? {} : { displaced: String(t.displaced) }),
   };

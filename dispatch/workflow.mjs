@@ -100,10 +100,22 @@ import { instruction } from './prompts.mjs';
  * @typedef {{ newest: { id: number, created: string } | null }} Stale
  * @typedef {{ reason: string | null, notes: Note[], unnamed: Array<{ pr: number, reason: string }>, triage: { prompt: string, sessionName: string } | null, range: Range | null, stale: Stale | null, advance: import('./runs.mjs').Cursor | null }} Plan
  *   `advance`: the workflow's cursor once the turn has sent, when it planned this run's news.
+ *   `heard`: on a green deploy, each session's PRs left out of its message
+ *   because it hears of them from a ticket's comment ({@link Heard}).
+ * @typedef {Plan & { heard?: Array<{ session: string, prs: number[] }> }} TargetPlan
  */
 
 /** A target without its article, for `<target> deploy`: `the dispatcher` is `dispatcher`. @param {string} target */
 const bare = (target) => target.replace(/^the /, '');
+
+/**
+ * @typedef {(session: string, pr: number) => boolean} Heard
+ *   Whether `session` hears PR `pr`'s green deploy from governor's comment
+ *   on a ticket `pr` closed (dispatch/turn.mjs).
+ */
+
+/** @type {Heard} */
+const NO_ONE_HEARD = () => false;
 
 /** @param {string} reason @param {Range | null} [range] @returns {Plan} */
 const nobody = (reason, range = null) => ({ reason, notes: [], unnamed: [], triage: null, range, stale: null, advance: null });
@@ -383,15 +395,17 @@ const deployText = (run, { target, end, tags }, own, subscribed, failed, told, p
  * never succeeded, and the cursor keeps a re-fire to once
  * (dispatch/coverage.mjs).
  *
- * @param {{ invocation: WorkflowFire | JobFire, coverage: Coverage, prompts?: Prompts, workflows?: Workflows }} args
+ * @param {{ invocation: WorkflowFire | JobFire, coverage: Coverage, prompts?: Prompts, workflows?: Workflows, heard?: Heard }} args
  *   `prompts`: the repo's config file's, which replace each text's
- *   instruction. `workflows`: its CI, triage targets and tags.
- * @returns {Promise<Plan>}
+ *   instruction. `workflows`: its CI, triage targets and tags. `heard`:
+ *   whether a session hears a PR's green deploy from governor's comment on
+ *   a ticket the PR closed, so its message leaves that PR out.
+ * @returns {Promise<TargetPlan>}
  */
-export const planWorkflow = async ({ invocation, coverage, prompts = {}, workflows = NO_WORKFLOWS }) => {
+export const planWorkflow = async ({ invocation, coverage, prompts = {}, workflows = NO_WORKFLOWS, heard = NO_ONE_HEARD }) => {
   if (invocation.kind === 'job') {
     const { workflow, branch, runId, url, headSha, runAttempt } = invocation;
-    return planTarget({ kind: 'workflow', name: workflow, branch, runId, url, conclusion: 'success', headSha, job: url, ...(runAttempt === undefined ? {} : { runAttempt }) }, coverage, prompts, workflows);
+    return planTarget({ kind: 'workflow', name: workflow, branch, runId, url, conclusion: 'success', headSha, job: url, ...(runAttempt === undefined ? {} : { runAttempt }) }, coverage, prompts, workflows, heard);
   }
   const run = invocation;
   const { name, runId, conclusion } = run;
@@ -402,7 +416,7 @@ export const planWorkflow = async ({ invocation, coverage, prompts = {}, workflo
     return conclusion === 'failure' ? planCi(run, coverage, prompts) : nobody(`${name} run ${runId} ended ${conclusion}: nothing to tell`);
   }
   if (conclusion !== 'failure') return nobody(`${name} run ${runId} ended ${conclusion}: ${conclusion === 'success' ? 'each shipping job in it is told on its own' : 'nothing to tell'}`);
-  return planTarget(run, coverage, prompts, workflows);
+  return planTarget(run, coverage, prompts, workflows, heard);
 };
 
 /**
@@ -489,9 +503,10 @@ const planCi = async (run, coverage, prompts) => {
  * @param {Coverage} coverage
  * @param {Prompts} prompts
  * @param {Workflows} workflows
- * @returns {Promise<Plan>}
+ * @param {Heard} heard A green deploy's PRs a session hears from a ticket's comment, left out of its message.
+ * @returns {Promise<TargetPlan>}
  */
-const planTarget = async (run, coverage, prompts, workflows) => {
+const planTarget = async (run, coverage, prompts, workflows, heard) => {
   const { triage, tags } = workflows;
   const { name, runId, conclusion, headSha } = run;
   if (coverage.reason !== null) return stoppedShort(coverage);
@@ -520,10 +535,21 @@ const planTarget = async (run, coverage, prompts, workflows) => {
   }
 
   const { sessions, owned, unnamed } = await coverage.sessions(pulls, 'deploys');
-  /** @type {Plan} */
-  const plan = { reason: null, notes: [], unnamed, triage: null, range, stale: null, advance };
-  for (const { session, own, subscribed } of sessions.values()) {
+  /** @type {Array<{ session: string, prs: number[] }>} */
+  const heardBy = [];
+  /** @type {TargetPlan} */
+  const plan = { reason: null, notes: [], unnamed, triage: null, range, stale: null, advance, heard: heardBy };
+  for (const entry of sessions.values()) {
+    const { session } = entry;
+    // A session that holds a role on a ticket the turn commented on hears
+    // the deploy from that comment, so a session hears of a deploy once.
+    const unheard = (/** @type {PullRow} */ p) => conclusion !== 'success' || !heard(session, p.number);
+    const own = entry.own.filter(unheard);
+    const subscribed = entry.subscribed.filter(unheard);
+    const left = [...entry.own, ...entry.subscribed].filter((p) => !unheard(p));
+    if (left.length > 0) heardBy.push({ session, prs: left.sort(byMerge).map((p) => p.number) });
     const prs = [...own, ...subscribed].sort(byMerge);
+    if (prs.length === 0) continue;
     const told = subscribed.filter((p) => owned.has(p.number));
     plan.notes.push({
       prs: prs.map((p) => p.number),
