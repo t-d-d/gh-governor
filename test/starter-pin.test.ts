@@ -267,12 +267,7 @@ const schemaPin = (file: string) => {
   return sha;
 };
 
-// Skipped while governor at the pin reads only .github/dispatch.json in the
-// older layout, which the starter files no longer use, and no commit on main
-// yet reads .github/governor.json. #526 moves the starter kit's pins to one
-// that does, whose $schema names schema/governor.schema.json, and turns this
-// check back on.
-describe('the starter kit\'s config files at their pinned commit', { skip: 'governor at the pinned commit reads only the older .github/dispatch.json layout, and the pins move once .github/governor.json is on main (#526)' }, () => {
+describe('the starter kit\'s config files at their pinned commit', () => {
   // The pinned commit's tree, read from git history into a temporary folder,
   // with this checkout's modules beside it, so its readConfig can be imported.
   let dir: string | undefined;

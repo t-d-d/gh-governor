@@ -38,7 +38,7 @@ const checkPin = () => {
 /** The commit a config file's `$schema` names, or null when it names no schema of this repo's. */
 const schemaCommit = (text: string) => {
   const { $schema } = JSON.parse(text) as { $schema?: unknown };
-  return /^https:\/\/raw\.githubusercontent\.com\/t-d-d\/gh-governor\/([0-9a-f]{40})\/schema\/dispatch\.schema\.json$/.exec(String($schema))?.[1] ?? null;
+  return /^https:\/\/raw\.githubusercontent\.com\/t-d-d\/gh-governor\/([0-9a-f]{40})\/schema\/governor\.schema\.json$/.exec(String($schema))?.[1] ?? null;
 };
 
 describe('the starter kit\'s config file', () => {
