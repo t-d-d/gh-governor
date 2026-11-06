@@ -117,12 +117,12 @@ import { planDispatch } from './dispatch-fire.mjs';
 import { planUnblocked } from './unblocked-fire.mjs';
 import { planClosingPr, planTicket } from './ticket-fire.mjs';
 import { offerAfterRefusal, planOffer } from './offer.mjs';
-import { takeAfterNotice } from './take.mjs';
+import { planPrEdit, takeAfterNotice } from './take.mjs';
 import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken, turnResends } from '../scripts/lib/github-app.mjs';
 import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
-import { CONFIG_PATH, SWITCHES, switchOf, turnsOn } from './repo-config.mjs';
+import { CONFIG_PATH, SWITCHES, switchesOf, turnsOn } from './repo-config.mjs';
 import { planWorkflow, withTickets } from './workflow.mjs';
 import { coverageOf } from './coverage.mjs';
 import { planBranchRun } from './branch-run.mjs';
@@ -641,23 +641,26 @@ const turnOf = async (event, deps, built) => {
       return { kind: invocation.kind, refusal: reason, signoffs: null, ...(unread.length === 0 ? {} : { unread }) };
     }
     served = [one];
-    const name = switchOf(invocation, one.config.workflows);
-    const unheard = invocation.kind === 'message' || invocation.kind === 'ticket' || invocation.kind === 'offer' ? unrelayed(invocation, relayOf(one.config)) : null;
+    // The first switch the fire needs that the file does not turn on: a
+    // `prEdit` fire needs two (switchesOf).
+    const name = switchesOf(invocation, one.config.workflows).find((needed) => !turnsOn(one.config, needed)) ?? null;
+    const relayed = invocation.kind === 'message' || invocation.kind === 'ticket' || invocation.kind === 'offer' || invocation.kind === 'prEdit';
+    const unheard = relayed ? unrelayed(invocation, relayOf(one.config)) : null;
     // An unblocked fire's switch is its ticket's state's (dispatch/unblocked.mjs):
     // with both off, no row acts. Its turn still reads the ticket once, for a
     // relative `Blocked until:` line on the close, and refuses after
     // (dispatch/waits.mjs).
-    if (name !== null && !turnsOn(one.config, name)) {
+    if (name !== null) {
       refusal = `${repo}'s ${CONFIG_PATH} does not turn ${name} on`;
       // A hook fired into a repo that turned hooks off is a caller someone
       // forgot: worth a look, not a page.
       deps.log('dispatch-refused', { level: invocation.kind === 'hook' ? 'warn' : 'info', repo, kind: invocation.kind, reason: refusal });
-    } else if ((invocation.kind === 'message' || invocation.kind === 'ticket' || invocation.kind === 'offer') && unheard !== null) {
+    } else if (relayed && unheard !== null) {
       // The receiver judged the fire by the repo's hook-table item, which
       // may lag the file, and dropped only an author outside the three. A
       // refusal here is as silent: no comment, no page.
       refusal = unheard;
-      deps.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, session: 'session' in invocation ? invocation.session : null, on: invocation.kind === 'message' ? invocation.on ?? null : invocation.issue, reason: refusal });
+      deps.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, session: 'session' in invocation ? invocation.session : null, on: invocation.kind === 'message' ? invocation.on ?? null : invocation.kind === 'prEdit' ? invocation.pr : invocation.issue, reason: refusal });
     } else if (invocation.kind === 'hook') {
       // The receiver read no file: a hook it lists no more, or a key version
       // it has moved past, is refused here (dispatch/hooks.mjs).
@@ -856,7 +859,7 @@ const heldBy = (deps, served, tokenFor, budgeted, until) => {
  * queued before the receiver judged by them names none, and was judged by
  * the defaults (dispatch/webhook/fire.mjs).
  *
- * @param {import('./webhook/fire.mjs').MessageFire | import('./webhook/fire.mjs').TicketFire | import('./webhook/fire.mjs').OfferFire} fire
+ * @param {import('./webhook/fire.mjs').MessageFire | import('./webhook/fire.mjs').TicketFire | import('./webhook/fire.mjs').OfferFire | import('./webhook/fire.mjs').PrEditFire} fire
  * @param {readonly string[]} relay
  * @returns {string | null}
  */
@@ -1877,6 +1880,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     planned = await planClosingPr(invocation, ctx);
   } else if (invocation.kind === 'offer') {
     planned = await planOffer(invocation, ctx);
+  } else if (invocation.kind === 'prEdit') {
+    planned = await planPrEdit(invocation, ctx);
   } else if (invocation.kind === 'dispatch') {
     planned = await planDispatch(invocation, ctx);
   }

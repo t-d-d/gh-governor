@@ -325,7 +325,7 @@ export const NO_WORKFLOWS = Object.freeze({ triage: [], tags: {} });
 
 // What CI is, and the switch each fire kind needs, live in a leaf the
 // receiver shares (dispatch/webhook/switches.mjs).
-export { isCi, switchOf } from './webhook/switches.mjs';
+export { isCi, switchOf, switchesOf } from './webhook/switches.mjs';
 
 /**
  * The heartbeat's section: `issue`, the issue governor records its fires

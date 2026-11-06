@@ -108,7 +108,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, RELAY, REPO_NAME, RED, SUMMONERS, TRUST_VALUES, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob, waitLine } from './fire.mjs';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { errorText } from './error-text.mjs';
-import { MENTION, MENTION_EVENTS, bodyEditFires, closingPrFires, defaultBranch, issueEventFires, mentionFires, offerFires, oneLine, pullRequestFires, ticketFires } from './mention.mjs';
+import { MENTION, MENTION_EVENTS, bodyEditFires, closingPrFires, defaultBranch, issueEventFires, mentionFires, offerFires, oneLine, prEditFires, pullRequestFires, ticketFires } from './mention.mjs';
 import { droppedBy } from './switches.mjs';
 import { pastReadingBound } from './subscribe.mjs';
 
@@ -785,7 +785,8 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
   }
   if (event === 'issue_dependencies') return unlinkedFire(payload);
   if (event === 'pull_request') {
-    const reviewed = both(both(pullRequestFires(payload, trust), closingPrFires(payload, trust)), reviewFire(payload));
+    // A body edit that moved the session link: the owner hears it (dispatch/take.mjs).
+    const reviewed = both(both(both(pullRequestFires(payload, trust), closingPrFires(payload, trust)), prEditFires(payload, trust)), reviewFire(payload));
     return main === null ? reviewed : both(reviewed, mergedFire(payload, main));
   }
   if (event === 'workflow_run' || event === 'workflow_job') {
