@@ -30,6 +30,7 @@ import { GITHUB_SOURCE } from './deliveries.mjs';
 import { relayOf, ticketAuthor } from './trust.mjs';
 import { rolesOf } from './roles.mjs';
 import { fireRepoOf } from './repos.mjs';
+import { turnsOn } from './repo-config.mjs';
 import { relayedBody, sameSession, sessionId, unsignedSessionBody } from './webhook/subscribe.mjs';
 
 /**
@@ -51,7 +52,7 @@ export const offerText = (issue, why) => [
     ? `Nobody owns #${issue}: the session its body names as owner is archived.`
     : `Nobody owns #${issue}: a session filed it without signing it, so its body names no session as owner.`,
   'No owner reads your comments on it.',
-  `If your comment changes what #${issue} asks, take the issue: edit its body to say what it now asks, and end the body with this session's link, alone on the line just above the Claude Code footer. You then own it.`,
+  `If your comment changes what #${issue} asks, take the issue: edit its body to say what it now asks, and end the body with this session's link, alone on the body's last line. You then own it.`,
   'If your comment changes nothing it asks, there is nothing more to do.',
 ].join(' ');
 
@@ -80,6 +81,29 @@ export const offerIssue = async ({ repo, issue, session, why, builders, deliveri
   // A send the cap held back logs itself.
   if (sent.capped !== true) log('dispatch-offer', { ...about, outcome: sent.ok ? 'offered' : sent.refused ? 'its session is archived' : 'not sent', ...(sent.ok || sent.refused ? {} : { level: 'error', error: sent.error }) });
   return sent;
+};
+
+/**
+ * After an issue owner's message refused as archived: with `sessionRules`
+ * on, the ticket is read for its builders and `session`, which signed the
+ * comment, is offered the issue unless it builds the ticket. Returns the
+ * delivery, or null where nothing was sent. A read that fails rejects.
+ *
+ * @param {{
+ *   repo: string,
+ *   issue: number,
+ *   session: string,
+ *   config: import('./repo-config.mjs').RepoConfig,
+ *   reader: () => Promise<NonNullable<Parameters<typeof rolesOf>[0]['reader']>>,
+ *   deliveries: Pick<import('./deliveries.mjs').Deliveries, 'deliver' | 'ownerOf'>,
+ *   log: (event: string, context?: Record<string, unknown>) => void,
+ * }} args
+ * @returns {Promise<import('./deliveries.mjs').Delivery | null>}
+ */
+export const offerAfterRefusal = async ({ repo, issue, session, config, reader, deliveries, log }) => {
+  if (!turnsOn(config, 'sessionRules')) return null;
+  const { builders } = await rolesOf({ issue, relay: relayOf(config), claim: config.labels.claim, owner: null, reader: await reader(), ownerOf: (pr) => deliveries.ownerOf(pr) });
+  return offerIssue({ repo, issue, session, why: 'archived', builders, deliveries, log });
 };
 
 /**

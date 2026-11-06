@@ -116,7 +116,7 @@ import { hookFor, planHook } from './hooks.mjs';
 import { planDispatch } from './dispatch-fire.mjs';
 import { planUnblocked } from './unblocked-fire.mjs';
 import { planClosingPr, planTicket } from './ticket-fire.mjs';
-import { offerIssue, planOffer } from './offer.mjs';
+import { offerAfterRefusal, planOffer } from './offer.mjs';
 import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken, turnResends } from '../scripts/lib/github-app.mjs';
@@ -1314,11 +1314,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       // An issue's owner refused as archived: nobody owns the issue, so the
       // session that signed the comment is offered it, unless it builds the
       // ticket (dispatch/offer.mjs). The ticket is read only here.
-      if (told.refused && invocation.offer !== undefined && on !== undefined && repo !== undefined && turnsOn(configOf(repo), 'sessionRules')) {
-        const config = configOf(repo);
-        const reader = await getReader();
-        const { builders } = await rolesOf({ issue: on, relay: relayOf(config), claim: config.labels.claim, owner: null, reader, ownerOf: (pr) => delivery().ownerOf(pr) });
-        offered = await offerIssue({ repo, issue: on, session: invocation.offer, why: 'archived', builders, deliveries: delivery(), log: deps.log });
+      if (told.refused && invocation.offer !== undefined && on !== undefined && repo !== undefined) {
+        offered = await offerAfterRefusal({ repo, issue: on, session: invocation.offer, config: configOf(repo), reader: getReader, deliveries: delivery(), log: deps.log });
       }
     } finally {
       loginStored = await storeIfRefreshed(deps, original, account);

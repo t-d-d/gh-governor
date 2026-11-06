@@ -111,8 +111,8 @@ export const planTicket = async (invocation, ctx) => {
   }
   /** @type {import('./deliveries.mjs').Delivery[]} */
   const sent = [];
-  /** The offers made to the session that commented. @type {import('./deliveries.mjs').Delivery[]} */
-  const offers = [];
+  /** The offer made to the session that commented, if one was sent. @type {import('./deliveries.mjs').Delivery | null} */
+  let offered = null;
   /** Whether the spec owner refused as archived. */
   let ownerGone = false;
   let loginStored = false;
@@ -137,8 +137,7 @@ export const planTicket = async (invocation, ctx) => {
     // The spec owner refused as archived: nobody owns the ticket, so the
     // session that signed the comment is offered it (dispatch/offer.mjs).
     if (ownerGone && event === 'comments' && poster !== undefined && turnsOn(config, 'sessionRules')) {
-      const offered = await offerIssue({ repo, issue, session: poster, why: 'archived', builders, deliveries: ctx.delivery(), log: ctx.log });
-      if (offered !== null) offers.push(offered);
+      offered = await offerIssue({ repo, issue, session: poster, why: 'archived', builders, deliveries: ctx.delivery(), log: ctx.log });
     }
   } finally {
     loginStored = await ctx.storeLogin();
@@ -146,7 +145,7 @@ export const planTicket = async (invocation, ctx) => {
   // The turn's answer: a send that failed, so the turn says so, else one
   // that took it, else the last refusal.
   // A send held at the ceiling is no fault, so one that faulted goes first.
-  const messaged = [...sent, ...offers].find((t) => !t.ok && !t.refused && t.capped !== true) ?? sent.find((t) => t.ok) ?? /** @type {import('./deliveries.mjs').Delivery} */ (sent.at(-1));
+  const messaged = [...sent, ...(offered === null ? [] : [offered])].find((t) => !t.ok && !t.refused && t.capped !== true) ?? sent.find((t) => t.ok) ?? /** @type {import('./deliveries.mjs').Delivery} */ (sent.at(-1));
   return { answer: { kind: invocation.kind, messaged, dispatched: [], loginStored } };
 };
 
