@@ -420,6 +420,10 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
   const call = githubApi({ token, fetch, sleep });
   /** Every open issue and PR, its body and its author, read once for `openNaming`. @type {Promise<Array<OpenRow & { body: unknown } & import('../../dispatch/webhook/fire.mjs').Author>> | null} */
   let openRows = null;
+  /** Every open issue and PR, read once a reader, and again after a read that failed. */
+  const openList = () => openRows ??= allPages(call, `/repos/${repo}/issues`, { state: 'open' })
+    .then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: Boolean(row.pull_request), body: row.body, ...authorOf(row) })))
+    .catch((error) => { openRows = null; openSessions.clear(); throw error; });
   /** Each open issue's and PR's sessions under a trust list, keyed by the list, each body read once per list. @type {Map<string, Promise<Array<OpenRow & { sessions: Set<string> }>>>} */
   const openSessions = new Map();
   /** The repo owner's type, read once a reader: a narrowed `trust.start` asks it of every ready ticket. @type {Promise<string> | null} */
@@ -701,9 +705,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      * @returns {Promise<OpenRow[]>}
      */
     openNaming: async (session, relay) => {
-      const read = openRows ??= allPages(call, `/repos/${repo}/issues`, { state: 'open' })
-        .then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: Boolean(row.pull_request), body: row.body, ...authorOf(row) })))
-        .catch((error) => { openRows = null; openSessions.clear(); throw error; });
+      const read = openList();
       const key = relay.join(',');
       let named = openSessions.get(key);
       if (named === undefined) {
@@ -712,6 +714,20 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       const id = sessionId(session);
       return (await named).filter((row) => row.sessions.has(id)).map(({ sessions: _sessions, ...row }) => row);
     },
+
+    /**
+     * The open PRs whose body closes issue `number` by GitHub's closing
+     * keywords (`closedBy`, dispatch/pr-body.mjs), read from the same list
+     * as `openNaming`, once per reader: the builder lookup
+     * (dispatch/builders.mjs) pays no read the standing line has not.
+     *
+     * @param {number} number
+     * @returns {Promise<Array<{ number: number, title: string, html_url: string }>>}
+     */
+    openClosing: async (number) =>
+      (await openList())
+        .filter((row) => row.pull && closedBy(String(row.body ?? ''), repo).includes(number))
+        .map((row) => ({ number: row.number, title: row.title, html_url: row.html_url })),
 
     /**
      * An issue's comments, oldest first, one page of a hundred. `since`

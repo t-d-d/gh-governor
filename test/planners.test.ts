@@ -262,6 +262,8 @@ describe('planUnblocked: an unblocked fire\'s plan', () => {
       readyIssues: async () => [ticket],
       comments: async () => comments,
       allComments: async () => comments.map((c) => ({ ...c, ours: true })),
+      // No open PR closes the ticket.
+      openClosing: async () => [],
       comment: async (issue: number, body: string) => { posted.push({ issue, body }); },
       removeLabel: async () => {},
       labelRemovals: async () => [],

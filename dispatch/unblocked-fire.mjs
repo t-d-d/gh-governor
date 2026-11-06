@@ -25,7 +25,7 @@ import { relativeAtClose, reportUnreadable } from './waits.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 import { byOf, failedLaunchesOf, failedReason } from './pickup.mjs';
 import { authorKind, autoOf, lets, relayOf, startOf } from './trust.mjs';
-import { lastDispatch } from './webhook/fire.mjs';
+import { buildersOf } from './builders.mjs';
 import { relayedBody, sameSession, sessionNamedIn } from './webhook/subscribe.mjs';
 
 /** @typedef {import('./turn.mjs').Reader} Reader */
@@ -183,38 +183,50 @@ export const planUnblocked = async (invocation, ctx) => {
       ctx.log('dispatch-unblocked', { ...about, outcome: lineSaid ? `the line's comment stands for the row's: ${settled?.outcome}` : 'commented', ...(unreadied === undefined ? {} : { unreadied }) });
       return { answer: { kind: invocation.kind, row, commented, dispatched: [] } };
     }
-    // The claimed ticket's session: the newest dispatch marker names the
-    // builder pickup launched, whatever its age, since the session builds
-    // for as long as it takes. With none, the body's owner link: an owner
-    // that claimed its own ticket builds it. The link counts only where the
-    // repo's trust.relay lets the body's author in.
-    const marked = lastDispatch(await reader.comments(issue))?.sessionUrl ?? null;
-    const owner = sessionNamedIn(relayedBody(ticket, relayOf(config)));
-    const session = marked ?? owner;
-    if (session === null) {
-      ctx.log('dispatch-unblocked', { ...about, outcome: 'nobody told: no dispatch marker or owner link on the ticket names its session' });
+    // The claimed ticket's builders, found one way (dispatch/builders.mjs):
+    // the owner of each open PR that closes it, else the session the newest
+    // dispatch comment names, else the body's owner link, which counts only
+    // where the repo's trust.relay lets the body's author in. A read that
+    // fails fails the turn.
+    const relay = relayOf(config);
+    const found = await buildersOf({ reader, ownerOf: (pr) => ctx.delivery().ownerOf(pr), issue, ticket, claim: config.labels.claim, relay });
+    if (found.sessions.length === 0) {
+      ctx.log('dispatch-unblocked', { ...about, outcome: 'nobody told: no open PR closing it, and no dispatch marker or owner link on the ticket names its session' });
       return { answer: { kind: invocation.kind, row, commented, messaged: null, dispatched: [] } };
     }
+    const owner = sessionNamedIn(relayedBody(ticket, relay));
     const text = notPlanned ?? unblockedMessage(invocation, ctx.prompts);
-    /** @type {import('./deliveries.mjs').Delivery} */
-    let told;
+    /** @type {import('./deliveries.mjs').Delivery[]} */
+    const sent = [];
     let loginStored = false;
-    /** What came of a send, for the log. @param {import('./deliveries.mjs').Delivery} sent */
-    const outcomeOf = (sent) => (sent.ok ? 'messaged' : sent.refused ? 'its session is archived' : 'not messaged');
+    /** What came of a send, for the log. @param {import('./deliveries.mjs').Delivery} told */
+    const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged');
     try {
-      told = await ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue] });
-      ctx.log('dispatch-unblocked', { ...about, session, outcome: outcomeOf(told) });
-      // A marker can outlive its builder, and a spec session that claimed
-      // the ticket since posts none: a refusal from the marker's session
-      // goes on to the session the owner link names, where that is another.
-      if (told.refused && marked !== null && owner !== null && !sameSession(owner, marked)) {
-        told = await ctx.delivery().deliver({ session: owner }, text, { source: GITHUB_SOURCE, on: [issue] });
+      for (const session of found.sessions) {
+        // A PR's builder that answers archived hands the message to the live
+        // session on its PRs' head branches, as a PR's owner does.
+        const owns = found.owns[session] ?? [];
+        const told = await ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue], owns });
+        sent.push(told);
+        ctx.log('dispatch-unblocked', { ...about, session, builder: found.by, ...(owns.length === 0 ? {} : { prs: owns }), outcome: outcomeOf(told) });
+      }
+      // Where no builder took it, a refused builder's message goes on to the
+      // session the owner link names, once, where that is another session: a
+      // spec session that claimed the ticket after an old builder's marker
+      // posts none.
+      const taken = sent.some((t) => t.ok || t.fallback?.outcome === 'forwarded');
+      if (!taken && sent.some((t) => t.refused) && owner !== null && !found.sessions.some((s) => sameSession(s, owner))) {
+        const told = await ctx.delivery().deliver({ session: owner }, text, { source: GITHUB_SOURCE, on: [issue] });
+        sent.push(told);
         ctx.log('dispatch-unblocked', { ...about, session: owner, fromBody: true, outcome: outcomeOf(told) });
       }
     } finally {
       loginStored = await ctx.storeLogin();
     }
-    return { answer: { kind: invocation.kind, row, commented, messaged: told, dispatched: [], loginStored } };
+    // The turn's answer: a send that failed, so the turn says so, else one
+    // that took it, else the last refusal.
+    const messaged = sent.find((t) => !t.ok && !t.refused) ?? sent.find((t) => t.ok) ?? /** @type {import('./deliveries.mjs').Delivery} */ (sent.at(-1));
+    return { answer: { kind: invocation.kind, row, commented, messaged, dispatched: [], loginStored } };
   }
   // A not-ready ticket's spec work starts with no person choosing the
   // ticket, so only for an author the repo's trust.auto lets in. Anyone
