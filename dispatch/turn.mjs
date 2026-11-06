@@ -1535,7 +1535,11 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         const outOfTime = spentMs > REVIEW_WINDOW_MS;
         const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, verdicts: { read: (n) => deps.state.verdict(fireRepo(), n), record: (n, read, verdict) => deps.state.recordVerdict(fireRepo(), n, read, verdict) }, trusted, outOfTime, tell, ...(workflows.ci === undefined || !review.waitForCi ? {} : { ci: workflows.ci }) });
         const usage = spent.get(reviewed.pr);
-        deps.log('dispatch-review', { ...reviewed, ...(usage === undefined ? {} : { usage }) });
+        // An owner's message the lane refused warns while a later review
+        // turn will try it again, and is an error on its last try, which
+        // fails the turn and drops it.
+        const level = reviewed.untold !== undefined ? 'error' : reviewed.owed !== undefined ? 'warn' : undefined;
+        deps.log('dispatch-review', { ...(level === undefined ? {} : { level }), ...reviewed, ...(usage === undefined ? {} : { usage }) });
         reviews.push(reviewed);
       }
     } finally {
@@ -2144,7 +2148,9 @@ export const cliEnv = (env, home, account) => ({
  * `review#<repo>` / `<pr>`, put only over the item the review read, and
  * expired three months after its write: the review reads it back in place
  * of its comment's text, which a person can edit, and a lost one costs a
- * model call. A ticket whose launch started nothing is the item
+ * model call. It may hold the owner's message the review could not queue,
+ * as JSON, which the next review turn at the same head and body sends: a
+ * lost one costs that message. A ticket whose launch started nothing is the item
  * `pickup-failed#<repo>` / `<issue>`, holding the time pickup holds it
  * until, put after the launch over any earlier one, and expired at that
  * time: a lost one lets one more launch go.
@@ -2170,6 +2176,24 @@ export const dynamoState = (client, table) => {
   };
   /** @param {unknown} error */
   const refused = (error) => error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException';
+  /**
+   * A verdict's owed message, from its JSON: undefined where it is
+   * malformed, which fails the read.
+   *
+   * @param {string | undefined} text
+   * @returns {import('./review.mjs').Owed | undefined}
+   */
+  const owedOf = (text) => {
+    if (text === undefined) return undefined;
+    try {
+      const owed = JSON.parse(text);
+      const ok = typeof owed?.comment === 'string' && Number.isInteger(owed.tries) && owed.tries > 0
+        && owed.message !== null && typeof owed.message === 'object' && owed.message.kind === 'message' && typeof owed.message.text === 'string';
+      return ok ? owed : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   const verdictKey = (/** @type {string} */ repo, /** @type {number} */ pr) => ({ pk: { S: `review#${repo}` }, sk: { S: String(pr) } });
   const sessionKey = (/** @type {string} */ session) => ({ pk: { S: `session#${sessionId(session)}` }, sk: { S: 'started' } });
   const sent = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label, /** @type {number | null} */ from) => ({ pk: pk(repo, workflow), sk: { S: `delivered#${label === null ? '' : `${label}#`}${from ?? 'none'}` } });
@@ -2245,12 +2269,13 @@ export const dynamoState = (client, table) => {
       const reason = item.passReason?.S;
       const passAt = item.passAt?.S;
       // A malformed item is a failed read, never a missing one.
-      if (headSha === undefined || bodySha === undefined || at === undefined || typeof again !== 'boolean' || (item.readSha !== undefined && item.readSha.S === undefined) || (reason === undefined) !== (passAt === undefined)) {
+      const owed = item.owed === undefined ? null : owedOf(item.owed.S);
+      if (headSha === undefined || bodySha === undefined || at === undefined || typeof again !== 'boolean' || (item.readSha !== undefined && item.readSha.S === undefined) || (reason === undefined) !== (passAt === undefined) || owed === undefined) {
         throw new Error(`the review verdict item for ${repo}#${pr} is malformed: ${JSON.stringify(item)}`);
       }
-      return { headSha, bodySha, readSha: item.readSha?.S ?? null, pass: reason === undefined || passAt === undefined ? null : { reason, at: passAt }, again, at };
+      return { headSha, bodySha, readSha: item.readSha?.S ?? null, pass: reason === undefined || passAt === undefined ? null : { reason, at: passAt }, again, at, ...(owed === null ? {} : { owed }) };
     },
-    recordVerdict: async (repo, pr, read, { headSha, bodySha, readSha, pass, again }) => {
+    recordVerdict: async (repo, pr, read, { headSha, bodySha, readSha, pass, again, owed }) => {
       try {
         await client.send(new PutItemCommand({
           TableName: table,
@@ -2261,6 +2286,7 @@ export const dynamoState = (client, table) => {
             ...(readSha === null ? {} : { readSha: { S: readSha } }),
             ...(pass === null ? {} : { passReason: { S: pass.reason }, passAt: { S: pass.at } }),
             again: { BOOL: again },
+            ...(owed == null ? {} : { owed: { S: JSON.stringify(owed) } }),
             at: { S: new Date().toISOString() },
             [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.now() / 1000) + VERDICT_TTL_S) },
           },

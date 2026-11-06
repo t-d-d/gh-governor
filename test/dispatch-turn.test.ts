@@ -6845,6 +6845,30 @@ describe('realDeps: the state table', () => {
     await assert.rejects(halfPass.verdict(REPO, 12), /malformed/);
   });
 
+  // A review whose owner's message the lane refused keeps the message on its verdict, so the next review turn sends it.
+  test('a PR review\'s verdict may hold an owed message, written as JSON and read back whole', async () => {
+    const H = 'a'.repeat(40);
+    const B = 'b'.repeat(64);
+    const AT = '2026-10-20T12:00:00.000Z';
+    const owed = { comment: 'Waits for an edit (test 3).\n\n<!-- marker -->', message: { kind: 'message', byBranch: true, text: 'Governor\'s PR review commented.', on: 12, authors: [] }, tries: 1 };
+    let stored: Record<string, any> | undefined;
+    const state = dynamoState({
+      send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
+        if (command.constructor.name === 'PutItemCommand') { stored = { ...command.input.Item, at: { S: AT } }; return {}; }
+        return { Item: stored };
+      },
+    } as never, 'T');
+    await state.recordVerdict(REPO, 12, null, { headSha: H, bodySha: B, readSha: null, pass: null, again: false, owed: owed as never });
+    assert.deepEqual(stored?.owed, { S: JSON.stringify(owed) });
+    assert.deepEqual(await state.verdict(REPO, 12), { headSha: H, bodySha: B, readSha: null, pass: null, again: false, at: AT, owed });
+    await state.recordVerdict(REPO, 12, null, { headSha: H, bodySha: B, readSha: null, pass: null, again: false, owed: null });
+    assert.equal(stored?.owed, undefined, 'a verdict owing nothing writes no attribute');
+    for (const bad of ['not json', JSON.stringify({ ...owed, tries: 0 }), JSON.stringify({ ...owed, message: { kind: 'session' } }), JSON.stringify({ ...owed, comment: 3 })]) {
+      const malformed = dynamoState({ send: async () => ({ Item: { pk: { S: 'review#acme/factory' }, sk: { S: '12' }, headSha: { S: H }, bodySha: { S: B }, again: { BOOL: false }, at: { S: AT }, owed: { S: bad } } }) } as never, 'T');
+      await assert.rejects(malformed.verdict(REPO, 12), /malformed/, bad);
+    }
+  });
+
   // A periodic's last fire, per repo and name, survives a lost item: no record is the baseline.
   test('a periodic\'s record is one item per repo and name, read consistently, written only over the record the turn read, and never expires', async () => {
     const sent: Array<{ name: string; input: Record<string, any> }> = [];

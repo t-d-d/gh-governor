@@ -125,12 +125,17 @@ import { RED_CONCLUSIONS } from '../scripts/lib/github-app.mjs';
  *   require. `checksAt`: the latest check runs and statuses at a commit,
  *   each red, green or pending, a check run with the slug of its App. `ciRuns`: a workflow's runs at a commit,
  *   newest first.
- * @typedef {{ headSha: string, bodySha: string, readSha: string | null, pass: { reason: string, at: string } | null, again: boolean }} Verdict
+ * @typedef {{ headSha: string, bodySha: string, readSha: string | null, pass: { reason: string, at: string } | null, again: boolean, owed?: Owed | null }} Verdict
  *   What a review that commented decided, as the next review relies on it:
  *   the head and body digest it read, the digest of what the model read
  *   (`readDigest`, dispatch/checklist.mjs) or null where the code decided,
  *   the model's pass with its reason and the head it was given at, or null,
- *   and `again` for a test-8 fail, read again at the same head.
+ *   `again` for a test-8 fail, read again at the same head, and `owed`, the
+ *   owner's message the lane refused, left out where none is owed.
+ * @typedef {{ comment: string, message: import('./webhook/fire.mjs').MessageFire, tries: number }} Owed
+ *   An owner's message no review turn has queued yet: the comment it tells
+ *   of, with its marker, the message as the review built it, fallback and
+ *   all, and how many review turns have tried to queue it.
  * @typedef {{
  *   read: (pr: number) => Promise<(Verdict & { at: string }) | null>,
  *   record: (pr: number, read: (Verdict & { at: string }) | null, verdict: Verdict) => Promise<boolean>,
@@ -140,15 +145,23 @@ import { RED_CONCLUSIONS } from '../scripts/lib/github-app.mjs';
  *   write that fails throws.
  * @typedef {'in_progress' | 'success' | 'failure' | 'neutral'} CheckState
  * @typedef {'merged' | 'passed' | 'conflict' | 'commented' | 'marker-moved' | 'skipped' | 'limited' | 'failed' | 'out-of-time'} Outcome
- * @typedef {{ pr: number, outcome: Outcome, reason: string | null, headSha: string | null, answer: Answer | null, error: string | null, check: string | null, told?: string, untold?: string }} Reviewed
+ * @typedef {{ pr: number, outcome: Outcome, reason: string | null, headSha: string | null, answer: Answer | null, error: string | null, check: string | null, told?: string, owed?: string, untold?: string }} Reviewed
  *   `check`: the state of the check the review posted, `refused: <why>` where
  *   GitHub refused it with a 403, or null where it posted none. `told`: what
- *   came of the owner's message of a new comment, as the turn's `tell` says;
- *   `untold`: why it was not queued, which fails the turn.
+ *   came of the owner's message, as the turn's `tell` says. `owed`: why it
+ *   was not queued, where a later review turn tries again, which the turn
+ *   logs at warn. `untold`: why it was not queued on its last try, so it is
+ *   dropped, which fails the turn.
  * @typedef {(pr: number, comment: string, message: import('./webhook/fire.mjs').MessageFire) => Promise<string>} Tell
  *   The turn's hand-off of the owner's message of comment `comment` on PR
  *   `pr`: what came of it, or a throw where it could not be queued.
  */
+
+/**
+ * How many review turns try to queue one owner's message: the one that
+ * posted its comment, and the next review fires at the same head and body.
+ */
+export const MESSAGE_TRIES = 3;
 
 /** What a message from the review says under the comment, where it asks the owner for work. */
 const ASKS = 'This is your pull request, and the review asks this of you. Do it on its branch: push, edit its description, or claim its ticket, as the comment says. Do not open a new branch or PR.';
@@ -444,6 +457,31 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
   const reviewed = { pr: number, outcome: 'skipped', reason: null, headSha: null, answer: null, error: null, check: null };
   /** @param {string} reason */
   const skip = (reason) => ({ ...reviewed, outcome: /** @type {Outcome} */ ('skipped'), reason });
+  /**
+   * One try at queueing the owner's message of `comment`, its `tries`
+   * earlier tries refused: null where it is queued, or dropped on its last
+   * try, else the message, still owed.
+   *
+   * @param {string} comment
+   * @param {import('./webhook/fire.mjs').MessageFire} message
+   * @param {number} tries
+   * @returns {Promise<Owed | null>}
+   */
+  const handOff = async (comment, message, tries) => {
+    if (tell === undefined) return null;
+    try {
+      reviewed.told = await tell(number, comment, message);
+      return null;
+    } catch (error) {
+      const why = messageOf(error);
+      if (tries + 1 >= MESSAGE_TRIES) {
+        reviewed.untold = `${why}; dropped after ${tries + 1} tries`;
+        return null;
+      }
+      reviewed.owed = why;
+      return { comment, message, tries: tries + 1 };
+    }
+  };
   // A PR merged, or commented on, before a later write failed keeps its
   // check: the review ran, and its comment says what the check does.
   let merged = false;
@@ -485,10 +523,26 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     const bodySha = bodyDigest(pull.body);
     // The verdict comes from the state table, never from the comment: a
     // person with write access can edit governor's comment.
-    const verdict = await verdicts.read(number);
+    let verdict = await verdicts.read(number);
     // A red required check's or CI run's fail is read again: a re-run can turn it green on the same head.
     const sameHead = verdict !== null && verdict.headSha === pull.headSha && verdict.bodySha === bodySha;
-    if (sameHead && !verdict.again) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
+    // The owner's message an earlier review at this head and body could
+    // not queue goes first, with no model and no comment, and the verdict
+    // is written again owing it or not, so a message queued is never
+    // queued again. A verdict at another head or body is a newer review's
+    // to tell: its message replaces the older one.
+    if (verdict !== null && sameHead && verdict.owed != null && tell !== undefined) {
+      const { at: _, owed, ...kept } = verdict;
+      const still = await handOff(owed.comment, owed.message, owed.tries);
+      await verdicts.record(number, verdict, { ...kept, ...(still === null ? {} : { owed: still }) });
+      const what = still !== null ? 'is owed still' : reviewed.untold !== undefined ? 'is dropped' : 'is sent';
+      if (!verdict.again) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body: its owner's message ${what}`);
+      // A test-8 fail is read again: over the item just written.
+      const now = await verdicts.read(number);
+      if (now === null || now.headSha !== pull.headSha || now.bodySha !== bodySha) return skip(`#${number}'s verdict changed while its owner's message was sent: that review's own fire reads it`);
+      verdict = now;
+    }
+    if (verdict !== null && sameHead && !verdict.again) return skip(`#${number} already reviewed at ${pull.headSha.slice(0, 12)} with this body`);
     // The comment is read only to edit it in place, and to tell which red
     // checks a test-8 fail the table holds named, so a PR skipped above
     // pages through no thread.
@@ -527,7 +581,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // so is one where governor's own check there is in progress: a review
     // that waited on the re-run would otherwise leave it waiting.
     const sameRed = checksFailure(checks.red, redCi);
-    if (byCommit && sameRed !== null && sameHead && verdict.again && last !== null && last.text === commentText(sameRed, { conflict: false })) {
+    if (byCommit && sameRed !== null && verdict !== null && sameHead && verdict.again && last !== null && last.text === commentText(sameRed, { conflict: false })) {
       const waiting = (await reader.checksAt(pull.headSha)).some((c) => c.name === CHECK && c.state === 'pending');
       if (!waiting) return skip(`#${number} failed test 8 at ${pull.headSha.slice(0, 12)} on the same red checks: a check's end there changes nothing`);
     }
@@ -588,14 +642,13 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // A new comment's owner hears it from this turn, which knows its
     // verdict: the relay sends governor's comment to nobody. An edit in
     // place tells nobody again. The hand-off goes before the verdict's
-    // write, so a write that fails still leaves the owner told.
-    if (!saidAlready && tell !== undefined) {
-      try {
-        reviewed.told = await tell(number, body, ownerMessage({ pull, text, acts }));
-      } catch (error) {
-        reviewed.untold = messageOf(error);
-      }
-    }
+    // write, so a write that fails still leaves the owner told, and one the
+    // lane refuses is owed on the verdict for the next review turn. A new
+    // message replaces one owed at this head and body; an edit in place
+    // keeps it, and at a new head or body it is dropped.
+    const owed = !saidAlready
+      ? await handOff(body, ownerMessage({ pull, text, acts }), 0)
+      : sameHead ? verdict?.owed ?? null : null;
     // After the comment: one GitHub refused leaves no verdict, so the next
     // fire reads the PR again. Another review's item standing is its own
     // verdict, as good as this one.
@@ -605,6 +658,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
       readSha,
       pass: answer.answer === 'pass' && readSha !== null ? { reason: answer.reason, at: answer.reused ?? pull.headSha } : null,
       again: key === 'push',
+      ...(owed === null ? {} : { owed }),
     });
     return { ...reviewed, outcome, reason: text };
   } catch (error) {
