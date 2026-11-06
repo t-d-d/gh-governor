@@ -30,7 +30,7 @@ import { SIGN_POSTS, UNATTENDED, dispatchMarker, parseFire } from '../dispatch/w
 import { WORKFLOW_PATHS, headMerge, workflowFile, workflowFile as workflowFixture } from './helpers/dispatch-workflows.ts';
 import { SIGN_OFF, SIGNOFF_LATEST_START_MS, SIGNOFF_PAGES, SIGNOFF_REPLY_POLL_MS, SIGNOFF_REPLY_WAIT_MS, SIGNOFF_WINDOW_MS, ARCHIVE_TIMEOUT_MS } from '../scripts/lib/session-signoff.mjs';
 import { LOGIN_EXPIRY_WARNING_MS, storedLogin } from '../scripts/lib/claude-login.mjs';
-import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, readLastRun } from '../dispatch/heartbeat.mjs';
+import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat } from '../dispatch/heartbeat.mjs';
 import { cloudSignedOff, cloudSignedOffThenNot, event } from './fixtures/session-events.ts';
 import { factoryFile } from './helpers/factory.ts';
 import { HOOK_KEY_STALE, hookPrompt } from '../dispatch/hooks.mjs';
@@ -51,7 +51,8 @@ const FACTORY_CONFIG = (() => {
   if (!read.ok) throw new Error(read.fault);
   return read.config;
 })();
-const FACTORY_PROMPTS = FACTORY_CONFIG.prompts;
+/** The factory's prompts, keyed by kind: each is text in the factory's file, never a prompt file. */
+const FACTORY_PROMPTS = FACTORY_CONFIG.prompts as Record<string, string | undefined>;
 /** A list of named entries as a section holds them: `sessions`, each keyed by its name. */
 const byName = (list: Array<{ name: string } & Record<string, unknown>>) => ({ sessions: Object.fromEntries(list.map(({ name, ...rest }) => [name, rest])) });
 /** The factory's file without the `waits` switch: a repo that never turned it on. */
@@ -8410,7 +8411,8 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
   });
 
   test('a body without governor\'s marker gets no write, and an error naming the repo and issue', async () => {
-    const h = beating({ body: `${BEAT.marker}\nlast-run: ${EARLIER}\n` });
+    // A body in the older shape: a repo's own marker and its last-run line, no governor block.
+    const h = beating({ body: `<!-- factory:routine-heartbeat:auto-develop -->\nlast-run: ${EARLIER}\n` });
     const result = await run({ source: 'aws.events' }, h.deps as never);
     assert.deepEqual(h.writes, []);
     const refused = h.logged.find((l) => l.event === 'dispatch-heartbeat-refused');
