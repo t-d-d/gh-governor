@@ -5246,6 +5246,74 @@ describe('run — a workflow run on main', () => {
         await run(jobFire(DEV), h.deps as never);
         assert.deepEqual([labelled, comments], [[], []]);
       });
+
+      /**
+       * A session that holds a role on a ticket the turn commented on hears
+       * the deploy from that comment, so its PR's deploy message is not
+       * sent: a session hears of a deploy once. #799 (SESSION) closes #730,
+       * #804 (REFUSED) closes #736.
+       */
+      describe('a session that hears the deploy from its ticket\'s comment', () => {
+        const REFUSED = 'https://claude.ai/code/session_01REFUSED';
+        const CLAIM = JSON.parse(FACTORY_FILE).pickup.claim as string;
+        type Row = { labels?: string[]; body?: string; state?: string; association?: string };
+        const shipped = (rows: Record<number, Row>, over: Record<string, unknown> = {}) => {
+          const comments: Array<{ issue: number; body: string }> = [];
+          const made = caughtUp(greens);
+          const reader = made.reader();
+          Object.assign(reader, {
+            ticket: async (n: number) => ({ number: n, title: `Issue ${n}`, body: '', state: 'closed', labels: [], pull: false, association: 'MEMBER', ...rows[n] }),
+            comment: async (n: number, body: string) => { comments.push({ issue: n, body }); },
+            closure: async (n: number) => ({ title: `Issue ${n}`, reason: 'completed', pr: n === 730 ? { number: 799, title: 'PR 799', url: `https://github.com/${REPO}/pull/799` } : n === 736 ? { number: 804, title: 'PR 804', url: `https://github.com/${REPO}/pull/804` } : null }),
+            pull: async (n: number) => ({ number: n, body: `The change.${footer(n === 799 ? SESSION : REFUSED)}`, head: '', defaultBranch: 'main', open: false, association: 'OWNER' }),
+            ...over,
+          });
+          return { ...made, comments };
+        };
+        const ran = async (rows: Record<number, Row>, options: { switches?: Record<string, boolean>, over?: Record<string, unknown> } = {}) => {
+          const made = shipped(rows, options.over);
+          const configFile = async () => (() => { const f = JSON.parse(FACTORY_FILE); switched(f, options.switches ?? {}); return JSON.stringify(f); })();
+          const h = harness({ reader: made.reader, configFile });
+          h.cursors.set(DEV_CURSOR, { runId: 498, commit: 'shaB', created: at(498) });
+          const r = await run(jobFire(DEV), h.deps as never);
+          return { h, r, comments: made.comments, told: h.messages.map((m) => m.session).sort() };
+        };
+
+        test('the builder of a claimed ticket, the owner of the PR whose merge closed it, gets no PR message', async () => {
+          const { h, r, comments, told } = await ran({ 730: { labels: [CLAIM] } });
+          assert.deepEqual(comments.map((c) => c.issue).sort(), [730, 736]);
+          assert.deepEqual(told, [REFUSED], '#804\'s session holds no role on #736, so it still gets the PR message');
+          assert.equal(exitCodeFor(r as never), 0);
+          assert.ok(h.logged.some((l) => l.event === 'dispatch-workflow' && JSON.stringify(l.heard ?? null).includes('session_01WROTEIT')), JSON.stringify(h.logged));
+          assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 500, 'the range is planned: the cursor moves');
+        });
+
+        test('the spec owner of an unclaimed ticket, its body\'s session link, gets no PR message', async () => {
+          const { told } = await ran({ 736: { body: `The spec.${footer(REFUSED)}` } });
+          assert.deepEqual(told, [SESSION]);
+        });
+
+        test('each session still gets the PR message where no ticket comment reaches it', async () => {
+          const roles = { 730: { labels: [CLAIM] }, 736: { body: `The spec.${footer(REFUSED)}` } };
+          const cases: Array<[string, Parameters<typeof ran>]> = [
+            ['the tickets already carried the label, so they got no comment', [{ 730: { ...roles[730], labels: [CLAIM, DEV] }, 736: { ...roles[736], labels: [DEV] } }]],
+            ['deployedLabels is off', [roles, { switches: { deployedLabels: false } }]],
+            ['subscribeMessages is off, so the comment reaches nobody', [roles, { switches: { subscribeMessages: false } }]],
+            ['trust.relay leaves out the tickets\' author, so the comment reaches nobody', [{ 730: { ...roles[730], association: 'NONE' }, 736: { ...roles[736], association: 'NONE' } }]],
+            ['the comments were refused', [roles, { over: { comment: async () => { throw new Error('403 Resource not accessible by integration'); } } }]],
+          ];
+          for (const [why, args] of cases) {
+            const { told } = await ran(...args);
+            assert.deepEqual(told, [REFUSED, SESSION], why);
+          }
+        });
+
+        test('a builder lookup that fails sends the PR message, and is logged', async () => {
+          const { h, told } = await ran({ 730: { labels: [CLAIM] } }, { over: { closure: async () => { throw new Error('GET /issues/730/timeline failed: 502'); } } });
+          assert.deepEqual(told, [REFUSED, SESSION]);
+          assert.ok(h.logged.some((l) => l.event === 'dispatch-labels' && /502/.test(String(l.error))), JSON.stringify(h.logged));
+        });
+      });
     });
   });
 

@@ -379,7 +379,7 @@ export const lastDispatch = (comments) => {
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit
  *   the lane ({@link FIRE_BUDGET}).
- * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], ownerOnly?: true }} TicketFire
+ * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[] }} TicketFire
  *   A comment on an issue, or the issue closed or reopened, where the issue
  *   may be claimed: its spec owner and, on a claimed ticket, its builders
  *   hear it, each told which role it holds (dispatch/ticket-fire.mjs). The
@@ -392,8 +392,7 @@ export const lastDispatch = (comments) => {
  *   session the body's owner link names, read under the repo's
  *   `trust.relay`, absent where it names none. `poster`: the session that
  *   signed the comment, which hears nothing of its own post. `closing`: as
- *   a message fire's. `authors`: as a message fire's. `ownerOnly`: the
- *   builders hear of this elsewhere, so only the spec owner is sent it.
+ *   a message fire's. `authors`: as a message fire's.
  * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
@@ -498,11 +497,11 @@ export const build = Object.freeze({
    * @param {{
    *   issue: number, text: string, event: 'comments' | 'close', state: 'open' | 'closed', labels: string[],
    *   owner?: string | null | undefined, poster?: string | null | undefined, closing?: boolean | undefined,
-   *   authors?: string[] | undefined, ownerOnly?: boolean | undefined,
+   *   authors?: string[] | undefined,
    * }} args
    * @returns {TicketFire}
    */
-  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, ownerOnly }) => ({
+  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors }) => ({
     kind: 'ticket',
     issue,
     text,
@@ -514,7 +513,6 @@ export const build = Object.freeze({
       poster: poster ?? undefined,
       closing: closing === true ? /** @type {true} */ (true) : undefined,
       authors,
-      ownerOnly: ownerOnly === true ? /** @type {true} */ (true) : undefined,
     }),
   }),
 
@@ -1042,9 +1040,7 @@ const parseTicket = (e) => {
   for (const key of /** @type {const} */ (['owner', 'poster'])) {
     if (e?.[key] !== undefined && !(typeof e[key] === 'string' && MESSAGE_SESSION.test(e[key]))) refuse(`${key} must be a session id or claude.ai/code URL`);
   }
-  for (const key of /** @type {const} */ (['closing', 'ownerOnly'])) {
-    if (e?.[key] !== undefined && e[key] !== true) refuse(`${key} must be true or absent`);
-  }
+  if (e?.closing !== undefined && e.closing !== true) refuse('closing must be true or absent');
   if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) refuse('authors must be trust values');
   const t = /** @type {Record<string, unknown>} */ (e);
   return {
@@ -1058,7 +1054,6 @@ const parseTicket = (e) => {
     ...(t.poster === undefined ? {} : { poster: String(t.poster) }),
     ...(t.closing === true ? { closing: /** @type {true} */ (true) } : {}),
     ...(t.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (t.authors)] }),
-    ...(t.ownerOnly === true ? { ownerOnly: /** @type {true} */ (true) } : {}),
   };
 };
 

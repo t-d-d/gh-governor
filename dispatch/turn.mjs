@@ -128,14 +128,15 @@ import { closingFires } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { reviewIssue, reviewLabelsOf } from './issue-review.mjs';
-import { sessionId } from './webhook/subscribe.mjs';
+import { relayedBody, sameSession, sessionId, sessionNamedIn } from './webhook/subscribe.mjs';
+import { buildersOf } from './builders.mjs';
 import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, deployedTarget, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
 import { deployedComment } from './webhook/deployed-comment.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, writeHeartbeatIssue } from './heartbeat.mjs';
 import { launcher, routineLaunch } from './launcher.mjs';
-import { RELAY, autoOf, relayOf, reviewOf } from './trust.mjs';
+import { RELAY, autoOf, lets, relayOf, reviewOf } from './trust.mjs';
 import { CAP_ZERO_REASON, REPO_SKIPPED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan, routineFault } from './launch-plan.mjs';
 
 export { CLAIM_STRANDED, CONNECTOR_MISSING, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, ticketOf } from './launch-plan.mjs';
@@ -1223,7 +1224,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     /** @type {{ outcome: Dispatched['outcome'], sessionUrl: string | null } | null} */
     let triage = null;
     let loginStored = false;
-    /** @type {Awaited<ReturnType<typeof labelTickets>>} */
+    /** @type {Omit<NonNullable<Awaited<ReturnType<typeof labelTickets>>>, 'commented'> | null} */
     let labels = null;
     /** What became of the label's cursor, when the plan moved it. @type {{ moved: boolean } | { held: number } | { error: string } | null} */
     let cursor = null;
@@ -1250,9 +1251,23 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         if (invocation.kind === 'job') deps.log('dispatch-labels', { ...about, error: messageOf(error) });
         throw error;
       }
-      if (turnsOn(config, 'deployedLabels')) labels = await labelTickets(invocation, reader, coverage, deps, about);
-      const plan = await planWorkflow({ invocation, coverage, prompts, workflows });
+      /** @type {Commented[]} */
+      let commented = [];
+      if (turnsOn(config, 'deployedLabels')) {
+        const labelled = await labelTickets(invocation, reader, coverage, deps, about);
+        if (labelled !== null) {
+          const { commented: those, ...rest } = labelled;
+          labels = rest;
+          commented = those;
+        }
+      }
+      const hearers = await hearersOf(commented, { reader, config, ownerOf: (pr) => delivery().ownerOf(pr), log: deps.log, about });
+      /** @type {import('./workflow.mjs').Heard} */
+      const heard = (session, pr) => hearers.some((h) => h.prs.includes(pr) && h.sessions.some((s) => sameSession(s, session)));
+      /** @type {import('./workflow.mjs').TargetPlan} */
+      const plan = await planWorkflow({ invocation, coverage, prompts, workflows, heard });
       reason = plan.reason;
+      if ((plan.heard ?? []).length > 0) deps.log('dispatch-workflow', { ...about, heard: plan.heard, reason: "each hears the deploy from governor's comment on a ticket its PRs closed, so its PR message leaves those PRs out" });
       // What the range covers, before anything is sent: a wrong baseline is
       // read off this line. A refusal to plan from a stale runs list
       // is its own event, which governor-stale-runs pages on.
@@ -1298,8 +1313,11 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         const toldOf = (/** @type {{ prs: number[], session: string }} */ n) => n.prs.map((pr) => `${pr} ${sessionId(n.session)}`);
         const owed = plan.notes.filter((n) => !toldOf(n).every((t) => told.has(t)) && tries(n.session) < WORKFLOW_SEND_TRIES);
         if (owed.length < plan.notes.length) deps.log('dispatch-workflow', { ...about, settled: plan.notes.filter((n) => !owed.includes(n)).map((n) => ({ session: n.session, prs: n.prs })), reason: 'told, or given up on, by an earlier turn' });
+        // A session that heard the deploy from a ticket's comment counts as
+        // told, so a turn from a held cursor, which finds the label already
+        // on and comments again on nothing, does not message it either.
         /** @type {Delivered} */
-        const now = { told: [], failed: [] };
+        const now = { told: (plan.heard ?? []).flatMap(toldOf), failed: [] };
         let untold = 0;
         for (const [i, note] of owed.entries()) {
           if (deps.now() - started > WORKFLOW_SEND_WINDOW_MS) {
@@ -1676,7 +1694,8 @@ export const ticketsOf = (invocation, coverage) => {
  * @param {import('./coverage.mjs').Coverage} coverage
  * @param {{ log: (event: string, context?: Record<string, unknown>) => void }} deps
  * @param {Record<string, unknown>} about
- * @returns {Promise<{ label: string, added: number[], failed: Array<{ ticket: number, error: string }> } | null>}
+ * @returns {Promise<{ label: string, added: number[], failed: Array<{ ticket: number, error: string }>, commented: Commented[] } | null>}
+ *   `commented`: each ticket the turn commented on, as read before its label.
  */
 const labelTickets = async (invocation, reader, coverage, deps, about) => {
   const plan = ticketsOf(invocation, coverage);
@@ -1689,6 +1708,7 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
   // target, or a run, gets none.
   const note = target !== null && invocation.kind === 'job' ? deployedComment({ target, workflow: invocation.workflow, url: invocation.url, commit: invocation.commit }) : null;
   const added = [];
+  /** @type {Commented[]} */
   const commented = [];
   const failed = [];
   for (const { ticket, prs } of plan.tickets) {
@@ -1696,9 +1716,12 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
     // told already, by the turn that added it.
     /** @type {boolean | null} */
     let had = null;
+    /** @type {import('../scripts/lib/github-app.mjs').TicketRow | null} */
+    let row = null;
     if (note !== null) {
       try {
-        had = (await reader.ticket(ticket)).labels.includes(plan.label);
+        row = await reader.ticket(ticket);
+        had = row.labels.includes(plan.label);
       } catch (error) {
         failed.push({ ticket, error: messageOf(error) });
         deps.log('dispatch-labels', { ...about, label: plan.label, ticket, prs, error: `could not read its labels, so no comment: ${messageOf(error)}` });
@@ -1712,17 +1735,60 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
       deps.log('dispatch-labels', { ...about, label: plan.label, ticket, prs, error: messageOf(error) });
       continue;
     }
-    if (had !== false || note === null) continue;
+    if (had !== false || note === null || row === null) continue;
     try {
       await reader.comment(ticket, note);
-      commented.push(ticket);
+      commented.push({ ticket, prs, row });
     } catch (error) {
       failed.push({ ticket, error: messageOf(error) });
       deps.log('dispatch-labels', { ...about, label: plan.label, ticket, prs, error: `comment refused: ${messageOf(error)}` });
     }
   }
-  deps.log('dispatch-labels', { ...about, label: plan.label, ...plan.range, added, commented });
-  return { label: plan.label, added, failed };
+  deps.log('dispatch-labels', { ...about, label: plan.label, ...plan.range, added, commented: commented.map((c) => c.ticket) });
+  return { label: plan.label, added, failed, commented };
+};
+
+/**
+ * @typedef {{ ticket: number, prs: number[], row: import('../scripts/lib/github-app.mjs').TicketRow }} Commented
+ *   A ticket a shipping job commented on, the PRs it shipped that close it,
+ *   and the ticket as read before the turn labelled it.
+ */
+
+/**
+ * Who hears governor's deploy comment on each ticket the turn commented
+ * on: the roles its ticket fire, or its spec owner's message, reaches
+ * (dispatch/ticket-fire.mjs). That is the spec owner the body's link names,
+ * and on a claimed ticket each builder the one lookup finds
+ * (dispatch/builders.mjs). Nobody hears it where `subscribeMessages` is
+ * off, or where `trust.relay` leaves out the ticket's author, whom the
+ * comment's message is judged by. A lookup that fails is logged, and that
+ * ticket's builders count as hearing nothing, so their PR message still
+ * goes: a session may hear a deploy twice, never not at all.
+ *
+ * @param {Commented[]} commented
+ * @param {{ reader: Reader, config: import('./repo-config.mjs').RepoConfig, ownerOf: (pr: number) => Promise<{ session: string | null }>, log: (event: string, context?: Record<string, unknown>) => void, about: Record<string, unknown> }} ctx
+ * @returns {Promise<Array<{ ticket: number, prs: number[], sessions: string[] }>>}
+ */
+const hearersOf = async (commented, { reader, config, ownerOf, log, about }) => {
+  if (commented.length === 0 || !turnsOn(config, 'subscribeMessages')) return [];
+  const relay = relayOf(config);
+  const { claim } = config.labels;
+  const hearers = [];
+  for (const { ticket, prs, row } of commented) {
+    if (!lets(relay, row)) continue;
+    const owner = sessionNamedIn(relayedBody(row, relay));
+    const sessions = owner === null ? [] : [owner];
+    if (claim !== '' && row.labels.includes(claim)) {
+      try {
+        const found = await buildersOf({ reader, ownerOf, issue: ticket, ticket: row, claim, relay, owner });
+        sessions.push(...found.sessions);
+      } catch (error) {
+        log('dispatch-labels', { ...about, ticket, prs, error: `could not find its builders, so their PR messages still go: ${messageOf(error)}` });
+      }
+    }
+    if (sessions.length > 0) hearers.push({ ticket, prs, sessions });
+  }
+  return hearers;
 };
 
 /**

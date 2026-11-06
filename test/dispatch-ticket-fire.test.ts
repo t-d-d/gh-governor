@@ -162,11 +162,16 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     assert.deepEqual(sent[1]!.opts.owns, [60]);
   });
 
-  test('a comment the builders hear elsewhere (ownerOnly): the spec owner alone, the builder still named', async () => {
-    const { ctx, sent } = context();
-    await planTicket(fire({ ownerOnly: true }), ctx);
-    assert.deepEqual(to(sent), [SPEC]);
-    assert.match(sent[0]!.text, new RegExp(`builder is ${BUILDER}`));
+  // Governor's deploy comment on a closed ticket, as the receiver queues it
+  // (dispatch/webhook/mention.mjs): the builder the merged PR names hears it
+  // beside the spec owner, and each is asked to sign off where nothing else
+  // is open, since its PR's own deploy message is not sent (#543).
+  test('governor\'s deploy comment on a closed claimed ticket reaches the spec owner and the merged PR\'s owner, each closing', async () => {
+    const { ctx, sent } = context({ merged: 60, owners: { 60: PR_OWNER } });
+    await planTicket(fire({ state: 'closed', closing: true, text: 'Deployed to prod by Deliver.' }), ctx);
+    assert.deepEqual(to(sent), [SPEC, PR_OWNER]);
+    assert.deepEqual(sent.map((m) => m.opts.closing), [true, true]);
+    assert.match(sent[1]!.text, /You are its builder/);
   });
 
   test('a claimed ticket with neither role found: nobody is sent anything', async () => {

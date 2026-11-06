@@ -25,6 +25,21 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
     instead of messages to the merges' sessions.
   - `tags`: target to the tag its deploy moves. Without a target in `tags`,
     the message names the commit it built and no tag.
+- **A session hears of a green deploy once.** A shipping job messages the
+  session of each PR it shipped, and with `deployMessages.deployedLabels`
+  on, comments on each ticket those PRs close the first time the ticket
+  gets the label. It sends no PR message about a PR to a session that holds
+  a role on a ticket that PR closes and that the turn has just commented on:
+  the ticket's spec owner, its body's owner link, or on a claimed ticket a
+  builder the one lookup finds (dispatch/builders.mjs). That session hears
+  the comment, which asks it to sign off where the ticket is closed. The PR
+  message still goes wherever no ticket comment reaches the PR's session:
+  the PR closes no ticket; `deployedLabels` is off; the ticket is outside
+  `TICKET_LABEL_PATHS`; the ticket already carried the label; the session
+  holds no role on the ticket; `subscribeMessages` is off or `trust.relay`
+  leaves out the ticket's author, so the comment reaches nobody; or the
+  comment or the lookup failed. A red deploy still goes to the PR's
+  session, since governor posts nothing on a ticket for it.
 - **The default branch comes from the event payload**
   (`repository.default_branch`), never from the literal `main`. Each
   workflow, job, scheduled and conflicts fire carries it, and the task reads
@@ -62,6 +77,9 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   "prod": "deploy/prod" }, "deployedLabels": true }` in
   test/fixtures/factory/.github/governor.json.
 - Governor's own shipping job: the deploy job in .github/workflows/deploy.yml.
+- Who hears a green deploy from a ticket's comment: `hearersOf` in
+  dispatch/turn.mjs, which `planWorkflow` (dispatch/workflow.mjs) reads to
+  leave those PRs out of each session's message.
 - test/dispatch-webhook.test.ts pins the receiver's payload-only routing, a
   `trunk` repo's included, and the drop by the repo's switches after it, in
   `fitness: the receiver drops a fire only where the repo's hook-table item
@@ -98,4 +116,4 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   the head is the one exception, because its end queues the review again.
 
 Judgment: that a served repo's workflows write the job-name suffix and `TICKET_LABEL_PATHS`, no check here sees: governor cannot read another repo's files at that repo's merge time.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The receiver drops a fire whose switch the repo's hook-table item says is off, the conflicts check never, since #147. The PR's own CI run at its head holds its merge, as test 8, since #398: a repo whose plan cannot require a check would otherwise merge a pass on red CI. The CI run at the head holds a merge only where `prReview.waitForCi` is not `false` since #459: a repo whose CI runs only after the merge has no run at a PR's head, so every PR waited forever. The deploy targets and tags moved from `workflows` to the `deployMessages` section, and `workflows` keeps only `ci`, since #525.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The receiver drops a fire whose switch the repo's hook-table item says is off, the conflicts check never, since #147. The PR's own CI run at its head holds its merge, as test 8, since #398: a repo whose plan cannot require a check would otherwise merge a pass on red CI. The CI run at the head holds a merge only where `prReview.waitForCi` is not `false` since #459: a repo whose CI runs only after the merge has no run at a PR's head, so every PR waited forever. The deploy targets and tags moved from `workflows` to the `deployMessages` section, and `workflows` keeps only `ci`, since #525. A shipping job sends no PR message to a session that holds a role on a ticket it has just commented on, since that session hears the comment, since #543, under PRD #535.

@@ -228,7 +228,7 @@
       "additionalProperties": false
     },
     "subscribeMessages": {
-      "description": "Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. On a claimed ticket, a comment, a close and a reopen also reach the sessions building it, and each message names the ticket's spec owner and builders. A filer hears of its ticket's first deploy to each target through governor's comment on its issue, which asks it to sign off where the issue is closed. It hears a `deployed:` label only through a subscribe line for `deploys`.",
+      "description": "Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. On a claimed ticket, a comment, a close and a reopen also reach the sessions building it, and each message names the ticket's spec owner and builders. A ticket's spec owner, and its builders where it is claimed, hear of its first deploy to each target through governor's comment on it, which asks them to sign off where the issue is closed, and then get no PR deploy message for it. It hears a `deployed:` label only through a subscribe line for `deploys`.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -551,7 +551,7 @@
           }
         },
         "deployedLabels": {
-          "description": "Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, so the issue's filer hears of the deploy. Default false.",
+          "description": "Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, so the ticket's spec owner and builders hear of the deploy there in place of a PR message. Default false.",
           "type": "boolean"
         },
         "prompts": {
