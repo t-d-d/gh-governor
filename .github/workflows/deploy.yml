@@ -423,10 +423,13 @@ jobs:
       # stack after the rollback as it does after the apply, with the same
       # lines (test/dispatch-stack.test.ts holds the two steps together). A
       # rollback that kept the URL writes the same config again. The task is
-      # probed whatever this step did, and a red one pages the operator.
+      # probed whatever this step did, and a red one pages the operator. The
+      # script's calls to GitHub carry no timeout, so the step has one: a hung
+      # call would otherwise hold the probe until the job's timeout.
       - name: Point the App's webhook at the receiver the rollback left
         id: repoint
         if: ${{ failure() && steps.rollback.outcome == 'success' }}
+        timeout-minutes: 5
         run: |
           WEBHOOK_URL=$(aws cloudformation describe-stacks --stack-name governor \
             --query "Stacks[0].Outputs[?OutputKey=='WebhookUrl'].OutputValue" --output text)
@@ -456,14 +459,15 @@ jobs:
 
       # The deploy's red run reaches whoever watches Actions; governor down
       # reaches the operator, through the topic every alarm publishes to.
-      # Once the rollback has started, and until its probe passes, governor
-      # may be down, so the page reads the rollback's own outcomes under
+      # Once the rollback has started, and until its probe passes and the
+      # App's webhook points at the receiver it left, governor may be down or
+      # deaf, so the page reads the rollback's own outcomes under
       # `always()`. A cancel by hand or by the job's timeout comes after the
       # red probe, so whether the job then reads as failed or as cancelled,
       # the page runs: it asks neither `failure()` nor `cancelled()`, nor
       # `job.status`. The job's timeout ends it a few minutes inside the
       # deploy role's one-hour session, which leaves the page time to publish.
-      - name: Page the operator, since the rollback did not bring the task back
+      - name: Page the operator, since the rollback did not bring governor back
         id: page
         if: ${{ always() && steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && !(steps.repoint.outcome == 'success' && steps.reprobe.outcome == 'success') }}
         env:
@@ -476,6 +480,9 @@ jobs:
             echo "::error::the rollback did not bring the task back; governor is down. Paging the operator."
             SUBJECT="[governor] A deploy's probe failed, and so did its rollback"
             MESSAGE="Governor is down. The deploy at ${GITHUB_SHA} failed its probe, and rolling the main stack back to what it ran before did not bring the task back: the rollback's apply or its probe failed. Read the run: ${RUN_URL}"
+            if [ "$REPOINT_OUTCOME" = failure ]; then
+              MESSAGE="${MESSAGE} Pointing the App's webhook at the receiver the rollback left failed too, so once the task is back, check the webhook's URL."
+            fi
           elif [ "$REPOINT_OUTCOME" = failure ]; then
             echo "::error::the rollback brought the task back, but could not point the App's webhook at the receiver it left; GitHub's deliveries may fail. Paging the operator."
             SUBJECT="[governor] A deploy's probe failed, and its rollback could not point the App's webhook"

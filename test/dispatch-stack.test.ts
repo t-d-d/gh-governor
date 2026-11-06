@@ -1319,8 +1319,11 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     assert.ok(repoint, 'no step points the App\'s webhook after the rollback');
     assert.ok(runsScript('scripts/point-app-webhook.mjs')(repoint));
     assert.equal(repoint.run, point.run, 'the rollback points the webhook differently from the deploy');
-    assert.equal(repoint.env, point.env);
+    assert.deepEqual(repoint.env, point.env);
     assert.equal(repoint.if, "${{ failure() && steps.rollback.outcome == 'success' }}");
+    // GitHub's API calls carry no timeout of their own, and a hung one would
+    // hold the rollback's probe until the job's timeout cancels the run.
+    assert.ok(Number(repoint['timeout-minutes']) > 0 && Number(repoint['timeout-minutes']) <= 5, 'the step that points the webhook after the rollback can hold up its probe');
     const index = (id: string) => steps.findIndex(withId(id));
     assert.ok(index('rollback') < index('repoint') && index('repoint') < index('reprobe'));
   });
@@ -1336,6 +1339,8 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     const run = steps.find(withId('page'))?.run ?? '';
     assert.match(run, /elif \[ "\$REPOINT_OUTCOME" = failure \]/);
     assert.match(run, /webhook/);
+    // A rollback whose probe failed as well still says the webhook was not pointed.
+    assert.match(run, /if \[ "\$REPOINT_OUTCOME" = failure \]; then\s+MESSAGE="\$\{MESSAGE\} [^"]*webhook/);
   });
 
   test('a rollback that cannot apply pages the operator, and probes nothing', () => {

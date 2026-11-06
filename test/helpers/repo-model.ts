@@ -26,6 +26,7 @@ export type WorkflowStep = {
   // A step whose job is to report cannot be what fails the run; GitHub spells
   // that `continue-on-error`, so a suite that asserts the distinction needs it.
   'continue-on-error'?: boolean;
+  'timeout-minutes'?: number;
   // js-yaml parses unquoted scalar env values (`FOO: 1`, `FOO: true`) as
   // number/boolean, so this is not string-only in general.
   env?: Record<string, string | number | boolean>;

@@ -8,8 +8,9 @@
  * one the receiver routes is unticked, and the deploy's `app-events` check
  * reads them back (scripts/conformance.mjs).
  *
- * Run by .github/workflows/deploy.yml after the apply. Everything arrives
- * in the environment, so neither key sits in an argument list:
+ * Run by .github/workflows/deploy.yml after the apply, and again after a
+ * rollback. Everything arrives in the environment, so neither key sits in an
+ * argument list:
  *
  *   APP_ID              the App's id, for its JWT
  *   APP_PRIVATE_KEY     the App's key, for its JWT (`/app/hook/config` takes no other)
