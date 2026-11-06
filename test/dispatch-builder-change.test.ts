@@ -20,6 +20,7 @@ import { SWITCHES, readConfig, type RepoConfig } from '../dispatch/repo-config.m
 import { planClosingPr, planTicket } from '../dispatch/ticket-fire.mjs';
 import { GITHUB_SOURCE, deliveries } from '../dispatch/deliveries.mjs';
 import { sessionNamedIn } from '../dispatch/webhook/subscribe.mjs';
+import { closedBy } from '../dispatch/pr-body.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 const SECRET = 'whsec_test';
@@ -179,6 +180,12 @@ describe('the receiver: a PR that comes to close a ticket queues a closingPr fir
       assert.equal(ofKind(await handled('pull_request', pull('opened', body)), 'closingPr').length, 1, body);
     }
   });
+
+  test('a reference closedBy reads past an HTML comment queues the fire too', async () => {
+    const body = `Closes <!-- the ticket -->#7\n\n${OTHER}`;
+    assert.deepEqual(closedBy(body, REPO), [7]);
+    assert.equal(ofKind(await handled('pull_request', pull('opened', body)), 'closingPr').length, 1);
+  });
 });
 
 // ── The task: a dispatch comment's fire queued before #565 ──────────────
@@ -293,8 +300,9 @@ const prContext = ({
   const posted: Array<{ issue: number, body: string }> = [];
   const logged: Array<Record<string, unknown>> = [];
   const sent: Sent[] = [];
+  const pulls: number[] = [];
   const reader = {
-    pull: async (n: number) => ({ number: n, body: prBody, head: 'claude/other', defaultBranch: 'main', open, author: prAuthor.author, association: prAuthor.association }),
+    pull: async (n: number) => { pulls.push(n); return { number: n, body: prBody, head: 'claude/other', defaultBranch: 'main', open, author: prAuthor.author, association: prAuthor.association }; },
     ticket: async (n: number) => ({ number: n, title: 'A ticket', body, state, labels, pull: false, ...ticketAuthor }),
     openClosing: async () => closing.map((number) => ({ number, title: `PR ${number}`, html_url: `u${number}` })),
     closure: async () => ({ pr: null }),
@@ -315,7 +323,7 @@ const prContext = ({
     now: () => NOW,
     log: (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); },
   };
-  return { ctx: ctx as never, posted, logged, sent };
+  return { ctx: ctx as never, posted, logged, sent, pulls, reader };
 };
 
 const closingPr = { kind: 'closingPr', repo: REPO, pr: 9 } as never;
@@ -363,6 +371,39 @@ describe('planClosingPr: a PR by another session that closes a claimed ticket na
     const { ctx, posted } = prContext({ thread: [forged], body: 'A person wrote this.' });
     await planClosingPr(closingPr, ctx);
     assert.deepEqual(dispatchedTo(posted[0]!.body), { builder: OTHER, displaced: null });
+  });
+
+  test('a newest dispatch comment that names no session displaces nobody, and the spec owner hears only as the spec owner', async () => {
+    const { ctx, posted, sent } = prContext({ thread: [
+      { body: dispatchMarker({ at: stamp(NOW - 7_200_000), sessionUrl: BUILDER }), ours: true },
+      { body: dispatchMarker({ at: stamp(NOW - 3_600_000), sessionUrl: null }), ours: true },
+    ] });
+    await planClosingPr(closingPr, ctx);
+    assert.deepEqual(dispatchedTo(posted[0]!.body), { builder: OTHER, displaced: null });
+    assert.deepEqual(sent.map((m) => m.session), [SPEC]);
+    assert.match(sent[0]!.text, /You are its spec owner\./);
+    assert.doesNotMatch(sent[0]!.text, /no longer build|sign off/);
+  });
+
+  test('the turn reads its PR once: the owner is found from the PR it read', async () => {
+    const c = prContext({ prBody: `Closes #7\n\n${BUILDER}` });
+    const real = deliveries({
+      prompts: CONFIG.prompts as never,
+      signOff: true,
+      reader: async () => c.reader as never,
+      repo: REPO,
+      relay: RELAY,
+      send: async () => ({ status: 0, output: '{}' }),
+      launch: async () => ({ outcome: 'dispatched', sessionUrl: OTHER }),
+      sessions: () => async () => null,
+      now: () => NOW,
+      log: () => {},
+      sleep: async () => {},
+    });
+    const ctx = { ...(c.ctx as Record<string, unknown>), delivery: () => real } as never;
+    await planClosingPr(closingPr, ctx);
+    assert.deepEqual(c.pulls, [9]);
+    assert.deepEqual(c.posted, [], 'the PR\'s owner, read from its body, builds the ticket already');
   });
 
   test('an unclaimed ticket, a closed ticket, a closed PR, and a PR no session holds post nothing', async () => {
@@ -423,7 +464,7 @@ describe('a takeover of a PR that closes a ticket posts the dispatch comment on 
   const archived = async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) });
   const accepted = (session: string) => ({ status: 0, output: JSON.stringify({ ok: true, session_id: session, url: `https://claude.ai/code/${session}` }) });
 
-  const fakes = ({ send, sessions = async () => null as string | null, prBody = PR_BODY, open = true }: { send: (m: { session: string }) => Promise<{ status: number, output: string }>, sessions?: (branch: string) => Promise<string | null>, prBody?: string, open?: boolean }) => {
+  const fakes = ({ send, sessions = async () => null as string | null, prBody = PR_BODY, open = true, kinds = {} }: { send: (m: { session: string }) => Promise<{ status: number, output: string }>, sessions?: (branch: string) => Promise<string | null>, prBody?: string, open?: boolean, kinds?: Record<number, { pull: boolean, state: string }> }) => {
     const comments: Array<{ issue: number, body: string }> = [];
     const edits: Array<{ pr: number, body: string }> = [];
     let body = prBody;
@@ -433,7 +474,7 @@ describe('a takeover of a PR that closes a ticket posts the dispatch comment on 
       pull: async (n: number) => ({ number: n, body, head: 'claude/branch-9', defaultBranch: 'main', open, author: 't-d-d', association: 'OWNER', bot: false, own: false }),
       updatePull: async (n: number, change: { body: string }) => { edits.push({ pr: n, body: change.body }); body = change.body; },
       issue: async (n: number) => ({ number: n, body: '', pull: false }),
-      ticket: async (n: number) => ({ number: n, title: 'A ticket', body: `The spec.\n\n${SPEC}${FOOTER}`, author: 't-d-d', association: 'OWNER' }),
+      ticket: async (n: number) => ({ number: n, title: 'A ticket', body: `The spec.\n\n${SPEC}${FOOTER}`, author: 't-d-d', association: 'OWNER', ...kinds[n] }),
       updateIssue: async () => {},
       openNaming: async () => [],
       openPulls: async () => [],
@@ -488,6 +529,16 @@ describe('a takeover of a PR that closes a ticket posts the dispatch comment on 
     await f.delivery.deliver({ session: BUILDER }, 'PR #9 merged', { source: GITHUB_SOURCE, owns: [9] } as never);
     assert.equal(sessionNamedIn(f.edits[0]?.body ?? ''), LIVE, 'the body names the branch session');
     assert.deepEqual(f.comments, []);
+  });
+
+  test('a takeover posts on each issue its PR closes, open or closed, and on no PR', async () => {
+    const f = fakes({
+      send: async (m) => (m.session === SPEC ? accepted('session_01SPECOWNER') : archived(m)),
+      prBody: `Closes #7\nCloses #6\nCloses #8\n\n## Outcome\n\nThe work.\n\n${BUILDER}`,
+      kinds: { 7: { pull: false, state: 'open' }, 6: { pull: false, state: 'closed' }, 8: { pull: true, state: 'open' } },
+    });
+    await f.delivery.deliver({ session: BUILDER }, 'a remark', { source: GITHUB_SOURCE, fallback, takeover: true } as never);
+    assert.deepEqual(f.comments.map((c) => c.issue), [7, 6]);
   });
 
   test('a takeover of a PR that closes no ticket posts nothing', async () => {

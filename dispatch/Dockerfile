@@ -46,9 +46,10 @@ COPY dispatch/launch-session.py ./dispatch/launch-session.py
 COPY dispatch/lane.mjs dispatch/turn.mjs dispatch/launcher.mjs dispatch/deliveries.mjs dispatch/unblocked.mjs dispatch/waits.mjs dispatch/cli.mjs dispatch/workflow.mjs dispatch/runs.mjs dispatch/coverage.mjs dispatch/labels.mjs dispatch/branch-run.mjs dispatch/review.mjs dispatch/checklist.mjs dispatch/pr-body.mjs dispatch/conflicts.mjs dispatch/prompts.mjs dispatch/repo-config.mjs dispatch/repos.mjs dispatch/heartbeat.mjs dispatch/periodics.mjs dispatch/pickup.mjs dispatch/hooks.mjs dispatch/dispatch-fire.mjs dispatch/unblocked-fire.mjs dispatch/builders.mjs dispatch/ticket-fire.mjs dispatch/told.mjs dispatch/roles.mjs dispatch/sweep.mjs dispatch/launch-plan.mjs dispatch/uncounted.mjs dispatch/routines.mjs dispatch/trust.mjs dispatch/start.mjs dispatch/cli-answer.mjs dispatch/issue-review.mjs ./dispatch/
 # The fire the receiver builds and the task parses (fire.mjs), the switch each
 # fire needs (switches.mjs), the bodies the turn reads the way the
-# receiver does, and the error text the task logs the way the receiver does
-# (error-text.mjs).
-COPY dispatch/webhook/error-text.mjs dispatch/webhook/fire.mjs dispatch/webhook/mention.mjs dispatch/webhook/subscribe.mjs dispatch/webhook/review-comment.mjs dispatch/webhook/deployed-comment.mjs dispatch/webhook/hook-table.mjs dispatch/webhook/switches.mjs ./dispatch/webhook/
+# receiver does, the error text the task logs the way the receiver does
+# (error-text.mjs), and the closing-keyword grammar both read PR bodies by
+# (closing.mjs).
+COPY dispatch/webhook/error-text.mjs dispatch/webhook/fire.mjs dispatch/webhook/mention.mjs dispatch/webhook/subscribe.mjs dispatch/webhook/review-comment.mjs dispatch/webhook/deployed-comment.mjs dispatch/webhook/hook-table.mjs dispatch/webhook/switches.mjs dispatch/webhook/closing.mjs ./dispatch/webhook/
 # The markdown parser subscribe.mjs reads quotes with, and the notices of the
 # three packages it carries (dispatch/webhook/vendor/README.md).
 COPY dispatch/webhook/vendor/commonmark.cjs dispatch/webhook/vendor/LICENSE.commonmark dispatch/webhook/vendor/LICENSE.entities dispatch/webhook/vendor/LICENSE.mdurl ./dispatch/webhook/vendor/
