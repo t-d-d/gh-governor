@@ -37,6 +37,11 @@ const API_VERSION = '2022-11-28';
  * again: a write may have landed whatever came back. Any other answer, a 404,
  * a 422, a 403 for a missing permission or a longer rate limit, is never
  * resent here.
+ *
+ * A call that spends all its sends on server errors or dropped connections
+ * turns resends off for the rest of the turn (`Resends`): a fault that
+ * outlasts two resends is an outage, not a blip, and every later read would spend 3 sends and 3 seconds
+ * of pauses failing, which a sweep or a review would take out of its window.
  */
 const SENDS = 3;
 const RESEND_PAUSE_MS = 1_000;
@@ -71,7 +76,17 @@ export const appJwt = ({ appId, privateKeyPem, now = Date.now() }) => {
 /** @typedef {(event: string, context?: Record<string, unknown>) => void} Log */
 
 /**
- * @param {{ fetch: typeof globalThis.fetch, sleep: (ms: number) => Promise<unknown>, log: Log }} io
+ * @typedef {{ spent: boolean }} Resends Whether a call this turn has spent
+ * its sends, after which every call sharing the switch is sent once. A turn
+ * makes one (`turnResends`) and hands it to every client it builds; a client
+ * given none has its own.
+ */
+
+/** A turn's resend switch, on. @returns {Resends} */
+export const turnResends = () => ({ spent: false });
+
+/**
+ * @param {{ fetch: typeof globalThis.fetch, sleep: (ms: number) => Promise<unknown>, log: Log, resends: Resends }} io
  * @param {string} auth The Authorization header value.
  * @param {string} method
  * @param {string} path Under the API host.
@@ -79,7 +94,7 @@ export const appJwt = ({ appId, privateKeyPem, now = Date.now() }) => {
  * @param {boolean} [repeatable] Safe to send twice; a GET always is.
  * @returns {Promise<any>} The JSON body, or null for an empty answer.
  */
-const request = async ({ fetch, sleep, log }, auth, method, path, body, repeatable = method.toUpperCase() === 'GET') => {
+const request = async ({ fetch, sleep, log, resends }, auth, method, path, body, repeatable = method.toUpperCase() === 'GET') => {
   /** What the last answer asks of a resend: see `resendOf`. @type {Resend} */
   let resend = 'backoff';
   const send = async () => {
@@ -118,15 +133,19 @@ const request = async ({ fetch, sleep, log }, auth, method, path, body, repeatab
       return await send();
     } catch (error) {
       // A dropped connection leaves `resend` at its backoff: no answer came.
-      if (sent >= sends || resend === null) throw error;
+      if (resend === null || resends.spent) throw error;
       const status = /** @type {{ status?: number }} */ (error)?.status;
-      log('dispatch-github-retry', {
-        level: 'info',
-        method,
-        path,
-        ...(status === undefined ? { error: messageOf(error) } : { status }),
-        try: sent,
-      });
+      const answer = status === undefined ? { error: messageOf(error) } : { status };
+      if (sent >= sends) {
+        // A rate limit is the one token's, not GitHub's: the turn's other
+        // installations keep their resends.
+        if (sends > 1 && /** @type {{ rateLimited?: boolean }} */ (error)?.rateLimited !== true) {
+          resends.spent = true;
+          log('dispatch-github-resends-off', { level: 'warn', method, path, ...answer });
+        }
+        throw error;
+      }
+      log('dispatch-github-retry', { level: 'info', method, path, ...answer, try: sent });
       await sleep(resend === 'backoff' ? RESEND_PAUSE_MS * 2 ** (sent - 1) : resend);
     }
   }
@@ -202,26 +221,26 @@ const apiMessage = async (response) => {
  * A REST call as an installation token, by method and path. The shape
  * every fetch-side caller takes its `api` in.
  *
- * @param {{ token: string, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log }} args
+ * @param {{ token: string, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log, resends?: Resends }} args
  * @returns {(method: string, path: string, body?: unknown) => Promise<any>}
  */
-export const githubApi = ({ token, fetch = globalThis.fetch, sleep = realSleep, log = noLog }) => {
+export const githubApi = ({ token, fetch = globalThis.fetch, sleep = realSleep, log = noLog, resends = turnResends() }) => {
   const auth = `Bearer ${token}`;
-  return (method, path, body) => request({ fetch, sleep, log }, auth, method, path, body);
+  return (method, path, body) => request({ fetch, sleep, log, resends }, auth, method, path, body);
 };
 
 /**
  * An installation token for the repository: the App's identity, scoped to the
  * one installation, good for an hour.
  *
- * @param {{ appId: string, privateKeyPem: string, repo: string, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log, now?: number }} args
+ * @param {{ appId: string, privateKeyPem: string, repo: string, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log, resends?: Resends, now?: number }} args
  * @returns {Promise<string>}
  */
-export const installationToken = async ({ appId, privateKeyPem, repo, fetch = globalThis.fetch, sleep = realSleep, log = noLog, now }) => {
+export const installationToken = async ({ appId, privateKeyPem, repo, fetch = globalThis.fetch, sleep = realSleep, log = noLog, resends = turnResends(), now }) => {
   const auth = `Bearer ${appJwt({ appId, privateKeyPem, ...(now === undefined ? {} : { now }) })}`;
-  const installation = await request({ fetch, sleep, log }, auth, 'GET', `/repos/${repo}/installation`);
+  const installation = await request({ fetch, sleep, log, resends }, auth, 'GET', `/repos/${repo}/installation`);
   // A second mint only issues a second token, so it is resent like a read.
-  const minted = await request({ fetch, sleep, log }, auth, 'POST', `/app/installations/${installation.id}/access_tokens`, undefined, true);
+  const minted = await request({ fetch, sleep, log, resends }, auth, 'POST', `/app/installations/${installation.id}/access_tokens`, undefined, true);
   return String(minted.token);
 };
 
@@ -231,17 +250,17 @@ export const installationToken = async ({ appId, privateKeyPem, repo, fetch = gl
  * account is not on `owners`, or that is suspended, is listed with no repos:
  * it gets no token, and nothing of it is read. A refusal anywhere throws.
  *
- * @param {{ appId: string, privateKeyPem: string, owners: readonly string[], fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log, now?: number }} args
+ * @param {{ appId: string, privateKeyPem: string, owners: readonly string[], fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log, resends?: Resends, now?: number }} args
  * @returns {Promise<Array<{ account: string, repos: string[] }>>}
  */
-export const appInstallations = async ({ appId, privateKeyPem, owners, fetch = globalThis.fetch, sleep = realSleep, log = noLog, now }) => {
+export const appInstallations = async ({ appId, privateKeyPem, owners, fetch = globalThis.fetch, sleep = realSleep, log = noLog, resends = turnResends(), now }) => {
   const auth = `Bearer ${appJwt({ appId, privateKeyPem, ...(now === undefined ? {} : { now }) })}`;
   const listed = owners.map((o) => o.toLowerCase());
   /** @type {Array<{ account: string, repos: string[] }>} */
   const out = [];
   for (let page = 1; ; page += 1) {
     /** @type {any[]} */
-    const batch = await request({ fetch, sleep, log }, auth, 'GET', `/app/installations?per_page=100&page=${page}`);
+    const batch = await request({ fetch, sleep, log, resends }, auth, 'GET', `/app/installations?per_page=100&page=${page}`);
     for (const installation of batch) {
       const account = String(installation?.account?.login ?? '');
       // A suspended installation refuses a token mint: read it as granting
@@ -250,8 +269,8 @@ export const appInstallations = async ({ appId, privateKeyPem, owners, fetch = g
         out.push({ account, repos: [] });
         continue;
       }
-      const minted = await request({ fetch, sleep, log }, auth, 'POST', `/app/installations/${installation.id}/access_tokens`, undefined, true);
-      const call = githubApi({ token: String(minted.token), fetch, sleep, log });
+      const minted = await request({ fetch, sleep, log, resends }, auth, 'POST', `/app/installations/${installation.id}/access_tokens`, undefined, true);
+      const call = githubApi({ token: String(minted.token), fetch, sleep, log, resends });
       /** @type {string[]} */
       const repos = [];
       for (let p = 1; ; p += 1) {
@@ -442,11 +461,11 @@ const after = (rows, field, since, by) => {
  * commit; its writes are a comment edited, a merge and the `governor` check run. The
  * conflict check's: the open PRs, and the commit main is at.
  *
- * @param {{ token: string, repo: string, appId?: number, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log }} args
+ * @param {{ token: string, repo: string, appId?: number, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log, resends?: Resends }} args
  * `appId`: the App the token is an installation of, whose comments `allComments` marks,
  * and whose issues and PRs every trust list lets in (`own`).
  */
-export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sleep = realSleep, log = noLog }) => {
+export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sleep = realSleep, log = noLog, resends = turnResends() }) => {
   /**
    * The author of an issue or PR row, as a trust list judges it
    * (dispatch/webhook/fire.mjs): `NONE` where GitHub gave no association.
@@ -469,7 +488,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
    */
   const headOf = (row) => (String(row?.head?.repo?.full_name ?? '').toLowerCase() === repo.toLowerCase() ? String(row.head.ref ?? '') : '');
 
-  const call = githubApi({ token, fetch, sleep, log });
+  const call = githubApi({ token, fetch, sleep, log, resends });
   /** Every open issue and PR, its body, labels and author, read once for `openNaming`. @type {Promise<Array<OpenRow & { body: unknown, labels: string[] } & import('../../dispatch/webhook/fire.mjs').Author>> | null} */
   let openRows = null;
   /** Every open issue and PR, read once a reader, and again after a read that failed. */

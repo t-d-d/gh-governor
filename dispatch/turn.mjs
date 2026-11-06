@@ -118,7 +118,7 @@ import { planUnblocked } from './unblocked-fire.mjs';
 import { planClosingPr, planTicket } from './ticket-fire.mjs';
 import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
-import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
+import { appInstallations, githubReader, installationToken, turnResends } from '../scripts/lib/github-app.mjs';
 import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
 import { CONFIG_PATH, SWITCHES, switchOf, turnsOn } from './repo-config.mjs';
 import { planWorkflow, withTickets } from './workflow.mjs';
@@ -2535,6 +2535,10 @@ export const realDeps = () => {
   const log = (/** @type {string} */ event, /** @type {Record<string, unknown>} */ context = {}) =>
     console.log(JSON.stringify({ event, ...context }));
 
+  // One call that spends its sends in a GitHub outage stops every later
+  // call's resends for the rest of the turn, the reader's and the mints'.
+  const resends = turnResends();
+
   /** The App's secret, read once a turn. @type {Promise<{ appId?: unknown, privateKey?: unknown }> | null} */
   let appSecret = null;
   const app = () => (appSecret ??= secretText(String(env.GITHUB_APP_SECRET_ID)).then((text) => JSON.parse(text)));
@@ -2583,8 +2587,8 @@ export const realDeps = () => {
 
   return {
     owners,
-    installations: async () => appInstallations({ ...(await appKey()), owners, log }),
-    configFile: (served, token, path) => githubReader({ token, repo: served, log }).configFile(path),
+    installations: async () => appInstallations({ ...(await appKey()), owners, log, resends }),
+    configFile: (served, token, path) => githubReader({ token, repo: served, log, resends }).configFile(path),
     environments: async (token, organization) => {
       const response = await fetch(ENVIRONMENTS_API, {
         headers: { Authorization: `Bearer ${token}`, 'anthropic-version': '2023-06-01', ...(organization === null ? {} : { 'x-organization-uuid': organization }) },
@@ -2602,13 +2606,13 @@ export const realDeps = () => {
         await secrets.send(new PutSecretValueCommand({ SecretId: String(env.CLAUDE_LOGIN_SECRET_ID), SecretString: text }));
       },
     },
-    githubToken: async (served) => installationToken({ ...(await appKey()), repo: served, log }),
+    githubToken: async (served) => installationToken({ ...(await appKey()), repo: served, log, resends }),
     appId: async () => {
       const id = Number((await app()).appId);
       if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`the GitHub App secret's appId is not an App ID: ${String((await app()).appId)}`);
       return id;
     },
-    reader: (token, appId, served) => githubReader({ token, repo: served, appId, log }),
+    reader: (token, appId, served) => githubReader({ token, repo: served, appId, log, resends }),
     workspace: {
       // The turn's own directory, where a message and a review run, a
       // checkout-less repo of the fire's; the bare schedule
