@@ -4695,6 +4695,23 @@ const withFakeClaude = async (lines: string[], body: () => Promise<void>) => {
 };
 
 /**
+ * One call that spends its sends in a GitHub outage turns resends off for
+ * the rest of the turn (scripts/lib/github-app.mjs). That holds only where
+ * every GitHub client the turn builds shares the one switch.
+ */
+describe('fitness: a turn\'s GitHub clients share one resend switch (dispatcher-repos.md)', () => {
+  test('every GitHub client realDeps builds is handed the turn\'s one resend switch', () => {
+    // Every client turn.mjs builds, wherever: each call is one line, and one
+    // built from a variable (`githubReader(args)`) shows no switch, so fails.
+    const source = readFileSync('dispatch/turn.mjs', 'utf8');
+    assert.equal((source.match(/= turnResends\(\)/g) ?? []).length, 1, 'realDeps makes one switch a turn');
+    const calls = [...source.matchAll(/\b(appInstallations|githubReader|installationToken|githubApi)\((.*)$/gm)];
+    assert.ok(calls.length >= 4, 'turn.mjs builds its GitHub clients');
+    for (const [call, name, rest] of calls) assert.match(rest!, /\bresends\b/, `${name} is handed the switch: ${call}`);
+  });
+});
+
+/**
  * The real message dependency hands the CLI the text on stdin, never as an
  * argument: the CLI's option parser reads a text that begins with `-` (a
  * markdown list, most review comments) as an option and refuses it
