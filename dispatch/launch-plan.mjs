@@ -78,6 +78,9 @@ export const ticketOf = (key) => {
  * the launcher's budget (`LAUNCH_TIMEOUT_MS`, dispatch/turn.mjs), its marker and the heartbeat still end inside the task's
  * deadline (dispatch/cli.mjs), so the refreshed login is stored. Two launches
  * at the full budget both start; a DispatchCap above two runs out of window.
+ * The spec owners' messages of their new builders go after the heartbeat,
+ * once the loop ends, and this window does not count them: they have only
+ * what is left before the deadline.
  */
 export const SCHEDULE_LAUNCH_WINDOW_MS = 7 * 60 * 1000;
 
@@ -373,15 +376,16 @@ export const launchPlan = async (plan, ctx, started) => {
     // the turn.
     await plan.done?.({ dispatched: ran, left });
   } finally {
+    // A claim no marker names a session for: an unconfirmed launch, one past
+    // its budget, a marker refused, a release refused. Nothing puts the
+    // labels back, because the session may be running. It is logged before
+    // the messages below, so a send that hangs holds back no line.
+    for (const key of claims) log(CLAIM_STRANDED, { ...ticketOf(key), reason: 'claimed, and no dispatch marker names its session: the launch was unconfirmed, ran past its budget, or the turn threw' });
+    claims.clear();
     // Every launch has run, so the spec owners' messages spend no launch
     // window. They go even where the loop threw: each launch they name
     // started. A send never throws (`sendAll`, dispatch/told.mjs).
     for (const tell of tells) await tell();
-    // A claim no marker names a session for: an unconfirmed launch, one past
-    // its budget, a marker refused, a release refused. Nothing puts the
-    // labels back, because the session may be running.
-    for (const key of claims) log(CLAIM_STRANDED, { ...ticketOf(key), reason: 'claimed, and no dispatch marker names its session: the launch was unconfirmed, ran past its budget, or the turn threw' });
-    claims.clear();
   }
   return ran;
 };

@@ -237,6 +237,43 @@ describe('launchPlan starts every launch a plan holds', () => {
     assert.deepEqual(logged.filter((l) => l.event === CLAIM_STRANDED).map((l) => l.issue), [16]);
     assert.equal(ctx.claims.size, 0);
   });
+
+  // The spec owners' messages go once the loop ends. A send that hangs
+  // until the deadline must not hold back the stranded-claim lines.
+  test('a spec owner message that never returns still lets the stranded claim be logged', async () => {
+    const owner = 'https://claude.ai/code/session_01SPECOWNER';
+    const { ctx, logged } = context({ launched: (a) => (a.issue === 18 ? { outcome: 'unconfirmed', sessionUrl: null, status: 0, output: '' } : { outcome: 'dispatched', sessionUrl: URL_OF(Number(a.issue)), status: 0, output: '' }) });
+    const reader = ctx.readerFor;
+    const sent: string[] = [];
+    Object.assign(ctx, {
+      readerFor: async (repo: string) => {
+        const r = await reader(repo);
+        return { ...r, ticket: async (n: number) => ({ ...(await r.ticket(n)), body: `The spec.\n\n${owner}` }) };
+      },
+      delivery: () => ({ deliver: ({ session }: { session: string }) => { sent.push(session); return new Promise(() => {}); } }),
+    });
+    void launchPlan(plan([ticket(17), ticket(18)]), ctx, NOW);
+    for (let i = 0; i < 20 && sent.length === 0; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent, [owner]);
+    assert.deepEqual(logged.filter((l) => l.event === CLAIM_STRANDED).map((l) => l.issue), [18]);
+  });
+
+  test('a launch that throws still sends the messages of the launches before it, and the throw goes on', async () => {
+    const owner = 'https://claude.ai/code/session_01SPECOWNER';
+    const { ctx } = context({ launched: (a) => { if (a.issue === 20) throw new Error('launcher down'); return { outcome: 'dispatched', sessionUrl: URL_OF(Number(a.issue)), status: 0, output: '' }; } });
+    const reader = ctx.readerFor;
+    const sent: Array<{ session: string, text: string }> = [];
+    Object.assign(ctx, {
+      readerFor: async (repo: string) => {
+        const r = await reader(repo);
+        return { ...r, ticket: async (n: number) => ({ ...(await r.ticket(n)), body: `The spec.\n\n${owner}` }) };
+      },
+      delivery: () => ({ deliver: async ({ session }: { session: string }, text: string) => { sent.push({ session, text }); return { ok: true, refused: false, error: null }; } }),
+    });
+    await assert.rejects(launchPlan(plan([ticket(19), ticket(20)]), ctx, NOW), /launcher down/);
+    assert.deepEqual(sent.map((s) => s.session), [owner]);
+    assert.match(sent[0]!.text, /Issue #19: .* has a new builder: https:\/\/claude\.ai\/code\/session_19/);
+  });
 });
 
 describe('the reason a cap of 0 gives', () => {
