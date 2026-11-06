@@ -52,7 +52,8 @@
  * session as its fallback (`deliver`, dispatch/deliveries.mjs), which
  * counts against DispatchCap as the launch it replaces does. A ready
  * ticket's pickup session is asked to say what the merge changed in a
- * comment and its PR description, and to leave an owned body to its owner.
+ * comment and its PR description, and never to edit the body, whoever owns
+ * it.
  *
  * Pure: dispatch/unblocked-fire.mjs reads and writes.
  */
