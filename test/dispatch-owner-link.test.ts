@@ -16,7 +16,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { ownSessionPost, postedBy, relayedBody, relinkSession, sessionNamedIn, unlinkSession, unsignedSessionBody } from '../dispatch/webhook/subscribe.mjs';
+import { isSessionPost, ownSessionPost, postedBy, relayedBody, relinkSession, sessionNamedIn, unlinkSession, unsignedSessionBody } from '../dispatch/webhook/subscribe.mjs';
 
 const OWNER = 'https://claude.ai/code/session_01OWNERAAA';
 const OTHER = 'https://claude.ai/code/session_01OTHERBBB';
@@ -170,6 +170,7 @@ describe('postedBy reads a post\'s signature by the same rule', () => {
         const post = `@claude look at this.\n\n${write(OWNER)}\n\n${footer}`;
         assert.equal(postedBy(post), OWNER, `${shape}, ${form}`);
         assert.equal(ownSessionPost(post), true, `${shape}, ${form}`);
+        assert.equal(isSessionPost(post), true, `${shape}, ${form}`);
       }
     }
   });
