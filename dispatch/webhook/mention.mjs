@@ -331,9 +331,9 @@ const summons = (prompt, on, reason, appId, by) => {
 };
 
 /**
- * What a summons on an issue says of its ticket: its state and labels, and
- * the spec owner its body names, read only where `bodies` lets the body's
- * author in, as a ticket fire's ({@link ticketFires}).
+ * What a summons on an issue, or a ticket fire ({@link ticketFires}), says
+ * of its ticket: its state and labels, and the spec owner its body names,
+ * read only where `bodies` lets the body's author in.
  *
  * @param {any} issue
  * @param {readonly string[]} bodies
@@ -955,13 +955,10 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
   const none = { fires: [], reason: '' };
   const issue = payload?.issue;
   if (!Number.isInteger(issue?.number) || issue.number <= 0 || issue?.pull_request) return none;
-  const labels = (issue?.labels ?? []).map((/** @type {{ name?: unknown }} */ l) => l?.name).filter((/** @type {unknown} */ n) => typeof n === 'string' && n !== '');
+  // The spec owner the body names, read only where `bodies` lets its author in.
+  const { state, labels, owner = null } = summonedTicket(issue, bodies, appId);
   if (labels.length === 0) return none;
   const onAuthor = authorOf(issue, appId);
-  // The spec owner the body names, read only where `bodies` lets its author in.
-  const ticketBody = relayedBody({ body: issue?.body, ...onAuthor }, bodies);
-  const owner = sessionNamedIn(ticketBody);
-  const state = issue?.state === 'closed' ? 'closed' : 'open';
   /** @type {{ text: (limit: number) => string, event: 'comments' | 'close' | 'edit', poster: string | null, closing: boolean, authors: string[], ownerOnly: boolean, what: string }} */
   let about;
   if (event === 'issue_comment') {

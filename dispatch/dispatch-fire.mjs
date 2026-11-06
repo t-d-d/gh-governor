@@ -120,7 +120,7 @@ const unstartedSummons = async ({ repo, on, writer, assigner }, ctx) => {
 const ownerText = (prompt) => [
   'This remark summoned a fresh session on your pull request, but you are the live session that owns it, so no fresh session starts and the remark comes to you.',
   '',
-  prompt.endsWith(`\n${UNATTENDED}`) ? prompt.slice(0, -UNATTENDED.length - 1) : prompt,
+  attended(prompt),
 ].join('\n');
 
 /**
@@ -137,15 +137,28 @@ const UNSENT = Object.freeze({ ok: false, answered: null, refused: false, sessio
 
 /**
  * What a summons on an issue tells each live role on it, above the roles:
- * that nobody else starts. A remark reaches the role as any remark on the
- * ticket does, so the notice does not repeat it. An assignment carries no
- * text, so its notice says who assigned the ticket.
+ * that nobody else starts. Where the repo's `subscribeMessages` is on, a
+ * remark reaches the role as any remark on the ticket does, so the notice
+ * does not repeat it. Where it is off, nothing else carries the remark, so
+ * the notice quotes it, as the summons's own prompt does (`remark`). An
+ * assignment carries no text, so its notice says who assigned the ticket.
  *
- * @param {{ issue: number, assigner?: string | undefined }} summons
+ * @param {{ issue: number, assigner?: string | undefined, remark: string | null }} summons
  */
-const roleNotice = ({ issue, assigner }) => (assigner !== undefined
-  ? `${assigner} assigned #${issue} to claude, which asks governor to start a session on it. You hold a role on #${issue} and are live, so no session starts, and this notice comes to you in its place. An assignment carries no text: read the ticket and its newest comments for what may be wanted.`
-  : `An @claude remark on #${issue} asks governor to start a session on it. You hold a role on #${issue} and are live, so no session starts. The remark reaches you as any remark on the ticket does; this notice says only that nobody else was started for it.`);
+const roleNotice = ({ issue, assigner, remark }) => {
+  if (assigner !== undefined) return `${assigner} assigned #${issue} to claude, which asks governor to start a session on it. You hold a role on #${issue} and are live, so no session starts, and this notice comes to you in its place. An assignment carries no text: read the ticket and its newest comments for what may be wanted.`;
+  const asked = `An @claude remark on #${issue} asks governor to start a session on it. You hold a role on #${issue} and are live, so no session starts`;
+  return remark === null
+    ? `${asked}. The remark reaches you as any remark on the ticket does; this notice says only that nobody else was started for it.`
+    : `${asked}, and the remark comes to you instead.\n\n${remark}`;
+};
+
+/**
+ * A summons's prompt without the line meant for an unattended fresh session.
+ *
+ * @param {string} prompt
+ */
+const attended = (prompt) => (prompt.endsWith(`\n${UNATTENDED}`) ? prompt.slice(0, -UNATTENDED.length - 1) : prompt);
 
 /**
  * Look for the live roles on the issue a summons is on, and send each a
@@ -160,14 +173,19 @@ const roleNotice = ({ issue, assigner }) => (assigner !== undefined
  * that may be live. A builder found by its PR, refusing, hands the notice to
  * the live session on that PR's head branch.
  *
- * @param {{ repo: string, on: number, writer?: string | undefined, assigner?: string | undefined, ticket: import('./webhook/fire.mjs').SummonedTicket }} summons
+ * @param {{ repo: string, on: number, writer?: string | undefined, assigner?: string | undefined, ticket: import('./webhook/fire.mjs').SummonedTicket, prompt: string }} summons
  * @param {import('./turn.mjs').TurnContext} ctx
  * @returns {Promise<Owned>}
  */
-const toRoles = async ({ repo, on, writer, assigner, ticket }, ctx) => {
+const toRoles = async ({ repo, on, writer, assigner, ticket, prompt }, ctx) => {
   const config = ctx.configOf(repo);
   const relay = relayOf(config);
   const owner = ticket.owner ?? null;
+  // A writer the repo's trust.relay leaves out reaches no role: where the
+  // body already names one, nothing more is read to find the rest.
+  const unrelayed = writer !== undefined && !relay.includes(writer);
+  if (unrelayed && owner !== null) return { kind: 'held', session: owner };
+  const remark = turnsOn(config, 'subscribeMessages') ? null : attended(prompt);
   const claim = config.labels.claim;
   /** @type {import('./builders.mjs').Builders} */
   let found = { sessions: [], by: null, prs: [], owns: {} };
@@ -181,31 +199,37 @@ const toRoles = async ({ repo, on, writer, assigner, ticket }, ctx) => {
     }
   }
   const builders = found.sessions;
-  const both = owner !== null && builders.some((b) => sameSession(b, owner));
+  // A spec owner that is also a builder found by its PR is sent with that
+  // PR, so a refusal hands the notice to the live session on its branch.
+  const asBuilder = owner === null ? undefined : builders.find((b) => sameSession(b, owner));
   /** @type {Array<{ session: string, role: import('./ticket-fire.mjs').TicketRole, owns: number[] }>} */
   const sends = [];
-  if (owner !== null) sends.push({ session: owner, role: both ? 'spec owner and builder' : 'spec owner', owns: [] });
+  if (owner !== null) sends.push({ session: owner, role: asBuilder !== undefined ? 'spec owner and builder' : 'spec owner', owns: asBuilder === undefined ? [] : found.owns[asBuilder] ?? [] });
   for (const builder of builders) {
     if (owner === null || !sameSession(builder, owner)) sends.push({ session: builder, role: 'builder', owns: found.owns[builder] ?? [] });
   }
   if (sends.length === 0) return { kind: 'none' };
-  if (writer !== undefined && !relay.includes(writer)) return { kind: 'held', session: sends.map((s) => s.session).join(', ') };
+  if (unrelayed) return { kind: 'held', session: sends.map((s) => s.session).join(', ') };
+  const taken = (/** @type {import('./deliveries.mjs').Delivery} */ t) => t.ok || t.fallback?.outcome === 'forwarded';
+  // A send that failed with no refusal, or a branch lookup after one that
+  // failed, says nothing of the session: it may be live.
+  const faults = (/** @type {import('./deliveries.mjs').Delivery} */ t) => !taken(t) && (!t.refused || t.fallback !== null);
   /** @type {import('./deliveries.mjs').Delivery[]} */
   const sent = [];
   try {
     for (const { session, role, owns } of sends) {
-      const told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner })}\n\n${rolesText({ issue: on, owner, builders, role })}`, { source: GITHUB_SOURCE, on: [on], owns, strict: true });
+      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner, remark })}\n\n${rolesText({ issue: on, owner, builders, role })}`, { source: GITHUB_SOURCE, on: [on], owns, strict: true });
+      // A refusal is no fault: what failed is handing the notice on.
+      if (told.refused && faults(told)) told = { ...told, error: `${session} is archived, and the live session on the head branch of PR ${owns.map((n) => `#${n}`).join(', ')} could not be found or did not take the notice` };
       sent.push(told);
-      ctx.log('dispatch-launch', { ...(told.ok || told.refused ? { level: 'info' } : {}), repo, issue: on, session, role, outcome: told.ok ? 'forwarded' : told.refused ? 'its session is archived' : 'not forwarded' });
+      const outcome = told.ok ? 'forwarded' : taken(told) ? 'handed to the live session on its PR\'s head branch' : faults(told) ? 'not forwarded' : 'its session is archived';
+      ctx.log('dispatch-launch', { ...(faults(told) ? {} : { level: 'info' }), repo, issue: on, session, role, outcome, ...(faults(told) ? { error: told.error } : {}) });
     }
   } catch (error) {
     await ctx.storeLogin();
     throw error;
   }
-  const taken = (/** @type {import('./deliveries.mjs').Delivery} */ t) => t.ok || t.fallback?.outcome === 'forwarded';
-  // A send that failed with no refusal, or a branch lookup after one that
-  // failed, says nothing of the session: it may be live.
-  const faulted = sent.find((t) => !taken(t) && (!t.refused || t.fallback !== null));
+  const faulted = sent.find(faults);
   if (faulted !== undefined) return { kind: 'told', told: faulted };
   const took = sent.find(taken);
   return took === undefined ? { kind: 'none' } : { kind: 'told', told: took };
@@ -296,7 +320,7 @@ export const planDispatch = async (invocation, ctx) => {
   const onIssue = on !== undefined && ticket !== undefined;
   if (on !== undefined && (writer !== undefined || onIssue)) {
     const owned = onIssue
-      ? await toRoles({ repo, on, writer, assigner, ticket }, ctx)
+      ? await toRoles({ repo, on, writer, assigner, ticket, prompt: invocation.prompt }, ctx)
       : await toOwner({ repo, on, writer: /** @type {string} */ (writer), prompt: invocation.prompt }, ctx);
     const where = onIssue ? 'an issue whose spec owner or builder the body or the builder lookup names' : 'a PR a live session owns';
     if (owned.kind === 'held') {
@@ -309,7 +333,7 @@ export const planDispatch = async (invocation, ctx) => {
       // on the branch took it, and the refusal is no error.
       const handed = !told.ok && told.fallback?.outcome === 'forwarded';
       const error = told.ok || handed ? null : told.error;
-      ctx.log('dispatch-launch', { ...(error === null ? { level: 'info' } : {}), repo, issue: on, outcome: told.ok || handed ? 'forwarded' : 'not forwarded', sessionUrl: handed ? told.fallback?.sessionUrl : told.sessionUrl, ...(error === null ? {} : { error }), reason: onIssue ? 'a summons on an issue with a live spec owner or builder: each live role was told, and no fresh session starts' : 'a summons on a PR a live session owns: it went to that session, and no fresh session starts' });
+      ctx.log('dispatch-launch', { ...(error === null ? { level: 'info' } : {}), repo, issue: on, outcome: told.ok || handed ? 'forwarded' : 'not forwarded', sessionUrl: handed ? told.fallback?.sessionUrl : told.sessionUrl, ...(error === null ? {} : { error }), reason: onIssue ? `a summons on an issue with a spec owner or builder ${error === null ? 'that took the notice' : 'that may be live'}: no fresh session starts` : 'a summons on a PR a live session owns: it went to that session, and no fresh session starts' });
       return { launches: [], unread: [], result: { messaged: told } };
     }
   }

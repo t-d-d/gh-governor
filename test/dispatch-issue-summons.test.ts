@@ -82,8 +82,9 @@ type Sent = { session: string, text: string, opts: Record<string, unknown> };
  * A `TurnContext` whose reader holds ticket 7: `comments` its thread,
  * `closing` the open PRs that close it, `owners` each PR's owner.
  * `archived` sessions refuse; `faulted` ones fail without a refusal.
+ * `fallbacks` is what a refusal's hand-off to a PR's branch did.
  */
-const context = ({ config = CONFIG, comments = [{ body: MARKER }] as Array<{ body: string }>, closing = [] as number[], owners = {} as Record<number, string>, archived = [] as string[], faulted = [] as string[], fails = null as string | null, body = SPEC_BODY } = {}) => {
+const context = ({ config = CONFIG, comments = [{ body: MARKER }] as Array<{ body: string }>, closing = [] as number[], owners = {} as Record<number, string>, archived = [] as string[], faulted = [] as string[], fallbacks = {} as Record<string, { outcome: string, sessionUrl: string | null }>, fails = null as string | null, body = SPEC_BODY } = {}) => {
   const sent: Sent[] = [];
   const reads: string[] = [];
   const logged: Array<Record<string, unknown>> = [];
@@ -110,7 +111,7 @@ const context = ({ config = CONFIG, comments = [{ body: MARKER }] as Array<{ bod
         sent.push({ session, text, opts });
         const gone = archived.includes(session);
         const faults = faulted.includes(session);
-        return { ok: !gone && !faults, answered: !faults, refused: gone, sessionUrl: session, error: gone ? `cloud session ${session} is archived and cannot accept new messages` : faults ? 'claude exited 1: HTTP 503' : null, fallback: null, dropped: null, skipped: null, relinked: null };
+        return { ok: !gone && !faults, answered: !faults, refused: gone, sessionUrl: session, error: gone ? `cloud session ${session} is archived and cannot accept new messages` : faults ? 'claude exited 1: HTTP 503' : null, fallback: fallbacks[session] ?? null, dropped: null, skipped: null, relinked: null };
       },
     }),
     storeLogin: async () => true,
@@ -193,6 +194,15 @@ describe('a summons on an issue starts nothing beside a live spec owner or build
     assert.deepEqual(sent[1]!.opts.owns, [12]);
   });
 
+  test('a spec owner that is also a builder by its open PR is sent with the PR, so the session on its branch can take it', async () => {
+    const { ctx, sent } = context({ closing: [12], owners: { 12: SPEC } });
+    const plan = await planDispatch(commented({ labels: [CLAIM] }) as never, ctx) as any;
+    assert.deepEqual(plan.launches, []);
+    assert.deepEqual(to(sent), [SPEC]);
+    assert.match(sent[0]!.text, /You are its spec owner and its builder\./);
+    assert.deepEqual(sent[0]!.opts.owns, [12]);
+  });
+
   test('an assignment to claude follows the same rule, and the notice names who assigned it', async () => {
     const { ctx, sent } = context();
     const plan = await planDispatch(assigned() as never, ctx) as any;
@@ -205,6 +215,24 @@ describe('a summons on an issue starts nothing beside a live spec owner or build
     const { ctx } = context({ archived: [SPEC, BUILDER] });
     const plan = await planDispatch(assigned({ labels: [CLAIM] }) as never, ctx) as any;
     assert.equal(plan.launches.length, 1);
+  });
+});
+
+describe('a summons on an issue under a repo whose subscribe messages are off', () => {
+  test('the notice carries the remark, since no other message will', async () => {
+    const { subscribeMessages: _off, ...file } = FILE;
+    const { ctx, sent } = context({ config: configOf(file) });
+    const plan = await planDispatch(commented() as never, ctx) as any;
+    assert.deepEqual(plan.launches, []);
+    assert.deepEqual(to(sent), [SPEC]);
+    assert.match(sent[0]!.text, /does this need the empty case too\?/);
+    assert.doesNotMatch(sent[0]!.text, /reaches you as any remark/);
+  });
+
+  test('with them on, the notice does not repeat the remark', async () => {
+    const { ctx, sent } = context();
+    await planDispatch(commented() as never, ctx);
+    assert.doesNotMatch(sent[0]!.text, /does this need the empty case too\?/);
   });
 });
 
@@ -295,6 +323,19 @@ describe('a summons on an issue that reaches no session', () => {
     assert.deepEqual(plan.launches, []);
     assert.equal(plan.result.messaged.ok, false);
     assert.equal(plan.result.messaged.refused, false);
+  });
+
+  test('a builder that refuses, whose branch session cannot be found, fails the turn naming the hand-off, not the refusal', async () => {
+    const PR_OWNER = 'https://claude.ai/code/session_01PROWNER';
+    const { ctx, logged } = context({ closing: [12], owners: { 12: PR_OWNER }, archived: [SPEC, PR_OWNER], fallbacks: { [PR_OWNER]: { outcome: 'failed', sessionUrl: null } } });
+    const plan = await planDispatch(commented({ labels: [CLAIM] }) as never, ctx) as any;
+    assert.deepEqual(plan.launches, []);
+    assert.equal(plan.result.messaged.ok, false);
+    assert.doesNotMatch(String(plan.result.messaged.error), /is archived and cannot accept/);
+    assert.match(String(plan.result.messaged.error), /head branch/);
+    const send = logged.find((l) => l.event === 'dispatch-launch' && l.session === PR_OWNER);
+    assert.equal(send?.outcome, 'not forwarded');
+    assert.equal(send?.level, undefined);
   });
 
   test('a writer trust.relay leaves out reaches no role, and nothing starts beside a role the ticket names', async () => {

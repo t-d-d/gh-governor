@@ -240,7 +240,8 @@ spends the one claude.ai login.
   on the fire (`ticket`), read from the payload as for a ticket fire, and
   the task sends each role a notice, the spec owner and, on a claimed
   ticket, each builder the one lookup finds. A role that takes it starts
-  nothing; the roles hear the remark itself as any remark on the ticket.
+  nothing; the roles hear the remark itself as any remark on the ticket,
+  or, where `subscribeMessages` is off, in the notice.
   Whether a role is live is learned by sending: one that refuses as
   archived leaves its role vacant. A writer `trust.relay` leaves out
   reaches no role, and nothing starts beside a role the ticket names. A
