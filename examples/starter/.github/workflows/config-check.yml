@@ -10,6 +10,8 @@
 #
 # If your prompts live in files ({ "file": "<path>" } in governor.json),
 # add their paths under `paths:` too, so a change to one runs the check.
+# Likewise, if governor.json sets `sessionRules.file`, add that path under
+# `paths:`, so a change to the file that carries the block runs the check.
 name: config check
 
 on:
@@ -27,6 +29,6 @@ permissions:
 
 jobs:
   check:
-    uses: t-d-d/gh-governor/.github/workflows/config-check.yml@f57e63456f0a4dbc1edaba69a2bc833b3e306857
+    uses: t-d-d/gh-governor/.github/workflows/config-check.yml@c9a699d6f5914185df986815b959c9e010251a99
     with:
-      commit: f57e63456f0a4dbc1edaba69a2bc833b3e306857
+      commit: c9a699d6f5914185df986815b959c9e010251a99

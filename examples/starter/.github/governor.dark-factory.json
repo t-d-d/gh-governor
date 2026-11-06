@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/f57e63456f0a4dbc1edaba69a2bc833b3e306857/schema/governor.schema.json",
+  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/c9a699d6f5914185df986815b959c9e010251a99/schema/governor.schema.json",
   "environment": "my-env",
   "workflows": { "ci": ".github/workflows/ci.yml" },
   "pickup": {
@@ -62,6 +62,7 @@
   "hooks": { "enabled": false },
   "waits": {},
   "signOff": {},
+  "sessionRules": {},
   "issueReviews": {
     "reviews": {
       "triage": {
