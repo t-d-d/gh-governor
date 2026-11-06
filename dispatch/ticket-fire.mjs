@@ -1,6 +1,6 @@
 /**
- * A ticket fire: a comment on an issue, or the issue closed or reopened,
- * which the receiver queued in place of the spec owner's message because
+ * A ticket fire: a comment on an issue, the issue closed or reopened, or
+ * its body edited, which the receiver queued in place of the spec owner's message because
  * the issue carries the repo's claim label, or the hook table could not
  * say which label that is (dispatch/webhook/route.mjs). The receiver holds
  * no token, so the builders are found here.
@@ -17,7 +17,8 @@
  * Every message is a notice: it asks nothing beyond the recipient's own
  * part. The spec owner acts on a remark that changes what counts as done,
  * by editing the body. The builder acts on a remark about the build, and
- * never edits the body.
+ * never edits the body. A body edit tells the spec owner the edit may be
+ * its own, and the builder that the spec changed.
  *
  * Governor's own dispatch comment, a change of builder, is a ticket fire
  * too (`dispatched`). It reaches the spec owner, and the builder it
@@ -34,6 +35,7 @@ import { fireRepoOf } from './repos.mjs';
 import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 import { relayedBody, sameSession, sessionId } from './webhook/subscribe.mjs';
+import { EDIT_BUILDER, EDIT_SPEC_OWNER } from './webhook/mention.mjs';
 
 /** @typedef {'spec owner' | 'builder' | 'spec owner and builder'} TicketRole */
 
@@ -77,6 +79,11 @@ export const planTicket = async (invocation, ctx) => {
   /** The sessions left out, and why, for the log. @type {string[]} */
   const skipped = [];
   const own = (/** @type {string} */ session) => poster !== undefined && sameSession(session, poster);
+  // What a body edit tells each role, under what happened.
+  const edit = (/** @type {TicketRole} */ role) => (event !== 'edit' ? '' : `\n\n${[
+    ...(role === 'builder' ? [] : [EDIT_SPEC_OWNER]),
+    ...(role === 'spec owner' ? [] : [EDIT_BUILDER]),
+  ].join('\n')}`);
   if (event === 'dispatched') {
     // Governor's dispatch comment: the builder it names never hears it.
     const builder = invocation.builder ?? null;
@@ -105,7 +112,7 @@ export const planTicket = async (invocation, ctx) => {
   } else if (!claimed) {
     // The spec owner's message as the receiver queued it before, with no read.
     if (owner !== null && own(owner)) skipped.push(`${sessionId(owner)}'s own post`);
-    else if (owner !== null) sends.push({ session: owner, text, role: null, owns: [] });
+    else if (owner !== null) sends.push({ session: owner, text: `${text}${edit('spec owner')}`, role: null, owns: [] });
   } else {
     const relay = relayOf(config);
     const reader = await ctx.readerFor(repo);
@@ -115,7 +122,7 @@ export const planTicket = async (invocation, ctx) => {
     const both = owner !== null && builders.some((b) => sameSession(b, owner));
     // A builder whose PR's merge closed the ticket heard the merge through its PR.
     const throughPr = event === 'close' && state === 'closed' && found.by === 'merged PR';
-    const say = (/** @type {TicketRole} */ role) => `${text}\n\n${rolesText({ issue, owner, builders, role })}`;
+    const say = (/** @type {TicketRole} */ role) => `${text}${edit(role)}\n\n${rolesText({ issue, owner, builders, role })}`;
     if (owner !== null) {
       if (own(owner)) skipped.push(`${sessionId(owner)}'s own post`);
       else sends.push({ session: owner, text: say(both ? 'spec owner and builder' : 'spec owner'), role: both ? 'spec owner and builder' : 'spec owner', owns: [] });

@@ -397,9 +397,9 @@ export const lastDispatch = (comments) => {
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit
  *   the lane ({@link FIRE_BUDGET}).
- * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'dispatched', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], ownerOnly?: true, builder?: string, displaced?: string }} TicketFire
- *   A comment on an issue, or the issue closed or reopened, where the issue
- *   may be claimed: its spec owner and, on a claimed ticket, its builders
+ * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], ownerOnly?: true, builder?: string, displaced?: string }} TicketFire
+ *   A comment on an issue, the issue closed or reopened, or its body
+ *   edited (`edit`), where the issue may be claimed: its spec owner and, on a claimed ticket, its builders
  *   hear it, each told which role it holds (dispatch/ticket-fire.mjs). The
  *   receiver holds no token, so it queues this fire in place of the spec
  *   owner's message wherever the ticket's labels hold the repo's claim
@@ -524,7 +524,7 @@ export const build = Object.freeze({
 
   /**
    * @param {{
-   *   issue: number, text: string, event: 'comments' | 'close' | 'dispatched', state: 'open' | 'closed', labels: string[],
+   *   issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[],
    *   owner?: string | null | undefined, poster?: string | null | undefined, closing?: boolean | undefined,
    *   authors?: string[] | undefined, ownerOnly?: boolean | undefined,
    *   builder?: string | null | undefined, displaced?: string | null | undefined,
@@ -1074,7 +1074,7 @@ const parseTicket = (e) => {
   const refuse = (/** @type {string} */ what) => { throw new Error(`a ticket invocation's ${what}, got: ${JSON.stringify(e)?.slice(0, 300)}`); };
   if (!isPositiveInt(e?.issue)) refuse('issue must be a positive integer');
   if (typeof e?.text !== 'string' || e.text.trim() === '') refuse('text must say what happened');
-  if (e?.event !== 'comments' && e?.event !== 'close' && e?.event !== 'dispatched') refuse('event must be comments, close or dispatched');
+  if (e?.event !== 'comments' && e?.event !== 'close' && e?.event !== 'edit' && e?.event !== 'dispatched') refuse('event must be comments, close, edit or dispatched');
   if (e?.state !== 'open' && e?.state !== 'closed') refuse('state must be open or closed');
   if (!Array.isArray(e?.labels) || !e.labels.every((l) => typeof l === 'string')) refuse('labels must be label names');
   for (const key of /** @type {const} */ (['owner', 'poster', 'builder', 'displaced'])) {
@@ -1089,7 +1089,7 @@ const parseTicket = (e) => {
     kind: 'ticket',
     issue: Number(t.issue),
     text: String(t.text),
-    event: /** @type {'comments' | 'close' | 'dispatched'} */ (t.event),
+    event: /** @type {'comments' | 'close' | 'edit' | 'dispatched'} */ (t.event),
     state: /** @type {'open' | 'closed'} */ (t.state),
     labels: [.../** @type {string[]} */ (t.labels)],
     ...(t.owner === undefined ? {} : { owner: String(t.owner) }),
