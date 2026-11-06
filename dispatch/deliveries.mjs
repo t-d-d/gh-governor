@@ -405,8 +405,9 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   was tried. `skipped`: why nobody was sent to. `error`: why the send
  *   failed, or why no owner could be found. `capped`: the send did not go,
  *   since the session's count about a subject of the message is at the
- *   ceiling. It is no refusal and no fault: nothing starts and nobody is
- *   dropped, and the turn does not fail on it.
+ *   ceiling, or a refusal's hand-off to a live session did not go for the
+ *   same reason, with its fallback skipped. It is no fault: nothing starts
+ *   beside a held session, and the turn does not fail on it.
  *
  * @typedef {{
  *   deliver: (to: Recipient, text: string, options: DeliverOptions) => Promise<Delivery>,
@@ -704,7 +705,9 @@ export const deliveries = (deps) => {
    * @param {About} about
    * @param {number} until
    * @param {{ strict: boolean, commit?: string | undefined }} how
-   * @returns {Promise<{ outcome: 'forwarded' | 'failed', sessionUrl: string | null, error?: string } | null>}
+   * @returns {Promise<{ outcome: 'forwarded' | 'failed' | 'skipped', sessionUrl: string | null, error?: string, capped?: true } | null>}
+   *   `skipped` with `capped`: a live session on a branch was held at the
+   *   ceiling and nobody else took it, so nothing starts beside it.
    */
   const toBranchOwners = async (owns, refused, text, about, until, { strict, commit }) => {
     /** @type {Map<string, { session: string, prs: number[] }>} */
@@ -725,7 +728,7 @@ export const deliveries = (deps) => {
       deps.log('dispatch-message', { level: strict ? 'error' : 'warn', session: refused[0], owns, error: why });
       return strict ? { outcome: 'failed', sessionUrl: null, error: why } : null;
     }
-    /** @type {{ outcome: 'forwarded' | 'failed', sessionUrl: string | null, error?: string } | null} */
+    /** @type {{ outcome: 'forwarded' | 'failed' | 'skipped', sessionUrl: string | null, error?: string, capped?: true } | null} */
     let passed = null;
     for (const { session, prs } of found.values()) {
       if (commit !== undefined && await ownCommit(session, commit)) {
@@ -733,11 +736,15 @@ export const deliveries = (deps) => {
         continue;
       }
       const handed = await send(session, text, about, until);
-      if (handed.capped) continue;
+      // Held at the ceiling: live, so nothing starts beside it, and its own line has said so.
+      if (handed.capped) {
+        passed ??= { outcome: 'skipped', sessionUrl: null, ...(handed.error === null ? {} : { error: handed.error }), capped: true };
+        continue;
+      }
       deps.log('dispatch-message', { ...(refusedBy(handed) ? { level: 'info' } : {}), session, onBranch: true, owns: prs, ok: handed.ok, sessionUrl: handed.sessionUrl, error: handed.error, status: handed.status });
       if (handed.ok) {
         for (const n of prs) await nameOwner(n, session);
-        passed ??= { outcome: 'forwarded', sessionUrl: session };
+        if (passed === null || passed.capped === true) passed = { outcome: 'forwarded', sessionUrl: session };
       } else if (!refusedBy(handed)) {
         passed = { outcome: 'failed', sessionUrl: null, error: `the live session ${session} on the head branch did not take it: ${handed.error ?? 'no answer'}` };
       }
@@ -872,10 +879,13 @@ export const deliveries = (deps) => {
     // the caller names. A refusal there hands the message to the live
     // session on each one's head branch before anything starts.
     const owned = [...new Set([...owns, ...(takeover && withFallback?.issue !== undefined ? [withFallback.issue] : [])])];
+    /** Whether the session the message was handed to in place of this one was held at the ceiling. */
+    let held = false;
     if (refused && !withFallback && owned.length > 0) {
       const passed = await toBranchOwners(owned, [session], text, about, until, { strict, commit });
       if (passed !== null) {
         fallback = { outcome: passed.outcome, sessionUrl: passed.sessionUrl };
+        held = passed.capped === true;
         deps.log('dispatch-message-fallback', { session, owns: owned, ...passed });
       }
     }
@@ -893,7 +903,7 @@ export const deliveries = (deps) => {
       /** Whether the PR has closed, which a takeover has nothing to take over of. */
       let closed = false;
       /** Why an unconfirmed takeover holds the PR, where one does: nothing starts beside it. @type {string | null} */
-      let held = null;
+      let unconfirmed = null;
       // A takeover reads the PR now, not when the remark arrived. One that
       // has closed or merged since has nothing to take over: a remark posted
       // while the PR was open can be delivered after it merged. A remark
@@ -921,7 +931,7 @@ export const deliveries = (deps) => {
           if (!handed.capped) deps.log('dispatch-message', { ...(refusedBy(handed) ? { level: 'info' } : {}), session: owner, fromBody: true, ok: handed.ok, sessionUrl: handed.sessionUrl, error: handed.error, status: handed.status });
           if (handed.ok) fallback = { outcome: 'forwarded', sessionUrl: owner };
           // The live owner, held at the ceiling: no takeover starts beside it.
-          else if (handed.capped) { fallback = { outcome: 'skipped', sessionUrl: null }; reason = handed.error; }
+          else if (handed.capped) { fallback = { outcome: 'skipped', sessionUrl: null }; reason = handed.error; held = true; }
           else if (!refusedBy(handed)) fallback = { outcome: 'failed', sessionUrl: null };
           else gone.push(owner);
         }
@@ -935,7 +945,7 @@ export const deliveries = (deps) => {
           const since = ownerUnknownSince(relayedBody(pr, deps.relay));
           const at = since === null ? Number.NaN : Date.parse(since);
           if (at <= deps.now() && deps.now() < at + TAKEOVER_HOLD_MS) {
-            held = `PR #${issue}'s body says a takeover at ${since} launched and printed no session link, so its session may be running; nothing starts beside it until ${new Date(at + TAKEOVER_HOLD_MS).toISOString()}`;
+            unconfirmed = `PR #${issue}'s body says a takeover at ${since} launched and printed no session link, so its session may be running; nothing starts beside it until ${new Date(at + TAKEOVER_HOLD_MS).toISOString()}`;
           }
         }
         if (fallback === null && pr.defaultBranch !== '' && pr.head !== pr.defaultBranch) branch = pr.head;
@@ -948,11 +958,12 @@ export const deliveries = (deps) => {
         if (passed !== null) {
           fallback = { outcome: passed.outcome, sessionUrl: passed.sessionUrl };
           if (passed.error !== undefined) reason = passed.error;
+          held = passed.capped === true;
         }
       }
-      if (fallback === null && held !== null) {
+      if (fallback === null && unconfirmed !== null) {
         fallback = { outcome: 'skipped', sessionUrl: null };
-        reason = held;
+        reason = unconfirmed;
       }
       if (fallback === null) {
         const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL, ...(branch === '' ? {} : { branch }) }, until);
@@ -975,7 +986,8 @@ export const deliveries = (deps) => {
       dropped = false;
       for (const from of dropFrom) dropped = (await drop(from, session)) || dropped;
     }
-    return { ok, answered, refused, sessionUrl, error, fallback, dropped, relinked };
+    // Handed to a live session the ceiling held: no fault, and nothing started beside it.
+    return { ok, answered, refused, sessionUrl, error, fallback, dropped, relinked, ...(held ? { capped: /** @type {const} */ (true) } : {}) };
   };
 
   /** @type {Deliveries['deliver']} */

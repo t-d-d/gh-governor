@@ -28,7 +28,7 @@ import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from
 import { byOf, failedLaunchesOf, failedReason } from './pickup.mjs';
 import { authorKind, autoOf, lets, relayOf, startOf, ticketAuthor } from './trust.mjs';
 import { mergedNote, rolesOf } from './roles.mjs';
-import { specOwnerTeller, unmarked } from './told.mjs';
+import { outcomeOf, specOwnerTeller, unmarked } from './told.mjs';
 import { sameSession } from './webhook/subscribe.mjs';
 
 /** @typedef {import('./turn.mjs').Reader} Reader */
@@ -64,9 +64,6 @@ const readUnblocked = async (reader, issue, sleep, statusOf) => {
     await sleep(UNBLOCKED_WAIT_MS);
   }
 };
-
-/** What came of a send, for the log. @param {import('./deliveries.mjs').Delivery} told */
-const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session is archived' : told.capped ? 'held at the message ceiling' : 'not messaged');
 
 /**
  * A ready or claimed ticket's spec owner's notice of its blocker's close,

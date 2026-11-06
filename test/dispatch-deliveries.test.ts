@@ -1143,6 +1143,28 @@ describe('deliver: a PR whose body links an archived session', () => {
     assert.deepEqual(f.launches, []);
     assert.deepEqual(told.fallback, { outcome: 'forwarded', sessionUrl: LIVE });
   });
+
+  // The live session on the branch held at the ceiling is still live: a
+  // takeover beside it would start a second session on its branch.
+  const heldLive = async (m: Counted): Promise<Count> => (m.session === LIVE ? { raised: false, first: true, count: 20, counts: { relay: 20 } } : { raised: true });
+
+  test('a live session on the branch held at the ceiling starts no takeover beside it, and the delivery is held', async () => {
+    const f = fakes({ send: goneOld, reader: reader(), sessions: onBranch({ [BRANCH]: LIVE }), count: heldLive });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'Why?', { fallback: takeover, takeover: true, on: [PR] });
+    assert.deepEqual(f.sent.map((m) => m.session), ['session_01OLD']);
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(f.edits, []);
+    assert.deepEqual(told.fallback, { outcome: 'skipped', sessionUrl: null });
+    assert.equal((told as Told & { capped?: boolean }).capped, true);
+  });
+
+  test('an event with no fallback whose branch session is held at the ceiling is held, not a gone session', async () => {
+    const f = fakes({ send: goneOld, reader: reader(), sessions: onBranch({ [BRANCH]: LIVE }), count: heldLive });
+    const told = await f.deliver({ session: 'session_01OLD' }, 'A summons.', { owns: [PR], on: [PR], strict: true });
+    assert.deepEqual(f.launches, []);
+    assert.deepEqual(told.fallback, { outcome: 'skipped', sessionUrl: null });
+    assert.equal((told as Told & { capped?: boolean }).capped, true);
+  });
 });
 
 describe('deliver: the ceiling on one session\'s messages about one subject in an hour', () => {

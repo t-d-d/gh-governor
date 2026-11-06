@@ -67,7 +67,7 @@ export const specOwnerNote = (issue, comment) => [
  */
 
 /** What came of a send, for the log. @param {import('./deliveries.mjs').Delivery} told */
-const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session is archived' : told.capped ? 'held at the message ceiling' : 'not messaged');
+export const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session is archived' : told.capped ? 'held at the message ceiling' : 'not messaged');
 
 /**
  * Send each of `sends`, in turn, logging each under {@link TOLD}. A send

@@ -4616,7 +4616,7 @@ describe('run — periodics an event brings due', () => {
   });
 });
 
-describe('run — the ceiling on one session\'s messages about one subject in an hour', () => {
+describe('run: the ceiling on one session\'s messages about one subject in an hour', () => {
   test('a message counts against its session and subject under the stack\'s ceiling; past it nothing is sent, and the turn does not fail', async () => {
     const h = harness({ messageCeiling: 2 });
     const fire = { kind: 'message', session: 'session_01ABC', text: 'a remark', on: 7, event: 'comments', subscribed: true };
@@ -5111,6 +5111,18 @@ describe('run — a workflow run on main', () => {
     const r = await run(jobFire(DEV), deps as never);
     assert.deepEqual(launches, []);
     assert.equal(exitCodeFor(r as never), 1);
+  });
+
+  // The ceiling pages once through governor-session-loop; a failed turn
+  // would page again for each held note.
+  test('a deploy note held at the message ceiling starts nothing, says so in its delivery, and does not fail the turn', async () => {
+    const { reader } = delivered();
+    const { deps, launches, messages } = harness({ reader, state: { countMessage: async () => ({ raised: false, first: true, count: 20, counts: { deploy: 20 } }) } });
+    const r = await run(jobFire(DEV), deps as never) as { deliveries: Array<{ capped?: boolean }> };
+    assert.deepEqual(messages, []);
+    assert.deepEqual(launches, []);
+    assert.ok(r.deliveries.length > 0 && r.deliveries.every((d) => d.capped === true), JSON.stringify(r.deliveries));
+    assert.equal(exitCodeFor(r as never), 0);
   });
 
   // Whether a note closes is planWorkflow's; the turn sends it with the standing that says so, less the PRs it is about.
@@ -6176,6 +6188,19 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     assert.ok(r0.edits[0]!.body.includes('https://claude.ai/code/session_01ABC'), 'the body\'s session link is the fresh session');
     assert.ok(!r0.edits[0]!.body.includes(OWNER), 'and no longer the archived owner');
     assert.deepEqual(r.checks.map((c) => c.outcome), ['fallback']);
+    assert.equal(exitCodeFor(r as never), 0);
+  });
+
+  // The ceiling pages once through governor-session-loop; a failed check
+  // would page again for each held send.
+  test('an owner held at the message ceiling is skipped, not failed, and the turn does not fail', async () => {
+    const r0 = conflictReader({ pulls: [open(804)], reads: { 804: [false] } });
+    const { deps, messages, launches } = harness({ reader: r0.reader, sleep, state: { countMessage: async () => ({ raised: false, first: true, count: 20, counts: { conflict: 20 } }) } });
+    const r = await run(fire, deps as never) as Result;
+    assert.deepEqual(messages, []);
+    assert.deepEqual(launches, []);
+    assert.deepEqual(r.checks.map((c) => c.outcome), ['skipped']);
+    assert.match(String(r.checks[0]!.reason), /ceiling/);
     assert.equal(exitCodeFor(r as never), 0);
   });
 
