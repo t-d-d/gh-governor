@@ -18,7 +18,7 @@ import { postedByApp } from '../../dispatch/webhook/review-comment.mjs';
 import { closedBy } from '../../dispatch/pr-body.mjs';
 import { relayedBody, sessionId, sessionsNamedIn } from '../../dispatch/webhook/subscribe.mjs';
 import { waitOf } from './ready-work.mjs';
-import { lets } from '../../dispatch/trust.mjs';
+import { lets, ticketAuthor } from '../../dispatch/trust.mjs';
 import { lastDispatch } from '../../dispatch/webhook/fire.mjs';
 import { messageOf } from './error-message.mjs';
 
@@ -429,19 +429,21 @@ const pagesUntil = async (call, path, query, past, pages = 30) => {
  * Rows whose time `field` is after `since`, as a periodic's window counts
  * them (dispatch/periodics.mjs), oldest first. Pull requests are dropped
  * from an issues list. With `by`, a trust list (dispatch/trust.mjs), only
- * the rows whose author it lets in are kept.
+ * the rows whose author it lets in are kept, judged as the receiver judges
+ * them (`ticketAuthor`): an issue `appId`'s App filed is let in as the App.
  *
  * @param {any[]} rows
  * @param {string} field
  * @param {string} since
  * @param {readonly string[]} [by]
+ * @param {number} [appId]
  * @returns {CountedRow[]}
  */
-const after = (rows, field, since, by) => {
+const after = (rows, field, since, by, appId) => {
   const from = Date.parse(since);
   return rows
     .filter((row) => !row.pull_request && typeof row[field] === 'string' && Date.parse(row[field]) > from)
-    .filter((row) => by === undefined || lets(by, { author: row.user?.login, association: row.author_association, bot: row.user?.type === 'Bot' }))
+    .filter((row) => by === undefined || lets(by, ticketAuthor({ author: row.user?.login, association: row.author_association, bot: row.user?.type === 'Bot', app: postedByApp(row, appId) })))
     .map((row) => ({ number: row.number, title: String(row.title ?? ''), at: row[field] }))
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 };
@@ -587,7 +589,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      */
     issuesOpenedSince: async (since, by) => {
       const rows = await pagesUntil(call, `/repos/${repo}/issues`, { state: 'all', sort: 'created', direction: 'desc' }, (row) => Date.parse(row.created_at) <= Date.parse(since));
-      return after(rows, 'created_at', since, by);
+      return after(rows, 'created_at', since, by, appId);
     },
 
     /**
@@ -599,7 +601,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      * @param {readonly string[]} [by]
      * @returns {Promise<CountedRow[]>}
      */
-    issuesClosedSince: async (since, by) => after(await allPages(call, `/repos/${repo}/issues`, { state: 'closed', since, sort: 'updated', direction: 'desc' }), 'closed_at', since, by),
+    issuesClosedSince: async (since, by) => after(await allPages(call, `/repos/${repo}/issues`, { state: 'closed', since, sort: 'updated', direction: 'desc' }), 'closed_at', since, by, appId),
 
     /**
      * The native `blocked by` relationships, each naming its repo where
