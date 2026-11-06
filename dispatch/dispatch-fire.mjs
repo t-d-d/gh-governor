@@ -161,8 +161,9 @@ const attended = (prompt) => (prompt.endsWith(`\n${UNATTENDED}`) ? prompt.slice(
 /**
  * Look for the live roles on the issue a summons is on, and send each a
  * notice ({@link roleNotice}): the spec owner the fire names, read by the
- * receiver from the body, and on a claimed ticket each builder the one
- * lookup finds (dispatch/builders.mjs). Nothing is read on an unclaimed
+ * receiver from the body, and on a claimed ticket each builder, found as
+ * every path finds a ticket's roles (`rolesOf`, dispatch/roles.mjs). A
+ * spec owner that is also a builder is one send. Nothing is read on an unclaimed
  * ticket. `none` where the ticket names no role, or every role refused as
  * archived; `held` where it names one but `trust.relay` leaves the writer
  * out, so the remark reaches nobody and nothing starts beside it; `told`

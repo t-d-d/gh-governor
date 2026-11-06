@@ -77,7 +77,7 @@ export const waitUnreadableComment = (value) => {
 };
 
 /**
- * @typedef {(issue: number, comment: string) => Promise<void>} Tell
+ * @typedef {import('./told.mjs').Tell} Tell
  *   The message to the ticket's spec owner of a comment governor just
  *   posted on it (`specOwnerTeller`, dispatch/told.mjs). The comment is a
  *   record for people, which the relay sends to nobody, so the turn that
@@ -647,7 +647,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
         await reader.comment(issue, comment);
         // With no spec work to ask, no spec message carries the end, so
         // the spec owner hears the comment, once, when it is posted.
-        if (!spec && tell !== undefined) await tell(issue, comment);
+        if (!spec && tell !== undefined) await tell(issue, comment, ticket);
       }
       // The spec work starts with no person choosing the ticket, so only
       // for an author the repo's trust.auto lets in.

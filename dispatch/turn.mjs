@@ -1822,11 +1822,11 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
  *
  * @param {number[]} tickets
  * @param {{ invocation: import('./webhook/fire.mjs').WorkflowFire | import('./webhook/fire.mjs').JobFire, coverage: import('./coverage.mjs').Coverage, commented: Commented[], reader: Reader, config: import('./repo-config.mjs').RepoConfig, ownerOf: (pr: number) => Promise<{ session: string | null }> }} ctx
- * @returns {Promise<{ found: import('./workflow.mjs').TicketRoles[], failed: Array<{ ticket: number, error: string }>, skipped: number[] }>}
+ * @returns {Promise<{ found: import('./workflow.mjs').ShippedTicket[], failed: Array<{ ticket: number, error: string }>, skipped: number[] }>}
  *   `skipped`: each ticket no PR of the range closes, which names nobody.
  */
 const shippedRolesOf = async (tickets, { invocation, coverage, commented, reader, config, ownerOf }) => {
-  /** @type {import('./workflow.mjs').TicketRoles[]} */
+  /** @type {import('./workflow.mjs').ShippedTicket[]} */
   const found = [];
   /** @type {Array<{ ticket: number, error: string }>} */
   const failed = [];

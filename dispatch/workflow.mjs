@@ -554,7 +554,7 @@ const planTarget = async (run, coverage, prompts, workflows) => {
 };
 
 /**
- * @typedef {{ ticket: number, title: string, prs: number[], roles: import('./roles.mjs').TicketRoles }} TicketRoles
+ * @typedef {{ ticket: number, title: string, prs: number[], roles: import('./roles.mjs').TicketRoles }} ShippedTicket
  *   A ticket a green deploy commented on (dispatch/turn.mjs): the PRs it
  *   shipped that close it, and its roles as every path finds them
  *   (`rolesOf`, dispatch/roles.mjs).
@@ -564,7 +564,7 @@ const planTarget = async (run, coverage, prompts, workflows) => {
  * One entry naming a ticket and the PRs that closed it, with the "Roles on
  * #N" lines every path writes for the recipient (`holder`).
  *
- * @param {TicketRoles} ticket
+ * @param {ShippedTicket} ticket
  * @param {import('./roles.mjs').RoleHolder} holder
  */
 const ticketLine = ({ ticket, title, prs, roles }, holder) => [
@@ -583,7 +583,7 @@ const ticketLine = ({ ticket, title, prs, roles }, holder) => [
  * returned as it is.
  *
  * @param {TargetPlan} plan
- * @param {TicketRoles[]} tickets
+ * @param {ShippedTicket[]} tickets
  * @returns {TargetPlan}
  */
 export const withTickets = (plan, tickets) => {

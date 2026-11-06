@@ -192,8 +192,8 @@ spends the one claude.ai login.
   (`rolesText`). A message to a builder whose PR has merged says so, and
   that it acts on the message only where it calls for new work; such a
   builder still hears the ticket's events, since a repo may keep a ticket
-  open past a merge. Every place that judges a ticket's author against a
-  trust list judges one governor's App filed as the receiver does.
+  open past a merge. The roles, a blocker's close, an ended wait and the
+  issue reviews judge a ticket governor's App filed as the receiver does.
 - A ticket's builder is found by one lookup, called from `rolesOf` alone
   (`buildersOf`, dispatch/builders.mjs). First, the owner, as `ownerOf`
   finds it, of each open PR whose body closes the ticket by GitHub's
