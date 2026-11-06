@@ -133,6 +133,7 @@ import { sessionId } from './webhook/subscribe.mjs';
 import { rolesOf } from './roles.mjs';
 import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, countAgainst, deliveries as turnDeliveries, fromDispatcher, readSend, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, deployedTarget, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
+import { SESSION_RULES } from './session-rules.mjs';
 import { deployedComment } from './webhook/deployed-comment.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, writeHeartbeatIssue } from './heartbeat.mjs';
@@ -668,7 +669,9 @@ const turnOf = async (event, deps, built) => {
     recordSession: (sessionUrl) => deps.state.recordSession(sessionUrl),
     suffix: (launchRepo) => {
       const own = configIn(served, launchRepo);
-      return own !== undefined && turnsOn(own, 'waits') ? `${SIGN_POSTS}\n\n${WAIT_PROMPT}` : SIGN_POSTS;
+      // Rule 1 is the signing rule, so the rules take SIGN_POSTS's place.
+      const signing = own !== undefined && turnsOn(own, 'sessionRules') ? SESSION_RULES : SIGN_POSTS;
+      return own !== undefined && turnsOn(own, 'waits') ? `${signing}\n\n${WAIT_PROMPT}` : signing;
     },
     budgeted,
     fireRepo: repo,

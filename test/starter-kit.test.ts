@@ -18,6 +18,14 @@ import { readConfig as checkerReadConfig } from '../checker/heartbeat-check.mjs'
 import { globMatches } from '../dispatch/checklist.mjs';
 
 const STARTER = 'examples/starter/';
+/**
+ * Why the two every-section tests are off: governor at the kit's pinned
+ * commit refuses a `sessionRules` section, and the pins cannot move to a
+ * commit on main before the section merges. #610 adds the section to both
+ * files, moves the pins, and turns these tests back on. The owner agreed to
+ * this on #599.
+ */
+const SESSION_RULES_SKIP = 'the starter files gain sessionRules in #610, with the pins moved past the commit that adds it';
 const CONFIG_FILE = `${STARTER}${CONFIG_PATH}`;
 const DARK_FILE = `${STARTER}.github/governor.dark-factory.json`;
 const WORKFLOW_FILE = `${STARTER}.github/workflows/heartbeat.yml`;
@@ -66,7 +74,7 @@ describe('the starter kit\'s config file', () => {
     assert.deepEqual(Object.keys((JSON.parse(text) as { heartbeat: object }).heartbeat), ['issue']);
   });
 
-  test('lists every feature\'s section, the seven it turns on with no enabled and the rest with "enabled": false', () => {
+  test('lists every feature\'s section, the seven it turns on with no enabled and the rest with "enabled": false', { skip: SESSION_RULES_SKIP }, () => {
     const sections = sectionsOf(text);
     assert.deepEqual(Object.keys(sections).sort(), [...SECTIONS].sort(), 'a new feature\'s section is added to the starter file');
     const on = ['pickup', 'summons', 'prMessages', 'subscribeMessages', 'heartbeat', 'periodics', 'signOff'];
@@ -146,7 +154,7 @@ describe('the starter kit\'s dark-factory config file', () => {
     assert.ok(got.ok, JSON.stringify(got));
   });
 
-  test('lists every feature\'s section, with every one but hooks on', () => {
+  test('lists every feature\'s section, with every one but hooks on', { skip: SESSION_RULES_SKIP }, () => {
     const sections = sectionsOf(text);
     assert.deepEqual(Object.keys(sections).sort(), [...SECTIONS].sort(), 'a new feature\'s section is added to the dark-factory file');
     for (const name of SECTIONS) assert.equal(sections[name], name !== 'hooks', name);

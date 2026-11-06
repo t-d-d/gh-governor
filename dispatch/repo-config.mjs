@@ -55,7 +55,9 @@ export const OLD_CONFIG_PATH = '.github/dispatch.json';
  * deployed-label job fires, the PR review, the heartbeat, periodics,
  * hooks, what governor does when a ticket's wait ends (`waits`,
  * dispatch/waits.mjs), and the sign-off sweep's archive and the standing
- * line's ask to sign off (`signOff`, scripts/lib/session-signoff.mjs).
+ * line's ask to sign off (`signOff`, scripts/lib/session-signoff.mjs),
+ * and the three rules every session follows (`sessionRules`,
+ * dispatch/session-rules.mjs).
  * Each but `deployedLabels` is a section of the file, on where the file has
  * it and its `enabled` is not `false`; `deployedLabels` is
  * `deployMessages.deployedLabels`, on where that section is on and the key
@@ -64,7 +66,7 @@ export const OLD_CONFIG_PATH = '.github/dispatch.json';
 export const GENERIC_SWITCHES = Object.freeze([
   'pickup', 'summons', 'prMessages', 'subscribeMessages', 'redScheduledRun', 'unblocked',
   'ciMessages', 'deployMessages', 'branchRunMessages', 'conflicts', 'deployedLabels', 'prReview',
-  'heartbeat', 'periodics', 'hooks', 'waits', 'signOff',
+  'heartbeat', 'periodics', 'hooks', 'waits', 'signOff', 'sessionRules',
 ]);
 
 /**
@@ -147,6 +149,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   hooks: 'A session on a hook\'s prompt when a signed request fires one of the hooks `sessions` holds. A fire while the hook\'s last session is open goes into that session as a message. Needs at least one hook when on.',
   waits: 'When a ticket\'s `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker\'s close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.',
   signOff: 'Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off.',
+  sessionRules: 'The three rules every session in the repo follows: sign what you post, only an owner edits a body or pushes to a PR\'s branch, and comment on what you do not own. Every session governor starts reads them at the end of its opening prompt, in place of the signing line. Sessions a person starts read them in the block the repo copies into its `CLAUDE.md`, or the file `file` names, and the config check warns where that block is missing or old.',
 });
 
 /** A section's `enabled` key. */
@@ -556,6 +559,15 @@ const signOffSchema = z.strictObject({
 });
 
 /**
+ * The `sessionRules` section: `enabled`, and `file`, the file that carries
+ * the rules' block for sessions a person starts (dispatch/session-rules.mjs).
+ */
+const sessionRulesSchema = z.strictObject({
+  enabled,
+  file: repoPath.optional().meta({ description: 'The file that carries governor\'s session rules block, a path from the repo\'s root, which the config check reads at a pull request\'s head. Default `CLAUDE.md` at the root.' }),
+});
+
+/**
  * Each feature's section, its JSON Schema description the switch's
  * ({@link SWITCH_DESCRIPTIONS}).
  */
@@ -576,6 +588,7 @@ const sectionSchemas = {
   hooks: hooksSchema,
   waits: waitsSchema,
   signOff: signOffSchema,
+  sessionRules: sessionRulesSchema,
 };
 
 /**
@@ -647,7 +660,7 @@ const toConfig = (file) => {
       for (const [key, kind] of Object.entries(place.prompts)) if (held.prompts?.[key] !== undefined) prompts[kind] = held.prompts[key];
     }
   }
-  const { pickup, deployMessages, prReview, heartbeat, waits, periodics, hooks, issueReviews, signOff } = file;
+  const { pickup, deployMessages, prReview, heartbeat, waits, periodics, hooks, issueReviews, signOff, sessionRules } = file;
   // With no ready or claim label, no feature that reads the labels is on
   // (fileSchema), so these are never read but to list no ready label.
   const labels = pickup?.ready !== undefined && pickup.claim !== undefined
@@ -671,6 +684,7 @@ const toConfig = (file) => {
   if (waits?.issue !== undefined) config.waits = { issue: waits.issue };
   if (pickup?.sweepHours !== undefined) config.pickup = { sweepHours: pickup.sweepHours };
   if (signOff?.heldMessage === true) config.signOff = { heldMessage: true };
+  if (sessionRules?.file !== undefined) config.sessionRules = { file: sessionRules.file };
   if (file.trust !== undefined) config.trust = file.trust;
   if (issueReviews !== undefined) config.issueReviews = issueReviews;
   // `$schema` is for the editor: governor drops it unread.
@@ -820,7 +834,7 @@ export const configSchema = fileSchema.transform(toConfig)
  * @typedef {{ enabled?: boolean, reviews: IssueReview[] }} IssueReviews
  *   The `issueReviews` section: `enabled` as the file sets it, and each
  *   review, in the order of the file's keys.
- * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, signOff?: { heldMessage: true }, periodics: Periodic[], hooks: Hook[], issueReviews?: IssueReviews }} RepoConfig
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, signOff?: { heldMessage: true }, sessionRules?: { file: string }, periodics: Periodic[], hooks: Hook[], issueReviews?: IssueReviews }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
  *   ready labels the claim takes off, and a failed launch puts back.
@@ -839,6 +853,8 @@ export const configSchema = fileSchema.transform(toConfig)
  *   `trust`: whose GitHub text governor acts on, where the file sets it.
  *   `signOff`: where the file sets `heldMessage`, the sweep tells a
  *   session the first time it holds it from its sign-off.
+ *   `sessionRules`: where the file sets `file`, the file that carries the
+ *   session rules' block in place of `CLAUDE.md`.
  *   `periodics`: the recurring sessions the schedule fire starts.
  *   `hooks`: the hooks an outside system fires.
  *   `issueReviews`: the issue reviews section, where the file has one.

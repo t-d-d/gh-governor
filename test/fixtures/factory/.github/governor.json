@@ -439,6 +439,7 @@
     "heldMessage": true,
     "prompt": "Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make `Signing off.` the last line of your reply, and the dispatcher archives the session. Above it, write any `Lesson:` lines CLAUDE.md § Lessons calls for; usually there are none."
   },
+  "sessionRules": {},
   "issueReviews": {
     "reviews": {
       "triage": {

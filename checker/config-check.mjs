@@ -13,7 +13,9 @@
  * failing, on a file that is valid but cannot work: a ready label the repo
  * lacks, a `workflows.ci` file that is not there, a heartbeat issue without
  * its marker, a review glob that matches no path, an issue review whose
- * `by` the repo's `trust.review` lets none of in. Only governor can check
+ * `by` the repo's `trust.review` lets none of in, and, where the file turns
+ * `sessionRules` on, a `CLAUDE.md` (or the file `sessionRules.file` names)
+ * without the current session rules block. Only governor can check
  * that `environment` resolves, because that needs the claude.ai login. It
  * warns too, in wording of its own, where a `trust` list reaches beyond
  * owners, members and collaborators, and notes each unset list governor
@@ -35,6 +37,7 @@ import yaml from 'js-yaml';
 import { globMatches } from '../dispatch/checklist.mjs';
 import { HEARTBEAT_MARKER } from '../dispatch/heartbeat.mjs';
 import { CONFIG_PATH, ISSUE_REVIEW_BY, OLD_CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
+import { SESSION_RULES_VERSION, blockIn, rulesFile } from '../dispatch/session-rules.mjs';
 import { fitsInside, narrowedLists, reviewOf, trustExposures } from '../dispatch/trust.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
@@ -113,8 +116,31 @@ const warningsOf = async (config, reads) => {
       ...review.quote.filter((entry) => none(entry.replace(/^!/, ''))).map((entry) => `prReview.quote: ${entry} matches no path in the repo`),
     ];
   };
+  /**
+   * Sessions a person starts read the rules only in this file, so a
+   * missing or old block warns. A read that fails warns too: the block is
+   * advice to sessions, not something governor reads.
+   *
+   * @returns {Promise<string[]>}
+   */
+  const sessionRules = async () => {
+    if (config.features.sessionRules !== true) return [];
+    const path = rulesFile(config);
+    /** @type {string | null} */
+    let text;
+    try {
+      text = await reads.read(path);
+    } catch (error) {
+      return [`sessionRules: could not read ${path}, so its session rules block went unchecked: ${messageOf(error)}`];
+    }
+    if (text === null) return [`sessionRules: ${path} is not in the repo, so sessions a person starts are not told the rules. Add it with the block from docs/serving-a-repo.md`];
+    const found = blockIn(text);
+    if (found === 'missing') return [`sessionRules: ${path} does not carry governor's session rules block, so sessions a person starts are not told the rules. Copy the block from docs/serving-a-repo.md into it`];
+    if (found === 'old') return [`sessionRules: ${path} carries a session rules block that is not governor's current one, v${SESSION_RULES_VERSION}. Replace it with the one in docs/serving-a-repo.md`];
+    return [];
+  };
   // Independent reads, run together; the warnings keep this order.
-  return [...(await Promise.all([labels(), ci(), heartbeat(), globs()])).flat(), ...unreviewable(config)];
+  return [...(await Promise.all([labels(), ci(), heartbeat(), globs(), sessionRules()])).flat(), ...unreviewable(config)];
 };
 
 /**

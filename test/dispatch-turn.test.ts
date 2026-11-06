@@ -27,6 +27,7 @@ import { ownerUnknownSince, sessionNamedIn, subscribeLine } from '../dispatch/we
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { promptFor, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { SIGN_POSTS, UNATTENDED, dispatchMarker, lastDispatch, parseFire } from '../dispatch/webhook/fire.mjs';
+import { SESSION_RULES } from '../dispatch/session-rules.mjs';
 import { WORKFLOW_PATHS, headMerge, workflowFile, workflowFile as workflowFixture } from './helpers/dispatch-workflows.ts';
 import { SIGN_OFF, SIGNOFF_LATEST_START_MS, SIGNOFF_PAGES, SIGNOFF_REPLY_POLL_MS, SIGNOFF_REPLY_WAIT_MS, SIGNOFF_WINDOW_MS, ARCHIVE_TIMEOUT_MS } from '../scripts/lib/session-signoff.mjs';
 import { LOGIN_EXPIRY_WARNING_MS, storedLogin } from '../scripts/lib/claude-login.mjs';
@@ -61,8 +62,14 @@ const WAITS_OFF_FILE = (() => {
   delete file.waits;
   return JSON.stringify(file);
 })();
-/** A launch's prompt as the launcher gets it: governor's line on signing posts, then, with the factory's `waits` on, its line on waiting, end every one. */
-const signed = (prompt: string) => `${prompt}\n\n${SIGN_POSTS}\n\n${WAIT_PROMPT}`;
+/** The factory's file without the `sessionRules` switch: a repo that never turned it on. */
+const RULES_OFF_FILE = (() => {
+  const file = JSON.parse(FACTORY_FILE);
+  delete file.sessionRules;
+  return JSON.stringify(file);
+})();
+/** A launch's prompt as the launcher gets it: with the factory's `sessionRules` on, the three rules, then, with its `waits` on, the line on waiting, end every one. */
+const signed = (prompt: string) => `${prompt}\n\n${SESSION_RULES}\n\n${WAIT_PROMPT}`;
 const FACTORY_CONFIG_LABELS = FACTORY_CONFIG.labels;
 /** The factory's wait ticket (`waits.issue`), which each waiting ticket is linked as blocked by, and its read. */
 const WAIT_TICKET = JSON.parse(FACTORY_FILE).waits.issue as number;
@@ -936,7 +943,7 @@ describe('run — schedule', () => {
   // Claude Code ends a session's comment in the bare footer, which names no
   // session, so the receiver cannot skip a session's own post unless the
   // session puts its link above the footer itself.
-  test('every session the turn launches is told to put its link above the footer of what it posts', async () => {
+  test('every session the turn launches is told the three rules, the first of which puts its link above the footer of what it posts', async () => {
     const pickup = harness();
     await run({ source: 'aws.events' }, pickup.deps as never);
     const byHand = harness();
@@ -945,7 +952,20 @@ describe('run — schedule', () => {
     await run({ kind: 'message', session: 'session_01OLD', text: 'hi', fallback: { prompt: 'take the PR over' } }, takeover.deps as never);
     const prompts = [...pickup.launches, ...byHand.launches, ...takeover.launches].map((l) => l.prompt);
     assert.equal(prompts.length, 4);
-    for (const prompt of prompts) assert.ok(prompt.endsWith(`\n\n${SIGN_POSTS}\n\n${WAIT_PROMPT}`), prompt);
+    for (const prompt of prompts) assert.ok(prompt.endsWith(`\n\n${SESSION_RULES}\n\n${WAIT_PROMPT}`), prompt);
+    for (const prompt of prompts) assert.ok(!prompt.includes(SIGN_POSTS), 'rule 1 is the signing rule, in place of SIGN_POSTS');
+  });
+
+  test('in a repo with sessionRules off, every launch\'s prompt ends with the signing line as before, and carries no rules', async () => {
+    const harnesses = [harness({ configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) }), harness({ configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) })];
+    await run({ source: 'aws.events' }, harnesses[0]!.deps as never);
+    await run({ kind: 'dispatch', prompt: 'hello' }, harnesses[1]!.deps as never);
+    const prompts = harnesses.flatMap((h) => h.launches.map((l: { prompt: string }) => l.prompt));
+    assert.ok(prompts.length >= 2, String(prompts.length));
+    for (const prompt of prompts) {
+      assert.ok(prompt.endsWith(`\n\n${SIGN_POSTS}\n\n${WAIT_PROMPT}`), prompt);
+      assert.ok(!prompt.includes(SESSION_RULES), prompt);
+    }
   });
 
   test('marks each issue with the session URL, and writes the heartbeat', async () => {
@@ -3370,7 +3390,7 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       const spec = specOf(h);
       assert.equal(spec.length, 1, JSON.stringify(h.launches.map((l) => l.sessionName)));
       assert.ok(spec[0]!.prompt.includes(waitSpecPrompt({ issue: 7, title: 'Issue 7', until: PAST, labels: FACTORY_CONFIG_LABELS, prompts: FACTORY_PROMPTS })), spec[0]!.prompt);
-      assert.ok(spec[0]!.prompt.endsWith(`\n\n${SIGN_POSTS}\n\n${WAIT_PROMPT}`), spec[0]!.prompt);
+      assert.ok(spec[0]!.prompt.endsWith(`\n\n${SESSION_RULES}\n\n${WAIT_PROMPT}`), spec[0]!.prompt);
       assert.ok(!h.comments.some((c) => c.body.includes('governor:dispatched')), 'no dispatch comment');
       assert.deepEqual(h.issueEdits, [{ issue: 7, body: String(owned.body).replace(OWNER, 'https://claude.ai/code/session_01ABC') }], 'the spec session takes the owner\'s place in the body');
       assert.deepEqual([...h.waitItems], []);
@@ -3599,7 +3619,7 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
     assert.ok(on.launches[0]!.prompt.endsWith(`\n\n${WAIT_PROMPT}`));
     const off = harness({ configFile: async (repo: string) => (repo === REPO ? WAITS_OFF_FILE : null) });
     await run({ kind: 'dispatch', prompt: 'hello' }, off.deps as never);
-    assert.ok(off.launches[0]!.prompt.endsWith(`\n\n${SIGN_POSTS}`));
+    assert.ok(off.launches[0]!.prompt.endsWith(`\n\n${SESSION_RULES}`));
     assert.ok(!off.launches[0]!.prompt.includes(WAIT_PROMPT));
   });
 });
