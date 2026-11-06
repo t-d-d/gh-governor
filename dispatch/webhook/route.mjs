@@ -59,6 +59,9 @@
  * repo's issue reviews on it (dispatch/issue-review.mjs). So does a label
  * added or removed, by anyone, where the repo's hook-table item lists the
  * label as one whose change can start a review, or cannot say.
+ * An issue's body edited by anyone but a bot queues its spec owner's
+ * message, told the edit may be its own; on a claimed ticket, a `ticket`
+ * fire in its place, which reaches the builders too (dispatch/ticket-fire.mjs).
  * An issue closed queues a `schedule` fire naming it as `freed`. Its turn
  * starts nothing: it queues one `unblocked` fire for each open ticket the
  * issue directly blocked, in whichever listed owner's repo the ticket is,
@@ -105,7 +108,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, RELAY, REPO_NAME, RED, SUMMONERS, TRUST_VALUES, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob, waitLine } from './fire.mjs';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { errorText } from './error-text.mjs';
-import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires, ticketFires } from './mention.mjs';
+import { MENTION, MENTION_EVENTS, bodyEditFires, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires, ticketFires } from './mention.mjs';
 import { droppedBy } from './switches.mjs';
 import { pastReadingBound } from './subscribe.mjs';
 
@@ -775,7 +778,10 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
     const mentioned = mentionFires({ event, payload, ...trust }) ?? nothing(`issues ${action}: nothing to select from`);
     // An issue opened is counted on its summons, or on a fire of its own.
     const counted = action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened', 'dispatch') : mentioned;
-    return both(both(counted, waitFire(payload)), issueReviewFire(payload));
+    const reviewed = both(both(counted, waitFire(payload)), issueReviewFire(payload));
+    // A body edit: the spec owner's message, or on a claimed ticket the
+    // ticket fire in its place, settled by the claim label.
+    return action === 'edited' ? both(both(reviewed, bodyEditFires(payload, trust)), ticketFires({ event, payload, ...trust })) : reviewed;
   }
   if (event === 'issue_dependencies') return unlinkedFire(payload);
   if (event === 'pull_request') {
