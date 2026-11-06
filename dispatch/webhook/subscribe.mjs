@@ -433,6 +433,48 @@ export const relinkSession = (body, sessionUrl) => {
 };
 
 /**
+ * The body with its owner link, as {@link sessionNamedIn} reads it,
+ * removed, and every other character kept: a link alone on its line goes
+ * with its line and the blank line before it. A body that names no owner
+ * is returned as it is. Governor removes the link of a session that may
+ * not own an issue, a builder or a session that edited a person's issue
+ * (dispatch/take.mjs). With `footer`, a Claude Code footer left signing
+ * nothing goes too, with the rules above it: a person's issue the editor
+ * signed would otherwise read as a session's unsigned post
+ * ({@link unsignedSessionBody}), which any session may take. Throws for a
+ * body {@link pastReadingBound}.
+ *
+ * @param {unknown} body
+ * @param {{ footer?: boolean }} [options]
+ * @returns {string}
+ */
+export const unlinkSession = (body, { footer = false } = {}) => {
+  const unlinked = unlinkOwner(body);
+  return footer ? withoutUnsignedFooter(unlinked) : unlinked;
+};
+
+/**
+ * The body with its owner link removed ({@link unlinkSession}).
+ *
+ * @param {unknown} body
+ * @returns {string}
+ */
+const unlinkOwner = (body) => {
+  const text = String(body ?? '');
+  if (pastReadingBound(text)) throw new Error('the body is too long or too deeply nested to read for its session link');
+  const owner = ownerLink(ownerText(text));
+  if (!owner) return text;
+  const start = text.lastIndexOf('\n', owner.at - 1) + 1;
+  const newline = text.indexOf('\n', owner.at);
+  const end = newline === -1 ? text.length : newline;
+  if (text.slice(start, end).trim() !== owner.link) return `${text.slice(0, owner.at)}${text.slice(owner.at + owner.link.length)}`;
+  const before = text.slice(0, start).replace(/\s+$/, '');
+  const after = text.slice(end).replace(/^\s*\n/, '');
+  if (after.trim() === '') return before;
+  return before === '' ? after : `${before}\n\n${after}`;
+};
+
+/**
  * Whether `body`, an issue's, is a session's unsigned post: its last line
  * with text on it, past any rule, outside any quote and subscribe line, is
  * the Claude Code footer, and it names no session ({@link sessionNamedIn}). A session
@@ -451,6 +493,23 @@ export const unsignedSessionBody = (body) => {
 
 /** A line with nothing on it but a rule, or nothing at all. */
 const RULE_OR_BLANK = /^[\s*_-]*$/;
+
+/**
+ * `text` without the footer that ends a session's unsigned post, nor the
+ * rules and blank lines above it. Any other body is returned as it is.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+const withoutUnsignedFooter = (text) => {
+  if (!unsignedSessionBody(text)) return text;
+  const lines = ownerText(text).split('\n');
+  let last = lines.length - 1;
+  while (last > 0 && RULE_OR_BLANK.test((lines[last] ?? '').trim())) last -= 1;
+  let kept = text.split('\n').slice(0, last);
+  while (kept.length > 0 && RULE_OR_BLANK.test((kept.at(-1) ?? '').trim())) kept = kept.slice(0, -1);
+  return kept.join('\n');
+};
 
 /**
  * The whole of a Claude Code footer line, in either shape a session's body

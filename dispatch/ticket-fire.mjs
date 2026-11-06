@@ -25,6 +25,12 @@
  * offered it once the roles have heard it, unless it builds the ticket
  * (dispatch/offer.mjs).
  *
+ * A body edit that moved the owner link (`moved`), with `sessionRules` on,
+ * goes to the old owner as the spec owner, never to the session that made
+ * it, and then the take is confirmed or the old link written back
+ * (dispatch/take.mjs). With `sessionRules` off, the new owner hears it as
+ * before.
+ *
  * A `dispatched` ticket fire, governor's dispatch comment queued before
  * the relay dropped governor's comments, still reaches the spec owner and
  * the builder it displaced, as the posting turn now tells them
@@ -44,6 +50,7 @@ import { relayedBody, sameSession, sessionId } from './webhook/subscribe.mjs';
 import { EDIT_BUILDER, EDIT_SPEC_OWNER } from './webhook/mention.mjs';
 import { builderChangeSends, tellBuilderChange } from './told.mjs';
 import { offerIssue } from './offer.mjs';
+import { settleMove } from './take.mjs';
 import { turnsOn } from './repo-config.mjs';
 
 /** @typedef {import('./roles.mjs').TicketRole} TicketRole */
@@ -61,7 +68,11 @@ export const planTicket = async (invocation, ctx) => {
   const repo = fireRepoOf(invocation);
   const { issue, text, event, state, labels, poster, closing } = invocation;
   const config = ctx.configOf(repo);
-  const owner = invocation.owner ?? null;
+  // A body edit that moved the owner link: under sessionRules the old
+  // owner is the spec owner, and the session the new body names made the edit.
+  const moved = event === 'edit' && invocation.moved !== undefined && turnsOn(config, 'sessionRules') ? invocation.moved : null;
+  const editor = moved === null ? null : invocation.owner ?? null;
+  const owner = moved === null ? invocation.owner ?? null : moved.from ?? null;
   const claimed = labels.includes(config.labels.claim) && config.labels.claim !== '';
   const about = { repo, issue, change: event, state, claimed };
   /** @type {Array<{ session: string, text: string, role: TicketRole | null, owns: number[] }>} */
@@ -70,7 +81,7 @@ export const planTicket = async (invocation, ctx) => {
   const skipped = [];
   /** The ticket's builders, none on an unclaimed ticket. @type {string[]} */
   let builders = [];
-  const own = (/** @type {string} */ session) => poster !== undefined && sameSession(session, poster);
+  const own = (/** @type {string} */ session) => (poster !== undefined && sameSession(session, poster)) || (editor !== null && sameSession(session, editor));
   // What a body edit tells each role, under what happened.
   const edit = (/** @type {TicketRole} */ role) => (event !== 'edit' ? '' : `\n\n${[
     ...(role === 'builder' ? [] : [EDIT_SPEC_OWNER]),
@@ -105,7 +116,7 @@ export const planTicket = async (invocation, ctx) => {
     }
     Object.assign(about, { builders, builder: roles.by });
   }
-  if (sends.length === 0) {
+  if (sends.length === 0 && editor === null) {
     ctx.log('dispatch-ticket', { ...about, outcome: 'nobody told', ...(skipped.length === 0 ? { reason: 'no role on the ticket is held by a session' } : { skipped }) });
     return { answer: { kind: invocation.kind, messaged: null, dispatched: [] } };
   }
@@ -115,6 +126,10 @@ export const planTicket = async (invocation, ctx) => {
   let offered = null;
   /** Whether the spec owner refused as archived. */
   let ownerGone = false;
+  /** The spec owner's delivery, where it was sent. @type {import('./deliveries.mjs').Delivery | null} */
+  let notice = null;
+  /** The take's confirmation or the correction, where one was sent. @type {import('./deliveries.mjs').Delivery | null} */
+  let took = null;
   let loginStored = false;
   try {
     for (const { session, text: told, role, owns } of sends) {
@@ -131,6 +146,7 @@ export const planTicket = async (invocation, ctx) => {
         owns,
       });
       sent.push(delivered);
+      if (role !== 'builder') notice = delivered;
       if (role !== 'builder' && delivered.refused) ownerGone = true;
       ctx.log('dispatch-ticket', { ...about, session, role: role ?? 'spec owner', ...(owns.length === 0 ? {} : { prs: owns }), outcome: delivered.ok ? 'messaged' : delivered.refused ? 'its session is archived' : delivered.capped ? 'held at the message ceiling' : 'not messaged', ...(skipped.length === 0 ? {} : { skipped }) });
     }
@@ -139,13 +155,26 @@ export const planTicket = async (invocation, ctx) => {
     if (ownerGone && event === 'comments' && poster !== undefined && turnsOn(config, 'sessionRules')) {
       offered = await offerIssue({ repo, issue, session: poster, why: 'archived', builders, deliveries: ctx.delivery(), log: ctx.log });
     }
+    // The edit moved the owner link: the take confirmed, or the old link
+    // written back (dispatch/take.mjs).
+    if (moved !== null && editor !== null) {
+      took = await settleMove({
+        repo, issue, editor, moved, notice, builders,
+        github: await ctx.readerFor(repo),
+        relay: relayOf(config),
+        tellOnce: (session, kind) => ctx.state.recordTold(session, kind),
+        deliveries: ctx.delivery(),
+        log: ctx.log,
+      });
+    }
   } finally {
     loginStored = await ctx.storeLogin();
   }
   // The turn's answer: a send that failed, so the turn says so, else one
   // that took it, else the last refusal.
   // A send held at the ceiling is no fault, so one that faulted goes first.
-  const messaged = [...sent, ...(offered === null ? [] : [offered])].find((t) => !t.ok && !t.refused && t.capped !== true) ?? sent.find((t) => t.ok) ?? /** @type {import('./deliveries.mjs').Delivery} */ (sent.at(-1));
+  const answered = [...sent, ...(offered === null ? [] : [offered]), ...(took === null ? [] : [took])];
+  const messaged = answered.find((t) => !t.ok && !t.refused && t.capped !== true) ?? answered.find((t) => t.ok) ?? answered.at(-1) ?? null;
   return { answer: { kind: invocation.kind, messaged, dispatched: [], loginStored } };
 };
 

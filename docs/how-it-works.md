@@ -200,6 +200,17 @@ On a claimed ticket the task finds the builders by the lookup above. Each messag
 
 An empty role is filled one of two ways: by governor's spec session, where spec work arrives as before, or by a session that takes the issue with a signed edit of its body after the offer.
 
+**A body edit that moves the owner link.** Any session can edit an issue's body and end it with its own link. Where the repo's file turns on `sessionRules` and `subscribeMessages` both, governor reads the old body from the `edited` delivery as well as the new (`dispatch/take.mjs`). Where the old body named owner A, or no session, and the new body names session B, the edit's notice goes to A, and B is not sent its own edit.
+
+- **A take.** Where A refuses the notice as archived, or the old body was a session's unsigned post, B now owns the issue, and governor tells it so.
+- **A live owner's issue.** Where A takes the notice, governor reads the body again and, where its owner link still names B, writes A's link back in its place. The rest of B's edit stays. B is told, with the rules, that it edited an issue it does not own, that its link was replaced by the owner's, and to comment next time.
+- **No take.** A ticket's builder never takes its spec, and a person's issue, with no footer and no session, is the person's. Governor writes A's link back where the old body named A, and otherwise removes B's link, and tells B to comment instead.
+- B hears each kind of correction once: governor keeps a record in its state table for three months, and writes the link back every time. The confirmation of a take is not a correction, and goes every time.
+- Where the body names someone else by the time governor reads it again, nothing is written and B hears nothing. A read or write that fails logs `dispatch-spec-owner` at error and changes nothing else. A notice to A that the message cap holds back stops the rest.
+- A person who moves the link edits as the operator's login, as a session does, and is treated the same. To hand a live owner's issue over, ask the owner to sign off.
+
+With `sessionRules` off, B hears the edit as before, told it may be its own. With `subscribeMessages` off, no session hears a body edit.
+
 **A change of builder** is announced on the ticket with governor's dispatch comment, the marker and the line `Dispatched to <session URL> at <time>.` Governor posts one at pickup's launch, and at each change of builder after it:
 
 - a takeover of a PR that closes the ticket, where governor starts a session on the PR or writes a session found on its branch into a body that named another session (`announce`, `dispatch/deliveries.mjs`). The comment goes on each issue the PR closes, open or closed alike, since a PR's owner builds every issue it closes. Governor reads each number first, and posts nothing on one that is a PR. The owner it replaced refused as archived, so the comment displaces nobody. It is posted with the takeover, under the switch that sent the message.
