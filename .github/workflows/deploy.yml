@@ -32,19 +32,24 @@
 # gate test cannot: that the task can pull its image, reach the network, hold
 # a pseudo-terminal and find the CLI. A red probe is a red deploy.
 #
-# A red probe after an apply rolls the stack back. Before the apply, the job
-# reads the image the stack runs, which is the image before this deploy. It
-# is not always one whose probe passed: a red step between the apply and the
-# probe, or a rollback that failed, leaves the new image in place. On a red
-# probe that changed the image, the job applies the same template again with
-# the image before it, changing nothing else, and probes again.
+# A red probe after an apply rolls the whole main stack back. Before the
+# apply, the job reads what the stack runs: its template, which is the
+# previous deploy's packaged template, and its parameters, the image among
+# them. That is not always a state whose probe passed: a red step between the
+# apply and the probe, or a rollback that failed, leaves the new one in place.
+# On a red probe after an apply that changed the stack, the job applies that
+# template with those parameters, so the receiver's code, the task image and
+# everything else in the main stack return together, and probes again. The
+# previous template's receiver code is the previous deploy's package in the
+# build bucket, which nothing expires; if it is gone the rollback fails, and
+# says so. The bootstrap stack is never rolled back.
 # The deploy stays red either way. A rollback that does not bring the task
 # back, because its apply or its probe failed, pages the operator through the
 # stack's alerts topic: governor is then down. So does a run cancelled, by
 # hand or by its timeout, after the rollback started and before its probe
-# passed. The rest of a template change, such as a new alarm or role, stays:
-# that applies or fails with CloudFormation's own rollback. A probe-only run
-# applies nothing, so it rolls nothing back.
+# passed. A first apply, with no stack before it, has nothing to roll back
+# to, and nor does an apply that changed nothing. A probe-only run applies
+# nothing, so it rolls nothing back.
 #
 # No secret is written here. The operator saves the claude.ai login, the App
 # key and the drop-box writer into the bootstrap stack's secrets once, before
@@ -227,30 +232,43 @@ jobs:
             --s3-prefix governor \
             --output-template-file "$RUNNER_TEMP/governor.packaged.yml"
 
-      # The image a red probe rolls back to. A stack that does not exist yet
-      # runs no image, so a red probe on its first apply has nothing to roll
-      # back to, and nor does one whose deploy left the image as it was; any
-      # other error stops the deploy before it changes anything.
-      - name: Read the image the stack runs now
+      # What a red probe rolls back to: the template the main stack runs,
+      # which is the previous deploy's packaged template, and its parameters.
+      # A stack that does not exist yet runs no image, so a red probe on its
+      # first apply has nothing to roll back to; any other error stops the
+      # deploy before it changes anything. The parameters stay in a file and
+      # out of the log.
+      - name: Read what the stack runs now
         id: previous
         if: ${{ !inputs.probe_only }}
         run: |
-          # stderr apart from the value, so a warning never becomes the image.
-          if ! PREVIOUS=$(aws cloudformation describe-stacks --stack-name governor \
-              --query "Stacks[0].Parameters[?ParameterKey=='ImageUri'].ParameterValue" --output text 2>"$RUNNER_TEMP/previous.err"); then
+          set -o pipefail
+          # stderr apart from the value, so a warning never becomes part of it.
+          if ! STACK=$(aws cloudformation describe-stacks --stack-name governor \
+              --query 'Stacks[0]' --output json 2>"$RUNNER_TEMP/previous.err"); then
             if ! grep -q "does not exist" "$RUNNER_TEMP/previous.err"; then
-              echo "::error::could not read the image the stack runs: $(cat "$RUNNER_TEMP/previous.err")"
+              echo "::error::could not read what the stack runs: $(cat "$RUNNER_TEMP/previous.err")"
               exit 1
             fi
-            PREVIOUS=""
+            STACK=""
+          fi
+          PREVIOUS=""
+          if [[ -n "$STACK" ]]; then
+            PREVIOUS=$(jq -r '.Parameters[]? | select(.ParameterKey == "ImageUri") | .ParameterValue' <<<"$STACK")
           fi
           if [[ -z "$PREVIOUS" || "$PREVIOUS" == None ]]; then
             echo "::notice::the stack runs no image yet, so a red probe has nothing to roll back to"
-            PREVIOUS=""
-          else
-            echo "the stack runs ${PREVIOUS}; a red probe rolls back to it"
+            echo "image_uri=" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          jq -r '.Parameters[] | "\(.ParameterKey)=\(.ParameterValue)"' <<<"$STACK" > "$RUNNER_TEMP/governor.previous.parameters"
+          # A YAML template comes back as a string, a JSON one as an object.
+          aws cloudformation get-template --stack-name governor --query TemplateBody --output json 2>"$RUNNER_TEMP/previous.err" \
+            | jq -r 'if type == "string" then . else tojson end' > "$RUNNER_TEMP/governor.previous.yml" \
+            || { echo "::error::could not read the template the stack runs: $(cat "$RUNNER_TEMP/previous.err")"; exit 1; }
+          echo "the stack runs ${PREVIOUS}; a red probe rolls the main stack back to the template and parameters it runs now"
           echo "image_uri=${PREVIOUS}" >> "$GITHUB_OUTPUT"
+          echo "updated_at=$(jq -r '.LastUpdatedTime // .CreationTime' <<<"$STACK")" >> "$GITHUB_OUTPUT"
 
       - name: Apply the stack
         id: apply
@@ -261,6 +279,7 @@ jobs:
           GOVERNOR_OWNERS: ${{ vars.GOVERNOR_OWNERS }}
           APP_ID: ${{ vars.APP_ID }}
           DROP_BOX_URL: ${{ secrets.DROP_BOX_URL }}
+          PREVIOUS_UPDATED_AT: ${{ steps.previous.outputs.updated_at }}
           # The template's default, passed because `aws cloudformation
           # deploy` keeps a parameter it is not given: a new default alone
           # never reaches a deployed stack.
@@ -287,6 +306,17 @@ jobs:
               "GitHubAppId=${APP_ID}" \
               "DropBoxUrl=${DROP_BOX_URL}" \
               "ScheduleExpression=${SCHEDULE_EXPRESSION}"
+          # An apply that changed nothing leaves the stack's update time as it
+          # was, and a red probe then has nothing to roll back. A time that
+          # cannot be read counts as a change.
+          set -o pipefail
+          UPDATED_AT=$(aws cloudformation describe-stacks --stack-name governor --query 'Stacks[0]' --output json \
+            | jq -r '.LastUpdatedTime // .CreationTime') || UPDATED_AT=unread
+          if [[ "$UPDATED_AT" == "$PREVIOUS_UPDATED_AT" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # The App's webhook follows the stack: the receiver's URL and the
       # stack's key, written as the App itself, and every installation
@@ -345,33 +375,44 @@ jobs:
         if: ${{ success() || (!cancelled() && steps.apply.outcome == 'success') }}
         run: node scripts/run-turn.mjs --kind probe
 
-      # Every step from here runs only after a red probe. The packaged
-      # template is the one just applied, and `aws cloudformation deploy`
-      # keeps every parameter it is not given, so the image is the one thing
-      # the rollback changes.
-      - name: Roll the stack back to the image it ran before this deploy
+      # Every step from here runs only after a red probe. The rollback
+      # applies the template and parameters the stack ran before this deploy,
+      # read before the apply, not the new packaged template: the receiver's
+      # code goes back with the task image, so a new receiver never runs
+      # beside an old task.
+      - name: Roll the main stack back to what it ran before this deploy
         id: rollback
-        if: ${{ failure() && !inputs.probe_only && steps.probe.outcome == 'failure' && steps.previous.outputs.image_uri != '' && steps.previous.outputs.image_uri != steps.image.outputs.image_uri }}
+        if: ${{ failure() && !inputs.probe_only && steps.probe.outcome == 'failure' && steps.previous.outputs.image_uri != '' && steps.apply.outputs.changed == 'true' }}
         env:
           PREVIOUS_IMAGE_URI: ${{ steps.previous.outputs.image_uri }}
         run: |
-          echo "::error::the probe failed; rolling the stack back to ${PREVIOUS_IMAGE_URI}, the image it ran before this deploy"
+          echo "::error::the probe failed; rolling the main stack back to the template, receiver code and parameters it ran before this deploy, with ${PREVIOUS_IMAGE_URI}"
+          # The previous template's receiver code is the previous deploy's
+          # package in the build bucket. Nothing expires it, but a missing one
+          # fails here, by name, and not halfway through CloudFormation.
+          while read -r BUCKET KEY; do
+            if ! aws s3api head-object --bucket "$BUCKET" --key "$KEY" > /dev/null; then
+              echo "::error::the previous deploy's receiver package s3://${BUCKET}/${KEY} is gone, so the rollback cannot restore the receiver"
+              exit 1
+            fi
+          done < <(awk '/S3Bucket:/ { gsub(/["\047]/, "", $2); bucket = $2 } /S3Key:/ { gsub(/["\047]/, "", $2); print bucket, $2 }' "$RUNNER_TEMP/governor.previous.yml" | sort -u)
+          mapfile -t PREVIOUS_PARAMETERS < "$RUNNER_TEMP/governor.previous.parameters"
           aws cloudformation deploy \
             --stack-name governor \
-            --template-file "$RUNNER_TEMP/governor.packaged.yml" \
+            --template-file "$RUNNER_TEMP/governor.previous.yml" \
             --capabilities CAPABILITY_IAM \
             --no-fail-on-empty-changeset \
             --parameter-overrides \
-              "ImageUri=${PREVIOUS_IMAGE_URI}"
+              "${PREVIOUS_PARAMETERS[@]}"
 
-      - name: Probe the task on the image it rolled back to
+      - name: Probe the task on the stack it rolled back to
         id: reprobe
         if: ${{ failure() && steps.rollback.outcome == 'success' }}
         env:
           PREVIOUS_IMAGE_URI: ${{ steps.previous.outputs.image_uri }}
         run: |
           node scripts/run-turn.mjs --kind probe
-          echo "::notice::rolled the stack back to ${PREVIOUS_IMAGE_URI}, and its probe passed. The deploy stays red: this commit's image failed its probe."
+          echo "::notice::rolled the main stack back to what it ran before this deploy, with ${PREVIOUS_IMAGE_URI}, and its probe passed. The deploy stays red: this commit failed its probe."
 
       # The deploy's red run reaches whoever watches Actions; governor down
       # reaches the operator, through the topic every alarm publishes to.

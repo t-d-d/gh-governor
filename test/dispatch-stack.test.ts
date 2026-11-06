@@ -1186,8 +1186,12 @@ describe('.github/workflows/deploy.yml', () => {
  * under either reading.
  * Returns the ids (or names) of the steps that ran, in order.
  */
-const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success' | 'failure' | 'cancelled'>, previousImage = 'governor@sha256:good', newImage = 'governor@sha256:new', cancelKeepsFailure = false } = {}) => {
-  const outputsOf: Record<string, Record<string, string>> = { previous: { image_uri: previousImage }, image: { image_uri: newImage } };
+const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success' | 'failure' | 'cancelled'>, previousImage = 'governor@sha256:good', newImage = 'governor@sha256:new', changed = true, cancelKeepsFailure = false } = {}) => {
+  const outputsOf: Record<string, Record<string, string>> = {
+    previous: { image_uri: previousImage, updated_at: '2026-01-01T00:00:00Z' },
+    image: { image_uri: newImage },
+    apply: { changed: String(changed) },
+  };
   const state: Record<string, { outcome: string; outputs: Record<string, string> }> = {};
   const ran: string[] = [];
   let failed = false;
@@ -1220,18 +1224,32 @@ const runDeploy = ({ probeOnly = false, outcomes = {} as Record<string, 'success
 describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
   const after = (ran: string[], id: string) => ran.slice(ran.indexOf(id) + 1);
 
-  test('reads the image the stack runs before the apply, from the stack\'s own ImageUri parameter', () => {
+  test('reads what the main stack runs before the apply: its template, its parameters and the image among them', () => {
     const previous = steps.find(withId('previous'));
-    assert.ok(previous, 'no step reads the image the stack runs now');
-    assert.match(previous.run ?? '', /describe-stacks --stack-name governor(?![\w-])/);
-    assert.match(previous.run ?? '', /ParameterKey=='ImageUri'/);
-    assert.match(previous.run ?? '', /image_uri=/);
+    assert.ok(previous, 'no step reads what the stack runs now');
+    const run = previous.run ?? '';
+    assert.match(run, /describe-stacks --stack-name governor(?![\w-])/);
+    assert.match(run, /ParameterKey == "ImageUri"/);
+    assert.match(run, /image_uri=/);
+    assert.match(run, /updated_at=/);
+    // The template the stack runs is the previous deploy's packaged template,
+    // whose receiver code names the previous deploy's package.
+    assert.match(run, /get-template --stack-name governor(?![\w-])[^\n]*\n?[^\n]*> "\$RUNNER_TEMP\/governor\.previous\.yml"/);
+    assert.match(run, /"\\\(\.ParameterKey\)=\\\(\.ParameterValue\)"[^\n]*> "\$RUNNER_TEMP\/governor\.previous\.parameters"/);
+    assert.match(run, /set -o pipefail/);
     assert.equal(previous.if, '${{ !inputs.probe_only }}');
-    // A warning the CLI prints on stderr would otherwise become the image a rollback applies.
-    assert.doesNotMatch(previous.run ?? '', /PREVIOUS=\$\(aws [^)]*2>&1/, 'the image read takes the CLI\'s stderr into its value');
+    // A warning the CLI prints on stderr would otherwise become part of what a rollback applies.
+    assert.doesNotMatch(run, /=\$\(aws [^)]*2>&1/, 'the read takes the CLI\'s stderr into its value');
   });
 
-  test('holds the order: read the current image, apply, probe, and on a red probe re-apply the previous image and probe again', () => {
+  test('the apply says whether it changed the stack, from the stack\'s own update time', () => {
+    const apply = steps.find(withId('apply'));
+    assert.equal(apply?.env?.PREVIOUS_UPDATED_AT, '${{ steps.previous.outputs.updated_at }}');
+    assert.match(apply?.run ?? '', /\.LastUpdatedTime \/\/ \.CreationTime/);
+    assert.match(apply?.run ?? '', /changed=/);
+  });
+
+  test('holds the order: read what the stack runs, apply, probe, and on a red probe apply what it ran before and probe again', () => {
     const { ran, failed } = runDeploy({ outcomes: { probe: 'failure' } });
     const order = ['previous', 'apply', 'probe', 'rollback', 'reprobe'];
     assert.deepEqual(ran.filter((id) => order.includes(id)), order);
@@ -1245,19 +1263,31 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     assert.equal(failed, false);
   });
 
-  test('the rollback re-applies the stack with the previous image and nothing else, and says so in the log', () => {
+  // The rollback applies what the stack ran before this deploy, not the new
+  // packaged template: the receiver's code, the task image and every other
+  // parameter go back together, so a new receiver never runs beside an old task.
+  test('the rollback applies the template and parameters read before the apply, not the new packaged template', () => {
     const rollback = steps.find(withId('rollback'));
     assert.ok(rollback && appliesStack('governor')(rollback), 'the rollback does not apply the main stack');
     const run = rollback.run ?? '';
-    // The template just applied, so the image is the one thing that changes:
-    // `aws cloudformation deploy` keeps every parameter it is not given.
-    assert.match(run, /--template-file "\$RUNNER_TEMP\/governor\.packaged\.yml"/);
+    assert.match(run, /--template-file "\$RUNNER_TEMP\/governor\.previous\.yml"/);
+    assert.doesNotMatch(run, /governor\.packaged\.yml/, 'the rollback applies the new packaged template');
     assert.match(run, /--capabilities CAPABILITY_IAM(?=\s)/);
+    assert.match(run, /mapfile -t PREVIOUS_PARAMETERS < "\$RUNNER_TEMP\/governor\.previous\.parameters"/);
     const overrides = run.slice(run.indexOf('--parameter-overrides'));
-    assert.deepEqual([...overrides.matchAll(/"(\w+)=/g)].map((m) => m[1]), ['ImageUri']);
-    assert.match(overrides, /"ImageUri=\$\{PREVIOUS_IMAGE_URI\}"/);
+    assert.match(overrides, /^--parameter-overrides[\s\\]+"\$\{PREVIOUS_PARAMETERS\[@\]\}"\s*$/, 'the rollback passes parameters other than those it read');
     assert.equal(rollback.env?.PREVIOUS_IMAGE_URI, '${{ steps.previous.outputs.image_uri }}');
-    assert.match(run, /::error::[^\n]*rolling the stack back to \$\{PREVIOUS_IMAGE_URI\}/);
+    assert.match(run, /::error::[^\n]*rolling the main stack back[^\n]*\$\{PREVIOUS_IMAGE_URI\}/);
+  });
+
+  // Nothing expires the build bucket's objects. Should the previous deploy's
+  // package be gone, the rollback says so before CloudFormation starts.
+  test('the rollback fails loudly, before it applies, when the previous receiver package is gone', () => {
+    const run = steps.find(withId('rollback'))?.run ?? '';
+    assert.match(run, /S3Bucket:[^\n]*S3Key:/);
+    assert.match(run, /aws s3api head-object --bucket "\$BUCKET" --key "\$KEY"/);
+    assert.match(run, /::error::[^\n]*package[^\n]*gone/);
+    assert.ok(run.indexOf('head-object') < run.indexOf('cloudformation deploy'), 'the package check runs after the apply');
   });
 
   test('probes again through the same script once the rollback applied, and logs the image it rolled back to', () => {
@@ -1326,15 +1356,22 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     assert.ok(failed);
   });
 
-  test('a stack that ran no image before the apply has nothing to roll back to', () => {
+  test('a first apply, with no stack before it, has nothing to roll back to', () => {
     const { ran } = runDeploy({ outcomes: { probe: 'failure' }, previousImage: '' });
     assert.equal(ran.at(-1), 'probe');
   });
 
-  test('a deploy that left the image as it was has no other image to roll back to', () => {
-    const { ran, failed } = runDeploy({ outcomes: { probe: 'failure' }, previousImage: 'governor@sha256:same', newImage: 'governor@sha256:same' });
+  test('a deploy that changed nothing has nothing to roll back to', () => {
+    const { ran, failed } = runDeploy({ outcomes: { probe: 'failure' }, previousImage: 'governor@sha256:same', newImage: 'governor@sha256:same', changed: false });
     assert.equal(ran.at(-1), 'probe');
     assert.ok(failed);
+  });
+
+  // The receiver's code is in the template, not the image: a deploy that
+  // changed only the receiver still rolls back.
+  test('a deploy that kept the image but changed the stack rolls back', () => {
+    const { ran } = runDeploy({ outcomes: { probe: 'failure' }, previousImage: 'governor@sha256:same', newImage: 'governor@sha256:same' });
+    assert.deepEqual(after(ran, 'probe'), ['rollback', 'reprobe']);
   });
 
   test('a red apply probes nothing and rolls nothing back', () => {
