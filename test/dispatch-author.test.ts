@@ -276,6 +276,18 @@ describe('postedTo: a tool call that posted to the issue or PR', () => {
     const post = "gh api repos/acme/factory/issues/7/comments --input - <<-EOF\n\t{\"body\": \"One; two\nthree || four\"}\n\tEOF";
     assert.deepEqual(postedTo({ name: 'Bash', input: { command: `${post}\ngh issue comment 8 --body later` } }, REPO, 7), { text: post });
   });
+
+  test('a shell line that posts twice to the issue carries the text of each post', () => {
+    const line = 'gh issue comment 7 --body "Starting work"; gh issue comment 7 --body "Done, the PR is up"';
+    assert.match(postedTo({ name: 'Bash', input: { command: line } }, REPO, 7)?.text ?? '', /Starting work/);
+    assert.match(postedTo({ name: 'Bash', input: { command: line } }, REPO, 7)?.text ?? '', /Done, the PR is up/);
+    assert.deepEqual(postedTo({ name: 'Bash', input: { command: 'gh issue comment 7 --body "First"; gh issue comment 7 --body-file b.md' } }, REPO, 7), { text: null });
+  });
+
+  test('an apostrophe in a shell comment does not join the commands after it', () => {
+    const line = "# read the issue's body first\ngh api repos/acme/factory/issues/7 --jq .body\ngh api repos/acme/factory/issues/8/comments -f body=x";
+    assert.equal(postedTo({ name: 'Bash', input: { command: line } }, REPO, 7), null);
+  });
 });
 
 describe('shellCommands: the commands of a shell line', () => {
@@ -293,6 +305,24 @@ describe('shellCommands: the commands of a shell line', () => {
   test('a here document stays with the command that opened it', () => {
     const doc = 'cat > b.md <<"END" && gh api x\nOne; two\nEND';
     assert.deepEqual(shellCommands(`${doc}\nnext`), ['cat > b.md <<"END"\nOne; two\nEND', 'gh api x', 'next']);
+  });
+
+  test('a comment is no command, and its quotes open nothing', () => {
+    assert.deepEqual(shellCommands("# it's the first\na 1 # and b's; c\nb 2"), ['a 1', 'b 2']);
+    assert.deepEqual(shellCommands('echo a#b ${#x} $#; c'), ['echo a#b ${#x} $#', 'c']);
+  });
+
+  test('a here document whose delimiter is quoted in part ends at the unquoted word', () => {
+    assert.deepEqual(shellCommands("cat <<E'O'F\nbody; x\nEOF\nnext"), ["cat <<E'O'F\nbody; x\nEOF", 'next']);
+    assert.deepEqual(shellCommands('cat <<\\EOF\nbody\nEOF\nnext'), ['cat <<\\EOF\nbody\nEOF', 'next']);
+  });
+
+  test('a backquoted substitution is one part of its command', () => {
+    assert.deepEqual(shellCommands('x=`date; whoami` && y'), ['x=`date; whoami`', 'y']);
+  });
+
+  test('a pipe at the end of a line runs on to the next', () => {
+    assert.deepEqual(shellCommands('echo a |\n  b; c'), ['echo a |\n  b', 'c']);
   });
 });
 

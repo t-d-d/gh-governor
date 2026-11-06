@@ -35,7 +35,7 @@
  * event.
  */
 
-import { NUMBER_KEYS, escaped, firstCommand, readCandidate, readsOnly, repoNamedIn, searchAuthor, shellBody, tellFound } from './author.mjs';
+import { NUMBER_KEYS, escaped, judgeCommands, readCandidate, readsOnly, repoNamedIn, searchAuthor, shellBody, tellFound } from './author.mjs';
 import { SESSION_RULES } from './session-rules.mjs';
 import { EDIT_SPEC_OWNER } from './webhook/mention.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
@@ -79,15 +79,17 @@ export const editedBody = (call, repo, on) => {
   const input = /** @type {Record<string, unknown> | null} */ (call.input !== null && typeof call.input === 'object' ? call.input : null);
   if (input === null) return null;
   const [owner = '', name = ''] = repo.toLowerCase().split('/');
-  if (typeof input.command === 'string') return firstCommand(input.command, (command) => {
+  if (typeof input.command === 'string') {
     const path = new RegExp(`repos/(?:${escaped(owner)}/${escaped(name)}|\\{owner\\}/\\{repo\\})/issues/${on}(?![0-9/])`, 'i');
     // The issue may follow flags, such as `-R <repo>`, or be named by its page.
     const cli = new RegExp(`\\bgh\\s+issue\\s+edit\\s+(?:-\\S+(?:\\s+[^-\\s]\\S*)?\\s+)*(?:#?|https://github\\.com/${escaped(owner)}/${escaped(name)}/issues/)${on}(?![0-9])`, 'i');
-    const viaCli = cli.test(command) && repoNamedIn(command, repo);
-    if (!viaCli && !(path.test(command) && !readsOnly(command))) return null;
-    // A write with no body, a title or a label, made no body edit.
-    return shellBody(command);
-  });
+    return judgeCommands(input.command, (command) => {
+      const viaCli = cli.test(command) && repoNamedIn(command, repo);
+      if (!viaCli && !(path.test(command) && !readsOnly(command))) return null;
+      // A write with no body, a title or a label, made no body edit.
+      return shellBody(command);
+    });
+  }
   const tool = String(call.name ?? '').replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '');
   if (/(?:^|_)(?:get|list|search|read)(?:_|$)/i.test(tool) || /comment|review|pull/i.test(tool)) return null;
   if (String(input.owner ?? '').toLowerCase() !== owner || String(input.repo ?? '').toLowerCase() !== name) return null;
