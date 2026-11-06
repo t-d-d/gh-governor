@@ -131,12 +131,154 @@ export const shellBody = (command) => {
 };
 
 /**
+ * A here document's opener at the reader's place: `<<` or `<<-`, then its
+ * delimiter, quoted in whole or in part or not at all.
+ */
+const HERE_DOC = /<<(-?)[ \t]*((?:'[^']*'|"[^"]*"|\\.|[^\s;&|<>()'"\\])+)/y;
+
+/**
+ * The commands of a shell line, each as its own text: the line split on
+ * `;`, `&&`, `||` and newlines that stand outside quotes, a backslash
+ * escape, a command substitution (`$(…)` or backquotes) and a here
+ * document. A here document's lines stay with the command that opened it,
+ * and a line that ends in a pipe runs on to the next. A comment (`#` at
+ * the start of a word, to the end of its line) is no part of a command.
+ * Parts that hold nothing but blanks are dropped, and each part is trimmed.
+ *
+ * @param {string} line
+ * @returns {string[]}
+ */
+export const shellCommands = (line) => {
+  /** @type {string[]} */
+  const parts = [];
+  let part = '';
+  /**
+   * The here documents opened on the current line, each with the index its command takes among `parts`.
+   * @type {Array<{ word: string, tabs: boolean, owner: number }>}
+   */
+  let docs = [];
+  /** How deep in `$(…)` the reader stands. */
+  let depth = 0;
+  const cut = () => {
+    if (part.trim() !== '') parts.push(part.trim());
+    part = '';
+  };
+  /** Whether a newline here ends the command: not inside `$(…)`, nor after a pipe. */
+  const ends = () => depth === 0 && !/\|\s*$/.test(part);
+  let i = 0;
+  while (i < line.length) {
+    const c = line[i] ?? '';
+    if (c === '\\') {
+      part += line.slice(i, i + 2);
+      i += 2;
+    } else if (c === "'" || c === '`') {
+      // A single-quoted string, or a backquoted substitution, runs to its closing mark.
+      let j = i + 1;
+      while (j < line.length && line[j] !== c) j += c === '`' && line[j] === '\\' ? 2 : 1;
+      const to = Math.min(j + 1, line.length);
+      part += line.slice(i, to);
+      i = to;
+    } else if (c === '"') {
+      let j = i + 1;
+      while (j < line.length && line[j] !== '"') j += line[j] === '\\' ? 2 : 1;
+      const to = Math.min(j + 1, line.length);
+      part += line.slice(i, to);
+      i = to;
+    } else if (c === '#' && (i === 0 || /[\s;&|()]/.test(line[i - 1] ?? ''))) {
+      // A comment runs to the end of its line, and its quotes open nothing.
+      const eol = line.indexOf('\n', i);
+      i = eol === -1 ? line.length : eol;
+    } else if (line.startsWith('$(', i)) {
+      depth += 1;
+      part += '$(';
+      i += 2;
+    } else if (c === '(' && depth > 0) {
+      depth += 1;
+      part += c;
+      i += 1;
+    } else if (c === ')' && depth > 0) {
+      depth -= 1;
+      part += c;
+      i += 1;
+    } else if (line.startsWith('<<', i) && !line.startsWith('<<<', i)) {
+      // A here document: its delimiter, with its quotes read, ends it on a line of its own.
+      HERE_DOC.lastIndex = i;
+      const opener = HERE_DOC.exec(line);
+      if (opener === null) {
+        part += '<<';
+        i += 2;
+      } else {
+        const word = (opener[2] ?? '').replace(/'([^']*)'|"([^"]*)"|\\(.)/g, '$1$2$3');
+        docs.push({ word, tabs: opener[1] === '-', owner: parts.length });
+        part += opener[0];
+        i += opener[0].length;
+      }
+    } else if (c === '\n' && docs.length > 0) {
+      // The here documents opened on this line run from the next line, each
+      // to its delimiter, and each joins the command that opened it.
+      let at = i + 1;
+      for (const { word, tabs, owner } of docs) {
+        const from = at;
+        while (at < line.length) {
+          const eol = line.indexOf('\n', at);
+          const text = line.slice(at, eol === -1 ? line.length : eol);
+          at = eol === -1 ? line.length : eol + 1;
+          if ((tabs ? text.replace(/^\t+/, '') : text) === word) break;
+        }
+        const body = `\n${line.slice(from, at).replace(/\n$/, '')}`;
+        if (owner < parts.length) parts[owner] += body;
+        else part += body;
+      }
+      docs = [];
+      i = at;
+      if (ends()) cut();
+      else part += '\n';
+    } else if (c === '\n' && !ends()) {
+      part += c;
+      i += 1;
+    } else if (depth === 0 && (c === '\n' || c === ';' || line.startsWith('&&', i) || line.startsWith('||', i))) {
+      cut();
+      i += c === '\n' || c === ';' ? 1 : 2;
+    } else {
+      part += c;
+      i += 1;
+    }
+  }
+  cut();
+  return parts;
+};
+
+/**
+ * What `judge` finds among a shell line's commands ({@link shellCommands}),
+ * each judged on its own, as two commands joined on one line are two
+ * calls: null where none matches, `{ text: null }` where a match carries
+ * no text, and otherwise the text of every match, each on its own line,
+ * so a line that posts twice holds the words of either post.
+ *
+ * @param {string} line
+ * @param {(command: string) => { text: string | null } | null} judge
+ * @returns {{ text: string | null } | null}
+ */
+export const judgeCommands = (line, judge) => {
+  /** @type {string[]} */
+  const texts = [];
+  for (const command of shellCommands(line)) {
+    const found = judge(command);
+    if (found === null) continue;
+    if (found.text === null) return found;
+    texts.push(found.text);
+  }
+  return texts.length === 0 ? null : { text: texts.join('\n') };
+};
+
+/**
  * Whether a tool call posted to `repo`'s issue or PR `on`, and the text its
  * input carries, if any: `{ text }`, with `text` null where the input names
  * the target but not the post's text (a body read from a file), or null
  * where the call did not post there.
  *
- * - A shell command posts there where it writes (`gh api` with a field or
+ * - A shell command, each command of its line judged on its own
+ *   ({@link shellCommands}), posts there where it writes (`gh api` with a field or
  *   `--input`, a method other than GET, or `gh issue comment` / `gh pr
  *   comment` / `gh pr review`) to `repos/<repo>/issues/<on>` or
  *   `repos/<repo>/pulls/<on>`, or names `on` to the `gh` subcommand. A
@@ -159,14 +301,15 @@ export const postedTo = (call, repo, on) => {
   if (input === null) return null;
   const [owner = '', name = ''] = repo.toLowerCase().split('/');
   if (typeof input.command === 'string') {
-    const command = input.command;
     const path = new RegExp(`repos/(?:${escaped(owner)}/${escaped(name)}|\\{owner\\}/\\{repo\\})/(?:issues|pulls)/${on}(?![0-9])`, 'i');
     const cli = new RegExp(`\\bgh\\s+(?:issue\\s+comment|pr\\s+comment|pr\\s+review)\\s+#?${on}(?![0-9])`);
-    const viaCli = cli.test(command) && repoNamedIn(command, repo);
-    const writes = !readsOnly(command) && (/\s(?:-[fFd]|--field|--raw-field|--input|--data)[\s=]/.test(command) || /\s(?:-X|--method)[\s=]*["']?(?:POST|PATCH|PUT)\b/i.test(command));
-    if (!viaCli && !(path.test(command) && writes)) return null;
-    // A write that carries no body, such as a label or an approval, posted no comment.
-    return shellBody(command);
+    return judgeCommands(input.command, (command) => {
+      const viaCli = cli.test(command) && repoNamedIn(command, repo);
+      const writes = !readsOnly(command) && (/\s(?:-[fFd]|--field|--raw-field|--input|--data)[\s=]/.test(command) || /\s(?:-X|--method)[\s=]*["']?(?:POST|PATCH|PUT)\b/i.test(command));
+      if (!viaCli && !(path.test(command) && writes)) return null;
+      // A write that carries no body, such as a label or an approval, posted no comment.
+      return shellBody(command);
+    });
   }
   const tool = String(call.name ?? '').replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '');
   if (/(?:^|_)(?:get|list|search|read)(?:_|$)/i.test(tool)) return null;
