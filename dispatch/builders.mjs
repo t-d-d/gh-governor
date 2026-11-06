@@ -14,7 +14,9 @@
  * 3. Otherwise, the session the newest dispatch comment names
  *    (`lastDispatch`), read over the whole thread, so a thread past one
  *    page of comments still finds its newest. Only a comment governor's App
- *    posted counts.
+ *    posted counts. A newest dispatch comment that names no session, where
+ *    pickup's launch printed none, leaves the builder unknown: the lookup
+ *    stops there with none, and never goes on to the owner link.
  * 4. Otherwise, on a claimed ticket, the session the body's owner link
  *    names, read through the repo's `trust.relay`: a spec session that
  *    claimed its own ticket builds it.
@@ -102,8 +104,14 @@ export const buildersOf = async ({ reader, ownerOf, issue, ticket, claim, relay,
       if (found.sessions.length > 0) return { ...found, by: 'merged PR' };
     }
   }
-  const marked = lastDispatch(await reader.allComments(issue))?.sessionUrl ?? null;
-  if (marked !== null) return { sessions: [marked], by: 'dispatch comment', prs: [], owns: {} };
+  const newest = lastDispatch(await reader.allComments(issue));
+  if (newest !== null) {
+    // A comment that names no session records a builder nobody knows, and
+    // the spec owner is not it.
+    return newest.sessionUrl === null
+      ? { sessions: [], by: null, prs: [], owns: {} }
+      : { sessions: [newest.sessionUrl], by: 'dispatch comment', prs: [], owns: {} };
+  }
   const owner = !ticket.labels.includes(claim) ? null : named === undefined ? sessionNamedIn(relayedBody(ticket, relay)) : named;
   if (owner !== null) return { sessions: [owner], by: 'owner link', prs: [], owns: {} };
   return { sessions: [], by: null, prs: [], owns: {} };

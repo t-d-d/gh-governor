@@ -104,6 +104,15 @@ describe('buildersOf', () => {
     assert.deepEqual(await find(lookups({ thread: [marker(WORK), forged] })), { sessions: [WORK], by: 'dispatch comment', prs: [], owns: {} });
   });
 
+  // Pickup's launch may print no session id. Its comment still records a
+  // change of builder, to a builder nobody knows: the spec owner did not
+  // become the builder by it.
+  test('a newest dispatch comment that names no session leaves the builder unknown, and the owner link is not read', async () => {
+    const unnamed = { id: 2, body: dispatchMarker({ at: '2026-11-02T10:00:00.000Z', sessionUrl: null }), created_at: 'x', ours: true };
+    assert.deepEqual(await find(lookups({ thread: [marker(WORK), unnamed] })), { sessions: [], by: null, prs: [], owns: {} });
+    assert.deepEqual(await find(lookups({ thread: [unnamed] })), { sessions: [], by: null, prs: [], owns: {} });
+  });
+
   test('no closing PR and no dispatch comment, on a claimed ticket: the owner link\'s session', async () => {
     assert.deepEqual(await find(lookups()), { sessions: [OWNER], by: 'owner link', prs: [], owns: {} });
   });
