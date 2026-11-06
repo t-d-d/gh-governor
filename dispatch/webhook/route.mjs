@@ -297,7 +297,7 @@ const orderedEdit = (closing, moved) => {
   const [check] = closing.fires;
   const [edit] = moved.fires;
   if (check === undefined || edit === undefined || edit.fire.kind !== 'prEdit') return both(closing, moved);
-  return { fires: [{ ...edit, fire: { ...edit.fire, closing: true }, fallback: check }], reason: [moved.reason, closing.reason].join('; ') };
+  return { fires: [{ ...edit, fire: { ...edit.fire, closing: true }, fallback: check }], reason: [moved.reason, closing.reason].filter(Boolean).join('; ') };
 };
 
 /**

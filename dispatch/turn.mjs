@@ -649,12 +649,13 @@ const turnOf = async (event, deps, built) => {
     // place of its own `closingPr` fire: where the file turns a switch the
     // `prEdit` fire needs off, that check runs as the `closingPr` fire would
     // have, under its own switch.
-    if (invocation.kind === 'prEdit' && invocation.closing === true && switchesOf(invocation).some((needed) => !turnsOn(one.config, needed))) {
+    // The first switch a fire needs that the file does not turn on: a
+    // `prEdit` fire needs two (switchesOf).
+    const offFor = (/** @type {import('./webhook/fire.mjs').Fire} */ fire) => switchesOf(fire, one.config.workflows).find((needed) => !turnsOn(one.config, needed)) ?? null;
+    if (invocation.kind === 'prEdit' && invocation.closing === true && offFor(invocation) !== null) {
       closingInstead = { kind: 'closingPr', pr: invocation.pr, repo };
     }
-    // The first switch the fire needs that the file does not turn on: a
-    // `prEdit` fire needs two (switchesOf).
-    const name = switchesOf(closingInstead ?? invocation, one.config.workflows).find((needed) => !turnsOn(one.config, needed)) ?? null;
+    const name = offFor(closingInstead ?? invocation);
     const relayed = closingInstead === null && (invocation.kind === 'message' || invocation.kind === 'ticket' || invocation.kind === 'offer' || invocation.kind === 'prEdit' || invocation.kind === 'author');
     const unheard = relayed ? unrelayed(invocation, relayOf(one.config)) : null;
     // An unblocked fire's switch is its ticket's state's (dispatch/unblocked.mjs):

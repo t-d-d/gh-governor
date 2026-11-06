@@ -281,10 +281,11 @@ export const prEditText = (pr, editor) => [
  * A fire marked `closing`, an edit that also made the body close an issue,
  * then runs `closing` (`planClosingPr`, dispatch/ticket-fire.mjs) on the
  * body as it now reads, under `subscribeMessages`, so its dispatch comment
- * names whoever owns the PR once the owner is settled: A where its link
- * was written back or the body moved on, B where A refused as archived.
- * Where the owner is not settled, a notice not sent or a relink that
- * failed, the check does not run, since the body may still name B.
+ * names whoever owns the PR once the owner step is done: A where its link
+ * was written back, B where A refused as archived. The check runs whatever
+ * that step did, and where it threw, before the throw fails the turn: a
+ * failed turn is not retried, and a body nothing was written back to still
+ * names B, which owns the PR by its link.
  *
  * @param {import('./webhook/fire.mjs').PrEditFire & { repo?: string }} invocation
  * @param {import('./turn.mjs').TurnContext} ctx
@@ -293,6 +294,43 @@ export const prEditText = (pr, editor) => [
  * @returns {Promise<import('./turn.mjs').Plan>}
  */
 export const planPrEdit = async (invocation, ctx, { closing = null } = {}) => {
+  if (invocation.closing !== true || closing === null) return movePr(invocation, ctx);
+  const repo = fireRepoOf(invocation);
+  const { pr } = invocation;
+  /** @type {Awaited<ReturnType<typeof movePr>> | null} */
+  let moved = null;
+  /** @type {{ error: unknown } | null} */
+  let failed = null;
+  try {
+    moved = await movePr(invocation, ctx);
+  } catch (error) {
+    failed = { error };
+  }
+  /** @type {number[]} */
+  let announced = [];
+  let loginStored = false;
+  if (!turnsOn(ctx.configOf(repo), 'subscribeMessages')) {
+    ctx.log('dispatch-builder', { repo, pr, outcome: 'nothing announced', reason: `${repo}'s file does not turn subscribeMessages on` });
+  } else {
+    const checked = await closing({ kind: 'closingPr', pr, repo }, ctx);
+    if ('answer' in checked) {
+      announced = checked.answer.announced ?? [];
+      loginStored = checked.answer.loginStored === true;
+    }
+  }
+  if (failed !== null) throw failed.error;
+  const answer = /** @type {{ answer: NonNullable<Extract<import('./turn.mjs').Plan, { answer: unknown }>['answer']> }} */ (moved).answer;
+  return { answer: { ...answer, loginStored: answer.loginStored === true || loginStored, announced } };
+};
+
+/**
+ * The owner step of a `prEdit` fire, as {@link planPrEdit} describes it.
+ *
+ * @param {import('./webhook/fire.mjs').PrEditFire & { repo?: string }} invocation
+ * @param {import('./turn.mjs').TurnContext} ctx
+ * @returns {Promise<{ answer: { kind: 'prEdit', messaged: import('./deliveries.mjs').Delivery | null, dispatched: [], loginStored: boolean } }>}
+ */
+const movePr = async (invocation, ctx) => {
   const repo = fireRepoOf(invocation);
   const { pr, from, to } = invocation;
   const at = { repo, pr, owner: sessionId(from), editor: sessionId(to) };
@@ -303,15 +341,11 @@ export const planPrEdit = async (invocation, ctx, { closing = null } = {}) => {
   let notice = null;
   /** @type {import('./deliveries.mjs').Delivery | null} */
   let told = null;
-  // Whether the PR's owner is settled: A's link stands or the body moved
-  // on, or A refused as archived and B owns it.
-  let settled = false;
   try {
     notice = await deliveries.deliver({ session: from }, prEditText(pr, to), { source: GITHUB_SOURCE, kind: 'notice', on: [pr] });
     if (notice.ok) {
-      ({ told, settled } = await relinkPr({ repo, pr, from, to, at, relay, ctx, deliveries }));
+      told = await relinkPr({ repo, pr, from, to, at, relay, ctx, deliveries });
     } else if (notice.refused) {
-      settled = true;
       ctx.log(TAKE, { ...at, outcome: 'nothing written: the editor owns the PR by its link', reason: 'the old owner is archived' });
     } else {
       ctx.log(TAKE, { ...at, outcome: 'nothing done', reason: notice.capped === true ? 'the old owner\'s notice was held at the message ceiling' : 'the old owner\'s notice was not sent', ...(notice.capped === true ? {} : { level: 'error', error: notice.error }) });
@@ -322,35 +356,20 @@ export const planPrEdit = async (invocation, ctx, { closing = null } = {}) => {
   // A send that faulted goes first, so the turn fails on it.
   const sent = [notice, told].filter((d) => d !== null);
   const messaged = sent.find((d) => !d.ok && !d.refused && d.capped !== true) ?? told ?? notice;
-  if (invocation.closing !== true || closing === null) return { answer: { kind: invocation.kind, messaged, dispatched: [], loginStored } };
-  /** @type {number[]} */
-  let announced = [];
-  if (!settled) {
-    ctx.log('dispatch-builder', { repo, pr, outcome: 'nothing announced', reason: 'the PR\'s owner is not settled, so its body may still name the editor' });
-  } else if (!turnsOn(ctx.configOf(repo), 'subscribeMessages')) {
-    ctx.log('dispatch-builder', { repo, pr, outcome: 'nothing announced', reason: `${repo}'s file does not turn subscribeMessages on` });
-  } else {
-    const checked = await closing({ kind: 'closingPr', pr, repo }, ctx);
-    if ('answer' in checked) {
-      announced = checked.answer.announced ?? [];
-      loginStored = loginStored || checked.answer.loginStored === true;
-    }
-  }
-  return { answer: { kind: invocation.kind, messaged, dispatched: [], loginStored, announced } };
+  return { answer: { kind: 'prEdit', messaged, dispatched: [], loginStored } };
 };
 
 /**
  * Write `from`'s link back into PR `pr`'s body where it still names `to`,
  * then tell `to` once. Returns the correction's delivery, or null where
- * nothing was sent, and whether the owner is settled: false only where a
- * read or the write failed, so the body may still name `to`.
+ * nothing was sent.
  *
  * @param {{
  *   repo: string, pr: number, from: string, to: string, at: Record<string, unknown>, relay: readonly string[],
  *   ctx: import('./turn.mjs').TurnContext,
  *   deliveries: Pick<import('./deliveries.mjs').Deliveries, 'deliver'>,
  * }} args
- * @returns {Promise<{ told: import('./deliveries.mjs').Delivery | null, settled: boolean }>}
+ * @returns {Promise<import('./deliveries.mjs').Delivery | null>}
  */
 const relinkPr = async ({ repo, pr, from, to, at, relay, ctx, deliveries }) => {
   try {
@@ -359,14 +378,13 @@ const relinkPr = async ({ repo, pr, from, to, at, relay, ctx, deliveries }) => {
     const named = sessionNamedIn(relayedBody(row, relay));
     if (named === null || !sameSession(named, to)) {
       ctx.log(TAKE, { ...at, outcome: 'nothing written', reason: 'the body\'s session link no longer names the editor' });
-      return { told: null, settled: true };
+      return null;
     }
     await github.updatePull(pr, { body: relinkSession(row.body, from) });
     ctx.log('dispatch-relink', { level: 'info', ...at, outcome: 'the owner\'s link written back' });
   } catch (error) {
     ctx.log('dispatch-relink', { level: 'error', ...at, error: messageOf(error), reason: 'the body still names the editor as the PR\'s session' });
-    return { told: null, settled: false };
+    return null;
   }
-  const told = await correctOnce({ at, on: pr, editor: to, kind: 'edit-pr', restore: from, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries, log: ctx.log });
-  return { told, settled: true };
+  return correctOnce({ at, on: pr, editor: to, kind: 'edit-pr', restore: from, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries, log: ctx.log });
 };

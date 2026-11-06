@@ -158,7 +158,7 @@ type Delivery = { ok: boolean, answered: boolean | null, refused: boolean, cappe
  * is `archived`.
  */
 const context = ({
-  body = TAKEN, builder = BUILDER, archived = [] as string[], capped = [] as string[],
+  body = TAKEN, builder = BUILDER, archived = [] as string[], capped = [] as string[], throws = [] as string[],
   writeFails = false, config = CONFIG as RepoConfig,
 } = {}) => {
   const sent: Sent[] = [];
@@ -190,6 +190,7 @@ const context = ({
     delivery: () => ({
       ownerOf: async (_n: number, read?: { body: string }) => ({ session: sessionNamedIn((read ?? await reader.pull(12)).body), branch: '', linked: true }),
       deliver: async (to: { session?: string }, text: string, opts: Record<string, unknown>) => {
+        if (throws.includes(to.session!)) throw new Error('the lane is down');
         sent.push({ session: to.session!, text, opts });
         return answer(to.session!);
       },
@@ -233,13 +234,21 @@ describe('planPrEdit with a closing reference: the owner is settled before the c
     assert.deepEqual(dispatchedTo(posted[0]!.body), { builder: EDITOR, displaced: BUILDER });
   });
 
-  test('an owner left unsettled runs no closing check: a notice held at the ceiling, or a write that fails', async () => {
+  test('where nothing is written back, a notice held at the ceiling or a write that fails, the body still names the editor, and the comment names it', async () => {
     for (const over of [{ capped: [OWNER] }, { writeFails: true }]) {
-      const { ctx, posted, logged } = context(over);
+      const { ctx, writes, posted } = context(over);
       await planPrEdit(fire(), ctx, closing);
-      assert.deepEqual(posted, [], JSON.stringify(over));
-      assert.ok(logged.some((l) => l.event === 'dispatch-builder' && /not settled/.test(String(l.reason))), JSON.stringify(over));
+      assert.deepEqual(writes, [], JSON.stringify(over));
+      assert.equal(posted.length, 1, JSON.stringify(over));
+      assert.deepEqual(dispatchedTo(posted[0]!.body), { builder: EDITOR, displaced: BUILDER }, JSON.stringify(over));
     }
+  });
+
+  test('an owner step that throws still runs the closing check, then fails the turn: a failed turn is not retried', async () => {
+    const { ctx, posted } = context({ throws: [OWNER] });
+    await assert.rejects(planPrEdit(fire(), ctx, closing), /the lane is down/);
+    assert.equal(posted.length, 1);
+    assert.deepEqual(dispatchedTo(posted[0]!.body), { builder: EDITOR, displaced: BUILDER });
   });
 
   test('a prEdit fire with no closing mark runs no closing check', async () => {

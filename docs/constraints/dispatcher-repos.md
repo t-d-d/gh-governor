@@ -217,8 +217,9 @@ spends the one claude.ai login.
   the owner first, A's link written back or B kept where A refuses as
   archived, then, under `subscribeMessages`, runs `planClosingPr` on the
   body as it now reads, so the dispatch comment names whoever owns the PR.
-  Where the owner is not settled, a notice not sent or a relink that
-  failed, the check does not run. Where the item's switches, or the
+  The check runs whatever the owner step did, and where it threw, before
+  the throw fails the turn: where nothing was written back, the body
+  still names B, which owns the PR by its link. Where the item's switches, or the
   task's read of the file, turn `prMessages` or `sessionRules` off, the
   `closingPr` fire runs in its place, as before. Governor's own relinks are a bot's edits and
   queue nothing. Only where both steps find nobody

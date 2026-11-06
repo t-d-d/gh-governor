@@ -4793,6 +4793,7 @@ describe('run: a PR edit that moved its link and added a closing reference, in a
       const result = await run({ ...fire, closing: true }, h.deps as never) as Record<string, any>;
       assert.equal(result.kind, 'closingPr');
       assert.equal(result.refusal, undefined);
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-builder'), JSON.stringify(h.logged));
       assert.deepEqual(h.messages, []);
     }
   });
