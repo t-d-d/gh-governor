@@ -66,6 +66,7 @@ import { NO_WORKFLOWS, isCi } from './repo-config.mjs';
 import { short } from './runs.mjs';
 import { DEPENDABOT, FAILED, LABEL_PREFIX, UNATTENDED } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
+import { sameSession } from './webhook/subscribe.mjs';
 import { instruction } from './prompts.mjs';
 
 /**
@@ -92,30 +93,25 @@ import { instruction } from './prompts.mjs';
  *   fileAt: (path: string, ref: string) => Promise<string>,
  *   pullFiles: (n: number) => Promise<import('../scripts/lib/github-app.mjs').FileRow[]>,
  * }} WorkflowReader
- * @typedef {{ prs: number[], subscribed: number[], session: string, closing: boolean, text: string, fallback?: { prompt: string, sessionName: string, issue: number } }} Note
+ * @typedef {{ prs: number[], subscribed: number[], session: string, closing: boolean, text: string, fallback?: { prompt: string, sessionName: string, issue: number }, tickets?: number[], owns?: number[] }} Note
  *   `prs`: every PR the message is about, oldest merge first; `subscribed`:
  *   those of them the session did not write, which a refusal drops it from.
+ *   `tickets`: the tickets it is told of as a role holder ({@link withTickets}),
+ *   which the message is about too. `owns`: the PRs the session owns, where
+ *   that is not every PR in `prs` it does not subscribe to.
  * @typedef {import('./coverage.mjs').Range} Range
  * @typedef {import('./coverage.mjs').Coverage} Coverage
  * @typedef {{ newest: { id: number, created: string } | null }} Stale
  * @typedef {{ reason: string | null, notes: Note[], unnamed: Array<{ pr: number, reason: string }>, triage: { prompt: string, sessionName: string } | null, range: Range | null, stale: Stale | null, advance: import('./runs.mjs').Cursor | null }} Plan
  *   `advance`: the workflow's cursor once the turn has sent, when it planned this run's news.
- *   `heard`: on a green deploy, each session's PRs left out of its message
- *   because it hears of them from a ticket's comment ({@link Heard}).
- * @typedef {Plan & { heard?: Array<{ session: string, prs: number[] }> }} TargetPlan
+ *   `deploy`: on a green deploy, what {@link withTickets} needs to tell a
+ *   ticket's roles of it.
+ * @typedef {Plan & { deploy?: Deploy }} TargetPlan
+ * @typedef {{ run: RunView, target: string, end: string, tags: Tags }} Deploy
  */
 
 /** A target without its article, for `<target> deploy`: `the dispatcher` is `dispatcher`. @param {string} target */
 const bare = (target) => target.replace(/^the /, '');
-
-/**
- * @typedef {(session: string, pr: number) => boolean} Heard
- *   Whether `session` hears PR `pr`'s green deploy from governor's comment
- *   on a ticket `pr` closed (dispatch/turn.mjs).
- */
-
-/** @type {Heard} */
-const NO_ONE_HEARD = () => false;
 
 /** @param {string} reason @param {Range | null} [range] @returns {Plan} */
 const nobody = (reason, range = null) => ({ reason, notes: [], unnamed: [], triage: null, range, stale: null, advance: null });
@@ -395,17 +391,15 @@ const deployText = (run, { target, end, tags }, own, subscribed, failed, told, p
  * never succeeded, and the cursor keeps a re-fire to once
  * (dispatch/coverage.mjs).
  *
- * @param {{ invocation: WorkflowFire | JobFire, coverage: Coverage, prompts?: Prompts, workflows?: Workflows, heard?: Heard }} args
+ * @param {{ invocation: WorkflowFire | JobFire, coverage: Coverage, prompts?: Prompts, workflows?: Workflows }} args
  *   `prompts`: the repo's config file's, which replace each text's
- *   instruction. `workflows`: its CI, triage targets and tags. `heard`:
- *   whether a session hears a PR's green deploy from governor's comment on
- *   a ticket the PR closed, so its message leaves that PR out.
+ *   instruction. `workflows`: its CI, triage targets and tags.
  * @returns {Promise<TargetPlan>}
  */
-export const planWorkflow = async ({ invocation, coverage, prompts = {}, workflows = NO_WORKFLOWS, heard = NO_ONE_HEARD }) => {
+export const planWorkflow = async ({ invocation, coverage, prompts = {}, workflows = NO_WORKFLOWS }) => {
   if (invocation.kind === 'job') {
     const { workflow, branch, runId, url, headSha, runAttempt } = invocation;
-    return planTarget({ kind: 'workflow', name: workflow, branch, runId, url, conclusion: 'success', headSha, job: url, ...(runAttempt === undefined ? {} : { runAttempt }) }, coverage, prompts, workflows, heard);
+    return planTarget({ kind: 'workflow', name: workflow, branch, runId, url, conclusion: 'success', headSha, job: url, ...(runAttempt === undefined ? {} : { runAttempt }) }, coverage, prompts, workflows);
   }
   const run = invocation;
   const { name, runId, conclusion } = run;
@@ -416,7 +410,7 @@ export const planWorkflow = async ({ invocation, coverage, prompts = {}, workflo
     return conclusion === 'failure' ? planCi(run, coverage, prompts) : nobody(`${name} run ${runId} ended ${conclusion}: nothing to tell`);
   }
   if (conclusion !== 'failure') return nobody(`${name} run ${runId} ended ${conclusion}: ${conclusion === 'success' ? 'each shipping job in it is told on its own' : 'nothing to tell'}`);
-  return planTarget(run, coverage, prompts, workflows, heard);
+  return planTarget(run, coverage, prompts, workflows);
 };
 
 /**
@@ -503,10 +497,9 @@ const planCi = async (run, coverage, prompts) => {
  * @param {Coverage} coverage
  * @param {Prompts} prompts
  * @param {Workflows} workflows
- * @param {Heard} heard A green deploy's PRs a session hears from a ticket's comment, left out of its message.
  * @returns {Promise<TargetPlan>}
  */
-const planTarget = async (run, coverage, prompts, workflows, heard) => {
+const planTarget = async (run, coverage, prompts, workflows) => {
   const { triage, tags } = workflows;
   const { name, runId, conclusion, headSha } = run;
   if (coverage.reason !== null) return stoppedShort(coverage);
@@ -535,19 +528,9 @@ const planTarget = async (run, coverage, prompts, workflows, heard) => {
   }
 
   const { sessions, owned, unnamed } = await coverage.sessions(pulls, 'deploys');
-  /** @type {Array<{ session: string, prs: number[] }>} */
-  const heardBy = [];
   /** @type {TargetPlan} */
-  const plan = { reason: null, notes: [], unnamed, triage: null, range, stale: null, advance, heard: heardBy };
-  for (const entry of sessions.values()) {
-    const { session } = entry;
-    // A session that holds a role on a ticket the turn commented on hears
-    // the deploy from that comment, so a session hears of a deploy once.
-    const unheard = (/** @type {PullRow} */ p) => conclusion !== 'success' || !heard(session, p.number);
-    const own = entry.own.filter(unheard);
-    const subscribed = entry.subscribed.filter(unheard);
-    const left = [...entry.own, ...entry.subscribed].filter((p) => !unheard(p));
-    if (left.length > 0) heardBy.push({ session, prs: left.sort(byMerge).map((p) => p.number) });
+  const plan = { reason: null, notes: [], unnamed, triage: null, range, stale: null, advance, ...(conclusion === 'success' ? { deploy: { run, target, end, tags } } : {}) };
+  for (const { session, own, subscribed } of sessions.values()) {
     const prs = [...own, ...subscribed].sort(byMerge);
     if (prs.length === 0) continue;
     const told = subscribed.filter((p) => owned.has(p.number));
@@ -565,6 +548,98 @@ const planTarget = async (run, coverage, prompts, workflows, heard) => {
     });
   }
   return plan;
+};
+
+/**
+ * @typedef {{ ticket: number, title: string, prs: number[], owner: string | null, builders: string[], owns: Record<string, number[]> }} TicketRoles
+ *   A ticket a green deploy commented on (dispatch/turn.mjs): the PRs it
+ *   shipped that close it, the spec owner its body names under the repo's
+ *   `trust.relay`, and its builders (dispatch/builders.mjs), each with its
+ *   own PRs.
+ */
+
+/** @param {string[]} items */
+const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
+
+/**
+ * One line naming a ticket, the PRs that closed it, who holds each role,
+ * and which `role` the recipient holds.
+ *
+ * @param {TicketRoles} roles
+ * @param {'spec owner' | 'builder' | 'spec owner and builder'} role
+ */
+const ticketLine = ({ ticket, title, prs, owner, builders }, role) => [
+  `- Issue #${ticket}: ${oneLine(title)}, which ${prs.length === 1 ? `PR #${prs[0]}` : `PRs ${prs.map((n) => `#${n}`).join(', ')}`} closed.`,
+  `Its spec owner is ${owner === null ? 'a person, as no session link ends its body' : owner}; its builder is ${builders.length === 0 ? 'none governor can find' : listed(builders)}.`,
+  `You are its ${role === 'spec owner and builder' ? 'spec owner and its builder' : role}.`,
+].join(' ');
+
+/**
+ * A green deploy's plan with the roles of each ticket the turn commented
+ * on added: the shipping turn alone tells everyone who hears the deploy,
+ * each session once. A session that already has a note, as a PR's
+ * session, has the ticket added to it; any other gets a note of its own.
+ * Each note names every PR and ticket the session hears of, and its role
+ * on each ticket, and asks it to sign off where nothing else names it,
+ * whether the ticket is open or closed. A plan with no green deploy is
+ * returned as it is.
+ *
+ * @param {TargetPlan} plan
+ * @param {TicketRoles[]} tickets
+ * @returns {TargetPlan}
+ */
+export const withTickets = (plan, tickets) => {
+  const { deploy } = plan;
+  if (deploy === undefined || tickets.length === 0) return plan;
+  const { run, target, end, tags } = deploy;
+  /** @type {Array<{ note: Note, lines: string[], added: boolean }>} */
+  const touched = plan.notes.map((note) => ({ note: { ...note }, lines: [], added: false }));
+  /** @param {string} session */
+  const noteOf = (session) => {
+    const found = touched.find((t) => sameSession(t.note.session, session));
+    if (found !== undefined) return found;
+    const fresh = { note: /** @type {Note} */ ({ prs: [], subscribed: [], session, closing: true, text: '', owns: [] }), lines: [], added: true };
+    touched.push(fresh);
+    return fresh;
+  };
+  for (const roles of tickets) {
+    const { owner, builders } = roles;
+    /** @type {Array<[string, 'spec owner' | 'builder' | 'spec owner and builder']>} */
+    const hearers = [];
+    const both = owner !== null && builders.some((b) => sameSession(b, owner));
+    if (owner !== null) hearers.push([owner, both ? 'spec owner and builder' : 'spec owner']);
+    for (const builder of builders) if (owner === null || !sameSession(builder, owner)) hearers.push([builder, 'builder']);
+    for (const [session, role] of hearers) {
+      const entry = noteOf(session);
+      const { note } = entry;
+      // The PRs a session owns stay its own: a ticket's PR is not.
+      note.owns ??= note.prs.filter((n) => !note.subscribed.includes(n));
+      if (role !== 'spec owner') {
+        const key = Object.keys(roles.owns).find((s) => sameSession(s, session));
+        for (const n of key === undefined ? [] : roles.owns[key] ?? []) if (!note.owns.includes(n)) note.owns.push(n);
+      }
+      for (const n of roles.prs) if (!note.prs.includes(n)) note.prs.push(n);
+      note.tickets = [...(note.tickets ?? []), roles.ticket];
+      entry.lines.push(ticketLine(roles, role));
+    }
+  }
+  const notes = touched.map(({ note, lines, added }) => {
+    if (lines.length === 0) return note;
+    const heading = `Ticket${lines.length === 1 ? '' : 's'} you hold a role on, which this deploy shipped:`;
+    if (!added) return { ...note, text: [note.text, '', heading, ...lines].join('\n') };
+    const one = lines.length === 1;
+    return {
+      ...note,
+      text: [
+        `A change to ${one ? 'a ticket' : 'tickets'} you hold a role on is on ${onTarget(target, tags)}: ${run.name} published it (${run.job ?? run.url})${shippedAt(target, end, tags)}`,
+        '',
+        ...lines,
+        '',
+        'This is a notice: it asks nothing of you beyond your own role\'s part.',
+      ].join('\n'),
+    };
+  });
+  return { ...plan, notes };
 };
 
 /**

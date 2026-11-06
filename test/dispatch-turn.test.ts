@@ -148,7 +148,7 @@ const harness = (over: Record<string, unknown> = {}) => {
   // and label, keyed `<file>#<label>` here; CI's is label-less.
   const cursors = new Map<string, { runId: number; commit: string; created: string }>();
   // What each range's turns delivered, by workflow, label and the cursor they started from.
-  const delivered = new Map<string, { told: Set<string>; failed: string[] }>();
+  const delivered = new Map<string, { told: Set<string>; failed: string[]; tickets?: Set<number> }>();
   // Each PR a merge's conflicts check told, by repo, PR and merge commit.
   const conflictsTold = new Set<string>();
   // Each periodic's record, keyed `<repo>#<name>`, and every write to one.
@@ -351,12 +351,14 @@ const harness = (over: Record<string, unknown> = {}) => {
       },
       delivered: async (repo: string, workflow: string, label: string | null, from: number | null) => {
         const held = delivered.get(`${cursorKey(workflow, label, repo)} ${from}`);
-        return { told: [...held?.told ?? []], failed: [...held?.failed ?? []] };
+        const tickets = [...held?.tickets ?? []].sort((a, b) => a - b);
+        return { told: [...held?.told ?? []], failed: [...held?.failed ?? []], ...(tickets.length === 0 ? {} : { tickets }) };
       },
-      record: async (repo: string, workflow: string, label: string | null, from: number | null, { told, failed }: { told: string[]; failed: string[] }) => {
+      record: async (repo: string, workflow: string, label: string | null, from: number | null, { told, failed, tickets = [] }: { told: string[]; failed: string[]; tickets?: number[] }) => {
         const held = delivered.get(`${cursorKey(workflow, label, repo)} ${from}`) ?? { told: new Set<string>(), failed: [] };
         for (const t of told) held.told.add(t);
         held.failed.push(...failed);
+        if (tickets.length > 0) held.tickets = new Set([...held.tickets ?? [], ...tickets]);
         delivered.set(`${cursorKey(workflow, label, repo)} ${from}`, held);
       },
       // A conditional write, as the table's: false where the record stood.
@@ -5347,15 +5349,17 @@ describe('run — a workflow run on main', () => {
       });
 
       /**
-       * A session that holds a role on a ticket the turn commented on hears
-       * the deploy from that comment, so its PR's deploy message is not
-       * sent: a session hears of a deploy once. #799 (SESSION) closes #730,
-       * #804 (REFUSED) closes #736.
+       * A green deploy's shipping turn alone tells everyone who hears it,
+       * each session once: the session of each PR it shipped, and the spec
+       * owner and builders of each ticket it commented on. The comment is a
+       * record for people, which the receiver relays to nobody. #799
+       * (SESSION) closes #730, #804 (REFUSED) closes #736.
        */
-      describe('a session that hears the deploy from its ticket\'s comment', () => {
+      describe('who a green deploy tells', () => {
         const REFUSED = 'https://claude.ai/code/session_01REFUSED';
+        const SPEC = 'https://claude.ai/code/session_01SPECOWNER';
         const CLAIM = JSON.parse(FACTORY_FILE).pickup.claim as string;
-        type Row = { labels?: string[]; body?: string; state?: string; association?: string };
+        type Row = { labels?: string[]; body?: string; state?: string; association?: string; author?: string; app?: boolean };
         const shipped = (rows: Record<number, Row>, over: Record<string, unknown> = {}) => {
           const comments: Array<{ issue: number; body: string }> = [];
           const made = caughtUp(greens);
@@ -5369,37 +5373,63 @@ describe('run — a workflow run on main', () => {
           });
           return { ...made, comments };
         };
-        const ran = async (rows: Record<number, Row>, options: { switches?: Record<string, boolean>, over?: Record<string, unknown> } = {}) => {
+        type Ran = { switches?: Record<string, boolean>, over?: Record<string, unknown>, message?: (m: { session: string; text: string }) => Promise<unknown> };
+        const ran = async (rows: Record<number, Row>, options: Ran = {}) => {
           const made = shipped(rows, options.over);
           const configFile = async () => (() => { const f = JSON.parse(FACTORY_FILE); switched(f, options.switches ?? {}); return JSON.stringify(f); })();
-          const h = harness({ reader: made.reader, configFile });
+          const sent: Array<{ session: string; text: string }> = [];
+          const message = async (m: { session: string; text: string }) => { sent.push(m); return options.message ? options.message(m) : { status: 0, output: JSON.stringify({ ok: true }) }; };
+          const h = harness({ reader: made.reader, configFile, message, sleep: async () => {} });
           h.cursors.set(DEV_CURSOR, { runId: 498, commit: 'shaB', created: at(498) });
           const r = await run(jobFire(DEV), h.deps as never);
-          return { h, r, comments: made.comments, told: h.messages.map((m) => m.session).sort() };
+          return { h, r, comments: made.comments, sent, told: sent.map((m) => m.session).sort() };
         };
+        const to = (sent: Array<{ session: string; text: string }>, session: string) => sent.filter((m) => m.session === session);
 
-        test('the builder of a claimed ticket, the owner of the PR whose merge closed it, gets no PR message', async () => {
-          const { h, r, comments, told } = await ran({ 730: { labels: [CLAIM] } });
+        test('the builder of a claimed ticket that is also the PR\'s session gets one message naming its PR and its ticket, and its role', async () => {
+          const { h, r, comments, sent, told } = await ran({ 730: { labels: [CLAIM] } });
           assert.deepEqual(comments.map((c) => c.issue).sort(), [730, 736]);
-          assert.deepEqual(told, [REFUSED], '#804\'s session holds no role on #736, so it still gets the PR message');
+          assert.deepEqual(told, [REFUSED, SESSION], 'each session once');
+          const [own] = to(sent, SESSION);
+          assert.match(own!.text, /PR #799/);
+          assert.match(own!.text, /#730/);
+          assert.match(own!.text, /You are its builder/);
           assert.equal(exitCodeFor(r as never), 0);
-          assert.ok(h.logged.some((l) => l.event === 'dispatch-workflow' && JSON.stringify(l.heard ?? null).includes('session_01WROTEIT')), JSON.stringify(h.logged));
           assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 500, 'the range is planned: the cursor moves');
         });
 
-        test('the spec owner of an unclaimed ticket, its body\'s session link, gets no PR message', async () => {
-          const { told } = await ran({ 736: { body: `The spec.${footer(REFUSED)}` } });
-          assert.deepEqual(told, [SESSION]);
+        test('the spec owner of a ticket is told from the shipping turn, beside the PR\'s session, each once', async () => {
+          const { sent, told } = await ran({ 736: { body: `The spec.${footer(SPEC)}` } });
+          assert.deepEqual(told, [REFUSED, SPEC, SESSION].sort());
+          const [spec] = to(sent, SPEC);
+          assert.match(spec!.text, /#736/);
+          assert.match(spec!.text, /PR #804/);
+          assert.match(spec!.text, /You are its spec owner/);
+          assert.match(to(sent, REFUSED)[0]!.text, /PR #804/, 'the PR\'s session still hears its PR');
         });
 
-        test('each session still gets the PR message where no ticket comment reaches it', async () => {
-          const roles = { 730: { labels: [CLAIM] }, 736: { body: `The spec.${footer(REFUSED)}` } };
+        test('a session that is the PR\'s and the ticket\'s spec owner hears the deploy once', async () => {
+          const { told } = await ran({ 736: { body: `The spec.${footer(REFUSED)}` } });
+          assert.deepEqual(told, [REFUSED, SESSION]);
+        });
+
+        test('a session whose ticket is open at its deploy is asked to sign off where nothing else names it', async () => {
+          const { sent } = await ran({ 736: { body: `The spec.${footer(SPEC)}`, state: 'open' } });
+          const [spec] = to(sent, SPEC);
+          assert.match(spec!.text, /No other open PR or issue in acme\/factory names this session\. .*sign/i, spec!.text);
+        });
+
+        test('the turn tells the ticket\'s roles whatever subscribeMessages says', async () => {
+          const { told } = await ran({ 736: { body: `The spec.${footer(SPEC)}` } }, { switches: { subscribeMessages: false } });
+          assert.deepEqual(told, [REFUSED, SPEC, SESSION].sort());
+        });
+
+        test('with deployedLabels off, or no comment posted, only the PR\'s sessions are told, as before', async () => {
+          const rows = { 736: { body: `The spec.${footer(SPEC)}` } };
           const cases: Array<[string, Parameters<typeof ran>]> = [
-            ['the tickets already carried the label, so they got no comment', [{ 730: { ...roles[730], labels: [CLAIM, DEV] }, 736: { ...roles[736], labels: [DEV] } }]],
-            ['deployedLabels is off', [roles, { switches: { deployedLabels: false } }]],
-            ['subscribeMessages is off, so the comment reaches nobody', [roles, { switches: { subscribeMessages: false } }]],
-            ['trust.relay leaves out the tickets\' author, so the comment reaches nobody', [{ 730: { ...roles[730], association: 'NONE' }, 736: { ...roles[736], association: 'NONE' } }]],
-            ['the comments were refused', [roles, { over: { comment: async () => { throw new Error('403 Resource not accessible by integration'); } } }]],
+            ['deployedLabels is off', [rows, { switches: { deployedLabels: false } }]],
+            ['the ticket already carried the label', [{ 736: { ...rows[736], labels: [DEV] } }]],
+            ['the comment was refused', [rows, { over: { comment: async () => { throw new Error('403 Resource not accessible by integration'); } } }]],
           ];
           for (const [why, args] of cases) {
             const { told } = await ran(...args);
@@ -5407,10 +5437,69 @@ describe('run — a workflow run on main', () => {
           }
         });
 
-        test('a builder lookup that fails sends the PR message, and is logged', async () => {
-          const { h, told } = await ran({ 730: { labels: [CLAIM] } }, { over: { closure: async () => { throw new Error('GET /issues/730/timeline failed: 502'); } } });
+        test('the spec owner is read under the file\'s trust.relay, and a ticket governor\'s App filed is let in as the PR route lets in its PRs', async () => {
+          const left = await ran({ 736: { body: `The spec.${footer(SPEC)}`, association: 'NONE' } });
+          assert.deepEqual(left.told, [REFUSED, SESSION], 'trust.relay leaves out a stranger, whose body names nobody');
+          const app = await ran({ 736: { body: `The spec.${footer(SPEC)}`, association: 'NONE', author: 'governor-app[bot]', app: true } });
+          assert.deepEqual(app.told, [REFUSED, SPEC, SESSION].sort());
+        });
+
+        test('the builders are looked up once a turn: a PR that comes to close the ticket after the lookup changes nothing in it', async () => {
+          let looked = 0;
+          const LATE = 'https://claude.ai/code/session_01LATECOMER';
+          const { told } = await ran({ 730: { labels: [CLAIM] } }, {
+            over: {
+              openClosing: async () => { looked += 1; return looked === 1 ? [] : [{ number: 900, title: 'PR 900', html_url: `https://github.com/${REPO}/pull/900` }]; },
+              pull: async (n: number) => ({ number: n, body: `The change.${footer(n === 799 ? SESSION : n === 900 ? LATE : REFUSED)}`, head: '', defaultBranch: 'main', open: n === 900, association: 'OWNER' }),
+            },
+          });
+          assert.equal(looked, 1, 'one lookup per ticket');
           assert.deepEqual(told, [REFUSED, SESSION]);
-          assert.ok(h.logged.some((l) => l.event === 'dispatch-labels' && /502/.test(String(l.error))), JSON.stringify(h.logged));
+        });
+
+        test('a send that fails is retried from the held cursor, and nobody told is told again', async () => {
+          const rows = { 736: { body: `The spec.${footer(SPEC)}` } };
+          const dead = new Set([SPEC]);
+          const message = async ({ session }: { session: string }) => (dead.has(session)
+            ? { status: 1, output: JSON.stringify({ ok: false, error: '503 Service Unavailable' }) }
+            : { status: 0, output: JSON.stringify({ ok: true }) });
+          const made = shipped(rows);
+          const sent: string[] = [];
+          const h = harness({ reader: made.reader, message: async (m: { session: string }) => { sent.push(m.session); return message(m); }, sleep: async () => {} });
+          h.cursors.set(DEV_CURSOR, { runId: 498, commit: 'shaB', created: at(498) });
+          await run(jobFire(DEV), h.deps as never);
+          assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 498, 'the untold spec owner holds the cursor');
+          assert.deepEqual(made.comments.map((c) => c.issue).sort(), [730, 736]);
+
+          // The next turn finds the labels on and comments on nothing, and still owes the spec owner.
+          dead.clear();
+          sent.length = 0;
+          const again = shipped({ 730: { labels: [DEV] }, 736: { ...rows[736], labels: [DEV] } });
+          (h.deps as { reader: unknown }).reader = again.reader;
+          await run(jobFire(DEV), h.deps as never);
+          assert.deepEqual(again.comments, []);
+          assert.deepEqual(sent, [SPEC], 'only the spec owner, whom the first turn failed to tell');
+          assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 500);
+        });
+
+        test('a builder lookup that fails holds the cursor and is logged, and the next turn tells the builder', async () => {
+          const broken = { closure: async () => { throw new Error('GET /issues/730/timeline failed: 502'); } };
+          const made = shipped({ 730: { labels: [CLAIM] }, 736: { body: `The spec.${footer(SPEC)}` } }, broken);
+          const sent: string[] = [];
+          const h = harness({ reader: made.reader, message: async (m: { session: string }) => { sent.push(m.session); return { status: 0, output: JSON.stringify({ ok: true }) }; }, sleep: async () => {} });
+          h.cursors.set(DEV_CURSOR, { runId: 498, commit: 'shaB', created: at(498) });
+          const r = await run(jobFire(DEV), h.deps as never);
+          assert.equal(exitCodeFor(r as never), 1, 'a read that fails fails the turn');
+          assert.ok(h.logged.some((l) => /502/.test(JSON.stringify(l))), JSON.stringify(h.logged));
+          assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 498);
+          assert.deepEqual(sent.sort(), [REFUSED, SPEC, SESSION].sort(), 'whom the turn could name, it told');
+
+          sent.length = 0;
+          const again = shipped({ 730: { labels: [CLAIM, DEV] }, 736: { body: `The spec.${footer(SPEC)}`, labels: [DEV] } });
+          (h.deps as { reader: unknown }).reader = again.reader;
+          await run(jobFire(DEV), h.deps as never);
+          assert.deepEqual(sent, [], 'the builder is the PR\'s session, which the first turn told');
+          assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 500);
         });
       });
     });
@@ -6472,6 +6561,27 @@ describe('realDeps: the state table', () => {
     assert.ok(Number(update.input.ExpressionAttributeValues[':ttl'].N) > Date.now() / 1000);
 
     const malformed = dynamoState({ send: async () => ({ Item: { told: { S: '799 s1' } } }) } as never, 'T');
+    await assert.rejects(malformed.delivered(REPO, 'deliver.yml', 'deployed: dev', 498), /malformed/);
+  });
+  test('the delivered record also holds the tickets a green deploy commented on, merged by the same update, and leaves them out where there are none', async () => {
+    const sent: Array<{ name: string; input: Record<string, any> }> = [];
+    const client = {
+      send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
+        sent.push({ name: command.constructor.name, input: command.input });
+        return command.input.Key?.sk.S === 'delivered#deployed: dev#498'
+          ? { Item: { told: { SS: ['799 s1'] }, tickets: { NS: ['736', '730'] } } }
+          : {};
+      },
+    };
+    const state = dynamoState(client as never, 'T');
+    assert.deepEqual(await state.delivered(REPO, 'deliver.yml', 'deployed: dev', 498), { told: ['799 s1'], failed: [], tickets: [730, 736] });
+    sent.length = 0;
+    await state.record(REPO, 'deliver.yml', 'deployed: dev', 498, { told: [], failed: [], tickets: [736, 730, 736] });
+    assert.equal(sent.length, 1, 'tickets alone are worth a write');
+    assert.match(sent[0]!.input.UpdateExpression, /ADD tickets :tickets/);
+    assert.doesNotMatch(sent[0]!.input.UpdateExpression, /told|failed/);
+    assert.deepEqual(sent[0]!.input.ExpressionAttributeValues[':tickets'], { NS: ['736', '730'] });
+    const malformed = dynamoState({ send: async () => ({ Item: { tickets: { SS: ['730'] } } }) } as never, 'T');
     await assert.rejects(malformed.delivered(REPO, 'deliver.yml', 'deployed: dev', 498), /malformed/);
   });
   // A merge's conflicts check tells each PR once, whichever turn reads it.

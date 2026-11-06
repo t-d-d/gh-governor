@@ -120,7 +120,7 @@ import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken } from '../scripts/lib/github-app.mjs';
 import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
 import { CONFIG_PATH, SWITCHES, switchOf, turnsOn } from './repo-config.mjs';
-import { planWorkflow } from './workflow.mjs';
+import { planWorkflow, withTickets } from './workflow.mjs';
 import { coverageOf } from './coverage.mjs';
 import { planBranchRun } from './branch-run.mjs';
 import { checkConflicts } from './conflicts.mjs';
@@ -128,7 +128,7 @@ import { closingFires } from './unblocked.mjs';
 import { cliJudge } from './checklist.mjs';
 import { reviewPull } from './review.mjs';
 import { reviewIssue, reviewLabelsOf } from './issue-review.mjs';
-import { relayedBody, sameSession, sessionId, sessionNamedIn } from './webhook/subscribe.mjs';
+import { relayedBody, sessionId, sessionNamedIn } from './webhook/subscribe.mjs';
 import { buildersOf } from './builders.mjs';
 import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, deliveries as turnDeliveries, fromDispatcher, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, deployedTarget, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
@@ -136,7 +136,7 @@ import { deployedComment } from './webhook/deployed-comment.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, writeHeartbeatIssue } from './heartbeat.mjs';
 import { launcher, routineLaunch } from './launcher.mjs';
-import { RELAY, autoOf, lets, relayOf, reviewOf } from './trust.mjs';
+import { RELAY, autoOf, relayOf, reviewOf } from './trust.mjs';
 import { CAP_ZERO_REASON, REPO_SKIPPED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan, routineFault } from './launch-plan.mjs';
 
 export { CLAIM_STRANDED, CONNECTOR_MISSING, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, ticketOf } from './launch-plan.mjs';
@@ -285,9 +285,12 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   the item the review read, false where another stood.
  *   A read or write that fails throws.
  *
- * @typedef {{ told: string[], failed: string[] }} Delivered
+ * @typedef {{ told: string[], failed: string[], tickets?: number[] }} Delivered
  *   `told`: each PR whose session heard it, as `<pr> <session>`. `failed`:
- *   a session per send to it that failed, so a session's count is its tries.
+ *   a session per send to it that failed, so a session's count is its tries,
+ *   and `#<ticket>` per lookup of a ticket's roles that failed. `tickets`:
+ *   each ticket a green deploy commented on, whose roles the range owes the
+ *   deploy, left out where there are none.
  *
  * @typedef {{ repo: string, issue: number | null, outcome: 'dispatched' | 'unconfirmed' | 'failed', sessionUrl: string | null }} Dispatched
  *   `issue`: null for a launch with no ticket, a periodic's among them.
@@ -1261,14 +1264,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           commented = those;
         }
       }
-      const hearers = await hearersOf(commented, { reader, config, ownerOf: (pr) => delivery().ownerOf(pr), log: deps.log, about });
-      /** @type {import('./workflow.mjs').Heard} */
-      const heard = (session, pr) => hearers.some((h) => h.prs.includes(pr) && h.sessions.some((s) => sameSession(s, session)));
       /** @type {import('./workflow.mjs').TargetPlan} */
-      const plan = await planWorkflow({ invocation, coverage, prompts, workflows, heard });
+      let plan = await planWorkflow({ invocation, coverage, prompts, workflows });
       reason = plan.reason;
-      const heardBy = plan.heard ?? [];
-      if (heardBy.length > 0) deps.log('dispatch-workflow', { ...about, heard: heardBy, reason: "each hears the deploy from governor's comment on a ticket its PRs closed, so its PR message leaves those PRs out" });
+      // A green shipping job tells the roles of each ticket it commented
+      // on, beside the PRs' sessions: one turn decides who hears the deploy.
+      const ticketed = invocation.kind === 'job' && plan.deploy !== undefined && turnsOn(config, 'deployedLabels');
       // What the range covers, before anything is sent: a wrong baseline is
       // read off this line. A refusal to plan from a stale runs list
       // is its own event, which governor-stale-runs pages on.
@@ -1289,7 +1290,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       let pin = null;
       /** @type {Delivered | null} A record that cannot be read refuses the sends, as a cursor that cannot does. */
       let before = { told: [], failed: [] };
-      if (plan.advance !== null && plan.notes.length > 0) {
+      if (plan.advance !== null && (plan.notes.length > 0 || ticketed)) {
         try {
           const baseline = plan.range?.baseline ?? null;
           from = coverage.from;
@@ -1300,6 +1301,33 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           deps.log('dispatch-stale-runs', { ...about, reason });
           before = null;
         }
+      }
+      /** Each lookup of a ticket's roles that failed this turn, as `#<ticket>`. @type {string[]} */
+      const unlooked = [];
+      /** The tickets whose roles the range owes the deploy. @type {number[]} */
+      let owedTickets = [];
+      if (before !== null && ticketed) {
+        // Recorded before any send: a turn that dies sending still leaves
+        // the next one the tickets it commented on, which it finds labelled.
+        if (commented.length > 0) {
+          try {
+            await deps.state.record(fireRepo(), workflow, label, from?.runId ?? null, { told: [], failed: [], tickets: commented.map((c) => c.ticket) });
+          } catch (error) {
+            deps.log('dispatch-labels', { ...about, tickets: commented.map((c) => c.ticket), error: `could not record the tickets commented on before the sends: ${messageOf(error)}` });
+          }
+        }
+        owedTickets = [...new Set([...(before.tickets ?? []), ...commented.map((c) => c.ticket)])].sort((a, b) => a - b);
+        const tried = before.failed.map(sessionId);
+        const looked = await rolesOf(owedTickets.filter((t) => tried.filter((f) => f === `#${t}`).length < WORKFLOW_SEND_TRIES), {
+          invocation, coverage, commented, reader, config, ownerOf: (pr) => delivery().ownerOf(pr),
+        });
+        for (const { ticket, error } of looked.failed) {
+          const gaveUp = tried.filter((f) => f === `#${ticket}`).length + 1 >= WORKFLOW_SEND_TRIES;
+          unlooked.push(`#${ticket}`);
+          (labels ??= { label: coverage.label ?? '', added: [], failed: [] }).failed.push({ ticket, error });
+          deps.log('dispatch-labels', { ...about, ticket, error: `could not find its roles, so they are ${gaveUp ? `given up on after ${WORKFLOW_SEND_TRIES} turns` : 'owed the deploy by the next turn'}: ${error}` });
+        }
+        plan = withTickets(plan, looked.found);
       }
       if (before !== null) {
         if (plan.triage !== null) {
@@ -1314,19 +1342,17 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         const toldOf = (/** @type {{ prs: number[], session: string }} */ n) => n.prs.map((pr) => `${pr} ${sessionId(n.session)}`);
         const owed = plan.notes.filter((n) => !toldOf(n).every((t) => told.has(t)) && tries(n.session) < WORKFLOW_SEND_TRIES);
         if (owed.length < plan.notes.length) deps.log('dispatch-workflow', { ...about, settled: plan.notes.filter((n) => !owed.includes(n)).map((n) => ({ session: n.session, prs: n.prs })), reason: 'told, or given up on, by an earlier turn' });
-        // A session that heard the deploy from a ticket's comment counts as
-        // told, so a turn from a held cursor, which finds the label already
-        // on and comments again on nothing, does not message it either.
         /** @type {Delivered} */
-        const now = { told: heardBy.flatMap(toldOf), failed: [] };
-        let untold = 0;
+        const now = { told: [], failed: [...unlooked], tickets: owedTickets };
+        // A lookup that failed leaves its ticket's roles untold.
+        let untold = unlooked.filter((t) => tries(t) + 1 < WORKFLOW_SEND_TRIES).length;
         for (const [i, note] of owed.entries()) {
           if (deps.now() - started > WORKFLOW_SEND_WINDOW_MS) {
             untold += owed.length - i;
             deps.log('dispatch-workflow', { ...about, untold: owed.slice(i).map((n) => ({ session: n.session, prs: n.prs })), reason: `out of time: past ${WORKFLOW_SEND_WINDOW_MS} ms, another delivery might outrun the deadline` });
             break;
           }
-          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, fallback: note.fallback, on: note.prs, closing: note.closing, dropFrom: note.subscribed, owns: note.prs.filter((n) => !note.subscribed.includes(n)) });
+          const { ok, answered, refused, error, fallback } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, fallback: note.fallback, on: [...note.prs, ...(note.tickets ?? [])], closing: note.closing, dropFrom: note.subscribed, owns: note.owns ?? note.prs.filter((n) => !note.subscribed.includes(n)) });
           deliveries.push({ prs: note.prs, session: note.session, ok, answered, refused, error, fallback });
           // As dispatch/cli.mjs counts a fault: a refusal with no fallback is a gone session, told enough.
           if (ok || (refused && fallback?.outcome !== 'failed')) {
@@ -1758,40 +1784,44 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
  */
 
 /**
- * Who hears governor's deploy comment on each ticket the turn commented
- * on: the roles its ticket fire, or its spec owner's message, reaches
- * (dispatch/ticket-fire.mjs). That is the spec owner the body's link names,
- * and on a claimed ticket each builder the one lookup finds
- * (dispatch/builders.mjs). Nobody hears it where `subscribeMessages` is
- * off, or where `trust.relay` leaves out the ticket's author, whom the
- * comment's message is judged by. A lookup that fails is logged, and that
- * ticket's builders count as hearing nothing, so their PR message still
- * goes: a session may hear a deploy twice, never not at all.
+ * The roles of each ticket a green deploy owes its news (`tickets`): the
+ * spec owner its body names, read under the repo's `trust.relay` with a
+ * ticket governor's App filed let in as the PR route lets in its PRs, and
+ * on a claimed ticket each builder the one lookup finds
+ * (dispatch/builders.mjs). Each ticket is looked up once a turn. A ticket
+ * the turn commented on is read as it was before its label; any other is
+ * read again. A read that fails names nobody: it is returned as failed, so
+ * the turn holds its cursor and the next turn looks again.
  *
- * @param {Commented[]} commented
- * @param {{ reader: Reader, config: import('./repo-config.mjs').RepoConfig, ownerOf: (pr: number) => Promise<{ session: string | null }>, log: (event: string, context?: Record<string, unknown>) => void, about: Record<string, unknown> }} ctx
- * @returns {Promise<Array<{ ticket: number, prs: number[], sessions: string[] }>>}
+ * @param {number[]} tickets
+ * @param {{ invocation: import('./webhook/fire.mjs').WorkflowFire | import('./webhook/fire.mjs').JobFire, coverage: import('./coverage.mjs').Coverage, commented: Commented[], reader: Reader, config: import('./repo-config.mjs').RepoConfig, ownerOf: (pr: number) => Promise<{ session: string | null }> }} ctx
+ * @returns {Promise<{ found: import('./workflow.mjs').TicketRoles[], failed: Array<{ ticket: number, error: string }> }>}
  */
-const hearersOf = async (commented, { reader, config, ownerOf, log, about }) => {
-  if (commented.length === 0 || !turnsOn(config, 'subscribeMessages')) return [];
+const rolesOf = async (tickets, { invocation, coverage, commented, reader, config, ownerOf }) => {
+  /** @type {import('./workflow.mjs').TicketRoles[]} */
+  const found = [];
+  /** @type {Array<{ ticket: number, error: string }>} */
+  const failed = [];
+  if (tickets.length === 0) return { found, failed };
   const relay = relayOf(config);
   const { claim } = config.labels;
-  const hearers = [];
-  for (const { ticket, prs, row } of commented) {
-    if (!lets(relay, row)) continue;
-    const owner = sessionNamedIn(relayedBody(row, relay));
-    const sessions = owner === null ? [] : [owner];
-    if (claim !== '' && row.labels.includes(claim)) {
-      try {
-        const found = await buildersOf({ reader, ownerOf, issue: ticket, ticket: row, claim, relay, owner });
-        sessions.push(...found.sessions);
-      } catch (error) {
-        log('dispatch-labels', { ...about, ticket, prs, error: `could not find its builders, so their PR messages still go: ${messageOf(error)}` });
-      }
+  const shipped = new Map(ticketsOf(invocation, coverage).tickets.map((t) => [t.ticket, t.prs]));
+  for (const ticket of tickets) {
+    const prs = shipped.get(ticket) ?? commented.find((c) => c.ticket === ticket)?.prs ?? [];
+    if (prs.length === 0) continue;
+    try {
+      const read = commented.find((c) => c.ticket === ticket)?.row ?? await reader.ticket(ticket);
+      const row = { ...read, own: read.app === true };
+      const owner = sessionNamedIn(relayedBody(row, relay));
+      const builders = claim !== '' && row.labels.includes(claim)
+        ? await buildersOf({ reader, ownerOf, issue: ticket, ticket: row, claim, relay, owner })
+        : { sessions: [], owns: {} };
+      found.push({ ticket, title: row.title, prs, owner, builders: builders.sessions, owns: builders.owns });
+    } catch (error) {
+      failed.push({ ticket, error: messageOf(error) });
     }
-    if (sessions.length > 0) hearers.push({ ticket, prs, sessions });
   }
-  return hearers;
+  return { found, failed };
 };
 
 /**
@@ -2116,26 +2146,30 @@ export const dynamoState = (client, table) => {
       const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: sent(repo, workflow, label, from), ConsistentRead: true }));
       if (item === undefined) return { told: [], failed: [] };
       const failed = (item.failed?.L ?? []).map((v) => v.S);
-      if ((item.told !== undefined && item.told.SS === undefined) || (item.failed !== undefined && item.failed.L === undefined) || failed.some((s) => s === undefined)) {
+      const tickets = (item.tickets?.NS ?? []).map(Number);
+      if ((item.told !== undefined && item.told.SS === undefined) || (item.failed !== undefined && item.failed.L === undefined) || failed.some((s) => s === undefined)
+        || (item.tickets !== undefined && item.tickets.NS === undefined) || tickets.some((n) => !Number.isSafeInteger(n))) {
         throw new Error(`the delivered item for ${workflow} ${label ?? ''} from ${from ?? 'none'} is malformed: ${JSON.stringify(item)}`);
       }
-      return { told: item.told?.SS ?? [], failed: /** @type {string[]} */ (failed) };
+      return { told: item.told?.SS ?? [], failed: /** @type {string[]} */ (failed), ...(tickets.length === 0 ? {} : { tickets: tickets.sort((a, b) => a - b) }) };
     },
     // One update merges into what a racing turn wrote: never a read, then a write.
-    record: async (repo, workflow, label, from, { told, failed }) => {
-      if (told.length === 0 && failed.length === 0) return;
+    record: async (repo, workflow, label, from, { told, failed, tickets = [] }) => {
+      if (told.length === 0 && failed.length === 0 && tickets.length === 0) return;
+      const added = [...(told.length === 0 ? [] : ['told :told']), ...(tickets.length === 0 ? [] : ['tickets :tickets'])];
       await client.send(new UpdateItemCommand({
         TableName: table,
         Key: sent(repo, workflow, label, from),
         UpdateExpression: [
           `SET #ttl = :ttl${failed.length === 0 ? '' : ', failed = list_append(if_not_exists(failed, :none), :failed)'}`,
-          ...(told.length === 0 ? [] : ['ADD told :told']),
+          ...(added.length === 0 ? [] : [`ADD ${added.join(', ')}`]),
         ].join(' '),
         ExpressionAttributeNames: { '#ttl': STATE_TTL_ATTRIBUTE },
         ExpressionAttributeValues: {
           ':ttl': { N: String(Math.floor(Date.now() / 1000) + DELIVERED_TTL_S) },
           ...(failed.length === 0 ? {} : { ':none': { L: [] }, ':failed': { L: failed.map((s) => ({ S: s })) } }),
           ...(told.length === 0 ? {} : { ':told': { SS: [...new Set(told)] } }),
+          ...(tickets.length === 0 ? {} : { ':tickets': { NS: [...new Set(tickets)].map(String) } }),
         },
       }));
     },
