@@ -20,7 +20,11 @@
  * part. The spec owner acts on a remark that changes what counts as done,
  * by editing the body. The builder acts on a remark about the build, and
  * never edits the body. A body edit tells the spec owner the edit may be
- * its own, and the builder that the spec changed.
+ * its own, and the builder that the spec changed. Under `sessionRules`,
+ * where the edit left the owner link in place, governor first searches for
+ * who made it (dispatch/editor.mjs): the spec owner is not told of its own
+ * edit, is told someone else made one, and keeps the old line only where
+ * its events could not be read. The builder hears every edit.
  *
  * Where the spec owner refuses a comment as archived, nobody owns the
  * ticket, so with `sessionRules` on the session that signed the comment is
@@ -49,12 +53,13 @@ import { fireRepoOf } from './repos.mjs';
 import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 import { relayedBody, sameSession, sessionId } from './webhook/subscribe.mjs';
-import { EDIT_BUILDER, EDIT_SPEC_OWNER } from './webhook/mention.mjs';
+import { EDIT_BUILDER } from './webhook/mention.mjs';
 import { builderChangeSends, tellBuilderChange } from './told.mjs';
 import { offerIssue } from './offer.mjs';
 import { settleMove } from './take.mjs';
 import { turnsOn } from './repo-config.mjs';
 import { relayedText, tellAuthor, wroteIt } from './author.mjs';
+import { ownerLine, tellEditor } from './editor.mjs';
 
 /** @typedef {import('./roles.mjs').TicketRole} TicketRole */
 
@@ -82,6 +87,11 @@ export const planTicket = async (invocation, ctx) => {
   const moved = event === 'edit' && invocation.moved !== undefined && turnsOn(config, 'sessionRules') ? invocation.moved : null;
   const editor = moved === null ? null : invocation.owner ?? null;
   const owner = moved === null ? invocation.owner ?? null : moved.from ?? null;
+  // A body edit that left the owner link in place, under sessionRules: who
+  // made it is searched for, the owner first (dispatch/editor.mjs).
+  const edit = event === 'edit' && moved === null && owner !== null && invocation.edited !== undefined && turnsOn(config, 'sessionRules') ? invocation.edited : null;
+  const edited = edit === null || owner === null ? null : await ctx.findEditor(issue, edit, owner);
+  const ownEdit = edited?.by === 'owner';
   const claimed = labels.includes(config.labels.claim) && config.labels.claim !== '';
   const about = { repo, issue, change: event, state, claimed };
   /** @type {Array<{ session: string, text: string, role: TicketRole | null, owns: number[] }>} */
@@ -91,9 +101,10 @@ export const planTicket = async (invocation, ctx) => {
   /** The ticket's builders, none on an unclaimed ticket. @type {string[]} */
   let builders = [];
   const own = (/** @type {string} */ session) => (poster !== undefined && sameSession(session, poster)) || (editor !== null && sameSession(session, editor)) || wroteIt(found, session);
-  // What a body edit tells each role, under what happened.
-  const edit = (/** @type {TicketRole} */ role) => (event !== 'edit' ? '' : `\n\n${[
-    ...(role === 'builder' ? [] : [EDIT_SPEC_OWNER]),
+  // What a body edit tells each role, under what happened. The spec owner
+  // hears nothing of its own edit.
+  const editLines = (/** @type {TicketRole} */ role) => (event !== 'edit' ? '' : `\n\n${[
+    ...(role === 'builder' || ownEdit ? [] : [ownerLine(edited)]),
     ...(role === 'spec owner' ? [] : [EDIT_BUILDER]),
   ].join('\n')}`);
   if (event === 'dispatched') {
@@ -108,7 +119,8 @@ export const planTicket = async (invocation, ctx) => {
   } else if (!claimed) {
     // The spec owner's message as the receiver queued it before, with no read.
     if (owner !== null && own(owner)) skipped.push(`${sessionId(owner)}'s own post`);
-    else if (owner !== null) sends.push({ session: owner, text: `${text}${edit('spec owner')}`, role: null, owns: [] });
+    else if (owner !== null && ownEdit) skipped.push(`${sessionId(owner)}, which made the edit`);
+    else if (owner !== null) sends.push({ session: owner, text: `${text}${editLines('spec owner')}`, role: null, owns: [] });
   } else {
     const relay = relayOf(config);
     const reader = await ctx.readerFor(repo);
@@ -121,11 +133,12 @@ export const planTicket = async (invocation, ctx) => {
       const { session, role, owns } = holder;
       if (role === 'builder' && throughPr) skipped.push(`${sessionId(session)}, which heard the merge that closed it through its PR`);
       else if (own(session)) skipped.push(`${sessionId(session)}'s own post`);
-      else sends.push({ session, text: `${text}${edit(role)}\n\n${rolesText(roles, holder)}`, role, owns });
+      else if (role === 'spec owner' && ownEdit) skipped.push(`${sessionId(session)}, which made the edit`);
+      else sends.push({ session, text: `${text}${editLines(role)}\n\n${rolesText(roles, holder)}`, role, owns });
     }
     Object.assign(about, { builders, builder: roles.by });
   }
-  if (sends.length === 0 && editor === null && found === null) {
+  if (sends.length === 0 && editor === null && found === null && edited?.by !== 'other') {
     ctx.log('dispatch-ticket', { ...about, outcome: 'nobody told', ...(skipped.length === 0 ? { reason: 'no role on the ticket is held by a session' } : { skipped }) });
     return { answer: { kind: invocation.kind, messaged: null, dispatched: [] } };
   }
@@ -139,7 +152,7 @@ export const planTicket = async (invocation, ctx) => {
   let notice = null;
   /** The take's confirmation or the correction, where one was sent. @type {import('./deliveries.mjs').Delivery | null} */
   let took = null;
-  /** The unsigned post's author's nudge, or each candidate's. @type {import('./deliveries.mjs').Delivery[]} */
+  /** The unsigned post's author's nudge, or each candidate's, or the body edit's editor's. @type {import('./deliveries.mjs').Delivery[]} */
   let nudged = [];
   let loginStored = false;
   try {
@@ -180,6 +193,9 @@ export const planTicket = async (invocation, ctx) => {
     }
     if (post !== null && found !== null) {
       nudged = await tellAuthor({ repo, on: issue, post, found, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries: ctx.delivery(), log: ctx.log });
+    }
+    if (edit !== null && edited !== null) {
+      nudged = [...nudged, ...await tellEditor({ repo, on: issue, edit, edited, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries: ctx.delivery(), log: ctx.log })];
     }
   } finally {
     loginStored = await ctx.storeLogin();

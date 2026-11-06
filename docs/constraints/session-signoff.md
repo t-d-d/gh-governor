@@ -77,7 +77,10 @@ session's own last reply is current and needs nothing in the repo.
   decides nothing. The candidates are the login's live sessions in the
   post's repo (`reposOf`), updated at or after ten minutes before the
   post. The events' text is never logged: a `dispatch-author` line names
-  sessions, counts and reasons that quote no event.
+  sessions, counts and reasons that quote no event. Reading the spec
+  owner's events, and then the other candidates', to find who made a body
+  edit (dispatch/editor.mjs) follows the same rules, in windows anchored on
+  the edit's time, and a `dispatch-editor` line quotes no event either.
 
 ## Examples
 
@@ -100,4 +103,4 @@ session's own last reply is current and needs nothing in the repo.
   writes: each repo then needs the hook and a credential, and the record
   goes stale.
 
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The sweep and the standing line's ask run only where the repo's file turns the `signOff` switch on since #278. A session that owns an open PR is held from the archive, and told so once where the repo's file asks, since #594. With `sessionRules` on, ownership of an issue lapses at its owner's archive, and the ask waits only on the session's open PRs, its builds and the issues it owns that carry a ready or claim label, narrowing #535, since #612, under PRD #599. Reading candidates' events to find an unsigned post's author follows the rules for reading a reply, and their text is never logged, since #616, under PRD #599.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The sweep and the standing line's ask run only where the repo's file turns the `signOff` switch on since #278. A session that owns an open PR is held from the archive, and told so once where the repo's file asks, since #594. With `sessionRules` on, ownership of an issue lapses at its owner's archive, and the ask waits only on the session's open PRs, its builds and the issues it owns that carry a ready or claim label, narrowing #535, since #612, under PRD #599. Reading candidates' events to find an unsigned post's author follows the rules for reading a reply, and their text is never logged, since #616, under PRD #599. Reading them to find who made a body edit follows the same rules, since #617, under PRD #599.

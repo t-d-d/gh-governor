@@ -76,6 +76,9 @@ export const AUTHOR_PAGES = 5;
  *   `maybe` the candidates not ruled out where the search could not decide,
  *   and both empty where every candidate was ruled out.
  * @typedef {(on: number, post: UnsignedPost) => Promise<Found>} FindAuthor
+ * @typedef {(call: { name?: string | undefined, input?: unknown }, repo: string, on: number) => { text: string | null } | null} Match
+ *   Whether a tool call made the act searched for on `repo`'s issue or PR
+ *   `on`, and the text its input carries: {@link postedTo} for a post.
  * @typedef {(event: string, context?: Record<string, unknown>) => void} Log
  */
 
@@ -86,10 +89,46 @@ const CSE_ID = /^cse_([A-Za-z0-9]+)$/;
 const ASSISTANT = z.object({ message: z.object({ content: z.array(z.looseObject({ type: z.string(), name: z.string().optional(), input: z.unknown().optional() })) }) });
 
 /** The keys a GitHub tool's input names an issue or a PR by. */
-const NUMBER_KEYS = ['issue_number', 'issueNumber', 'pull_number', 'pullNumber', 'number'];
+export const NUMBER_KEYS = ['issue_number', 'issueNumber', 'pull_number', 'pullNumber', 'number'];
 
-/** @param {string} text */
-const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** `text` with a regular expression's special characters escaped. @param {string} text */
+export const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Whether a `gh` command's `-R` / `--repo`, where it names one, is `repo`.
+ *
+ * @param {string} command
+ * @param {string} repo `owner/name`
+ */
+export const repoNamedIn = (command, repo) => {
+  const named = /(?:\s-R|--repo)[=\s]+["']?([^\s"']+)/.exec(command)?.[1]?.toLowerCase();
+  return named === undefined || named === repo.toLowerCase() || named.endsWith(`/${repo.toLowerCase()}`);
+};
+
+/**
+ * Whether a `gh api` command reads: `-X GET` with fields sends them as a query.
+ *
+ * @param {string} command
+ */
+export const readsOnly = (command) => /\s(?:-X|--method)[\s=]*["']?GET\b/i.test(command);
+
+/**
+ * The body a shell command that writes to GitHub carries: `{ text }`, the
+ * command itself where it carries the body inline (`body=`, `--body`,
+ * `-b`, a here document), `{ text: null }` where the shell expands it or it
+ * is read from a file or stdin, and null where it carries none.
+ *
+ * @param {string} command
+ * @returns {{ text: string | null } | null}
+ */
+export const shellBody = (command) => {
+  // A body the shell expands, from a variable or a command, is not in the command's text.
+  if (/(?:body=|--body[=\s]+|\s-b\s+)["']?\$/.test(command)) return { text: null };
+  if (/body=(?!@)|--body[=\s]|\s-b\s|<</.test(command)) return { text: command };
+  // A body read from a file or stdin.
+  if (/body=@|--body-file[=\s]|--input[=\s]|\s-F\s+(?![\w[\]]+=)/.test(command)) return { text: null };
+  return null;
+};
 
 /**
  * Whether a tool call posted to `repo`'s issue or PR `on`, and the text its
@@ -123,19 +162,11 @@ export const postedTo = (call, repo, on) => {
     const command = input.command;
     const path = new RegExp(`repos/(?:${escaped(owner)}/${escaped(name)}|\\{owner\\}/\\{repo\\})/(?:issues|pulls)/${on}(?![0-9])`, 'i');
     const cli = new RegExp(`\\bgh\\s+(?:issue\\s+comment|pr\\s+comment|pr\\s+review)\\s+#?${on}(?![0-9])`);
-    const named = /(?:\s-R|--repo)[=\s]+["']?([^\s"']+)/.exec(command)?.[1]?.toLowerCase();
-    const viaCli = cli.test(command) && (named === undefined || named === repo.toLowerCase() || named.endsWith(`/${repo.toLowerCase()}`));
-    // `gh api -X GET` with fields sends them as a query: a read.
-    const reads = /\s(?:-X|--method)[\s=]*["']?GET\b/i.test(command);
-    const writes = !reads && (/\s(?:-[fFd]|--field|--raw-field|--input|--data)[\s=]/.test(command) || /\s(?:-X|--method)[\s=]*["']?(?:POST|PATCH|PUT)\b/i.test(command));
+    const viaCli = cli.test(command) && repoNamedIn(command, repo);
+    const writes = !readsOnly(command) && (/\s(?:-[fFd]|--field|--raw-field|--input|--data)[\s=]/.test(command) || /\s(?:-X|--method)[\s=]*["']?(?:POST|PATCH|PUT)\b/i.test(command));
     if (!viaCli && !(path.test(command) && writes)) return null;
-    // A body the shell expands, from a variable or a command, is not in the command's text.
-    if (/(?:body=|--body[=\s]+|\s-b\s+)["']?\$/.test(command)) return { text: null };
-    if (/body=(?!@)|--body[=\s]|\s-b\s|<</.test(command)) return { text: command };
-    // A body read from a file or stdin.
-    if (/body=@|--body-file[=\s]|--input[=\s]|\s-F\s+(?![\w[\]]+=)/.test(command)) return { text: null };
     // A write that carries no body, such as a label or an approval, posted no comment.
-    return null;
+    return shellBody(command);
   }
   const tool = String(call.name ?? '').replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '');
   if (/(?:^|_)(?:get|list|search|read)(?:_|$)/i.test(tool)) return null;
@@ -173,10 +204,12 @@ const unescaped = (text) => text
  * `clear`, none did; `unreadable`, with a reason that quotes no event,
  * where the events could not be read back to the window.
  *
- * @param {{ events: (id: string, cursor?: string) => Promise<unknown>, id: string, repo: string, on: number, post: UnsignedPost }} args
+ * `match` names the act searched for, a post by default.
+ *
+ * @param {{ events: (id: string, cursor?: string) => Promise<unknown>, id: string, repo: string, on: number, post: UnsignedPost, match?: Match }} args
  * @returns {Promise<{ read: 'posted' | 'clear' } | { read: 'unreadable', reason: string }>}
  */
-export const readCandidate = async ({ events, id, repo, on, post }) => {
+export const readCandidate = async ({ events, id, repo, on, post, match = postedTo }) => {
   const at = Date.parse(post.at);
   const from = at - AUTHOR_BEFORE_MS;
   const to = at + AUTHOR_AFTER_MS;
@@ -208,7 +241,7 @@ export const readCandidate = async ({ events, id, repo, on, post }) => {
       if (!message.success) continue;
       for (const block of message.data.message.content) {
         if (block.type !== 'tool_use') continue;
-        const posted = postedTo(block, repo, on);
+        const posted = match(block, repo, on);
         if (posted !== null && (posted.text === null || holds(posted.text, post.words))) return { read: 'posted' };
       }
     }
@@ -244,12 +277,14 @@ export const candidatesOf = (rows, repo, at) => rows.flatMap((row) => {
  * Search the login's sessions for the author of `post` on `repo`'s issue
  * or PR `on` (see the module's head). A list that cannot be read is
  * `searched: false`; a candidate whose events cannot be read is not ruled
- * out. Logs nothing.
+ * out. Logs nothing. `match` names the act searched for, a post by
+ * default; `skip` names sessions already ruled out, which are no
+ * candidates.
  *
- * @param {{ list: () => Promise<readonly unknown[]>, events: (id: string, cursor?: string) => Promise<unknown>, repo: string, on: number, post: UnsignedPost }} args
+ * @param {{ list: () => Promise<readonly unknown[]>, events: (id: string, cursor?: string) => Promise<unknown>, repo: string, on: number, post: UnsignedPost, match?: Match, skip?: readonly string[] }} args
  * @returns {Promise<Found>}
  */
-export const searchAuthor = async ({ list, events, repo, on, post }) => {
+export const searchAuthor = async ({ list, events, repo, on, post, match = postedTo, skip = [] }) => {
   /** @type {readonly unknown[]} */
   let rows;
   try {
@@ -257,13 +292,13 @@ export const searchAuthor = async ({ list, events, repo, on, post }) => {
   } catch (error) {
     return { searched: false, reason: `the sessions list could not be read: ${messageOf(error).slice(0, 200)}` };
   }
-  const candidates = candidatesOf(rows, repo, Date.parse(post.at));
+  const candidates = candidatesOf(rows, repo, Date.parse(post.at)).filter(({ session }) => !skip.some((s) => sameSession(s, session)));
   /** @type {string[]} */
   const posted = [];
   /** @type {string[]} */
   const unread = [];
   // Each candidate's events are read side by side.
-  const reads = await Promise.all(candidates.map(({ id }) => readCandidate({ events, id, repo, on, post })));
+  const reads = await Promise.all(candidates.map(({ id }) => readCandidate({ events, id, repo, on, post, match })));
   candidates.forEach(({ session }, i) => {
     const read = reads[i]?.read;
     if (read === 'posted') posted.push(session);
@@ -320,22 +355,52 @@ export const maybeText = (on, url) => [
  * }} args
  * @returns {Promise<import('./deliveries.mjs').Delivery[]>}
  */
-export const tellAuthor = async ({ repo, on, post, found, tellOnce, deliveries, log }) => {
-  const at = { repo, on, post: post.at };
+export const tellAuthor = ({ repo, on, post, found, tellOnce, deliveries, log }) => tellFound({
+  event: AUTHOR,
+  at: { repo, on, post: post.at },
+  found,
+  nudge: { kind: 'unsigned', text: nudgeText(on, post.url) },
+  maybe: { kind: 'unsigned-maybe', text: maybeText(on, post.url) },
+  tellOnce: /** @type {(session: string, kind: string) => Promise<boolean>} */ (tellOnce),
+  deliveries,
+  log,
+});
+
+/**
+ * Tell what a search found, as {@link tellAuthor} does, with the kinds and
+ * texts of the act searched for: `nudge` to the one session found, `maybe`
+ * to each candidate not ruled out. Logs `event` lines that name sessions
+ * and counts, never text.
+ *
+ * @param {{
+ *   event: string,
+ *   at: Record<string, unknown>,
+ *   found: Found,
+ *   nudge: { kind: string, text: string },
+ *   maybe: { kind: string, text: string },
+ *   tellOnce: (session: string, kind: string) => Promise<boolean>,
+ *   deliveries: Pick<import('./deliveries.mjs').Deliveries, 'deliver'>,
+ *   log: Log,
+ * }} args `at`: what the log lines say the search was of, its `on` the
+ *   issue or PR the corrections are about.
+ * @returns {Promise<import('./deliveries.mjs').Delivery[]>}
+ */
+export const tellFound = async ({ event, at, found, nudge, maybe, tellOnce, deliveries, log }) => {
+  const on = Number(at.on);
   if (!found.searched) {
-    log(AUTHOR, { ...at, level: 'warn', outcome: 'not searched', reason: found.reason });
+    log(event, { ...at, level: 'warn', outcome: 'not searched', reason: found.reason });
     return [];
   }
   const counts = { candidates: found.candidates, unread: found.unread };
   if (found.author === null && found.maybe.length === 0) {
-    log(AUTHOR, { ...at, ...counts, outcome: 'nobody told', reason: 'every candidate was ruled out: most likely a person, or a session governor cannot list' });
+    log(event, { ...at, ...counts, outcome: 'nobody told', reason: 'every candidate was ruled out: most likely a person, or a session governor cannot list' });
     return [];
   }
-  /** @type {Array<{ session: string, kind: Correction, text: string }>} */
+  /** @type {Array<{ session: string, kind: string, text: string }>} */
   const tells = found.author !== null
-    ? [{ session: found.author, kind: 'unsigned', text: nudgeText(on, post.url) }]
-    : found.maybe.map((session) => ({ session, kind: /** @type {Correction} */ ('unsigned-maybe'), text: maybeText(on, post.url) }));
-  log(AUTHOR, { ...at, ...counts, outcome: found.author !== null ? 'author found' : 'undecided', sessions: tells.map((t) => sessionId(t.session)) });
+    ? [{ session: found.author, ...nudge }]
+    : found.maybe.map((session) => ({ session, ...maybe }));
+  log(event, { ...at, ...counts, outcome: found.author !== null ? 'author found' : 'undecided', sessions: tells.map((t) => sessionId(t.session)) });
   /** @type {import('./deliveries.mjs').Delivery[]} */
   const sent = [];
   for (const { session, kind, text } of tells) {
@@ -344,16 +409,16 @@ export const tellAuthor = async ({ repo, on, post, found, tellOnce, deliveries, 
     try {
       first = await tellOnce(session, kind);
     } catch (error) {
-      log(AUTHOR, { ...about, level: 'error', outcome: 'not told', error: messageOf(error), reason: 'the record that it was told could not be put' });
+      log(event, { ...about, level: 'error', outcome: 'not told', error: messageOf(error), reason: 'the record that it was told could not be put' });
       continue;
     }
     if (!first) {
-      log(AUTHOR, { ...about, outcome: 'not told', reason: 'it was told of this before' });
+      log(event, { ...about, outcome: 'not told', reason: 'it was told of this before' });
       continue;
     }
     const told = await deliveries.deliver({ session }, text, { source: GITHUB_SOURCE, kind: 'correction', on: [on] });
     sent.push(told);
-    if (told.capped !== true) log(AUTHOR, { ...about, outcome: told.ok ? 'told' : told.refused ? 'its session is archived' : 'not told', ...(told.ok || told.refused ? {} : { level: 'error', error: told.error }) });
+    if (told.capped !== true) log(event, { ...about, outcome: told.ok ? 'told' : told.refused ? 'its session is archived' : 'not told', ...(told.ok || told.refused ? {} : { level: 'error', error: told.error }) });
   }
   return sent;
 };
