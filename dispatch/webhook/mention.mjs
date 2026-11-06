@@ -383,6 +383,7 @@ const summonedTicket = (issue, bodies, appId) => {
  *   post?: import('./fire.mjs').UnsignedPost | null,
  *   offer?: string | null,
  *   moved?: import('./fire.mjs').MovedLink | undefined,
+ *   edited?: import('./fire.mjs').UnsignedPost | null,
  *   authors: string[],
  *   reason: string,
  * }} args `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
@@ -396,9 +397,12 @@ const summonedTicket = (issue, bodies, appId) => {
  *   refuse as archived (dispatch/offer.mjs).
  *   `moved`: on an issue owner's message of a body edit, where the edit
  *   moved the owner link from (dispatch/take.mjs).
+ *   `edited`: on an issue owner's message of a body edit, the edit's time,
+ *   page and first words ({@link editedOf}), so the task can search for
+ *   who made it (dispatch/editor.mjs).
  * @returns {Queued}
  */
-const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, post = null, offer = null, moved, authors, reason }) => {
+const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, post = null, offer = null, moved, edited = null, authors, reason }) => {
   const role = owner ? 'owner' : 'subscriber';
   const number = Number.isInteger(on?.number) ? on.number : undefined;
   /** @param {string} text @returns {MessageFire} */
@@ -414,6 +418,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
     offer: owner && issue && event === 'comments' ? offer : null,
     moved: owner && issue ? moved : undefined,
     unsigned: unsigned ? post : null,
+    edited: owner && issue ? edited : null,
     fallback: owner && fallback
       ? { prompt: `${text}\n${HANDOFF}\n${UNATTENDED}`, sessionName: sessionName(on?.number, on?.title), issue: number }
       : undefined,
@@ -652,6 +657,23 @@ const bodyEdited = (payload) => payload?.action === 'edited'
   && payload?.sender?.type !== 'Bot';
 
 /**
+ * A body edit's time, page and first words, in an unsigned post's shape:
+ * the time is the issue's `updated_at`, which an `edited` delivery sets to
+ * the edit's, the page the issue's, and the words the new body's. Null
+ * where the payload lacks a time or a github.com page.
+ *
+ * @param {any} issue
+ * @returns {import('./fire.mjs').UnsignedPost | null}
+ */
+export const editedOf = (issue) => {
+  const at = issue?.updated_at;
+  const url = issue?.html_url;
+  if (typeof at !== 'string' || at.length > 40 || !Number.isFinite(Date.parse(at))) return null;
+  if (typeof url !== 'string' || url.length > 300 || !/^https:\/\/github\.com\/\S+$/.test(url)) return null;
+  return { at, url, words: postWords(String(issue?.body ?? '')) };
+};
+
+/**
  * Where a body edit moved the issue's owner link from, or undefined where
  * it moved nothing: the new body, read through `relayedBody` under
  * `bodies`, names a session, and the old body (`changes.body.from`), read
@@ -679,7 +701,10 @@ const movedLink = (payload, bodies, appId) => {
 
 /**
  * A ticket's body edited: the spec owner's message, told the edit may be
- * its own ({@link EDIT_SPEC_OWNER}). On a claimed ticket the ticket fire
+ * its own ({@link EDIT_SPEC_OWNER}). The fire carries the edit's time
+ * ({@link editedOf}): under `sessionRules` the task searches for who made
+ * the edit and tells the owner that in place of the line, or tells it
+ * nothing where the edit was its own (dispatch/editor.mjs). On a claimed ticket the ticket fire
  * ({@link ticketFires}) replaces it and reaches the builders too. Only the
  * spec owner hears it here: a subscribe line names no body edits.
  *
@@ -710,6 +735,7 @@ export const bodyEditFires = (payload, { relay = RELAY, bodies = relay, appId } 
     issue: true,
     authors: kindsOf([onAuthor]),
     moved: movedLink(payload, bodies, appId),
+    edited: editedOf(issue),
     reason,
   });
   return { fires: [fire], reason: fire.reason };
@@ -1060,7 +1086,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
   // The spec owner the body names, read only where `bodies` lets its author in.
   const { state, labels, owner = null } = summonedTicket(issue, bodies, appId);
   if (labels.length === 0) return none;
-  /** @type {{ text: (limit: number) => string, event: 'comments' | 'close' | 'edit', poster: string | null, closing: boolean, authors: string[], what: string, moved?: import('./fire.mjs').MovedLink | undefined, unsigned?: import('./fire.mjs').UnsignedPost | null }} */
+  /** @type {{ text: (limit: number) => string, event: 'comments' | 'close' | 'edit', poster: string | null, closing: boolean, authors: string[], what: string, moved?: import('./fire.mjs').MovedLink | undefined, unsigned?: import('./fire.mjs').UnsignedPost | null, edited?: import('./fire.mjs').UnsignedPost | null }} */
   let about;
   if (event === 'issue_comment') {
     const comment = payload?.comment;
@@ -1098,12 +1124,13 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
       authors: kindsOf([onAuthor]),
       what: `issue #${issue.number} body edited`,
       moved: movedLink(payload, bodies, appId),
+      edited: editedOf(issue),
     };
   } else {
     return none;
   }
   /** @param {string} text */
-  const fire = (text) => build.ticket({ issue: issue.number, text, event: about.event, state, labels, owner, poster: about.poster, closing: about.closing, authors: about.authors, moved: about.moved, unsigned: about.unsigned });
+  const fire = (text) => build.ticket({ issue: issue.number, text, event: about.event, state, labels, owner, poster: about.poster, closing: about.closing, authors: about.authors, moved: about.moved, unsigned: about.unsigned, edited: about.edited });
   let limit = EXCERPT_CHARS;
   let built = fire(about.text(limit));
   while (fireWeight(built) > FIRE_BUDGET && limit > 1) {

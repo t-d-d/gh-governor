@@ -119,6 +119,7 @@ import { planClosingPr, planTicket } from './ticket-fire.mjs';
 import { offerAfterRefusal, planOffer } from './offer.mjs';
 import { planPrEdit, takeAfterNotice } from './take.mjs';
 import { planAuthor, relayedText, searchAuthor, tellAuthor, wroteIt } from './author.mjs';
+import { editedText, searchEditor, tellEditor } from './editor.mjs';
 import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken, turnResends } from '../scripts/lib/github-app.mjs';
@@ -1175,6 +1176,7 @@ const runOpen = (deps) => {
  *   sleep: Deps['sleep'],
  *   cap: number,
  *   findAuthor: import('./author.mjs').FindAuthor,
+ *   findEditor: import('./editor.mjs').FindEditor,
  * }} TurnContext
  *   `readerFor`: a repo's reader, one a turn. `configOf`: a served repo's
  *   config. `prompts`: the fire's repo's, none for the bare schedule fire.
@@ -1186,7 +1188,9 @@ const runOpen = (deps) => {
  *   no marker covers yet ({@link Deps}). `beats`: where the bare fire adds
  *   its heartbeat lines, for `run` to write. `findAuthor`: the search of
  *   the login's live sessions for a session's unsigned post in the fire's
- *   repo (dispatch/author.mjs).
+ *   repo (dispatch/author.mjs). `findEditor`: the search for who made a
+ *   body edit on an issue in the fire's repo, its owner first
+ *   (dispatch/editor.mjs).
  */
 
 /**
@@ -1396,6 +1400,31 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     });
   };
 
+  /**
+   * The search for who made a body edit on an issue in the fire's repo,
+   * the owner first, under the same token as {@link findAuthor}. A refresh
+   * that fails reads no events: the owner hears the edit as before.
+   *
+   * @type {import('./editor.mjs').FindEditor}
+   */
+  const findEditor = async (on, edit, owner) => {
+    /** @type {string} */
+    let token;
+    try {
+      token = await authorToken();
+    } catch (error) {
+      return { by: 'unknown', reason: messageOf(error) };
+    }
+    return searchEditor({
+      owner,
+      list: () => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
+      events: (id, cursor) => deps.sessions.events(id, token, cursor),
+      repo: fireRepo(),
+      on,
+      edit,
+    });
+  };
+
   if (invocation.kind === 'message') {
     const { on, event, commit, closing, text, fallback } = invocation;
     // A session's unsigned post, under sessionRules: its author is searched
@@ -1417,15 +1446,24 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const moved = invocation.moved !== undefined && 'session' in invocation && on !== undefined && repo !== undefined && turnsOn(configOf(repo), 'sessionRules') ? invocation.moved : null;
     /** The take's confirmation or the correction. @type {import('./deliveries.mjs').Delivery | null} */
     let took = null;
+    // A body edit that left the owner link in place, under sessionRules:
+    // who made it is searched for, the owner first, and the owner is not
+    // told of its own edit (dispatch/editor.mjs).
+    const edit = invocation.edited !== undefined && moved === null && 'session' in invocation && on !== undefined && repo !== undefined && turnsOn(configOf(repo), 'sessionRules') ? invocation.edited : null;
+    /** @type {import('./editor.mjs').EditFound | null} */
+    let edited = null;
     try {
       if (post !== null && on !== undefined) found = await findAuthor(on, post);
+      if (edit !== null && on !== undefined && 'session' in invocation) edited = await findEditor(on, edit, invocation.session);
       if (moved !== null && moved.from === undefined) {
         told = { ...told, skipped: 'the old body named no owner to tell of the edit' };
       } else if ('session' in invocation && wroteIt(found, invocation.session)) {
         told = { ...told, skipped: 'the session wrote the post, unsigned: it is told to sign it instead' };
+      } else if (edited?.by === 'owner') {
+        told = { ...told, skipped: 'the session made the edit itself: it is not told of its own edit' };
       } else told = await delivery().deliver(
         'byBranch' in invocation ? { pr: invocation.on, ...(invocation.poster === undefined ? {} : { poster: invocation.poster }) } : { session: moved?.from ?? invocation.session },
-        relayedText(text, found),
+        editedText(relayedText(text, found), edited),
         {
           source: GITHUB_SOURCE,
           kind: 'relay',
@@ -1462,6 +1500,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       }
       if (post !== null && found !== null && on !== undefined && repo !== undefined) {
         nudged = await tellAuthor({ repo, on, post, found, tellOnce: (session, kind) => deps.state.recordTold(session, kind), deliveries: delivery(), log: deps.log });
+      }
+      if (edit !== null && edited !== null && on !== undefined && repo !== undefined) {
+        nudged = [...nudged, ...await tellEditor({ repo, on, edit, edited, tellOnce: (session, kind) => deps.state.recordTold(session, kind), deliveries: delivery(), log: deps.log })];
       }
     } finally {
       loginStored = await storeIfRefreshed(deps, original, account);
@@ -1912,6 +1953,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     sleep: deps.sleep,
     cap: deps.cap,
     findAuthor,
+    findEditor,
   };
   const started = deps.now();
   /** The plan a kind's planner returned. @type {Plan | undefined} */
