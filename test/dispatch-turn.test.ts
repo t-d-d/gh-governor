@@ -2573,14 +2573,16 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual([h.launches, h.messages], [[], []]);
   });
 
-  test('a ready ticket\'s pickup prompt after a close asks for a comment and a PR note, and leaves an owned body to its owner', async () => {
-    const h = ticketTurn({ body: OWNED });
-    await run(fire(), h.deps as never);
-    const prompt = h.launches[0]!.prompt;
-    assert.match(prompt, /comment on the ticket/);
-    assert.match(prompt, /PR description/);
-    assert.match(prompt, /Leave the body to the session whose link ends it/);
-    assert.doesNotMatch(prompt, /fix the ticket's body where the merge changed/);
+  test('a ready ticket\'s pickup prompt after a close asks for a comment and a PR note, and never has the builder edit the body', async () => {
+    for (const body of [OWNED, '']) {
+      const h = ticketTurn({ body });
+      await run(fire(), h.deps as never);
+      const prompt = h.launches[0]!.prompt;
+      assert.match(prompt, /comment on the ticket/);
+      assert.match(prompt, /PR description/);
+      assert.match(prompt, /Never edit the ticket's body/);
+      assert.doesNotMatch(prompt, /[Ff]ix the body/);
+    }
   });
 
   // A ticket governor unreadied on a not-planned close waits for a person:

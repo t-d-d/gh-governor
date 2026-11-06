@@ -48,7 +48,9 @@ export const sessionName = (number, title) => {
  *
  * The default tells the session to check the ticket against the code
  * first, and to comment and stop where the code already settles it or the
- * work is far larger than it reads. No PR's merge or close will come to ask
+ * work is far larger than it reads. It also tells the session never to
+ * edit the ticket's body, and to put a difference from the spec in a
+ * comment and its PR description. No PR's merge or close will come to ask
  * such a session to sign off, so where the repo turns `signOff` on, the
  * default goes on to ask it, in the repo's `signOff` prompt where it sets
  * one. With the switch off it carries no ask, as the standing line does not

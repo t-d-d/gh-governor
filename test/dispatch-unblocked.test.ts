@@ -158,6 +158,23 @@ describe('the texts', () => {
     assert.match(text, /before you build/i);
   });
 
+  // The builder never writes the ticket's body: the body is what the PR is
+  // reviewed against, and any body a session writes ends with its own link,
+  // which would take the owner link from the spec owner.
+  test('a ready ticket\'s default ask never has the builder edit the body, whoever owns it', () => {
+    const text = readyPrompt('Pickup #7\n\nImplement it.', fire, {});
+    assert.match(text, /comment on the ticket/);
+    assert.match(text, /PR description/);
+    assert.match(text, /Never edit the ticket's body/);
+    assert.doesNotMatch(text, /[Ff]ix the body/);
+    assert.doesNotMatch(text, /no session link/);
+  });
+
+  test('a repo\'s own ready ask is sent unchanged', () => {
+    const text = readyPrompt('Pickup #7\n\nImplement it.', fire, { unblockedReady: 'Fix the body as you see fit.' });
+    assert.ok(text.endsWith('It blocked #7.\nFix the body as you see fit.'), text);
+  });
+
   test('a spec session is told to add the claim label itself before it builds', () => {
     const text = specPrompt({ fire, title: 'The step', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: {} });
     assert.match(text, /^Spec #7 'The step'/);
