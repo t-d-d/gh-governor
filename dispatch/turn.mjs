@@ -2561,8 +2561,8 @@ export const realDeps = () => {
 
   return {
     owners,
-    installations: async () => appInstallations({ ...(await appKey()), owners }),
-    configFile: (served, token, path) => githubReader({ token, repo: served }).configFile(path),
+    installations: async () => appInstallations({ ...(await appKey()), owners, log }),
+    configFile: (served, token, path) => githubReader({ token, repo: served, log }).configFile(path),
     environments: async (token, organization) => {
       const response = await fetch(ENVIRONMENTS_API, {
         headers: { Authorization: `Bearer ${token}`, 'anthropic-version': '2023-06-01', ...(organization === null ? {} : { 'x-organization-uuid': organization }) },
@@ -2580,13 +2580,13 @@ export const realDeps = () => {
         await secrets.send(new PutSecretValueCommand({ SecretId: String(env.CLAUDE_LOGIN_SECRET_ID), SecretString: text }));
       },
     },
-    githubToken: async (served) => installationToken({ ...(await appKey()), repo: served }),
+    githubToken: async (served) => installationToken({ ...(await appKey()), repo: served, log }),
     appId: async () => {
       const id = Number((await app()).appId);
       if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`the GitHub App secret's appId is not an App ID: ${String((await app()).appId)}`);
       return id;
     },
-    reader: (token, appId, served) => githubReader({ token, repo: served, appId }),
+    reader: (token, appId, served) => githubReader({ token, repo: served, appId, log }),
     workspace: {
       // The turn's own directory, where a message and a review run, a
       // checkout-less repo of the fire's; the bare schedule
