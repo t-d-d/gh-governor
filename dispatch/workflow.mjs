@@ -67,7 +67,7 @@ import { short } from './runs.mjs';
 import { DEPENDABOT, FAILED, LABEL_PREFIX, UNATTENDED } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { sameSession } from './webhook/subscribe.mjs';
-import { listed } from './told.mjs';
+import { rolesText } from './roles.mjs';
 import { instruction } from './prompts.mjs';
 
 /**
@@ -554,25 +554,23 @@ const planTarget = async (run, coverage, prompts, workflows) => {
 };
 
 /**
- * @typedef {{ ticket: number, title: string, prs: number[], owner: string | null, builders: string[], owns: Record<string, number[]> }} TicketRoles
+ * @typedef {{ ticket: number, title: string, prs: number[], roles: import('./roles.mjs').TicketRoles }} ShippedTicket
  *   A ticket a green deploy commented on (dispatch/turn.mjs): the PRs it
- *   shipped that close it, the spec owner its body names under the repo's
- *   `trust.relay`, and its builders (dispatch/builders.mjs), each with its
- *   own PRs.
+ *   shipped that close it, and its roles as every path finds them
+ *   (`rolesOf`, dispatch/roles.mjs).
  */
 
 /**
- * One line naming a ticket, the PRs that closed it, who holds each role,
- * and which `role` the recipient holds.
+ * One entry naming a ticket and the PRs that closed it, with the "Roles on
+ * #N" lines every path writes for the recipient (`holder`).
  *
- * @param {TicketRoles} roles
- * @param {import('./ticket-fire.mjs').TicketRole} role
+ * @param {ShippedTicket} ticket
+ * @param {import('./roles.mjs').RoleHolder} holder
  */
-const ticketLine = ({ ticket, title, prs, owner, builders }, role) => [
+const ticketLine = ({ ticket, title, prs, roles }, holder) => [
   `- Issue #${ticket}: ${oneLine(title)}, which ${prs.length === 1 ? `PR #${prs[0]}` : `PRs ${prs.map((n) => `#${n}`).join(', ')}`} closed.`,
-  `Its spec owner is ${owner === null ? 'a person, as no session link ends its body' : owner}; its builder is ${builders.length === 0 ? 'none governor can find' : listed(builders)}.`,
-  `You are its ${role === 'spec owner and builder' ? 'spec owner and its builder' : role}.`,
-].join(' ');
+  ...rolesText(roles, holder).split('\n').map((line) => `  ${line}`),
+].join('\n');
 
 /**
  * A green deploy's plan with the roles of each ticket the turn commented
@@ -585,7 +583,7 @@ const ticketLine = ({ ticket, title, prs, owner, builders }, role) => [
  * returned as it is.
  *
  * @param {TargetPlan} plan
- * @param {TicketRoles[]} tickets
+ * @param {ShippedTicket[]} tickets
  * @returns {TargetPlan}
  */
 export const withTickets = (plan, tickets) => {
@@ -602,29 +600,20 @@ export const withTickets = (plan, tickets) => {
     touched.push(fresh);
     return fresh;
   };
-  for (const roles of tickets) {
-    const { owner, builders } = roles;
-    /** @type {Array<[string, import('./ticket-fire.mjs').TicketRole]>} */
-    const hearers = [];
-    const both = owner !== null && builders.some((b) => sameSession(b, owner));
-    if (owner !== null) hearers.push([owner, both ? 'spec owner and builder' : 'spec owner']);
-    for (const builder of builders) if (owner === null || !sameSession(builder, owner)) hearers.push([builder, 'builder']);
-    for (const [session, role] of hearers) {
-      const entry = noteOf(session);
+  for (const shipped of tickets) {
+    for (const holder of shipped.roles.holders) {
+      const entry = noteOf(holder.session);
       const { note } = entry;
       // The PRs a session owns stay its own: a ticket's PR is not.
       note.owns ??= note.prs.filter((n) => !note.subscribed.includes(n));
-      if (role !== 'spec owner') {
-        const key = Object.keys(roles.owns).find((s) => sameSession(s, session));
-        for (const n of key === undefined ? [] : roles.owns[key] ?? []) if (!note.owns.includes(n)) note.owns.push(n);
-      }
+      for (const n of holder.owns) if (!note.owns.includes(n)) note.owns.push(n);
       // A PR's session keeps the PRs it was planned with, which its told
       // record is keyed by: a ticket's other PRs are named to it, not news
       // of its own, so a later turn does not tell it the deploy again.
       const into = entry.added ? note.prs : (note.about ??= []);
-      for (const n of roles.prs) if (!note.prs.includes(n) && !into.includes(n)) into.push(n);
-      note.tickets = [...(note.tickets ?? []), roles.ticket];
-      entry.lines.push(ticketLine(roles, role));
+      for (const n of shipped.prs) if (!note.prs.includes(n) && !into.includes(n)) into.push(n);
+      note.tickets = [...(note.tickets ?? []), shipped.ticket];
+      entry.lines.push(ticketLine(shipped, holder));
     }
   }
   const notes = touched.map(({ note, lines, added }) => {
@@ -638,8 +627,6 @@ export const withTickets = (plan, tickets) => {
         `A change to ${one ? 'a ticket' : 'tickets'} you hold a role on is on ${onTarget(target, tags)}: ${run.name} published it (${run.job ?? run.url})${shippedAt(target, end, tags)}`,
         '',
         ...lines,
-        '',
-        'This is a notice: it asks nothing of you beyond your own role\'s part.',
       ].join('\n'),
     };
   });

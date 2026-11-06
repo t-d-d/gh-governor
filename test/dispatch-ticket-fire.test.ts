@@ -196,4 +196,23 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     assert.deepEqual(to(sent), [SPEC, BUILDER]);
     assert.equal(plan.answer.messaged.ok, true);
   });
+
+  // #562: a spec owner that also builds through its open PR is sent with
+  // that PR, as the summons path sends it, so a refusal hands the message
+  // to the live session on the PR's head branch.
+  test('a spec owner that also builds through its open PR is sent with that PR', async () => {
+    const { ctx, sent } = context({ closing: [60], owners: { 60: SPEC } });
+    await planTicket(fire(), ctx);
+    assert.deepEqual(to(sent), [SPEC]);
+    assert.deepEqual(sent[0]!.opts.owns, [60]);
+    assert.match(sent[0]!.text, /You are its spec owner and its builder\./);
+  });
+
+  test('a body edit on a ticket a merged PR closed reaches that PR\'s builder, told its PR has merged', async () => {
+    const { ctx, sent } = context({ merged: 60, owners: { 60: PR_OWNER } });
+    await planTicket(fire({ event: 'edit', state: 'closed' }), ctx);
+    assert.deepEqual(to(sent), [SPEC, PR_OWNER]);
+    assert.match(sent[1]!.text, /Your PR, which closed #7, has merged: act on this message only where it calls for new work\./);
+    assert.doesNotMatch(sent[0]!.text, /has merged/);
+  });
 });

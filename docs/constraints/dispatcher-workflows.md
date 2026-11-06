@@ -29,11 +29,12 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   once.** A green shipping job messages the session of each PR it shipped,
   and with `deployMessages.deployedLabels` on, comments on each ticket those
   PRs close the first time the ticket gets the label, and messages that
-  ticket's spec owner and builders itself. The spec owner is the body's
-  owner link read under the file's `trust.relay`, which lets in a ticket
-  governor's App filed as the PR route lets in that App's PRs. The builders
-  are, on a claimed ticket, those the one lookup finds
-  (dispatch/builders.mjs), looked up once per turn. A session gets one
+  ticket's spec owner and builders itself, found as every path finds a
+  ticket's roles (`rolesOf`, dispatch/roles.mjs), once per turn. The spec
+  owner is the body's owner link read under the file's `trust.relay`, which
+  lets in a ticket governor's App filed as the PR route lets in that App's
+  PRs. The builders are, on a claimed ticket, those the one lookup finds
+  (dispatch/builders.mjs). A session gets one
   message naming each PR and ticket it hears of and its role on each, and
   is asked to sign off where nothing else names it, whether the ticket is
   open or closed. These sends take the turn's retries from the held cursor
@@ -81,8 +82,8 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   "prod": "deploy/prod" }, "deployedLabels": true }` in
   test/fixtures/factory/.github/governor.json.
 - Governor's own shipping job: the deploy job in .github/workflows/deploy.yml.
-- Who hears a green deploy: `rolesOf` in dispatch/turn.mjs finds each
-  commented ticket's roles, and `withTickets` (dispatch/workflow.mjs) adds
+- Who hears a green deploy: `shippedRolesOf` in dispatch/turn.mjs finds
+  each commented ticket's roles through `rolesOf` (dispatch/roles.mjs), and `withTickets` (dispatch/workflow.mjs) adds
   them to the PRs' notes, one per session. The receiver's drop of the
   deploy comment is `deployComment` in dispatch/webhook/mention.mjs.
 - test/dispatch-webhook.test.ts pins the receiver's payload-only routing, a

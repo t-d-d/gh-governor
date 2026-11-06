@@ -29,7 +29,6 @@
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { strangerReason } from '../scripts/lib/dispatch-router.mjs';
-import { buildersOf } from './builders.mjs';
 import { DEFAULT_SESSION_NAME, GITHUB_SOURCE } from './deliveries.mjs';
 import { turnsOn } from './repo-config.mjs';
 import { fireRepoOf } from './repos.mjs';
@@ -39,8 +38,7 @@ import { startKinds } from './start.mjs';
 import { reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 import { RED, UNATTENDED } from './webhook/fire.mjs';
 import { redRunPrompt } from './workflow.mjs';
-import { rolesText } from './told.mjs';
-import { sameSession } from './webhook/subscribe.mjs';
+import { rolesOf, rolesText } from './roles.mjs';
 
 /**
  * Whether the scheduled run before `scheduled`, of the same workflow on
@@ -163,8 +161,9 @@ const attended = (prompt) => (prompt.endsWith(`\n${UNATTENDED}`) ? prompt.slice(
 /**
  * Look for the live roles on the issue a summons is on, and send each a
  * notice ({@link roleNotice}): the spec owner the fire names, read by the
- * receiver from the body, and on a claimed ticket each builder the one
- * lookup finds (dispatch/builders.mjs). Nothing is read on an unclaimed
+ * receiver from the body, and on a claimed ticket each builder, found as
+ * every path finds a ticket's roles (`rolesOf`, dispatch/roles.mjs). A
+ * spec owner that is also a builder is one send. Nothing is read on an unclaimed
  * ticket. `none` where the ticket names no role, or every role refused as
  * archived; `held` where it names one but `trust.relay` leaves the writer
  * out, so the remark reaches nobody and nothing starts beside it; `told`
@@ -186,28 +185,21 @@ const toRoles = async ({ repo, on, writer, assigner, ticket, prompt }, ctx) => {
   const unrelayed = writer !== undefined && !relay.includes(writer);
   if (unrelayed && owner !== null) return { kind: 'held', session: owner };
   const remark = turnsOn(config, 'subscribeMessages') ? null : attended(prompt);
-  const claim = config.labels.claim;
-  /** @type {import('./builders.mjs').Builders} */
-  let found = { sessions: [], by: null, prs: [], owns: {} };
-  if (claim !== '' && ticket.labels.includes(claim)) {
-    try {
-      found = await buildersOf({ reader: await ctx.readerFor(repo), ownerOf: (pr) => ctx.delivery().ownerOf(pr), issue: on, ticket: { state: ticket.state, labels: ticket.labels }, claim, relay, owner });
-    } catch (error) {
-      const why = `could not look for the builders of #${on}, so nothing starts beside a session that may be live: ${messageOf(error)}`;
-      ctx.log('dispatch-launch', { level: 'error', repo, issue: on, error: why });
-      return { kind: 'told', told: { ...UNSENT, error: why } };
-    }
+  const { claim } = config.labels;
+  // Nothing is read on an unclaimed ticket: its spec owner is its only role.
+  const claimed = claim !== '' && ticket.labels.includes(claim);
+  /** @type {import('./roles.mjs').TicketRoles} */
+  let roles;
+  try {
+    roles = await rolesOf({ issue: on, relay, claim, ticket: { state: ticket.state, labels: ticket.labels }, owner, ...(claimed ? { reader: await ctx.readerFor(repo), ownerOf: (/** @type {number} */ pr) => ctx.delivery().ownerOf(pr) } : {}) });
+  } catch (error) {
+    const why = `could not look for the builders of #${on}, so nothing starts beside a session that may be live: ${messageOf(error)}`;
+    ctx.log('dispatch-launch', { level: 'error', repo, issue: on, error: why });
+    return { kind: 'told', told: { ...UNSENT, error: why } };
   }
-  const builders = found.sessions;
   // A spec owner that is also a builder found by its PR is sent with that
   // PR, so a refusal hands the notice to the live session on its branch.
-  const asBuilder = owner === null ? undefined : builders.find((b) => sameSession(b, owner));
-  /** @type {Array<{ session: string, role: import('./ticket-fire.mjs').TicketRole, owns: number[] }>} */
-  const sends = [];
-  if (owner !== null) sends.push({ session: owner, role: asBuilder !== undefined ? 'spec owner and builder' : 'spec owner', owns: asBuilder === undefined ? [] : found.owns[asBuilder] ?? [] });
-  for (const builder of builders) {
-    if (owner === null || !sameSession(builder, owner)) sends.push({ session: builder, role: 'builder', owns: found.owns[builder] ?? [] });
-  }
+  const sends = roles.holders;
   if (sends.length === 0) return { kind: 'none' };
   if (unrelayed) return { kind: 'held', session: sends.map((s) => s.session).join(', ') };
   const taken = (/** @type {import('./deliveries.mjs').Delivery} */ t) => t.ok || t.fallback?.outcome === 'forwarded';
@@ -217,8 +209,9 @@ const toRoles = async ({ repo, on, writer, assigner, ticket, prompt }, ctx) => {
   /** @type {import('./deliveries.mjs').Delivery[]} */
   const sent = [];
   try {
-    for (const { session, role, owns } of sends) {
-      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner, remark })}\n\n${rolesText({ issue: on, owner, builders, role })}`, { source: GITHUB_SOURCE, on: [on], owns, strict: true });
+    for (const holder of sends) {
+      const { session, role, owns } = holder;
+      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner, remark })}\n\n${rolesText(roles, holder)}`, { source: GITHUB_SOURCE, on: [on], owns, strict: true });
       // A refusal is no fault: what failed is handing the notice on.
       if (told.refused && faults(told)) told = { ...told, error: `${session} is archived, and the live session on the head branch of PR ${owns.map((n) => `#${n}`).join(', ')} could not be found or did not take the notice` };
       sent.push(told);

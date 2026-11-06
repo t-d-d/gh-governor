@@ -581,3 +581,35 @@ describe('fitness: the receiver relays no comment governor\'s App posts (dispatc
     assert.deepEqual(routed.fires.map((f) => [f.fire.kind, (f.fire as { session?: string }).session]), [['message', SPEC], ['message', WATCHER]]);
   });
 });
+
+/**
+ * A ticket's roles are found one way wherever governor looks for them, as a
+ * PR's owner is: every path that messages a ticket's roles calls `rolesOf`
+ * (dispatch/roles.mjs), and the builder lookup it wraps is called from
+ * nowhere else.
+ */
+describe('fitness: a ticket\'s roles are found one way (dispatcher-repos.md)', () => {
+  const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+  const files = [
+    ...readdirSync(new URL('../dispatch/', import.meta.url)).filter((f) => f.endsWith('.mjs')).map((f) => `dispatch/${f}`),
+    ...readdirSync(new URL('../dispatch/webhook/', import.meta.url)).filter((f) => f.endsWith('.mjs')).map((f) => `dispatch/webhook/${f}`),
+    ...readdirSync(new URL('../scripts/lib/', import.meta.url)).filter((f) => f.endsWith('.mjs')).map((f) => `scripts/lib/${f}`),
+  ];
+
+  test('buildersOf is called from rolesOf alone', () => {
+    const callers = files.filter((f) => f !== 'dispatch/builders.mjs' && /\bbuildersOf\(/.test(source(f)));
+    assert.deepEqual(callers, ['dispatch/roles.mjs']);
+    assert.equal([...source('dispatch/roles.mjs').matchAll(/\bbuildersOf\(/g)].length, 1);
+  });
+
+  test('the "Roles on #N" lines are written in one place', () => {
+    const writers = files.filter((f) => /Roles on #\$\{/.test(source(f)) || /its builder is \$\{/.test(source(f)));
+    assert.deepEqual(writers, ['dispatch/roles.mjs']);
+  });
+
+  for (const path of ['dispatch/ticket-fire.mjs', 'dispatch/dispatch-fire.mjs', 'dispatch/turn.mjs', 'dispatch/unblocked-fire.mjs', 'dispatch/told.mjs']) {
+    test(`${path} finds a ticket's roles with rolesOf`, () => {
+      assert.match(source(path), /\brolesOf\(\{/);
+    });
+  }
+});

@@ -26,10 +26,10 @@ import { ROW_SWITCH, UNREADIED_HELD, mayBeUnreadied, notPlannedComment, ownerOut
 import { relativeAtClose, reportUnreadable } from './waits.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 import { byOf, failedLaunchesOf, failedReason } from './pickup.mjs';
-import { authorKind, autoOf, lets, relayOf, startOf } from './trust.mjs';
-import { buildersOf } from './builders.mjs';
+import { authorKind, autoOf, lets, relayOf, startOf, ticketAuthor } from './trust.mjs';
+import { mergedNote, rolesOf } from './roles.mjs';
 import { specOwnerTeller, unmarked } from './told.mjs';
-import { relayedBody, sameSession, sessionNamedIn } from './webhook/subscribe.mjs';
+import { sameSession } from './webhook/subscribe.mjs';
 
 /** @typedef {import('./turn.mjs').Reader} Reader */
 
@@ -245,21 +245,21 @@ export const planUnblocked = async (invocation, ctx) => {
       if (posted !== undefined) await tellOwner(posted);
       return { answer: { kind: invocation.kind, row, commented, dispatched: [] } };
     }
-    // The claimed ticket's builders, found one way (dispatch/builders.mjs):
-    // the owner of each open PR that closes it, else the session the newest
-    // dispatch comment names, else the body's owner link, which counts only
-    // where the repo's trust.relay lets the body's author in. A read that
-    // fails fails the turn.
+    // The claimed ticket's roles, found one way (dispatch/roles.mjs): its
+    // builders, the owner of each open PR that closes it, else the session
+    // the newest dispatch comment names, else the body's owner link, and its
+    // spec owner, which counts only where the repo's trust.relay lets the
+    // body's author in. A read that fails fails the turn.
     const relay = relayOf(config);
-    const found = await buildersOf({ reader, ownerOf: (pr) => ctx.delivery().ownerOf(pr), issue, ticket, claim: config.labels.claim, relay });
-    if (found.sessions.length === 0) {
+    const roles = await rolesOf({ issue, relay, claim: config.labels.claim, ticket, reader, ownerOf: (pr) => ctx.delivery().ownerOf(pr) });
+    const builders = roles.holders.filter((h) => h.role !== 'spec owner');
+    if (builders.length === 0) {
       ctx.log('dispatch-unblocked', { ...about, outcome: 'nobody told: no open PR closing it, and no dispatch marker or owner link on the ticket names its session' });
       return { answer: { kind: invocation.kind, row, commented, messaged: null, dispatched: [] } };
     }
-    // The spec owner, the session the body's owner link names. Where it is
-    // also a builder it gets the ask alone; otherwise a notice.
-    const owner = sessionNamedIn(relayedBody(ticket, relay));
-    const noticed = owner !== null && !found.sessions.some((s) => sameSession(s, owner)) ? owner : null;
+    // The spec owner, where it is also a builder, gets the ask alone;
+    // otherwise a notice.
+    const noticed = roles.holders.find((h) => h.role === 'spec owner')?.session ?? null;
     // The builders are asked in the words of what this turn posted, markers out.
     const text = posted !== undefined ? unmarked(posted) : notPlanned ?? unblockedMessage(invocation, ctx.prompts);
     /** @type {import('./deliveries.mjs').Delivery[]} */
@@ -268,11 +268,11 @@ export const planUnblocked = async (invocation, ctx) => {
     const asks = { asked: [], archived: [], unreached: [] };
     let loginStored = false;
     try {
-      for (const session of found.sessions) {
+      for (const { session, owns, merged } of builders) {
         // A PR's builder that answers archived hands the message to the live
-        // session on its PRs' head branches, as a PR's owner does.
-        const owns = found.owns[session] ?? [];
-        const told = await ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue], owns });
+        // session on its PRs' head branches, as a PR's owner does. One whose
+        // PR has merged is told so.
+        const told = await ctx.delivery().deliver({ session }, merged ? `${text}\n\n${mergedNote(issue)}` : text, { source: GITHUB_SOURCE, on: [issue], owns });
         sent.push(told);
         // A refusal whose ask the live session on the branch failed to take
         // reached nobody, which is no vacant role. A session asked twice,
@@ -283,12 +283,12 @@ export const planUnblocked = async (invocation, ctx) => {
           if (!asks.asked.some((s) => sameSession(s, took))) asks.asked.push(took);
         } else if (told.refused && told.fallback?.outcome !== 'failed') asks.archived.push(session);
         else asks.unreached.push(session);
-        ctx.log('dispatch-unblocked', { ...about, session, builder: found.by, ...(owns.length === 0 ? {} : { prs: owns }), outcome: outcomeOf(told) });
+        ctx.log('dispatch-unblocked', { ...about, session, builder: roles.by, ...(owns.length === 0 ? {} : { prs: owns }), outcome: outcomeOf(told) });
       }
       // A refused builder leaves the role vacant: its ask goes to nobody,
       // and the spec owner is not asked in its place.
       if (asks.asked.length === 0 && asks.unreached.length === 0 && asks.archived.length > 0) {
-        ctx.log('dispatch-unblocked', { ...about, builders: found.sessions, outcome: 'no builder took the ask, so it goes to nobody: the builder role is vacant' });
+        ctx.log('dispatch-unblocked', { ...about, builders: roles.builders, outcome: 'no builder took the ask, so it goes to nobody: the builder role is vacant' });
       }
       // The spec owner hears the close as a notice that asks nothing and
       // names the builders that were asked.
@@ -305,7 +305,7 @@ export const planUnblocked = async (invocation, ctx) => {
   // ticket, so only for an author the repo's trust.auto lets in. Anyone
   // may open an issue and link it as blocked by a real ticket.
   const auto = autoOf(config);
-  if (row === 'not-ready' && !lets(auto, ticket)) {
+  if (row === 'not-ready' && !lets(auto, ticketAuthor(ticket))) {
     ctx.log('dispatch-unblocked', { ...about, level: 'info', outcome: `nothing starts and nothing is sent: opened by a ${authorKind(ticket)} author, whom trust.auto (${auto.join(', ') || 'empty'}) does not let in` });
     return { answer: { kind: invocation.kind, row, dispatched: [] } };
   }
@@ -322,7 +322,7 @@ export const planUnblocked = async (invocation, ctx) => {
   // and nothing starts in its place.
   // The owner counts only where the repo's trust.relay lets the body's
   // author in: a session link in a stranger's body routes nothing.
-  const owner = row === 'not-ready' ? sessionNamedIn(relayedBody(ticket, relayOf(config))) : null;
+  const owner = row === 'not-ready' ? (await rolesOf({ issue, relay: relayOf(config), ticket })).owner : null;
   if (owner !== null) {
     const held = await specHeld();
     if (held !== null) {
@@ -347,7 +347,7 @@ export const planUnblocked = async (invocation, ctx) => {
   // A ready ticket's spec owner hears, under unblocked, that a builder was
   // started, as a notice that asks nothing. Nothing is sent where the
   // launch failed and started nothing.
-  const specOwner = row === 'ready' && turnsOn(config, 'unblocked') ? sessionNamedIn(relayedBody(ticket, relayOf(config))) : null;
+  const specOwner = row === 'ready' && turnsOn(config, 'unblocked') ? (await rolesOf({ issue, relay: relayOf(config), ticket })).owner : null;
   /** @type {import('./launch-plan.mjs').LaunchablePlan['done']} */
   const done = specOwner === null ? undefined : async ({ dispatched }) => {
     // An unconfirmed launch may be running, and posted its dispatch comment,

@@ -279,6 +279,17 @@ describe('a waiting ticket that is gone or moved', () => {
     assert.equal(lifted.specs.length, 1, 'a person\'s answer lifts the hold');
   });
 
+  test('with spec work off, the wait-ended comment is told with the ticket the turn read, so the spec owner is found with no second read', async () => {
+    const notReady = async () => ({ number: 7, title: 'Held', state: 'open', labels: [], association: 'MEMBER', wait: { until: '2026-11-05' } });
+    const { state } = stateWith();
+    const { reader, comments } = readerWith(notReady);
+    const told: Array<{ issue: number, row: Record<string, unknown> | undefined }> = [];
+    const tell = async (issue: number, _comment: string, row?: Record<string, unknown>) => { told.push({ issue, row }); };
+    await endedWaits({ reader, state, repo: REPO, labels: LABELS, spec: false, now: NOW, log: () => {}, tell });
+    assert.equal(comments.length, 1);
+    assert.deepEqual(told.map((t) => [t.issue, t.row?.number]), [[7, 7]]);
+  });
+
   test('the schedule fire reads several ended waits side by side, and returns their specs by issue', async () => {
     const started: number[] = [];
     let release = () => {};
