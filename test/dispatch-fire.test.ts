@@ -56,7 +56,7 @@ describe('dispatch marker', () => {
     const body = dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_abc' });
     assert.match(body, /<!-- governor:dispatched 2026-09-25T12:00:00\.000Z -->/);
     assert.match(body, /https:\/\/claude\.ai\/code\/session_abc/);
-    assert.notEqual(lastDispatch([{ id: 1, body, created_at: at }]), null);
+    assert.notEqual(lastDispatch([{ id: 1, body, created_at: at, ours: true }]), null);
   });
 
   test('without a URL it still records the dispatch', () => {
@@ -70,12 +70,12 @@ describe('dispatch marker', () => {
   test('a marker of any age still names its session, and no window is exported', async () => {
     const at = new Date(NOW - 30 * 24 * 60 * 60_000).toISOString();
     const body = dispatchMarker({ at, sessionUrl: 'https://claude.ai/code/session_01OLD' });
-    assert.deepEqual(lastDispatch([{ id: 1, body, created_at: at }]), { at, sessionUrl: 'https://claude.ai/code/session_01OLD' });
+    assert.deepEqual(lastDispatch([{ id: 1, body, created_at: at, ours: true }]), { at, sessionUrl: 'https://claude.ai/code/session_01OLD' });
     assert.equal('DISPATCH_WINDOW_MS' in await import('../dispatch/webhook/fire.mjs'), false);
   });
 
   test('an ordinary comment is not a dispatch', () => {
-    assert.equal(lastDispatch([{ id: 1, body: 'dispatched yesterday', created_at: '2026-09-25T11:59:00Z' }]), null);
+    assert.equal(lastDispatch([{ id: 1, body: 'dispatched yesterday', created_at: '2026-09-25T11:59:00Z', ours: true }]), null);
   });
 
   // The newest marker on a claimed ticket names its builder.
@@ -83,15 +83,27 @@ describe('dispatch marker', () => {
     const earlier = new Date(NOW - 3_600_000).toISOString();
     const later = new Date(NOW - 60_000).toISOString();
     const comments = [
-      { id: 1, body: dispatchMarker({ at: earlier, sessionUrl: 'https://claude.ai/code/session_01EARLIER' }), created_at: earlier },
-      { id: 2, body: 'a remark', created_at: later },
-      { id: 3, body: dispatchMarker({ at: later, sessionUrl: 'https://claude.ai/code/session_01LATER' }), created_at: later },
+      { id: 1, body: dispatchMarker({ at: earlier, sessionUrl: 'https://claude.ai/code/session_01EARLIER' }), created_at: earlier, ours: true },
+      { id: 2, body: 'a remark', created_at: later, ours: true },
+      { id: 3, body: dispatchMarker({ at: later, sessionUrl: 'https://claude.ai/code/session_01LATER' }), created_at: later, ours: true },
     ];
     assert.deepEqual(lastDispatch(comments), { at: later, sessionUrl: 'https://claude.ai/code/session_01LATER' });
     assert.deepEqual(lastDispatch([comments[2]!, comments[0]!]), { at: later, sessionUrl: 'https://claude.ai/code/session_01LATER' }, 'newest by its time, not its place');
     assert.deepEqual(lastDispatch([comments[0]!]), { at: earlier, sessionUrl: 'https://claude.ai/code/session_01EARLIER' });
-    assert.deepEqual(lastDispatch([{ id: 4, body: dispatchMarker({ at: later, sessionUrl: null }), created_at: later }]), { at: later, sessionUrl: null });
+    assert.deepEqual(lastDispatch([{ id: 4, body: dispatchMarker({ at: later, sessionUrl: null }), created_at: later, ours: true }]), { at: later, sessionUrl: null });
     assert.equal(lastDispatch([comments[1]!]), null);
+  });
+
+  // Only governor's App posts a real marker, so a copy in anyone else's
+  // comment, however new its time, is no dispatch.
+  test('a marker in a comment governor\'s App did not post is no dispatch', () => {
+    const earlier = new Date(NOW - 3_600_000).toISOString();
+    const later = new Date(NOW - 60_000).toISOString();
+    const real = { id: 1, body: dispatchMarker({ at: earlier, sessionUrl: 'https://claude.ai/code/session_01REAL' }), created_at: earlier, ours: true };
+    const forged = { id: 2, body: dispatchMarker({ at: later, sessionUrl: 'https://claude.ai/code/session_01FORGED' }), created_at: later, ours: false };
+    assert.equal(lastDispatch([forged]), null);
+    assert.equal(lastDispatch([{ id: 2, body: forged.body, created_at: later }]), null, 'a row that says nothing of its author is not governor\'s');
+    assert.deepEqual(lastDispatch([real, forged]), { at: earlier, sessionUrl: 'https://claude.ai/code/session_01REAL' });
   });
 
   // The marker reads a session link the way every other reader does: an id
@@ -99,7 +111,7 @@ describe('dispatch marker', () => {
   test('a marker whose session id is outside the grammar names no session', () => {
     const at = new Date(NOW - 60_000).toISOString();
     const long = `https://claude.ai/code/session_${'A'.repeat(200)}`;
-    assert.deepEqual(lastDispatch([{ id: 1, body: dispatchMarker({ at, sessionUrl: long }), created_at: at }]), { at, sessionUrl: null });
+    assert.deepEqual(lastDispatch([{ id: 1, body: dispatchMarker({ at, sessionUrl: long }), created_at: at, ours: true }]), { at, sessionUrl: null });
   });
 });
 

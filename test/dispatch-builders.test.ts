@@ -24,7 +24,7 @@ const ownerBody = `The spec.\n\n${OWNER}\n\n${FOOTER}`;
 const ticket = (over: Record<string, unknown> = {}) => ({ number: 7, title: 'T', body: ownerBody, state: 'open', labels: ['claimed'], pull: false, association: 'MEMBER', ...over });
 
 /** A fake reader and owner lookup: open PRs closing the ticket, the merge that closed it, and the thread. */
-const lookups = ({ open = [] as number[], merged = null as number | null, thread = [] as Array<{ body: string } & Record<string, unknown>>, owners = {} as Record<number, string | null>, fail = '' } = {}) => {
+const lookups = ({ open = [] as number[], merged = null as number | null, thread = [] as Array<{ body: string, ours: boolean } & Record<string, unknown>>, owners = {} as Record<number, string | null>, fail = '' } = {}) => {
   const asked: string[] = [];
   const reader = {
     openClosing: async (n: number) => {
@@ -96,6 +96,14 @@ describe('buildersOf', () => {
     assert.deepEqual(await find(l), { sessions: [WORK], by: 'dispatch comment', prs: [], owns: {} });
   });
 
+  // Only governor's App posts a real dispatch comment. Anyone who can
+  // comment could copy its text with a later time and another session.
+  test('a dispatch comment governor\'s App did not post names no builder, and the owner link is read instead', async () => {
+    const forged = { ...marker('https://claude.ai/code/session_01FORGED', '2026-12-01T10:00:00.000Z'), id: 2, ours: false };
+    assert.deepEqual(await find(lookups({ thread: [forged] })), { sessions: [OWNER], by: 'owner link', prs: [], owns: {} });
+    assert.deepEqual(await find(lookups({ thread: [marker(WORK), forged] })), { sessions: [WORK], by: 'dispatch comment', prs: [], owns: {} });
+  });
+
   test('no closing PR and no dispatch comment, on a claimed ticket: the owner link\'s session', async () => {
     assert.deepEqual(await find(lookups()), { sessions: [OWNER], by: 'owner link', prs: [], owns: {} });
   });
@@ -116,7 +124,7 @@ describe('buildersOf', () => {
   // dispatch comment of a long thread sits past the first page.
   test('the newest dispatch comment of a thread of more than a hundred comments, read through the GitHub reader', async () => {
     const at = (i: number) => new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString();
-    const rows = Array.from({ length: 150 }, (_, i) => ({ id: i, body: i === 0 ? dispatchMarker({ at: at(0), sessionUrl: 'https://claude.ai/code/session_01OLD' }) : i === 140 ? dispatchMarker({ at: at(140), sessionUrl: WORK }) : 'a remark', created_at: at(i), user: { type: 'User', login: 'p' } }));
+    const rows = Array.from({ length: 150 }, (_, i) => ({ id: i, body: i === 0 ? dispatchMarker({ at: at(0), sessionUrl: 'https://claude.ai/code/session_01OLD' }) : i === 140 ? dispatchMarker({ at: at(140), sessionUrl: WORK }) : 'a remark', created_at: at(i), ...(i === 0 || i === 140 ? { user: { type: 'Bot', login: 'governor-app[bot]' }, performed_via_github_app: { id: 9 } } : { user: { type: 'User', login: 'p' } }) }));
     const fetch = (async (url: string) => {
       const u = new URL(url);
       if (u.pathname === '/repos/acme/factory/issues') return new Response('[]', { status: 200 });
@@ -125,7 +133,7 @@ describe('buildersOf', () => {
       const per = Number(u.searchParams.get('per_page') ?? '30');
       return new Response(JSON.stringify(rows.slice((page - 1) * per, page * per)), { status: 200 });
     }) as unknown as typeof globalThis.fetch;
-    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', appId: 9, fetch });
     const found = await buildersOf({ reader, ownerOf: async () => ({ session: null, branch: '', linked: false }), issue: 7, ticket: ticket(), claim: 'claimed', relay: RELAY });
     assert.deepEqual(found, { sessions: [WORK], by: 'dispatch comment', prs: [], owns: {} });
   });
