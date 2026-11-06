@@ -1239,7 +1239,7 @@
       "additionalProperties": false
     },
     "sessionRules": {
-      "description": "The three rules every session in the repo follows: sign what you post, only an owner edits a body or pushes to a PR's branch, and comment on what you do not own. Every session governor starts reads them in the lines governor adds to its opening prompt, in place of the signing line. Sessions a person starts read them in the block the repo copies into its `CLAUDE.md`, or the file `file` names, and the config check warns where that block is missing or old.",
+      "description": "The three rules every session in the repo follows: sign what you post, only an owner edits a body or pushes to a PR's branch, and comment on what you do not own. Every session governor starts reads them in the lines governor adds to its opening prompt, in place of the signing line. Sessions a person starts read them in the block the repo copies into its `CLAUDE.md`, or the file `file` names, and the config check warns where that block is missing or old. Governor also offers an issue nobody owns to a session that signs a comment on it.",
       "type": "object",
       "properties": {
         "enabled": {

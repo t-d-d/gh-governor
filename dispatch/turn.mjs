@@ -116,6 +116,7 @@ import { hookFor, planHook } from './hooks.mjs';
 import { planDispatch } from './dispatch-fire.mjs';
 import { planUnblocked } from './unblocked-fire.mjs';
 import { planClosingPr, planTicket } from './ticket-fire.mjs';
+import { offerIssue, planOffer } from './offer.mjs';
 import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken, turnResends } from '../scripts/lib/github-app.mjs';
@@ -622,7 +623,7 @@ const turnOf = async (event, deps, built) => {
     }
     served = [one];
     const name = switchOf(invocation, one.config.workflows);
-    const unheard = invocation.kind === 'message' || invocation.kind === 'ticket' ? unrelayed(invocation, relayOf(one.config)) : null;
+    const unheard = invocation.kind === 'message' || invocation.kind === 'ticket' || invocation.kind === 'offer' ? unrelayed(invocation, relayOf(one.config)) : null;
     // An unblocked fire's switch is its ticket's state's (dispatch/unblocked.mjs):
     // with both off, no row acts. Its turn still reads the ticket once, for a
     // relative `Blocked until:` line on the close, and refuses after
@@ -632,12 +633,12 @@ const turnOf = async (event, deps, built) => {
       // A hook fired into a repo that turned hooks off is a caller someone
       // forgot: worth a look, not a page.
       deps.log('dispatch-refused', { level: invocation.kind === 'hook' ? 'warn' : 'info', repo, kind: invocation.kind, reason: refusal });
-    } else if ((invocation.kind === 'message' || invocation.kind === 'ticket') && unheard !== null) {
+    } else if ((invocation.kind === 'message' || invocation.kind === 'ticket' || invocation.kind === 'offer') && unheard !== null) {
       // The receiver judged the fire by the repo's hook-table item, which
       // may lag the file, and dropped only an author outside the three. A
       // refusal here is as silent: no comment, no page.
       refusal = unheard;
-      deps.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, session: 'session' in invocation ? invocation.session : null, on: invocation.kind === 'ticket' ? invocation.issue : invocation.on ?? null, reason: refusal });
+      deps.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, session: 'session' in invocation ? invocation.session : null, on: invocation.kind === 'message' ? invocation.on ?? null : invocation.issue, reason: refusal });
     } else if (invocation.kind === 'hook') {
       // The receiver read no file: a hook it lists no more, or a key version
       // it has moved past, is refused here (dispatch/hooks.mjs).
@@ -831,7 +832,7 @@ const heldBy = (deps, served, tokenFor, budgeted, until) => {
  * queued before the receiver judged by them names none, and was judged by
  * the defaults (dispatch/webhook/fire.mjs).
  *
- * @param {import('./webhook/fire.mjs').MessageFire | import('./webhook/fire.mjs').TicketFire} fire
+ * @param {import('./webhook/fire.mjs').MessageFire | import('./webhook/fire.mjs').TicketFire | import('./webhook/fire.mjs').OfferFire} fire
  * @param {readonly string[]} relay
  * @returns {string | null}
  */
@@ -1290,6 +1291,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     /** @type {import('./deliveries.mjs').Delivery} */
     let told = { ok: false, answered: null, refused: false, sessionUrl: null, error: null, fallback: null, dropped: null, skipped: null, relinked: null };
     let loginStored = false;
+    /** The offer of the issue to the session that commented, where its owner refused. @type {import('./deliveries.mjs').Delivery | null} */
+    let offered = null;
     try {
       told = await delivery().deliver(
         'byBranch' in invocation ? { pr: invocation.on, ...(invocation.poster === undefined ? {} : { poster: invocation.poster }) } : { session: invocation.session },
@@ -1308,6 +1311,15 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           owns: on === undefined || invocation.subscribed === true ? [] : [on],
         },
       );
+      // An issue's owner refused as archived: nobody owns the issue, so the
+      // session that signed the comment is offered it, unless it builds the
+      // ticket (dispatch/offer.mjs). The ticket is read only here.
+      if (told.refused && invocation.offer !== undefined && on !== undefined && repo !== undefined && turnsOn(configOf(repo), 'sessionRules')) {
+        const config = configOf(repo);
+        const reader = await getReader();
+        const { builders } = await rolesOf({ issue: on, relay: relayOf(config), claim: config.labels.claim, owner: null, reader, ownerOf: (pr) => delivery().ownerOf(pr) });
+        offered = await offerIssue({ repo, issue: on, session: invocation.offer, why: 'archived', builders, deliveries: delivery(), log: deps.log });
+      }
     } finally {
       loginStored = await storeIfRefreshed(deps, original, account);
     }
@@ -1316,7 +1328,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // dispatcher failure (dispatch/cli.mjs). Any other answer with ok:false
     // (a revoked login, a 5xx), or a fallback that was tried, stays one.
     const archived = told.refused && told.fallback === null;
-    return { kind: 'message', ...told, archived, loginStored };
+    return { kind: 'message', ...told, archived, loginStored, ...(offered === null ? {} : { offered }) };
   }
 
   // A red run on the default branch, or a shipping job that succeeded there: the PR(s)
@@ -1770,6 +1782,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     planned = await planTicket(invocation, ctx);
   } else if (invocation.kind === 'closingPr') {
     planned = await planClosingPr(invocation, ctx);
+  } else if (invocation.kind === 'offer') {
+    planned = await planOffer(invocation, ctx);
   } else if (invocation.kind === 'dispatch') {
     planned = await planDispatch(invocation, ctx);
   }

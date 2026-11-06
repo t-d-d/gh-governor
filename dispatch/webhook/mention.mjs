@@ -78,7 +78,7 @@
 import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets } from './fire.mjs';
 import { closingNumbers } from './closing.mjs';
 import { REVIEW_MARKER, postedByApp } from './review-comment.mjs';
-import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, withoutQuotes } from './subscribe.mjs';
+import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, unsignedSessionBody, withoutQuotes } from './subscribe.mjs';
 
 export const MENTION = '@claude';
 
@@ -376,15 +376,19 @@ const summonedTicket = (issue, bodies, appId) => {
  *   closing?: boolean,
  *   issue?: boolean,
  *   unsigned?: boolean,
+ *   offer?: string | null,
  *   authors: string[],
  *   reason: string,
  * }} args `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
  *   `authors`: the kinds the fire was judged by, which the task judges again.
  *   `unsigned`: a session's post naming no session, which the message says
  *   ({@link UNSIGNED}). A session's post carries no fallback.
+ *   `offer`: the session that signed a comment on an issue, which the
+ *   owner's fire names, so the task offers it the issue should the owner
+ *   refuse as archived (dispatch/offer.mjs).
  * @returns {Queued}
  */
-const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, authors, reason }) => {
+const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, offer = null, authors, reason }) => {
   const role = owner ? 'owner' : 'subscriber';
   const number = Number.isInteger(on?.number) ? on.number : undefined;
   /** @param {string} text @returns {MessageFire} */
@@ -397,6 +401,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
     closing,
     subscribed: !owner || issue,
     authors,
+    offer: owner && issue && event === 'comments' ? offer : null,
     fallback: owner && fallback
       ? { prompt: `${text}\n${HANDOFF}\n${UNATTENDED}`, sessionName: sessionName(on?.number, on?.title), issue: number }
       : undefined,
@@ -466,7 +471,7 @@ const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = fals
       skipped.push(`${sessionId(poster)}'s own post`);
       continue;
     }
-    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, issue, unsigned, authors: named, reason }));
+    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, issue, unsigned, offer: poster, authors: named, reason }));
   }
   const heard = fires.length === 0 && skipped.length === 0 ? [`${reason}: nobody subscribes to ${event}`] : [];
   return { fires, reason: [...fires.map((f) => f.reason), ...skipped, ...heard].join('; ') };
@@ -1029,4 +1034,35 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
   }
   const reason = `${about.what}: for its spec owner and, on a claimed ticket, its builders, in place of the spec owner's own message`;
   return { fires: [{ fire: built, reason, key: 'ticket', claimed: { labels, replaces: owner === null ? null : sessionId(owner) } }], reason: '' };
+};
+
+/**
+ * The `offer` fire a session's signed comment on an issue may queue: where
+ * the issue's body is a session's unsigned post (`unsignedSessionBody`),
+ * nobody owns it, so the task offers it to the session that commented
+ * (dispatch/offer.mjs). It needs `sessionRules` alone, so it goes whatever
+ * `subscribeMessages` says. An issue whose body names an owner is offered
+ * from the comment's relay, once the owner refuses as archived ({@link
+ * messageFire}, dispatch/ticket-fire.mjs), and a person's body, with no
+ * footer, is the person's. A body `bodies` masks names nobody and is no
+ * session's post. No offer goes on a PR: governor takes a PR over when its
+ * owner is archived. What reaches no session gets no offer either: an
+ * edited comment, governor's own, a stranger's.
+ *
+ * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[], bodies?: readonly string[] }} args
+ * @returns {{ fires: Array<{ fire: import('./fire.mjs').OfferFire, reason: string, key: string }>, reason: string }}
+ */
+export const offerFires = ({ event, payload, appId, relay = RELAY, bodies = relay }) => {
+  const none = { fires: [], reason: '' };
+  const issue = payload?.issue;
+  const comment = payload?.comment;
+  if (event !== 'issue_comment' || payload?.action !== 'created') return none;
+  if (!Number.isInteger(issue?.number) || issue.number <= 0 || issue?.pull_request) return none;
+  if (governorComment(comment, appId) || notAnUpdate({ written: comment, relay, appId }) !== null) return none;
+  const session = postedBy(String(comment?.body ?? ''));
+  if (session === null) return none;
+  const onAuthor = authorOf(issue, appId);
+  if (!unsignedSessionBody(relayedBody({ body: issue?.body, ...onAuthor }, bodies))) return none;
+  const reason = `comment ${comment?.id} on #${issue.number}, whose body a session filed unsigned: offer the issue to ${sessionId(session)}`;
+  return { fires: [{ fire: build.offer({ issue: issue.number, session, authors: kindsOf([authorOf(comment, appId), onAuthor]) }), reason, key: 'offer' }], reason };
 };

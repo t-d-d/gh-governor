@@ -4699,6 +4699,69 @@ describe('messageCeiling', () => {
   });
 });
 
+describe('run: an issue\'s owner refuses as archived, and the session that commented is offered the issue', () => {
+  const OWNER = 'https://claude.ai/code/session_01OLD';
+  const COMMENTER = 'https://claude.ai/code/session_01COMMENTER';
+  const fire = { kind: 'message', session: OWNER, text: 'a remark', on: 7, event: 'comments', subscribed: true, offer: COMMENTER };
+  /** The CLI: the owner answers archived, every other session takes it, unless `fails` names it. */
+  const cli = (fails: string | null = null) => async (message: { session: string; text: string }) => {
+    if (message.session === OWNER) return { status: 1, output: JSON.stringify({ ok: false, session_id: 'session_01OLD', error: 'cloud session session_01OLD is archived and cannot accept new messages' }) };
+    if (message.session === fails) return { status: 1, output: '' };
+    return { status: 0, output: JSON.stringify({ ok: true, session_id: 'session_01COMMENTER', url: COMMENTER }) };
+  };
+  const offerSends = (h: ReturnType<typeof harness>) => h.messages.filter((m) => m.session === COMMENTER);
+
+  test('the commenter is offered the issue once the owner refuses, and the turn does not fail', async () => {
+    const sent: Array<{ session: string; text: string }> = [];
+    const h = harness({ message: async (m: { session: string; text: string }) => { sent.push(m); return cli()(m); } });
+    const result = await run(fire, h.deps as never) as Record<string, any>;
+    assert.deepEqual(sent.map((m) => m.session), [OWNER, COMMENTER]);
+    assert.match(sent[1]!.text, /Nobody owns #7/);
+    assert.equal(result.offered?.ok, true);
+    assert.equal(exitCodeFor(result as never), 0);
+    assert.ok(h.countsAsked.some((c) => c.session === COMMENTER && c.subject === 'acme/factory#7' && c.kind === 'offer'));
+  });
+
+  test('a live owner, a fire naming nobody to offer, and a repo with sessionRules off make no offer', async () => {
+    const live = harness();
+    await run(fire, live.deps as never);
+    assert.deepEqual(live.messages.map((m) => m.session), [OWNER]);
+    const none = harness({ message: cli() });
+    await run({ ...fire, offer: undefined }, none.deps as never);
+    assert.deepEqual(offerSends(none), []);
+    const sent: string[] = [];
+    const off = harness({ configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null), message: async (m: { session: string; text: string }) => { sent.push(m.session); return cli()(m); } });
+    await run(fire, off.deps as never);
+    assert.deepEqual(sent, [OWNER]);
+  });
+
+  test('one of a claimed ticket\'s builders is never offered it', async () => {
+    const sent: string[] = [];
+    const h = harness({ message: async (m: { session: string; text: string }) => { sent.push(m.session); return cli()(m); } });
+    const reader = h.deps.reader;
+    h.deps.reader = ((...a: unknown[]) => ({
+      ...(reader as (...b: unknown[]) => Record<string, unknown>)(...a),
+      ticket: async (n: number) => ({ number: n, id: 9000 + n, title: `Issue ${n}`, body: `The spec.\n\n${OWNER}`, state: 'open', labels: ['workflow: under development'], pull: false, association: 'MEMBER' }),
+      allComments: async () => [{ body: dispatchMarker({ at: new Date(NOW - 60_000).toISOString(), sessionUrl: COMMENTER }), ours: true }],
+    })) as never;
+    await run(fire, h.deps as never);
+    assert.deepEqual(sent, [OWNER]);
+  });
+
+  test('an offer that fails without a refusal fails the turn', async () => {
+    const h = harness({ message: cli('https://claude.ai/code/session_01COMMENTER') });
+    const result = await run(fire, h.deps as never);
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  test('an offer fire is refused in a repo whose file does not turn sessionRules on', async () => {
+    const h = harness({ configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) });
+    const result = await run({ kind: 'offer', issue: 7, session: COMMENTER }, h.deps as never) as Record<string, any>;
+    assert.match(String(result.refusal), /sessionRules/);
+    assert.deepEqual(h.messages, []);
+  });
+});
+
 describe('run — a message into a session', () => {
   test('restores the login, sends the text to the session, and reports the CLI\'s answer', async () => {
     const { deps, calls, messages, launches, comments, logged } = harness();

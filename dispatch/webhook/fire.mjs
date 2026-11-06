@@ -365,7 +365,7 @@ export const lastDispatch = (comments) => {
  *   (dispatch/dispatch-fire.mjs). A summons on a PR carries none, and so
  *   does one queued before the receiver named it.
  * @typedef {{ state: 'open' | 'closed', labels: string[], owner?: string }} SummonedTicket
- * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[] }
+ * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[], offer?: string }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
  *   `subscribed`: the session hears by subscription, a `governor:subscribe`
@@ -378,6 +378,13 @@ export const lastDispatch = (comments) => {
  *   or that an event is on. Governor's own App is never among them. The
  *   task judges them again from the file. A fire queued before the
  *   receiver judged by them carries none, and was judged by the default.
+ *   `offer`: on an issue owner's message of a comment a session signed,
+ *   that session. Where the owner refuses as archived, the task offers it
+ *   the issue under `sessionRules` (dispatch/offer.mjs).
+ * @typedef {{ kind: 'offer', issue: number, session: string, authors?: string[] }} OfferFire
+ *   A session's signed comment on an issue whose body is a session's
+ *   unsigned post, which names no owner: the task offers `session` the
+ *   issue (dispatch/offer.mjs). `authors`: as a message fire's.
  * @typedef {{ kind: 'workflow', name: string, path?: string, branch: string, event?: string, runId: number, url: string, conclusion: string, headSha: string, runAttempt?: number }} WorkflowFire
  *   A run of any workflow on the default branch, `branch`, that ended red;
  *   `path`: its file, where the run named one; `event`: what started it.
@@ -434,7 +441,7 @@ export const lastDispatch = (comments) => {
  *   ticket. The task reads the PR and each ticket it closes, and where a
  *   claimed ticket's builder is not the PR's owner, posts the dispatch
  *   comment naming that owner (dispatch/ticket-fire.mjs).
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire | ClosingPrFire) & { repo?: string, counted?: Count }} Fire
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire | ClosingPrFire | OfferFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
@@ -479,11 +486,11 @@ export const build = Object.freeze({
    * @param {({ session: string, byBranch?: undefined, poster?: undefined } | { session?: undefined, byBranch: true, poster?: string | undefined }) & {
    *   text: string, on?: number | undefined, event?: SubscriptionEvent | undefined, commit?: string | undefined,
    *   closing?: boolean | undefined, subscribed?: boolean | undefined, fallback?: Fallback | undefined,
-   *   authors?: string[] | undefined,
+   *   authors?: string[] | undefined, offer?: string | null | undefined,
    * }} args
    * @returns {MessageFire}
    */
-  message: ({ session, byBranch, poster, text, on, event, commit, closing, subscribed, fallback, authors }) => /** @type {MessageFire} */ ({
+  message: ({ session, byBranch, poster, text, on, event, commit, closing, subscribed, fallback, authors, offer }) => /** @type {MessageFire} */ ({
     kind: 'message',
     ...(byBranch === true ? { byBranch, ...present({ poster }) } : { session }),
     text,
@@ -495,6 +502,7 @@ export const build = Object.freeze({
       subscribed: subscribed === true ? /** @type {true} */ (true) : undefined,
       authors,
       fallback: fallback && present(fallback),
+      offer: offer ?? undefined,
     }),
   }),
 
@@ -559,6 +567,9 @@ export const build = Object.freeze({
       displaced: displaced ?? undefined,
     }),
   }),
+
+  /** @param {{ issue: number, session: string, authors?: string[] | undefined }} args @returns {OfferFire} */
+  offer: ({ issue, session, authors }) => ({ kind: 'offer', issue, session, ...present({ authors }) }),
 
   /** @param {{ pr: number }} args @returns {ClosingPrFire} */
   closingPr: ({ pr }) => ({ kind: 'closingPr', pr }),
@@ -860,6 +871,12 @@ const parseKind = (event) => {
   if (kind === 'hook') return parseHook(e);
   if (kind === 'unblocked') return parseUnblocked(e);
   if (kind === 'ticket') return parseTicket(e);
+  if (kind === 'offer') {
+    if (!isPositiveInt(e?.issue)) throw new Error(`an offer invocation's issue must be a positive integer, got: ${JSON.stringify(e?.issue)}`);
+    if (!(typeof e?.session === 'string' && MESSAGE_SESSION.test(e.session))) throw new Error(`an offer invocation's session must be a session id or claude.ai/code URL, got: ${JSON.stringify(e?.session)}`);
+    if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) throw new Error(`an offer invocation's authors are trust values, got: ${JSON.stringify(e.authors)}`);
+    return { kind, issue: Number(e?.issue), session: e.session, ...(e?.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (e.authors)] }) };
+  }
   if (kind === 'closingPr') {
     if (!isPositiveInt(e?.pr)) throw new Error(`a closingPr invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);
     return { kind, pr: Number(e?.pr) };
@@ -929,6 +946,9 @@ const parseMessage = (e, event) => {
   if (e.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => TRUST_SET.has(String(a)) && typeof a === 'string'))) {
     throw new Error(`a message invocation's authors are trust values, got: ${JSON.stringify(e.authors)}`);
   }
+  if (e.offer !== undefined && !(typeof e.offer === 'string' && MESSAGE_SESSION.test(e.offer))) {
+    throw new Error(`a message invocation's offer must be a session id or claude.ai/code URL, got: ${JSON.stringify(e.offer)}`);
+  }
   const to = e.byBranch === true
     ? { byBranch: /** @type {true} */ (true), on: Number(e.on), ...(typeof e.poster === 'string' ? { poster: e.poster } : {}) }
     : { session: /** @type {string} */ (e.session) };
@@ -943,6 +963,7 @@ const parseMessage = (e, event) => {
     ...(e.closing === true ? { closing: /** @type {true} */ (true) } : {}),
     ...(e.subscribed === true ? { subscribed: /** @type {true} */ (true) } : {}),
     ...(e.authors === undefined ? {} : { authors: /** @type {string[]} */ ([...e.authors]) }),
+    ...(e.offer === undefined ? {} : { offer: /** @type {string} */ (e.offer) }),
   };
 };
 

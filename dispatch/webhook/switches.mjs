@@ -36,7 +36,9 @@ export const isCi = (run, workflows) => workflows.ci !== undefined && run.path =
  * deploy messages. The bare schedule fire's heartbeat is read on its own.
  * A close needs none: it starts nothing, and queues an `unblocked` fire per
  * ticket it blocked, whose switch the ticket's own state picks in its own
- * repo, `pickup` or `unblocked` (dispatch/unblocked.mjs). A ticket's `wait`
+ * repo, `pickup` or `unblocked` (dispatch/unblocked.mjs). An `offer`
+ * fire, an ownerless issue offered to the session that commented on it,
+ * needs `sessionRules` (dispatch/offer.mjs). A ticket's `wait`
  * fire needs `waits` (dispatch/waits.mjs), and an `issueReview` fire
  * `issueReviews` (dispatch/issue-review.mjs).
  *
@@ -51,6 +53,7 @@ export const switchOf = (fire, workflows = {}) => {
     case 'message': return fire.subscribed === true ? 'subscribeMessages' : 'prMessages';
     case 'ticket': return 'subscribeMessages';
     case 'closingPr': return 'subscribeMessages';
+    case 'offer': return 'sessionRules';
     case 'workflow': return isCi(fire, workflows) ? 'ciMessages' : 'deployMessages';
     case 'job': return 'deployMessages';
     case 'branch-run': return 'branchRunMessages';
