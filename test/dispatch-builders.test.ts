@@ -56,23 +56,28 @@ const find = (l: ReturnType<typeof lookups>, t = ticket()) => buildersOf({ reade
 describe('buildersOf', () => {
   test('an open PR that closes the ticket: its owner, even where the newest dispatch comment names another session', async () => {
     const l = lookups({ open: [20], owners: { 20: PR_A }, thread: [marker(WORK)] });
-    assert.deepEqual(await find(l), { sessions: [PR_A], by: 'open PR', prs: [20] });
+    assert.deepEqual(await find(l), { sessions: [PR_A], by: 'open PR', prs: [20], owns: { [PR_A]: [20] } });
     assert.ok(!l.asked.includes('thread 7'), 'no thread read once an open PR names the builder');
   });
 
   test('two open PRs that close the ticket: both owners, once each', async () => {
     const l = lookups({ open: [20, 21, 22], owners: { 20: PR_A, 21: PR_B, 22: PR_A } });
-    assert.deepEqual(await find(l), { sessions: [PR_A, PR_B], by: 'open PR', prs: [20, 21, 22] });
+    assert.deepEqual(await find(l), { sessions: [PR_A, PR_B], by: 'open PR', prs: [20, 21, 22], owns: { [PR_A]: [20, 22], [PR_B]: [21] } });
   });
 
   test('an open PR whose owner nobody finds: the lookup goes on to the dispatch comment', async () => {
     const l = lookups({ open: [20], thread: [marker(WORK)] });
-    assert.deepEqual(await find(l), { sessions: [WORK], by: 'dispatch comment', prs: [] });
+    assert.deepEqual(await find(l), { sessions: [WORK], by: 'dispatch comment', prs: [], owns: {} });
+  });
+
+  test('open PRs where only some owners are found: the builder\'s PRs are the ones whose owner was found', async () => {
+    const l = lookups({ open: [20, 21], owners: { 21: PR_A } });
+    assert.deepEqual(await find(l), { sessions: [PR_A], by: 'open PR', prs: [21], owns: { [PR_A]: [21] } });
   });
 
   test('a ticket a merge closed: the merged PR\'s owner', async () => {
     const l = lookups({ merged: 30, owners: { 30: MERGED }, thread: [marker(WORK)] });
-    assert.deepEqual(await find(l, ticket({ state: 'closed' })), { sessions: [MERGED], by: 'merged PR', prs: [30] });
+    assert.deepEqual(await find(l, ticket({ state: 'closed' })), { sessions: [MERGED], by: 'merged PR', prs: [30], owns: { [MERGED]: [30] } });
   });
 
   test('an open ticket reads no closure', async () => {
@@ -83,21 +88,21 @@ describe('buildersOf', () => {
 
   test('a ticket closed by hand: the dispatch comment\'s session', async () => {
     const l = lookups({ thread: [marker(WORK)] });
-    assert.deepEqual(await find(l, ticket({ state: 'closed' })), { sessions: [WORK], by: 'dispatch comment', prs: [] });
+    assert.deepEqual(await find(l, ticket({ state: 'closed' })), { sessions: [WORK], by: 'dispatch comment', prs: [], owns: {} });
   });
 
   test('no closing PR: the session the newest dispatch comment names', async () => {
     const l = lookups({ thread: [marker('https://claude.ai/code/session_01OLD', '2026-10-01T10:00:00.000Z'), marker(WORK), { id: 3, body: 'A remark', created_at: 'x', ours: false }] });
-    assert.deepEqual(await find(l), { sessions: [WORK], by: 'dispatch comment', prs: [] });
+    assert.deepEqual(await find(l), { sessions: [WORK], by: 'dispatch comment', prs: [], owns: {} });
   });
 
   test('no closing PR and no dispatch comment, on a claimed ticket: the owner link\'s session', async () => {
-    assert.deepEqual(await find(lookups()), { sessions: [OWNER], by: 'owner link', prs: [] });
+    assert.deepEqual(await find(lookups()), { sessions: [OWNER], by: 'owner link', prs: [], owns: {} });
   });
 
   test('an owner link counts only on a claimed ticket, and only where trust.relay lets the body\'s author in', async () => {
-    assert.deepEqual(await find(lookups(), ticket({ labels: [] })), { sessions: [], by: null, prs: [] });
-    assert.deepEqual(await find(lookups(), ticket({ association: 'NONE' })), { sessions: [], by: null, prs: [] });
+    assert.deepEqual(await find(lookups(), ticket({ labels: [] })), { sessions: [], by: null, prs: [], owns: {} });
+    assert.deepEqual(await find(lookups(), ticket({ association: 'NONE' })), { sessions: [], by: null, prs: [], owns: {} });
   });
 
   test('a read that fails fails the lookup, never reads as no builder', async () => {
@@ -122,6 +127,6 @@ describe('buildersOf', () => {
     }) as unknown as typeof globalThis.fetch;
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
     const found = await buildersOf({ reader, ownerOf: async () => ({ session: null, branch: '', linked: false }), issue: 7, ticket: ticket(), claim: 'claimed', relay: RELAY });
-    assert.deepEqual(found, { sessions: [WORK], by: 'dispatch comment', prs: [] });
+    assert.deepEqual(found, { sessions: [WORK], by: 'dispatch comment', prs: [], owns: {} });
   });
 });

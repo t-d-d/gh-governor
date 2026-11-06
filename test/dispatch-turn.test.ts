@@ -2376,6 +2376,42 @@ describe('run — an unblocked fire', () => {
     assert.equal(exitCodeFor(result as never), 0);
   });
 
+  /** A message mock that answers `archived` for `gone` and records every send. */
+  const archivedFor = (gone: string, sent: string[]) => async ({ session }: { session: string }) => {
+    sent.push(session);
+    return session === gone
+      ? { status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }
+      : { status: 0, output: JSON.stringify({ ok: true, session_id: 'session_01OK', url: session }) };
+  };
+
+  // A PR's owner is the live session its body links, else the live session
+  // on its head branch (dispatcher-repos.md): a linked builder that answers
+  // archived hands the close to the session on the branch, whose link then
+  // goes into the PR body, before the owner link is tried.
+  test('claimed, and the open PR\'s linked session archived: the live session on its head branch hears the close, and is written into the PR body', async () => {
+    const sent: string[] = [];
+    const edits: Array<{ pr: number; body: string }> = [];
+    const BRANCH_OWNER = 'https://claude.ai/code/session_01BRANCH';
+    const h = withClosing({ 60: PR_A }, { labels: [CLAIM], body: specBody(SPEC), over: { message: archivedFor(PR_A, sent) } });
+    const reader = h.deps.reader;
+    h.deps.reader = ((...args: Parameters<typeof reader>) => ({ ...reader(...args), updatePull: async (pr: number, { body }: { body: string }) => { edits.push({ pr, body }); } })) as typeof reader;
+    h.rows.push({ id: 'cse_01BRANCH', session_status: 'SESSION_STATUS_IDLE', environment_kind: 'remote', updated_at: new Date(NOW - 60_000).toISOString(), external_metadata: { current_branches: { '': 'claude/b-60' } } });
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.deepEqual(sent, [PR_A, BRANCH_OWNER]);
+    assert.equal(sessionNamedIn(edits.find((e) => e.pr === 60)?.body ?? ''), BRANCH_OWNER);
+    assert.deepEqual([h.launches, h.comments], [[], []]);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('claimed, two open PRs close it, one owner archived and the other taking it: the owner link hears nothing more', async () => {
+    const sent: string[] = [];
+    const h = withClosing({ 60: PR_A, 61: PR_B }, { labels: [CLAIM], body: specBody(SPEC), over: { message: archivedFor(PR_A, sent) } });
+    const result = await run(fire(), h.deps as never) as Record<string, unknown>;
+    assert.deepEqual(sent, [PR_A, PR_B]);
+    assert.equal((result.messaged as { ok: boolean }).ok, true);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
   test('claimed: a comment read or an open PR read that fails fails the turn, and nobody is told', async () => {
     for (const fails of ['allComments', 'openClosing']) {
       const h = ticketTurn({ labels: [CLAIM], comments: [{ body: OLD_MARKER }] });

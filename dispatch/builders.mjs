@@ -32,13 +32,17 @@ import { relayedBody, sameSession, sessionNamedIn } from './webhook/subscribe.mj
  *
  * @typedef {'open PR' | 'merged PR' | 'dispatch comment' | 'owner link'} BuilderSource
  *
- * @typedef {{ sessions: string[], by: BuilderSource | null, prs: number[] }} Builders
+ * @typedef {{ sessions: string[], by: BuilderSource | null, prs: number[], owns: Record<string, number[]> }} Builders
  *   `sessions`: each builder once. `by`: the step that found them, null for
  *   none. `prs`: the PRs whose owners they are, for the first two steps.
+ *   `owns`: each of those builders' own PRs, keyed by the session as
+ *   `sessions` spells it, so a send to one can hand the message to the live
+ *   session on its PRs' head branches should it answer archived.
  */
 
 /**
- * Each PR's owner, once each, and the PRs read.
+ * Each PR's owner, once each, the PRs whose owner was found, and each
+ * owner's own PRs.
  *
  * @param {number[]} prs
  * @param {(pr: number) => Promise<{ session: string | null }>} ownerOf
@@ -46,11 +50,23 @@ import { relayedBody, sameSession, sessionNamedIn } from './webhook/subscribe.mj
 const ownersOf = async (prs, ownerOf) => {
   /** @type {string[]} */
   const sessions = [];
+  /** @type {number[]} */
+  const owned = [];
+  /** @type {Record<string, number[]>} */
+  const owns = {};
   for (const pr of prs) {
     const { session } = await ownerOf(pr);
-    if (session !== null && !sessions.some((s) => sameSession(s, session))) sessions.push(session);
+    if (session === null) continue;
+    const known = sessions.find((s) => sameSession(s, session));
+    if (known === undefined) {
+      sessions.push(session);
+      owns[session] = [pr];
+    } else {
+      owns[known]?.push(pr);
+    }
+    owned.push(pr);
   }
-  return sessions;
+  return { sessions, prs: owned, owns };
 };
 
 /**
@@ -69,19 +85,19 @@ const ownersOf = async (prs, ownerOf) => {
 export const buildersOf = async ({ reader, ownerOf, issue, ticket, claim, relay }) => {
   const open = (await reader.openClosing(issue)).map((p) => p.number);
   if (open.length > 0) {
-    const sessions = await ownersOf(open, ownerOf);
-    if (sessions.length > 0) return { sessions, by: 'open PR', prs: open };
+    const found = await ownersOf(open, ownerOf);
+    if (found.sessions.length > 0) return { ...found, by: 'open PR' };
   }
   if (ticket.state === 'closed') {
     const { pr } = await reader.closure(issue);
     if (pr !== null) {
-      const sessions = await ownersOf([pr.number], ownerOf);
-      if (sessions.length > 0) return { sessions, by: 'merged PR', prs: [pr.number] };
+      const found = await ownersOf([pr.number], ownerOf);
+      if (found.sessions.length > 0) return { ...found, by: 'merged PR' };
     }
   }
   const marked = lastDispatch(await reader.allComments(issue))?.sessionUrl ?? null;
-  if (marked !== null) return { sessions: [marked], by: 'dispatch comment', prs: [] };
+  if (marked !== null) return { sessions: [marked], by: 'dispatch comment', prs: [], owns: {} };
   const owner = ticket.labels.includes(claim) ? sessionNamedIn(relayedBody(ticket, relay)) : null;
-  if (owner !== null) return { sessions: [owner], by: 'owner link', prs: [] };
-  return { sessions: [], by: null, prs: [] };
+  if (owner !== null) return { sessions: [owner], by: 'owner link', prs: [], owns: {} };
+  return { sessions: [], by: null, prs: [], owns: {} };
 };

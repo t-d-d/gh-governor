@@ -203,14 +203,19 @@ export const planUnblocked = async (invocation, ctx) => {
     const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged');
     try {
       for (const session of found.sessions) {
-        const told = await ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue] });
+        // A PR's builder that answers archived hands the message to the live
+        // session on its PRs' head branches, as a PR's owner does.
+        const owns = found.owns[session] ?? [];
+        const told = await ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue], owns });
         sent.push(told);
-        ctx.log('dispatch-unblocked', { ...about, session, builder: found.by, ...(found.prs.length === 0 ? {} : { prs: found.prs }), outcome: outcomeOf(told) });
+        ctx.log('dispatch-unblocked', { ...about, session, builder: found.by, ...(owns.length === 0 ? {} : { prs: owns }), outcome: outcomeOf(told) });
       }
-      // A refused builder's message goes on to the session the owner link
-      // names, once, where that is another session: a spec session that
-      // claimed the ticket after an old builder's marker posts none.
-      if (sent.some((t) => t.refused) && owner !== null && !found.sessions.some((s) => sameSession(s, owner))) {
+      // Where no builder took it, a refused builder's message goes on to the
+      // session the owner link names, once, where that is another session: a
+      // spec session that claimed the ticket after an old builder's marker
+      // posts none.
+      const taken = sent.some((t) => t.ok || t.fallback?.outcome === 'forwarded');
+      if (!taken && sent.some((t) => t.refused) && owner !== null && !found.sessions.some((s) => sameSession(s, owner))) {
         const told = await ctx.delivery().deliver({ session: owner }, text, { source: GITHUB_SOURCE, on: [issue] });
         sent.push(told);
         ctx.log('dispatch-unblocked', { ...about, session: owner, fromBody: true, outcome: outcomeOf(told) });
