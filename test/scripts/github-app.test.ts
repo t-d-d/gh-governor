@@ -19,6 +19,7 @@ import {
   RUNS_PER_PAGE,
   appInstallations,
   installationToken,
+  turnResends,
 } from '../../scripts/lib/github-app.mjs';
 import { RELAY } from '../../dispatch/webhook/fire.mjs';
 import { CONFIG_PATH } from '../../dispatch/repo-config.mjs';
@@ -1293,7 +1294,7 @@ describe('githubApi', () => {
       return true;
     });
     assert.equal(calls.length, 3);
-    assert.equal(logged.length, 2, 'one line per resend, none for the last failure');
+    assert.deepEqual(logged.map((l) => l.event), ['dispatch-github-retry', 'dispatch-github-retry', 'dispatch-github-resends-off'], 'one line per resend, and the last failure turns resends off');
   });
 
   test('a GET rate limited for 10 seconds or less waits what GitHub asks and is sent again; a longer limit fails at once', async () => {
@@ -1373,6 +1374,69 @@ describe('githubApi', () => {
     const token = await installationToken({ appId: '1', privateKeyPem: PEM, repo: 'acme/factory', fetch, sleep: async () => {}, log: (event: string) => { logged.push(event); } });
     assert.equal(token, 'ghs_x');
     assert.deepEqual(logged, ['dispatch-github-retry', 'dispatch-github-retry']);
+  });
+
+  // In an outage every read would take 3 sends and 3 seconds of pauses
+  // before it failed, and a sweep or a review could spend its window on
+  // reads that were always going to fail. One call that spends its sends
+  // stops the resends for the rest of the turn, as a failed message resend
+  // does in dispatch/deliveries.mjs.
+  test('once one call has spent its sends, every later call sharing the turn\'s switch is sent once', async () => {
+    const resends = turnResends();
+    const outage = answers([503]);
+    await assert.rejects(githubApi({ token: 't', ...outage.io, resends })('GET', '/repos/acme/factory/hooks'), /503/);
+    assert.equal(outage.calls.length, 3);
+    assert.deepEqual(outage.logged.map((l) => l.event), ['dispatch-github-retry', 'dispatch-github-retry', 'dispatch-github-resends-off']);
+    assert.deepEqual(outage.logged[2]?.context, { level: 'warn', method: 'GET', path: '/repos/acme/factory/hooks', status: 503 });
+
+    const later = answers([502, 200]);
+    await assert.rejects(githubApi({ token: 't', ...later.io, resends })('GET', '/repos/acme/factory/pulls'), (e: { status?: unknown }) => e.status === 502);
+    assert.equal(later.calls.length, 1, 'another client on the same switch');
+    assert.deepEqual(later.waits, []);
+    assert.deepEqual(later.logged, []);
+
+    const reader = answers([502, 200]);
+    await assert.rejects(githubReader({ token: 't', repo: 'acme/factory', ...reader.io, resends }).configFile(), /502/);
+    assert.equal(reader.calls.length, 1, 'the reader');
+
+    const minted = answers([503, 200]);
+    await assert.rejects(installationToken({ appId: '1', privateKeyPem: PEM, repo: 'acme/factory', ...minted.io, resends }), /503/);
+    assert.equal(minted.calls.length, 1, 'the token mint');
+
+    const listed = answers([503, 200]);
+    await assert.rejects(appInstallations({ appId: '1', privateKeyPem: PEM, owners: ['acme'], ...listed.io, resends }), /503/);
+    assert.equal(listed.calls.length, 1, 'the installations list');
+  });
+
+  test('a call that recovers on a resend, or ends on an answer never resent, leaves the turn\'s resends on', async () => {
+    const resends = turnResends();
+    await githubApi({ token: 't', ...answers([502, 503, 200]).io, resends })('GET', '/repos/acme/factory/hooks');
+    await assert.rejects(githubApi({ token: 't', ...answers([502, 404]).io, resends })('GET', '/repos/acme/factory/hooks'), /404/);
+    await assert.rejects(githubApi({ token: 't', ...answers([502]).io, resends })('POST', '/repos/acme/factory/hooks', {}), /502/);
+    const after = answers([502, 200]);
+    assert.deepEqual(await githubApi({ token: 't', ...after.io, resends })('GET', '/repos/acme/factory/hooks'), [{ id: 1 }]);
+    assert.equal(after.calls.length, 2);
+  });
+
+  // GitHub limits each installation token on its own, and the bare schedule
+  // turn reads several installations: one token's limit is no outage, and
+  // should not cost another repo its resends.
+  test('a call that spends its sends on a short rate limit leaves the turn\'s resends on', async () => {
+    const resends = turnResends();
+    const limited = answers([new Response('', { status: 429, statusText: 'Too Many Requests', headers: { 'retry-after': '1' } })]);
+    await assert.rejects(githubApi({ token: 't', ...limited.io, resends })('GET', '/repos/acme/factory/hooks'), /429/);
+    assert.equal(limited.calls.length, 3);
+    assert.deepEqual(limited.logged.map((l) => l.event), ['dispatch-github-retry', 'dispatch-github-retry']);
+    const other = answers([502, 200]);
+    assert.deepEqual(await githubApi({ token: 'u', ...other.io, resends })('GET', '/repos/acme/other/hooks'), [{ id: 1 }]);
+    assert.equal(other.calls.length, 2);
+  });
+
+  test('clients without a shared switch do not stop each other\'s resends', async () => {
+    await assert.rejects(githubApi({ token: 't', ...answers([503]).io })('GET', '/repos/acme/factory/hooks'), /503/);
+    const other = answers([502, 200]);
+    assert.deepEqual(await githubApi({ token: 't', ...other.io })('GET', '/repos/acme/factory/hooks'), [{ id: 1 }]);
+    assert.equal(other.calls.length, 2);
   });
 
   test('the reader and the token mint resend a dropped call', async () => {
