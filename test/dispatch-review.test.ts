@@ -22,6 +22,8 @@ import { readFileSync } from 'node:fs';
 import { asksOwner, commentKey, commentText, mergeConflictText, passOf } from '../dispatch/webhook/review-comment.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
+import { FIRE_BUDGET, fireWeight } from '../dispatch/webhook/fire.mjs';
+import { ownerMessage } from '../dispatch/review.mjs';
 import { APP_ID, BODY, DEPENDABOT_COMMIT, FILES, HEAD, IAM, MERGE_BASE, PASS, REPO, SKILL, cliOutput, dependabotRow, pullRow } from './helpers/dispatch-review-fixtures.ts';
 import type { Answer, FileRow, Pull, PullCommit, TicketRow } from './helpers/dispatch-review-fixtures.ts';
 import { factoryFile } from './helpers/factory.ts';
@@ -499,7 +501,20 @@ describe('run — what reaches the owner session', () => {
     }
   });
 
-  test('the dedup id is the comment\'s: one comment queues once, another comment queues again', async () => {
+  test('a comment longer than a lane message holds is cut to fit, its fallback and its ask kept', () => {
+    const pull = { number: 767, title: 'Run the PR review from the dispatcher', html_url: `https://github.com/${REPO}/pull/767` };
+    const text = `Waits for a description edit: ${'界'.repeat(65000)} (test 3).`;
+    const fire = ownerMessage({ pull, text, acts: true });
+    assert.ok(fireWeight(fire) <= FIRE_BUDGET, `${fireWeight(fire)} bytes`);
+    assert.match(fire.text, /^Governor's PR review commented on your pull request\.\n\nPR #767: /);
+    assert.match(fire.text, /Waits for a description edit: 界/);
+    assert.match(fire.text, /the review asks this of you/);
+    assert.match(fire.fallback!.prompt, /yours now/);
+    const short = ownerMessage({ pull, text: 'Waits for a description edit: name the cost (test 3).', acts: true });
+    assert.ok(short.text.includes('Waits for a description edit: name the cost (test 3).'), 'a comment that fits is sent whole');
+  });
+
+  test('the dedup id is the comment\'s and its turn\'s: another comment, or the same one posted later, queues again', async () => {
     const a = harness({ answers: [COSTS] });
     await review({ kind: 'review', pr: 767 }, a);
     const b = harness({ answers: [COSTS] });
@@ -508,6 +523,10 @@ describe('run — what reaches the owner session', () => {
     await review({ kind: 'review', pr: 767 }, c);
     assert.equal(a.queued[0]!.dedupId, b.queued[0]!.dedupId);
     assert.notEqual(a.queued[0]!.dedupId, c.queued[0]!.dedupId);
+    const later = harness({ answers: [COSTS], now: () => NOW + 60_000 });
+    await review({ kind: 'review', pr: 767 }, later);
+    assert.equal(later.comments[0]!.body, a.comments[0]!.body);
+    assert.notEqual(later.queued[0]!.dedupId, a.queued[0]!.dedupId, 'the same words and marker posted again later are a new message, not one SQS drops');
     assert.ok(a.queued[0]!.dedupId.length <= 128);
   });
 

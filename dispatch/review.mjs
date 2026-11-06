@@ -84,7 +84,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { DEPENDABOT, UNATTENDED, authorKind, build, lets } from './webhook/fire.mjs';
+import { DEPENDABOT, FIRE_BUDGET, UNATTENDED, authorKind, build, fireWeight, lets } from './webhook/fire.mjs';
 import { asksOwner, commentKey, commentText, sentence } from './webhook/review-comment.mjs';
 import { HANDOFF, oneLine } from './webhook/mention.mjs';
 import { checkLabel, checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
@@ -164,41 +164,56 @@ const NOTICE = 'This is your pull request. This is a notice: the review asks not
  * (`acts`) does it carry the fallback that takes a gone session's PR over,
  * on the PR's head branch. It is governor's own text, so it names no
  * author for `trust.relay` to judge; the owner lookup reads the body's
- * link only where `trust.relay` lets the PR's author in.
+ * link only where `trust.relay` lets the PR's author in. A comment too long
+ * for one lane message ({@link FIRE_BUDGET}), sent twice where it carries
+ * the fallback, is cut short, pointing at the PR for the rest.
  *
  * @param {{ pull: Pick<PullRequestRow, 'number' | 'title' | 'html_url'>, text: string, acts: boolean }} args
  * @returns {import('./webhook/fire.mjs').MessageFire}
  */
 export const ownerMessage = ({ pull, text, acts }) => {
-  const said = [
-    'Governor\'s PR review commented on your pull request.',
-    '',
-    `PR #${pull.number}: ${oneLine(pull.title)} (${pull.html_url})`,
-    '',
-    text,
-  ].join('\n');
-  return build.message({
-    byBranch: true,
-    text: `${said}\n\n${acts ? ASKS : NOTICE}`,
-    on: pull.number,
-    authors: [],
-    fallback: acts
-      ? { prompt: [said, '', HANDOFF, ASKS, UNATTENDED].join('\n'), sessionName: oneLine(`PR review #${pull.number} ${pull.title}`).slice(0, 100), issue: pull.number }
-      : undefined,
-  });
+  /** @param {string} words */
+  const fire = (words) => {
+    const said = [
+      'Governor\'s PR review commented on your pull request.',
+      '',
+      `PR #${pull.number}: ${oneLine(pull.title)} (${pull.html_url})`,
+      '',
+      words,
+    ].join('\n');
+    return build.message({
+      byBranch: true,
+      text: `${said}\n\n${acts ? ASKS : NOTICE}`,
+      on: pull.number,
+      authors: [],
+      fallback: acts
+        ? { prompt: [said, '', HANDOFF, ASKS, UNATTENDED].join('\n'), sessionName: oneLine(`PR review #${pull.number} ${pull.title}`).slice(0, 100), issue: pull.number }
+        : undefined,
+    });
+  };
+  let message = fire(text);
+  for (let limit = text.length; fireWeight(message) > FIRE_BUDGET && limit > 1;) {
+    limit = Math.floor(limit / 2);
+    message = fire(`${text.slice(0, limit).trimEnd()}… [${text.length - limit} more characters in the comment on the PR]`);
+  }
+  return message;
 };
 
 /**
- * The lane's deduplication id for the owner's message of one comment:
- * the repo, the PR and the comment with its marker, hashed, since SQS takes
- * 128 characters. A turn that queues the same comment twice queues it once;
- * a new comment, a new id.
+ * The lane's deduplication id for the owner's message of one comment: the
+ * repo, the PR, the comment with its marker and when its turn started,
+ * hashed, since SQS takes 128 characters. A review turn is never run again
+ * (dispatch/lane.mjs), so nothing needs this to drop a second send; the
+ * time keeps a later comment with the same words and marker, such as a
+ * red check's fail after a pass at one head, from being dropped as the
+ * first.
  *
  * @param {string} repo
  * @param {number} pr
  * @param {string} comment
+ * @param {number} at
  */
-export const ownerMessageId = (repo, pr, comment) => createHash('sha256').update(`pr-review:${repo.toLowerCase()}#${pr}:${comment}`).digest('hex');
+export const ownerMessageId = (repo, pr, comment, at) => createHash('sha256').update(`pr-review:${repo.toLowerCase()}#${pr}:${at}:${comment}`).digest('hex');
 
 /** The check run the review posts its verdict as. It is named for governor, not the review: it is a gate, and approves nothing. */
 export const CHECK = 'governor';

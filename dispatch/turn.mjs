@@ -1519,7 +1519,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const tell = async (n, comment, message) => {
         if (!turnsOn(config, 'prMessages')) return `${fireRepo()}'s ${CONFIG_PATH} does not turn prMessages on: no session is told`;
         if (deps.enqueue === undefined) throw new Error(`this turn has no fire lane to queue #${n}'s message to its owner on`);
-        await deps.enqueue({ fire: { ...message, repo: fireRepo() }, reason: `the PR review commented on ${fireRepo()}#${n}: its message to the PR's owner` }, ownerMessageId(fireRepo(), n, comment));
+        await deps.enqueue({ fire: { ...message, repo: fireRepo() }, reason: `the PR review commented on ${fireRepo()}#${n}: its message to the PR's owner` }, ownerMessageId(fireRepo(), n, comment, started));
         return "queued for the PR's owner";
       };
       for (const [i, target] of targets.entries()) {
