@@ -57,6 +57,15 @@ describe('exitCodeFor', () => {
     assert.equal(exitCodeFor({ kind: 'schedule', queued: ['acme/factory#7'], passedOver: [] } as never), 0);
   });
 
+  // A ticket fire's messages to a claimed ticket's spec owner and builders:
+  // the send the planner hands back is the turn, as an unblocked fire's is.
+  test('a ticket message that failed is a fault; one a gone session refused, or a fire nobody heard, is not', () => {
+    assert.equal(exitCodeFor({ kind: 'ticket', messaged: { ok: true, refused: false }, dispatched: [] }), 0);
+    assert.equal(exitCodeFor({ kind: 'ticket', messaged: { ok: false, refused: true }, dispatched: [] }), 0);
+    assert.equal(exitCodeFor({ kind: 'ticket', messaged: { ok: false, refused: false }, dispatched: [] }), 1);
+    assert.equal(exitCodeFor({ kind: 'ticket', messaged: null, dispatched: [] }), 0);
+  });
+
   // A summons trust.task refused, sent on to the live session on its PR's
   // head branch: a send that faulted is the operator's to read, as a
   // message's is; no session on the branch, or a gone one, is not.

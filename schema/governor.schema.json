@@ -228,7 +228,7 @@
       "additionalProperties": false
     },
     "subscribeMessages": {
-      "description": "Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. A filer hears of its ticket's first deploy to each target through governor's comment on its issue, which asks it to sign off where the issue is closed. It hears a `deployed:` label only through a subscribe line for `deploys`.",
+      "description": "Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. On a claimed ticket, a comment, a close and a reopen also reach the sessions building it, and each message names the ticket's spec owner and builders. A filer hears of its ticket's first deploy to each target through governor's comment on its issue, which asks it to sign off where the issue is closed. It hears a `deployed:` label only through a subscribe line for `deploys`.",
       "type": "object",
       "properties": {
         "enabled": {

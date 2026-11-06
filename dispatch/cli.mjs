@@ -106,6 +106,10 @@ export const exitCodeFor = (result) => {
   // not-ready ticket's owner: a gone session is told enough, unless the spec
   // session in its place started nothing.
   if (result.kind === 'unblocked' && result.messaged != null) return faultedSend(result.messaged) ? 1 : 0;
+  // A ticket fire's messages to a claimed ticket's spec owner and builders:
+  // the planner hands back a send that faulted where one did, so the turn
+  // fails on it, and a gone session is told enough.
+  if (result.kind === 'ticket' && result.messaged != null) return faultedSend(result.messaged) ? 1 : 0;
   // A summons sent to the live session that owns its PR: a send that
   // faulted, or a lookup that failed, fails the turn, as a message's does.
   // No live owner is no fault: the summons was judged as before.

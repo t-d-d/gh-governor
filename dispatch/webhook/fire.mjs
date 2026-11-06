@@ -384,7 +384,22 @@ export const lastDispatch = (comments) => {
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit
  *   the lane ({@link FIRE_BUDGET}).
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire) & { repo?: string, counted?: Count }} Fire
+ * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], ownerOnly?: true }} TicketFire
+ *   A comment on an issue, or the issue closed or reopened, where the issue
+ *   may be claimed: its spec owner and, on a claimed ticket, its builders
+ *   hear it, each told which role it holds (dispatch/ticket-fire.mjs). The
+ *   receiver holds no token, so it queues this fire in place of the spec
+ *   owner's message wherever the ticket's labels hold the repo's claim
+ *   label, or the hook table cannot say what that label is; the task finds
+ *   the builders. `text`: what happened, as the spec owner's message says
+ *   it. `state`: the issue's after the event. `labels`: its labels then, by
+ *   which the task tells a claimed ticket with no read. `owner`: the
+ *   session the body's owner link names, read under the repo's
+ *   `trust.relay`, absent where it names none. `poster`: the session that
+ *   signed the comment, which hears nothing of its own post. `closing`: as
+ *   a message fire's. `authors`: as a message fire's. `ownerOnly`: the
+ *   builders hear of this elsewhere, so only the spec owner is sent it.
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
@@ -483,6 +498,30 @@ export const build = Object.freeze({
 
   /** @param {{ issue: number }} args @returns {IssueReviewFire} */
   issueReview: ({ issue }) => ({ kind: 'issueReview', issue }),
+
+  /**
+   * @param {{
+   *   issue: number, text: string, event: 'comments' | 'close', state: 'open' | 'closed', labels: string[],
+   *   owner?: string | null | undefined, poster?: string | null | undefined, closing?: boolean | undefined,
+   *   authors?: string[] | undefined, ownerOnly?: boolean | undefined,
+   * }} args
+   * @returns {TicketFire}
+   */
+  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, ownerOnly }) => ({
+    kind: 'ticket',
+    issue,
+    text,
+    event,
+    state,
+    labels,
+    ...present({
+      owner: owner ?? undefined,
+      poster: poster ?? undefined,
+      closing: closing === true ? /** @type {true} */ (true) : undefined,
+      authors,
+      ownerOnly: ownerOnly === true ? /** @type {true} */ (true) : undefined,
+    }),
+  }),
 
   /**
    * Each title on one line and at most {@link TITLE_LIMIT} characters, so
@@ -758,6 +797,7 @@ const parseKind = (event) => {
   if (kind === 'periodics') return { kind };
   if (kind === 'hook') return parseHook(e);
   if (kind === 'unblocked') return parseUnblocked(e);
+  if (kind === 'ticket') return parseTicket(e);
   if (kind === 'wait') {
     if (!isPositiveInt(e?.issue)) throw new Error(`a wait invocation's issue must be a positive integer, got: ${JSON.stringify(e?.issue)}`);
     return { kind, issue: Number(e?.issue) };
@@ -987,6 +1027,43 @@ const parseUnblocked = (e) => {
     issue: Number(e?.issue),
     blocker: { repo: String(blocker.repo), number: Number(blocker.number), title: String(blocker.title), ...(blocker.reason === undefined ? {} : { reason: String(blocker.reason) }), ...(blocker.closedAt === undefined ? {} : { closedAt: String(blocker.closedAt) }) },
     ...(p === undefined ? {} : { pr: { number: Number(p?.number), title: String(p?.title), url: String(p?.url) } }),
+  };
+};
+
+/**
+ * A ticket fire, refused unless it names the issue, the text, the event and
+ * the issue's state and labels, and each session it names is a session.
+ *
+ * @param {Record<string, unknown> | null} e
+ * @returns {TicketFire}
+ */
+const parseTicket = (e) => {
+  const refuse = (/** @type {string} */ what) => { throw new Error(`a ticket invocation's ${what}, got: ${JSON.stringify(e)?.slice(0, 300)}`); };
+  if (!isPositiveInt(e?.issue)) refuse('issue must be a positive integer');
+  if (typeof e?.text !== 'string' || e.text.trim() === '') refuse('text must say what happened');
+  if (e?.event !== 'comments' && e?.event !== 'close') refuse('event must be comments or close');
+  if (e?.state !== 'open' && e?.state !== 'closed') refuse('state must be open or closed');
+  if (!Array.isArray(e?.labels) || !e.labels.every((l) => typeof l === 'string')) refuse('labels must be label names');
+  for (const key of /** @type {const} */ (['owner', 'poster'])) {
+    if (e?.[key] !== undefined && !(typeof e[key] === 'string' && MESSAGE_SESSION.test(e[key]))) refuse(`${key} must be a session id or claude.ai/code URL`);
+  }
+  for (const key of /** @type {const} */ (['closing', 'ownerOnly'])) {
+    if (e?.[key] !== undefined && e[key] !== true) refuse(`${key} must be true or absent`);
+  }
+  if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) refuse('authors must be trust values');
+  const t = /** @type {Record<string, unknown>} */ (e);
+  return {
+    kind: 'ticket',
+    issue: Number(t.issue),
+    text: String(t.text),
+    event: /** @type {'comments' | 'close'} */ (t.event),
+    state: /** @type {'open' | 'closed'} */ (t.state),
+    labels: [.../** @type {string[]} */ (t.labels)],
+    ...(t.owner === undefined ? {} : { owner: String(t.owner) }),
+    ...(t.poster === undefined ? {} : { poster: String(t.poster) }),
+    ...(t.closing === true ? { closing: /** @type {true} */ (true) } : {}),
+    ...(t.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (t.authors)] }),
+    ...(t.ownerOnly === true ? { ownerOnly: /** @type {true} */ (true) } : {}),
   };
 };
 

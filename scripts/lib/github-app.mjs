@@ -19,6 +19,7 @@ import { closedBy } from '../../dispatch/pr-body.mjs';
 import { relayedBody, sessionId, sessionsNamedIn } from '../../dispatch/webhook/subscribe.mjs';
 import { waitOf } from './ready-work.mjs';
 import { lets } from '../../dispatch/trust.mjs';
+import { lastDispatch } from '../../dispatch/webhook/fire.mjs';
 
 const API = 'https://api.github.com';
 /** The version the gh-deps shim pins, so both read the same endpoint shapes. */
@@ -418,14 +419,26 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
   const headOf = (row) => (String(row?.head?.repo?.full_name ?? '').toLowerCase() === repo.toLowerCase() ? String(row.head.ref ?? '') : '');
 
   const call = githubApi({ token, fetch, sleep });
-  /** Every open issue and PR, its body and its author, read once for `openNaming`. @type {Promise<Array<OpenRow & { body: unknown } & import('../../dispatch/webhook/fire.mjs').Author>> | null} */
+  /** Every open issue and PR, its body, labels and author, read once for `openNaming`. @type {Promise<Array<OpenRow & { body: unknown, labels: string[] } & import('../../dispatch/webhook/fire.mjs').Author>> | null} */
   let openRows = null;
   /** Every open issue and PR, read once a reader, and again after a read that failed. */
   const openList = () => openRows ??= allPages(call, `/repos/${repo}/issues`, { state: 'open' })
-    .then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: Boolean(row.pull_request), body: row.body, ...authorOf(row) })))
+    .then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: Boolean(row.pull_request), body: row.body, labels: (row.labels ?? []).map((/** @type {{ name?: unknown } | string} */ l) => (typeof l === 'string' ? l : String(l?.name ?? ''))), ...authorOf(row) })))
     .catch((error) => { openRows = null; openSessions.clear(); throw error; });
   /** Each open issue's and PR's sessions under a trust list, keyed by the list, each body read once per list. @type {Map<string, Promise<Array<OpenRow & { sessions: Set<string> }>>>} */
   const openSessions = new Map();
+  /** Each claimed ticket's builder by its newest dispatch comment, its thread read once a reader. @type {Map<number, Promise<string | null>>} */
+  const dispatchedTo = new Map();
+  /** @param {number} number */
+  const dispatchedOf = (number) => {
+    let found = dispatchedTo.get(number);
+    if (found === undefined) {
+      dispatchedTo.set(number, found = allPages(call, `/repos/${repo}/issues/${number}/comments`, {})
+        .then((rows) => { const marked = lastDispatch(rows.map((row) => ({ body: row.body ?? '' })))?.sessionUrl; return marked === undefined || marked === null ? null : sessionId(marked); })
+        .catch((error) => { dispatchedTo.delete(number); throw error; }));
+    }
+    return found;
+  };
   /** The repo owner's type, read once a reader: a narrowed `trust.start` asks it of every ready ticket. @type {Promise<string> | null} */
   let ownerType = null;
   /** The repo's outside collaborators, read once a reader, for the same reason. @type {Promise<string[]> | null} */
@@ -700,11 +713,18 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
      * and filtered here: the search API allows an installation about thirty
      * calls a minute, which the App's other callers spend too.
      *
+     * Given the repo's claim label (`claim`), an open claimed issue that no
+     * open PR closes counts too where its newest dispatch comment names the
+     * session: a builder's ticket counts before its PR exists
+     * (dispatch/builders.mjs). Each such thread is read once per reader.
+     * One an open PR closes counts through the PR.
+     *
      * @param {string} session
      * @param {readonly string[]} relay
+     * @param {{ claim?: string }} [options]
      * @returns {Promise<OpenRow[]>}
      */
-    openNaming: async (session, relay) => {
+    openNaming: async (session, relay, { claim } = {}) => {
       const read = openList();
       const key = relay.join(',');
       let named = openSessions.get(key);
@@ -712,7 +732,16 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         openSessions.set(key, named = read.then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: row.pull, sessions: sessionsNamedIn(relayedBody(row, relay)) }))));
       }
       const id = sessionId(session);
-      return (await named).filter((row) => row.sessions.has(id)).map(({ sessions: _sessions, ...row }) => row);
+      const naming = (await named).filter((row) => row.sessions.has(id)).map(({ sessions: _sessions, ...row }) => row);
+      if (claim === undefined || claim === '') return naming;
+      const rows = await read;
+      const closed = new Set(rows.filter((row) => row.pull).flatMap((row) => closedBy(String(row.body ?? ''), repo)));
+      const claimed = rows.filter((row) => !row.pull && row.labels.includes(claim) && !closed.has(row.number) && !naming.some((n) => n.number === row.number));
+      const building = [];
+      for (const row of claimed) {
+        if (await dispatchedOf(row.number) === id) building.push({ number: row.number, title: row.title, html_url: row.html_url, pull: false });
+      }
+      return [...naming, ...building];
     },
 
     /**

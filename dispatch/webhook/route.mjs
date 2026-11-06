@@ -105,7 +105,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, RELAY, REPO_NAME, RED, SUMMONERS, TRUST_VALUES, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob, waitLine } from './fire.mjs';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { errorText } from './error-text.mjs';
-import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires } from './mention.mjs';
+import { MENTION, MENTION_EVENTS, defaultBranch, issueEventFires, mentionFires, oneLine, pullRequestFires, ticketFires } from './mention.mjs';
 import { droppedBy } from './switches.mjs';
 import { pastReadingBound } from './subscribe.mjs';
 
@@ -202,7 +202,9 @@ export const verifySignature = (secret, body, signature) => {
 /**
  * @typedef {import('./fire.mjs').Fire} Fire
  * @typedef {import('./fire.mjs').FireMessage} FireMessage
- * @typedef {{ fire: Fire, reason: string, key?: string, ready?: readonly string[], reviewLabel?: { label: string, change: 'labeled' | 'unlabeled' } }} Queued One fire, and the key that tells it from the delivery's others.
+ * @typedef {{ fire: Fire, reason: string, key?: string, ready?: readonly string[], reviewLabel?: { label: string, change: 'labeled' | 'unlabeled' }, claimed?: { labels: string[], replaces: string | null } }} Queued One fire, and the key that tells it from the delivery's others.
+ *   `claimed`: a ticket fire's issue's labels, and the key of the spec
+ *   owner's message it replaces ({@link settleClaims}).
  *   `ready`: a selection fire's ticket's labels, one of which must be a
  *   ready label for the fire to queue; the receiver names the first the
  *   repo's hook-table item lists as the fire's label ({@link switchedOn}).
@@ -211,6 +213,39 @@ export const verifySignature = (secret, body, signature) => {
  *   ({@link switchedOn}).
  * @typedef {{ fires: Queued[], reason: string }} Decision
  */
+
+/**
+ * A delivery's ticket fires settled by the repo's claim label (`claim`):
+ * a ticket fire whose issue carries the label queues, and the spec owner's
+ * own message it replaces does not; one whose issue does not carry it does
+ * not queue, and the spec owner's message goes as before. Where the hook
+ * table cannot say which label claims a ticket (null: an item written
+ * before it held one, no item, a failed read), the ticket fire queues and
+ * the task decides (docs/constraints/dispatcher-state.md). Undefined, for
+ * a delivery routed with no hook table to judge by: no ticket fire queues.
+ *
+ * @param {Decision} decision
+ * @param {string | null | undefined} claim
+ * @returns {Decision}
+ */
+const settleClaims = (decision, claim) => {
+  const tickets = decision.fires.filter((q) => q.claimed !== undefined);
+  if (tickets.length === 0) return decision;
+  let fires = decision.fires;
+  /** @type {string[]} */
+  const reasons = [];
+  for (const ticket of tickets) {
+    const claimed = /** @type {{ labels: string[], replaces: string | null }} */ (ticket.claimed);
+    const queues = claim === null || (claim !== undefined && claimed.labels.includes(claim));
+    if (!queues) {
+      fires = fires.filter((q) => q !== ticket);
+      continue;
+    }
+    fires = fires.filter((q) => !(q.fire.kind === 'message' && claimed.replaces !== null && q.key === claimed.replaces));
+    reasons.push(claim === null ? `${ticket.reason}, as the hook table names no claim label` : ticket.reason);
+  }
+  return { fires, reason: [decision.reason, ...reasons].filter(Boolean).join('; ') };
+};
 
 /** @param {string} reason @returns {Decision} */
 const nothing = (reason) => ({ fires: [], reason });
@@ -678,21 +713,24 @@ const heldBy = (issue, repo) => {
  * table says the repo's file leaves `prReview` off, and the task refuses it
  * where the file does.
  *
- * @param {{ event: string | undefined, payload: any, owners: readonly string[], appId?: number | undefined, relay?: readonly string[], bodies?: readonly string[] }} args
+ * @param {{ event: string | undefined, payload: any, owners: readonly string[], appId?: number | undefined, relay?: readonly string[], bodies?: readonly string[], claim?: string | null | undefined }} args
  * `owners`: the stack's owner list. `appId`: the dispatcher's own App,
  * whose comment alone is the PR review's, and which every trust list lets
  * in; without it, no comment is. `relay`: whose text may reach a running
  * session ({@link receiverRelay}), the defaults where the receiver knows
  * no other (mention.mjs). `bodies`: whose body may name a session, `relay`
- * where unset.
+ * where unset. `claim`: the repo's claim label, by which a claimed
+ * ticket's comment, close or reopen queues a ticket fire; null where the
+ * hook table cannot say, which queues it; left out, none queues
+ * ({@link settleClaims}).
  * @returns {Decision}
  */
-export const routeEvent = ({ event, payload, owners, appId, relay, bodies }) => {
+export const routeEvent = ({ event, payload, owners, appId, relay, bodies, claim }) => {
   const repo = payload?.repository?.full_name;
   if (typeof repo !== 'string' || !REPO_NAME.test(repo)) return nothing(`${event ?? 'unnamed'} delivery names no repository`);
   const owner = repo.slice(0, repo.indexOf('/'));
   if (!ownerListed(owners, owner)) return nothing(`delivery is for ${repo}, whose owner ${owner} is not on the owner list`);
-  const decision = routeFor({ event, payload, appId, relay, bodies });
+  const decision = settleClaims(routeFor({ event, payload, appId, relay, bodies }), claim);
   return { ...decision, fires: decision.fires.map((queued) => ({ ...queued, fire: { ...queued.fire, repo } })) };
 };
 
@@ -731,8 +769,8 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
     }
     // The selection's fire, where there is one, beside each subscriber's,
     // and a label's issue review fire.
-    if (selection !== null) return both(both(selection, issueEventFires(payload, trust)), labelReviewFire(payload));
-    if (action === 'reopened') return both(both(issueEventFires(payload, trust), waitFire(payload)), issueReviewFire(payload));
+    if (selection !== null) return both(both(both(selection, issueEventFires(payload, trust)), ticketFires({ event, payload, ...trust })), labelReviewFire(payload));
+    if (action === 'reopened') return both(both(both(issueEventFires(payload, trust), ticketFires({ event, payload, ...trust })), waitFire(payload)), issueReviewFire(payload));
     if (action === 'labeled' || action === 'unlabeled') return both(issueEventFires(payload, trust), labelReviewFire(payload));
     const mentioned = mentionFires({ event, payload, ...trust }) ?? nothing(`issues ${action}: nothing to select from`);
     // An issue opened is counted on its summons, or on a fire of its own.
@@ -755,7 +793,8 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
     return event === 'check_run' ? finishedCheckReview(payload, main, appId) : finalStatusReview(payload, main);
   }
   if (MENTION_EVENTS.has(String(event))) {
-    return mentionFires({ event, payload, ...trust }) ?? nothing(`${event} ${payload?.action}: no ${MENTION} mention and no subscriber`);
+    const written = mentionFires({ event, payload, ...trust }) ?? nothing(`${event} ${payload?.action}: no ${MENTION} mention and no subscriber`);
+    return event === 'issue_comment' ? both(written, ticketFires({ event, payload, ...trust })) : written;
   }
   return nothing(`${event ?? 'unnamed'} event: not one the dispatcher acts on`);
 };
@@ -878,7 +917,7 @@ export const handle = async (request, deps) => {
   const event = headers['x-github-event'];
   const delivery = headers['x-github-delivery'];
   logUnreadBodies(payload, event, delivery, deps);
-  const decision = await judged(({ relay, bodies }) => routeEvent({ event, payload, owners: deps.owners, appId: deps.appId, relay, bodies }), delivery, deps);
+  const decision = await judged(({ relay, bodies, claim }) => routeEvent({ event, payload, owners: deps.owners, appId: deps.appId, relay, bodies, claim }), delivery, deps);
   if (decision.fires.length === 0) {
     // Never an error: an outsider who installed the App must not page anyone.
     deps.log('webhook-ignored', { level: 'info', delivery: delivery ?? null, github: event, reason: decision.reason });
@@ -923,24 +962,25 @@ export const receiverRelay = (relay) => [...new Set([...SUMMONERS, ...(relay ?? 
  * session's own post on a stranger's PR naming that session, and reads no
  * item. Otherwise the item is read once, the delivery routed again under
  * the item's `trust.relay` ({@link receiverRelay}), a body read under that
- * list alone (the default where it names none), and each fire the
+ * list alone (the default where it names none), its ticket fires settled
+ * by the item's claim label ({@link settleClaims}), and each fire the
  * item's ready labels or switches drop is dropped ({@link switchedOn}). A
  * read that fails, or an item that is malformed, is logged at error and
  * routes under the defaults and drops nothing by switch or label: the task
  * still refuses a fire its repo's file does not allow, and a 503 would
  * lose the delivery, which GitHub does not send again by itself.
  *
- * @param {(trust: { relay: readonly string[], bodies: readonly string[] }) => Decision} route
+ * @param {(trust: { relay: readonly string[], bodies: readonly string[], claim: string | null }) => Decision} route
  * @param {string | undefined} delivery
  * @param {Deps} deps
  * @returns {Promise<Decision>}
  */
 const judged = async (route, delivery, deps) => {
-  const widest = route({ relay: TRUST_VALUES, bodies: TRUST_VALUES });
+  const widest = route({ relay: TRUST_VALUES, bodies: TRUST_VALUES, claim: null });
   // A body read under every list can turn a summons into a message the
   // receiver refuses, so a delivery goes unread only where reading no body
   // queues nothing either.
-  const repo = (widest.fires[0] ?? route({ relay: TRUST_VALUES, bodies: [] }).fires[0])?.fire.repo;
+  const repo = (widest.fires[0] ?? route({ relay: TRUST_VALUES, bodies: [], claim: null }).fires[0])?.fire.repo;
   if (repo === undefined) return widest;
   /** @type {import('./hook-table.mjs').Known | null} */
   let item;
@@ -948,9 +988,9 @@ const judged = async (route, delivery, deps) => {
     item = await deps.repoItem(repo);
   } catch (error) {
     deps.log('webhook-switches-unread', { level: 'error', delivery: delivery ?? null, repo, error: String(/** @type {any} */ (error)?.message ?? error) });
-    return route({ relay: receiverRelay(null), bodies: RELAY });
+    return route({ relay: receiverRelay(null), bodies: RELAY, claim: null });
   }
-  return switchedOn(route({ relay: receiverRelay(item?.relay), bodies: item?.relay ?? RELAY }), item, delivery, deps);
+  return switchedOn(route({ relay: receiverRelay(item?.relay), bodies: item?.relay ?? RELAY, claim: item?.claim ?? null }), item, delivery, deps);
 };
 
 /**

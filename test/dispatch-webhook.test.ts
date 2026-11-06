@@ -1577,7 +1577,10 @@ describe('handle', () => {
   });
 
   test('a signed close queues one freed fire on the lane, keyed by the delivery', async () => {
-    const { deps, queued } = harness();
+    // An item naming the claim label, which the closed issue does not
+    // carry: with none, the close of a labelled issue also queues a ticket
+    // fire for the task to judge (test/dispatch-ticket-route.test.ts).
+    const { deps, queued } = harness({ repoItem: async () => ({ switches: null, ready: null, claim: 'workflow: under development' }) });
     const response = await handle(delivery('issues', issuesEvent('closed')), deps);
     assert.equal(response.statusCode, 202);
     assert.equal(queued.length, 1);

@@ -830,3 +830,83 @@ export const pullRequestFires = (payload, { relay = RELAY, bodies = relay, appId
     reason: `#${pr?.number} ${pr?.merged ? 'merged' : 'closed'}`,
   });
 };
+
+/**
+ * @typedef {{ fire: import('./fire.mjs').TicketFire, reason: string, key: 'ticket', claimed: { labels: string[], replaces: string | null } }} TicketQueued
+ *   A ticket fire, and what the receiver settles it by
+ *   (`settleClaims`, route.mjs): the issue's labels, which must hold the
+ *   repo's claim label for the fire to queue, and the key of the spec
+ *   owner's own message, which the fire replaces where it queues.
+ */
+
+/**
+ * The ticket fire a comment on an issue, or an issue closed or reopened,
+ * may queue (dispatch/ticket-fire.mjs): one fire for the spec owner and
+ * the builders together, which the task sends to each role, told which it
+ * holds. The receiver cannot find the builders, so it queues this beside
+ * the spec owner's own message, and settles which goes once it knows the
+ * repo's claim label. An issue with no labels cannot be claimed, and gets
+ * none. What reaches no session today reaches none here either: a PR's
+ * comment, an edited one, the dispatcher's marker, a stranger's comment.
+ *
+ * Governor's deploy comment reaches the spec owner alone (`ownerOnly`):
+ * a builder hears the deploy through its PR.
+ *
+ * @param {{ event: string | undefined, payload: any, appId?: number | undefined, relay?: readonly string[], bodies?: readonly string[] }} args
+ * @returns {{ fires: TicketQueued[], reason: string }}
+ */
+export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = relay }) => {
+  const none = { fires: [], reason: '' };
+  const issue = payload?.issue;
+  if (!Number.isInteger(issue?.number) || issue.number <= 0 || issue?.pull_request) return none;
+  const labels = (issue?.labels ?? []).map((/** @type {{ name?: unknown }} */ l) => l?.name).filter((/** @type {unknown} */ n) => typeof n === 'string' && n !== '');
+  if (labels.length === 0) return none;
+  const onAuthor = authorOf(issue, appId);
+  // The spec owner the body names, read only where `bodies` lets its author in.
+  const ticketBody = relayedBody({ body: issue?.body, ...onAuthor }, bodies);
+  const owner = sessionNamedIn(ticketBody);
+  const state = issue?.state === 'closed' ? 'closed' : 'open';
+  /** @type {{ text: (limit: number) => string, event: 'comments' | 'close', poster: string | null, closing: boolean, authors: string[], ownerOnly: boolean, what: string }} */
+  let about;
+  if (event === 'issue_comment') {
+    const comment = payload?.comment;
+    if (payload?.action !== 'created') return none;
+    if (notAnUpdate({ written: comment, relay, appId }) !== null) return none;
+    const body = String(comment?.body ?? '');
+    const deployed = body.includes(DEPLOYED_MARKER) && postedByApp(comment, appId);
+    const told = deployed ? { ...payload, comment: { ...comment, body: withoutMarker(body, DEPLOYED_MARKER) } } : payload;
+    const unsigned = unsignedPost(body);
+    about = {
+      text: (limit) => `${issueCommentPrompt(told, 'subscriber', limit)}${unsigned ? `\n\n${UNSIGNED}` : ''}`,
+      event: 'comments',
+      poster: postedBy(body),
+      closing: deployed && state === 'closed',
+      authors: kindsOf([authorOf(comment, appId), onAuthor]),
+      ownerOnly: deployed,
+      what: `comment ${comment?.id} on #${issue.number}`,
+    };
+  } else if (event === 'issues' && (payload?.action === 'closed' || payload?.action === 'reopened')) {
+    if (!lets(relay, onAuthor)) return none;
+    about = {
+      text: () => issueEventPrompt(payload, null),
+      event: 'close',
+      poster: null,
+      closing: payload.action === 'closed',
+      authors: kindsOf([onAuthor]),
+      ownerOnly: false,
+      what: `issue #${issue.number} ${payload.action}`,
+    };
+  } else {
+    return none;
+  }
+  /** @param {string} text */
+  const fire = (text) => build.ticket({ issue: issue.number, text, event: about.event, state, labels, owner, poster: about.poster, closing: about.closing, authors: about.authors, ownerOnly: about.ownerOnly });
+  let limit = EXCERPT_CHARS;
+  let built = fire(about.text(limit));
+  while (fireWeight(built) > FIRE_BUDGET && limit > 1) {
+    limit = Math.floor(limit / 2);
+    built = fire(about.text(limit));
+  }
+  const reason = `${about.what}: for its spec owner${about.ownerOnly ? '' : ' and, on a claimed ticket, its builders'}, in place of the spec owner's own message`;
+  return { fires: [{ fire: built, reason, key: 'ticket', claimed: { labels, replaces: owner === null ? null : sessionId(owner) } }], reason: '' };
+};
