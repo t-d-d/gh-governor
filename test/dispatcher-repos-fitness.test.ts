@@ -38,7 +38,7 @@ import { factoryFile } from './helpers/factory.ts';
 const FACTORY = 'acme/factory';
 const ASKME = 't-d-d/askme-mcp';
 const FACTORY_FILE = factoryFile(CONFIG_PATH);
-const ASKME_FILE = JSON.stringify({ environment: 'env_01ASK', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { pickup: true, summons: true, prMessages: true, subscribeMessages: true } });
+const ASKME_FILE = JSON.stringify({ environment: 'env_01ASK', pickup: { ready: ['mode: afk'], claim: 'claimed' }, summons: {}, prMessages: {}, subscribeMessages: {} });
 const NOW = Date.parse('2026-10-27T12:00:00Z');
 
 describe('fitness: the factory\'s config file, shaped like a served repo\'s, passes the committed schema (dispatcher-repos.md)', () => {
@@ -61,7 +61,7 @@ describe('fitness: a repo without the file, or with a file that fails the schema
   });
 
   test('by the bare schedule fire or a fire naming it', async () => {
-    for (const file of [null, '{', '{}', JSON.stringify({ ...JSON.parse(ASKME_FILE), features: { heartbeat: true } }), JSON.stringify({ ...JSON.parse(ASKME_FILE), environment: 'nowhere' })]) {
+    for (const file of [null, '{', '{}', JSON.stringify({ ...JSON.parse(ASKME_FILE), heartbeat: {} }), JSON.stringify({ ...JSON.parse(ASKME_FILE), environment: 'nowhere' })]) {
       const listed = await servedRepos({ ...reads(file), installations: async () => [{ account: 't-d-d', repos: [ASKME] }] });
       assert.deepEqual(listed.served, [], String(file));
       assert.equal(await repoServed({ ...reads(file), repo: ASKME }), null, String(file));
@@ -88,9 +88,9 @@ const fakeGitHub = (repo: string, file: string, routes: Record<string, unknown> 
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
     const rest = pathname.slice(`/repos/${repo}`.length);
     if (method === 'GET' && rest in routes) return json(routes[rest]);
-    if (rest === '/contents/.github/dispatch.json') return json({ type: 'file', encoding: 'base64', content: Buffer.from(file).toString('base64') });
-    if (rest === '/issues' && method === 'GET') return json([{ number: 2, title: 'Issue 2', state: 'open', created_at: '2026-08-01T00:00:00Z', user: { login: 'maintainer' }, author_association: 'MEMBER', labels: JSON.parse(file).labels.ready.map((name: string) => ({ name })) }]);
-    if (rest === '/issues/2' && method === 'GET') return json({ number: 2, title: 'Issue 2', state: 'open', body: '', user: { login: 'maintainer' }, author_association: 'MEMBER', labels: JSON.parse(file).labels.ready.map((name: string) => ({ name })) });
+    if (rest === '/contents/.github/governor.json') return json({ type: 'file', encoding: 'base64', content: Buffer.from(file).toString('base64') });
+    if (rest === '/issues' && method === 'GET') return json([{ number: 2, title: 'Issue 2', state: 'open', created_at: '2026-08-01T00:00:00Z', user: { login: 'maintainer' }, author_association: 'MEMBER', labels: JSON.parse(file).pickup.ready.map((name: string) => ({ name })) }]);
+    if (rest === '/issues/2' && method === 'GET') return json({ number: 2, title: 'Issue 2', state: 'open', body: '', user: { login: 'maintainer' }, author_association: 'MEMBER', labels: JSON.parse(file).pickup.ready.map((name: string) => ({ name })) });
     if (/^\/labels\//.test(rest)) return json({ message: 'Not Found' }, 404);
     if (method === 'GET') return json([]);
     return json({});

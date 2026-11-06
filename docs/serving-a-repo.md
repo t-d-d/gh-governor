@@ -1,6 +1,6 @@
 # Serving a repo
 
-How a repo puts governor to work: what each feature does, how to opt in, what `.github/dispatch.json` holds, and the two checks a served repo runs on itself. The [README](../README.md) is the overview. [How governor works](how-it-works.md) is the detail behind each feature, and [Hooks](hooks.md) covers sessions an outside system starts.
+How a repo puts governor to work: what each feature does, how to opt in, what `.github/governor.json` holds, and the two checks a served repo runs on itself. The [README](../README.md) is the overview. [How governor works](how-it-works.md) is the detail behind each feature, and [Hooks](hooks.md) covers sessions an outside system starts.
 
 - [What governor does](#what-governor-does)
 - [How a repo opts in](#how-a-repo-opts-in)
@@ -17,7 +17,7 @@ How a repo puts governor to work: what each feature does, how to opt in, what `.
 
 ## What governor does
 
-Each served repo turns on the features it wants, one switch each:
+Each served repo turns on the features it wants, one section of its config file each:
 
 - **Pickup.** A ticket carrying the repo's ready labels, with no open blocker, gets a cloud session of its own. Governor claims the ticket with the repo's claim label first, and comments the session's link on it. Only the ticket's own labels and blockers count, never its parent issue's, so a repo pauses work by taking the ready labels off the tickets that should wait. Governor does the same itself when a ready, unclaimed ticket's blocker closes as not planned: it takes the ready labels off and says so in a comment, so nothing starts before a person decides the ticket still stands. Putting them back readies it again. This is pickup's work, whatever `unblocked` says. Until a person puts them back or answers the comment, a later blocker's close starts no spec session for the ticket either.
 - **Summons.** `@claude` in an issue, a comment or a review, from someone with a say in the repo, starts a session on that remark.
@@ -43,7 +43,7 @@ A file with `waits` on may also name a wait ticket, `"waits": { "issue": <number
 
 1. Install the App (`governor-app`, or your fork's own) on the repo. The account that installs it must be on the deployment's owner list.
 2. Give the Claude GitHub App access to the repo, so the cloud sessions can push and comment.
-3. Commit `.github/dispatch.json` to the default branch.
+3. Commit `.github/governor.json` to the default branch.
 
 The next fire serves the repo. No deploy is needed. Deleting the file or uninstalling the App stops it at the next fire.
 
@@ -60,101 +60,118 @@ The smallest useful file:
 ```json
 {
   "environment": "my-env",
-  "labels": { "ready": ["mode: afk"], "claim": "claimed" },
-  "features": { "pickup": true, "summons": true, "prMessages": true, "subscribeMessages": true }
+  "pickup": { "ready": ["mode: afk"], "claim": "claimed" },
+  "summons": {},
+  "prMessages": {},
+  "subscribeMessages": {}
 }
 ```
 
 ### The starter kit
 
-[examples/starter/](../examples/starter/) is a starter kit a new repo copies into its own `.github/`, so it gets recurring work from day one. It offers two policies, one `dispatch.json` each, and a repo copies one of them:
+[examples/starter/](../examples/starter/) is a starter kit a new repo copies into its own `.github/`, so it gets recurring work from day one. It offers two policies, one config file each, and a repo copies one of them:
 
-- **`.github/dispatch.json`, where the owner merges.** Pick it for a repo starting out, or one where a person reads every pull request before it merges. Sessions pick up tickets and hear their PRs, and governor reviews nothing.
-- **`.github/dispatch.dark-factory.json`, a dark factory.** Pick it for a repo whose CI you trust to stop a bad change, where a ticket should go from its label to a merged commit with no person. It turns on every switch but `hooks`, the PR review among them, with `merge` true.
+- **`.github/governor.json`, where the owner merges.** Pick it for a repo starting out, or one where a person reads every pull request before it merges. Sessions pick up tickets and hear their PRs, and governor reviews nothing.
+- **`.github/governor.dark-factory.json`, a dark factory.** Pick it for a repo whose CI you trust to stop a bad change, where a ticket should go from its label to a merged commit with no person. It turns on every feature but `hooks`, the PR review among them, with `merge` true.
 
 The kit holds four files:
 
-- `.github/dispatch.json` names its JSON Schema in `$schema`, at the commit the config check is pinned to, so an editor describes each key on hover. Its `features` lists every switch, so the file shows every feature governor has: the ones it leaves off are `false`. It turns on pickup, summons, PR messages, subscriptions, sign-off, the heartbeat and three periodics: a code review every 10 merges into the default branch, a backlog review every 5 issues opened, each also weekly when its count has counted anything, and a weekly review on its day limit alone. The backlog review checks the issues opened, then lists on the heartbeat issue the tickets left stuck: claimed ones with no open pull request, and, where issue reviews are on, open ones no issue review ran on and ones still carrying a review's `failure` or `neutral` labels. Its issue reviews are off, since it has no `issueReviews` section, and the ready labels are `mode: afk` alone: a ready label only a review adds would stop pickup with the reviews off. Each prompt is plain text that needs no skill, and acts on the window governor writes under it: the last fire's time, and what each count counted since. A repo can swap any prompt for one that calls its own skill.
-- `.github/dispatch.dark-factory.json` is the same file with every switch but `hooks` on. It keeps the placeholders and the three periodics, and reviews every ticket before pickup builds it. Its `triage` issue review runs on each ticket that is not claimed, when it is opened, reopened or has its body edited, and when a label that changes which of its `byLabel` entries apply is added or removed. It reads governor's default prompt, then a check of the ticket's type from its `byLabel` entries: a PRD, a bug (`type: bug` or `bug`) or an enhancement. Readiness is the review's label and the mode is a person's. The one ready label is `triage: build`. A bug that passes gets `triage: build`, so pickup builds it with no person. An enhancement that passes gets `triage: passed`, and a person readies it by adding `triage: build`. A ticket its filer must edit gets `triage: needs edit`, and one a person must decide gets `triage: needs a person`, which is among the excluded labels beside `mode: human`, so pickup never takes a ticket the review doubts. A person holds a ticket by adding `mode: human`, and no review run takes it off. A person overrules the review by adding `triage: build` by hand. Create the `triage: build` label before the file goes in, or the config check warns that no ticket can carry it. It names the CI workflow `ciMessages` reads in `workflows.ci`, and has a `review` section: a plain-text checklist that needs no skill, `merge` true, and a human-only list that leaves every `CLAUDE.md`, `.claude/`, `.github/workflows/`, `.github/actions/`, `.github/dispatch.json` itself and `infra/` to a person, each with its reason. A PR touching one of them waits for a person to merge it.
+- `.github/governor.json` names its JSON Schema in `$schema`, at the commit the config check is pinned to, so an editor describes each key on hover. It lists every feature's section, so the file shows every feature governor has: the ones it leaves off are `{ "enabled": false }`. It turns on pickup, summons, PR messages, subscriptions, sign-off, the heartbeat and three periodics: a code review every 10 merges into the default branch, a backlog review every 5 issues opened, each also weekly when its count has counted anything, and a weekly review on its day limit alone. The backlog review checks the issues opened, then lists on the heartbeat issue the tickets left stuck: claimed ones with no open pull request, and, where issue reviews are on, open ones no issue review ran on and ones still carrying a review's `failure` or `neutral` labels. Its issue reviews are off, since its `issueReviews` section sets `"enabled": false`, and the ready labels are `mode: afk` alone: a ready label only a review adds would stop pickup with the reviews off. Each prompt is plain text that needs no skill, and acts on the window governor writes under it: the last fire's time, and what each count counted since. A repo can swap any prompt for one that calls its own skill.
+- `.github/governor.dark-factory.json` is the same file with every feature but `hooks` on. It keeps the placeholders and the three periodics, and reviews every ticket before pickup builds it. Its `triage` issue review runs on each ticket that is not claimed, when it is opened, reopened or has its body edited, and when a label that changes which of its `byLabel` entries apply is added or removed. It reads governor's default prompt, then a check of the ticket's type from its `byLabel` entries: a PRD, a bug (`type: bug` or `bug`) or an enhancement. Readiness is the review's label and the mode is a person's. The one ready label is `triage: build`. A bug that passes gets `triage: build`, so pickup builds it with no person. An enhancement that passes gets `triage: passed`, and a person readies it by adding `triage: build`. A ticket its filer must edit gets `triage: needs edit`, and one a person must decide gets `triage: needs a person`, which is among the excluded labels beside `mode: human`, so pickup never takes a ticket the review doubts. A person holds a ticket by adding `mode: human`, and no review run takes it off. A person overrules the review by adding `triage: build` by hand. Create the `triage: build` label before the file goes in, or the config check warns that no ticket can carry it. It names the CI workflow `ciMessages` reads in `workflows.ci`, and has a `prReview` section: a plain-text prompt that needs no skill, `merge` true, and a human-only list that leaves every `CLAUDE.md`, `.claude/`, `.github/workflows/`, `.github/actions/`, `.github/governor.json` itself and `infra/` to a person, each with its reason. A PR touching one of them waits for a person to merge it.
 - `.github/workflows/heartbeat.yml` calls [the heartbeat checker](#the-heartbeat-checker) every hour, pinned to a commit of this repo.
-- `.github/workflows/config-check.yml` calls [the config check](#the-config-check) on each pull request that changes `dispatch.json` or an issue template, pinned to a commit of this repo.
+- `.github/workflows/config-check.yml` calls [the config check](#the-config-check) on each pull request that changes `governor.json` or an issue template, pinned to a commit of this repo.
 
 To use it:
 
 1. Create the heartbeat issue. Its body must carry governor's marker, `<!-- governor:heartbeat -->`, or governor writes nothing into it. Put the marker on a line of its own: governor writes its block after it. Anything else in the body stays yours.
-2. Copy the files into the repo's `.github/`, all but the policy you did not pick. For a dark factory, copy `dispatch.dark-factory.json` in place of `dispatch.json`, saved as `.github/dispatch.json`. Governor reads no other name.
-3. In `dispatch.json`, set `environment` to the repo's cloud environment, by name, in place of the `my-env` placeholder. Set `heartbeat.issue` to the issue's number, and the labels to the repo's own.
+2. Copy the files into the repo's `.github/`, all but the policy you did not pick. For a dark factory, copy `governor.dark-factory.json` in place of `governor.json`, saved as `.github/governor.json`. Governor reads no other name.
+3. In `governor.json`, set `environment` to the repo's cloud environment, by name, in place of the `my-env` placeholder. Set `heartbeat.issue` to the issue's number, and pickup's labels to the repo's own.
 4. Keep, edit or drop the periodics, and set the checker's labels in `heartbeat.yml`.
 5. For a dark factory, also set these before the file merges:
    - `workflows.ci` to the repo's own CI workflow, in place of `.github/workflows/ci.yml`.
    - The human-only globs to the repo's own paths: `infra/**` stands for wherever the repo keeps its infrastructure. Add any other path a person should see change, such as billing or auth code.
    - The checklist, if the repo has its own rules for a pull request.
-   - Nothing more for CI. The review waits for the latest run of `workflows.ci` at a PR's head to end green, whether or not the plan lets the default branch require it. A CI workflow with a `paths` filter has no run at the head of a PR it skips, so that PR waits until a push starts one, or a person merges it, as it would on a required check. A CI workflow that runs only after the merge has no run at any PR's head: set `review.waitForCi` to `false`. The review needs the App's Actions read to see the run. For any other check the review should wait for, list its name in `review.requireChecks`.
+   - Nothing more for CI. The review waits for the latest run of `workflows.ci` at a PR's head to end green, whether or not the plan lets the default branch require it. A CI workflow with a `paths` filter has no run at the head of a PR it skips, so that PR waits until a push starts one, or a person merges it, as it would on a required check. A CI workflow that runs only after the merge has no run at any PR's head: set `prReview.waitForCi` to `false`. The review needs the App's Actions read to see the run. For any other check the review should wait for, list its name in `review.requireChecks`.
    - Each shipping job's name, ending `· deployed: <target>`, and the deploy workflow's top-level `TICKET_LABEL_PATHS`, which deploy messages and `deployed:` labels read ([Deploy messages and labels](#deploy-messages-and-labels)).
    - `merge` to false, if a person should merge each pass after all. A pass then posts its comment and check, and merges nothing. Require the `governor` check in a ruleset on the default branch, with governor's App as its source, so a pull request cannot merge while its session still owes a fix.
 6. Merge them into the default branch through a pull request. The config check runs on it.
 
 The dark factory keeps `hooks` off, since a hook needs a key the owner mints after the file merges. To add one, merge a `hooks` entry with `hooks` turned on, then mint its key as [Hooks](hooks.md) says.
 
-Governor writes pickup's line after its next sweep. A periodic's line appears when governor first reads it, on the next sweep or counted event, and says it has not fired yet. Its first fire comes one day limit or one count later, and replaces the line. Until a line appears, the checker measures from when `dispatch.json` last changed.
+Governor writes pickup's line after its next sweep. A periodic's line appears when governor first reads it, on the next sweep or counted event, and says it has not fired yet. Its first fire comes one day limit or one count later, and replaces the line. Until a line appears, the checker measures from when `governor.json` last changed.
 
 ### The schema
 
 The schema is `configSchema` in [dispatch/repo-config.mjs](../dispatch/repo-config.mjs). An unknown key anywhere is a fault, except a top-level `$schema`, which names the JSON Schema for an editor ([Editing the file with its JSON Schema](#editing-the-file-with-its-json-schema)) and which governor ignores.
 
+The file has one rule for where a setting lives. `environment`, `trust` and `workflows` are shared settings, since several features read them. Every other top-level key is one feature's section, and holds every setting and prompt that feature reads:
+
+- A section turns its feature on, unless it sets `"enabled": false`. A feature with no settings is `{}`. A feature with no section is off.
+- A section that is off needs none of its required settings.
+- A section's named entries are an object keyed by name: `periodics.sessions`, `hooks.sessions` and `issueReviews.reviews`. An entry does not set `name`.
+- A field holding text or `{ "file": "<path>" }` is `prompt`. A section with more than one has `prompts`, keyed by kind.
+- Pickup's labels serve the other features that read them: `unblocked`, `waits`, `prReview` and `issueReviews`. A file that turns one of those on has a `pickup` section with `ready` and `claim`, which may set `"enabled": false` to keep pickup itself off.
+
+Governor read `.github/dispatch.json` in an older layout before this one, and reads it no more. [Moving from dispatch.json](#moving-from-dispatchjson) says where each key went.
+
 | Key | Required | What it holds |
 |---|---|---|
 | `$schema` | no | The URL of this file's JSON Schema, for an editor to describe and check each key. Governor ignores it. Use the schema at the commit the config check is pinned to, and bump both together. |
 | `environment` | yes | The claude.ai cloud environment the repo's sessions start in: its name as `/remote-env` lists it, or its ID. A public repo should use the name. |
-| `labels.ready` | yes | Every label a ready ticket carries. |
-| `labels.claim` | yes | The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up. |
-| `labels.claimRemoves` | no | The ready labels the claim takes off, and a failed launch puts back. Default none. |
-| `labels.exclude` | no | Labels that keep a ticket out: a ticket carrying any of them is never picked up, and a blocker's close starts no session for it. It cannot name a ready label. Default `["type: prd"]`. A hold label, one that marks a ticket as needing a person or staying not ready (`mode: human`, say), belongs here, or a blocker's close starts a session to rewrite that ticket's spec. |
-| `features` | yes | The switches that turn governor's features on, each `true` or `false`. A switch left out is off. |
-| `workflows` | no | What the repo's workflows are to governor: `ci`, `triage` and `tags`. |
-| `review` | when `prReview` is on | The PR review's settings: its checklist, and the lists it checks a PR against. Needed when `prReview` is on. |
-| `heartbeat` | when `heartbeat` is on | `{ "issue": <number> }`: the issue governor records every fire on, under the `<!-- governor:heartbeat -->` marker its body must carry. The older `{ "issue": <number>, "marker": "<!-- … -->" }` keeps one `last-run:` line under the repo's own marker, which the hourly sweep updates. Needed when `heartbeat` is on. |
-| `waits` | no | `{ "issue": <number> }`: the wait ticket, which each waiting ticket is linked as blocked by while it waits, so its sidebar shows the wait. Read only with `waits` on. Without it, governor links nothing. |
-| `pickup` | no | `{ "sweepHours": <number>, "by": [ … ] }`: how many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one, default one; and `by`, the retired name of `trust.task`, which governor reads as it. |
 | `trust` | no | `{ "start": [ … ], "auto": [ … ], "task": [ … ], "relay": [ … ], "review": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `start` is who may set work going, by readying a ticket or writing a summons, default `OWNER`, `MEMBER` and `COLLABORATOR`, which a repo may narrow and never widen. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`. `review` is whose pull requests the PR review reads, default the three. |
-| `prompts` | no | Replacement wording for the instruction in each kind of message, keyed by kind. |
-| `periodics` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed. At least one when the `periodics` switch is on. |
-| `hooks` | when `hooks` is on | The sessions an outside system starts with a signed request, each with an optional `perHour` cap on fires. At least one when the `hooks` switch is on. |
-| `issueReviews` | no | The issue reviews: `reviews`, each keyed by its name, with its selector `when`, the labels each of its `conclusions` adds, and optionally its own `prompt` and checks and labels per label (`byLabel`), and `enabled`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. Governor runs them where the file has this section, unless `enabled` is `false`. |
+| `workflows` | no | What the repo's workflows are to governor: `ci`. |
+| `workflows.ci` | no | The CI workflow's file, under `.github/workflows/`. A red run of it tells the sessions of the merges it may blame, and the PR review waits for its run at a PR's head. Without it, no run is CI. |
+| `pickup.ready` | when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on | Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. Every label a ready ticket carries. |
+| `pickup.claim` | when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on | Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up. |
+| `pickup.claimRemoves` | no | The ready labels the claim takes off, and a failed launch puts back. Default none. |
+| `pickup.exclude` | no | Labels that keep a ticket out: a ticket carrying any of them is never picked up, and a blocker's close starts no session for it. It cannot name a ready label. Default `["type: prd"]`. A hold label, one that marks a ticket as needing a person or staying not ready (`mode: human`, say), belongs here, or a blocker's close starts a session to rewrite that ticket's spec. |
+| `pickup.sweepHours` | no | How many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default one, which sweeps at every fire. |
+| `pickup.prompt` | no | Replaces the default wording of a pickup session's opening prompt, below `Pickup #N 'title'`. It may name the facts {issue}, {repo} and {claim}, which governor writes in. The text, or { "file": "<path>" }. |
+| `deployMessages.triage` | no | The deploy targets whose failure starts one fresh session, rather than messages to the sessions of the merges it shipped. Default none. |
+| `deployMessages.tags` | no | The tag each deploy target's deploy moves, keyed by target, which deploy messages name. Default none. |
+| `deployMessages.deployedLabels` | no | Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, so the issue's filer hears of the deploy. Default false. |
+| `prReview.prompt` | when `prReview` is on | Required when on. The review model's system prompt, after governor's fixed frame and before a suffix naming what the code decided: the text, or { "file": "<path>" }. |
+| `heartbeat.issue` | when `heartbeat` is on | Required when on. The number of the issue governor records its fires on. Its body must already carry the `<!-- governor:heartbeat -->` marker, or governor writes nothing into it. |
+| `periodics.sessions` | when `periodics` is on | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed, each keyed by its name: one line, with no space at either end. Its session is named after it, and governor keys its record by it. At least one when on. |
+| `hooks.sessions` | when `hooks` is on | The sessions an outside system starts with a signed request, each keyed by its name: lower-case letters, digits and hyphens. The name ends the hook's URL, and its session is named after it. Each may cap its fires with `perHour`. At least one when on. |
+| `waits.issue` | no | The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing. |
+| `waits.prompts` | no | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `spec`, `ownerSpec`. |
 
-The switches in `features`:
-
-| Switch | What it turns on |
+| Section | What it turns on |
 |---|---|
-| `pickup` | A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `pickup.sweepHours` sets. |
+| `pickup` | A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `sweepHours` sets. Its labels serve the features that read them, so a file turning on `unblocked`, `waits`, `prReview` or `issueReviews` has this section, with `"enabled": false` if pickup is to stay off. |
 | `summons` | A session per `@claude` remark, and a dispatch started by hand. |
 | `prMessages` | Messages into the session a PR names, or the newest live session holding its branch. |
 | `subscribeMessages` | Messages to sessions subscribed by a `governor:subscribe` line, and to an issue's filer. A filer hears of its ticket's first deploy to each target through governor's comment on its issue, which asks it to sign off where the issue is closed. It hears a `deployed:` label only through a subscribe line for `deploys`. |
 | `redScheduledRun` | A fresh session on a scheduled run on the default branch that went red. |
-| `unblocked` | What a blocker's close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket's session, and the spec work on a not-ready ticket. The session whose link ends the ticket's body owns it and is asked to rewrite its own spec; a fresh session rewrites it only where the body names no session or that session is archived, so nobody takes a ticket from its owner. A file that still sets the older `mergeHandoff` reads as this. |
+| `unblocked` | What a blocker's close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket's session, and the spec work on a not-ready ticket. The session whose link ends the ticket's body owns it and is asked to rewrite its own spec; a fresh session rewrites it only where the body names no session or that session is archived, so nobody takes a ticket from its owner. |
 | `ciMessages` | A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`. |
 | `deployMessages` | A shipping job, or a red deploy, tells the sessions of the merges it shipped. |
 | `branchRunMessages` | A run dispatched on a branch tells the session that wrote its commit. |
 | `conflicts` | A merge into the default branch tells each PR it left conflicted. |
-| `deployedLabels` | A shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, so the issue's filer hears of the deploy. Needs `deployMessages`. |
-| `prReview` | The PR review, run from the `review` section. |
-| `heartbeat` | Governor records each fire on the issue the `heartbeat` section names: a line for pickup and one per periodic. In the older shape with a `marker`, the hourly sweep stamps the issue's `last-run:` line instead. |
-| `periodics` | A session per periodic in the `periodics` list, each time its day limit passes or one of its counts is reached. |
-| `hooks` | A session on a hook's prompt when a signed request fires one of the hooks the `hooks` list holds. A fire while the hook's last session is open goes into that session as a message. |
+| `prReview` | The PR review: its prompt, and the lists it checks a PR against. Needs `prompt` when on. |
+| `heartbeat` | Governor records each fire on the issue `issue` names: a line for pickup and one per periodic, under the `<!-- governor:heartbeat -->` marker its body must carry. Needs `issue` when on. |
+| `periodics` | A session per periodic in `sessions`, each time its day limit passes or one of its counts is reached. Needs at least one periodic when on. |
+| `hooks` | A session on a hook's prompt when a signed request fires one of the hooks `sessions` holds. A fire while the hook's last session is open goes into that session as a message. Needs at least one hook when on. |
 | `waits` | When a ticket's `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker's close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch. |
 | `signOff` | Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off. |
+| `issueReviews` | The issue reviews: `reviews`, each keyed by its name, with its selector `when`, the labels each of its `conclusions` adds, and optionally its own `prompt` and checks and labels per label (`byLabel`), and `enabled`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion's labels. Governor runs them where the file has this section, unless `enabled` is `false`. |
 
 `workflows`:
 
-- `ci`: the CI workflow's file, under `.github/workflows/`. Without it, no run is CI. With `prReview` on, the review also waits for this workflow's latest run at a PR's head and fails test 8 where it ended red, unless `review.waitForCi` is `false`. A red run on the default branch drives `ciMessages` either way.
+- `ci`: the CI workflow's file, under `.github/workflows/`. Without it, no run is CI. With `prReview` on, the review also waits for this workflow's latest run at a PR's head and fails test 8 where it ended red, unless `prReview.waitForCi` is `false`. A red run on the default branch drives `ciMessages` either way.
+
+`deployMessages` holds the deploy targets beside its switch:
+
 - `triage`: the deploy targets whose failure starts one fresh session, rather than messages to the sessions of the merges it shipped.
 - `tags`: the tag each target's deploy moves, which messages name.
+- `deployedLabels`: whether a shipping job labels the tickets it shipped `deployed: <target>`. Default `false`.
 
 A deploy is seen only if the repo's workflow declares it: the shipping job's name ends `· deployed: <target>`, and the workflow sets a top-level `TICKET_LABEL_PATHS` env. [Deploy messages and labels](#deploy-messages-and-labels) gives the steps.
 
-`review`:
+`prReview`:
 
-- `checklist` (required): the model's system prompt, after governor's fixed frame and before a suffix naming what the code decided, as text or `{ "file": "<path>" }`.
+- `prompt` (required when on): the model's system prompt, after governor's fixed frame and before a suffix naming what the code decided, as text or `{ "file": "<path>" }`.
 - `humanOnly`: `{ "glob", "reason", "unless" }` entries. A PR changing a matching path waits for a person, unless every ticket it closes carries one of the `unless` labels.
 - `tickets`: `require` and `forbid` lists of `{ "labels", "unless" }` rules that every ticket the PR closes must meet.
 - `quote`: globs of changed files the model reads whole. A `!` entry takes a path back out.
@@ -164,9 +181,9 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 - `waitForCi`: whether the review waits for the `workflows.ci` run at a PR's head. Default `true`. Set it `false` where the CI workflow does not run on pull requests, such as one with only `on: push` to the default branch and `workflow_dispatch`: its PRs have no CI run at their head and would otherwise wait forever. With `false`, the review reads no workflow runs, and still reads the required checks and `requireChecks`. A PR already waiting is reviewed on its next push or body edit.
 - `merge`: whether a pass merges. Default `true`. With `false`, a pass posts its comment and a `success` check, and the owner merges.
 
-`periodics`: a list of recurring sessions, each `{ "name", "prompt", "days" }`, with `counts`, `gapHours` and `connectors` if wanted.
+`periodics.sessions`: the recurring sessions, each keyed by its name, each `{ "prompt", "days" }`, with `counts`, `gapHours` and `connectors` if wanted.
 
-- `name`: one line, unique in the file. The session is named after it.
+- The key is the name: one line, with no space at either end. The session is named after it.
 - `prompt`: what the session runs, as text or `{ "file": "<path>" }` read from the default branch. Governor adds a line under it giving the last fire's time, or saying this is the first run, and lists what each count counted since then, by number and title.
 - `days` (required): the day limit, in whole days, at least one. The periodic is due on the sweep nearest that many days after its last fire.
 - `counts`: any of `merges` (pull requests merged into the default branch), `issuesOpened` and `issuesClosed`, each a whole number of at least one. The periodic is also due once that many have happened since its last fire, whichever limit comes first. At its day limit, a periodic with counts that counted nothing starts no session, and its next day limit counts from then.
@@ -174,25 +191,57 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 - `connectors`: the claude.ai connectors the session needs, each by its name in the account's connector list, such as `gmail_prod`: letters, digits, hyphens and underscores, each named once. A session governor starts with `claude --cloud` has none of the account's connectors, so a periodic that names any starts as a run of a routine instead, with those connectors attached and no others. Governor keeps one routine for the periodic, named after the repo and the periodic, and fires it itself. The routine is kept disabled, so its own schedule never starts a run. A connector the account has not connected starts nothing and pages (`governor-connector-missing`), and the periodic stays due. So does a routine the routines API refuses (`governor-routine-refused`), and the repo's tickets and other periodics still start. This works in public repos too, where whatever the session writes is public.
 
 ```json
-{ "name": "Code review", "prompt": "Review what merged since the last review.", "days": 7, "counts": { "merges": 20 }, "gapHours": 4 }
+"periodics": { "sessions": { "Code review": { "prompt": "Review what merged since the last review.", "days": 7, "counts": { "merges": 20 }, "gapHours": 4 } } }
 ```
 
 A new periodic starts its first session one day limit, or one count, after the first fire that reads it. A periodic never overlaps itself: while the session its last fire started is still open, a due periodic is held. Governor starts nothing, logs the fire as held with that session's link, and leaves the last fire's time alone, so the count keeps growing and the first check after the session is archived fires it. Archived by the sign-off sweep or by hand, or deleted, the run is finished. How governor keeps each one's record is in [docs/how-it-works.md](how-it-works.md#periodics).
 
-`hooks`: a list of hooks, each `{ "name", "prompt", "keyVersion" }`, with `perHour` if wanted. How a caller signs its request, and how the owner mints its key, is in [Hooks](hooks.md).
+`hooks.sessions`: the hooks, each keyed by its name, each `{ "prompt", "keyVersion" }`, with `perHour` if wanted. How a caller signs its request, and how the owner mints its key, is in [Hooks](hooks.md).
 
-- `name`: lower-case letters, digits and hyphens, unique in the file. It ends the hook's URL, and the session is named after it.
+- The key is the name: lower-case letters, digits and hyphens. It ends the hook's URL, and the session is named after it.
 - `prompt`: what the session runs, as text or `{ "file": "<path>" }` read from the default branch. Governor adds lines under it saying which hook fired and when, and quoting the caller's text as the caller's data.
 - `keyVersion` (required): the version of the hook's key a request must be signed with, a positive whole number of at most nine digits. It is not a secret.
 - `perHour`: the most fires governor queues for the hook in one clock hour, a positive whole number up to 100. Default 20. A fire past it gets `429`, so a leaked key cannot flood the queue every repo shares. Each signed request counts once in its clock hour: sending the same request again in that hour, after a timeout or a `502`, takes no second place.
 
 ```json
-{ "name": "operator-prod", "prompt": { "file": "ops/prod-alarm.md" }, "keyVersion": 1, "perHour": 20 }
+"hooks": { "sessions": { "operator-prod": { "prompt": { "file": "ops/prod-alarm.md" }, "keyVersion": 1, "perHour": 20 } } }
 ```
 
-`prompts`: each value is text, or `{ "file": "<path>" }` read from the default branch. The kinds, and the facts each may name as `{fact}`, are in [docs/how-it-works.md](how-it-works.md#prompts).
+A section's `prompt`, or each of its `prompts`, replaces the instruction in one kind of message the feature sends. Each value is text, or `{ "file": "<path>" }` read from the default branch. The kinds, the key each sits under, and the facts each may name as `{fact}`, are in [docs/how-it-works.md](how-it-works.md#prompts).
 
-[test/fixtures/factory/.github/dispatch.json](../test/fixtures/factory/.github/dispatch.json) is a full file with every feature on.
+[test/fixtures/factory/.github/governor.json](../test/fixtures/factory/.github/governor.json) is a full file with every feature on.
+
+### Moving from dispatch.json
+
+Governor reads `.github/governor.json`, and no longer reads `.github/dispatch.json`. A repo with only the old file is not served, and governor logs that at warn, naming the file to add. To move a repo:
+
+1. Add `.github/governor.json` in the new layout before the governor that reads it is deployed. The governor running before then never reads it.
+2. After the deploy, bump the pins of the config check and the heartbeat checker to a commit that reads the new file.
+3. Delete `.github/dispatch.json`.
+
+Where each key went:
+
+| In `dispatch.json` | In `governor.json` |
+|---|---|
+| `features.<switch>` | the section's presence, and its `enabled` |
+| `labels.ready`, `labels.claim`, `labels.claimRemoves`, `labels.exclude` | `pickup.ready`, `pickup.claim`, `pickup.claimRemoves`, `pickup.exclude` |
+| `prompts.pickup` | `pickup.prompt` |
+| `prompts.signOff` | `signOff.prompt` |
+| `prompts.unblockedReady`, `unblockedSpec`, `unblockedOwnerSpec`, `unblockedClaimed`, `unblockedNotPlanned` | `unblocked.prompts.ready`, `spec`, `ownerSpec`, `claimed`, `notPlanned` |
+| `prompts.waitEndedSpec`, `waitEndedOwnerSpec` | `waits.prompts.spec`, `ownerSpec` |
+| `prompts.redScheduledRun` | `redScheduledRun.prompt` |
+| `prompts.ciBreaker`, `ciTriage`, `ciBumpTriage` | `ciMessages.prompts.breaker`, `triage`, `bumpTriage` |
+| `prompts.prodTriage`, `deployGreen`, `deployGreenMany`, `deployRed`, `deployRedMany` | `deployMessages.prompts.triage`, `green`, `greenMany`, `red`, `redMany` |
+| `prompts.subscribed` | `subscribeMessages.prompt` |
+| `prompts.conflicts` | `conflicts.prompt` |
+| `workflows.triage`, `workflows.tags` | `deployMessages.triage`, `deployMessages.tags` |
+| `features.deployedLabels` | `deployMessages.deployedLabels` |
+| `review` | `prReview` |
+| `review.checklist` | `prReview.prompt` |
+| `periodics` (a list) | `periodics.sessions`, keyed by name |
+| `hooks` (a list) | `hooks.sessions`, keyed by name |
+
+`pickup.sweepHours`, `heartbeat.issue`, `waits.issue`, `trust`, `workflows.ci` and `issueReviews` keep their places. These are gone, and governor refuses a file that sets them: `features.mergeHandoff`, `features.ticketReviews`, the prompts `mergeHandoff` and `mergeHandoffUnread`, `pickup.by` (use `trust.task`), and the heartbeat's older shape with its own `marker`.
 
 ### Deploy messages and labels
 
@@ -201,14 +250,14 @@ A new periodic starts its first session one day limit, or one count, after the f
 1. **Mark the shipping job.** Name the job whose success means the change is live so the name ends ` · deployed: <target>`: a middle dot (U+00B7) with one space each side, then the target, such as `live` or `prod`. Mark only that job for each target. Never mark a rollback job that redeploys an older build, or governor tells sessions their change is live as it is taken down.
 2. **Add `at <sha>` only when it is needed.** Put `at <sha>` before the dot when the job builds a commit other than the run's head, such as a release dispatched at an older commit. The sha is the whole 40-character commit id in lower case, the form `${{ github.sha }}` gives: a short one makes the job fire nothing. Without it, governor takes the run's head as the commit shipped.
 3. **Declare `TICKET_LABEL_PATHS`.** Set it as a top-level `env:` entry of the workflow file. It picks which of the shipped PRs hear of the deploy and have their tickets labelled. `all` picks every PR the job shipped. `trigger` picks the PRs that changed a file under the workflow's own `on.push.paths`, and needs those paths. Anything else is read as globs, one per line, so more than one glob needs a YAML block (`|`).
-4. **Name the target's tag.** Without a `workflows.tags` entry, a message says "Your change is on the <target>", so a target named `live` reads "on the live". With `"tags": { "live": "live-ok" }` it says "Your change is on live", and "the live-ok tag is on <sha>".
+4. **Name the target's tag.** Without a `deployMessages.tags` entry, a message says "Your change is on the <target>", so a target named `live` reads "on the live". With `"tags": { "live": "live-ok" }` it says "Your change is on live", and "the live-ok tag is on <sha>".
 5. **Turn on the switches.** `deployMessages`, and `deployedLabels` for the labels, which needs `deployMessages`.
 
 What to expect once it is set up:
 
 - **The tag is named when the job ends.** A message says "the <tag> tag is on <sha>" as soon as the shipping job succeeds. If a later job moves the tag, the message runs ahead of it, and is wrong if that job fails. Mark the job that moves the tag, or a job after it.
 - **The first marked deploy tells nobody.** A shipping job covers the merges since the last green run that shipped the same label. The first run with the marker has none, so it only sets the baseline. Messages and labels start with the next one.
-- **A deploy workflow that is also `workflows.ci`.** Many small repos run the gate inside the deploy. A red run of that workflow is then CI: it goes to `ciMessages` (the one suspect's session, or one fresh session for several), never to the red-deploy message (the `deployRed` prompt). A green shipping job in it still uses `deployMessages`. A deploy runs only after the merge, so it has no run at a PR's head: with `prReview` on, set `review.waitForCi` to `false`, or every PR's review waits for a CI run that never comes.
+- **A deploy workflow that is also `workflows.ci`.** Many small repos run the gate inside the deploy. A red run of that workflow is then CI: it goes to `ciMessages` (the one suspect's session, or one fresh session for several), never to the red-deploy message (the `deployRed` prompt). A green shipping job in it still uses `deployMessages`. A deploy runs only after the merge, so it has no run at a PR's head: with `prReview` on, set `prReview.waitForCi` to `false`, or every PR's review waits for a CI run that never comes.
 - **An issue's filer hears the comment, not the label.** The first time a ticket gets a `deployed:` label, governor comments on it, naming the target, the job and the commit it built, and the filer hears that comment as any comment on its issue. On a closed issue the message asks the filer to sign off. The repo needs `subscribeMessages` and `deployedLabels` on. A ticket that already had the label gets no second comment. The filer is not told of the label itself unless a `governor:subscribe` line names it for `deploys`, so by default it hears each deploy once. A filer that has signed off by then refuses the message, and nothing starts.
 
 A minimal deploy workflow, `.github/workflows/deploy.yml`, with both marks:
@@ -230,22 +279,21 @@ jobs:
       - run: ./scripts/deploy.sh
 ```
 
-And the lines that match it in `dispatch.json`:
+And the section that matches it in `governor.json`:
 
 ```json
 {
-  "features": { "deployMessages": true, "deployedLabels": true },
-  "workflows": { "tags": { "live": "live-ok" } }
+  "deployMessages": { "deployedLabels": true, "tags": { "live": "live-ok" } }
 }
 ```
 
 ### Editing the file with its JSON Schema
 
-[schema/dispatch.schema.json](../schema/dispatch.schema.json) is `configSchema` exported as a JSON Schema. It describes every key: what governor does with it, and for a switch, what the switch turns on. An editor that reads it shows each key's description on hover and in completion, keys the file leaves out included, and flags an unknown key. A repo names the schema in the file's own `$schema` key, at a pinned commit of this repo, so it needs no editor settings, and anyone reading the file, an AI included, finds the descriptions from the file itself:
+[schema/governor.schema.json](../schema/governor.schema.json) is `configSchema` exported as a JSON Schema. It describes every key: what governor does with it, and for a section, what the feature does. An editor that reads it shows each key's description on hover and in completion, keys the file leaves out included, and flags an unknown key. A repo names the schema in the file's own `$schema` key, at a pinned commit of this repo, so it needs no editor settings, and anyone reading the file, an AI included, finds the descriptions from the file itself:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/<commit>/schema/dispatch.schema.json",
+  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/<commit>/schema/governor.schema.json",
   "environment": "my-env"
 }
 ```
@@ -296,7 +344,7 @@ The default is `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit a `trust.re
 "trust": { "task": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE"] }
 ```
 
-Governor refuses `BOT` in it. The older `pickup.by` is read as `trust.task`, so a file that sets it keeps working, but a file that sets both is refused. Where the file sets `trust.relay` or `trust.review` too, every value `task` names, `BOT` aside, must be in each. The [config check](#the-config-check) warns where `trust.task` reaches beyond owners, members and collaborators, saying what that opens.
+Governor refuses `BOT` in it, and refuses the older `pickup.by`. Where the file sets `trust.relay` or `trust.review` too, every value `task` names, `BOT` aside, must be in each. The [config check](#the-config-check) warns where `trust.task` reaches beyond owners, members and collaborators, saying what that opens.
 
 On a ticket whose author has no say, a ready label counts only when a person other than its author, or governor's own App, added it last. A label the author added, as an issue template does, or that a labelling workflow or another App added, does not count. Once `trust.start` is narrowed, the same holds on every ticket: a bot's label never counts. Governor logs `dispatch-pickup` at warn and comments once on the ticket, naming the labels and who added each. Someone with triage access who takes the labels off and adds them again starts the ticket. The [config check](#the-config-check) fails an issue template that names a ready label, whatever `trust.task` says.
 
@@ -315,7 +363,7 @@ The default is `OWNER`, `MEMBER` and `COLLABORATOR`. So a stranger's issue linke
 "trust": { "auto": ["OWNER"] }
 ```
 
-Or widen it, with the same values pickup reads. Governor refuses `BOT` in it, since no person read a bot's issue. Where the file sets `trust.task` (or the older `pickup.by`) too, every value `auto` names must be in it, or governor refuses the file: it would set going a ticket that pickup may not start. Where the file sets `trust.relay` or `trust.review`, the same holds for each. Where the file leaves `auto` unset and sets a narrower `trust.task`, `pickup.by`, `trust.relay` or `trust.review`, `auto` is narrowed to fit, never widened. The [config check](#the-config-check) warns where `auto` reaches beyond owners, members and collaborators, saying what that opens, and notes where it narrowed an unset `auto`.
+Or widen it, with the same values pickup reads. Governor refuses `BOT` in it, since no person read a bot's issue. Where the file sets `trust.task` too, every value `auto` names must be in it, or governor refuses the file: it would set going a ticket that pickup may not start. Where the file sets `trust.relay` or `trust.review`, the same holds for each. Where the file leaves `auto` unset and sets a narrower `trust.task`, `pickup.by`, `trust.relay` or `trust.review`, `auto` is narrowed to fit, never widened. The [config check](#the-config-check) warns where `auto` reaches beyond owners, members and collaborators, saying what that opens, and notes where it narrowed an unset `auto`.
 
 ### Whose text reaches a running session
 
@@ -330,7 +378,7 @@ An event with no text, a label, a close, a reopen or a push, is judged by the au
 "trust": { "relay": ["OWNER", "MEMBER", "COLLABORATOR"] }
 ```
 
-Or widen it, for an open-source repo whose sessions should hear outside contributors. Where the file sets `auto` or `task` (or `pickup.by`) too, every value each names, `BOT` aside, must be in `relay`, or governor refuses the file: it would start work on a ticket whose author's comments could not reach its session. Where the file sets `relay` and leaves `auto` or `task` unset, each is narrowed to fit, never widened. An `auto` set wider than an unset `relay` narrows nothing. The [config check](#the-config-check) warns where `relay` reaches beyond owners, members and collaborators. `BOT` in a `relay` the file sets warns too: a bot that quotes strangers' issues, such as a triage or summary bot, carries their text into a session. Where the file sets `trust.review` too, every value `relay` names, `BOT` aside, must be in it, and where it leaves `relay` unset, `relay` is narrowed to fit `review`, keeping `BOT`.
+Or widen it, for an open-source repo whose sessions should hear outside contributors. Where the file sets `auto` or `task` too, every value each names, `BOT` aside, must be in `relay`, or governor refuses the file: it would start work on a ticket whose author's comments could not reach its session. Where the file sets `relay` and leaves `auto` or `task` unset, each is narrowed to fit, never widened. An `auto` set wider than an unset `relay` narrows nothing. The [config check](#the-config-check) warns where `relay` reaches beyond owners, members and collaborators. `BOT` in a `relay` the file sets warns too: a bot that quotes strangers' issues, such as a triage or summary bot, carries their text into a session. Where the file sets `trust.review` too, every value `relay` names, `BOT` aside, must be in it, and where it leaves `relay` unset, `relay` is narrowed to fit `review`, keeping `BOT`.
 
 ### Whose pull requests the PR review reads
 
@@ -342,11 +390,11 @@ The default is `OWNER`, `MEMBER` and `COLLABORATOR`. So a stranger's pull reques
 "trust": { "review": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE"] }
 ```
 
-`review` sits at the top of the chain `auto` ⊆ `task` ⊆ `relay` ⊆ `review`: where the file sets it beside any of the others, every value each names, `BOT` aside, must be in `review`, or governor refuses the file. A list the file leaves unset is narrowed to fit it, never widened, and `review` itself is never narrowed. The [config check](#the-config-check) warns where `review` reaches beyond owners, members and collaborators: where `review.merge` is on, a pass merges such a pull request with no person reading it.
+`review` sits at the top of the chain `auto` ⊆ `task` ⊆ `relay` ⊆ `review`: where the file sets it beside any of the others, every value each names, `BOT` aside, must be in `review`, or governor refuses the file. A list the file leaves unset is narrowed to fit it, never widened, and `review` itself is never narrowed. The [config check](#the-config-check) warns where `review` reaches beyond owners, members and collaborators: where `prReview.merge` is on, a pass merges such a pull request with no person reading it.
 
 ### Issue reviews
 
-A repo turns issue reviews on with an `issueReviews` section. Governor runs its reviews unless the section sets `"enabled": false`, and a file without the section runs none. A file that still sets `features.ticketReviews` is read, but governor reads that key as nothing, and the [config check](#the-config-check) warns that the switch is now `issueReviews.enabled`.
+A repo turns issue reviews on with an `issueReviews` section. Governor runs its reviews unless the section sets `"enabled": false`, and a file without the section runs none. 
 
 `reviews` holds each review keyed by its name: lower-case letters, digits and hyphens. The name goes into every comment and marker the review writes, so renaming a review starts its rounds afresh. Reviews run in the order of their keys, except that JavaScript puts a key made only of digits first. A file with two reviews under one name keeps the last.
 
@@ -379,18 +427,18 @@ Each issue review names, in `conclusions`, the labels each of its conclusions ad
 }
 ```
 
-On every run governor adds the conclusion's labels and removes the ones the other two conclusions name, creating a label the repo lacks. It touches no other label. Every label a review's conclusions name, in its `conclusions` and in each `byLabel` entry's, starts with the review's name, a colon and a space, in any case: `triage: build` for a review named `triage`. Governor refuses a file otherwise. A run removes labels, so a label it shares with people would come off when a person had put it there: a `success` would take off a `mode: human` hold a member added, and pickup would start the ticket. So a review's labels are its own, new labels for its outcomes. The repo's own labels, such as `mode: afk` and `mode: human`, stay a person's: list them in `labels.ready`, `labels.exclude` and a review's `when`, and no review adds or removes them. Reviews and pickup share no code: they meet only through the review's labels. Two patterns:
+On every run governor adds the conclusion's labels and removes the ones the other two conclusions name, creating a label the repo lacks. It touches no other label. Every label a review's conclusions name, in its `conclusions` and in each `byLabel` entry's, starts with the review's name, a colon and a space, in any case: `triage: build` for a review named `triage`. Governor refuses a file otherwise. A run removes labels, so a label it shares with people would come off when a person had put it there: a `success` would take off a `mode: human` hold a member added, and pickup would start the ticket. So a review's labels are its own, new labels for its outcomes. The repo's own labels, such as `mode: afk` and `mode: human`, stay a person's: list them in `pickup.ready`, `pickup.exclude` and a review's `when`, and no review adds or removes them. Reviews and pickup share no code: they meet only through the review's labels. Two patterns:
 
-- **Review every ticket before it is built.** List the review's `success` label among `labels.ready`, here `"ready": ["triage: build"]`. A ticket is not ready until the review has passed it, and a later `failure` or `neutral` takes the label off again. A ticket the review readies is picked up by its label's own fire, as a person's label is. The review queues no pickup fire of its own.
+- **Review every ticket before it is built.** List the review's `success` label among `pickup.ready`, here `"ready": ["triage: build"]`. A ticket is not ready until the review has passed it, and a later `failure` or `neutral` takes the label off again. A ticket the review readies is picked up by its label's own fire, as a person's label is. The review queues no pickup fire of its own.
 - **Review a ticket once someone readies it.** List the ready label in the review's `when.labels`, here `"labels": ["mode: afk"]`. Adding the label queues the review at once, so a ticket filed before it was ready is read when it becomes so. That review's `conclusions` then cannot name the label, so it readies nothing itself.
 
-Put the `neutral` labels in `labels.exclude`, beside a person's hold such as `mode: human`, so pickup never takes a ticket the review doubted. Put the claim label in `when.exclude`, so a ticket already being built is not reviewed when its session edits the body. A person overrules a review by adding its `success` label by hand.
+Put the `neutral` labels in `pickup.exclude`, beside a person's hold such as `mode: human`, so pickup never takes a ticket the review doubted. Put the claim label in `when.exclude`, so a ticket already being built is not reviewed when its session edits the body. A person overrules a review by adding its `success` label by hand.
 
-Governor refuses a file where a conclusion names a label that does not start with the review's name, a colon and a space, where one label appears under two conclusions of one review, where one label appears in two reviews' conclusions, where a review whose `by` reaches beyond `trust.auto` names a ready label, or where a conclusion names a label a `byLabel` entry matches on, a label the same review's `when.labels` or `when.exclude` names, or `labels.claim`. The ready-label rule reads a review's `by` narrowed by `trust.review`, since the review reads no ticket whose author `trust.review` leaves out. Each rule reads a review's `conclusions` with every `byLabel` entry's. On an open-source repo, keep the default `by` on the review whose labels can ready a ticket, and give strangers a second review whose labels ready nothing.
+Governor refuses a file where a conclusion names a label that does not start with the review's name, a colon and a space, where one label appears under two conclusions of one review, where one label appears in two reviews' conclusions, where a review whose `by` reaches beyond `trust.auto` names a ready label, or where a conclusion names a label a `byLabel` entry matches on, a label the same review's `when.labels` or `when.exclude` names, or `pickup.claim`. The ready-label rule reads a review's `by` narrowed by `trust.review`, since the review reads no ticket whose author `trust.review` leaves out. Each rule reads a review's `conclusions` with every `byLabel` entry's. On an open-source repo, keep the default `by` on the review whose labels can ready a ticket, and give strangers a second review whose labels ready nothing.
 
 ### An issue review's prompt and its checks per label
 
-A review's `prompt` replaces governor's default prompt, after governor's fixed frame. It is text or `{ "file": "<path>" }`, read from the default branch with the config file, as `review.checklist` is. A missing or empty file makes the config invalid.
+A review's `prompt` replaces governor's default prompt, after governor's fixed frame. It is text or `{ "file": "<path>" }`, read from the default branch with the config file, as `prReview.prompt` is. A missing or empty file makes the config invalid.
 
 `byLabel` adds checks and labels per issue label:
 
@@ -441,9 +489,9 @@ jobs:
 
 What it reads:
 
-- `.github/dispatch.json` from the default branch. It reads only `features.heartbeat`, `features.pickup`, `features.periodics`, `heartbeat.issue`, `pickup.sweepHours` and each periodic's `name` and `days`, and ignores every other key. A file using a key added after the pinned commit still reads.
+- `.github/governor.json` from the default branch. It reads only the `heartbeat`, `pickup` and `periodics` sections, each on unless it sets `"enabled": false`, and in them `heartbeat.issue`, `pickup.sweepHours` and each periodic's name and `days`, and ignores every other key. A file using a key added after the pinned commit still reads.
 - The heartbeat issue the file names, and the lines governor keeps under its `<!-- governor:heartbeat -->` marker.
-- When `.github/dispatch.json` last changed on the default branch, only for a pickup sweep or periodic that has no line yet. A change brought in by a merge commit counts from the merge, not from when its branch commit was made. It reads up to 1,000 commits of the branch's history for this, and past that uses the commit's own date.
+- When `.github/governor.json` last changed on the default branch, only for a pickup sweep or periodic that has no line yet. A change brought in by a merge commit counts from the merge, not from when its branch commit was made. It reads up to 1,000 commits of the branch's history for this, and past that uses the commit's own date.
 
 The inputs:
 
@@ -463,14 +511,14 @@ It runs on the caller's own token, `contents: read` and `issues: write`, and hol
 
 ### The config check
 
-Governor reads `.github/dispatch.json` from the default branch only, so a bad file shows up only after it merges. The repo then goes unserved, and the alarm pages the operator, not the repo. The config check catches the file on the pull request instead. The repo calls the reusable workflow [.github/workflows/config-check.yml](../.github/workflows/config-check.yml) on pull requests that change the file or an issue template, pinned to a commit of this repo. It passes the same commit as `commit`, because a called workflow cannot learn which commit it runs from:
+Governor reads `.github/governor.json` from the default branch only, so a bad file shows up only after it merges. The repo then goes unserved, and the alarm pages the operator, not the repo. The config check catches the file on the pull request instead. The repo calls the reusable workflow [.github/workflows/config-check.yml](../.github/workflows/config-check.yml) on pull requests that change the file or an issue template, pinned to a commit of this repo. It passes the same commit as `commit`, because a called workflow cannot learn which commit it runs from:
 
 ```yaml
 name: config check
 on:
   pull_request:
     paths:
-      - .github/dispatch.json
+      - .github/governor.json
       - .github/ISSUE_TEMPLATE/**
       - ISSUE_TEMPLATE.md
       - .github/ISSUE_TEMPLATE.md
@@ -490,7 +538,7 @@ The workflow fetches this repo at `commit` with git, installs the task's depende
 
 The run fails, with governor's fault text, on:
 
-- a file that is not JSON, or that the schema refuses, a rule across keys included, such as a claim label that is also a ready label or `prReview` on with no `review` section;
+- a file that is not JSON, or that the schema refuses, a rule across keys included, such as a claim label that is also a ready label or `prReview` on with no `prompt`;
 - a prompt file that is missing or empty, or that names a fact its kind lacks;
 - an issue template whose `labels:` names one of the file's ready labels: an issue form or a Markdown template's front matter under `.github/ISSUE_TEMPLATE/`, or a single `ISSUE_TEMPLATE.md` at the root, in `.github/` or in `docs/`. The template adds its labels whoever opens the issue, so it would ready every ticket of its kind before anyone read it. The error is on the template, and holds whatever `trust.task` says.
 
@@ -498,15 +546,14 @@ It warns, without failing, on a file governor reads but that cannot work:
 
 - a ready label the repo does not have;
 - a `workflows.ci` file that is not in the repo;
-- a heartbeat issue that does not exist or lacks its marker, `<!-- governor:heartbeat -->`, or the repo's own in the older shape;
-- a `review.humanOnly` or `review.quote` glob that matches no path;
+- a heartbeat issue that does not exist or lacks its marker, `<!-- governor:heartbeat -->`;
+- a `prReview.humanOnly` or `prReview.quote` glob that matches no path;
 - an issue review whose `by`, or its default, shares no value with `trust.review`: governor refuses every ticket such a review selects before it runs, so it never comments;
-- `features.ticketReviews`, which governor reads as nothing: the switch is now `issueReviews.enabled`;
 - an issue template it cannot parse, or a template folder in a tree too large for GitHub to list whole, so its labels went unchecked.
 
 It warns too, under a title of its own, where a `trust` list the file sets reaches beyond `OWNER`, `MEMBER` and `COLLABORATOR`, and says what that list opens. Such a file works, so this is not a "cannot work" warning. It adds a notice for each list the file leaves unset that governor narrowed to fit the lists it sets, `trust.task` among them ([Whose issues governor sets going by itself](#whose-issues-governor-sets-going-by-itself), [Whose issues and pull requests work may be about](#whose-issues-and-pull-requests-work-may-be-about), [Whose text reaches a running session](#whose-text-reaches-a-running-session), [Whose pull requests the PR review reads](#whose-pull-requests-the-pr-review-reads)).
 
-A pull request that deletes the file gets a warning that governor will stop serving the repo.
+A pull request that deletes the file gets a warning that governor will stop serving the repo. Where the head still has `.github/dispatch.json`, the warning says governor no longer reads it.
 
 It runs on the caller's own token, `contents: read` alone, and holds no secret or id. It uses no action. Where that token may not read the repo's labels or the heartbeat issue, as can happen in a private repo, the check warns that it could not, and leaves that part undone.
 

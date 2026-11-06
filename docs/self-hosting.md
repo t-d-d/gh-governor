@@ -51,19 +51,21 @@ Under your account's or organisation's **Settings → Developer settings → Git
 
 1. Fork this repo, or create a repo from it. Keep the `LICENSE`.
 2. Install your App on it, and give the Claude GitHub App access to it.
-3. To have governor work on its own tickets, commit a `.github/dispatch.json` like this one:
+3. To have governor work on its own tickets, commit a `.github/governor.json` like this one:
 
    ```json
    {
      "environment": "my-env",
-     "labels": { "ready": ["mode: afk"], "claim": "claimed", "claimRemoves": [] },
-     "features": { "pickup": true, "summons": true, "prMessages": true, "subscribeMessages": true }
+     "pickup": { "ready": ["mode: afk"], "claim": "claimed", "claimRemoves": [] },
+     "summons": {},
+     "prMessages": {},
+     "subscribeMessages": {}
    }
    ```
 
    and create its ready label, `mode: afk`.
 
-   You can also turn `prReview` on, as this repo does. Give it a `review` section that names its `checklist`, which the section needs, and sets `"merge": false`, since `merge` is true unless set. Then a pass only posts a comment and a `governor` check, and you still merge every pull request, so governor never passes a change to its own code with nobody looking. A pull request cannot review itself either: the review runs the image deployed from main and reads its checklist from main. This repo's checklist is `.claude/skills/pr-review/SKILL.md`. Each review is a `claude -p` run on the stored login, so it draws on the same usage limit as the sessions.
+   You can also turn `prReview` on, as this repo does. Give its section a `prompt`, which it needs when on, and sets `"merge": false`, since `merge` is true unless set. Then a pass only posts a comment and a `governor` check, and you still merge every pull request, so governor never passes a change to its own code with nobody looking. A pull request cannot review itself either: the review runs the image deployed from main and reads its checklist from main. This repo's checklist is `.claude/skills/pr-review/SKILL.md`. Each review is a `claude -p` run on the stored login, so it draws on the same usage limit as the sessions.
 
 ### 3. Create an AWS account and apply the bootstrap stack
 

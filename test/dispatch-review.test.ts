@@ -25,6 +25,7 @@ import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { APP_ID, BODY, DEPENDABOT_COMMIT, FILES, HEAD, IAM, MERGE_BASE, PASS, REPO, SKILL, cliOutput, dependabotRow, pullRow } from './helpers/dispatch-review-fixtures.ts';
 import type { Answer, FileRow, Pull, PullCommit, TicketRow } from './helpers/dispatch-review-fixtures.ts';
 import { factoryFile } from './helpers/factory.ts';
+import { switched } from './helpers/governor-file.ts';
 import { githubReader } from '../scripts/lib/github-app.mjs';
 import { BOT, REVIEW, authorKind, lets } from '../dispatch/trust.mjs';
 
@@ -602,7 +603,7 @@ describe('run — what a review skips, saying nothing', () => {
     const stranger = harness({ config, pulls: { 767: pullRow({ association: 'NONE' }) } });
     await review({ kind: 'review', pr: 767 }, stranger);
     assert.equal(stranger.judged.length, 1, 'the model reads a NONE author\'s PR where review lists NONE');
-    const owners = JSON.stringify({ ...opened, pickup: { ...opened.pickup, by: ['OWNER'] }, trust: { ...opened.trust, review: ['OWNER'] } });
+    const owners = JSON.stringify({ ...opened, trust: { ...opened.trust, task: ['OWNER'], review: ['OWNER'] } });
     const member = harness({ config: owners, pulls: { 767: pullRow({ association: 'MEMBER' }) } });
     const result = await review({ kind: 'review', pr: 767 }, member);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['skipped']);
@@ -623,7 +624,7 @@ describe('run — what a review skips, saying nothing', () => {
 });
 
 /**
- * Dependabot's bumps: read by the Dependabot list in .github/dispatch.json,
+ * Dependabot's bumps: read by the Dependabot list in .github/governor.json,
  * not the checklist. Its body is its own template and its files are
  * dependency manifests the human-only list holds for a session's change.
  */
@@ -1073,7 +1074,7 @@ describe('fitness: run — no run but the CI workflow\'s at the head holds a mer
 
   test('a repo whose CI runs only after the merge sets `review.waitForCi` false: the review reads no workflow runs', async () => {
     const opened = JSON.parse(factoryFile(CONFIG_PATH));
-    const config = JSON.stringify({ ...opened, review: { ...opened.review, waitForCi: false } });
+    const config = JSON.stringify({ ...opened, prReview: { ...opened.prReview, waitForCi: false } });
     for (const runs of [[], [ciRun({ conclusion: 'failure' })], [ciRun({ status: 'in_progress', conclusion: null })]]) {
       const h = harness({ config, ciRuns: runs });
       const turn = await review({ kind: 'review', pr: 767 }, h);
@@ -1086,7 +1087,7 @@ describe('fitness: run — no run but the CI workflow\'s at the head holds a mer
 
   test('with `review.waitForCi` false, a required check or a `requireChecks` entry still fails or holds test 8', async () => {
     const opened = JSON.parse(factoryFile(CONFIG_PATH));
-    const config = (review: Record<string, unknown> = {}) => JSON.stringify({ ...opened, review: { ...opened.review, waitForCi: false, ...review } });
+    const config = (review: Record<string, unknown> = {}) => JSON.stringify({ ...opened, prReview: { ...opened.prReview, waitForCi: false, ...review } });
     const red = harness({ config: config(), required: ['gate'], checks: [{ name: 'gate', state: 'red' }], ciRuns: [] });
     await review({ kind: 'review', pr: 767 }, red);
     assert.equal(red.judged.length, 0);
@@ -1532,13 +1533,12 @@ describe('run — a review of every open PR', () => {
  */
 const TAGALONG = 't-d-d/tagalong';
 const TAGALONG_CHECKLIST = '# Tagalong review\n\nPass a PR that says what it changes.';
-const tagalongFile = (review: Record<string, unknown> = {}, features: Record<string, boolean> = { prReview: true }) => JSON.stringify({
+const tagalongFile = (review: Record<string, unknown> = {}, features: Record<string, boolean | undefined> = { prReview: true }) => JSON.stringify(switched({
   environment: 'env_01TAG',
-  labels: { ready: ['ready'], claim: 'claimed' },
-  features,
-  review: { checklist: TAGALONG_CHECKLIST, merge: false, ...review },
-});
-const tagalong = (over: Parameters<typeof harness>[0] = {}, review: Record<string, unknown> = {}, features?: Record<string, boolean>) => {
+  pickup: { enabled: false, ready: ['ready'], claim: 'claimed' },
+  prReview: { prompt: TAGALONG_CHECKLIST, merge: false, ...review },
+}, features));
+const tagalong = (over: Parameters<typeof harness>[0] = {}, review: Record<string, unknown> = {}, features?: Record<string, boolean | undefined>) => {
   const h = harness({ config: tagalongFile(review, features), tickets: { 748: { labels: ['claimed'] } }, ...over });
   (h.deps as { owners: string[] }).owners = ['acme', 't-d-d'];
   return h;
@@ -1636,7 +1636,7 @@ describe('fitness: the review posts its verdict as the `governor` check (dispatc
 
   test('a bump is read by the Dependabot list whatever trust.review says', async () => {
     const opened = JSON.parse(factoryFile(CONFIG_PATH));
-    const config = JSON.stringify({ ...opened, pickup: { ...opened.pickup, by: ['OWNER'] }, trust: { ...opened.trust, review: ['OWNER'] } });
+    const config = JSON.stringify({ ...opened, trust: { ...opened.trust, task: ['OWNER'], review: ['OWNER'] } });
     const h = harness({ config, pulls: { 767: dependabotRow() }, files: [{ filename: 'normalize-lambda/requirements.txt', status: 'modified' }] });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
@@ -2068,7 +2068,7 @@ describe('run — any served repo\'s review', () => {
   });
 
   test('a repo whose file leaves prReview off refuses the fire before the login', async () => {
-    const h = tagalong({}, {}, { pickup: true });
+    const h = tagalong({}, {}, { pickup: true, prReview: undefined });
     const turn = await run({ kind: 'review', pr: 767, repo: TAGALONG }, h.deps as never) as unknown as { refusal?: string };
     assert.match(String(turn.refusal), /does not turn prReview on/);
     assert.deepEqual([h.judged.length, h.comments.length], [0, 0]);

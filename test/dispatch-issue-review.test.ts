@@ -166,7 +166,7 @@ const posted = (name: string, conclusion: string, key: string, ours = true, id =
 });
 
 describe('the issueReviews config', () => {
-  const BASE = { environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: {} };
+  const BASE = { environment: 'env_1', pickup: { enabled: false, ready: ['mode: afk'], claim: 'claimed' } };
   const file = (issueReviews: unknown, over: Record<string, unknown> = {}) => readConfig(JSON.stringify({ ...BASE, issueReviews, ...over }));
   const reviews = (list: Array<{ name: string } & Record<string, unknown>>) => file(section(list));
 
@@ -243,25 +243,34 @@ describe('the issueReviews config', () => {
     assert.ok(reviews([{ name: 'community', when: { by, labels: ['a'], exclude: ['b'] } }]).ok);
   });
 
-  test('features.ticketReviews is read, and read as nothing: the section turns the reviews on', () => {
-    const moved = readConfig(JSON.stringify({ ...BASE, features: { ticketReviews: true } }));
-    assert.ok(moved.ok, JSON.stringify(moved));
-    assert.equal('ticketReviews' in moved.config.features, false);
-    assert.equal(turnsOn(moved.config, 'issueReviews'), false);
-    const off = file({ reviews: { triage: {} } }, { features: { ticketReviews: false } });
-    assert.ok(off.ok);
-    assert.equal(turnsOn(off.config, 'issueReviews'), true);
-    assert.equal(file({ reviews: { triage: {} } }, { features: { issueReviews: true } }).ok, false, 'the switch is no feature');
+  test('features.ticketReviews is refused, as the whole features section is: the section turns the reviews on', () => {
+    for (const features of [{ ticketReviews: true }, { ticketReviews: false }, { issueReviews: true }]) {
+      const read = file({ reviews: { triage: {} } }, { features });
+      assert.equal(read.ok, false, JSON.stringify(features));
+      assert.match(read.ok ? '' : read.fault, /Unrecognized key: "features"/);
+    }
   });
 
-  test('the config check warns that the switch moved, where a file sets features.ticketReviews', async () => {
+  test('the config check fails a file that still sets features.ticketReviews, with governor\'s fault', async () => {
     const checkOf = async (text: string) => check({ read: async (path: string) => (path === CONFIG_PATH ? text : null), paths: async () => ({ paths: [], truncated: false }), labels: async () => ['mode: afk', 'claimed'], issueBody: async () => null } as never);
     const moved = await checkOf(JSON.stringify({ ...BASE, features: { ticketReviews: false } }));
-    assert.deepEqual(moved.errors, []);
-    assert.deepEqual(moved.warnings.filter((w) => /ticketReviews/.test(w)).length, 1, JSON.stringify(moved.warnings));
-    assert.match(moved.warnings.find((w) => /ticketReviews/.test(w)) ?? '', /features\.ticketReviews: .*issueReviews\.enabled/);
+    assert.equal(moved.errors.length, 1, JSON.stringify(moved));
+    assert.match(moved.errors[0] ?? '', /features/);
     const now = await checkOf(JSON.stringify({ ...BASE, issueReviews: { reviews: { triage: {} } } }));
+    assert.deepEqual(now.errors, []);
     assert.deepEqual(now.warnings.filter((w) => /ticketReviews/.test(w)), []);
+  });
+
+  test('a file turning the reviews on needs a pickup section with its labels, which may be off', () => {
+    const { pickup: _labels, ...bare } = BASE;
+    const none = readConfig(JSON.stringify({ ...bare, issueReviews: { reviews: { triage: {} } } }));
+    assert.equal(none.ok, false);
+    assert.match(none.ok ? '' : none.fault, /pickup: issueReviews is on and reads pickup's labels/);
+    const off = readConfig(JSON.stringify({ ...bare, issueReviews: { enabled: false, reviews: { triage: {} } } }));
+    assert.ok(off.ok, JSON.stringify(off));
+    const noClaim = readConfig(JSON.stringify({ ...bare, pickup: { enabled: false, ready: ['mode: afk'] }, issueReviews: { reviews: { triage: {} } } }));
+    assert.equal(noClaim.ok, false);
+    assert.match(noClaim.ok ? '' : noClaim.fault, /pickup\.claim: issueReviews is on/);
   });
 
   test('the factory has the section, with a review', () => {
@@ -281,7 +290,7 @@ describe('the issueReviews config', () => {
 describe('fitness: dispatcher-review.md, the config check warns of an issue review trust.review never lets in', () => {
   const outsiders = ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'NONE'];
   const checkOf = async (over: Record<string, unknown>) => {
-    const text = JSON.stringify(shaped({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: {}, ...over }));
+    const text = JSON.stringify(shaped({ environment: 'env_1', pickup: { enabled: false, ready: ['mode: afk'], claim: 'claimed' }, ...over }));
     assert.ok(readConfig(text).ok, 'governor reads the file');
     return check({ read: async (path: string) => (path === CONFIG_PATH ? text : null), paths: async () => ({ paths: [], truncated: false }), labels: async () => ['mode: afk', 'claimed'], issueBody: async () => null } as never);
   };
@@ -314,7 +323,7 @@ describe('fitness: dispatcher-review.md, the config check warns of an issue revi
 });
 
 describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a config may name', () => {
-  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triage: build'], claim: 'claimed' }, features: {} };
+  const base = { environment: 'env_1', pickup: { enabled: false, ready: ['mode: afk', 'triage: build'], claim: 'claimed' } };
   const text = (over: Record<string, unknown>) => JSON.stringify(shaped({ ...base, ...over }));
   const refused = async (over: Record<string, unknown>, ...words: RegExp[]) => {
     const read = readConfig(text(over));
@@ -348,7 +357,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   test('a review open to outsiders reads trust.auto as narrowed, and an unset auto is the three with a say', async () => {
     // trust.review lets outsiders in, or the review could read none of their tickets.
     const outsiders = { review: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'NONE'] };
-    await refused({ labels: { ready: ['community: build'], claim: 'claimed' }, trust: outsiders, issueReviews: [{ name: 'community', when: { by: ['NONE', 'CONTRIBUTOR'] }, conclusions: { success: ['community: build'] } }] }, /community/, /NONE, CONTRIBUTOR/);
+    await refused({ pickup: { enabled: false, ready: ['community: build'], claim: 'claimed' }, trust: outsiders, issueReviews: [{ name: 'community', when: { by: ['NONE', 'CONTRIBUTOR'] }, conclusions: { success: ['community: build'] } }] }, /community/, /NONE, CONTRIBUTOR/);
     // trust.relay narrows an unset auto as autoOf does.
     await refused({ trust: { relay: ['OWNER', 'BOT'] }, issueReviews: [{ name: 'triage', when: { by: ['OWNER', 'MEMBER'] }, conclusions: { success: ['triage: build'] } }] }, /MEMBER/);
   });
@@ -373,7 +382,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
     await refused({ issueReviews: [{ name: 'triage', when: {}, conclusions: { neutral: ['Claimed'] } }] }, /triage/, /"Claimed"/, /claim/);
     // The claim label belongs in when.exclude, so a conclusion naming it there too gets the one fault, not two.
     const claimExcluded = { issueReviews: [{ name: 'triage', when: { exclude: ['claimed'] }, conclusions: { neutral: ['claimed'] } }] };
-    await refused(claimExcluded, /triage/, /"claimed"/, /labels\.claim/);
+    await refused(claimExcluded, /triage/, /"claimed"/, /pickup\.claim/);
     const read = readConfig(text(claimExcluded));
     assert.doesNotMatch(read.ok ? '' : read.fault, /when\.exclude/);
   });
@@ -423,7 +432,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
 
 describe('fitness: dispatcher-repos.md, an issue review\'s prompts are prompt values read from the default branch', () => {
   const config = (issueReviews: Array<{ name: string } & Record<string, unknown>>) => {
-    const read = readConfig(JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: {}, issueReviews: section(issueReviews) }));
+    const read = readConfig(JSON.stringify({ environment: 'env_1', pickup: { enabled: false, ready: ['mode: afk'], claim: 'claimed' }, issueReviews: section(issueReviews) }));
     assert.ok(read.ok, JSON.stringify(read));
     return read.config;
   };
@@ -451,7 +460,7 @@ describe('fitness: dispatcher-repos.md, an issue review\'s prompts are prompt va
   });
 
   test('the config check fails a missing checklist file as governor\'s read does', async () => {
-    const text = JSON.stringify({ environment: 'env_1', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: {}, issueReviews: section([{ name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'], prompt: { file: '.github/bug.md' } }] }]) });
+    const text = JSON.stringify({ environment: 'env_1', pickup: { enabled: false, ready: ['mode: afk'], claim: 'claimed' }, issueReviews: section([{ name: 'triage', when: {}, byLabel: [{ labels: ['type: bug'], prompt: { file: '.github/bug.md' } }] }]) });
     const checked = await check({ read: async (path: string) => (path === CONFIG_PATH ? text : null), paths: async () => ({ paths: [], truncated: false }), labels: async () => ['mode: afk', 'claimed'], issueBody: async () => null } as never);
     assert.equal(checked.errors.length, 1);
     assert.match(checked.errors[0]!, /issueReviews\.reviews\.triage\.byLabel\.0\.prompt: \.github\/bug\.md/);
@@ -470,7 +479,7 @@ describe('fitness: dispatcher-repos.md, an issue review\'s prompts are prompt va
 });
 
 describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a byLabel entry may name', () => {
-  const base = { environment: 'env_1', labels: { ready: ['mode: afk', 'triage: build'], claim: 'claimed' }, features: {} };
+  const base = { environment: 'env_1', pickup: { enabled: false, ready: ['mode: afk', 'triage: build'], claim: 'claimed' } };
   const text = (over: Record<string, unknown>) => JSON.stringify(shaped({ ...base, ...over }));
   const refused = async (over: Record<string, unknown>, ...words: RegExp[]) => {
     const read = readConfig(text(over));

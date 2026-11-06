@@ -121,7 +121,7 @@ group.
   itself. Each list is an attribute of its own, so another can join the
   item without reshaping it.
 - What the receiver knows of a repo's ready labels: the same item's
-  `ready`, the file's `labels.ready`, written in the same `PutItem` as the
+  `ready`, the file's `pickup.ready`, written in the same `PutItem` as the
   hooks and switches and read in the same one read as the switches. A
   label that it does not list, whoever added it, queues no selection fire, and the
   delivery's reason says so. A missing item, one without `ready`, malformed

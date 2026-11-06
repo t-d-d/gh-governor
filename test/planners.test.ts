@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_MODEL, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
-import { readConfig } from '../dispatch/repo-config.mjs';
+import { readConfig, type RepoConfig } from '../dispatch/repo-config.mjs';
 import { hookPrompt, planHook } from '../dispatch/hooks.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { planDispatch } from '../dispatch/dispatch-fire.mjs';
@@ -24,13 +24,14 @@ import { factoryFile } from './helpers/factory.ts';
 
 const REPO = 'acme/factory';
 const NOW = Date.parse('2026-09-25T12:00:00Z');
-const FILE = JSON.parse(factoryFile('.github/dispatch.json'));
+const FILE = JSON.parse(factoryFile('.github/governor.json'));
 const CONFIG = (() => {
   const read = readConfig(JSON.stringify(FILE));
   assert.ok(read.ok);
-  return read.config;
+  // The factory's prompts, its periodics' and its hook's, are text, none a file.
+  return read.config as RepoConfig;
 })();
-const HOOK = (FILE.hooks as Array<{ name: string, prompt: string, keyVersion: number }>)[0]!;
+const HOOK = CONFIG.hooks[0]!;
 
 type Logged = { event: string } & Record<string, unknown>;
 type HookRecord = { session: string, at: string };
@@ -54,7 +55,7 @@ const context = (over: Record<string, unknown> = {}) => {
     },
     served: [],
     bare: false,
-    prompts: FILE.prompts,
+    prompts: CONFIG.prompts,
     delivery: () => ({
       deliver: async ({ session }: { session: string }, text: string, { source }: { source: unknown }) => {
         sent.push({ session, text, source });
@@ -223,7 +224,7 @@ describe('planDispatch: a dispatch fire\'s plan', () => {
     const { ctx } = withRuns([run(500, 'failure'), run(499, 'success')]);
     const plan = await planDispatch(scheduled, ctx) as any;
     assert.equal(plan.launches.length, 1);
-    assert.deepEqual(plan.launches[0].asked, { prompt: redRunPrompt('look into it', FILE.prompts), sessionName: 'Scheduled Emulator red', model: DEFAULT_MODEL });
+    assert.deepEqual(plan.launches[0].asked, { prompt: redRunPrompt('look into it', CONFIG.prompts), sessionName: 'Scheduled Emulator red', model: DEFAULT_MODEL });
   });
 
   test('a red scheduled run after a red plans nothing, and says why', async () => {
@@ -311,7 +312,7 @@ describe('planUnblocked: an unblocked fire\'s plan', () => {
     const [only] = plan.launches;
     assert.deepEqual({ issue: only.issue, claim: only.claim, holdsRepo: only.holdsRepo }, { issue: 7, claim: false, holdsRepo: true });
     assert.deepEqual(only.asked, {
-      prompt: specPrompt({ fire: fire(), title: 'Issue 7', labels: CONFIG.labels, prompts: FILE.prompts }),
+      prompt: specPrompt({ fire: fire(), title: 'Issue 7', labels: CONFIG.labels, prompts: CONFIG.prompts }),
       sessionName: sessionName(7, 'Issue 7'),
       model: DEFAULT_MODEL,
     });
@@ -354,7 +355,7 @@ describe('planUnblocked: an unblocked fire\'s plan', () => {
     const off = { ...CONFIG, features: { ...CONFIG.features, pickup: false, unblocked: false } };
     const { ctx } = ticketContext({ over: { configOf: () => off } });
     const plan = await planUnblocked(fire(), ctx) as any;
-    assert.deepEqual(plan, { answer: { kind: 'unblocked', refusal: `${REPO}'s .github/dispatch.json turns neither pickup nor unblocked on`, dispatched: [] } });
+    assert.deepEqual(plan, { answer: { kind: 'unblocked', refusal: `${REPO}'s .github/governor.json turns neither pickup nor unblocked on`, dispatched: [] } });
   });
 
   test('a fire that names no repo is refused', async () => {
@@ -363,12 +364,15 @@ describe('planUnblocked: an unblocked fire\'s plan', () => {
 });
 
 describe('planSweep: the bare schedule fire\'s plan', () => {
-  const RETRO = (FILE.periodics as Array<{ name: string, prompt: string, days: number }>)[0]!;
+  const RETRO = CONFIG.periodics[0]!;
   // One periodic, a heartbeat in governor's own block and no wait ticket, so
   // the fakes need no window, marker or sidebar reads.
   const SWEPT = (() => {
-    const { waits: _waits, ...rest } = FILE;
-    const read = readConfig(JSON.stringify({ ...rest, periodics: [RETRO], heartbeat: { issue: 412 } }));
+    // waits stays on, with no wait ticket.
+    const { issue: _ticket, ...waits } = FILE.waits;
+    const rest = { ...FILE, waits };
+    const sessions = { [RETRO.name]: FILE.periodics.sessions[RETRO.name] };
+    const read = readConfig(JSON.stringify({ ...rest, periodics: { sessions }, heartbeat: { issue: 412 } }));
     assert.ok(read.ok);
     return read.config;
   })();

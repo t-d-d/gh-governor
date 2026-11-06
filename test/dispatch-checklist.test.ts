@@ -435,7 +435,7 @@ describe('tests 1 and 7, decided in code before any model call', () => {
     const LISTED: FileRow[] = [
       { filename: '.claude/settings.json', status: 'modified' },
       { filename: 'dispatch/review.mjs', status: 'modified' },
-      { filename: '.github/dispatch.json', status: 'modified' },
+      { filename: '.github/governor.json', status: 'modified' },
       { filename: 'src/billing/entitlements.ts', status: 'modified' },
     ];
     const worked = (mode: string, workflow = 'workflow: under development') => ({ labels: [mode, 'type: bug', workflow] });
@@ -1151,7 +1151,7 @@ describe('the human-only list', () => {
     '.github/actions/lambda-image/**': '.github/actions/lambda-image/action.yml',
     '.github/actions/normalize-base-image/**': '.github/actions/normalize-base-image/action.yml',
     '.github/workflows/build-normalize-base.yml': '.github/workflows/build-normalize-base.yml',
-    '.github/dispatch.json': '.github/dispatch.json',
+    '.github/governor.json': '.github/governor.json',
   };
 
   test('every entry catches the path pinned beside it, and every pinned glob is on the list', () => {
@@ -1204,7 +1204,7 @@ describe('the Dependabot list', () => {
       const path = CATCHES[glob]!;
       assert.ok(globMatches(glob, path), `${glob} catches ${path}`);
     }
-    for (const path of ['dispatch/package.json', 'dispatch/package-lock.json', '.github/dispatch.json', 'kokoro-lambda/Dockerfile', '.github/workflows/ci.yml', 'clients/web/package.json']) {
+    for (const path of ['dispatch/package.json', 'dispatch/package-lock.json', '.github/governor.json', 'kokoro-lambda/Dockerfile', '.github/workflows/ci.yml', 'clients/web/package.json']) {
       assert.ok(!FACTORY_REVIEW.dependabot.some((glob) => globMatches(glob, path)), path);
     }
   });

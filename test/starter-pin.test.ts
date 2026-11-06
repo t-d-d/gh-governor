@@ -262,20 +262,22 @@ describe('the gate\'s checkout', () => {
 // pinned to. test/starter-kit.test.ts checks the kit's pins agree.
 const schemaPin = (file: string) => {
   const { $schema } = JSON.parse(readFileSync(join(REPO_ROOT, 'examples/starter/.github', file), 'utf8')) as { $schema?: unknown };
-  const sha = /^https:\/\/raw\.githubusercontent\.com\/t-d-d\/gh-governor\/([0-9a-f]{40})\/schema\/dispatch\.schema\.json$/.exec(String($schema))?.[1];
+  const sha = /^https:\/\/raw\.githubusercontent\.com\/t-d-d\/gh-governor\/([0-9a-f]{40})\/schema\/governor\.schema\.json$/.exec(String($schema))?.[1];
   assert.ok(sha !== undefined, String($schema));
   return sha;
 };
 
-// Skipped while governor at the pin refuses the issueReviews section the
-// dark-factory file now holds, and governor now refuses the old list. #526
-// moves the starter kit's pins and turns this check back on.
-describe('the starter kit\'s config files at their pinned commit', { skip: 'governor at the pinned commit refuses the issueReviews section, and the pins move once the config reshape is on main (#526)' }, () => {
+// Skipped while governor at the pin reads only .github/dispatch.json in the
+// older layout, which the starter files no longer use, and no commit on main
+// yet reads .github/governor.json. #526 moves the starter kit's pins to one
+// that does, whose $schema names schema/governor.schema.json, and turns this
+// check back on.
+describe('the starter kit\'s config files at their pinned commit', { skip: 'governor at the pinned commit reads only the older .github/dispatch.json layout, and the pins move once .github/governor.json is on main (#526)' }, () => {
   // The pinned commit's tree, read from git history into a temporary folder,
   // with this checkout's modules beside it, so its readConfig can be imported.
   let dir: string | undefined;
   let readConfigAt: ((text: string) => { ok: boolean }) | undefined;
-  const sha = schemaPin('dispatch.json');
+  const sha = schemaPin('governor.json');
   before(async () => {
     dir = mkdtempSync(join(tmpdir(), 'starter-pin-config-'));
     const tar = execFileSync('git', ['archive', sha, 'dispatch', 'scripts', 'checker', 'package.json'], { cwd: REPO_ROOT, maxBuffer: 1 << 28 });
@@ -286,12 +288,12 @@ describe('the starter kit\'s config files at their pinned commit', { skip: 'gove
   after(() => { if (dir !== undefined) rmSync(dir, { recursive: true, force: true }); });
 
   test('both files name the same commit, and it is on main', () => {
-    assert.equal(schemaPin('dispatch.dark-factory.json'), sha);
+    assert.equal(schemaPin('governor.dark-factory.json'), sha);
     const onMain = spawnSync('git', ['merge-base', '--is-ancestor', sha, 'origin/main'], { cwd: REPO_ROOT });
     assert.equal(onMain.status, 0, `${sha} is not on origin/main`);
   });
 
-  for (const file of ['dispatch.json', 'dispatch.dark-factory.json']) {
+  for (const file of ['governor.json', 'governor.dark-factory.json']) {
     test(`governor's readConfig at the pin accepts ${file}`, () => {
       assert.ok(readConfigAt !== undefined);
       const got = readConfigAt(readFileSync(join(REPO_ROOT, 'examples/starter/.github', file), 'utf8'));

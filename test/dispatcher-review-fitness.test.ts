@@ -258,7 +258,8 @@ describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)',
   });
 
   test('the file schema takes no script, hook or command for the review: a check settings cannot express is the repo\'s CI', () => {
-    const file = (review: Record<string, unknown>) => JSON.stringify({ environment: 'env_01X', labels: { ready: ['r'], claim: 'c' }, features: { prReview: true }, review: { checklist: 'c', ...review } });
+    const file = (prReview: Record<string, unknown>) => JSON.stringify({ environment: 'env_01X', pickup: { enabled: false, ready: ['r'], claim: 'c' }, prReview: { prompt: 'c', ...prReview } });
+    assert.ok(readConfig(file({})).ok, 'the file is valid without the key');
     for (const key of ['script', 'hook', 'command', 'run']) {
       const refused = readConfig(file({ [key]: 'check.sh' }));
       assert.ok(!refused.ok && refused.fault.includes(key), key);
@@ -303,9 +304,10 @@ describe('the factory\'s review section, the shape the review tests read', () =>
   });
 
   test('the skill\'s test 7 and By hand name the file as the list, and carry no paths of their own', () => {
-    assert.ok(test7.includes('`.github/dispatch.json`'), test7);
+    assert.ok(test7.includes('`.github/governor.json`'), test7);
+    assert.ok(test7.includes('`prReview.humanOnly`'), test7);
     const backticked = [...test7.matchAll(/`([^`]+)`/g)].map((m) => m[1]!);
-    assert.deepEqual(backticked.filter((p) => p !== '.github/dispatch.json' && /[/*]/.test(p)), [], 'a path in the skill is a second list');
-    assert.match(skill, /## By hand[\s\S]*\.github\/dispatch\.json/);
+    assert.deepEqual(backticked.filter((p) => p !== '.github/governor.json' && /[/*]/.test(p)), [], 'a path in the skill is a second list');
+    assert.match(skill, /## By hand[\s\S]*\.github\/governor\.json/);
   });
 });

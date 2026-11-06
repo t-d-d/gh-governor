@@ -13,8 +13,8 @@ import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
 import { AUTO, BOT, RELAY, REVIEW, START, autoOf, fitsInside, lets, narrowedLists, relayOf, reviewOf, startNarrowed, startOf, taskOf, trustExposures } from '../dispatch/trust.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
-const BASE = { environment: 'my-env', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { pickup: true } };
-const file = (over: Record<string, unknown>) => JSON.stringify({ ...BASE, ...over });
+const BASE = { environment: 'my-env', pickup: { ready: ['mode: afk'], claim: 'claimed' } };
+const file = (over: Record<string, unknown>) => JSON.stringify({ ...BASE, ...over, pickup: { ...BASE.pickup, ...(over.pickup as Record<string, unknown> | undefined) } });
 const config = (over: Record<string, unknown>) => {
   const read = readConfig(file(over));
   assert.ok(read.ok, JSON.stringify(read));
@@ -30,7 +30,7 @@ describe('trust.auto in the config file', () => {
   test('a file may set it, narrower or wider, by GitHub\'s author_association values', () => {
     assert.deepEqual(autoOf(config({ trust: { auto: ['OWNER'] } })), ['OWNER']);
     assert.deepEqual(autoOf(config({ trust: { auto: [] } })), [], 'an empty list: governor sets nothing going by itself');
-    assert.deepEqual(autoOf(config({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'] }, pickup: { by: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'] } })), ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR']);
+    assert.deepEqual(autoOf(config({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'], task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'] } })), ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR']);
     for (const auto of [['owner'], ['ANYONE'], 'OWNER', [1]]) assert.ok(!readConfig(file({ trust: { auto } })).ok, JSON.stringify(auto));
   });
 
@@ -45,27 +45,30 @@ describe('trust.auto in the config file', () => {
     assert.ok(!readConfig(file({ trust: { everyone: ['OWNER'] } })).ok);
   });
 
-  test('set beside pickup.by, it must sit inside it: auto ⊆ task', () => {
-    const read = readConfig(file({ trust: { auto: ['OWNER', 'MEMBER'] }, pickup: { by: ['OWNER'] } }));
+  test('set beside trust.task, it must sit inside it: auto ⊆ task', () => {
+    const read = readConfig(file({ trust: { auto: ['OWNER', 'MEMBER'], task: ['OWNER'] } }));
     assert.ok(!read.ok);
     assert.match(read.fault, /trust\.auto/);
-    assert.match(read.fault, /pickup\.by/);
+    assert.match(read.fault, /trust\.task/);
     assert.match(read.fault, /MEMBER/);
-    assert.deepEqual(autoOf(config({ trust: { auto: ['OWNER'] }, pickup: { by: ['OWNER', 'NONE'] } })), ['OWNER']);
+    assert.deepEqual(autoOf(config({ trust: { auto: ['OWNER'], task: ['OWNER', 'NONE'] } })), ['OWNER']);
   });
 
-  test('unset, it is narrowed to fit a pickup.by the file sets, never widened', () => {
-    assert.deepEqual(autoOf(config({ pickup: { by: ['OWNER'] } })), ['OWNER']);
-    assert.deepEqual(narrowedLists(config({ pickup: { by: ['OWNER'] } })), [{ list: 'auto', to: ['OWNER'] }]);
-    assert.deepEqual(autoOf(config({ pickup: { by: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] } })), ['OWNER', 'MEMBER', 'COLLABORATOR'], 'a wider pickup.by widens nothing');
-    assert.deepEqual(narrowedLists(config({ pickup: { by: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] } })), []);
-    assert.deepEqual(narrowedLists(config({ trust: { auto: ['OWNER'] }, pickup: { by: ['OWNER'] } })), [], 'a list the file sets is not narrowed');
+  test('unset, it is narrowed to fit a trust.task the file sets, never widened', () => {
+    assert.deepEqual(autoOf(config({ trust: { task: ['OWNER'] } })), ['OWNER']);
+    assert.deepEqual(narrowedLists(config({ trust: { task: ['OWNER'] } })), [{ list: 'auto', to: ['OWNER'] }]);
+    assert.deepEqual(autoOf(config({ trust: { task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] } })), ['OWNER', 'MEMBER', 'COLLABORATOR'], 'a wider trust.task widens nothing');
+    assert.deepEqual(narrowedLists(config({ trust: { task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE'] } })), []);
+    assert.deepEqual(narrowedLists(config({ trust: { auto: ['OWNER'], task: ['OWNER'] } })), [], 'a list the file sets is not narrowed');
   });
 
-  test('a file valid before trust stays valid: the factory, and a narrow pickup.by', () => {
+  test('the factory is valid, and the retired pickup.by is refused as a key pickup does not know', () => {
     assert.ok(readConfig(factoryFile(CONFIG_PATH)).ok);
-    assert.ok(readConfig(file({ pickup: { by: ['OWNER'] } })).ok);
-    assert.ok(readConfig(file({ pickup: { by: ['NONE'] } })).ok);
+    for (const by of [['OWNER'], ['NONE']]) {
+      const read = readConfig(file({ pickup: { by } }));
+      assert.ok(!read.ok, JSON.stringify(by));
+      assert.match(read.fault, /pickup: Unrecognized key: "by"/);
+    }
   });
 });
 
@@ -90,8 +93,10 @@ describe('what a trust list the file widens exposes', () => {
   });
 
   test('auto beyond the three names the values and the routes it opens', () => {
-    const [said, ...rest] = trustExposures(config({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'NONE'] }, pickup: { by: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'NONE'] } }));
-    assert.deepEqual(rest, []);
+    const [said, ...rest] = trustExposures(config({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'NONE'], task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'NONE'] } }));
+    // auto must sit inside task, so the task list the file widens says what it opens too.
+    assert.equal(rest.length, 1);
+    assert.match(String(rest[0]), /^trust\.task: /);
     assert.match(String(said), /^trust\.auto: /);
     assert.match(String(said), /CONTRIBUTOR and NONE/);
     for (const route of [/wait ends/, /blocker closes/, /periodic/, /conflicts/]) assert.match(String(said), route);
@@ -102,7 +107,7 @@ describe('what a trust list the file widens exposes', () => {
 describe('trust.relay in the config file', () => {
   test('unset, it is OWNER, MEMBER, COLLABORATOR and BOT', () => {
     assert.deepEqual([...RELAY], ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT']);
-    for (const over of [{}, { trust: {} }, { trust: { auto: ['OWNER'] } }, { pickup: { by: ['OWNER'] } }]) assert.deepEqual(relayOf(config(over)), ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT'], JSON.stringify(over));
+    for (const over of [{}, { trust: {} }, { trust: { auto: ['OWNER'] } }, { trust: { task: ['OWNER'] } }]) assert.deepEqual(relayOf(config(over)), ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT'], JSON.stringify(over));
   });
 
   test('a file may set it, narrower or wider, BOT included or not', () => {
@@ -119,26 +124,26 @@ describe('trust.relay in the config file', () => {
     assert.match(read.fault, /MEMBER, COLLABORATOR/);
   });
 
-  test('pickup.by and relay both set, pickup.by wider, is refused: task within relay', () => {
-    const read = readConfig(file({ trust: { relay: ['OWNER'] }, pickup: { by: ['OWNER', 'NONE'] } }));
+  test('task and relay both set, task wider, is refused: task within relay', () => {
+    const read = readConfig(file({ trust: { relay: ['OWNER'], task: ['OWNER', 'NONE'] } }));
     assert.ok(!read.ok);
-    assert.match(read.fault, /pickup\.by/);
+    assert.match(read.fault, /trust\.task/);
     assert.match(read.fault, /trust\.relay/);
     assert.match(read.fault, /NONE/);
   });
 
   test('BOT in relay breaks no chain: it is left aside', () => {
-    assert.ok(readConfig(file({ trust: { auto: ['OWNER'], relay: ['OWNER', 'BOT'] }, pickup: { by: ['OWNER'] } })).ok);
+    assert.ok(readConfig(file({ trust: { auto: ['OWNER'], relay: ['OWNER', 'BOT'], task: ['OWNER'] } })).ok);
   });
 
   test('auto set wider than an unset relay narrows nothing and is valid', () => {
-    const wide = config({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'] }, pickup: { by: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'] } });
+    const wide = config({ trust: { auto: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'], task: ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'] } });
     assert.deepEqual(relayOf(wide), [...RELAY]);
     assert.deepEqual(autoOf(wide), ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR']);
     assert.deepEqual(narrowedLists(wide), []);
   });
 
-  test('a relay the file sets narrows an unset auto and an unset pickup.by, never widens them', () => {
+  test('a relay the file sets narrows an unset auto and an unset task, never widens them', () => {
     const narrow = config({ trust: { relay: ['OWNER', 'BOT'] } });
     assert.deepEqual(autoOf(narrow), ['OWNER']);
     assert.deepEqual(taskOf(narrow), ['OWNER']);
@@ -151,14 +156,14 @@ describe('trust.relay in the config file', () => {
     assert.deepEqual(narrowedLists(wide), []);
   });
 
-  test('pickup.by the file sets is the task list, as before', () => {
-    assert.deepEqual(taskOf(config({ pickup: { by: ['OWNER', 'NONE'] } })), ['OWNER', 'NONE']);
+  test('trust.task the file sets is the task list', () => {
+    assert.deepEqual(taskOf(config({ trust: { task: ['OWNER', 'NONE'] } })), ['OWNER', 'NONE']);
     assert.deepEqual(taskOf(config({})), ['OWNER', 'MEMBER', 'COLLABORATOR']);
-    assert.deepEqual(fitsInside(config({ pickup: { by: ['OWNER'] } }), 'auto'), ['pickup.by']);
+    assert.deepEqual(fitsInside(config({ trust: { task: ['OWNER'] } }), 'auto'), ['trust.task']);
   });
 
   test('a file valid before relay stays valid', () => {
-    for (const over of [{}, { pickup: { by: ['NONE'] } }, { trust: { auto: ['OWNER'] }, pickup: { by: ['OWNER', 'CONTRIBUTOR'] } }]) assert.ok(readConfig(file(over)).ok, JSON.stringify(over));
+    for (const over of [{}, { trust: { task: ['NONE'] } }, { trust: { auto: ['OWNER'], task: ['OWNER', 'CONTRIBUTOR'] } }]) assert.ok(readConfig(file(over)).ok, JSON.stringify(over));
   });
 });
 
@@ -211,18 +216,19 @@ describe('trust.task in the config file', () => {
     assert.match(read.fault, /BOT/);
   });
 
-  test('pickup.by and trust.task both set is refused, saying why', () => {
-    const read = readConfig(file({ trust: { task: ['OWNER'] }, pickup: { by: ['OWNER'] } }));
-    assert.ok(!read.ok);
-    assert.match(read.fault, /pickup\.by/);
-    assert.match(read.fault, /trust\.task/);
+  test('pickup.by, the retired name of trust.task, is refused, alone or beside it', () => {
+    for (const over of [{ pickup: { by: ['OWNER'] } }, { trust: { task: ['OWNER'] }, pickup: { by: ['OWNER'] } }]) {
+      const read = readConfig(file(over));
+      assert.ok(!read.ok, JSON.stringify(over));
+      assert.match(read.fault, /pickup: Unrecognized key: "by"/, JSON.stringify(over));
+    }
   });
 
-  test('a pickup.by the file sets, wider or narrower, stays valid and is read as trust.task', () => {
-    for (const by of [['OWNER', 'CONTRIBUTOR', 'NONE'], ['OWNER']]) {
-      const read = config({ pickup: { by } });
-      assert.deepEqual(taskOf(read), by);
-      assert.deepEqual(fitsInside(read, 'auto'), ['pickup.by']);
+  test('a trust.task the file sets, wider or narrower, stays valid and fits auto inside it', () => {
+    for (const task of [['OWNER', 'CONTRIBUTOR', 'NONE'], ['OWNER']]) {
+      const read = config({ trust: { task } });
+      assert.deepEqual(taskOf(read), task);
+      assert.deepEqual(fitsInside(read, 'auto'), ['trust.task']);
     }
   });
 
@@ -268,7 +274,7 @@ describe('what a task the file widens exposes', () => {
 describe('trust.start in the config file', () => {
   test('unset, it is OWNER, MEMBER and COLLABORATOR, and not narrowed', () => {
     assert.deepEqual([...START], ['OWNER', 'MEMBER', 'COLLABORATOR']);
-    for (const over of [{}, { trust: {} }, { trust: { relay: ['OWNER'] } }, { pickup: { by: ['OWNER'] } }]) {
+    for (const over of [{}, { trust: {} }, { trust: { relay: ['OWNER'] } }, { trust: { task: ['OWNER'] } }]) {
       assert.deepEqual(startOf(config(over)), ['OWNER', 'MEMBER', 'COLLABORATOR'], JSON.stringify(over));
       assert.equal(startNarrowed(config(over)), false, JSON.stringify(over));
     }
@@ -304,7 +310,7 @@ describe('trust.start in the config file', () => {
 describe('trust.review in the config file', () => {
   test('unset, it is OWNER, MEMBER and COLLABORATOR, whatever the other lists say', () => {
     assert.deepEqual([...REVIEW], ['OWNER', 'MEMBER', 'COLLABORATOR']);
-    for (const over of [{}, { trust: {} }, { trust: { relay: ['OWNER'] } }, { trust: { relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT', 'NONE'] } }, { pickup: { by: ['OWNER', 'NONE'] } }]) {
+    for (const over of [{}, { trust: {} }, { trust: { relay: ['OWNER'] } }, { trust: { relay: ['OWNER', 'MEMBER', 'COLLABORATOR', 'BOT', 'NONE'] } }, { trust: { task: ['OWNER', 'NONE'] } }]) {
       assert.deepEqual(reviewOf(config(over)), ['OWNER', 'MEMBER', 'COLLABORATOR'], JSON.stringify(over));
     }
   });
@@ -324,7 +330,7 @@ describe('trust.review in the config file', () => {
   });
 
   test('task or auto set wider than a set review is refused too: the chain runs to review', () => {
-    for (const over of [{ trust: { task: ['OWNER', 'NONE'], review: ['OWNER'] } }, { pickup: { by: ['OWNER', 'NONE'] }, trust: { review: ['OWNER'] } }, { trust: { auto: ['OWNER', 'MEMBER'], review: ['OWNER'] } }]) {
+    for (const over of [{ trust: { task: ['OWNER', 'NONE'], review: ['OWNER'] } }, { trust: { task: ['OWNER', 'NONE'], review: ['OWNER'] } }, { trust: { auto: ['OWNER', 'MEMBER'], review: ['OWNER'] } }]) {
       const read = readConfig(file(over));
       assert.ok(!read.ok, JSON.stringify(over));
       assert.match(read.fault, /trust\.review/, JSON.stringify(over));
@@ -358,7 +364,7 @@ describe('trust.review in the config file', () => {
   });
 
   test('a file valid before review stays valid', () => {
-    for (const over of [{}, { pickup: { by: ['NONE'] } }, { trust: { auto: ['OWNER'], task: ['OWNER', 'CONTRIBUTOR'], relay: ['OWNER', 'CONTRIBUTOR', 'NONE', 'BOT'] } }, { trust: { start: ['OWNER'] } }]) {
+    for (const over of [{}, { trust: { task: ['NONE'] } }, { trust: { auto: ['OWNER'], task: ['OWNER', 'CONTRIBUTOR'], relay: ['OWNER', 'CONTRIBUTOR', 'NONE', 'BOT'] } }, { trust: { start: ['OWNER'] } }]) {
       assert.ok(readConfig(file(over)).ok, JSON.stringify(over));
     }
   });

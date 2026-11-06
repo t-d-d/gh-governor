@@ -610,9 +610,6 @@ const fileSchema = z.strictObject({
     if (on('hooks') && Object.keys(raw.hooks.sessions ?? {}).length === 0) ctx.addIssue({ code: 'custom', path: ['hooks', 'sessions'], message: 'hooks is on, so its section lists at least one hook' });
   });
 
-/** A repo's labels when its file has no pickup section, so no feature that reads them is on. */
-const NO_LABELS = Object.freeze({ ready: [], claim: '', claimRemoves: [], exclude: ['type: prd'] });
-
 /**
  * The file as written, read into the shape governor's code takes: each
  * switch in `features`, pickup's labels in `labels`, every prompt in
@@ -624,14 +621,13 @@ const NO_LABELS = Object.freeze({ ready: [], claim: '', claimRemoves: [], exclud
  * @returns {FileConfig}
  */
 const toConfig = (file) => {
-  const raw = file;
-  const on = (/** @type {string} */ name) => sectionOn(raw, name);
+  const on = (/** @type {string} */ name) => sectionOn(file, name);
   /** @type {Record<string, boolean>} */
   const features = Object.fromEntries(GENERIC_SWITCHES.map((name) => [name, name === 'deployedLabels' ? on('deployMessages') && file.deployMessages?.deployedLabels === true : on(name)]));
   /** @type {Record<string, string | PromptFile>} */
   const prompts = {};
   for (const [section, place] of Object.entries(SECTION_PROMPTS)) {
-    const held = raw[section];
+    const held = file[section];
     if (held === undefined) continue;
     if ('prompt' in place) {
       if (held.prompt !== undefined) prompts[place.prompt] = held.prompt;
@@ -640,9 +636,11 @@ const toConfig = (file) => {
     }
   }
   const { pickup, deployMessages, prReview, heartbeat, waits, periodics, hooks, issueReviews } = file;
+  // With no ready or claim label, no feature that reads the labels is on
+  // (fileSchema), so these are never read but to list no ready label.
   const labels = pickup?.ready !== undefined && pickup.claim !== undefined
     ? { ready: pickup.ready, claim: pickup.claim, claimRemoves: pickup.claimRemoves, exclude: pickup.exclude }
-    : { ...NO_LABELS, ready: [...NO_LABELS.ready], claimRemoves: [], exclude: [...NO_LABELS.exclude] };
+    : { ready: [], claim: '', claimRemoves: [], exclude: ['type: prd'] };
   /** @type {FileConfig} */
   const config = {
     environment: file.environment,
@@ -662,7 +660,7 @@ const toConfig = (file) => {
   if (pickup?.sweepHours !== undefined) config.pickup = { sweepHours: pickup.sweepHours };
   if (file.trust !== undefined) config.trust = file.trust;
   if (issueReviews !== undefined) config.issueReviews = issueReviews;
-  // `$schema` is for the editor, and governor does nothing with it.
+  // `$schema` is for the editor: governor drops it unread.
   return config;
 };
 

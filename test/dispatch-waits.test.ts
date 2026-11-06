@@ -102,11 +102,12 @@ describe('the wait fire', () => {
 });
 
 describe('the waits switch', () => {
-  test('is a generic switch, off unless the file turns it on', () => {
+  test('is a generic switch, off unless the file has its section', () => {
     assert.ok(GENERIC_SWITCHES.includes('waits'));
-    const base = { environment: 'env_x', labels: { ready: ['ready'], claim: 'claimed' } };
-    assert.equal(configSchema.parse({ ...base, features: {} }).features.waits, undefined);
-    assert.equal(configSchema.parse({ ...base, features: { waits: true } }).features.waits, true);
+    const base = { environment: 'env_x', pickup: { enabled: false, ready: ['ready'], claim: 'claimed' } };
+    assert.equal(configSchema.parse(base).features.waits, false);
+    assert.equal(configSchema.parse({ ...base, waits: {} }).features.waits, true);
+    assert.equal(configSchema.parse({ ...base, waits: { enabled: false } }).features.waits, false);
   });
 
   test('the spec session after a wait is a prompt kind a repo can replace', () => {
@@ -350,17 +351,21 @@ describe('the reader: a ticket\'s link to the wait ticket', () => {
 });
 
 describe('the config file\'s wait ticket', () => {
-  const file = (waits: unknown) => ({ environment: 'env_01FACTORY', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { waits: true }, workflows: {}, waits });
+  const file = (waits: unknown) => ({ environment: 'env_01FACTORY', pickup: { ready: ['mode: afk'], claim: 'claimed' }, workflows: {}, waits });
 
-  test('`waits: { issue }` names the wait ticket, and anything else there is a fault', () => {
-    assert.equal(configSchema.safeParse(file({ issue: 413 })).success, true);
-    for (const bad of [{}, { issue: 0 }, { issue: 'one' }, { issue: 413, issues: [414] }]) {
+  test('`waits.issue` names the wait ticket, and anything else there is a fault', () => {
+    const read = configSchema.safeParse(file({ issue: 413 }));
+    assert.equal(read.success, true);
+    assert.deepEqual(read.data?.waits, { issue: 413 });
+    for (const bad of [{ issue: 0 }, { issue: 'one' }, { issue: 413, issues: [414] }]) {
       assert.equal(configSchema.safeParse(file(bad)).success, false, JSON.stringify(bad));
     }
   });
 
-  test('the section is optional', () => {
-    const { waits: _, ...without } = file(undefined);
-    assert.equal(configSchema.safeParse(without).success, true);
+  test('the wait ticket is optional: a waits section without it turns waits on and links nothing', () => {
+    const read = configSchema.safeParse(file({}));
+    assert.equal(read.success, true);
+    assert.equal(read.data?.features.waits, true);
+    assert.equal(read.data?.waits, undefined);
   });
 });

@@ -21,6 +21,7 @@ import {
   installationToken,
 } from '../../scripts/lib/github-app.mjs';
 import { RELAY } from '../../dispatch/webhook/fire.mjs';
+import { CONFIG_PATH } from '../../dispatch/repo-config.mjs';
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const PEM = privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
@@ -1183,11 +1184,11 @@ describe('a served repo\'s reads', () => {
   });
 
   test('configFile reads the file off the default branch; GitHub\'s 404 is no file, any other refusal throws', async () => {
-    const path = 'https://api.github.com/repos/t-d-d/askme-mcp/contents/.github/dispatch.json';
+    const path = `https://api.github.com/repos/t-d-d/askme-mcp/contents/${CONFIG_PATH}`;
     const text = '{"environment":"env_1"}';
     const { fetch, calls } = fakeFetch({ [path]: { type: 'file', encoding: 'base64', content: Buffer.from(text).toString('base64') } });
     assert.equal(await githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch }).configFile(), text);
-    assert.equal(calls[0]!.url, path, 'no ref: the default branch, never a PR head');
+    assert.equal(calls[0]!.url, path, 'no ref: the default branch, never a PR head; and the default path is CONFIG_PATH, which the reader writes out');
     const none = fakeFetch({});
     assert.equal(await githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch: none.fetch }).configFile(), null);
     const broken = fakeFetch({ [path]: new Response('{"message":"boom"}', { status: 502, statusText: 'Bad Gateway' }) });

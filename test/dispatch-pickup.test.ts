@@ -9,11 +9,12 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
 import { SWEEP_HOURS, SWEEP_SLACK_MS, byOf, sweepDue, sweepHoursOf } from '../dispatch/pickup.mjs';
-import { ASSOCIATIONS } from '../dispatch/webhook/fire.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
-const BASE = { environment: 'env_01ASK', labels: { ready: ['mode: afk'], claim: 'claimed' }, features: { pickup: true } };
-const file = (over: Record<string, unknown>) => JSON.stringify({ ...BASE, ...over });
+const LABELS = { ready: ['mode: afk'], claim: 'claimed' };
+const BASE = { environment: 'env_01ASK', pickup: LABELS };
+/** A file whose pickup section holds the labels and `pickup`, and the rest of `over` at the top. */
+const file = ({ pickup = {}, ...over }: Record<string, unknown>) => JSON.stringify({ ...BASE, pickup: { ...LABELS, ...(pickup as object) }, ...over });
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-27T12:17:00Z');
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -28,13 +29,32 @@ describe('the config file\'s pickup section', () => {
     }
   });
 
-  test('unset is one hour, the schedule fire\'s own tick: a file with no pickup section, or an empty one', () => {
+  test('unset is one hour, the schedule fire\'s own tick: a pickup section that sets no sweepHours', () => {
     assert.equal(SWEEP_HOURS, 1);
-    for (const over of [{}, { pickup: {} }]) {
-      const read = readConfig(file(over));
-      assert.ok(read.ok, JSON.stringify(read));
-      assert.equal(sweepHoursOf(read.config), 1);
+    const read = readConfig(file({}));
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.equal(sweepHoursOf(read.config), 1);
+  });
+
+  test('pickup\'s labels are its section\'s: ready, claim, claimRemoves and exclude', () => {
+    const read = readConfig(file({ pickup: { ready: ['mode: afk', 'ready'], claim: 'taken', claimRemoves: ['ready'], exclude: ['mode: human'] } }));
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.config.labels, { ready: ['mode: afk', 'ready'], claim: 'taken', claimRemoves: ['ready'], exclude: ['mode: human'] });
+    const defaults = readConfig(file({}));
+    assert.ok(defaults.ok);
+    assert.deepEqual(defaults.config.labels, { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [], exclude: ['type: prd'] });
+  });
+
+  test('pickup on needs ready and claim; pickup off needs neither', () => {
+    for (const key of ['ready', 'claim']) {
+      const { [key]: _drop, ...rest } = LABELS as Record<string, unknown>;
+      const read = readConfig(JSON.stringify({ ...BASE, pickup: rest }));
+      assert.ok(!read.ok);
+      assert.match(read.ok ? '' : read.fault, new RegExp(`pickup\\.${key}: pickup is on`));
     }
+    const off = readConfig(JSON.stringify({ environment: 'env_01ASK', pickup: { enabled: false } }));
+    assert.ok(off.ok, JSON.stringify(off));
+    assert.equal(off.config.features.pickup, false);
   });
 
   test('unset, a repo swept at the last hourly fire is swept again at this one', () => {
@@ -46,22 +66,22 @@ describe('the config file\'s pickup section', () => {
     const read = readConfig(factoryFile(CONFIG_PATH));
     assert.ok(read.ok);
     assert.equal(typeof read.config.pickup?.sweepHours, 'number');
-    assert.ok(Array.isArray(read.config.pickup?.by));
   });
 
-  test('a file may list whose tickets pickup starts, by GitHub\'s author_association values', () => {
+  test('pickup.by is dropped and refused: whose tickets pickup starts is trust.task', () => {
     const read = readConfig(file({ pickup: { by: ['OWNER', 'NONE'] } }));
-    assert.ok(read.ok, JSON.stringify(read));
-    assert.deepEqual(byOf(read.config), ['OWNER', 'NONE']);
-    const every = readConfig(file({ pickup: { by: [...ASSOCIATIONS] } }));
-    assert.ok(every.ok, JSON.stringify(every));
-    for (const by of [[], ['owner'], ['ANYONE'], 'OWNER', [1]]) {
-      assert.ok(!readConfig(file({ pickup: { by } })).ok, JSON.stringify(by));
+    assert.ok(!read.ok);
+    assert.match(read.ok ? '' : read.fault, /pickup: Unrecognized key: "by"/);
+    const task = readConfig(file({ trust: { task: ['OWNER', 'NONE'], relay: ['OWNER', 'NONE'], review: ['OWNER', 'NONE'] } }));
+    assert.ok(task.ok, JSON.stringify(task));
+    assert.deepEqual(byOf(task.config), ['OWNER', 'NONE']);
+    for (const by of [['owner'], ['ANYONE'], 'OWNER', [1]]) {
+      assert.ok(!readConfig(file({ trust: { task: by } })).ok, JSON.stringify(by));
     }
   });
 
-  test('unset, by is OWNER, MEMBER and COLLABORATOR', () => {
-    for (const over of [{}, { pickup: {} }, { pickup: { sweepHours: 3 } }]) {
+  test('unset, whose tickets pickup starts is OWNER, MEMBER and COLLABORATOR', () => {
+    for (const over of [{}, { pickup: { sweepHours: 3 } }]) {
       const read = readConfig(file(over));
       assert.ok(read.ok, JSON.stringify(read));
       assert.deepEqual(byOf(read.config), ['OWNER', 'MEMBER', 'COLLABORATOR']);

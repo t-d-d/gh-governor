@@ -18,11 +18,16 @@ import { markOwnerUnknown, sessionNamedIn, subscribeLine, subscribersFor } from 
 import { RELAY, dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { SIGN_OFF } from '../scripts/lib/session-signoff.mjs';
-import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 /** The factory's own file's prompts, whose sign-off ask names its lessons. */
-const FACTORY_PROMPTS = JSON.parse(factoryFile(CONFIG_PATH)).prompts;
+const FACTORY_PROMPTS = (() => {
+  const read = readConfig(factoryFile(CONFIG_PATH));
+  assert.ok(read.ok);
+  // The factory's prompts are text, none a file.
+  return read.config.prompts as Record<string, string | undefined>;
+})();
 
 const REPO = 'acme/factory';
 const NOW = Date.parse('2026-09-25T12:00:00Z');

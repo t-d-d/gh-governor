@@ -1,5 +1,5 @@
 /**
- * The JSON Schema of `.github/dispatch.json` (schema/dispatch.schema.json),
+ * The JSON Schema of `.github/governor.json` (schema/governor.schema.json),
  * exported from `configSchema` by scripts/export-config-schema.mjs. A served
  * repo names it in its file's `$schema` key, and an editor then completes key
  * names, describes each key and flags an unknown one. It covers the file's
@@ -11,7 +11,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { SCHEMA_PATH, configJsonSchema, schemaText } from '../scripts/export-config-schema.mjs';
-import { readConfig } from '../dispatch/repo-config.mjs';
+import { SECTIONS, readConfig } from '../dispatch/repo-config.mjs';
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
@@ -43,9 +43,9 @@ describe('the config file\'s JSON Schema', () => {
     assert.deepEqual(missing, [], 'give each a description with .meta() in dispatch/repo-config.mjs');
   });
 
-  test('documents the review section\'s requireChecks', () => {
-    const schema = configJsonSchema() as { properties: { review: { properties: Record<string, { description?: unknown, type?: unknown }> } } };
-    const listed = schema.properties.review.properties.requireChecks;
+  test('documents the prReview section\'s requireChecks', () => {
+    const schema = configJsonSchema() as { properties: { prReview: { properties: Record<string, { description?: unknown, type?: unknown }> } } };
+    const listed = schema.properties.prReview.properties.requireChecks;
     assert.equal(listed?.type, 'array');
     assert.match(String(listed?.description), /check/);
   });
@@ -58,7 +58,7 @@ describe('the config file\'s JSON Schema', () => {
 });
 
 describe('a $schema key in the config file', () => {
-  const fixture = JSON.parse(read('test/fixtures/factory/.github/dispatch.json')) as Record<string, unknown>;
+  const fixture = JSON.parse(read('test/fixtures/factory/.github/governor.json')) as Record<string, unknown>;
   const url = `https://raw.githubusercontent.com/t-d-d/gh-governor/0123456789abcdef0123456789abcdef01234567/${SCHEMA_PATH}`;
 
   test('is ignored: readConfig reads the same config with and without it', () => {
@@ -76,11 +76,12 @@ describe('a $schema key in the config file', () => {
   });
 
   test('is refused below the top, as any unknown key is', () => {
-    const labels = { ...(fixture.labels as Record<string, unknown>), $schema: url };
-    const got = readConfig(JSON.stringify({ ...fixture, labels }));
+    const pickup = { ...(fixture.pickup as Record<string, unknown>), $schema: url };
+    const got = readConfig(JSON.stringify({ ...fixture, pickup }));
     assert.equal(got.ok, false);
-    assert.match(got.ok ? '' : got.fault, /labels/);
-    const periodics = (fixture.periodics as Record<string, unknown>[]).map((p) => ({ ...p, $schema: url }));
+    assert.match(got.ok ? '' : got.fault, /pickup/);
+    const { sessions } = fixture.periodics as { sessions: Record<string, Record<string, unknown>> };
+    const periodics = { sessions: Object.fromEntries(Object.entries(sessions).map(([name, p]) => [name, { ...p, $schema: url }])) };
     assert.equal(readConfig(JSON.stringify({ ...fixture, periodics })).ok, false);
   });
 
@@ -103,7 +104,7 @@ describe('a $schema key in the config file', () => {
     };
     walk(configJsonSchema(), '$');
     assert.deepEqual(defaultedRequired, []);
-    assert.deepEqual(configJsonSchema().required, ['environment', 'labels', 'features']);
+    assert.deepEqual(configJsonSchema().required, ['environment']);
   });
 });
 
@@ -140,19 +141,18 @@ describe('docs/serving-a-repo.md on the schema', () => {
     return rows;
   };
 
-  test('the key table says what each key\'s description says, and lists every top-level key', () => {
+  test('the key table says what each key\'s description says, and with the section table lists every top-level key', () => {
     const rows = tableRows('Key');
     assert.ok(rows.length > 10);
     for (const { key, cell } of rows) assert.equal(cell, nodeAt(key)?.description, `the page's row for ${key}`);
-    const tops = new Set(rows.map((r) => r.key.split('.')[0]));
+    const tops = new Set([...rows, ...tableRows('Section')].map((r) => r.key.split('.')[0]));
     const unlisted = Object.keys((configJsonSchema() as Node).properties ?? {}).filter((k) => !tops.has(k));
-    assert.deepEqual(unlisted, [], 'give each top-level key a row in the page\'s key table');
+    assert.deepEqual(unlisted, [], 'give each top-level key a row in the page\'s key table or section table');
   });
 
-  test('the switch table says what each switch\'s description says, and lists every switch', () => {
-    const rows = tableRows('Switch');
-    for (const { key, cell } of rows) assert.equal(cell, nodeAt(`features.${key}`)?.description, `the page's row for ${key}`);
-    const listed = Object.entries(nodeAt('features')?.properties ?? {}).filter(([, n]) => !(n as { deprecated?: boolean }).deprecated).map(([k]) => k);
-    assert.deepEqual(rows.map((r) => r.key), listed);
+  test('the section table says what each section\'s description says, and lists every feature section in order', () => {
+    const rows = tableRows('Section');
+    for (const { key, cell } of rows) assert.equal(cell, nodeAt(key)?.description, `the page's row for ${key}`);
+    assert.deepEqual(rows.map((r) => r.key), [...SECTIONS]);
   });
 });

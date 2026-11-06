@@ -12,11 +12,16 @@ import { planWorkflow } from '../dispatch/workflow.mjs';
 import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { RELAY, UNATTENDED } from '../dispatch/webhook/fire.mjs';
 import { FINAL_LABELS, FACTORY_WORKFLOWS, WORKFLOW_PATHS, headMerge, workflowFile } from './helpers/dispatch-workflows.ts';
-import { CONFIG_PATH } from '../dispatch/repo-config.mjs';
+import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 /** The factory's own file's prompts: the texts these cases read are the factory's. */
-const PROMPTS = JSON.parse(factoryFile(CONFIG_PATH)).prompts;
+const PROMPTS = (() => {
+  const read = readConfig(factoryFile(CONFIG_PATH));
+  assert.ok(read.ok);
+  // The factory's prompts are text, none a file.
+  return read.config.prompts as Record<string, string | undefined>;
+})();
 
 const REPO = 'acme/factory';
 const NOW = Date.parse('2026-09-25T12:00:00Z');
