@@ -31,12 +31,12 @@ import {
   readDigest,
   reviewPrompt,
 } from '../dispatch/checklist.mjs';
-import { bodyDigest, reviewMarker } from '../dispatch/pr-body.mjs';
 import { readFacts } from '../dispatch/review.mjs';
 import { commentText } from '../dispatch/webhook/review-comment.mjs';
 import { DEPENDABOT } from '../dispatch/webhook/fire.mjs';
-import { routeEvent } from '../dispatch/webhook/route.mjs';
-import { APP_ID, BODY, FILES, HEAD, IAM, MERGE_BASE, PASS, FACTORY_REVIEW, FACTORY_RULES, REPO, SKILL, cliOutput, pullRow } from './helpers/dispatch-review-fixtures.ts';
+import { ownerMessage } from '../dispatch/review.mjs';
+import { asksOwner } from '../dispatch/webhook/review-comment.mjs';
+import { BODY, FILES, HEAD, IAM, MERGE_BASE, PASS, FACTORY_REVIEW, FACTORY_RULES, REPO, SKILL, cliOutput, pullRow } from './helpers/dispatch-review-fixtures.ts';
 import type { Answer, FileRow, Pull, TicketRow } from './helpers/dispatch-review-fixtures.ts';
 
 /**
@@ -109,18 +109,12 @@ const ask = async (over: {
   return { answer, text: commentText(answer, { conflict: false }), judged, baseReads, fileReads, openReads, sessionsRead };
 };
 
-/** What the receiver queues for the review's comment on #767 saying `text`. */
-const receiverFires = (text: string, body = BODY) => routeEvent({
-  event: 'issue_comment',
-  owners: ['acme'],
-  appId: APP_ID,
-  payload: {
-    action: 'created',
-    issue: { number: 767, user: { login: 'tdickinson', type: 'User' }, author_association: 'OWNER', title: 'Run the PR review from the dispatcher', html_url: `https://github.com/${REPO}/pull/767`, body, pull_request: { url: 'p' } },
-    comment: { id: 1, body: `${text}\n\n${reviewMarker(HEAD, bodyDigest(body))}`, html_url: 'c', user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE', performed_via_github_app: { id: APP_ID } },
-    repository: { full_name: REPO },
-  },
-}).fires.map((f) => f.fire as { kind: string, session?: string });
+/** What the review turn queues for #767's owner on the answer `h` holds: one message, with the fallback only where the answer asks for work. */
+const ownerFires = (h: { answer: Parameters<typeof asksOwner>[0], text: string }) => [ownerMessage({
+  pull: { number: 767, title: 'Run the PR review from the dispatcher', html_url: `https://github.com/${REPO}/pull/767` },
+  text: h.text,
+  acts: asksOwner(h.answer, { conflict: false }),
+})];
 
 describe('tests 1 and 7, decided in code before any model call', () => {
   const person = /^Waits for a person: /;
@@ -187,7 +181,7 @@ describe('tests 1 and 7, decided in code before any model call', () => {
         assert.ok(text.includes(`\`${words}\``), text);
         assert.ok(text.includes('every closing statement goes in the `Closes #N` lines at the top of the body, lines holding nothing else'), text);
         assert.match(text, /\(test 1\)/, text);
-        assert.deepEqual(receiverFires(text, body).map((f) => f.kind), ['message'], 'the owner session hears it');
+        assert.deepEqual(ownerFires(h).map((f) => f.kind), ['message'], 'the owner session hears it');
       }
     }
   });
@@ -214,7 +208,7 @@ describe('tests 1 and 7, decided in code before any model call', () => {
       for (const ref of refs) assert.ok(text.includes(ref), text);
       assert.ok(text.includes('close it from a PR in its own repo'), text);
       assert.ok(text.includes('open an issue here and mark it as blocked by that issue'), text);
-      assert.deepEqual(receiverFires(text, body).map((f) => f.kind), ['message'], 'the owner session hears it');
+      assert.deepEqual(ownerFires(h).map((f) => f.kind), ['message'], 'the owner session hears it');
     }
   });
 
@@ -586,7 +580,7 @@ describe('a constraint file the code leaves to the model', () => {
     assert.match(text, person);
     assert.match(text, /\(test 7\)/);
     assert.ok(text.includes(PATH), text);
-    assert.deepEqual(receiverFires(text).map((f) => [f.kind, (f as { fallback?: unknown }).fallback]), [['message', undefined]]);
+    assert.deepEqual(ownerFires(h).map((f) => [f.kind, f.fallback]), [['message', undefined]]);
   });
 
   test('the code still decides test 7 before any model call: a constraint file added, removed or renamed, the README, or another human-only path beside it', async () => {
@@ -647,7 +641,6 @@ describe('a constraint file the code leaves to the model', () => {
  * test 7, and the author session hears its edit first.
  */
 describe('a model-judged edit beside a later test no edit meets', () => {
-  const OWNER = 'https://claude.ai/code/session_01OWNER';
   const EDIT_THEN = /^Waits for a description edit, then a person: /;
   const CRITERION = 'no criterion is answered at merge';
   const PATH = 'docs/constraints/billing-store-cards.md';
@@ -662,7 +655,7 @@ describe('a model-judged edit beside a later test no edit meets', () => {
     assert.match(text, EDIT_THEN, text);
     assert.ok(text.includes(`${CRITERION} (test 2). An edit to the description meets test 2`), text);
     assert.ok(text.includes(`Test 3 fails whatever the description says: ${IAM.reason}. A person merges it.`), text);
-    assert.deepEqual(receiverFires(text).map((f) => [f.kind, f.session]), [['message', OWNER]]);
+    assert.deepEqual(ownerFires(h).map((f) => [f.kind, f.fallback !== undefined]), [['message', true]]);
   });
 
   test('an edit on test 2 and a constraint file whose rule changes: the edit, then the person on test 7, and the owner session hears it', async () => {
@@ -672,13 +665,13 @@ describe('a model-judged edit beside a later test no edit meets', () => {
     const text = h.text;
     assert.match(text, EDIT_THEN, text);
     assert.match(text, /\(test 2\)[\s\S]*Test 7 fails whatever the description says: /, text);
-    assert.deepEqual(receiverFires(text).map((f) => [f.kind, f.session]), [['message', OWNER]]);
+    assert.deepEqual(ownerFires(h).map((f) => [f.kind, f.fallback !== undefined]), [['message', true]]);
   });
 
   test('a later test only a person meets and no edit owed is a person\'s alone: the owner hears it, and no fallback takes the PR over', async () => {
     const h = await ask({ answers: [{ ...IAM, reason: `${IAM.reason}, and test 5 names no owner a person has not decided` }] });
     assert.match(h.text, /^Waits for a person: /);
-    assert.deepEqual(receiverFires(h.text).map((f) => [f.kind, (f as { fallback?: unknown }).fallback]), [['message', undefined]]);
+    assert.deepEqual(ownerFires(h).map((f) => [f.kind, f.fallback]), [['message', undefined]]);
   });
 });
 
@@ -691,7 +684,6 @@ describe('a model-judged edit beside a later test no edit meets', () => {
 describe('the state of the tickets a PR names', () => {
   const person = /^Waits for a person: /;
   const edit = /^Waits for a description edit: /;
-  const OWNER = 'https://claude.ai/code/session_01OWNER';
 
   test('a ticket still `ready for development` fails test 1, and the author session is told to claim it', async () => {
     const h = await ask({ tickets: { 748: { labels: ['mode: afk', 'type: nfr', 'workflow: ready for development'] } } });
@@ -702,8 +694,8 @@ describe('the state of the tickets a PR names', () => {
     assert.match(text, /#748[\s\S]*\(test 1\)/);
     assert.match(text, /workflow: under development/);
     assert.equal(h.answer.answer, 'fail');
-    const fires = receiverFires(text);
-    assert.deepEqual(fires.map((f) => [f.kind, f.session]), [['message', OWNER]], 'the owner session hears it');
+    const fires = ownerFires(h);
+    assert.deepEqual(fires.map((f) => [f.kind, f.fallback !== undefined]), [['message', true]], 'the owner session hears it');
   });
 
   test('a claimed readied ADR passes; one still `ready for development` is told to claim it', async () => {
@@ -784,7 +776,7 @@ describe('the state of the tickets a PR names', () => {
     const reason = h.text;
     assert.match(reason, /^Waits for a description edit, then a person: /, reason);
     assert.match(reason, /#859[\s\S]*\(test 5\)[\s\S]*Test 7 fails whatever the description says: `dispatch\/review\.mjs`/, reason);
-    assert.deepEqual(receiverFires(h.text, VERIFIED('#859')).map((f) => [f.kind, f.session]), [['message', OWNER]]);
+    assert.deepEqual(ownerFires(h).map((f) => [f.kind, f.fallback !== undefined]), [['message', true]]);
   });
 
   test('a ready ADR changing the constraint file it names is told to claim it, not sent to a person', async () => {
