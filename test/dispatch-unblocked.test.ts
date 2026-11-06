@@ -194,6 +194,8 @@ describe('the texts', () => {
     assert.match(started, /This is a notice: it asks nothing of you\. You are #7's spec owner, and may still edit its body/);
     assert.match(started, /started a builder for #7, https:\/\/claude\.ai\/code\/session_01NEW, and asked it to check the spec against what merged/);
     assert.match(unblockedNotice(fire, { started: null }), /started a builder for #7 and asked it/);
+    const { pr: _pr, ...handClosed } = fire;
+    assert.match(unblockedNotice(handClosed, { started: null }), /with no PR[\s\S]*check the spec against this close before it builds/);
     const two = unblockedNotice(fire, { asked: ['A', 'B'], archived: [], unreached: [], what: 'what merged' });
     assert.match(two, /Its builders, A and B, were asked to check its work against what merged\./);
     const mixed = unblockedNotice(fire, { asked: ['A'], archived: ['B'], unreached: [], what: 'what merged' });

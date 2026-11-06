@@ -2373,7 +2373,7 @@ describe('run — an unblocked fire', () => {
     assert.equal(exitCodeFor(result as never), 0);
   });
 
-  test('claimed, the marker\'s session and the body\'s both archived: the builder is asked, the body\'s session is sent a notice, and the turn does not fail', async () => {
+  test('claimed, the marker\'s session and the body\'s both archived: the builder\'s ask goes to nobody, the body\'s session is sent a notice, and the turn does not fail', async () => {
     const sent: string[] = [];
     const bothArchived = async ({ session }: { session: string }) => {
       sent.push(session);
@@ -2468,6 +2468,38 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(sent, [PR_A, PR_B, SPEC]);
     assert.equal((result.messaged as { ok: boolean }).ok, true);
     assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  // A builder that refused hands its ask to the live session on its PR's
+  // head branch. Where that session is the other builder, the notice names
+  // it once; where the send to it fails, the notice says it was not reached,
+  // since a live session is no vacant role.
+  test('claimed, the archived builder\'s branch session is the other builder: the notice names it once', async () => {
+    const texts: Array<{ session: string; text: string }> = [];
+    const archived = archivedFor(PR_A, []);
+    const h = withClosing({ 60: PR_A, 61: PR_B }, { labels: [CLAIM], body: specBody(SPEC), over: { message: async (m: { session: string; text: string }) => { texts.push(m); return archived(m); } } });
+    h.rows.push({ id: 'cse_01PRB', session_status: 'SESSION_STATUS_IDLE', environment_kind: 'remote', updated_at: new Date(NOW - 60_000).toISOString(), external_metadata: { current_branches: { '': 'claude/b-60' } } });
+    await run(fire(), h.deps as never);
+    const notice = texts.find((t) => t.session === SPEC)?.text ?? '';
+    assert.match(notice, /Its builder, https:\/\/claude\.ai\/code\/session_01PRB, was asked/);
+  });
+
+  test('claimed, the archived builder\'s branch session not reached: the notice says governor could not reach it, not that the role is vacant', async () => {
+    const BRANCH_OWNER = 'https://claude.ai/code/session_01BRANCH';
+    const texts: Array<{ session: string; text: string }> = [];
+    const h = withClosing({ 60: PR_A }, { labels: [CLAIM], body: specBody(SPEC), over: { message: async (m: { session: string; text: string }) => {
+      texts.push(m);
+      if (m.session === PR_A) return { status: 1, output: JSON.stringify({ ok: false, session_id: m.session, error: `cloud session ${m.session} is archived and cannot accept new messages` }) };
+      if (m.session === BRANCH_OWNER) return { status: 1, output: JSON.stringify({ ok: false, session_id: m.session, error: 'boom' }) };
+      return { status: 0, output: JSON.stringify({ ok: true, session_id: 'session_01OK', url: m.session }) };
+    } } });
+    h.rows.push({ id: 'cse_01BRANCH', session_status: 'SESSION_STATUS_IDLE', environment_kind: 'remote', updated_at: new Date(NOW - 60_000).toISOString(), external_metadata: { current_branches: { '': 'claude/b-60' } } });
+    await run(fire(), h.deps as never);
+    assert.ok(texts.some((t) => t.session === BRANCH_OWNER));
+    const notice = texts.find((t) => t.session === SPEC)?.text ?? '';
+    assert.match(notice, /could not reach its builder, https:\/\/claude\.ai\/code\/session_01PRA, so nobody was asked/);
+    assert.doesNotMatch(notice, /is archived/);
+    assert.ok(!h.logged.some((l) => l.event === 'dispatch-unblocked' && /goes to nobody/.test(String(l.outcome))));
   });
 
   test('claimed: a comment read or an open PR read that fails fails the turn, and nobody is told', async () => {

@@ -327,7 +327,7 @@ export const unblockedNotice = (fire, ask) => {
   const { issue } = fire;
   let who;
   if ('started' in ask) {
-    who = `Governor started a builder for #${issue}${ask.started === null ? '' : `, ${ask.started},`} and asked it to check the spec against what merged before it builds.`;
+    who = `Governor started a builder for #${issue}${ask.started === null ? '' : `, ${ask.started},`} and asked it to check the spec against ${fire.pr === undefined ? 'this close' : 'what merged'} before it builds.`;
   } else {
     const one = (/** @type {readonly string[]} */ s) => (s.length === 1 ? `Its builder, ${s[0]},` : `Its builders, ${joined(s)},`);
     const asked = ask.asked.length === 0 ? '' : `${one(ask.asked)} ${ask.asked.length === 1 ? 'was' : 'were'} asked to check its work against ${ask.what}.`;
@@ -387,10 +387,7 @@ export const unreadiedSince = (on, removals, labels, since) => {
 export const mayBeUnreadied = (on, labels) => labels.ready.some((l) => !on.includes(l)) && labelsSay([...on, ...labels.ready], labels) === 'ready';
 
 /** @param {readonly string[]} names */
-const listed = (names) => {
-  const quoted = names.map((n) => `\`${n}\``);
-  return quoted.length <= 1 ? quoted.join('') : `${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)}`;
-};
+const listed = (names) => joined(names.map((n) => `\`${n}\``));
 
 /**
  * What became of a ticket's ready labels, for its comment. Fixed text, not

@@ -64,6 +64,25 @@ const readUnblocked = async (reader, issue, sleep, statusOf) => {
   }
 };
 
+/** What came of a send, for the log. @param {import('./deliveries.mjs').Delivery} told */
+const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged');
+
+/**
+ * A ready or claimed ticket's spec owner's notice of its blocker's close,
+ * sent and logged. A notice that fails logs at error and does not fail the
+ * turn: the ask is what the turn owes.
+ *
+ * @param {import('./turn.mjs').TurnContext} ctx
+ * @param {import('./webhook/fire.mjs').UnblockedFire & { repo?: string }} invocation
+ * @param {Record<string, unknown>} about The turn's log fields.
+ * @param {string} session The spec owner.
+ * @param {import('./unblocked.mjs').NoticeAsk} ask
+ */
+const sendNotice = async (ctx, invocation, about, session, ask) => {
+  const told = await ctx.delivery().deliver({ session }, unblockedNotice(invocation, ask), { source: GITHUB_SOURCE, on: [invocation.issue] });
+  ctx.log('dispatch-unblocked', { ...about, session, role: 'spec owner', notice: true, ...(told.ok || told.refused ? {} : { level: 'error' }), outcome: outcomeOf(told), ...(told.error === null ? {} : { error: told.error }) });
+};
+
 /**
  * An unblocked fire's plan. A row that ends the turn without a launch (a
  * refusal, nothing to do, a ticket its relative line holds, a comment, a
@@ -215,8 +234,6 @@ export const planUnblocked = async (invocation, ctx) => {
     /** @type {{ asked: string[], archived: string[], unreached: string[] }} */
     const asks = { asked: [], archived: [], unreached: [] };
     let loginStored = false;
-    /** What came of a send, for the log. @param {import('./deliveries.mjs').Delivery} told */
-    const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged');
     try {
       for (const session of found.sessions) {
         // A PR's builder that answers archived hands the message to the live
@@ -224,24 +241,25 @@ export const planUnblocked = async (invocation, ctx) => {
         const owns = found.owns[session] ?? [];
         const told = await ctx.delivery().deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue], owns });
         sent.push(told);
+        // A refusal whose ask the live session on the branch failed to take
+        // reached nobody, which is no vacant role. A session asked twice,
+        // as a builder and on another's branch, is named once.
         const forwarded = told.fallback?.outcome === 'forwarded';
-        if (told.ok || forwarded) asks.asked.push(forwarded ? told.fallback?.sessionUrl ?? session : session);
-        else if (told.refused) asks.archived.push(session);
+        const took = forwarded ? told.fallback?.sessionUrl ?? session : session;
+        if (told.ok || forwarded) {
+          if (!asks.asked.some((s) => sameSession(s, took))) asks.asked.push(took);
+        } else if (told.refused && told.fallback?.outcome !== 'failed') asks.archived.push(session);
         else asks.unreached.push(session);
         ctx.log('dispatch-unblocked', { ...about, session, builder: found.by, ...(owns.length === 0 ? {} : { prs: owns }), outcome: outcomeOf(told) });
       }
       // A refused builder leaves the role vacant: its ask goes to nobody,
       // and the spec owner is not asked in its place.
-      if (asks.asked.length === 0 && asks.archived.length > 0) {
+      if (asks.asked.length === 0 && asks.unreached.length === 0 && asks.archived.length > 0) {
         ctx.log('dispatch-unblocked', { ...about, builders: found.sessions, outcome: 'no builder took the ask, so it goes to nobody: the builder role is vacant' });
       }
       // The spec owner hears the close as a notice that asks nothing and
-      // names the builders that were asked. A notice that fails is logged,
-      // and does not fail the turn: the ask is what the turn owes.
-      if (noticed !== null) {
-        const told = await ctx.delivery().deliver({ session: noticed }, unblockedNotice(invocation, { ...asks, what: row === 'claimed' ? 'what merged' : 'this close' }), { source: GITHUB_SOURCE, on: [issue] });
-        ctx.log('dispatch-unblocked', { ...about, session: noticed, role: 'spec owner', notice: true, ...(told.ok || told.refused ? {} : { level: 'error' }), outcome: outcomeOf(told), ...(told.error === null ? {} : { error: told.error }) });
-      }
+      // names the builders that were asked.
+      if (noticed !== null) await sendNotice(ctx, invocation, about, noticed, { ...asks, what: row === 'claimed' && invocation.pr !== undefined ? 'what merged' : 'this close' });
     } finally {
       loginStored = await ctx.storeLogin();
     }
@@ -295,18 +313,17 @@ export const planUnblocked = async (invocation, ctx) => {
   const launches = [];
   // A ready ticket's spec owner hears, under unblocked, that a builder was
   // started, as a notice that asks nothing. Nothing is sent where the
-  // launch started nothing.
+  // launch did not confirm a session, since it may have started nothing.
   const specOwner = row === 'ready' && turnsOn(config, 'unblocked') ? sessionNamedIn(relayedBody(ticket, relayOf(config))) : null;
   /** @type {import('./launch-plan.mjs').LaunchablePlan['done']} */
   const done = specOwner === null ? undefined : async ({ dispatched }) => {
-    const builder = dispatched.find((d) => d.issue === issue && d.repo === repo && d.outcome !== 'failed');
+    const builder = dispatched.find((d) => d.issue === issue && d.repo === repo && d.outcome === 'dispatched');
     if (builder === undefined) {
       ctx.log('dispatch-unblocked', { ...about, session: specOwner, role: 'spec owner', notice: true, outcome: 'no notice: no builder started' });
       return;
     }
     if (builder.sessionUrl !== null && sameSession(builder.sessionUrl, specOwner)) return;
-    const told = await ctx.delivery().deliver({ session: specOwner }, unblockedNotice(invocation, { started: builder.sessionUrl }), { source: GITHUB_SOURCE, on: [issue] });
-    ctx.log('dispatch-unblocked', { ...about, session: specOwner, role: 'spec owner', notice: true, ...(told.ok || told.refused ? {} : { level: 'error' }), outcome: told.ok ? 'messaged' : told.refused ? 'its session is archived' : 'not messaged', ...(told.error === null ? {} : { error: told.error }) });
+    await sendNotice(ctx, invocation, about, specOwner, { started: builder.sessionUrl });
   };
   if (ctx.cap === 0) {
     ctx.log('dispatch-unblocked', { ...about, outcome: 'not started', reason: CAP_ZERO_REASON });
