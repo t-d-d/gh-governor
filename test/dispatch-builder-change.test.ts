@@ -115,13 +115,13 @@ describe('the dispatch comment says who builds the ticket, and whom it displaced
   test('pickup\'s comment names its session and displaces nobody', () => {
     const body = dispatchMarker({ at: stamp(), sessionUrl: BUILDER });
     assert.deepEqual(dispatchedTo(body), { builder: BUILDER, displaced: null });
-    assert.equal(lastDispatch([{ body }])?.sessionUrl, BUILDER);
+    assert.equal(lastDispatch([{ body, ours: true }])?.sessionUrl, BUILDER);
   });
 
   test('a change of builder names the new session and the one it displaced, and the lookup still reads the new one', () => {
     const body = dispatchMarker({ at: stamp(), sessionUrl: OTHER, displaced: BUILDER });
     assert.deepEqual(dispatchedTo(body), { builder: OTHER, displaced: BUILDER });
-    assert.equal(lastDispatch([{ body }])?.sessionUrl, OTHER);
+    assert.equal(lastDispatch([{ body, ours: true }])?.sessionUrl, OTHER);
     assert.match(body, /^<!-- governor:dispatched \S+ -->\n/, 'the marker is unchanged');
   });
 });
@@ -333,7 +333,7 @@ describe('planClosingPr: a PR by another session that closes a claimed ticket na
     assert.equal(posted.length, 1);
     assert.equal(posted[0]!.issue, 7);
     assert.deepEqual(dispatchedTo(posted[0]!.body), { builder: OTHER, displaced: BUILDER });
-    assert.equal(lastDispatch([{ body: posted[0]!.body }])?.at, stamp());
+    assert.equal(lastDispatch([{ body: posted[0]!.body, ours: true }])?.at, stamp());
   });
 
   test('the builder\'s own PR posts nothing', async () => {

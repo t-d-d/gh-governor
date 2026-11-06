@@ -176,8 +176,8 @@ export const planTicket = async (invocation, ctx) => {
  * found by the newest dispatch comment or the owner link, the comment names
  * that builder as displaced, and the relay asks it to stop. Where another
  * open PR closes the ticket, both owners build it, and nobody is displaced.
- * Only a dispatch comment governor's App posted names a builder here. A
- * read or a comment that fails fails the turn.
+ * Only a dispatch comment governor's App posted names a builder, as the
+ * lookup reads it. A read or a comment that fails fails the turn.
  *
  * @param {import('./webhook/fire.mjs').ClosingPrFire & { repo?: string }} invocation
  * @param {import('./turn.mjs').TurnContext} ctx
@@ -207,11 +207,11 @@ export const planClosingPr = async (invocation, ctx) => {
     ctx.log('dispatch-builder', { repo, pr, outcome: 'nothing announced', reason: 'no session holds it' });
     return answer();
   }
-  // The ticket's builders as they were without this PR, read from governor's own markers alone.
+  // The ticket's builders as they were without this PR.
   const without = {
     openClosing: async (/** @type {number} */ n) => (await reader.openClosing(n)).filter((p) => p.number !== pr),
     closure: (/** @type {number} */ n) => reader.closure(n),
-    allComments: async (/** @type {number} */ n) => (await reader.allComments(n)).filter((c) => c.ours === true),
+    allComments: (/** @type {number} */ n) => reader.allComments(n),
   };
   for (const issue of tickets) {
     const ticket = await reader.ticket(issue);
