@@ -3,8 +3,9 @@
  * a config file that names its JSON Schema, lists every feature's section, and turns on
  * pickup, the heartbeat and three periodics; a dark-factory file a repo copies
  * in its place, with every feature but hooks on and the review's merge on; the
- * workflow that calls the heartbeat checker; and the workflow that calls the
- * config check on pull requests. Its prompts are plain text that
+ * workflow that calls the heartbeat checker; the workflow that calls the
+ * config check on pull requests; and the CLAUDE.md that carries the session
+ * rules block. Its prompts are plain text that
  * works without any skill, and each acts on the window governor writes under
  * it (dispatch/periodics.mjs).
  */

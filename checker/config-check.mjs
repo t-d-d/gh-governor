@@ -136,7 +136,7 @@ const warningsOf = async (config, reads) => {
     if (text === null) return [`sessionRules: ${path} is not in the repo, so sessions a person starts are not told the rules. Add it with the block from docs/serving-a-repo.md`];
     const found = blockIn(text);
     if (found === 'missing') return [`sessionRules: ${path} does not carry governor's session rules block, so sessions a person starts are not told the rules. Copy the block from docs/serving-a-repo.md into it`];
-    if (found === 'old') return [`sessionRules: ${path} carries a session rules block that is not governor's current one, v${SESSION_RULES_VERSION}. Replace it with the one in docs/serving-a-repo.md`];
+    if (found === 'old') return [`sessionRules: ${path} carries a session rules block that differs from governor's current one, v${SESSION_RULES_VERSION}. Replace it with the one in docs/serving-a-repo.md`];
     return [];
   };
   // Independent reads, run together; the warnings keep this order.

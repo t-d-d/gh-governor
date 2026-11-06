@@ -260,7 +260,7 @@ describe('the check warns where sessionRules is on and the CLAUDE.md block is mi
     assert.equal(edited.warnings.length, 1);
     const got = await check(reads(tree({}, { 'CLAUDE.md': OLD_BLOCK })));
     assert.deepEqual(edited.warnings, got.warnings);
-    assert.deepEqual(got.warnings, ['sessionRules: CLAUDE.md carries a session rules block that is not governor\'s current one, v1. Replace it with the one in docs/serving-a-repo.md']);
+    assert.deepEqual(got.warnings, ['sessionRules: CLAUDE.md carries a session rules block that differs from governor\'s current one, v1. Replace it with the one in docs/serving-a-repo.md']);
   });
 
   test('sessionRules.file names the file read in place of the root CLAUDE.md', async () => {
@@ -268,7 +268,7 @@ describe('the check warns where sessionRules is on and the CLAUDE.md block is mi
     assert.deepEqual((await check(reads(tree({ file: 'docs/AGENTS.md' }, files)))).warnings, []);
     const moved = await check(reads(tree({ file: 'docs/AGENTS.md' }, { 'CLAUDE.md': SESSION_RULES_BLOCK, 'docs/AGENTS.md': OLD_BLOCK })));
     assert.equal(moved.warnings.length, 1);
-    assert.match(moved.warnings[0]!, /^sessionRules: docs\/AGENTS\.md carries a session rules block that is not governor's current one/);
+    assert.match(moved.warnings[0]!, /^sessionRules: docs\/AGENTS\.md carries a session rules block that differs from governor's current one/);
   });
 
   test('says nothing about the block where the switch is off or the section absent', async () => {

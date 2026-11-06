@@ -167,10 +167,10 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  * that fails: the session is running either way. The record spends none
  * of the launch's budget, so a slow one never turns a launch that started
  * into one tried again; the turn waits for every record before it ends.
- * Every prompt ends in `SIGN_POSTS`, which no repo's prompts replace: the
- * receiver skips a session's own posts only where the session signed them.
- * In a repo whose file turns `sessionRules` on, the three rules take its
- * place, the first of them the same signing rule.
+ * Every prompt carries the signing rule, which no repo's prompts replace:
+ * the receiver skips a session's own posts only where the session signed
+ * them. It is `SIGN_POSTS`, or, in a repo whose file turns `sessionRules`
+ * on, the three rules, the first of them the same signing rule.
  * In a repo whose file turns `waits` on, the line on making a ticket wait
  * follows it (`WAIT_PROMPT`, dispatch/waits.mjs).
  * A launch runs under the turn's budget (`budgeted`), cut to `until`.

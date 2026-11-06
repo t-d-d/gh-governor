@@ -669,9 +669,10 @@ const turnOf = async (event, deps, built) => {
     recordSession: (sessionUrl) => deps.state.recordSession(sessionUrl),
     suffix: (launchRepo) => {
       const own = configIn(served, launchRepo);
+      if (own === undefined) return SIGN_POSTS;
       // Rule 1 is the signing rule, so the rules take SIGN_POSTS's place.
-      const signing = own !== undefined && turnsOn(own, 'sessionRules') ? SESSION_RULES : SIGN_POSTS;
-      return own !== undefined && turnsOn(own, 'waits') ? `${signing}\n\n${WAIT_PROMPT}` : signing;
+      const signing = turnsOn(own, 'sessionRules') ? SESSION_RULES : SIGN_POSTS;
+      return turnsOn(own, 'waits') ? `${signing}\n\n${WAIT_PROMPT}` : signing;
     },
     budgeted,
     fireRepo: repo,
