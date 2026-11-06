@@ -137,7 +137,7 @@ served repos have their owner merge, so a pass there must not merge.
   wait on a person, reaches a live owner and starts nobody. No subscriber
   hears it, and the relay sends the comment itself to nobody
   (dispatcher-repos.md). A comment edited in place tells nobody again,
-  unless a message is owed.
+  unless it is at a new head or body while a message is owed.
   The owner's message is delivered at least once: a fire the lane refuses
   is owed on the PR's verdict (dispatcher-state.md), the comment stands,
   and the next review fire at the same head and body queues it, with no

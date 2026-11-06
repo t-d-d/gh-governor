@@ -78,7 +78,8 @@
  * (`asksOwner`), a fail an edit, a claim or a push meets and a conflict,
  * carries the fallback that takes a gone session's PR over; a pass or a
  * wait on a person reaches a live owner and starts nobody. A comment
- * edited in place tells nobody again.
+ * edited in place tells nobody again, unless a message is owed: at a new
+ * head or body it then sends the comment as it now reads in its place.
  *
  * `reviewPull` reads and writes through the injected reader.
  */
@@ -657,11 +658,10 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // it now reads in its place, with its tries. An edit in place at this
     // head and body keeps it.
     const prior = verdict?.owed ?? null;
-    const owed = !saidAlready
-      ? await handOff(body, ownerMessage({ pull, text, acts }), 0)
-      : prior === null ? null
-        : sameHead ? prior
-          : await handOff(body, ownerMessage({ pull, text, acts }), prior.tries);
+    const message = ownerMessage({ pull, text, acts });
+    const owed = !saidAlready ? await handOff(body, message, 0)
+      : prior === null || sameHead ? prior
+        : await handOff(body, message, prior.tries);
     // After the comment: one GitHub refused leaves no verdict, so the next
     // fire reads the PR again. Another review's item standing is its own
     // verdict, as good as this one.
