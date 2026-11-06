@@ -6,7 +6,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { ROW_SWITCH, closingFires, readyPrompt, specPrompt, ticketRow, unblockedFacts, unblockedMessage, notPlannedComment, readyToTakeOff, unreadiedSince, mayBeUnreadied } from '../dispatch/unblocked.mjs';
+import { ROW_SWITCH, closingFires, readyPrompt, specPrompt, ticketRow, unblockedFacts, unblockedMessage, unblockedNotice, notPlannedComment, readyToTakeOff, unreadiedSince, mayBeUnreadied } from '../dispatch/unblocked.mjs';
 import { UNREADIED_MARKER, heldUnreadied } from '../scripts/lib/ready-work.mjs';
 import { parseFire, fireWeight, FIRE_BUDGET } from '../dispatch/webhook/fire.mjs';
 
@@ -186,6 +186,22 @@ describe('the texts', () => {
 
   test('a claimed session hears the blocker closed and by which PR', () => {
     assert.match(unblockedMessage(fire, {}), /#41.*PR #52[\s\S]*against what merged/);
+  });
+
+  test('a spec owner\'s notice says it asks nothing, and names who was asked', () => {
+    const started = unblockedNotice(fire, { started: 'https://claude.ai/code/session_01NEW' });
+    assert.match(started, /#41.*PR #52/);
+    assert.match(started, /This is a notice: it asks nothing of you\. You are #7's spec owner, and may still edit its body/);
+    assert.match(started, /started a builder for #7, https:\/\/claude\.ai\/code\/session_01NEW, and asked it to check the spec against what merged/);
+    assert.match(unblockedNotice(fire, { started: null }), /started a builder for #7 and asked it/);
+    const { pr: _pr, ...handClosed } = fire;
+    assert.match(unblockedNotice(handClosed, { started: null }), /with no PR[\s\S]*check the spec against this close before it builds/);
+    const two = unblockedNotice(fire, { asked: ['A', 'B'], archived: [], unreached: [], what: 'what merged' });
+    assert.match(two, /Its builders, A and B, were asked to check its work against what merged\./);
+    const mixed = unblockedNotice(fire, { asked: ['A'], archived: ['B'], unreached: [], what: 'what merged' });
+    assert.match(mixed, /Its builder, A, was asked[\s\S]*Its builder, B, is archived\.$/);
+    assert.match(unblockedNotice(fire, { asked: [], archived: ['B'], unreached: [], what: 'this close' }), /Its builder, B, is archived, so nobody was asked\.$/);
+    assert.match(unblockedNotice(fire, { asked: [], archived: [], unreached: ['C'], what: 'this close' }), /could not reach its builder, C, so nobody was asked\.$/);
   });
 
   test('a not-planned close leaves a comment naming the blocker', () => {
