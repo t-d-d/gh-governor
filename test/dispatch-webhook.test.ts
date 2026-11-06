@@ -1154,9 +1154,9 @@ describe('routeEvent — subscribers', () => {
 
   /**
    * A shipping job that labels a ticket `deployed: <target>` also comments
-   * on it (dispatch/turn.mjs). The owner hears the comment, as any comment
-   * governor's App posts, without the marker, and with the sign-off ask
-   * only where the issue is closed. It does not hear the label.
+   * on it (dispatch/turn.mjs). The comment is a record for people: the
+   * shipping turn messages the ticket's roles itself, so the relay sends it
+   * to nobody. Nobody hears the label either.
    */
   describe('governor\'s deploy comment', () => {
     const app = { user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE', performed_via_github_app: { id: APP_ID } };
@@ -1167,15 +1167,10 @@ describe('routeEvent — subscribers', () => {
       assert.equal(text, `Deployed to prod by Deliver ([job](https://github.com/acme/factory/actions/runs/500/job/2)), built from aaaaaaa.\n\n<!-- governor:deployed prod -->`);
     });
 
-    test('reaches the issue\'s owner without its marker, asking for sign-off on a closed issue and not on an open one', () => {
-      const closed = commented({ ...issue(`Filed.${footer}`), state: 'closed' }).sent;
-      assert.deepEqual(closed.map((m) => [m.session, m.event, m.on, m.closing]), [[OWNER, 'comments', 717, true]]);
-      assert.ok(closed[0]!.text.includes('Deployed to prod by Deliver'), closed[0]!.text);
-      assert.doesNotMatch(closed[0]!.text, /governor:deployed/);
-      assert.equal(closed[0]!.fallback, undefined);
-
-      const open = commented({ ...issue(`Filed.${footer}`), state: 'open' }).sent;
-      assert.deepEqual(open.map((m) => [m.session, m.event, m.closing]), [[OWNER, 'comments', undefined]]);
+    test('reaches no session through the relay, on a closed issue or an open one', () => {
+      assert.deepEqual(commented({ ...issue(`Filed.${footer}`), state: 'closed' }).sent, []);
+      assert.deepEqual(commented({ ...issue(`Filed.${footer}`), state: 'open' }).sent, []);
+      assert.deepEqual(commented({ ...issue(`Filed.\n\n${subscribeLine(FILER)}${footer}`), state: 'closed' }).sent, [], 'nor a subscriber');
     });
 
     test('a person\'s comment quoting the marker on a closed issue asks for no sign-off', () => {

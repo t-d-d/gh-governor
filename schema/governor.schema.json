@@ -551,7 +551,7 @@
           }
         },
         "deployedLabels": {
-          "description": "Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, so the ticket's spec owner and builders hear of the deploy there in place of a PR message. Default false.",
+          "description": "Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, for people to read; the shipping job messages each such ticket's spec owner and builders itself. Default false.",
           "type": "boolean"
         },
         "prompts": {

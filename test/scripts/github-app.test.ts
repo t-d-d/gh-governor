@@ -976,6 +976,19 @@ describe('githubReader', () => {
     await assert.rejects(githubReader({ token: 't', repo: 'acme/factory', fetch }).outsideCollaborators(), /outside collaborators/);
   });
 
+  // The shipping turn judges a ticket governor's App filed as it judges
+  // that App's PRs: every trust list lets it in.
+  test('ticket marks an issue the reader\'s own App opened, and no other bot\'s', async () => {
+    const app = { type: 'Bot', login: 'governor-app[bot]' };
+    const { fetch } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/issues/12': { number: 12, title: 'T', body: '', state: 'open', labels: [], user: app, performed_via_github_app: { id: 7 } },
+      'https://api.github.com/repos/acme/factory/issues/13': { number: 13, title: 'T', body: '', state: 'open', labels: [], user: app, performed_via_github_app: { id: 8 } },
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', appId: 7, fetch });
+    assert.equal((await reader.ticket(12)).app, true);
+    assert.equal((await reader.ticket(13)).app, undefined);
+  });
+
   // A fire naming issues reads each on its own and orders them oldest first.
   test('ticket carries its creation time, where the issue has one', async () => {
     const { fetch } = fakeFetch({

@@ -140,7 +140,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   deployMessages: 'A shipping job, or a red deploy, tells the sessions of the merges it shipped.',
   branchRunMessages: 'A run dispatched on a branch tells the session that wrote its commit.',
   conflicts: 'A merge into the default branch tells each PR it left conflicted.',
-  deployedLabels: 'Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, so the ticket\'s spec owner and builders hear of the deploy there in place of a PR message. Default false.',
+  deployedLabels: 'Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, for people to read; the shipping job messages each such ticket\'s spec owner and builders itself. Default false.',
   prReview: 'The PR review: its prompt, and the lists it checks a PR against. Needs `prompt` when on.',
   heartbeat: 'Governor records each fire on the issue `issue` names: a line for pickup and one per periodic, under the `<!-- governor:heartbeat -->` marker its body must carry. Needs `issue` when on.',
   periodics: 'A session per periodic in `sessions`, each time its day limit passes or one of its counts is reached. Needs at least one periodic when on.',

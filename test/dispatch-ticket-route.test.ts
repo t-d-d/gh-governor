@@ -171,16 +171,19 @@ describe('the receiver: a claimed ticket\'s comment, close and reopen queue a ti
     assert.deepEqual(ofKind(fires, 'ticket'), []);
   });
 
-  // Governor's deploy comment reaches both roles, as any comment does: the
-  // shipping turn sends no PR message to a session that hears it.
-  test('governor\'s deploy comment on a claimed ticket: the ticket fire goes to the spec owner and the builders, without its marker', async () => {
+  // Governor's deploy comment is a record for people: the shipping turn
+  // tells the ticket's roles itself, so the relay queues nothing for it.
+  test('governor\'s deploy comment on a claimed ticket queues no ticket fire and no message', async () => {
     const body = deployedComment({ target: 'prod', workflow: 'Deliver', url: `https://github.com/${REPO}/actions/runs/1/job/2`, commit: 'a'.repeat(40) });
     const bot = { user: { login: 'governor-app[bot]', type: 'Bot' }, author_association: 'NONE', performed_via_github_app: { id: APP_ID }, body };
     const { fires } = await handled('issue_comment', commented([CLAIM], bot), item(CLAIM));
-    const tickets = ofKind(fires, 'ticket');
-    assert.equal(tickets.length, 1);
-    assert.ok(!('ownerOnly' in tickets[0]!), JSON.stringify(tickets[0]));
-    assert.ok(!tickets[0]!.text.includes('governor:deployed'), tickets[0]!.text);
+    assert.deepEqual([ofKind(fires, 'ticket'), ofKind(fires, 'message')], [[], []]);
+  });
+
+  test('a person\'s comment quoting the deploy marker still reaches the roles', async () => {
+    const body = deployedComment({ target: 'prod', workflow: 'Deliver', url: `https://github.com/${REPO}/actions/runs/1/job/2`, commit: 'a'.repeat(40) });
+    const { fires } = await handled('issue_comment', commented([CLAIM], { body }), item(CLAIM));
+    assert.equal(ofKind(fires, 'ticket').length, 1);
   });
 });
 

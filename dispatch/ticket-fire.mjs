@@ -11,9 +11,8 @@
  * (dispatch/builders.mjs) are sent it, each told who holds both roles and
  * which it holds. A session never hears its own signed post. A builder
  * whose PR's merge closed the ticket hears the close through its PR, and
- * not again from the ticket. Governor's deploy comment reaches both roles
- * like any comment, and the shipping turn sends no PR deploy message to a
- * session that holds a role on the ticket (dispatch/turn.mjs).
+ * not again from the ticket. Governor's deploy comment is no ticket fire:
+ * the shipping turn tells both roles of a deploy itself (dispatch/turn.mjs).
  *
  * Every message is a notice: it asks nothing beyond the recipient's own
  * part. The spec owner acts on a remark that changes what counts as done,
@@ -40,8 +39,8 @@ import { EDIT_BUILDER, EDIT_SPEC_OWNER } from './webhook/mention.mjs';
 
 /** @typedef {'spec owner' | 'builder' | 'spec owner and builder'} TicketRole */
 
-/** @param {string[]} items */
-const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
+/** Items joined as a sentence lists them: `a, b and c`. @param {string[]} items */
+export const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
 
 /**
  * What a message about a ticket adds under what happened: who holds each
