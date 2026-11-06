@@ -618,6 +618,8 @@ const turnOf = async (event, deps, built) => {
   // The bare schedule fire names no repo: it serves every repo it finds.
   // Any other fire names its repo, or parseFire refused it.
   const bare = invocation.kind === 'schedule' && invocation.repo === undefined;
+  /** The closing check a `prEdit` fire runs as its `closingPr` fire, where its own switches are off. @type {import('./webhook/fire.mjs').ClosingPrFire & { repo: string } | null} */
+  let closingInstead = null;
   const repo = invocation.repo;
   /** @type {import('./repos.mjs').Served[]} */
   let served;
@@ -643,10 +645,17 @@ const turnOf = async (event, deps, built) => {
       return { kind: invocation.kind, refusal: reason, signoffs: null, ...(unread.length === 0 ? {} : { unread }) };
     }
     served = [one];
+    // A `prEdit` fire marked `closing` carries the edit's closing check in
+    // place of its own `closingPr` fire: where the file turns a switch the
+    // `prEdit` fire needs off, that check runs as the `closingPr` fire would
+    // have, under its own switch.
+    if (invocation.kind === 'prEdit' && invocation.closing === true && switchesOf(invocation).some((needed) => !turnsOn(one.config, needed))) {
+      closingInstead = { kind: 'closingPr', pr: invocation.pr, repo };
+    }
     // The first switch the fire needs that the file does not turn on: a
     // `prEdit` fire needs two (switchesOf).
-    const name = switchesOf(invocation, one.config.workflows).find((needed) => !turnsOn(one.config, needed)) ?? null;
-    const relayed = invocation.kind === 'message' || invocation.kind === 'ticket' || invocation.kind === 'offer' || invocation.kind === 'prEdit' || invocation.kind === 'author';
+    const name = switchesOf(closingInstead ?? invocation, one.config.workflows).find((needed) => !turnsOn(one.config, needed)) ?? null;
+    const relayed = closingInstead === null && (invocation.kind === 'message' || invocation.kind === 'ticket' || invocation.kind === 'offer' || invocation.kind === 'prEdit' || invocation.kind === 'author');
     const unheard = relayed ? unrelayed(invocation, relayOf(one.config)) : null;
     // An unblocked fire's switch is its ticket's state's (dispatch/unblocked.mjs):
     // with both off, no row acts. Its turn still reads the ticket once, for a
@@ -715,7 +724,7 @@ const turnOf = async (event, deps, built) => {
   /** @type {Awaited<ReturnType<typeof turnFor>>} */
   let turned;
   try {
-    turned = await turnFor(invocation, {
+    turned = await turnFor(closingInstead ?? invocation, {
       ...deps,
       secret,
       githubToken: tokenFor,
@@ -1967,7 +1976,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   } else if (invocation.kind === 'offer') {
     planned = await planOffer(invocation, ctx);
   } else if (invocation.kind === 'prEdit') {
-    planned = await planPrEdit(invocation, ctx);
+    planned = await planPrEdit(invocation, ctx, { closing: planClosingPr });
   } else if (invocation.kind === 'author') {
     planned = await planAuthor(invocation, ctx);
   } else if (invocation.kind === 'dispatch') {

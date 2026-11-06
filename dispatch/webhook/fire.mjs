@@ -479,12 +479,15 @@ export const lastDispatch = (comments) => {
  *   ticket. The task reads the PR and each ticket it closes, and where a
  *   claimed ticket's builder is not the PR's owner, posts the dispatch
  *   comment naming that owner (dispatch/ticket-fire.mjs).
- * @typedef {{ kind: 'prEdit', pr: number, from: string, to: string, authors?: string[] }} PrEditFire
+ * @typedef {{ kind: 'prEdit', pr: number, from: string, to: string, authors?: string[], closing?: true }} PrEditFire
  *   A PR body edit, by no bot, that moved the PR's session link from
  *   `from` to `to`, both read under the repo's `trust.relay`. Under
  *   `prMessages` and `sessionRules` the task sends `from` a notice and,
  *   where it takes it, writes its link back and tells `to` once
- *   (dispatch/take.mjs). `authors`: as a message fire's.
+ *   (dispatch/take.mjs). `authors`: as a message fire's. `closing`: the
+ *   same edit made the body close an issue its old body did not, so the
+ *   turn runs the `closingPr` fire's check once the owner is settled, in
+ *   place of a `closingPr` fire of its own.
  * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire | ClosingPrFire | OfferFire | PrEditFire | AuthorFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
@@ -629,8 +632,8 @@ export const build = Object.freeze({
   /** @param {{ pr: number }} args @returns {ClosingPrFire} */
   closingPr: ({ pr }) => ({ kind: 'closingPr', pr }),
 
-  /** @param {{ pr: number, from: string, to: string, authors?: string[] | undefined }} args @returns {PrEditFire} */
-  prEdit: ({ pr, from, to, authors }) => ({ kind: 'prEdit', pr, from, to, ...present({ authors }) }),
+  /** @param {{ pr: number, from: string, to: string, authors?: string[] | undefined, closing?: true | undefined }} args @returns {PrEditFire} */
+  prEdit: ({ pr, from, to, authors, closing }) => ({ kind: 'prEdit', pr, from, to, ...present({ authors }), ...(closing === true ? { closing } : {}) }),
 
   /**
    * Each title on one line and at most {@link TITLE_LIMIT} characters, so
@@ -943,7 +946,8 @@ const parseKind = (event) => {
       if (!(typeof value === 'string' && value.startsWith('https://claude.ai/code/') && MESSAGE_SESSION.test(value))) throw new Error(`a prEdit invocation's ${key} must be a claude.ai/code session URL, got: ${JSON.stringify(e?.[key])}`);
     }
     if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) throw new Error(`a prEdit invocation's authors are trust values, got: ${JSON.stringify(e.authors)}`);
-    return { kind, pr: Number(e?.pr), from: String(e?.from), to: String(e?.to), ...(e?.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (e.authors)] }) };
+    if (e?.closing !== undefined && e.closing !== true) throw new Error(`a prEdit invocation's closing is true or absent, got: ${JSON.stringify(e.closing)}`);
+    return { kind, pr: Number(e?.pr), from: String(e?.from), to: String(e?.to), ...(e?.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (e.authors)] }), ...(e?.closing === true ? { closing: /** @type {const} */ (true) } : {}) };
   }
   if (kind === 'author') {
     if (!isPositiveInt(e?.on)) throw new Error(`an author invocation's on must be a positive integer, got: ${JSON.stringify(e?.on)}`);

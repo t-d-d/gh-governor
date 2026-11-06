@@ -4777,6 +4777,34 @@ describe('run: an issue\'s owner refuses as archived, and the session that comme
   });
 });
 
+describe('run: a PR edit that moved its link and added a closing reference, in a repo with a prEdit switch off (#626)', () => {
+  const OWNER = 'https://claude.ai/code/session_01OLD';
+  const EDITOR = 'https://claude.ai/code/session_01EDITOR';
+  const fire = { kind: 'prEdit', pr: 12, from: OWNER, to: EDITOR, authors: ['OWNER'] };
+  const PR_OFF_FILE = (() => {
+    const file = JSON.parse(FACTORY_FILE);
+    delete file.prMessages;
+    return JSON.stringify(file);
+  })();
+
+  test('the closing check runs as the closingPr fire would have, and nobody hears the edit', async () => {
+    for (const file of [RULES_OFF_FILE, PR_OFF_FILE]) {
+      const h = harness({ configFile: async (repo: string) => (repo === REPO ? file : null) });
+      const result = await run({ ...fire, closing: true }, h.deps as never) as Record<string, any>;
+      assert.equal(result.kind, 'closingPr');
+      assert.equal(result.refusal, undefined);
+      assert.deepEqual(h.messages, []);
+    }
+  });
+
+  test('without the closing mark the fire is refused, as before', async () => {
+    const h = harness({ configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) });
+    const result = await run(fire, h.deps as never) as Record<string, any>;
+    assert.match(String(result.refusal), /sessionRules/);
+    assert.deepEqual(h.messages, []);
+  });
+});
+
 describe('run: an issue owner\'s message of a body edit that moved its owner link (#614)', () => {
   const OWNER = 'https://claude.ai/code/session_01OLD';
   const EDITOR = 'https://claude.ai/code/session_01EDITOR';
