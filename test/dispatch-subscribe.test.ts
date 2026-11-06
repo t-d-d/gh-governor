@@ -83,6 +83,25 @@ describe('owner unknown', () => {
     assert.ok(types.includes('emph') && !types.includes('html_block'), `the sentence renders as emphasis, not as a raw HTML block: ${types.join(' ')}`);
   });
 
+  for (const [name, eol] of [['LF', '\n'], ['CRLF', '\r\n'], ['a bare CR', '\r']] as const) {
+    test(`on a body whose lines end in ${name}, the line goes just above the owner link's line`, () => {
+      const lines = ['The change.', '', '🤖 Generated with [Claude Code](https://claude.com/claude-code)', '', OWNER];
+      const marked = markOwnerUnknown(lines.join(eol), AT);
+      const at = marked.indexOf('_Governor took this PR over');
+      assert.equal(marked.slice(0, at), lines.slice(0, -1).map((l) => `${l}${eol}`).join(''), 'everything above the owner link\'s line stays above the marker');
+      assert.ok(marked.endsWith(`-->\n${OWNER}`), 'the owner link\'s line follows the marker');
+      assert.equal(sessionNamedIn(marked), OWNER);
+      assert.equal(ownerUnknownSince(marked), AT);
+    });
+
+    test(`on a body whose lines end in ${name}, marking again and relinking remove only the marker's line`, () => {
+      const body = ['The change.', '', '🤖 Generated with [Claude Code](https://claude.com/claude-code)', '', OWNER].join(eol);
+      const twice = markOwnerUnknown(markOwnerUnknown(body, AT), LATER);
+      assert.equal(twice, markOwnerUnknown(body, LATER));
+      assert.equal(relinkSession(twice, FILER), body.replace(OWNER, FILER));
+    });
+  }
+
   test('a body too long to read is not marked: nothing would read the line', () => {
     assert.throws(() => markOwnerUnknown(`${'x'.repeat(2 * BODY_READ_LIMIT + 1)}${footer}`, AT), /too long/);
   });
