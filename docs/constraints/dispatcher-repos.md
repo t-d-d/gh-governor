@@ -545,6 +545,7 @@ spends the one claude.ai login.
   changed: a dropped connection, a 500, 502, 503 or 504, or a rate limit
   whose `retry-after` is 10 seconds or less. It sends at most 3 times,
   pausing 1 and then 2 seconds, or the `retry-after` where GitHub gives one,
+  and does not resend a server error whose `retry-after` asks for longer,
   and logs `dispatch-github-retry` at info for each resend
   (`request`, scripts/lib/github-app.mjs). It never resends any other answer:
   a 404, a 422, a 403 for a missing permission, a rate limit that asks for a

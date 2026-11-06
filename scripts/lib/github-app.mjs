@@ -20,6 +20,7 @@ import { relayedBody, sessionId, sessionsNamedIn } from '../../dispatch/webhook/
 import { waitOf } from './ready-work.mjs';
 import { lets } from '../../dispatch/trust.mjs';
 import { lastDispatch } from '../../dispatch/webhook/fire.mjs';
+import { messageOf } from './error-message.mjs';
 
 const API = 'https://api.github.com';
 /** The version the gh-deps shim pins, so both read the same endpoint shapes. */
@@ -42,8 +43,8 @@ const RESEND_PAUSE_MS = 1_000;
 const RESENT_STATUSES = new Set([500, 502, 503, 504]);
 const RESEND_WAIT_MAX_S = 10;
 
-/** @param {string} event @param {Record<string, unknown>} [context] */
-const noLog = (event, context) => { void event; void context; };
+/** @type {Log} */
+const noLog = () => {};
 
 /** @param {number} ms */
 const realSleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
@@ -123,7 +124,7 @@ const request = async ({ fetch, sleep, log }, auth, method, path, body, repeatab
         level: 'info',
         method,
         path,
-        ...(status === undefined ? { error: error instanceof Error ? error.message : String(error) } : { status }),
+        ...(status === undefined ? { error: messageOf(error) } : { status }),
         try: sent,
       });
       await sleep(resend === 'backoff' ? RESEND_PAUSE_MS * 2 ** (sent - 1) : resend);
@@ -134,21 +135,24 @@ const request = async ({ fetch, sleep, log }, auth, method, path, body, repeatab
 /** @typedef {'backoff' | number | null} Resend */
 
 /**
- * What a failed answer asks of a resend: `'backoff'` for a server error,
- * which waits the doubling pause; the milliseconds GitHub's `retry-after`
- * asks for on a rate limit, where that is a whole number of seconds no more
- * than `RESEND_WAIT_MAX_S`; and null for any other answer, never resent.
+ * What a failed answer asks of a resend. A server error or a rate limit that
+ * gives a `retry-after` waits it, where that is a whole number of seconds no
+ * more than `RESEND_WAIT_MAX_S`, and is not resent where GitHub asks for
+ * longer. A server error that gives none waits the doubling pause
+ * (`'backoff'`). Any other answer, a rate limit naming no wait among them,
+ * is null: never resent.
  *
  * @param {Response} response
  * @param {boolean} limited Whether `rateLimited` classes it.
  * @returns {Resend}
  */
 const resendOf = (response, limited) => {
-  if (RESENT_STATUSES.has(response.status)) return 'backoff';
-  if (!limited) return null;
-  const after = (response.headers.get('retry-after') ?? '').trim();
-  if (!/^\d+$/.test(after)) return null;
-  const seconds = Number(after);
+  const server = RESENT_STATUSES.has(response.status);
+  if (!server && !limited) return null;
+  const after = response.headers.get('retry-after');
+  if (after === null) return server ? 'backoff' : null;
+  if (!/^\d+$/.test(after.trim())) return null;
+  const seconds = Number(after.trim());
   return seconds <= RESEND_WAIT_MAX_S ? seconds * 1_000 : null;
 };
 

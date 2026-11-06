@@ -1208,7 +1208,7 @@ describe('githubApi', () => {
   // say it, and a secondary limit's body where they do not.
   test('a refusal says whether it is a rate limit, so a caller never reads the text', async () => {
     const refusal = async (response: Response) => {
-      const api = githubApi({ token: 't', fetch: (async () => response) as unknown as typeof globalThis.fetch });
+      const api = githubApi({ token: 't', fetch: (async () => response) as unknown as typeof globalThis.fetch, sleep: async () => {} });
       return api('GET', '/repos/acme/factory/hooks').then(() => assert.fail('no refusal'), (e: { rateLimited?: unknown }) => e.rateLimited);
     };
     const forbidden = (headers: Record<string, string>) => new Response('{"message":"Access restricted"}', { status: 403, statusText: 'Forbidden', headers });
@@ -1273,6 +1273,16 @@ describe('githubApi', () => {
       assert.equal(calls.length, 3, String(status));
       assert.deepEqual(waits, [1_000, 2_000], String(status));
     }
+  });
+
+  test('a server error that gives a retry-after waits it, and one asking for more than 10 seconds is not resent', async () => {
+    const after = (seconds: string) => new Response('{}', { status: 503, statusText: 'Service Unavailable', headers: { 'retry-after': seconds } });
+    const short = answers([after('5'), 200]);
+    assert.deepEqual(await githubApi({ token: 't', ...short.io })('GET', '/repos/acme/factory/hooks'), [{ id: 1 }]);
+    assert.deepEqual(short.waits, [5_000]);
+    const long = answers([after('30'), 200]);
+    await assert.rejects(githubApi({ token: 't', ...long.io })('GET', '/repos/acme/factory/hooks'), /503/);
+    assert.equal(long.calls.length, 1);
   });
 
   test('a GET answered 503 on all 3 sends fails as today, with its status', async () => {
