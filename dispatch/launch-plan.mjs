@@ -282,6 +282,8 @@ export const launchPlan = async (plan, ctx, started) => {
   const ran = [];
   /** @type {PlannedLaunch[]} */
   const left = [];
+  /** Each launch's change-of-builder message to its spec owner, sent in launch order once the loop ends. @type {Array<() => Promise<unknown>>} */
+  const tells = [];
   try {
     for (const [i, entry] of launches.entries()) {
       if (now() - started > SCHEDULE_LAUNCH_WINDOW_MS) {
@@ -341,19 +343,22 @@ export const launchPlan = async (plan, ctx, started) => {
         if (sessionUrl !== null) claims.delete(keyOf(ticket));
         // The comment is a record for people: this turn tells the spec
         // owner of its new builder, unless the plan's own message does.
+        // The message waits for the loop's end, since each send is a CLI
+        // call that would spend the launch window between launches.
         const row = ticketRows.get(keyOf(ticket));
         if (!entry.told && row !== undefined) {
-          await tellBuilderChange({
+          const owner = specOwnerOf(row, relayOf(configOf(ticket.repo)));
+          tells.push(() => tellBuilderChange({
             deliver: (session, text, options) => ctx.delivery(ticket.repo).deliver({ session }, text, { source: GITHUB_SOURCE, ...options }),
             log,
             repo: ticket.repo,
             issue: ticket.issue,
             title: row.title,
             url: `https://github.com/${ticket.repo}/issues/${ticket.issue}`,
-            owner: specOwnerOf(row, relayOf(configOf(ticket.repo))),
+            owner,
             builder: sessionUrl,
             displaced: null,
-          });
+          }));
         }
       } else if (ticket !== null && outcome !== 'failed') {
         // A spec session is the ticket's owner, named in its body, where its
@@ -368,6 +373,10 @@ export const launchPlan = async (plan, ctx, started) => {
     // the turn.
     await plan.done?.({ dispatched: ran, left });
   } finally {
+    // Every launch has run, so the spec owners' messages spend no launch
+    // window. They go even where the loop threw: each launch they name
+    // started. A send never throws (`sendAll`, dispatch/told.mjs).
+    for (const tell of tells) await tell();
     // A claim no marker names a session for: an unconfirmed launch, one past
     // its budget, a marker refused, a release refused. Nothing puts the
     // labels back, because the session may be running.
