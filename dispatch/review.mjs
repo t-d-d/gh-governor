@@ -469,6 +469,10 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
    */
   const handOff = async (comment, message, tries) => {
     if (tell === undefined) return null;
+    // A turn can try two messages, an owed one and its review's new one:
+    // what it reports is the last try's. A drop stays, and fails the turn.
+    delete reviewed.told;
+    delete reviewed.owed;
     try {
       reviewed.told = await tell(number, comment, message);
       return null;
@@ -532,6 +536,9 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // queued again. A verdict at another head or body is a newer review's
     // to tell: its message replaces the older one.
     if (verdict !== null && sameHead && verdict.owed != null && tell !== undefined) {
+      // The earlier review commented and posted its check: a write that
+      // fails here fails the turn, and leaves that check standing.
+      said = true;
       const { at: _, owed, ...kept } = verdict;
       const still = await handOff(owed.comment, owed.message, owed.tries);
       await verdicts.record(number, verdict, { ...kept, ...(still === null ? {} : { owed: still }) });
