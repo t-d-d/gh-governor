@@ -51,7 +51,10 @@ const COSTS: Answer = { answer: 'fail', test: 3, reason: 'the description names 
 type Thread = { id: number; body: string; created_at: string; ours: boolean };
 
 /** A PR's verdict item in the state table, as the review reads it. */
-type Verdict = { headSha: string, bodySha: string, readSha: string | null, pass: { reason: string, at: string } | null, again: boolean, at: string };
+type Verdict = { headSha: string, bodySha: string, readSha: string | null, pass: { reason: string, at: string } | null, again: boolean, at: string, owed?: Owed | null };
+
+/** An owner's message a review could not queue, kept on its verdict for the next review turn. */
+type Owed = { comment: string, message: { kind: string, text: string, on: number, fallback?: unknown }, tries: number };
 
 /**
  * The item the review that wrote a thread's last marker comment put
@@ -119,10 +122,16 @@ const harness = (over: {
   verdicts?: Record<number, Verdict | null> | string,
   /** The error the verdict's write fails with. */
   verdictWrite?: string,
-  /** The fire lane's refusal, for an enqueue that throws; null for a turn with no lane. */
-  enqueue?: string | null,
+  /**
+   * The fire lane's refusal, for an enqueue that throws; null for a turn
+   * with no lane. A list answers each enqueue in turn: a string refuses it,
+   * undefined queues it.
+   */
+  enqueue?: string | null | Array<string | undefined>,
 } = {}) => {
   const checkRuns: Array<{ name: string, sha: string, state: string, title: string, summary: string }> = [];
+  /** How many enqueues the turn has made, to answer a list of refusals in order. */
+  let enqueues = 0;
   /** The review's writes in the order made: each check by its state, the merge, the comment. */
   const writes: string[] = [];
   const comments: Array<{ issue: number, body: string }> = [];
@@ -212,7 +221,9 @@ const harness = (over: {
     }; },
     heartbeat: async () => {},
     enqueue: over.enqueue === null ? undefined : async (message: never, dedupId: string) => {
-      if (typeof over.enqueue === 'string') throw new Error(over.enqueue);
+      const refusal = Array.isArray(over.enqueue) ? over.enqueue[enqueues] : over.enqueue;
+      enqueues += 1;
+      if (typeof refusal === 'string') throw new Error(refusal);
       queued.push({ message, dedupId });
       return `m-${queued.length}`;
     },
@@ -239,6 +250,9 @@ const harness = (over: {
       },
       verdict: async (_repo: string, pr: number) => {
         if (typeof over.verdicts === 'string') throw new Error(over.verdicts);
+        // A verdict this turn wrote is the one a later read in it finds.
+        const written = verdictWrites.filter((w) => w.pr === pr).at(-1);
+        if (written !== undefined) return { ...written.verdict, at: `written-${verdictWrites.length}` };
         if (over.verdicts !== undefined && pr in over.verdicts) return over.verdicts[pr] ?? null;
         return verdictOf(over.threads?.[pr] ?? over.thread ?? []);
       },
@@ -490,14 +504,22 @@ describe('run — what reaches the owner session', () => {
     assert.equal(exitCodeFor(result as never), 0);
   });
 
-  test('a fire the lane refuses: the comment and the verdict stand, the review says so, and the turn fails', async () => {
+  test('a fire the lane refuses: the comment stands, the verdict owes the message, and the turn does not fail', async () => {
     for (const h of [harness({ answers: [COSTS], enqueue: 'SQS refused it' }), harness({ answers: [COSTS], enqueue: null })]) {
       const result = await review({ kind: 'review', pr: 767 }, h);
       assert.deepEqual(result.reviews.map((r) => r.outcome), ['commented']);
       assert.equal(h.comments.length, 1);
       assert.equal(h.verdictWrites.length, 1);
-      assert.match(String((result.reviews[0] as { untold?: string }).untold), /SQS refused it|no fire lane/);
-      assert.equal(exitCodeFor(result as never), 1);
+      const owed = h.verdictWrites[0]!.verdict.owed!;
+      assert.equal(owed.tries, 1);
+      assert.equal(owed.comment, h.comments[0]!.body);
+      assert.equal(owed.message.kind, 'message');
+      assert.ok(owed.message.text.includes(withoutMarker(h.comments[0]!.body)), 'the comment\'s text');
+      assert.ok(owed.message.fallback, 'the fallback the review chose');
+      assert.match(String((result.reviews[0] as { owed?: string }).owed), /SQS refused it|no fire lane/);
+      assert.equal((result.reviews[0] as { untold?: string }).untold, undefined);
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-review' && l.level === 'warn'), JSON.stringify(h.logged));
+      assert.equal(exitCodeFor(result as never), 0);
     }
   });
 
@@ -625,6 +647,129 @@ describe('run — what reaches the owner session', () => {
     assert.equal(refused.messages.length, 1);
     assert.deepEqual(refused.launches, []);
     assert.equal((told as { archived?: boolean }).archived, true, 'a gone owner, which the task reads as no failure of its own');
+  });
+});
+
+/**
+ * The owner's message of a review comment is delivered at least once. A
+ * message the lane refuses is kept on the verdict as owed, and the next
+ * review fire at the same head and body sends it without asking the model
+ * or commenting. It is tried on at most three review turns; the last
+ * refusal drops it, logs at error and fails the turn.
+ */
+describe('run: an owner\'s message the lane refused is owed', () => {
+  const owedVerdict = async () => {
+    const first = harness({ answers: [COSTS], enqueue: 'SQS refused it' });
+    await review({ kind: 'review', pr: 767 }, first);
+    const written = first.verdictWrites[0]!.verdict;
+    return { item: { ...written, at: '2026-09-26T11:00:00.000Z' } as Verdict, comment: first.comments[0]!.body };
+  };
+
+  test('the next review fire at the same head and body sends the owed message, asks no model, posts no comment, and clears it', async () => {
+    const { item, comment } = await owedVerdict();
+    const h = harness({ verdicts: { 767: item }, thread: [{ id: 41, body: comment, created_at: 't', ours: true }] });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['skipped']);
+    assert.deepEqual(ownerFires(h), [{ ...item.owed!.message, repo: REPO }]);
+    assert.deepEqual([h.judged.length, h.comments.length, h.commentEdits.length, h.merges.length, h.checkRuns.length], [0, 0, 0, 0, 0]);
+    assert.equal(h.verdictWrites.length, 1);
+    const { owed, at, ...kept } = item;
+    assert.deepEqual(h.verdictWrites[0], { repo: REPO, pr: 767, read: item, verdict: kept }, 'the verdict stands, owing nothing');
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('a queued message is not queued again: the fire after the one that sent it queues nothing', async () => {
+    const { item, comment } = await owedVerdict();
+    const sent = harness({ verdicts: { 767: item } });
+    await review({ kind: 'review', pr: 767, headSha: HEAD }, sent);
+    const after = harness({ verdicts: { 767: { ...sent.verdictWrites[0]!.verdict, at: 'later' } }, thread: [{ id: 41, body: comment, created_at: 't', ours: true }] });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, after);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['skipped']);
+    assert.deepEqual(after.queued, []);
+    assert.deepEqual(after.verdictWrites, []);
+  });
+
+  test('a review at a new head or body drops the older review\'s owed message: its own message replaces it', async () => {
+    const { item, comment } = await owedVerdict();
+    const pushed = harness({ verdicts: { 767: { ...item, headSha: MOVED } }, answers: [IAM] });
+    await review({ kind: 'review', pr: 767, headSha: HEAD }, pushed);
+    assert.equal(ownerFires(pushed).length, 1);
+    assert.match(String(ownerFires(pushed)[0]!.text), /IAM grant/, 'only the new review\'s message');
+    assert.equal(pushed.verdictWrites.at(-1)!.verdict.owed, undefined);
+    // An edit in place at a new body tells nobody, and still drops the older message.
+    const edited = harness({ verdicts: { 767: { ...item, bodySha: 'f'.repeat(64) } }, answers: [{ ...COSTS, reason: 'no cost is named' }], thread: [{ id: 41, body: comment, created_at: 't', ours: true }] });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, edited);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
+    assert.deepEqual(edited.queued, []);
+    assert.equal(edited.verdictWrites.at(-1)!.verdict.owed, undefined);
+  });
+
+  test('a refusal before the last try logs at warn, counts the try and keeps the message; the third drops it, logs at error and fails the turn', async () => {
+    const { item, comment } = await owedVerdict();
+    const thread = [{ id: 41, body: comment, created_at: 't', ours: true }];
+    const second = harness({ verdicts: { 767: item }, thread, enqueue: 'SQS refused it again' });
+    const two = await review({ kind: 'review', pr: 767, headSha: HEAD }, second);
+    assert.equal(second.verdictWrites[0]!.verdict.owed!.tries, 2);
+    assert.match(String((two.reviews[0] as { owed?: string }).owed), /refused it again/);
+    assert.ok(second.logged.some((l) => l.event === 'dispatch-review' && l.level === 'warn'), JSON.stringify(second.logged));
+    assert.equal(exitCodeFor(two as never), 0);
+    const third = harness({ verdicts: { 767: { ...second.verdictWrites[0]!.verdict, at: 'later' } }, thread, enqueue: 'SQS refused it a third time' });
+    const three = await review({ kind: 'review', pr: 767, headSha: HEAD }, third);
+    assert.equal(third.verdictWrites[0]!.verdict.owed, undefined, 'the message is dropped');
+    assert.match(String((three.reviews[0] as { untold?: string }).untold), /third time/);
+    assert.ok(third.logged.some((l) => l.event === 'dispatch-review' && l.level === 'error'), JSON.stringify(third.logged));
+    assert.equal(exitCodeFor(three as never), 1);
+    assert.deepEqual([third.judged.length, third.comments.length, third.commentEdits.length], [0, 0, 0]);
+  });
+
+  test('a test-8 fail read again at the same head sends its owed message first, then reviews as before', async () => {
+    const first = harness({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }], enqueue: 'SQS refused it' });
+    await review({ kind: 'review', pr: 767 }, first);
+    const item = { ...first.verdictWrites[0]!.verdict, at: '2026-09-26T11:00:00.000Z' } as Verdict;
+    assert.equal(item.again, true);
+    assert.equal(item.owed!.tries, 1);
+    const thread = [{ id: 41, body: first.comments[0]!.body, created_at: 't', ours: true }];
+    const still = harness({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }], verdicts: { 767: item }, thread });
+    const result = await review({ kind: 'review', pr: 767 }, still);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
+    assert.deepEqual(ownerFires(still), [{ ...item.owed!.message, repo: REPO }]);
+    assert.equal(still.verdictWrites.at(-1)!.verdict.owed, undefined);
+  });
+
+  test('a test-8 fail whose owed message is refused again, read again to a new comment the lane queues, owes nothing and does not warn', async () => {
+    const first = harness({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }], enqueue: 'SQS refused it' });
+    await review({ kind: 'review', pr: 767 }, first);
+    const item = { ...first.verdictWrites[0]!.verdict, at: '2026-09-26T11:00:00.000Z' } as Verdict;
+    const thread = [{ id: 41, body: first.comments[0]!.body, created_at: 't', ours: true }];
+    const green = harness({ required: ['gate'], checks: [{ name: 'gate', state: 'green' }], answers: [COSTS], verdicts: { 767: item }, thread, enqueue: ['SQS refused it again', undefined] });
+    const result = await review({ kind: 'review', pr: 767 }, green);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['commented']);
+    assert.equal(ownerFires(green).length, 1);
+    assert.equal(green.verdictWrites.at(-1)!.verdict.owed, undefined);
+    const reviewed = result.reviews[0] as { owed?: string, told?: string };
+    assert.equal(reviewed.owed, undefined, 'the refusal belonged to the message the new one replaced');
+    assert.match(String(reviewed.told), /queued/);
+    assert.ok(!green.logged.some((l) => l.event === 'dispatch-review' && l.level === 'warn'), JSON.stringify(green.logged));
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('a verdict write that fails after the owed message is sent fails the review and leaves the earlier check alone', async () => {
+    const { item, comment } = await owedVerdict();
+    const h = harness({ verdicts: { 767: item }, thread: [{ id: 41, body: comment, created_at: 't', ours: true }], verdictWrite: 'AccessDeniedException' });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['failed']);
+    assert.equal(h.queued.length, 1);
+    assert.deepEqual(h.checkRuns, [], 'the check the earlier review posted stands');
+    assert.equal(exitCodeFor(result as never), 1);
+  });
+
+  test('with prMessages off, an owed message is cleared and sends nothing', async () => {
+    const { item, comment } = await owedVerdict();
+    const h = tagalong({ verdicts: { 767: item }, thread: [{ id: 41, body: comment, created_at: 't', ours: true }] }, {}, { prReview: true, prMessages: false });
+    const result = await reviewTagalong(h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['skipped']);
+    assert.deepEqual(h.queued, []);
+    assert.equal(h.verdictWrites[0]!.verdict.owed, undefined);
   });
 });
 
