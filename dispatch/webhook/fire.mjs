@@ -320,7 +320,7 @@ export const lastDispatch = (comments) => {
  *   the receiver may not know; the turn ends before the login unless it is
  *   one of them.
  * @typedef {{ kind: 'probe' }} ProbeFire
- * @typedef {{ kind: 'dispatch', prompt: string, sessionName?: string, model?: string, scheduled?: ScheduledRun, on?: number, author?: string, writer?: string, assigner?: string }} DispatchFire
+ * @typedef {{ kind: 'dispatch', prompt: string, sessionName?: string, model?: string, scheduled?: ScheduledRun, on?: number, author?: string, writer?: string, assigner?: string, ticket?: SummonedTicket }} DispatchFire
  *   `scheduled`: the scheduled run gone red the session is for (route.mjs).
  *   `on`: the issue or PR a summons is on (mention.mjs). `author`: who opened
  *   it, as a trust value ({@link authorKind}), which the task judges by the
@@ -334,6 +334,12 @@ export const lastDispatch = (comments) => {
  *   whose association the payload does not carry, so the task looks it up
  *   where `trust.start` is narrowed (dispatch/start.mjs). A fire queued
  *   before the receiver named either carries neither.
+ *   `ticket`: on a summons on an issue, the issue's state and labels and
+ *   the spec owner its body names, read from the payload as a ticket fire's
+ *   are, so the task finds the ticket's roles before it starts anyone
+ *   (dispatch/dispatch-fire.mjs). A summons on a PR carries none, and so
+ *   does one queued before the receiver named it.
+ * @typedef {{ state: 'open' | 'closed', labels: string[], owner?: string }} SummonedTicket
  * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[] }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
@@ -430,10 +436,10 @@ export const build = Object.freeze({
   schedule: ({ issue, freed, label }) => ({ kind: 'schedule', ...present({ issue, freed, label }) }),
 
   /**
-   * @param {{ prompt: string, sessionName?: string | undefined, model?: string | undefined, scheduled?: ScheduledRun | undefined, on?: number | undefined, author?: string | undefined, writer?: string | undefined, assigner?: string | undefined }} args
+   * @param {{ prompt: string, sessionName?: string | undefined, model?: string | undefined, scheduled?: ScheduledRun | undefined, on?: number | undefined, author?: string | undefined, writer?: string | undefined, assigner?: string | undefined, ticket?: SummonedTicket | undefined }} args
    * @returns {DispatchFire}
    */
-  dispatch: ({ prompt, sessionName, model, scheduled, on, author, writer, assigner }) => ({ kind: 'dispatch', prompt, ...present({ sessionName, model, scheduled, on, author, writer, assigner }) }),
+  dispatch: ({ prompt, sessionName, model, scheduled, on, author, writer, assigner, ticket }) => ({ kind: 'dispatch', prompt, ...present({ sessionName, model, scheduled, on, author, writer, assigner, ticket }) }),
 
   /**
    * @param {({ session: string, byBranch?: undefined, poster?: undefined } | { session?: undefined, byBranch: true, poster?: string | undefined }) & {
@@ -637,6 +643,27 @@ const login = (v) => {
   return v;
 };
 
+/**
+ * A dispatch fire's `ticket`, refused unless it names the issue's state and
+ * labels, and any spec owner it names is a session.
+ *
+ * @param {unknown} v
+ * @returns {SummonedTicket}
+ */
+const parseSummonedTicket = (v) => {
+  const t = /** @type {Record<string, unknown> | null} */ (v);
+  const refuse = (/** @type {string} */ what) => { throw new Error(`a dispatch invocation's ticket ${what}, got: ${JSON.stringify(v)?.slice(0, 300)}`); };
+  if (t === null || typeof t !== 'object') return refuse('is an object');
+  if (t.state !== 'open' && t.state !== 'closed') refuse('state must be open or closed');
+  if (!Array.isArray(t.labels) || !t.labels.every((l) => typeof l === 'string')) refuse('labels must be label names');
+  if (t.owner !== undefined && !(typeof t.owner === 'string' && MESSAGE_SESSION.test(t.owner))) refuse('owner must be a session id or claude.ai/code URL');
+  return {
+    state: /** @type {'open' | 'closed'} */ (t.state),
+    labels: [.../** @type {string[]} */ (t.labels)],
+    ...(t.owner === undefined ? {} : { owner: String(t.owner) }),
+  };
+};
+
 /** A full commit id. @param {unknown} v @returns {v is string} */
 export const isCommit = (v) => typeof v === 'string' && /^[0-9a-f]{40}$/.test(v);
 
@@ -770,6 +797,7 @@ const parseKind = (event) => {
       ...(e.author === undefined ? {} : { author: trustValue(e.author) }),
       ...(e.writer === undefined ? {} : { writer: trustValue(e.writer, 'writer') }),
       ...(e.assigner === undefined ? {} : { assigner: login(e.assigner) }),
+      ...(e.ticket === undefined ? {} : { ticket: parseSummonedTicket(e.ticket) }),
     };
   }
   if (kind === 'message') return parseMessage(e, event);
