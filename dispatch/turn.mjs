@@ -1374,55 +1374,51 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   /** The login's token for the author search, read at most once a turn. */
   const authorToken = loginToken(deps, 'search the sessions for a post\'s author');
   /**
-   * The search of the login's live sessions for the author of a session's
-   * unsigned post in the fire's repo, under the login's token, refreshed
-   * once where it has expired: the search runs before any send, so no CLI
-   * has refreshed it yet, and an author fire sends nothing else
-   * (dispatch/author.mjs). A refresh that fails, or a list that cannot be
-   * read, is no search.
+   * What a search of the login's live sessions in the fire's repo reads,
+   * under the login's token, refreshed once where it has expired: the
+   * search runs before any send, so no CLI has refreshed it yet. Rejects
+   * where the refresh fails.
+   */
+  const sessionSearch = async () => {
+    const token = await authorToken();
+    return {
+      list: () => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
+      /** @param {string} id @param {string | undefined} [cursor] */
+      events: (id, cursor) => deps.sessions.events(id, token, cursor),
+      repo: fireRepo(),
+    };
+  };
+  /**
+   * The search for the author of a session's unsigned post in the fire's
+   * repo (dispatch/author.mjs). An author fire sends nothing else. A
+   * refresh that fails, or a list that cannot be read, is no search.
    *
    * @type {import('./author.mjs').FindAuthor}
    */
   const findAuthor = async (on, post) => {
-    /** @type {string} */
-    let token;
+    let search;
     try {
-      token = await authorToken();
+      search = await sessionSearch();
     } catch (error) {
       return { searched: false, reason: messageOf(error) };
     }
-    return searchAuthor({
-      list: () => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
-      events: (id, cursor) => deps.sessions.events(id, token, cursor),
-      repo: fireRepo(),
-      on,
-      post,
-    });
+    return searchAuthor({ ...search, on, post });
   };
-
   /**
    * The search for who made a body edit on an issue in the fire's repo,
-   * the owner first, under the same token as {@link findAuthor}. A refresh
-   * that fails reads no events: the owner hears the edit as before.
+   * the owner first (dispatch/editor.mjs). A refresh that fails reads no
+   * events: the owner hears the edit as before.
    *
    * @type {import('./editor.mjs').FindEditor}
    */
   const findEditor = async (on, edit, owner) => {
-    /** @type {string} */
-    let token;
+    let search;
     try {
-      token = await authorToken();
+      search = await sessionSearch();
     } catch (error) {
       return { by: 'unknown', reason: messageOf(error) };
     }
-    return searchEditor({
-      owner,
-      list: () => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
-      events: (id, cursor) => deps.sessions.events(id, token, cursor),
-      repo: fireRepo(),
-      on,
-      edit,
-    });
+    return searchEditor({ ...search, owner, on, edit });
   };
 
   if (invocation.kind === 'message') {

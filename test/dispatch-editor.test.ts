@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { handle } from '../dispatch/webhook/route.mjs';
 import { parseFire, postWords } from '../dispatch/webhook/fire.mjs';
-import { EDIT_BUILDER, EDIT_SPEC_OWNER } from '../dispatch/webhook/mention.mjs';
+import { EDIT_BUILDER, EDIT_SPEC_OWNER, editWords } from '../dispatch/webhook/mention.mjs';
 import { SWITCHES, readConfig, type RepoConfig } from '../dispatch/repo-config.mjs';
 import { AUTHOR_AFTER_MS, AUTHOR_BEFORE_MS } from '../dispatch/author.mjs';
 import { editMaybeText, editNudgeText, editedBody, editedText, ownerLine, searchEditor, tellEditor } from '../dispatch/editor.mjs';
@@ -103,6 +103,23 @@ describe('the receiver: a body edit carries its time, page and first words', () 
   });
 });
 
+describe('editWords: the words around where the body changed', () => {
+  const HEAD = 'Parent PRD one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen';
+  test('the words start a little before the first changed word, so an older copy of the body does not hold them', () => {
+    const from = `${HEAD}\n\nThe old tail.`;
+    const to = `${HEAD}\n\nA person's new paragraph.\n\nThe old tail.`;
+    const words = editWords(from, to);
+    assert.equal(words, 'ten eleven twelve thirteen fourteen fifteen sixteen seventeen a person s new paragraph the old tail');
+    assert.ok(!` ${postWords(from, 100)} `.includes(` ${words} `));
+  });
+
+  test('a deletion is caught across the join, and an edit that changes no word carries none', () => {
+    const words = editWords('one two three four five six seven eight nine ten', 'one two three four five nine ten');
+    assert.ok(words.includes('five nine'));
+    assert.equal(editWords('one two', 'one  two'), '');
+  });
+});
+
 describe('editedBody: a tool call that edited the issue\'s body', () => {
   test('a GitHub tool naming the repo, the issue and a body', () => {
     assert.deepEqual(editedBody({ name: 'mcp__github__issue_write', input: { method: 'update', owner: 'acme', repo: 'factory', issue_number: 7, body: NEW_BODY } }, REPO, 7), { text: NEW_BODY });
@@ -113,6 +130,14 @@ describe('editedBody: a tool call that edited the issue\'s body', () => {
     assert.deepEqual(editedBody({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/issues/7 -f body="The parser keeps"' } }, REPO, 7), { text: 'gh api -X PATCH repos/acme/factory/issues/7 -f body="The parser keeps"' });
     assert.deepEqual(editedBody({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/issues/7 -F body=@/tmp/b.md' } }, REPO, 7), { text: null });
     assert.deepEqual(editedBody({ name: 'Bash', input: { command: 'gh issue edit 7 --body-file /tmp/b.md' } }, REPO, 7), { text: null });
+  });
+
+  test('gh issue edit with its flags before the issue, or the issue by its page', () => {
+    assert.deepEqual(editedBody({ name: 'Bash', input: { command: 'gh issue edit -R acme/factory 7 --body-file /tmp/b.md' } }, REPO, 7), { text: null });
+    assert.deepEqual(editedBody({ name: 'Bash', input: { command: 'gh issue edit --repo=acme/factory 7 --body-file /tmp/b.md' } }, REPO, 7), { text: null });
+    assert.deepEqual(editedBody({ name: 'Bash', input: { command: 'gh issue edit https://github.com/acme/factory/issues/7 --body-file /tmp/b.md' } }, REPO, 7), { text: null });
+    assert.equal(editedBody({ name: 'Bash', input: { command: 'gh issue edit -R acme/factory 71 --body-file /tmp/b.md' } }, REPO, 7), null);
+    assert.equal(editedBody({ name: 'Bash', input: { command: 'gh issue edit https://github.com/acme/other/issues/7 --body-file /tmp/b.md' } }, REPO, 7), null);
   });
 
   test('a comment, a title-only edit, a read or another issue is no body edit', () => {

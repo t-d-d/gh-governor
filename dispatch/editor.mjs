@@ -35,7 +35,7 @@
  * event.
  */
 
-import { NUMBER_KEYS, readCandidate, searchAuthor, tellFound } from './author.mjs';
+import { NUMBER_KEYS, escaped, readCandidate, readsOnly, repoNamedIn, searchAuthor, shellBody, tellFound } from './author.mjs';
 import { SESSION_RULES } from './session-rules.mjs';
 import { EDIT_SPEC_OWNER } from './webhook/mention.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
@@ -45,7 +45,7 @@ export const EDITOR = 'dispatch-editor';
 
 /**
  * @typedef {import('./webhook/fire.mjs').UnsignedPost} BodyEdit
- *   The edit's time, its issue's page and the new body's first words.
+ *   The edit's time, its issue's page and the new body's words around the change (`editWords`, dispatch/webhook/mention.mjs).
  * @typedef {{ by: 'owner' }
  *   | { by: 'unknown', reason: string }
  *   | { by: 'other', found: import('./author.mjs').Found }} EditFound
@@ -54,9 +54,6 @@ export const EDITOR = 'dispatch-editor';
  *   do not, and `found` is the search of the other candidates.
  * @typedef {(on: number, edit: BodyEdit, owner: string) => Promise<EditFound>} FindEditor
  */
-
-/** @param {string} text */
-const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * Whether a tool call edited the body of `repo`'s issue `on`, and the text
@@ -84,17 +81,12 @@ export const editedBody = (call, repo, on) => {
   if (typeof input.command === 'string') {
     const command = input.command;
     const path = new RegExp(`repos/(?:${escaped(owner)}/${escaped(name)}|\\{owner\\}/\\{repo\\})/issues/${on}(?![0-9/])`, 'i');
-    const cli = new RegExp(`\\bgh\\s+issue\\s+edit\\s+#?${on}(?![0-9])`);
-    const named = /(?:\s-R|--repo)[=\s]+["']?([^\s"']+)/.exec(command)?.[1]?.toLowerCase();
-    const viaCli = cli.test(command) && (named === undefined || named === repo.toLowerCase() || named.endsWith(`/${repo.toLowerCase()}`));
-    const reads = /\s(?:-X|--method)[\s=]*["']?GET\b/i.test(command);
-    if (!viaCli && !(path.test(command) && !reads)) return null;
-    // A body the shell expands, from a variable or a command, is not in the command's text.
-    if (/(?:body=|--body[=\s]+|\s-b\s+)["']?\$/.test(command)) return { text: null };
-    if (/body=(?!@)|--body[=\s]|\s-b\s|<</.test(command)) return { text: command };
-    // A body read from a file or stdin.
-    if (/body=@|--body-file[=\s]|-F\s+-(?:\s|$)|--input[=\s]/.test(command)) return { text: null };
-    return null;
+    // The issue may follow flags, such as `-R <repo>`, or be named by its page.
+    const cli = new RegExp(`\\bgh\\s+issue\\s+edit\\s+(?:-\\S+(?:\\s+[^-\\s]\\S*)?\\s+)*(?:#?|https://github\\.com/${escaped(owner)}/${escaped(name)}/issues/)${on}(?![0-9])`, 'i');
+    const viaCli = cli.test(command) && repoNamedIn(command, repo);
+    if (!viaCli && !(path.test(command) && !readsOnly(command))) return null;
+    // A write with no body, a title or a label, made no body edit.
+    return shellBody(command);
   }
   const tool = String(call.name ?? '').replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '');
   if (/(?:^|_)(?:get|list|search|read)(?:_|$)/i.test(tool) || /comment|review|pull/i.test(tool)) return null;
@@ -132,8 +124,8 @@ export const ownerLine = (edited) => {
   if (edited === null || edited.by !== 'other') return EDIT_SPEC_OWNER;
   const { found } = edited;
   if (!found.searched) return `Someone else made the edit, not this session. ${AGAIN}`;
-  if (found.author !== null) return `Another session made the edit, not this one, and governor has asked it to post its change as a comment instead. ${AGAIN}`;
-  if (found.maybe.length > 0) return `Someone else made the edit, not this session. Governor could not tell which session made it, and has asked those it could not rule out to post their change as a comment instead. ${AGAIN}`;
+  if (found.author !== null) return `Another session made the edit, not this one. A session should comment on an issue it does not own, and governor tells it so. ${AGAIN}`;
+  if (found.maybe.length > 0) return `Someone else made the edit, not this session. Governor could not tell which session made it. ${AGAIN}`;
   return `Someone else made the edit, not this session, most likely a person. ${AGAIN}`;
 };
 

@@ -403,8 +403,8 @@ export const lastDispatch = (comments) => {
  *   ({@link UnsignedPost}). The task searches for its author before it
  *   relays, under `sessionRules`.
  *   `edited`: on an issue owner's message of a body edit, the edit's time
- *   (the issue's `updated_at`), its page and the new body's first words,
- *   in the shape of an unsigned post. The task searches for the session
+ *   (the issue's `updated_at`), its page and the new body's words around
+ *   the change (`editWords`, dispatch/webhook/mention.mjs), in the shape of an unsigned post. The task searches for the session
  *   that made the edit, the owner first, under `sessionRules`
  *   (dispatch/editor.mjs).
  * @typedef {{ kind: 'author', on: number, post: UnsignedPost, authors?: string[] }} AuthorFire
@@ -472,7 +472,7 @@ export const lastDispatch = (comments) => {
  *   names.
  *   `unsigned`: on a comment, where it is a session's unsigned post, as a
  *   message fire's.
- *   `edited`: on an `edit`, the edit's time, page and first words, as a
+ *   `edited`: on an `edit`, the edit's time, page and words, as a
  *   message fire's.
  * @typedef {{ kind: 'closingPr', pr: number }} ClosingPrFire
  *   A PR opened, reopened or edited so that its body may come to close a

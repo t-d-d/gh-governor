@@ -53,7 +53,7 @@ import { fireRepoOf } from './repos.mjs';
 import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 import { relayedBody, sameSession, sessionId } from './webhook/subscribe.mjs';
-import { EDIT_BUILDER, EDIT_SPEC_OWNER } from './webhook/mention.mjs';
+import { EDIT_BUILDER } from './webhook/mention.mjs';
 import { builderChangeSends, tellBuilderChange } from './told.mjs';
 import { offerIssue } from './offer.mjs';
 import { settleMove } from './take.mjs';
@@ -104,7 +104,7 @@ export const planTicket = async (invocation, ctx) => {
   // What a body edit tells each role, under what happened. The spec owner
   // hears nothing of its own edit.
   const editLines = (/** @type {TicketRole} */ role) => (event !== 'edit' ? '' : `\n\n${[
-    ...(role === 'builder' || ownEdit ? [] : [edited === null ? EDIT_SPEC_OWNER : ownerLine(edited)]),
+    ...(role === 'builder' || ownEdit ? [] : [ownerLine(edited)]),
     ...(role === 'spec owner' ? [] : [EDIT_BUILDER]),
   ].join('\n')}`);
   if (event === 'dispatched') {

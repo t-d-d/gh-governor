@@ -388,10 +388,12 @@ spends the one claude.ai login.
   searched for, under `sessionRules` and `subscribeMessages` both
   (dispatch/editor.mjs). The receiver carries the edit on the owner's
   message or the ticket fire (`edited`: the issue's `updated_at`, its page
-  and the new body's first words). The task reads the spec owner's own
-  events from ten minutes before the edit to one minute after it, as an
-  unsigned post's candidates' are read, for a tool call that edited the
-  issue's body (`editedBody`). Found: the owner made it, is not told of
+  and the new body's words from a few before the first changed word,
+  `editWords`, so a copy from an earlier edit does not hold them). The
+  task reads the spec owner's own events from ten minutes before the edit
+  to one minute after it, as an unsigned post's candidates' are read, for
+  a tool call that edited the issue's body (`editedBody`) and, where it
+  carries the body, holds those words. Found: the owner made it, is not told of
   it, and nobody is nudged. Not found: the other candidates are searched
   as for an unsigned post, the owner left out. One match is told once
   (`edit-unsigned`) to post its change as a comment, with the rules, and

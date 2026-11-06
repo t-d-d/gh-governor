@@ -91,8 +91,44 @@ const ASSISTANT = z.object({ message: z.object({ content: z.array(z.looseObject(
 /** The keys a GitHub tool's input names an issue or a PR by. */
 export const NUMBER_KEYS = ['issue_number', 'issueNumber', 'pull_number', 'pullNumber', 'number'];
 
-/** @param {string} text */
-const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** `text` with a regular expression's special characters escaped. @param {string} text */
+export const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Whether a `gh` command's `-R` / `--repo`, where it names one, is `repo`.
+ *
+ * @param {string} command
+ * @param {string} repo `owner/name`
+ */
+export const repoNamedIn = (command, repo) => {
+  const named = /(?:\s-R|--repo)[=\s]+["']?([^\s"']+)/.exec(command)?.[1]?.toLowerCase();
+  return named === undefined || named === repo.toLowerCase() || named.endsWith(`/${repo.toLowerCase()}`);
+};
+
+/**
+ * Whether a `gh api` command reads: `-X GET` with fields sends them as a query.
+ *
+ * @param {string} command
+ */
+export const readsOnly = (command) => /\s(?:-X|--method)[\s=]*["']?GET\b/i.test(command);
+
+/**
+ * The body a shell command that writes to GitHub carries: `{ text }`, the
+ * command itself where it carries the body inline (`body=`, `--body`,
+ * `-b`, a here document), `{ text: null }` where the shell expands it or it
+ * is read from a file or stdin, and null where it carries none.
+ *
+ * @param {string} command
+ * @returns {{ text: string | null } | null}
+ */
+export const shellBody = (command) => {
+  // A body the shell expands, from a variable or a command, is not in the command's text.
+  if (/(?:body=|--body[=\s]+|\s-b\s+)["']?\$/.test(command)) return { text: null };
+  if (/body=(?!@)|--body[=\s]|\s-b\s|<</.test(command)) return { text: command };
+  // A body read from a file or stdin.
+  if (/body=@|--body-file[=\s]|--input[=\s]|\s-F\s+(?![\w[\]]+=)/.test(command)) return { text: null };
+  return null;
+};
 
 /**
  * Whether a tool call posted to `repo`'s issue or PR `on`, and the text its
@@ -126,19 +162,11 @@ export const postedTo = (call, repo, on) => {
     const command = input.command;
     const path = new RegExp(`repos/(?:${escaped(owner)}/${escaped(name)}|\\{owner\\}/\\{repo\\})/(?:issues|pulls)/${on}(?![0-9])`, 'i');
     const cli = new RegExp(`\\bgh\\s+(?:issue\\s+comment|pr\\s+comment|pr\\s+review)\\s+#?${on}(?![0-9])`);
-    const named = /(?:\s-R|--repo)[=\s]+["']?([^\s"']+)/.exec(command)?.[1]?.toLowerCase();
-    const viaCli = cli.test(command) && (named === undefined || named === repo.toLowerCase() || named.endsWith(`/${repo.toLowerCase()}`));
-    // `gh api -X GET` with fields sends them as a query: a read.
-    const reads = /\s(?:-X|--method)[\s=]*["']?GET\b/i.test(command);
-    const writes = !reads && (/\s(?:-[fFd]|--field|--raw-field|--input|--data)[\s=]/.test(command) || /\s(?:-X|--method)[\s=]*["']?(?:POST|PATCH|PUT)\b/i.test(command));
+    const viaCli = cli.test(command) && repoNamedIn(command, repo);
+    const writes = !readsOnly(command) && (/\s(?:-[fFd]|--field|--raw-field|--input|--data)[\s=]/.test(command) || /\s(?:-X|--method)[\s=]*["']?(?:POST|PATCH|PUT)\b/i.test(command));
     if (!viaCli && !(path.test(command) && writes)) return null;
-    // A body the shell expands, from a variable or a command, is not in the command's text.
-    if (/(?:body=|--body[=\s]+|\s-b\s+)["']?\$/.test(command)) return { text: null };
-    if (/body=(?!@)|--body[=\s]|\s-b\s|<</.test(command)) return { text: command };
-    // A body read from a file or stdin.
-    if (/body=@|--body-file[=\s]|--input[=\s]|\s-F\s+(?![\w[\]]+=)/.test(command)) return { text: null };
     // A write that carries no body, such as a label or an approval, posted no comment.
-    return null;
+    return shellBody(command);
   }
   const tool = String(call.name ?? '').replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '');
   if (/(?:^|_)(?:get|list|search|read)(?:_|$)/i.test(tool)) return null;

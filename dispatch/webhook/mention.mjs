@@ -79,7 +79,7 @@
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
-import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets, postWords } from './fire.mjs';
+import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets, postWords, wordsOf, POST_WORDS, POST_WORDS_CHARS } from './fire.mjs';
 import { closingNumbers } from './closing.mjs';
 import { REVIEW_MARKER, postedByApp } from './review-comment.mjs';
 import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, unsignedSessionBody, withoutQuotes } from './subscribe.mjs';
@@ -398,7 +398,7 @@ const summonedTicket = (issue, bodies, appId) => {
  *   `moved`: on an issue owner's message of a body edit, where the edit
  *   moved the owner link from (dispatch/take.mjs).
  *   `edited`: on an issue owner's message of a body edit, the edit's time,
- *   page and first words ({@link editedOf}), so the task can search for
+ *   page and words ({@link editedOf}), so the task can search for
  *   who made it (dispatch/editor.mjs).
  * @returns {Queued}
  */
@@ -656,21 +656,48 @@ const bodyEdited = (payload) => payload?.action === 'edited'
   && payload?.changes?.body !== undefined
   && payload?.sender?.type !== 'Bot';
 
+/** How many unchanged words before a body edit's first changed word its words start with. */
+const EDIT_LEAD = 8;
+
 /**
- * A body edit's time, page and first words, in an unsigned post's shape:
- * the time is the issue's `updated_at`, which an `edited` delivery sets to
- * the edit's, the page the issue's, and the words the new body's. Null
- * where the payload lacks a time or a github.com page.
+ * The words of a body edit a call that made it carries: the new body's
+ * words from {@link EDIT_LEAD} before the first word that differs from the
+ * old body's, as many as a post's first words. An older copy of the body,
+ * from an earlier edit, does not hold them in that order, so the call that
+ * made an earlier edit is not taken for this one's. Empty where no word
+ * changed.
  *
- * @param {any} issue
+ * @param {string} from the old body
+ * @param {string} to the new body
+ */
+export const editWords = (from, to) => {
+  const old = wordsOf(from);
+  const now = wordsOf(to);
+  let i = 0;
+  while (i < old.length && i < now.length && old[i] === now[i]) i += 1;
+  if (i === old.length && i === now.length) return '';
+  const start = Math.max(0, i - EDIT_LEAD);
+  return now.slice(start, start + POST_WORDS).join(' ').slice(0, POST_WORDS_CHARS);
+};
+
+/**
+ * A body edit's time, page and words, in an unsigned post's shape: the
+ * time is the issue's `updated_at`, which an `edited` delivery sets to the
+ * edit's, the page the issue's, and the words those around the change
+ * ({@link editWords}). Null where the payload lacks a time or a github.com
+ * page.
+ *
+ * @param {any} payload
  * @returns {import('./fire.mjs').UnsignedPost | null}
  */
-export const editedOf = (issue) => {
+export const editedOf = (payload) => {
+  const issue = payload?.issue;
   const at = issue?.updated_at;
   const url = issue?.html_url;
   if (typeof at !== 'string' || at.length > 40 || !Number.isFinite(Date.parse(at))) return null;
   if (typeof url !== 'string' || url.length > 300 || !/^https:\/\/github\.com\/\S+$/.test(url)) return null;
-  return { at, url, words: postWords(String(issue?.body ?? '')) };
+  const from = payload?.changes?.body?.from;
+  return { at, url, words: editWords(typeof from === 'string' ? from : '', String(issue?.body ?? '')) };
 };
 
 /**
@@ -735,7 +762,7 @@ export const bodyEditFires = (payload, { relay = RELAY, bodies = relay, appId } 
     issue: true,
     authors: kindsOf([onAuthor]),
     moved: movedLink(payload, bodies, appId),
-    edited: editedOf(issue),
+    edited: editedOf(payload),
     reason,
   });
   return { fires: [fire], reason: fire.reason };
@@ -1124,7 +1151,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
       authors: kindsOf([onAuthor]),
       what: `issue #${issue.number} body edited`,
       moved: movedLink(payload, bodies, appId),
-      edited: editedOf(issue),
+      edited: editedOf(payload),
     };
   } else {
     return none;
