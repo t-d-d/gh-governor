@@ -274,8 +274,8 @@ describe('offerText', () => {
       assert.match(offerText(7, why), /alone on the body's last line/);
       assert.doesNotMatch(offerText(7, why), /just above the Claude Code footer/);
     }
-    // A link above the PR-style footer is not read as the owner; one on the last line is, with either footer.
-    assert.equal(sessionNamedIn(`The spec.\n\n${COMMENTER}${PR_FOOTER}`), null);
+    // A link on the last line is read with either footer, and since #622 so is one just above the PR-style footer.
+    assert.equal(sessionNamedIn(`The spec.\n\n${COMMENTER}${PR_FOOTER}`), COMMENTER);
     assert.equal(sessionNamedIn(`The spec.${PR_FOOTER}\n\n${COMMENTER}`), COMMENTER);
     assert.equal(sessionNamedIn(`The spec.\n\n${COMMENTER}`), COMMENTER);
   });
