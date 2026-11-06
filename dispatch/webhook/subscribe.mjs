@@ -321,9 +321,11 @@ const LABEL = /^(?:claude[- ]?(?:code[- ]?)?)?session(?:[- ]?link)?:$/i;
  * A line holding a session link: the text before it, the link as a
  * Markdown link's target, in angle brackets or bare, and the text after it.
  * A bare link may end in an underscore that closes emphasis, but not one
- * glued to more id characters.
+ * glued to more id characters. A Markdown link's text holds no bracket, so
+ * a line of many brackets is read in time linear in its length: a
+ * stranger's summons is read before its writer is judged.
  */
-const LINKED_LINE = new RegExp(`^(.*?)(?:\\[[^\\]\\n]*\\]\\((${LINK.source})\\)|<(${LINK.source})>|(${LINK.source})(?![A-Za-z0-9-]|_[A-Za-z0-9]))(.*)$`);
+const LINKED_LINE = new RegExp(`^(.*?)(?:\\[[^\\[\\]\\n]*\\]\\((${LINK.source})\\)|<(${LINK.source})>|(${LINK.source})(?![A-Za-z0-9-]|_[A-Za-z0-9]))(.*)$`);
 
 /**
  * The session link `line` is a signature of, or undefined: a link alone on
@@ -488,7 +490,8 @@ export const relinkSession = (body, sessionUrl) => {
   const owner = ownerLink(masked);
   if (owner?.line) {
     const [start, end] = owner.line;
-    return `${text.slice(0, start)}${text.slice(start, end).split(owner.link).join(sessionUrl)}${text.slice(end)}`;
+    const whole = new RegExp(`${owner.link.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9])`, 'g');
+    return `${text.slice(0, start)}${text.slice(start, end).replace(whole, sessionUrl)}${text.slice(end)}`;
   }
   if (owner) return `${text.slice(0, owner.at)}${sessionUrl}${text.slice(owner.at + owner.link.length)}`;
   const kept = text.trimEnd();
@@ -581,12 +584,20 @@ const withoutUnsignedFooter = (text) => {
 const FOOTER_LINE = /^(?:🤖\s*)?_?Generated (?:by|with) \[Claude Code\]\([^)\s]*\)_?$/u;
 
 /**
- * Whether a session posted `body`: the footer, or a session link under the
- * Claude Code attribution.
+ * Whether a session posted `body`: the footer, a session link under the
+ * Claude Code attribution, or a post {@link postedBy} reads as signed.
  *
  * @param {unknown} body
  */
-export const isSessionPost = (body) => String(body ?? '').includes(SESSION_FOOTER) || footerLink(withoutToolFooters(withoutLines(String(body ?? '')))) !== undefined;
+export const isSessionPost = (body) => footed(String(body ?? '')) || postedBy(body) !== null;
+
+/**
+ * Whether `text` carries the footer, or a session link under the Claude
+ * Code attribution.
+ *
+ * @param {string} text
+ */
+const footed = (text) => text.includes(SESSION_FOOTER) || footerLink(withoutToolFooters(withoutLines(text))) !== undefined;
 
 /**
  * The session that posted `body`, or null: its URL under the last Claude
@@ -603,9 +614,9 @@ export const isSessionPost = (body) => String(body ?? '').includes(SESSION_FOOTE
  */
 export const postedBy = (body) => {
   const text = ownerText(String(body ?? ''));
-  const under = lastLinkFrom(text, text.lastIndexOf(CLAUDE_CODE));
+  const under = footerLink(text);
   if (under) return under.link;
-  if (!text.split(/\r\n|\r|\n/).some((line) => FOOTER_LINE.test(line.trim()))) return null;
+  if (!lineSpans(text).some(([start, end]) => FOOTER_LINE.test(text.slice(start, end).trim()))) return null;
   return signatureLink(text)?.link ?? null;
 };
 
@@ -625,7 +636,7 @@ export const unsignedPost = (body) => withoutLines(withoutQuotes(String(body ?? 
  *
  * @param {unknown} body
  */
-export const ownSessionPost = (body) => isSessionPost(withoutQuotes(String(body ?? '')));
+export const ownSessionPost = (body) => footed(withoutQuotes(String(body ?? ''))) || postedBy(body) !== null;
 
 /** A session's id, off its claude.ai/code URL or as given. @param {string} session */
 export const sessionId = (session) => session.slice(session.lastIndexOf('/') + 1);

@@ -16,7 +16,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { postedBy, relayedBody, relinkSession, sessionNamedIn, unlinkSession, unsignedSessionBody } from '../dispatch/webhook/subscribe.mjs';
+import { ownSessionPost, postedBy, relayedBody, relinkSession, sessionNamedIn, unlinkSession, unsignedSessionBody } from '../dispatch/webhook/subscribe.mjs';
 
 const OWNER = 'https://claude.ai/code/session_01OWNERAAA';
 const OTHER = 'https://claude.ai/code/session_01OTHERBBB';
@@ -93,6 +93,18 @@ describe('a body\'s owner link: each placement, each way of writing it, and the 
     assert.equal(unsignedSessionBody(out), false);
   });
 
+  test('a relink replaces the owner link, not a longer id it starts in the Markdown link\'s text', () => {
+    const body = `The spec.\n\n[${OWNER}X](${OWNER})\n\n${PR_FOOTER}`;
+    assert.equal(relinkSession(body, OTHER), `The spec.\n\n[${OWNER}X](${OTHER})\n\n${PR_FOOTER}`);
+  });
+
+  test('a last line of many brackets is read in linear time, since a stranger\'s summons is read before its writer is judged', () => {
+    const started = Date.now();
+    assert.equal(sessionNamedIn(`The spec.\n\n${'['.repeat(60000)}`), null);
+    assert.equal(postedBy(`Fixed.\n\n${'['.repeat(60000)}\n\n${PR_FOOTER}`), null);
+    assert.ok(Date.now() - started < 2000, `took ${Date.now() - started}ms`);
+  });
+
   test('a body naming nobody gets the new owner appended, and a relink of what it wrote reads back', () => {
     const relinked = relinkSession(`The spec.\n\nSee ${OTHER} for the history.\n\n${PR_FOOTER}`, OWNER);
     assert.equal(sessionNamedIn(relinked), OWNER);
@@ -151,6 +163,16 @@ describe('postedBy reads a post\'s signature by the same rule', () => {
       assert.equal(postedBy(`> Fixed.\n>\n> ${OTHER}\n>\n> ${footer.replace('\n', '\n> ')}\n\nNot fixed.`), null, 'a quoted post');
     });
   }
+
+  test('a post postedBy reads as signed is a session\'s own post, so it summons nobody and starts no takeover', () => {
+    for (const [shape, footer] of Object.entries(POST_FOOTERS)) {
+      for (const [form, write] of Object.entries(WRITTEN)) {
+        const post = `@claude look at this.\n\n${write(OWNER)}\n\n${footer}`;
+        assert.equal(postedBy(post), OWNER, `${shape}, ${form}`);
+        assert.equal(ownSessionPost(post), true, `${shape}, ${form}`);
+      }
+    }
+  });
 
   test('a post with no Claude Code footer is no session\'s, though a link ends it: a person pasting a session\'s link is still heard by it', () => {
     assert.equal(postedBy(`@claude this one stalled, can you look?\n\n${OWNER}`), null);
