@@ -34,8 +34,10 @@
  * A body edit that moved the owner link (`moved`), with `sessionRules` on,
  * goes to the old owner as the spec owner, never to the session that made
  * it, and then the take is confirmed or the old link written back
- * (dispatch/take.mjs). With `sessionRules` off, the new owner hears it as
- * before.
+ * (dispatch/take.mjs). On a claimed ticket the builders hear it after
+ * that, so their roles line names the editor as the spec owner where the
+ * edit was a take, and the old owner otherwise, a settle that failed
+ * included. With `sessionRules` off, the new owner hears it as before.
  *
  * A `dispatched` ticket fire, governor's dispatch comment queued before
  * the relay dropped governor's comments, still reaches the spec owner and
@@ -94,7 +96,12 @@ export const planTicket = async (invocation, ctx) => {
   const ownEdit = edited?.by === 'owner';
   const claimed = labels.includes(config.labels.claim) && config.labels.claim !== '';
   const about = { repo, issue, change: event, state, claimed };
-  /** @type {Array<{ session: string, text: string, role: TicketRole | null, owns: number[] }>} */
+  /**
+   * Each send's text is written from the spec owner it names, which a take
+   * changes before the builders are told.
+   *
+   * @type {Array<{ session: string, text: (spec: string | null) => string, role: TicketRole | null, owns: number[] }>}
+   */
   const sends = [];
   /** The sessions left out, and why, for the log. @type {string[]} */
   const skipped = [];
@@ -114,13 +121,13 @@ export const planTicket = async (invocation, ctx) => {
     const displaced = invocation.displaced ?? null;
     const change = builderChangeSends({ issue, text, owner, builder, displaced });
     skipped.push(...change.skipped);
-    for (const send of change.sends) sends.push({ session: send.session, text: send.text, role: send.role, owns: [] });
+    for (const send of change.sends) sends.push({ session: send.session, text: () => send.text, role: send.role, owns: [] });
     Object.assign(about, { builder, displaced });
   } else if (!claimed) {
     // The spec owner's message as the receiver queued it before, with no read.
     if (owner !== null && own(owner)) skipped.push(`${sessionId(owner)}'s own post`);
     else if (owner !== null && ownEdit) skipped.push(`${sessionId(owner)}, which made the edit`);
-    else if (owner !== null) sends.push({ session: owner, text: `${text}${editLines('spec owner')}`, role: null, owns: [] });
+    else if (owner !== null) sends.push({ session: owner, text: () => `${text}${editLines('spec owner')}`, role: null, owns: [] });
   } else {
     const relay = relayOf(config);
     const reader = await ctx.readerFor(repo);
@@ -134,7 +141,7 @@ export const planTicket = async (invocation, ctx) => {
       if (role === 'builder' && throughPr) skipped.push(`${sessionId(session)}, which heard the merge that closed it through its PR`);
       else if (own(session)) skipped.push(`${sessionId(session)}'s own post`);
       else if (role === 'spec owner' && ownEdit) skipped.push(`${sessionId(session)}, which made the edit`);
-      else sends.push({ session, text: `${text}${editLines(role)}\n\n${rolesText(roles, holder)}`, role, owns });
+      else sends.push({ session, text: (spec) => `${text}${editLines(role)}\n\n${rolesText({ ...roles, owner: spec }, holder)}`, role, owns });
     }
     Object.assign(about, { builders, builder: roles.by });
   }
@@ -155,25 +162,31 @@ export const planTicket = async (invocation, ctx) => {
   /** The unsigned post's author's nudge, or each candidate's, or the body edit's editor's. @type {import('./deliveries.mjs').Delivery[]} */
   let nudged = [];
   let loginStored = false;
+  /** Send one role its message, naming `spec` as the spec owner. */
+  const send = async (/** @type {typeof sends[number]} */ { session, text: told, role, owns }, /** @type {string | null} */ spec) => {
+    const delivered = await ctx.delivery().deliver({ session }, told(spec), {
+      source: GITHUB_SOURCE,
+      kind: 'ticket',
+      on: [issue],
+      // A displaced builder has nothing left on the ticket: its standing
+      // line asks it to sign off where nothing else of its is open.
+      closing: closing === true || (event === 'dispatched' && role === 'builder'),
+      // The spec owner hears the ticket as its filer does, so an
+      // archived one with no fallback is dropped from its subscribe line.
+      dropFrom: role === 'builder' ? [] : [issue],
+      owns,
+    });
+    sent.push(delivered);
+    if (role !== 'builder') notice = delivered;
+    if (role !== 'builder' && delivered.refused) ownerGone = true;
+    ctx.log('dispatch-ticket', { ...about, session, role: role ?? 'spec owner', ...(owns.length === 0 ? {} : { prs: owns }), outcome: delivered.ok ? 'messaged' : delivered.refused ? 'its session is archived' : delivered.capped ? 'held at the message ceiling' : 'not messaged', ...(skipped.length === 0 ? {} : { skipped }) });
+  };
+  // On an edit that moved the owner link, the old owner hears it first,
+  // since its answer decides the take, and the builders once it is settled.
+  const first = moved === null ? sends : sends.filter((s) => s.role !== 'builder');
+  const after = moved === null ? [] : sends.filter((s) => s.role === 'builder');
   try {
-    for (const { session, text: told, role, owns } of sends) {
-      const delivered = await ctx.delivery().deliver({ session }, told, {
-        source: GITHUB_SOURCE,
-        kind: 'ticket',
-        on: [issue],
-        // A displaced builder has nothing left on the ticket: its standing
-        // line asks it to sign off where nothing else of its is open.
-        closing: closing === true || (event === 'dispatched' && role === 'builder'),
-        // The spec owner hears the ticket as its filer does, so an
-        // archived one with no fallback is dropped from its subscribe line.
-        dropFrom: role === 'builder' ? [] : [issue],
-        owns,
-      });
-      sent.push(delivered);
-      if (role !== 'builder') notice = delivered;
-      if (role !== 'builder' && delivered.refused) ownerGone = true;
-      ctx.log('dispatch-ticket', { ...about, session, role: role ?? 'spec owner', ...(owns.length === 0 ? {} : { prs: owns }), outcome: delivered.ok ? 'messaged' : delivered.refused ? 'its session is archived' : delivered.capped ? 'held at the message ceiling' : 'not messaged', ...(skipped.length === 0 ? {} : { skipped }) });
-    }
+    for (const one of first) await send(one, owner);
     // The spec owner refused as archived: nobody owns the ticket, so the
     // session that signed the comment is offered it (dispatch/offer.mjs).
     if (ownerGone && event === 'comments' && poster !== undefined && turnsOn(config, 'sessionRules')) {
@@ -181,15 +194,24 @@ export const planTicket = async (invocation, ctx) => {
     }
     // The edit moved the owner link: the take confirmed, or the old link
     // written back (dispatch/take.mjs).
-    if (moved !== null && editor !== null) {
-      took = await settleMove({
-        repo, issue, editor, moved, notice, builders,
-        github: await ctx.readerFor(repo),
-        relay: relayOf(config),
-        tellOnce: (session, kind) => ctx.state.recordTold(session, kind),
-        deliveries: ctx.delivery(),
-        log: ctx.log,
-      });
+    /** Whether the edit was a take, so the editor owns the ticket. */
+    let taken = false;
+    try {
+      if (moved !== null && editor !== null) {
+        ({ sent: took, taken } = await settleMove({
+          repo, issue, editor, moved, notice, builders,
+          github: await ctx.readerFor(repo),
+          relay: relayOf(config),
+          tellOnce: (session, kind) => ctx.state.recordTold(session, kind),
+          deliveries: ctx.delivery(),
+          log: ctx.log,
+        }));
+      }
+    } finally {
+      // A take names the editor as the spec owner. An edit that is not one,
+      // or a settle that failed or threw, names the old owner, as the body
+      // does once governor has written it back.
+      for (const one of after) await send(one, taken ? editor : owner);
     }
     if (post !== null && found !== null) {
       nudged = await tellAuthor({ repo, on: issue, post, found, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries: ctx.delivery(), log: ctx.log });
