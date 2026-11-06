@@ -8,7 +8,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { TOLD, specOwnerNote, specOwnerTeller, unmarked } from '../dispatch/told.mjs';
+import { TOLD, specOwnerNote, specOwnerTeller, tellerFor, unmarked } from '../dispatch/told.mjs';
 import { WAIT_FULL_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE_MARKER, repairRelative, reportUnreadable, waitLinks, waitRelativeMarker } from '../dispatch/waits.mjs';
 
 const REPO = 'acme/factory';
@@ -41,17 +41,18 @@ describe('the spec owner\'s message of governor\'s comment', () => {
   });
 
   test('goes to the session the ticket\'s body names, read under trust.relay, once', async () => {
-    const sent: Array<{ session: string, text: string, issue: number }> = [];
+    const sent: Array<{ session: string, text: string, issue: number, dropFrom: number[] }> = [];
     const { log } = logs();
     const tell = specOwnerTeller({
       read: async () => ({ body: `The spec.\n\n${SPEC}${FOOTER}`, author: 't-d-d', association: 'OWNER' }),
       relay: ['OWNER'],
-      deliver: (issue) => async (session, text) => { sent.push({ session, text, issue }); return delivered() as never; },
+      deliver: async (session, text, { on, dropFrom }) => { sent.push({ session, text, issue: on[0]!, dropFrom }); return delivered() as never; },
       log,
       repo: REPO,
     });
     await tell(7, 'The comment.');
     assert.deepEqual(sent.map((s) => [s.session, s.issue]), [[SPEC, 7]]);
+    assert.deepEqual(sent[0]!.dropFrom, [7], 'an archived spec owner leaves the ticket\'s subscribe line, as a relayed message did');
     assert.match(sent[0]!.text, /The comment\./);
   });
 
@@ -59,7 +60,7 @@ describe('the spec owner\'s message of governor\'s comment', () => {
     for (const row of [{ body: 'A person wrote this.', association: 'OWNER' }, { body: `The spec.\n\n${SPEC}`, association: 'NONE' }]) {
       const sent: string[] = [];
       const { log, logged } = logs();
-      const tell = specOwnerTeller({ read: async () => row, relay: ['OWNER'], deliver: () => async (session) => { sent.push(session); return delivered() as never; }, log, repo: REPO });
+      const tell = specOwnerTeller({ read: async () => row, relay: ['OWNER'], deliver: async (session) => { sent.push(session); return delivered() as never; }, log, repo: REPO });
       await tell(7, 'The comment.');
       assert.deepEqual(sent, [], JSON.stringify(row));
       assert.ok(logged.some((l) => l.event === TOLD && l.outcome === 'nobody told'));
@@ -68,14 +69,40 @@ describe('the spec owner\'s message of governor\'s comment', () => {
 
   test('a read or a send that fails is logged at error, and never fails the turn', async () => {
     const read = logs();
-    await specOwnerTeller({ read: async () => { throw new Error('HTTP 502'); }, relay: ['OWNER'], deliver: () => async () => delivered() as never, log: read.log, repo: REPO })(7, 'x');
+    await specOwnerTeller({ read: async () => { throw new Error('HTTP 502'); }, relay: ['OWNER'], deliver: async () => delivered() as never, log: read.log, repo: REPO })(7, 'x');
     assert.ok(read.logged.some((l) => l.level === 'error' && /502/.test(String(l.error))));
     const send = logs();
-    await specOwnerTeller({ read: async () => ({ body: `x\n\n${SPEC}`, association: 'OWNER' }), relay: ['OWNER'], deliver: () => async () => { throw new Error('boom'); }, log: send.log, repo: REPO })(7, 'x');
+    await specOwnerTeller({ read: async () => ({ body: `x\n\n${SPEC}`, association: 'OWNER' }), relay: ['OWNER'], deliver: async () => { throw new Error('boom'); }, log: send.log, repo: REPO })(7, 'x');
     assert.ok(send.logged.some((l) => l.level === 'error' && /boom/.test(String(l.error))));
     const failed = logs();
-    await specOwnerTeller({ read: async () => ({ body: `x\n\n${SPEC}`, association: 'OWNER' }), relay: ['OWNER'], deliver: () => async () => delivered({ ok: false, error: 'HTTP 500' }) as never, log: failed.log, repo: REPO })(7, 'x');
+    await specOwnerTeller({ read: async () => ({ body: `x\n\n${SPEC}`, association: 'OWNER' }), relay: ['OWNER'], deliver: async () => delivered({ ok: false, error: 'HTTP 500' }) as never, log: failed.log, repo: REPO })(7, 'x');
     assert.ok(failed.logged.some((l) => l.level === 'error' && l.outcome === 'not messaged'));
+  });
+
+  test('a turn\'s tellers send one at a time, however many comments go side by side', async () => {
+    // Each send is a CLI call on the one login, which may refresh it, so
+    // two at once could spend a refresh token the other already rotated.
+    let running = 0;
+    let most = 0;
+    const sent: number[] = [];
+    const ctx = {
+      readerFor: async () => ({ ticket: async () => ({ body: `x\n\n${SPEC}`, association: 'OWNER' }) }),
+      configOf: () => ({ trust: { relay: ['OWNER'] } }),
+      delivery: () => ({
+        deliver: async (_to: unknown, _text: string, { on }: { on: number[] }) => {
+          running += 1;
+          most = Math.max(most, running);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          running -= 1;
+          sent.push(on[0]!);
+          return delivered();
+        },
+      }),
+      log: logs().log,
+    };
+    await Promise.all([7, 8, 9].map((n) => tellerFor(ctx as never, REPO, 'github' as never)(n, 'x')));
+    assert.deepEqual([...sent].sort(), [7, 8, 9]);
+    assert.equal(most, 1);
   });
 });
 

@@ -181,27 +181,30 @@ export const planClosingPr = async (invocation, ctx) => {
     closure: (/** @type {number} */ n) => reader.closure(n),
     allComments: (/** @type {number} */ n) => reader.allComments(n),
   };
-  for (const issue of tickets) {
-    const ticket = await reader.ticket(issue);
-    const at = { repo, pr, issue, session };
-    if (ticket.pull || ticket.state !== 'open' || claim === '' || !ticket.labels.includes(claim)) {
-      ctx.log('dispatch-builder', { ...at, outcome: 'nothing announced', reason: 'the ticket is not an open claimed issue' });
-      continue;
-    }
-    const found = await buildersOf({ reader: without, ownerOf: (n) => owners.ownerOf(n), issue, ticket: { ...ticket, association: ticket.association ?? 'NONE' }, claim, relay });
-    if (found.sessions.some((s) => sameSession(s, session))) {
-      ctx.log('dispatch-builder', { ...at, outcome: 'nothing announced', reason: `it builds the ticket already, by its ${found.by}` });
-      continue;
-    }
-    const displaced = found.by === 'dispatch comment' || found.by === 'owner link' ? found.sessions[0] ?? null : null;
-    await reader.comment(issue, dispatchMarker({ at: new Date(ctx.now()).toISOString(), sessionUrl: session, displaced }));
-    announced.push(issue);
-    ctx.log('dispatch-builder', { ...at, displaced, outcome: 'announced the new builder on the ticket' });
-    // The comment is a record for people: this turn tells the spec owner,
-    // and the builder it displaced, itself.
-    try {
+  // A send may refresh the login, which is stored once, whatever the loop
+  // threw.
+  let loginStored = false;
+  try {
+    for (const issue of tickets) {
+      const ticket = await reader.ticket(issue);
+      const at = { repo, pr, issue, session };
+      if (ticket.pull || ticket.state !== 'open' || claim === '' || !ticket.labels.includes(claim)) {
+        ctx.log('dispatch-builder', { ...at, outcome: 'nothing announced', reason: 'the ticket is not an open claimed issue' });
+        continue;
+      }
+      const found = await buildersOf({ reader: without, ownerOf: (n) => owners.ownerOf(n), issue, ticket: { ...ticket, association: ticket.association ?? 'NONE' }, claim, relay });
+      if (found.sessions.some((s) => sameSession(s, session))) {
+        ctx.log('dispatch-builder', { ...at, outcome: 'nothing announced', reason: `it builds the ticket already, by its ${found.by}` });
+        continue;
+      }
+      const displaced = found.by === 'dispatch comment' || found.by === 'owner link' ? found.sessions[0] ?? null : null;
+      await reader.comment(issue, dispatchMarker({ at: new Date(ctx.now()).toISOString(), sessionUrl: session, displaced }));
+      announced.push(issue);
+      ctx.log('dispatch-builder', { ...at, displaced, outcome: 'announced the new builder on the ticket' });
+      // The comment is a record for people: this turn tells the spec owner,
+      // and the builder it displaced, itself.
       await tellBuilderChange({
-        deliver: (target, text, { closing }) => owners.deliver({ session: target }, text, { source: GITHUB_SOURCE, on: [issue], closing }),
+        deliver: (target, text, options) => owners.deliver({ session: target }, text, { source: GITHUB_SOURCE, ...options }),
         log: ctx.log,
         repo,
         issue,
@@ -211,9 +214,9 @@ export const planClosingPr = async (invocation, ctx) => {
         builder: session,
         displaced,
       });
-    } finally {
-      await ctx.storeLogin();
     }
+  } finally {
+    if (announced.length > 0) loginStored = await ctx.storeLogin();
   }
-  return answer();
+  return { answer: { kind: invocation.kind, dispatched: [], announced, loginStored } };
 };

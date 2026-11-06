@@ -149,12 +149,14 @@ spends the one claude.ai login.
   blocker's not-planned close, and a relative line's comment on a close
   that was not completed, ask a claimed ticket's builders in the comment's
   words and send its spec owner a notice, and tell an unclaimed ticket's
-  spec owner the comment. A `Blocked until:` line governor cannot read, a
+  spec owner the comment. A relative line is settled whatever the switches
+  say, so where no row acts on the close its comment still tells the spec
+  owner. A `Blocked until:` line governor cannot read, a
   relative line it cannot settle, and a wait-ticket link with no line tell
   the spec owner once, when the comment is posted. An issue review's
   comment tells the spec owner. An ended wait's spec owner hears it once,
-  in the schedule fire's message, and a deploy as dispatcher-workflows.md
-  says. The wait ticket's full comment, an issue review's loop guard and
+  in the schedule fire's message, or, with `unblocked` off, in the comment
+  the schedule fire tells it; a deploy as dispatcher-workflows.md says. The wait ticket's full comment, an issue review's loop guard and
   a trust refusal are for people, and tell no session. A send that fails
   is logged at error, and the comment stands. A comment on a PR is out of
   the rule: the PR review's comment still reaches the PR's owner through

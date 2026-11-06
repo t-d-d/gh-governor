@@ -567,7 +567,10 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  * The wait-ended comment is a record for people: the relay sends it to
  * nobody, so the spec owner hears the ended wait once, in the schedule
  * fire's message asking it to rewrite its spec. With `tell`, an unreadable
- * line's comment tells the spec owner.
+ * line's comment tells the spec owner, and so does the wait-ended comment
+ * where `spec` is off, since no spec message carries it. A ticket
+ * `trust.auto` leaves out, or governor's unreadied hold, asks nothing of
+ * the spec owner, so it is told nothing.
  *
  * @param {{ reader: WaitReader, state: WaitState, repo: string, labels: import('../scripts/lib/ready-work.mjs').Labels, spec: boolean, now: number, log: Log, links?: WaitLinks, blocking?: LinkReader['blocking'], auto?: readonly string[], relay?: readonly string[], tell?: Tell | undefined }} args
  * @returns {Promise<{ specs: WaitSpec[], unread: Array<{ repo: string, error: string }> }>}
@@ -639,7 +642,13 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       const thread = await reader.allComments(issue);
       const marker = waitEndedMarker(wait.until);
       const told = thread.some((c) => String(c.body ?? '').includes(marker));
-      if (!told) await reader.comment(issue, waitEndedComment(wait.until));
+      if (!told) {
+        const comment = waitEndedComment(wait.until);
+        await reader.comment(issue, comment);
+        // With no spec work to ask, no spec message carries the end, so
+        // the spec owner hears the comment, once, when it is posted.
+        if (!spec && tell !== undefined) await tell(issue, comment);
+      }
       // The spec work starts with no person choosing the ticket, so only
       // for an author the repo's trust.auto lets in.
       if (spec && !lets(auto, ticket)) {

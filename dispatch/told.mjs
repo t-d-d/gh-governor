@@ -87,9 +87,13 @@ export const specOwnerNote = (issue, comment) => [
 ].join('\n');
 
 /**
- * @typedef {(session: string, text: string, options: { closing: boolean }) => Promise<import('./deliveries.mjs').Delivery>} Deliver
- *   A send to one session about the ticket, with its standing line asking it
- *   to sign off where `closing` and nothing else of its is open.
+ * @typedef {{ on: number[], closing: boolean, dropFrom: number[] }} SendOptions
+ * @typedef {(session: string, text: string, options: SendOptions) => Promise<import('./deliveries.mjs').Delivery>} Deliver
+ *   A send to one session about the ticket (`on`), with its standing line
+ *   asking it to sign off where `closing` and nothing else of its is open.
+ *   A spec owner hears the ticket as its filer does, so one archived with
+ *   no fallback is dropped from the ticket's subscribe line (`dropFrom`),
+ *   as a relayed message dropped it.
  * @typedef {(event: string, context?: Record<string, unknown>) => void} Log
  */
 
@@ -100,15 +104,15 @@ const outcomeOf = (told) => (told.ok ? 'messaged' : told.refused ? 'its session 
  * Send each of `sends`, in turn, logging each under {@link TOLD}. A send
  * that throws, or fails, is logged at error, and the rest still go.
  *
- * @param {{ deliver: Deliver, log: Log, about: Record<string, unknown>, sends: ReadonlyArray<{ session: string, text: string, role: TicketRole, closing?: boolean }> }} args
+ * @param {{ deliver: Deliver, log: Log, issue: number, about: Record<string, unknown>, sends: ReadonlyArray<{ session: string, text: string, role: TicketRole, closing?: boolean }> }} args
  * @returns {Promise<import('./deliveries.mjs').Delivery[]>}
  */
-export const sendAll = async ({ deliver, log, about, sends }) => {
+export const sendAll = async ({ deliver, log, issue, about, sends }) => {
   /** @type {import('./deliveries.mjs').Delivery[]} */
   const sent = [];
   for (const { session, text, role, closing = false } of sends) {
     try {
-      const told = await deliver(session, text, { closing });
+      const told = await deliver(session, text, { on: [issue], closing, dropFrom: role === 'builder' ? [] : [issue] });
       sent.push(told);
       log(TOLD, { ...about, session, role, ...(told.ok || told.refused ? {} : { level: 'error' }), outcome: outcomeOf(told), ...(told.error === null || told.error === undefined ? {} : { error: told.error }) });
     } catch (error) {
@@ -181,7 +185,7 @@ export const tellBuilderChange = async ({ deliver, log, repo, issue, title, url,
     log(TOLD, { ...about, outcome: 'nobody told', ...(skipped.length === 0 ? { reason: 'no session holds the spec owner role, and nobody was displaced' } : { skipped }) });
     return [];
   }
-  return sendAll({ deliver, log, about, sends });
+  return sendAll({ deliver, log, issue, about, sends });
 };
 
 /**
@@ -190,7 +194,7 @@ export const tellBuilderChange = async ({ deliver, log, repo, issue, title, url,
  * `relay`, and {@link specOwnerNote} sent. A read or a send that fails is
  * logged at error, and the comment stands.
  *
- * @param {{ read: (issue: number) => Promise<{ body?: unknown, author?: string, association?: string, app?: boolean }>, relay: readonly string[], deliver: (issue: number) => Deliver, log: Log, repo: string }} args
+ * @param {{ read: (issue: number) => Promise<{ body?: unknown, author?: string, association?: string, app?: boolean }>, relay: readonly string[], deliver: Deliver, log: Log, repo: string }} args
  * @returns {(issue: number, comment: string) => Promise<void>}
  */
 export const specOwnerTeller = ({ read, relay, deliver, log, repo }) => async (issue, comment) => {
@@ -207,13 +211,21 @@ export const specOwnerTeller = ({ read, relay, deliver, log, repo }) => async (i
     log(TOLD, { ...about, outcome: 'nobody told', reason: 'its body names no spec owner' });
     return;
   }
-  await sendAll({ deliver: deliver(issue), log, about, sends: [{ session: owner, text: specOwnerNote(issue, comment), role: 'spec owner' }] });
+  await sendAll({ deliver, log, issue, about, sends: [{ session: owner, text: specOwnerNote(issue, comment), role: 'spec owner' }] });
 };
+
+/** Each turn's last queued tell, so its tellers send one at a time. @type {WeakMap<object, Promise<void>>} */
+const queues = new WeakMap();
 
 /**
  * A turn's {@link specOwnerTeller} for one repo: the ticket read with the
  * repo's reader, its spec owner judged by the repo's `trust.relay`, and the
- * message sent through the repo's deliveries from `source`.
+ * message sent through the repo's deliveries from `source`. Every teller
+ * made from one `ctx` sends one at a time, in the order asked, however many
+ * comments its callers post side by side: each send is a CLI call on the
+ * one login, which may refresh it, and two at once could each spend a
+ * refresh token the other had already rotated. A teller never throws, so
+ * one send that fails holds up none after it.
  *
  * @param {Pick<import('./turn.mjs').TurnContext, 'readerFor' | 'configOf' | 'delivery' | 'log'>} ctx
  * @param {string} repo
@@ -222,10 +234,18 @@ export const specOwnerTeller = ({ read, relay, deliver, log, repo }) => async (i
  *   The ticket as the turn already read it, so it is not read again.
  * @returns {(issue: number, comment: string) => Promise<void>}
  */
-export const tellerFor = (ctx, repo, source, row) => specOwnerTeller({
-  read: async (issue) => row ?? (await ctx.readerFor(repo)).ticket(issue),
-  relay: relayOf(ctx.configOf(repo)),
-  deliver: (issue) => (session, text, { closing }) => ctx.delivery(repo).deliver({ session }, text, { source, on: [issue], closing }),
-  log: ctx.log,
-  repo,
-});
+export const tellerFor = (ctx, repo, source, row) => {
+  const tell = specOwnerTeller({
+    read: async (issue) => row ?? (await ctx.readerFor(repo)).ticket(issue),
+    relay: relayOf(ctx.configOf(repo)),
+    deliver: (session, text, options) => ctx.delivery(repo).deliver({ session }, text, { source, ...options }),
+    log: ctx.log,
+    repo,
+  });
+  return (issue, comment) => {
+    const run = () => tell(issue, comment);
+    const next = (queues.get(ctx) ?? Promise.resolve()).then(run, run);
+    queues.set(ctx, next);
+    return next;
+  };
+};

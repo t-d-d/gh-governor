@@ -390,6 +390,7 @@ describe('planClosingPr: a PR by another session that closes a claimed ticket na
     assert.match(sent[1]!.text, /sign off unless you know a reason not to/);
     assert.equal(sent[1]!.opts.closing, true);
     assert.deepEqual(sent.map((m) => m.opts.on), [[7], [7]]);
+    assert.deepEqual(sent.map((m) => m.opts.dropFrom), [[7], []], 'the spec owner hears it as the ticket\'s filer does');
   });
 
   test('where nobody is displaced only the spec owner hears; a spec owner that built it hears both in one message', async () => {

@@ -583,7 +583,7 @@ export const deliveries = (deps) => {
         continue;
       }
       await tellBuilderChange({
-        deliver: (session, text, { closing }) => deliver({ session }, text, { source: GITHUB_SOURCE, on: [issue], closing }),
+        deliver: (session, text, options) => deliver({ session }, text, { source: GITHUB_SOURCE, ...options }),
         log: deps.log,
         repo: deps.repo,
         issue,

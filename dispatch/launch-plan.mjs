@@ -344,7 +344,7 @@ export const launchPlan = async (plan, ctx, started) => {
         const row = ticketRows.get(keyOf(ticket));
         if (!entry.told && row !== undefined) {
           await tellBuilderChange({
-            deliver: (session, text, { closing }) => ctx.delivery(ticket.repo).deliver({ session }, text, { source: GITHUB_SOURCE, on: [ticket.issue], closing }),
+            deliver: (session, text, options) => ctx.delivery(ticket.repo).deliver({ session }, text, { source: GITHUB_SOURCE, ...options }),
             log,
             repo: ticket.repo,
             issue: ticket.issue,

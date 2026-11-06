@@ -353,6 +353,20 @@ describe('planUnblocked: an unblocked fire\'s plan', () => {
     assert.equal(posted.length, 1);
   });
 
+  test('an unreadable line\'s comment tells the spec owner, and the login the send may refresh is stored', async () => {
+    const OWNER = 'https://claude.ai/code/session_01SPECOWNER';
+    const { ctx, sent, stored, posted } = ticketContext();
+    const reader = await (ctx as any).readerFor(REPO);
+    const ticket = { ...(await reader.ticket()), body: `Blocked until: soon\n\nThe spec.\n\n${OWNER}`, wait: { unreadable: 'soon' } };
+    reader.ticket = async () => ticket;
+    reader.readyIssues = async () => [ticket];
+    const plan = await planUnblocked(fire(), ctx) as any;
+    assert.ok('answer' in plan, JSON.stringify(plan));
+    assert.equal(posted.length, 1);
+    assert.deepEqual(sent.map((s) => s.session), [OWNER]);
+    assert.ok(stored.length > 0, 'the send ran the CLI, and its refreshed login goes back');
+  });
+
   test('a repo turning neither pickup nor unblocked on refuses the fire in its answer', async () => {
     const off = { ...CONFIG, features: { ...CONFIG.features, pickup: false, unblocked: false } };
     const { ctx } = ticketContext({ over: { configOf: () => off } });
