@@ -12,7 +12,11 @@
  * ({@link stampHeartbeat}), each changed only by the fire it reports, and a
  * periodic's state by the sign-off sweep. A periodic governor has read but
  * not fired yet gets a line at its baseline's time, which only a missing line
- * takes.
+ * takes. Where the repo's file turns `sessionRules` on, the bare schedule
+ * fire adds one more line while the repo's `CLAUDE.md`, or the file
+ * `sessionRules.file` names, lacks the current session rules block
+ * ({@link RulesLine}), and clears it once the block is current or the
+ * switch is off.
  */
 
 import { messageOf } from '../scripts/lib/error-message.mjs';
@@ -84,6 +88,8 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
  * undefined changes nothing and writes nothing. A reader, read or write that
  * fails is logged under {@link HEARTBEAT_UNWRITTEN} and comes back as the
  * line the caller fails its turn with, once every other repo has gone.
+ * `level` sets both logs' level, `error` unless the caller says otherwise:
+ * a write that only changes a line which must page nobody logs at warn.
  *
  * @param {{
  *   reader: () => Promise<IssueWriter>,
@@ -93,15 +99,16 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
  *   refusal: string,
  *   stamp: (body: string) => string | undefined,
  *   log: (event: string, fields: Record<string, unknown>) => void,
+ *   level?: 'error' | 'warn',
  * }} args
  * @returns {Promise<'written' | 'refused' | 'unchanged' | { unwritten: string }>}
  */
-export const writeHeartbeatIssue = async ({ reader, repo, issue, marker, refusal, stamp, log }) => {
+export const writeHeartbeatIssue = async ({ reader, repo, issue, marker, refusal, stamp, log, level = 'error' }) => {
   try {
     const github = await reader();
     const { body } = await github.issue(issue);
     if (!body.includes(marker)) {
-      log(HEARTBEAT_REFUSED, { level: 'error', repo, issue, marker, reason: refusal });
+      log(HEARTBEAT_REFUSED, { level, repo, issue, marker, reason: refusal });
       return 'refused';
     }
     const next = stamp(body);
@@ -109,7 +116,7 @@ export const writeHeartbeatIssue = async ({ reader, repo, issue, marker, refusal
     await github.updateIssue(issue, { body: next });
     return 'written';
   } catch (error) {
-    log(HEARTBEAT_UNWRITTEN, { level: 'error', repo, issue, error: messageOf(error) });
+    log(HEARTBEAT_UNWRITTEN, { level, repo, issue, error: messageOf(error) });
     return { unwritten: `${repo}#${issue}: ${messageOf(error)}` };
   }
 };
@@ -134,12 +141,17 @@ export const HEARTBEAT_END = '<!-- governor:heartbeat-end -->';
  *   `at`: the last fire's time, or the baseline's while `not fired`. `by`: the
  *   limit that fired it, where known.
  *   `session`: the session the fire started, null where none did.
- * @typedef {{ pickup?: PickupLine, periodics: PeriodicLine[] }} Heartbeat
+ * @typedef {{ file: string, block: 'missing' | 'old' }} RulesLine
+ *   The file a served repo's session rules block is looked for in, on its
+ *   default branch, and why it is not current
+ *   (dispatch/session-rules.mjs `blockIn`).
+ * @typedef {{ pickup?: PickupLine, periodics: PeriodicLine[], rules?: RulesLine }} Heartbeat
  * @typedef {Partial<PeriodicLine> & { name: string }} PeriodicChange
  *   A periodic's line, or the fields of it that change.
- * @typedef {{ pickup?: PickupLine, periodics?: PeriodicChange[], signedOff?: string[] }} Beat
+ * @typedef {{ pickup?: PickupLine, periodics?: PeriodicChange[], signedOff?: string[], rules?: RulesLine | null }} Beat
  *   What a turn changes in the block. `signedOff`: the sessions the sign-off
- *   sweep archived, each `session_…`.
+ *   sweep archived, each `session_…`. `rules`: the session rules line, or
+ *   null to clear it; left out, the line stays as it is.
  */
 
 /** What a line calls each count, one and many. */
@@ -158,6 +170,15 @@ const STATES = /** @type {Record<RunState, string>} */ ({
   'not fired': 'not fired yet',
 });
 
+/** What the session rules line says of each block that is not current. */
+const RULES_BLOCKS = /** @type {Record<RulesLine['block'], string>} */ ({
+  missing: 'has no session rules block',
+  old: 'has an old session rules block',
+});
+
+/** Each block's text, back to its key. */
+const RULES_BLOCK_OF = /** @type {Record<string, RulesLine['block']>} */ (Object.fromEntries(Object.entries(RULES_BLOCKS).map(([k, v]) => [v, k])));
+
 /** @param {number} n @param {string} one @param {string} many */
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
@@ -167,6 +188,7 @@ const PERIODIC = new RegExp([
   '(?:, by (?:its day limit of (\\d+) days?|(\\d+) (merges?|issues? opened|issues? closed)))?',
   `, session (\\S+), (${Object.values(STATES).join('|')})$`,
 ].join(''));
+const RULES = new RegExp(`^- session rules: ("(?:[^"\\\\]|\\\\.)*") (${Object.values(RULES_BLOCKS).join('|')})$`);
 
 /** @param {Limit} by */
 const limitText = (by) => ('days' in by ? `its day limit of ${plural(by.days, 'day', 'days')}` : plural(by.number, ...COUNTED[by.count]));
@@ -178,15 +200,20 @@ const pickupText = ({ at, started }) => `- pickup: last sweep ${at}, started ${p
 const periodicText = ({ name, at, by, session, state }) =>
   `- periodic ${JSON.stringify(name)}: ${state === 'not fired' ? 'first read' : 'last fire'} ${at}${by === undefined ? '' : `, by ${limitText(by)}`}, session ${session ?? 'none'}, ${STATES[state]}`;
 
+/** @param {RulesLine} line */
+const rulesText = ({ file, block }) => `- session rules: ${JSON.stringify(file)} ${RULES_BLOCKS[block]}`;
+
 /**
  * One line of the block, read; null for a line governor did not write.
  *
  * @param {string} text
- * @returns {{ pickup: PickupLine } | { periodic: PeriodicLine } | null}
+ * @returns {{ pickup: PickupLine } | { periodic: PeriodicLine } | { rules: RulesLine } | null}
  */
 const lineOf = (text) => {
   const pickup = PICKUP.exec(text);
   if (pickup !== null) return { pickup: { at: String(pickup[1]), started: Number(pickup[2]) } };
+  const rules = RULES.exec(text);
+  if (rules !== null) return { rules: { file: JSON.parse(String(rules[1])), block: /** @type {RulesLine['block']} */ (RULES_BLOCK_OF[String(rules[2])]) } };
   const m = PERIODIC.exec(text);
   if (m === null) return null;
   const [, name, read, at, days, number, counted, session, state] = m;
@@ -242,6 +269,7 @@ export const readHeartbeat = (body) => {
     const line = lineOf(text);
     if (line === null) continue;
     if ('pickup' in line) beat.pickup = line.pickup;
+    else if ('rules' in line) beat.rules = line.rules;
     else beat.periodics = [...beat.periodics.filter((p) => p.name !== line.periodic.name), line.periodic];
   }
   return beat;
@@ -252,7 +280,8 @@ export const readHeartbeat = (body) => {
  * each periodic's line given the fields its change names (a periodic with
  * no line and no fire time gets none; a `not fired` change, from a baseline,
  * only adds a missing line and never replaces one), then each open or held
- * line whose session signed off marked so, its fire time kept. Lines the
+ * line whose session signed off marked so, its fire time kept, and the
+ * session rules line set, or cleared by a null, last. Lines the
  * change does not name stay; a line in the block governor did not write is
  * dropped. Nothing outside the block changes. Throws where the body lacks
  * the marker.
@@ -264,6 +293,7 @@ export const stampHeartbeat = (body, beat) => {
   const { before, after } = blockOf(body);
   const read = readHeartbeat(body);
   const pickup = beat.pickup ?? read.pickup;
+  const rules = beat.rules === undefined ? read.rules : beat.rules ?? undefined;
   const periodics = [...read.periodics];
   for (const change of beat.periodics ?? []) {
     const i = periodics.findIndex((p) => p.name === change.name);
@@ -278,6 +308,6 @@ export const stampHeartbeat = (body, beat) => {
   }
   const signed = new Set(beat.signedOff ?? []);
   const marked = periodics.map((p) => (p.session !== null && (p.state === 'open' || p.state === 'held') && signed.has(sessionId(p.session)) ? { ...p, state: /** @type {RunState} */ ('signed off') } : p));
-  const lines = [...(pickup === undefined ? [] : [pickupText(pickup)]), ...marked.map(periodicText)];
+  const lines = [...(pickup === undefined ? [] : [pickupText(pickup)]), ...marked.map(periodicText), ...(rules === undefined ? [] : [rulesText(rules)])];
   return `${before}\n${lines.map((l) => `${l}\n`).join('')}${HEARTBEAT_END}${after}`;
 };

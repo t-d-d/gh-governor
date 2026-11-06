@@ -35,6 +35,15 @@ session's own last reply is current and needs nothing in the repo.
   (`signsOff`). A served repo's sessions are told the line by the standing
   line governor writes under each message, or by the repo's own `signOff`
   prompt. With the switch off, the standing line leaves the ask out.
+- With `sessionRules` on as well, ownership of an issue lapses when its
+  owner is archived, and the ask waits only on what the session is doing:
+  an open PR it owns, by body link or head branch; a claimed ticket no
+  open PR closes whose newest dispatch marker names it; and an open issue
+  it owns that carries a ready label or the claim label. An issue it owns
+  with none of those does not hold the ask: the line lists it and says
+  signing off gives it up. This narrows #535's rule that a spec owner
+  stays held while any of its tickets is open. With `sessionRules` off,
+  every open item that names the session holds the ask, as before.
 - A session that owns an open PR in a served repo is not archived, whatever
   its reply says. Before it archives a signed-off session, the sweep finds
   the open PRs in the served repos the session's row names whose body names
@@ -82,4 +91,4 @@ session's own last reply is current and needs nothing in the repo.
   writes: each repo then needs the hook and a credential, and the record
   goes stale.
 
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The sweep and the standing line's ask run only where the repo's file turns the `signOff` switch on since #278. A session that owns an open PR is held from the archive, and told so once where the repo's file asks, since #594.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The sweep and the standing line's ask run only where the repo's file turns the `signOff` switch on since #278. A session that owns an open PR is held from the archive, and told so once where the repo's file asks, since #594. With `sessionRules` on, ownership of an issue lapses at its owner's archive, and the ask waits only on the session's open PRs, its builds and the issues it owns that carry a ready or claim label, narrowing #535, since #612, under PRD #599.

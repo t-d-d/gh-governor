@@ -19,6 +19,7 @@ import { RELAY, dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { SIGN_OFF } from '../scripts/lib/session-signoff.mjs';
 import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
+import { instruction } from '../dispatch/prompts.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 /** The factory's own file's prompts, whose sign-off ask names its lessons. */
@@ -73,6 +74,7 @@ const fakes = (over: {
   signOff?: boolean;
   relay?: readonly string[];
   claim?: string;
+  holding?: readonly string[];
   count?: (m: Counted) => Promise<Count>;
 } = {}) => {
   const sent: Message[] = [];
@@ -106,6 +108,7 @@ const fakes = (over: {
     repo: over.repo ?? REPO,
     relay: over.relay ?? RELAY,
     ...(over.claim === undefined ? {} : { claim: over.claim }),
+    ...(over.holding === undefined ? {} : { holding: over.holding }),
     send: async (m: Message, until: number) => {
       sent.push(m);
       untils.push(until);
@@ -703,6 +706,66 @@ describe('deliver — a session\'s standing', () => {
     await unmarked.deliver({ session: OWNER }, 'one');
     await unmarked.deliver({ session: OWNER }, 'two');
     assert.equal(flaky.length, 2, 'a failure that is not the rate limit leaves the next send to search');
+  });
+
+  // With session rules on, ownership of an issue lapses at sign-off (#612):
+  // the ask waits only on the session's open PRs, its builds and the
+  // readied or claimed issues it owns. The labels that hold an issue are
+  // the repo's ready labels and its claim label.
+  describe('with session rules on', () => {
+    const issue = (number: number, holds: boolean) => ({ ...open(number, false), holds });
+    const pr = (number: number) => ({ ...open(number), holds: true });
+    const HOLDING = ['workflow: ready for development', 'mode: afk', 'workflow: under development'];
+    const CLAIM = 'workflow: under development';
+
+    test('the search is given the labels that hold, beside the claim label', async () => {
+      const options: unknown[] = [];
+      const f = fakes({ claim: CLAIM, holding: HOLDING, reader: { openNaming: async (_id: string, _relay: unknown, given: unknown) => { options.push(given); return []; } } });
+      await f.deliver({ session: OWNER }, 'A comment.', { on: [724] });
+      assert.deepEqual(options, [{ claim: CLAIM, holding: HOLDING }]);
+    });
+
+    test('an owned issue with no ready or claim label does not hold the ask: the line lists it and says signing off gives it up', async () => {
+      const f = fakes({ claim: CLAIM, holding: HOLDING, reader: { openNaming: async () => [issue(801, false), issue(802, false)] } });
+      await f.deliver({ session: OWNER }, 'Your pull request was merged and deployed.', { on: [724], closing: true });
+      const text = f.sent[0]!.text;
+      assert.match(text, /Issue #801: Open 801/);
+      assert.match(text, /Issue #802: Open 802/);
+      assert.match(text, /Signing off gives up any of these issues you own/);
+      assert.ok(text.endsWith(instruction(FACTORY_PROMPTS, 'signOff')), text);
+    });
+
+    test('an owned issue with a ready or claim label, an owned PR or a built ticket holds the ask', async () => {
+      for (const held of [issue(803, true), pr(804)]) {
+        const f = fakes({ claim: CLAIM, holding: HOLDING, reader: { openNaming: async () => [issue(801, false), held] } });
+        await f.deliver({ session: OWNER }, 'Your ticket was closed.', { on: [724], closing: true });
+        const text = f.sent[0]!.text;
+        assert.match(text, new RegExp(`#${held.number}: Open ${held.number}`));
+        assert.match(text, /Issue #801/);
+        assert.ok(!text.includes(SIGN_OFF), text);
+        assert.doesNotMatch(text, /gives up/);
+      }
+    });
+
+    test('a message that does not close keeps today\'s line, and asks nothing', async () => {
+      const f = fakes({ claim: CLAIM, holding: HOLDING, reader: { openNaming: async () => [issue(801, false)] } });
+      await f.deliver({ session: OWNER }, 'A comment.', { on: [724] });
+      assert.ok(f.sent[0]!.text.endsWith(standingLine([open(801, false)], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })));
+    });
+
+    test('with sign-off off, a close keeps today\'s line, and asks nothing', async () => {
+      const f = fakes({ signOff: false, claim: CLAIM, holding: HOLDING, reader: { openNaming: async () => [issue(801, false)] } });
+      await f.deliver({ session: OWNER }, 'Your pull request was merged.', { on: [724], closing: true });
+      assert.ok(f.sent[0]!.text.endsWith(standingLine([open(801, false)], { repo: REPO, closing: false, prompts: FACTORY_PROMPTS })));
+      assert.ok(!f.sent[0]!.text.includes(SIGN_OFF));
+    });
+
+    test('with session rules off, an unlabelled owned issue still holds the ask, as today', async () => {
+      const f = fakes({ claim: CLAIM, reader: { openNaming: async () => [open(801, false)] } });
+      await f.deliver({ session: OWNER }, 'Your pull request was merged.', { on: [724], closing: true });
+      assert.ok(f.sent[0]!.text.endsWith(standingLine([open(801, false)], { repo: REPO, closing: true, prompts: FACTORY_PROMPTS })));
+      assert.ok(!f.sent[0]!.text.includes(SIGN_OFF));
+    });
   });
 
   test('standingLine: the list, nothing, or nothing and the sign-off', () => {
