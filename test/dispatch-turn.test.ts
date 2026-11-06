@@ -9450,7 +9450,7 @@ describe('run: a relative wait on a declared blocker', () => {
   const UNTIL = new Date(Date.parse(CLOSED_AT) + 4 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const blocker = { repo: REPO, number: 41, title: 'The parser', reason: 'completed', closedAt: CLOSED_AT };
   const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, ...over });
-  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, openBlockers = 0 as number | null, blockerRows = [] as Array<{ number: number, state: string }>, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>>, thread = [] as Array<{ body: string }> } = {}) => {
+  const relativeTurn = ({ labels = READY, features = {} as Record<string, boolean>, body = RELATIVE, openBlockers = 0 as number | null, blockerRows = [] as Array<{ number: number, state: string }>, rows = [] as Array<Record<string, unknown>>, issues = {} as Record<number, Record<string, unknown>>, thread = [] as Array<{ body: string, ours?: boolean }> } = {}) => {
     const asked: string[] = [];
     const file = switched(JSON.parse(FACTORY_FILE), features);
     const state = { body };
@@ -9526,7 +9526,7 @@ describe('run: a relative wait on a declared blocker', () => {
   // does (dispatch/ticket-fire.mjs), so it is sent no second message (#538).
   test('claimed, and a close that is not completed: one comment, which its session hears, and no second message', async () => {
     for (const [reason, row] of [['not_planned', 'not-planned'], ['duplicate', 'claimed']] as const) {
-      const h = relativeTurn({ labels: [CLAIM], thread: [{ body: MARKER }] });
+      const h = relativeTurn({ labels: [CLAIM], thread: [{ body: MARKER, ours: true }] });
       const result = await run(fire({ blocker: { ...blocker, reason } }), h.deps as never) as Record<string, unknown>;
       assert.deepEqual(h.issueEdits, [], reason);
       assert.equal(result.row, row, reason);
@@ -9541,7 +9541,7 @@ describe('run: a relative wait on a declared blocker', () => {
   });
 
   test('claimed, and a retried not-planned close: no second comment, and its session hears the close', async () => {
-    const h = relativeTurn({ labels: [CLAIM], thread: [{ body: MARKER }, { body: `Earlier.\n${waitNotPlannedMarker('#41')}` }] });
+    const h = relativeTurn({ labels: [CLAIM], thread: [{ body: MARKER, ours: true }, { body: `Earlier.\n${waitNotPlannedMarker('#41')}` }] });
     const result = await run(fire({ blocker: { ...blocker, reason: 'not_planned' } }), h.deps as never) as Record<string, unknown>;
     assert.equal(result.row, 'not-planned');
     assert.equal(result.commented, false);

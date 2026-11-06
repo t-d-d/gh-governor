@@ -627,15 +627,18 @@ describe('githubReader', () => {
   // A builder's standing counts its claimed ticket before its PR exists
   // (#538): an open claimed issue that no open PR closes counts for the
   // session its newest dispatch comment names, each thread read once per
-  // reader. One an open PR closes counts through the PR.
+  // reader. One an open PR closes counts through the PR. A marker in a
+  // comment governor's App did not post counts for nobody.
   test('openNaming with the claim label counts an open claimed ticket for the session its newest dispatch comment names, where no open PR closes it', async () => {
     const BUILDER = 'https://claude.ai/code/session_01BUILDER';
-    const marker = (at: string, url: string) => ({ id: 1, body: `<!-- governor:dispatched ${at} -->\nDispatched to ${url} at ${at}.`, created_at: at });
+    const APP = { user: { type: 'Bot', login: 'governor-app[bot]' }, performed_via_github_app: { id: 9 } };
+    const marker = (at: string, url: string, by: Record<string, unknown> = APP) => ({ id: 1, body: `<!-- governor:dispatched ${at} -->\nDispatched to ${url} at ${at}.`, created_at: at, ...by });
     const row = (number: number, labels: string[], body = 'A ticket.', pull = false) => ({ number, title: `T${number}`, html_url: `u${number}`, body, author_association: 'OWNER', labels: labels.map((name) => ({ name })), ...(pull ? { pull_request: { url: 'x' } } : {}) });
     const threads: Record<number, unknown[]> = {
       40: [marker('2026-11-01T00:00:00Z', 'https://claude.ai/code/session_01OLD'), marker('2026-11-02T00:00:00Z', BUILDER)],
       41: [marker('2026-11-02T00:00:00Z', BUILDER)],
       43: [marker('2026-11-02T00:00:00Z', 'https://claude.ai/code/session_01OTHER')],
+      44: [marker('2026-11-03T00:00:00Z', BUILDER, { user: { type: 'User', login: 'someone' } })],
     };
     const { fetch, calls } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues': () => [
@@ -643,25 +646,26 @@ describe('githubReader', () => {
         row(41, ['claimed']),
         row(42, ['mode: afk']),
         row(43, ['claimed']),
+        row(44, ['claimed']),
         row(50, [], 'Closes #41', true),
       ],
       ...Object.fromEntries(Object.entries(threads).map(([n, thread]) => [`https://api.github.com/repos/acme/factory/issues/${n}/comments`, () => thread])),
     });
-    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', appId: 9, fetch });
     assert.deepEqual(await reader.openNaming(BUILDER, RELAY), [], 'without the claim label, no thread is read');
     assert.equal(calls.length, 1);
     assert.deepEqual(await reader.openNaming(BUILDER, RELAY, { claim: 'claimed' }), [{ number: 40, title: 'T40', html_url: 'u40', pull: false }]);
     assert.deepEqual((await reader.openNaming('https://claude.ai/code/session_01OTHER', RELAY, { claim: 'claimed' })).map((r) => r.number), [43]);
-    assert.deepEqual(calls.map((c) => new URL(c.url).pathname).filter((p) => p.endsWith('/comments')).sort(), ['/repos/acme/factory/issues/40/comments', '/repos/acme/factory/issues/43/comments'], 'each claimed ticket no open PR closes, once');
+    assert.deepEqual(calls.map((c) => new URL(c.url).pathname).filter((p) => p.endsWith('/comments')).sort(), ['/repos/acme/factory/issues/40/comments', '/repos/acme/factory/issues/43/comments', '/repos/acme/factory/issues/44/comments'], 'each claimed ticket no open PR closes, once');
   });
 
   test('openNaming with the claim label lists an issue once, where its body also names the session', async () => {
     const BUILDER = 'https://claude.ai/code/session_01BUILDER';
     const { fetch } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues': () => [{ number: 40, title: 'T40', html_url: 'u40', body: `Mine.\n\n${BUILDER}`, author_association: 'OWNER', labels: [{ name: 'claimed' }] }],
-      'https://api.github.com/repos/acme/factory/issues/40/comments': () => [{ id: 1, body: `<!-- governor:dispatched 2026-11-02T00:00:00Z -->\nDispatched to ${BUILDER} at 2026-11-02T00:00:00Z.` }],
+      'https://api.github.com/repos/acme/factory/issues/40/comments': () => [{ id: 1, body: `<!-- governor:dispatched 2026-11-02T00:00:00Z -->\nDispatched to ${BUILDER} at 2026-11-02T00:00:00Z.`, user: { type: 'Bot', login: 'governor-app[bot]' }, performed_via_github_app: { id: 9 } }],
     });
-    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', appId: 9, fetch });
     assert.deepEqual((await reader.openNaming(BUILDER, RELAY, { claim: 'claimed' })).map((r) => r.number), [40]);
   });
 

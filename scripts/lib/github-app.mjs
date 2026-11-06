@@ -427,14 +427,14 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     .catch((error) => { openRows = null; openSessions.clear(); throw error; });
   /** Each open issue's and PR's sessions under a trust list, keyed by the list, each body read once per list. @type {Map<string, Promise<Array<OpenRow & { sessions: Set<string> }>>>} */
   const openSessions = new Map();
-  /** Each claimed ticket's builder by its newest dispatch comment, its thread read once a reader. @type {Map<number, Promise<string | null>>} */
+  /** Each claimed ticket's builder by its newest dispatch comment governor's App posted, its thread read once a reader. @type {Map<number, Promise<string | null>>} */
   const dispatchedTo = new Map();
   /** @param {number} number */
   const dispatchedOf = (number) => {
     let found = dispatchedTo.get(number);
     if (found === undefined) {
       dispatchedTo.set(number, found = allPages(call, `/repos/${repo}/issues/${number}/comments`, {})
-        .then((rows) => { const marked = lastDispatch(rows.map((row) => ({ body: row.body ?? '' })))?.sessionUrl; return marked === undefined || marked === null ? null : sessionId(marked); })
+        .then((rows) => { const marked = lastDispatch(rows.map((row) => ({ body: row.body ?? '', ours: postedByApp(row, appId) })))?.sessionUrl; return marked === undefined || marked === null ? null : sessionId(marked); })
         .catch((error) => { dispatchedTo.delete(number); throw error; }));
     }
     return found;
