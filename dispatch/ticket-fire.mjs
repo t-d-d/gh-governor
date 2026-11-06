@@ -9,7 +9,9 @@
  * message was before, and nothing is read from GitHub. On a claimed ticket
  * the spec owner and each builder the one lookup finds
  * (dispatch/builders.mjs) are sent it, each told who holds both roles and
- * which it holds. A session never hears its own signed post. A builder
+ * which it holds. A session never hears its own signed post, nor, under
+ * `sessionRules`, an unsigned one the search found it wrote
+ * (dispatch/author.mjs). A builder
  * whose PR's merge closed the ticket hears the close through its PR, and
  * not again from the ticket. A comment governor's App posted is no ticket
  * fire: the turn that posted it tells the roles itself (dispatch/told.mjs).
@@ -52,6 +54,7 @@ import { builderChangeSends, tellBuilderChange } from './told.mjs';
 import { offerIssue } from './offer.mjs';
 import { settleMove } from './take.mjs';
 import { turnsOn } from './repo-config.mjs';
+import { relayedText, tellAuthor, wroteIt } from './author.mjs';
 
 /** @typedef {import('./roles.mjs').TicketRole} TicketRole */
 
@@ -66,8 +69,14 @@ import { turnsOn } from './repo-config.mjs';
  */
 export const planTicket = async (invocation, ctx) => {
   const repo = fireRepoOf(invocation);
-  const { issue, text, event, state, labels, poster, closing } = invocation;
+  const { issue, event, state, labels, poster, closing } = invocation;
   const config = ctx.configOf(repo);
+  // A session's unsigned comment, under sessionRules: its author is searched
+  // for first, is not relayed its own post, and the relay drops its
+  // UNSIGNED line (dispatch/author.mjs).
+  const post = event === 'comments' && invocation.unsigned !== undefined && turnsOn(config, 'sessionRules') ? invocation.unsigned : null;
+  const found = post === null ? null : await ctx.findAuthor(issue, post);
+  const text = relayedText(invocation.text, found);
   // A body edit that moved the owner link: under sessionRules the old
   // owner is the spec owner, and the session the new body names made the edit.
   const moved = event === 'edit' && invocation.moved !== undefined && turnsOn(config, 'sessionRules') ? invocation.moved : null;
@@ -81,7 +90,7 @@ export const planTicket = async (invocation, ctx) => {
   const skipped = [];
   /** The ticket's builders, none on an unclaimed ticket. @type {string[]} */
   let builders = [];
-  const own = (/** @type {string} */ session) => (poster !== undefined && sameSession(session, poster)) || (editor !== null && sameSession(session, editor));
+  const own = (/** @type {string} */ session) => (poster !== undefined && sameSession(session, poster)) || (editor !== null && sameSession(session, editor)) || wroteIt(found, session);
   // What a body edit tells each role, under what happened.
   const edit = (/** @type {TicketRole} */ role) => (event !== 'edit' ? '' : `\n\n${[
     ...(role === 'builder' ? [] : [EDIT_SPEC_OWNER]),
@@ -116,7 +125,7 @@ export const planTicket = async (invocation, ctx) => {
     }
     Object.assign(about, { builders, builder: roles.by });
   }
-  if (sends.length === 0 && editor === null) {
+  if (sends.length === 0 && editor === null && found === null) {
     ctx.log('dispatch-ticket', { ...about, outcome: 'nobody told', ...(skipped.length === 0 ? { reason: 'no role on the ticket is held by a session' } : { skipped }) });
     return { answer: { kind: invocation.kind, messaged: null, dispatched: [] } };
   }
@@ -130,6 +139,8 @@ export const planTicket = async (invocation, ctx) => {
   let notice = null;
   /** The take's confirmation or the correction, where one was sent. @type {import('./deliveries.mjs').Delivery | null} */
   let took = null;
+  /** The unsigned post's author's nudge, or each candidate's. @type {import('./deliveries.mjs').Delivery[]} */
+  let nudged = [];
   let loginStored = false;
   try {
     for (const { session, text: told, role, owns } of sends) {
@@ -167,13 +178,16 @@ export const planTicket = async (invocation, ctx) => {
         log: ctx.log,
       });
     }
+    if (post !== null && found !== null) {
+      nudged = await tellAuthor({ repo, on: issue, post, found, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries: ctx.delivery(), log: ctx.log });
+    }
   } finally {
     loginStored = await ctx.storeLogin();
   }
   // The turn's answer: a send that failed, so the turn says so, else one
   // that took it, else the last refusal.
   // A send held at the ceiling is no fault, so one that faulted goes first.
-  const answered = [...sent, ...(offered === null ? [] : [offered]), ...(took === null ? [] : [took])];
+  const answered = [...sent, ...(offered === null ? [] : [offered]), ...(took === null ? [] : [took]), ...nudged];
   const messaged = answered.find((t) => !t.ok && !t.refused && t.capped !== true) ?? answered.find((t) => t.ok) ?? answered.at(-1) ?? null;
   return { answer: { kind: invocation.kind, messaged, dispatched: [], loginStored } };
 };

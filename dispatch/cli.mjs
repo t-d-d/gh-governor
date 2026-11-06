@@ -69,7 +69,7 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  * written (`heartbeatUnwritten`), and no repo's part of the turn failed
  * (`unread`), refusal or not.
  *
- * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string }, untold?: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, capped?: boolean, skipped?: string | null, fallback?: { outcome: string } | null } | null, offered?: { ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }, took?: { ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }, capped?: boolean }} result
+ * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string }, untold?: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, capped?: boolean, skipped?: string | null, fallback?: { outcome: string } | null } | null, offered?: { ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }, took?: { ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }, nudged?: Array<{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }>, capped?: boolean }} result
  * @returns {0 | 1}
  */
 export const exitCodeFor = (result) => {
@@ -125,6 +125,9 @@ export const exitCodeFor = (result) => {
   // editor's correction that faulted fails the turn, and a gone session is
   // told enough.
   if (result.kind === 'prEdit') return result.messaged != null && faultedSend(result.messaged) ? 1 : 0;
+  // A session's unsigned post no role hears: a nudge that faulted fails the
+  // turn, and a gone session is told enough.
+  if (result.kind === 'author') return result.messaged != null && faultedSend(result.messaged) ? 1 : 0;
   // A summons sent to the live session that owns its PR: a send that
   // faulted, or a lookup that failed, fails the turn, as a message's does.
   // No live owner is no fault: the summons was judged as before.
@@ -137,6 +140,8 @@ export const exitCodeFor = (result) => {
     if (result.offered !== undefined && faultedSend(result.offered)) return 1;
     // The take's confirmation or the correction that followed a body edit faulted.
     if (result.took !== undefined && faultedSend(result.took)) return 1;
+    // A nudge to the author of an unsigned post, or to a candidate, faulted.
+    if ((result.nudged ?? []).some((n) => faultedSend(n))) return 1;
     return result.ok || result.capped === true || result.skipped != null || result.dropped != null
       || (result.fallback != null && result.fallback.outcome !== 'failed') ? 0 : 1;
   }

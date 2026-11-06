@@ -373,7 +373,14 @@ export const lastDispatch = (comments) => {
  *   `sessionRules` the task sends the edit's notice to `from` in place of
  *   the new owner, and confirms the take or writes the old link back
  *   (dispatch/take.mjs).
- * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[], offer?: string, moved?: MovedLink }
+ * @typedef {{ at: string, url: string, words: string }} UnsignedPost
+ *   A comment, a review or a review comment that ends in the Claude Code
+ *   footer and names no session: when it was posted (`at`, the payload's
+ *   `created_at` or `submitted_at`), its page, and its first words
+ *   ({@link postWords}), by which the task matches the tool call that
+ *   posted it. Under `sessionRules` the task searches the login's live
+ *   sessions for its author (dispatch/author.mjs).
+ * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[], offer?: string, moved?: MovedLink, unsigned?: UnsignedPost }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
  *   `subscribed`: the session hears by subscription, a `governor:subscribe`
@@ -392,6 +399,14 @@ export const lastDispatch = (comments) => {
  *   `moved`: on an issue owner's message of a body edit that moved its
  *   owner link, where it was before ({@link MovedLink}). `session` is the
  *   session the new body names.
+ *   `unsigned`: the post relayed, where it is a session's unsigned post
+ *   ({@link UnsignedPost}). The task searches for its author before it
+ *   relays, under `sessionRules`.
+ * @typedef {{ kind: 'author', on: number, post: UnsignedPost, authors?: string[] }} AuthorFire
+ *   A session's unsigned post on issue or PR `on` that no role hears: the
+ *   task searches the login's live sessions for its author and tells it
+ *   (dispatch/author.mjs). Needs `sessionRules` alone. `authors`: as a
+ *   message fire's.
  * @typedef {{ kind: 'offer', issue: number, session: string, authors?: string[] }} OfferFire
  *   A session's signed comment on an issue whose body is a session's
  *   unsigned post, which names no owner: the task offers `session` the
@@ -428,7 +443,7 @@ export const lastDispatch = (comments) => {
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit
  *   the lane ({@link FIRE_BUDGET}).
- * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], builder?: string, displaced?: string, moved?: MovedLink }} TicketFire
+ * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], builder?: string, displaced?: string, moved?: MovedLink, unsigned?: UnsignedPost }} TicketFire
  *   A comment on an issue, the issue closed or reopened, or its body
  *   edited (`edit`), where the issue may be claimed: its spec owner and, on a claimed ticket, its builders
  *   hear it, each told which role it holds (dispatch/ticket-fire.mjs). The
@@ -450,6 +465,8 @@ export const lastDispatch = (comments) => {
  *   `moved`: on an `edit`, where the edit moved the owner link, where it
  *   was before ({@link MovedLink}); `owner` is the session the new body
  *   names.
+ *   `unsigned`: on a comment, where it is a session's unsigned post, as a
+ *   message fire's.
  * @typedef {{ kind: 'closingPr', pr: number }} ClosingPrFire
  *   A PR opened, reopened or edited so that its body may come to close a
  *   ticket. The task reads the PR and each ticket it closes, and where a
@@ -461,7 +478,7 @@ export const lastDispatch = (comments) => {
  *   `prMessages` and `sessionRules` the task sends `from` a notice and,
  *   where it takes it, writes its link back and tells `to` once
  *   (dispatch/take.mjs). `authors`: as a message fire's.
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire | ClosingPrFire | OfferFire | PrEditFire) & { repo?: string, counted?: Count }} Fire
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire | ClosingPrFire | OfferFire | PrEditFire | AuthorFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
@@ -507,10 +524,11 @@ export const build = Object.freeze({
    *   text: string, on?: number | undefined, event?: SubscriptionEvent | undefined, commit?: string | undefined,
    *   closing?: boolean | undefined, subscribed?: boolean | undefined, fallback?: Fallback | undefined,
    *   authors?: string[] | undefined, offer?: string | null | undefined, moved?: MovedLink | undefined,
+   *   unsigned?: UnsignedPost | null | undefined,
    * }} args
    * @returns {MessageFire}
    */
-  message: ({ session, byBranch, poster, text, on, event, commit, closing, subscribed, fallback, authors, offer, moved }) => /** @type {MessageFire} */ ({
+  message: ({ session, byBranch, poster, text, on, event, commit, closing, subscribed, fallback, authors, offer, moved, unsigned }) => /** @type {MessageFire} */ ({
     kind: 'message',
     ...(byBranch === true ? { byBranch, ...present({ poster }) } : { session }),
     text,
@@ -524,6 +542,7 @@ export const build = Object.freeze({
       fallback: fallback && present(fallback),
       offer: offer ?? undefined,
       moved,
+      unsigned: unsigned ?? undefined,
     }),
   }),
 
@@ -569,10 +588,11 @@ export const build = Object.freeze({
    *   owner?: string | null | undefined, poster?: string | null | undefined, closing?: boolean | undefined,
    *   authors?: string[] | undefined,
    *   builder?: string | null | undefined, displaced?: string | null | undefined, moved?: MovedLink | undefined,
+   *   unsigned?: UnsignedPost | null | undefined,
    * }} args
    * @returns {TicketFire}
    */
-  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, builder, displaced, moved }) => ({
+  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, builder, displaced, moved, unsigned }) => ({
     kind: 'ticket',
     issue,
     text,
@@ -587,11 +607,15 @@ export const build = Object.freeze({
       builder: builder ?? undefined,
       displaced: displaced ?? undefined,
       moved,
+      unsigned: unsigned ?? undefined,
     }),
   }),
 
   /** @param {{ issue: number, session: string, authors?: string[] | undefined }} args @returns {OfferFire} */
   offer: ({ issue, session, authors }) => ({ kind: 'offer', issue, session, ...present({ authors }) }),
+
+  /** @param {{ on: number, post: UnsignedPost, authors?: string[] | undefined }} args @returns {AuthorFire} */
+  author: ({ on, post, authors }) => ({ kind: 'author', on, post, ...present({ authors }) }),
 
   /** @param {{ pr: number }} args @returns {ClosingPrFire} */
   closingPr: ({ pr }) => ({ kind: 'closingPr', pr }),
@@ -912,6 +936,11 @@ const parseKind = (event) => {
     if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) throw new Error(`a prEdit invocation's authors are trust values, got: ${JSON.stringify(e.authors)}`);
     return { kind, pr: Number(e?.pr), from: String(e?.from), to: String(e?.to), ...(e?.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (e.authors)] }) };
   }
+  if (kind === 'author') {
+    if (!isPositiveInt(e?.on)) throw new Error(`an author invocation's on must be a positive integer, got: ${JSON.stringify(e?.on)}`);
+    if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) throw new Error(`an author invocation's authors are trust values, got: ${JSON.stringify(e.authors)}`);
+    return { kind, on: Number(e?.on), post: parseUnsigned(e?.post, 'an author invocation'), ...(e?.authors === undefined ? {} : { authors: [.../** @type {string[]} */ (e.authors)] }) };
+  }
   if (kind === 'closingPr') {
     if (!isPositiveInt(e?.pr)) throw new Error(`a closingPr invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);
     return { kind, pr: Number(e?.pr) };
@@ -985,6 +1014,7 @@ const parseMessage = (e, event) => {
     throw new Error(`a message invocation's offer must be a session id or claude.ai/code URL, got: ${JSON.stringify(e.offer)}`);
   }
   const moved = e.moved === undefined ? undefined : parseMoved(e.moved, 'a message invocation');
+  const unsigned = e.unsigned === undefined ? undefined : parseUnsigned(e.unsigned, 'a message invocation');
   const to = e.byBranch === true
     ? { byBranch: /** @type {true} */ (true), on: Number(e.on), ...(typeof e.poster === 'string' ? { poster: e.poster } : {}) }
     : { session: /** @type {string} */ (e.session) };
@@ -1001,7 +1031,50 @@ const parseMessage = (e, event) => {
     ...(e.authors === undefined ? {} : { authors: /** @type {string[]} */ ([...e.authors]) }),
     ...(e.offer === undefined ? {} : { offer: /** @type {string} */ (e.offer) }),
     ...(moved === undefined ? {} : { moved }),
+    ...(unsigned === undefined ? {} : { unsigned }),
   };
+};
+
+/** The most a post's first words run to, so a fire carrying them fits the lane. */
+export const POST_WORDS_CHARS = 400;
+
+/**
+ * A post's first {@link POST_WORDS} words, lower-cased, letters and digits
+ * only, joined by single spaces. Quoting, markdown and a shell's escaping
+ * fall away, so the words a session handed a tool call read the same as
+ * the post GitHub sends back.
+ *
+ * @param {unknown} text
+ * @param {number} [count]
+ * @returns {string}
+ */
+export const postWords = (text, count = POST_WORDS) => wordsOf(text).slice(0, count).join(' ').slice(0, POST_WORDS_CHARS);
+
+/** How many of a post's first words a fire carries. */
+export const POST_WORDS = 16;
+
+/**
+ * Every word of `text`, lower-cased, letters and digits only.
+ *
+ * @param {unknown} text
+ * @returns {string[]}
+ */
+export const wordsOf = (text) => String(text ?? '').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+
+/**
+ * A fire's `unsigned` or an author fire's `post`, refused unless it names
+ * when the post was made, its github.com page, and its first words.
+ *
+ * @param {unknown} raw
+ * @param {string} what the fire, for the error
+ * @returns {UnsignedPost}
+ */
+const parseUnsigned = (raw, what) => {
+  const u = /** @type {Record<string, unknown> | null} */ (raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : null);
+  if (!(typeof u?.at === 'string' && u.at.length <= 40 && Number.isFinite(Date.parse(u.at)))) throw new Error(`${what}'s post must say when it was made, got: ${JSON.stringify(raw)?.slice(0, 300)}`);
+  if (!(typeof u.url === 'string' && u.url.length <= 300 && /^https:\/\/github\.com\/\S+$/.test(u.url))) throw new Error(`${what}'s post must name its github.com page, got: ${JSON.stringify(u.url)?.slice(0, 300)}`);
+  if (!(typeof u.words === 'string' && u.words.length <= POST_WORDS_CHARS && /^[\p{L}\p{N} ]*$/u.test(u.words))) throw new Error(`${what}'s post must carry its first words, letters and digits only`);
+  return { at: u.at, url: u.url, words: u.words };
 };
 
 /**
@@ -1192,6 +1265,8 @@ const parseTicket = (e) => {
   if (e?.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => typeof a === 'string' && TRUST_SET.has(a)))) refuse('authors must be trust values');
   if (e?.moved !== undefined && e.event !== 'edit') refuse('moved goes only on an edit');
   const moved = e?.moved === undefined ? undefined : parseMoved(e.moved, 'a ticket invocation');
+  if (e?.unsigned !== undefined && e.event !== 'comments') refuse('unsigned goes only on a comment');
+  const unsigned = e?.unsigned === undefined ? undefined : parseUnsigned(e.unsigned, 'a ticket invocation');
   const t = /** @type {Record<string, unknown>} */ (e);
   return {
     kind: 'ticket',
@@ -1207,6 +1282,7 @@ const parseTicket = (e) => {
     ...(t.builder === undefined ? {} : { builder: String(t.builder) }),
     ...(t.displaced === undefined ? {} : { displaced: String(t.displaced) }),
     ...(moved === undefined ? {} : { moved }),
+    ...(unsigned === undefined ? {} : { unsigned }),
   };
 };
 

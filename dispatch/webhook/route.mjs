@@ -108,7 +108,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, RELAY, REPO_NAME, RED, SUMMONERS, TRUST_VALUES, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob, waitLine } from './fire.mjs';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { errorText } from './error-text.mjs';
-import { MENTION, MENTION_EVENTS, bodyEditFires, closingPrFires, defaultBranch, issueEventFires, mentionFires, offerFires, oneLine, prEditFires, pullRequestFires, ticketFires } from './mention.mjs';
+import { MENTION, MENTION_EVENTS, authorFires, bodyEditFires, closingPrFires, defaultBranch, issueEventFires, mentionFires, offerFires, oneLine, prEditFires, pullRequestFires, ticketFires } from './mention.mjs';
 import { droppedBy } from './switches.mjs';
 import { pastReadingBound } from './subscribe.mjs';
 
@@ -248,6 +248,22 @@ const settleClaims = (decision, claim) => {
     reasons.push(claim === null ? `${ticket.reason}, as the hook table names no claim label` : ticket.reason);
   }
   return { fires, reason: [decision.reason, ...reasons].filter(Boolean).join('; ') };
+};
+
+/**
+ * A delivery's `author` fire kept only where no other fire it queues relays
+ * the post (one carrying `unsigned`, mention.mjs): a relay's own turn
+ * searches for the post's author before it relays, so the search runs
+ * once a turn either way. Settled after the claims and the switches, so a
+ * relay the repo's file turns off, or a ticket fire an unclaimed issue
+ * drops, leaves the search to the `author` fire.
+ *
+ * @param {Decision} decision
+ * @returns {Decision}
+ */
+const settleAuthor = (decision) => {
+  const relayed = decision.fires.some((q) => q.fire.kind !== 'author' && 'unsigned' in q.fire && q.fire.unsigned !== undefined);
+  return relayed ? { ...decision, fires: decision.fires.filter((q) => q.fire.kind !== 'author') } : decision;
 };
 
 /** @param {string} reason @returns {Decision} */
@@ -716,7 +732,7 @@ const heldBy = (issue, repo) => {
  * table says the repo's file leaves `prReview` off, and the task refuses it
  * where the file does.
  *
- * @param {{ event: string | undefined, payload: any, owners: readonly string[], appId?: number | undefined, relay?: readonly string[], bodies?: readonly string[], claim?: string | null | undefined }} args
+ * @param {{ event: string | undefined, payload: any, owners: readonly string[], appId?: number | undefined, relay?: readonly string[], bodies?: readonly string[], claim?: string | null | undefined, settle?: boolean }} args
  * `owners`: the stack's owner list. `appId`: the dispatcher's own App,
  * whose comment alone is the PR review's, and which every trust list lets
  * in; without it, no comment is. `relay`: whose text may reach a running
@@ -725,15 +741,18 @@ const heldBy = (issue, repo) => {
  * where unset. `claim`: the repo's claim label, by which a claimed
  * ticket's comment, close or reopen queues a ticket fire; null where the
  * hook table cannot say, which queues it; left out, none queues
- * ({@link settleClaims}).
+ * ({@link settleClaims}). `settle`: whether an `author` fire is settled
+ * against the relays here ({@link settleAuthor}); the receiver settles it
+ * after the switches instead.
  * @returns {Decision}
  */
-export const routeEvent = ({ event, payload, owners, appId, relay, bodies, claim }) => {
+export const routeEvent = ({ event, payload, owners, appId, relay, bodies, claim, settle = true }) => {
   const repo = payload?.repository?.full_name;
   if (typeof repo !== 'string' || !REPO_NAME.test(repo)) return nothing(`${event ?? 'unnamed'} delivery names no repository`);
   const owner = repo.slice(0, repo.indexOf('/'));
   if (!ownerListed(owners, owner)) return nothing(`delivery is for ${repo}, whose owner ${owner} is not on the owner list`);
-  const decision = settleClaims(routeFor({ event, payload, appId, relay, bodies }), claim);
+  const claimed = settleClaims(routeFor({ event, payload, appId, relay, bodies }), claim);
+  const decision = settle ? settleAuthor(claimed) : claimed;
   return { ...decision, fires: decision.fires.map((queued) => ({ ...queued, fire: { ...queued.fire, repo } })) };
 };
 
@@ -801,7 +820,9 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
   }
   if (MENTION_EVENTS.has(String(event))) {
     const written = mentionFires({ event, payload, ...trust }) ?? nothing(`${event} ${payload?.action}: no ${MENTION} mention and no subscriber`);
-    return event === 'issue_comment' ? both(both(written, ticketFires({ event, payload, ...trust })), offerFires({ event, payload, ...trust })) : written;
+    // A session's unsigned post: its author is searched for (dispatch/author.mjs).
+    const searched = both(written, authorFires({ event, payload, ...trust }));
+    return event === 'issue_comment' ? both(both(searched, ticketFires({ event, payload, ...trust })), offerFires({ event, payload, ...trust })) : searched;
   }
   return nothing(`${event ?? 'unnamed'} event: not one the dispatcher acts on`);
 };
@@ -924,7 +945,8 @@ export const handle = async (request, deps) => {
   const event = headers['x-github-event'];
   const delivery = headers['x-github-delivery'];
   logUnreadBodies(payload, event, delivery, deps);
-  const decision = await judged(({ relay, bodies, claim }) => routeEvent({ event, payload, owners: deps.owners, appId: deps.appId, relay, bodies, claim }), delivery, deps);
+  // An `author` fire is settled after the switches (settleAuthor).
+  const decision = await judged(({ relay, bodies, claim }) => routeEvent({ event, payload, owners: deps.owners, appId: deps.appId, relay, bodies, claim, settle: false }), delivery, deps);
   if (decision.fires.length === 0) {
     // Never an error: an outsider who installed the App must not page anyone.
     deps.log('webhook-ignored', { level: 'info', delivery: delivery ?? null, github: event, reason: decision.reason });
@@ -995,9 +1017,9 @@ const judged = async (route, delivery, deps) => {
     item = await deps.repoItem(repo);
   } catch (error) {
     deps.log('webhook-switches-unread', { level: 'error', delivery: delivery ?? null, repo, error: String(/** @type {any} */ (error)?.message ?? error) });
-    return route({ relay: receiverRelay(null), bodies: RELAY, claim: null });
+    return settleAuthor(route({ relay: receiverRelay(null), bodies: RELAY, claim: null }));
   }
-  return switchedOn(route({ relay: receiverRelay(item?.relay), bodies: item?.relay ?? RELAY, claim: item?.claim ?? null }), item, delivery, deps);
+  return settleAuthor(switchedOn(route({ relay: receiverRelay(item?.relay), bodies: item?.relay ?? RELAY, claim: item?.claim ?? null }), item, delivery, deps));
 };
 
 /**

@@ -38,7 +38,8 @@ export const isCi = (run, workflows) => workflows.ci !== undefined && run.path =
  * ticket it blocked, whose switch the ticket's own state picks in its own
  * repo, `pickup` or `unblocked` (dispatch/unblocked.mjs). An `offer`
  * fire, an ownerless issue offered to the session that commented on it,
- * needs `sessionRules` (dispatch/offer.mjs). A ticket's `wait`
+ * needs `sessionRules` (dispatch/offer.mjs), as does an `author` fire, a
+ * session's unsigned post no role hears (dispatch/author.mjs). A ticket's `wait`
  * fire needs `waits` (dispatch/waits.mjs), and an `issueReview` fire
  * `issueReviews` (dispatch/issue-review.mjs). A `prEdit` fire, a PR body
  * edit that moved its session link, needs `prMessages` here and
@@ -56,6 +57,7 @@ export const switchOf = (fire, workflows = {}) => {
     case 'ticket': return 'subscribeMessages';
     case 'closingPr': return 'subscribeMessages';
     case 'offer': return 'sessionRules';
+    case 'author': return 'sessionRules';
     case 'prEdit': return 'prMessages';
     case 'workflow': return isCi(fire, workflows) ? 'ciMessages' : 'deployMessages';
     case 'job': return 'deployMessages';
