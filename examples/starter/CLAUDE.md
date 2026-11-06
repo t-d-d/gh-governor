@@ -1,6 +1,6 @@
 # Working in this repo
 
-Governor serves this repo. The block below holds the rules every session follows, whoever started it. Where `.github/governor.json` has a `sessionRules` section, governor gives the same rules to the sessions it starts. Copy the block whole, and replace it whole when governor publishes a new version: the config check warns where it is missing or old.
+Governor serves this repo. The block below holds the rules every session follows, whoever started it. Where `.github/governor.json` turns `sessionRules` on, governor gives the same rules to the sessions it starts. Copy the block whole, and replace it whole when governor publishes a new version: the config check warns where it is missing or old.
 
 <!-- governor:session-rules v1 -->
 Rules for every session in this repo:
