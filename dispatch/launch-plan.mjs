@@ -14,7 +14,8 @@ import { byOf, PICKUP_FAILED_HOLD_MS, PICKUP_FAILED_UNRECORDED } from './pickup.
 import { reportUncounted, reportUnlooked, reportUnstarted } from './uncounted.mjs';
 import { judgeReady } from './start.mjs';
 import { relayOf, startOf } from './trust.mjs';
-import { specOwnerOf, tellBuilderChange, tellerFor } from './told.mjs';
+import { tellBuilderChange, tellerFor } from './told.mjs';
+import { rolesOf } from './roles.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { reportUnreadable } from './waits.mjs';
 import { GITHUB_SOURCE, OUTPUT_TAIL, nameSpecSession } from './deliveries.mjs';
@@ -350,7 +351,7 @@ export const launchPlan = async (plan, ctx, started) => {
             issue: ticket.issue,
             title: row.title,
             url: `https://github.com/${ticket.repo}/issues/${ticket.issue}`,
-            owner: specOwnerOf(row, relayOf(configOf(ticket.repo))),
+            owner: (await rolesOf({ issue: ticket.issue, relay: relayOf(configOf(ticket.repo)), ticket: row })).owner,
             builder: sessionUrl,
             displaced: null,
           });

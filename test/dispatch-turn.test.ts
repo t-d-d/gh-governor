@@ -1976,7 +1976,7 @@ describe('run — an unblocked fire', () => {
   const OLD_MARKER = dispatchMarker({ at: new Date(NOW - 3 * 24 * 60 * 60 * 1000).toISOString(), sessionUrl: 'https://claude.ai/code/session_01WORK' });
   const blocker = { repo: 'acme/tools', number: 41, title: 'The parser', reason: 'completed' };
   const fire = (over: Record<string, unknown> = {}) => ({ kind: 'unblocked', repo: REPO, issue: 7, blocker, pr: { number: 52, title: 'Parse it', url: 'https://github.com/acme/tools/pull/52' }, ...over });
-  const ticketTurn = ({ unlabelFails = [] as string[], labels = READY, state = 'open', blockers = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, features = {} as Record<string, boolean>, openBlockers = undefined as number | undefined, wait = undefined as Record<string, string> | undefined, body = '', association = 'MEMBER', bodyFails = false, over = {} as Record<string, unknown> } = {}) => {
+  const ticketTurn = ({ unlabelFails = [] as string[], labels = READY, state = 'open', blockers = [{ number: 41, state: 'closed', title: 'The parser' }], comments = [] as Array<{ body: string }>, features = {} as Record<string, boolean>, openBlockers = undefined as number | undefined, wait = undefined as Record<string, string> | undefined, body = '', association = 'MEMBER', author = {} as { author?: string, app?: boolean }, bodyFails = false, over = {} as Record<string, unknown> } = {}) => {
     const asked: string[] = [];
     const file = JSON.parse(FACTORY_FILE);
     switched(file, features);
@@ -1987,7 +1987,7 @@ describe('run — an unblocked fire', () => {
         ticket: async (n: number) => {
           asked.push(`${repo} ticket ${n}`);
           // A claim re-reads the ticket; once claimed, it reads claimed.
-          return { number: n, title: `Issue ${n}`, body, state, labels, pull: false, association, ...(openBlockers === undefined ? {} : { openBlockers }), ...(wait === undefined ? {} : { wait }) };
+          return { number: n, title: `Issue ${n}`, body, state, labels, pull: false, association, ...author, ...(openBlockers === undefined ? {} : { openBlockers }), ...(wait === undefined ? {} : { wait }) };
         },
         blockers: async (n: number) => {
           asked.push(`${repo} blockers ${n}`);
@@ -2805,6 +2805,17 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(owned.messages.map((m) => m.session), [OWNER]);
   });
 
+  // #568: a ticket governor's own App filed is judged as the receiver
+  // judges it, not as any bot, which trust.auto may never hold.
+  test('not ready, opened by governor\'s own App: the owner message, as for a member', async () => {
+    const owned = ticketTurn({ labels: ['enhancement'], body: OWNED, association: 'NONE', author: { author: 'governor-app[bot]', app: true } });
+    await run(fire(), owned.deps as never);
+    assert.deepEqual(owned.messages.map((m) => m.session), [OWNER]);
+    const bot = ticketTurn({ labels: ['enhancement'], body: OWNED, association: 'NONE', author: { author: 'other[bot]' } });
+    await run(fire(), bot.deps as never);
+    assert.deepEqual([bot.launches, bot.messages], [[], []]);
+  });
+
   test('not ready, with trust.auto set to OWNER: a member\'s ticket gets nothing', async () => {
     const h = ticketTurn({ labels: ['enhancement'] });
     const file = JSON.parse(FACTORY_FILE);
@@ -3285,6 +3296,13 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       await run({ source: 'aws.events' }, h.deps as never);
       assert.deepEqual(h.messages, []);
       assert.equal(specOf(h).length, 1);
+    });
+
+    // #568: a ticket governor's own App filed is judged as the receiver judges it.
+    test('a ticket governor\'s own App opened asks its owner, as a member\'s does', async () => {
+      const h = waitsTurn({ ticket: { ...owned, association: 'NONE', author: 'governor-app[bot]', app: true } });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(h.messages.map((m) => m.session), [OWNER]);
     });
 
     test('a ticket opened by an OWNER gets its spec session as a member\'s does', async () => {
@@ -5468,6 +5486,7 @@ describe('run — a workflow run on main', () => {
           assert.match(own!.text, /PR #799/);
           assert.match(own!.text, /#730/);
           assert.match(own!.text, /You are its builder/);
+          assert.match(own!.text, /Your PR, which closed #730, has merged: act on this message only where it calls for new work\./, 'the roles lines read as on every other path');
           assert.equal(exitCodeFor(r as never), 0);
           assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 500, 'the range is planned: the cursor moves');
         });

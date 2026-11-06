@@ -20,46 +20,15 @@
  * Pure but for the `deliver`, `read` and `log` its callers hand it.
  */
 
-import { relayedBody, sameSession, sessionId, sessionNamedIn } from './webhook/subscribe.mjs';
+import { sameSession, sessionId } from './webhook/subscribe.mjs';
+import { rolesFrom, rolesOf, rolesText } from './roles.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { relayOf } from './trust.mjs';
 
 /** The log event for a message a turn sends about its own comment on an issue. */
 export const TOLD = 'dispatch-told';
 
-/** @typedef {'spec owner' | 'builder' | 'spec owner and builder'} TicketRole */
-
-/** Items joined as a sentence lists them: `a, b and c`. @param {string[]} items */
-export const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
-
-/**
- * What a message about a ticket adds under what happened: who holds each
- * role, which one the recipient holds, and what that role does with it.
- *
- * @param {{ issue: number, owner: string | null, builders: readonly string[], role: TicketRole }} args
- * @returns {string}
- */
-export const rolesText = ({ issue, owner, builders, role }) => {
-  const spec = owner === null ? 'a person, as no session link ends its body' : owner;
-  const built = builders.length === 0 ? 'none governor can find' : listed([...builders]);
-  const lines = [
-    `Roles on #${issue}: its spec owner is ${spec}; its builder is ${built}. You are its ${role === 'spec owner and builder' ? 'spec owner and its builder' : role}. This is a notice: it asks nothing of you beyond your own role's part.`,
-  ];
-  if (role !== 'builder') lines.push('As its spec owner you write its body: where a remark changes what counts as done, edit the body to say so.');
-  if (role !== 'spec owner') lines.push('As its builder you build it, on its branch and PR, and do not edit its body: act on what bears on the build, and record where your work differs from the body in your PR description.');
-  return lines.join('\n');
-};
-
-/**
- * The spec owner a ticket's row names: the session link that ends its body,
- * read only where `relay` lets the body's author in. A row governor's App
- * opened is judged as the App.
- *
- * @param {{ body?: unknown, author?: string, association?: string, app?: boolean }} row
- * @param {readonly string[]} relay
- * @returns {string | null}
- */
-export const specOwnerOf = (row, relay) => sessionNamedIn(relayedBody({ ...row, body: String(row.body ?? ''), own: row.app === true }, relay));
+/** @typedef {import('./roles.mjs').TicketRole} TicketRole */
 
 /**
  * Governor's comment as a session reads it: its markers taken out, since
@@ -146,7 +115,7 @@ export const builderChangeSends = ({ issue, text, owner, builder, displaced }) =
     skipped.push(`${sessionId(owner)}, the builder it names`);
   } else if (owner !== null) {
     const ownerBuilt = gone !== null && sameSession(gone, owner);
-    const lines = [text, '', rolesText({ issue, owner, builders: builder === null ? [] : [builder], role: 'spec owner' })];
+    const lines = [text, '', rolesText(rolesFrom({ issue, owner, builders: builder === null ? [] : [builder] }), { role: 'spec owner', merged: false })];
     if (ownerBuilt) lines.push(`${stops} Stop building it, and leave its branch and PR to that session; you remain its spec owner.`);
     sends.push({ session: owner, text: lines.join('\n'), role: 'spec owner', closing: false });
   }
@@ -189,20 +158,26 @@ export const tellBuilderChange = async ({ deliver, log, repo, issue, title, url,
 };
 
 /**
- * A wait warning's message to the ticket's spec owner, for the turn that
- * posted it: the ticket read for its body, the spec owner named in it under
- * `relay`, and {@link specOwnerNote} sent. A read or a send that fails is
- * logged at error, and the comment stands.
+ * A message of governor's comment to the ticket's spec owner, for the turn
+ * that posted it: the spec owner found as every path finds a ticket's roles
+ * (`rolesOf`, dispatch/roles.mjs), from the row the turn read where it
+ * hands one in, else from the ticket read now, and {@link specOwnerNote}
+ * sent. A read or a send that fails is logged at error, and the comment
+ * stands.
  *
- * @param {{ read: (issue: number) => Promise<{ body?: unknown, author?: string, association?: string, app?: boolean }>, relay: readonly string[], deliver: Deliver, log: Log, repo: string }} args
- * @returns {(issue: number, comment: string) => Promise<void>}
+ * @typedef {import('./roles.mjs').TicketRow} Row
+ * @typedef {(issue: number, comment: string, row?: Row) => Promise<void>} Tell
+ *   `row`: the ticket as the turn already read it, so it is not read again.
+ *
+ * @param {{ read: (issue: number) => Promise<Row>, relay: readonly string[], deliver: Deliver, log: Log, repo: string }} args
+ * @returns {Tell}
  */
-export const specOwnerTeller = ({ read, relay, deliver, log, repo }) => async (issue, comment) => {
+export const specOwnerTeller = ({ read, relay, deliver, log, repo }) => async (issue, comment, row) => {
   const about = { repo, issue, change: 'comment' };
   /** @type {string | null} */
   let owner;
   try {
-    owner = specOwnerOf(await read(issue), relay);
+    ({ owner } = await rolesOf({ issue, relay, ticket: row ?? await read(issue) }));
   } catch (error) {
     log(TOLD, { ...about, level: 'error', outcome: 'nobody told', error: messageOf(error), reason: 'the ticket could not be read for its spec owner; the comment stands' });
     return;
@@ -230,9 +205,10 @@ const queues = new WeakMap();
  * @param {Pick<import('./turn.mjs').TurnContext, 'readerFor' | 'configOf' | 'delivery' | 'log'>} ctx
  * @param {string} repo
  * @param {import('./deliveries.mjs').MessageSource} source
- * @param {{ body?: unknown, author?: string, association?: string, app?: boolean }} [row]
- *   The ticket as the turn already read it, so it is not read again.
- * @returns {(issue: number, comment: string) => Promise<void>}
+ * @param {Row} [row]
+ *   The ticket as the turn already read it, so it is not read again; a
+ *   caller may hand in the row with each comment instead.
+ * @returns {Tell}
  */
 export const tellerFor = (ctx, repo, source, row) => {
   const tell = specOwnerTeller({
@@ -242,8 +218,8 @@ export const tellerFor = (ctx, repo, source, row) => {
     log: ctx.log,
     repo,
   });
-  return (issue, comment) => {
-    const run = () => tell(issue, comment);
+  return (issue, comment, read) => {
+    const run = () => tell(issue, comment, read);
     const next = (queues.get(ctx) ?? Promise.resolve()).then(run, run);
     queues.set(ctx, next);
     return next;

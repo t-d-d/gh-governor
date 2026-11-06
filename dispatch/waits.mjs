@@ -47,8 +47,8 @@
 
 import { waitLine } from './webhook/fire.mjs';
 import { UNREADIED_HELD, ownerMessage, sameRepo, specSession, stillBlockedSentence, unblockedFacts } from './unblocked.mjs';
-import { relayedBody, sessionNamedIn } from './webhook/subscribe.mjs';
-import { AUTO, RELAY, authorKind, lets } from './trust.mjs';
+import { rolesOf } from './roles.mjs';
+import { AUTO, RELAY, authorKind, lets, ticketAuthor } from './trust.mjs';
 import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
 import { RELATIVE_WAIT, isWaiting, mayStartSpec, ticketStatus, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
@@ -651,7 +651,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       }
       // The spec work starts with no person choosing the ticket, so only
       // for an author the repo's trust.auto lets in.
-      if (spec && !lets(auto, ticket)) {
+      if (spec && !lets(auto, ticketAuthor(ticket))) {
         await drop(item, { until: wait.until, level: 'info', outcome: `${told ? 'ended: already told' : 'ended: commented'}; nothing starts and nothing is sent: opened by a ${authorKind(ticket)} author, whom trust.auto (${auto.join(', ') || 'empty'}) does not let in` });
         return;
       }
@@ -659,7 +659,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       // person's answer first, as a later blocker's close does.
       if (spec && mayStartSpec(thread)) {
         // A session link counts only where trust.relay lets the body's author in.
-        const owner = sessionNamedIn(relayedBody(ticket, relay));
+        const { owner } = await rolesOf({ issue, relay, ticket });
         specs.push({ issue, title: ticket.title, until: wait.until, read: item.until, owner });
         const work = owner === null ? 'starting a spec session' : `asking its owner, ${owner}, to rewrite its spec`;
         log(WAIT, { repo, issue, read: item.until, until: wait.until, outcome: told ? `ended: already told, ${work}` : `ended: commented, ${work}` });
