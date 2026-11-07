@@ -1403,7 +1403,7 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     }
   });
 
-  test('a run cancelled before the apply pages no one', () => {
+  test('a run cancelled before the apply finished pages no one', () => {
     assert.equal(runDeploy({ outcomes: { apply: 'cancelled' } }).ran.at(-1), 'apply');
     assert.equal(runDeploy({ outcomes: { previous: 'cancelled' } }).ran.at(-1), 'previous');
   });

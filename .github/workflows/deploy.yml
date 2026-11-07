@@ -54,9 +54,7 @@
 # passed. So does a run cancelled during its first probe, after an apply
 # that changed the stack: the probe is then cancelled, not red, so nothing
 # rolls back, and the new stack runs with no probe passed on it. That run
-# pages and does not roll back, since a rollback after a cancel would have
-# to finish inside the cancel's grace period and the deploy role's session;
-# a person rolls back or deploys again. A first apply, with no stack before
+# pages and does not roll back (the page step says why). A first apply, with no stack before
 # it, has nothing to roll back to, and nor does an apply that changed
 # nothing. A probe-only run applies nothing, so it rolls nothing back.
 #
@@ -476,6 +474,9 @@ jobs:
       # stack, pages too: the probe is then cancelled, not red, so no rollback
       # starts, and the new stack runs with no probe passed on it. A new image
       # that hangs the probe is the likeliest way to reach the timeout there.
+      # The run pages and does not roll back: a rollback after a cancel would
+      # have to finish inside the cancel's grace period and the deploy role's
+      # session, and a page is enough for a person to roll back or deploy again.
       - name: Page the operator, since governor may be down or running a stack no probe passed
         id: page
         if: ${{ always() && ((steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && !(steps.repoint.outcome == 'success' && steps.reprobe.outcome == 'success')) || (steps.probe.outcome == 'cancelled' && steps.apply.outputs.changed == 'true')) }}
@@ -489,7 +490,7 @@ jobs:
           if [ "$PROBE_OUTCOME" = cancelled ]; then
             echo "::error::the run was cancelled during its probe, after the apply changed the stack; no probe has passed on what the stack runs. Paging the operator."
             SUBJECT="[governor] A deploy was cancelled during its probe"
-            MESSAGE="Governor may be down. The deploy at ${GITHUB_SHA} changed the main stack, and the run was cancelled during its probe, by hand or by the job's timeout, so no probe has passed on what the stack runs and nothing rolled it back. Check the task, then roll the stack back or deploy again. Read the run: ${RUN_URL}"
+            MESSAGE="Governor may be down. The deploy at ${GITHUB_SHA} changed the main stack, and the run was cancelled during its probe, by hand or by the job's timeout, so no probe has passed on what the stack runs and nothing rolled it back. Check the task, then roll the stack back to what it ran before, if it ran one, or deploy again. Read the run: ${RUN_URL}"
           elif [ "$ROLLBACK_OUTCOME" = failure ] || [ "$REPROBE_OUTCOME" = failure ]; then
             echo "::error::the rollback did not bring the task back; governor is down. Paging the operator."
             SUBJECT="[governor] A deploy's probe failed, and so did its rollback"
