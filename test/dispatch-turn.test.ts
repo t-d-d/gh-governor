@@ -5962,6 +5962,24 @@ describe('run — a workflow run on main', () => {
           assert.match(to(sent, REFUSED)[0]!.text, /PR #804/, 'the PR\'s session still hears its PR');
         });
 
+        test('a ticket\'s roles hear the label as the news: each ticket and its deployed: label in one opening sentence, singular and plural', async () => {
+          const tail = 'by the \\[`Deliver`\\]\\([^)\\s]+\\/job\\/[^)\\s]+\\) workflow, which moved the `deploy\\/dev` tag to [0-9a-f]{7}\\.$';
+          const one = await ran({ 736: { body: `The spec.${footer(SPEC)}` } });
+          const [spec] = to(one.sent, SPEC);
+          assert.match(spec!.text, new RegExp(`^#736 is labelled \`deployed: dev\` ${tail}`, 'm'), spec!.text);
+          assert.doesNotMatch(spec!.text, /\bthe dev\b|published it|A change to/);
+          const both = await ran({ 730: { body: `The spec.${footer(SPEC)}` }, 736: { body: `The spec.${footer(SPEC)}` } });
+          const [many] = to(both.sent, SPEC);
+          assert.match(many!.text, new RegExp(`^#730 and #736 are labelled \`deployed: dev\` ${tail}`, 'm'), many!.text);
+        });
+
+        test('a PR\'s session that holds a role on a ticket is told the ticket\'s label beside its own change', async () => {
+          const { sent } = await ran({ 730: { labels: [CLAIM] } });
+          const [own] = to(sent, SESSION);
+          assert.match(own!.text, /^Your change is deployed to `dev` by the \[`Deliver`\]/m);
+          assert.match(own!.text, /^Ticket you hold a role on, now labelled `deployed: dev`:$/m, own!.text);
+        });
+
         test('a session that is the PR\'s and the ticket\'s spec owner hears the deploy once', async () => {
           const { told } = await ran({ 736: { body: `The spec.${footer(REFUSED)}` } });
           assert.deepEqual(told, [REFUSED, SESSION]);
@@ -8083,7 +8101,7 @@ describe('run — a PR whose body names no session', () => {
     const { deps, messages } = harness({ reader, sessions: api.sessions });
     await run(jobFire(DEV, SHA), deps as never);
     assert.deepEqual(messages.map((m) => m.session), [LOCAL]);
-    assert.match(messages[0]!.text, /Your change is on dev/);
+    assert.match(messages[0]!.text, /Your change is deployed to `dev`/);
   });
 
   test('with no live session on its head branch, nobody is messaged and the turn succeeds', async () => {
@@ -8655,7 +8673,7 @@ describe('run — the tickets a green run shipped', () => {
     const { deps, messages } = harness({ reader });
     await run(devFire, deps as never);
     assert.equal(messages.length, 1);
-    assert.match(messages[0]!.text, /on dev/);
+    assert.match(messages[0]!.text, /deployed to `dev`/);
     assert.deepEqual(labelled, [{ ticket: 810, labels: [DEV] }]);
   });
 
