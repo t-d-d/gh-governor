@@ -43,18 +43,25 @@ export const NOTHING_ASKED = 'Nothing is asked of you.';
 export const sessionLink = (text, session) => `[${text}](${session})`;
 
 /**
+ * Text as a Markdown link's words: on one line, each bracket or backslash
+ * escaped, so it cannot end the link's words early.
+ *
+ * @param {unknown} text
+ */
+export const linkWords = (text) => String(text ?? '').replace(/\s+/g, ' ').trim().replace(/[[\]\\]/g, '\\$&');
+
+/**
  * An issue or a PR as a message names it with its title: one Markdown link
- * whose words are the label and the title. The title is on one line, its
+ * whose words are the label and the title ({@link linkWords}), its
  * backticks dropped, since the app shows a link whose words hold a code
- * span as raw brackets, and a bracket or backslash in it escaped, so it
- * cannot end the link's words early.
+ * span as raw brackets.
  *
  * @param {string} label such as `#7` or `PR #12`
  * @param {unknown} title
  * @param {string} url
  */
 export const titleLink = (label, title, url) => {
-  const words = String(title ?? '').replace(/`/g, '').replace(/\s+/g, ' ').trim().replace(/[[\]\\]/g, '\\$&');
+  const words = linkWords(String(title ?? '').replace(/`/g, ''));
   return `[${words === '' ? label : `${label} ${words}`}](${url})`;
 };
 

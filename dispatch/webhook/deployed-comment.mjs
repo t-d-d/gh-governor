@@ -9,6 +9,7 @@
  */
 
 import { LABEL_PREFIX } from './fire.mjs';
+import { linkWords } from './roles-text.mjs';
 
 /** The start of the marker every deploy comment ends with. */
 export const DEPLOYED_MARKER = '<!-- governor:deployed ';
@@ -23,4 +24,4 @@ export const DEPLOYED_MARKER = '<!-- governor:deployed ';
  *   `workflow`: the shipping job's workflow's name; `url`: the job's page.
  */
 export const deployedComment = ({ target, workflow, url, commit }) =>
-  `Labelled \`${LABEL_PREFIX}${target}\` by the [${workflow.replace(/[[\]\\]/g, '\\$&')}](${url}) workflow at ${commit.slice(0, 7)}.\n\n${DEPLOYED_MARKER}${target} -->`;
+  `Labelled \`${LABEL_PREFIX}${target}\` by the [${linkWords(workflow)}](${url}) workflow at ${commit.slice(0, 7)}.\n\n${DEPLOYED_MARKER}${target} -->`;

@@ -18,6 +18,7 @@ import { editMaybeText, editNudgeText } from '../dispatch/editor.mjs';
 import { SESSION_RULES } from '../dispatch/session-rules.mjs';
 import { DEPLOYED_MARKER, deployedComment } from '../dispatch/webhook/deployed-comment.mjs';
 import { LABEL_PREFIX } from '../dispatch/webhook/fire.mjs';
+import { jobList } from '../dispatch/workflow.mjs';
 
 const SPEC = 'https://claude.ai/code/session_01SPECOWNER';
 const BUILDER = 'https://claude.ai/code/session_01BUILDER';
@@ -67,10 +68,12 @@ describe('a takeover of a PR whose session is gone', () => {
 });
 
 describe('a summons that reaches a live session', () => {
-  test('to the PR\'s owner, says in one sentence who asked and that it comes to the owner', () => {
-    const text = ownerText('The remark.', 'alice');
+  // A summons fire's `writer` is the writer's association, such as OWNER,
+  // which the task judges by trust.start. It is no name to tell a session.
+  test('to the PR\'s owner, says in one sentence that a remark asked and that it comes to the owner', () => {
+    const text = ownerText('The remark.');
     const [lead, ...rest] = text.split('\n');
-    assert.equal(lead, 'alice asked for a session on this PR, and it comes to you because you own the PR.');
+    assert.equal(lead, 'An @claude remark asked for a session on this PR, and it comes to you because you own the PR.');
     assert.equal(rest.join('\n'), '\nThe remark.');
   });
 
@@ -78,10 +81,11 @@ describe('a summons that reaches a live session', () => {
     const assigned = roleNotice({ issue: 7, assigner: 'alice', remark: null });
     assert.match(assigned, /^alice assigned #7 to claude to ask for a session, and it comes to you because you hold a role on #7\. /);
     assert.match(assigned, /read the ticket and its newest comments/);
-    const relayed = roleNotice({ issue: 7, writer: 'bob', remark: null });
-    assert.equal(relayed, 'bob asked for a session on #7 in an @claude comment, and it comes to you because you hold a role on #7. The comment reaches you as any comment on the ticket does.');
-    const quoted = roleNotice({ issue: 7, writer: 'bob', remark: 'The remark.' });
-    assert.equal(quoted, 'bob asked for a session on #7 in an @claude comment, and it comes to you because you hold a role on #7.\n\nThe remark.');
+    const relayed = roleNotice({ issue: 7, remark: null });
+    assert.equal(relayed, 'An @claude comment on #7 asked for a session, and it comes to you because you hold a role on #7. The comment reaches you as any comment on the ticket does.');
+    const quoted = roleNotice({ issue: 7, remark: 'The remark.' });
+    assert.equal(quoted, 'An @claude comment on #7 asked for a session, and it comes to you because you hold a role on #7.\n\nThe remark.');
+    for (const text of [relayed, quoted]) assert.doesNotMatch(text, /OWNER|MEMBER|COLLABORATOR/, text);
     for (const text of [assigned, relayed, quoted]) semicolons(text);
   });
 });
@@ -94,13 +98,13 @@ describe('the pickup prompt', () => {
 
   test('gives stopping without a PR a plain sentence of its own', () => {
     const text = promptFor(7, 'The ticket', 'acme/factory', 'claimed', {}, { signOff: true, deployMessages: true });
-    assert.match(text, / If you stopped at the check and raised no pull request, there is no pull request to wait for\. /);
+    assert.match(text, / If you stopped at the check and raised no pull request, sign off now\. /);
     assert.doesNotMatch(text, /no pull request will close/);
   });
 
   test('a repo\'s own sign-off prompt still follows the sentence', () => {
     const text = promptFor(7, 'The ticket', 'acme/factory', 'claimed', { signOff: 'Say goodbye.' }, { signOff: true });
-    assert.match(text, /there is no pull request to wait for\. Say goodbye\.$/);
+    assert.match(text, /sign off now\. Say goodbye\.$/);
   });
 });
 
@@ -194,5 +198,11 @@ describe('an issue or PR named with its title', () => {
     };
     const { fires } = pullRequestFires({ action: 'closed', pull_request: pr, sender: { login: 'bob', type: 'User' }, repository: { full_name: 'acme/factory', default_branch: 'main' } });
     assert.match(JSON.stringify(fires.map((f) => f.fire)), /\[#12 The fix\]\(https:\/\/github\.com\/acme\/factory\/pull\/12\), merged by bob/);
+  });
+});
+
+describe('a failed job named in a link', () => {
+  test('a bracket or backslash in its name cannot end the link\'s words early', () => {
+    assert.deepEqual(jobList([{ name: 'Build [x] \\', html_url: 'https://x.test/j' }] as never), ['- [Build \\[x\\] \\\\](https://x.test/j)']);
   });
 });
