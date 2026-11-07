@@ -14,8 +14,8 @@
  * {@link rolesOf} returns each session that holds a role once, with its
  * roles and the PRs it owns as a builder, so a send to it can hand the
  * message to the live session on a PR's head branch should it answer
- * archived. {@link rolesText} writes the "Roles on #N" lines from what it
- * returns, on every path that writes them.
+ * archived. {@link rolesText} writes the lines that tell the recipient its
+ * role, from what it returns, on every path that writes them.
  */
 
 import { buildersOf } from './builders.mjs';
@@ -108,36 +108,4 @@ export const rolesOf = async ({ issue, relay, claim = '', ticket, owner, reader,
   return rolesFrom({ issue, owner: spec, builders: found.sessions, owns: found.owns, by: found.by });
 };
 
-/** Items joined as a sentence lists them: `a, b and c`. @param {readonly string[]} items */
-export const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
-
-/**
- * What a message to a builder whose PR closed the ticket and has merged
- * says, on every path that messages it: such a builder still hears the
- * ticket's events, since a repo may keep a ticket open past a merge.
- *
- * @param {number} issue
- */
-export const mergedNote = (issue) => `Your PR, which closed #${issue}, has merged: act on this message only where it calls for new work.`;
-
-/**
- * What a message about a ticket adds under what happened: who holds each
- * role, which one the recipient (`holder`) holds, and what that role does
- * with it. A builder whose PR has merged is told so, and acts on the
- * message only where it calls for new work.
- *
- * @param {TicketRoles} roles
- * @param {Pick<RoleHolder, 'role' | 'merged'>} holder
- * @returns {string}
- */
-export const rolesText = ({ issue, owner, builders }, { role, merged }) => {
-  const spec = owner === null ? 'a person, as no session link ends its body' : owner;
-  const built = builders.length === 0 ? 'none governor can find' : listed(builders);
-  const lines = [
-    `Roles on #${issue}: its spec owner is ${spec}; its builder is ${built}. You are its ${role === 'spec owner and builder' ? 'spec owner and its builder' : role}. This is a notice: it asks nothing of you beyond your own role's part.`,
-  ];
-  if (role !== 'builder') lines.push('As its spec owner you write its body: where a remark changes what counts as done, edit the body to say so.');
-  if (role !== 'spec owner') lines.push('As its builder you build it, on its branch and PR, and do not edit its body: act on what bears on the build, and record where your work differs from the body in your PR description.');
-  if (role !== 'spec owner' && merged) lines.push(mergedNote(issue));
-  return lines.join('\n');
-};
+export { BUILDER_DUTY, SPEC_OWNER_DUTY, listed, mergedNote, rolesText, sessionLink } from './webhook/roles-text.mjs';

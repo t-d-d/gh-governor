@@ -36,7 +36,7 @@ describe('the spec owner\'s message of governor\'s comment', () => {
     const note = specOwnerNote(7, `Governor cannot read the date.\n\n${WAIT_UNREADABLE_MARKER}`);
     assert.match(note, /^Governor commented on #7:\n\nGovernor cannot read the date\.\n\n/);
     assert.doesNotMatch(note, /<!--/);
-    assert.match(note, /You are #7's spec owner/);
+    assert.match(note, /You are its spec owner\./);
     assert.equal(unmarked(`a\n\n${waitRelativeMarker('#3')}`), 'a');
   });
 

@@ -272,7 +272,7 @@ describe('launchPlan starts every launch a plan holds', () => {
     });
     await assert.rejects(launchPlan(plan([ticket(19), ticket(20)]), ctx, NOW), /launcher down/);
     assert.deepEqual(sent.map((s) => s.session), [owner]);
-    assert.match(sent[0]!.text, /Issue #19: .* has a new builder: https:\/\/claude\.ai\/code\/session_19/);
+    assert.match(sent[0]!.text, /\[#19\]\(https:\/\/github\.com\/acme\/factory\/issues\/19\) .* has \[a new builder\]\(https:\/\/claude\.ai\/code\/session_19\)/);
   });
 });
 

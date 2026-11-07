@@ -192,7 +192,7 @@ describe('the receiver: a PR that comes to close a ticket queues a closingPr fir
 
 type Sent = { session: string, text: string, opts: Record<string, unknown> };
 
-const TEXT = 'Issue #7: A ticket (https://github.com/acme/factory/issues/7) has a new builder.';
+const TEXT = '[#7](https://github.com/acme/factory/issues/7) A ticket has a new builder.';
 const dispatched = (over: Record<string, unknown> = {}) => ({ kind: 'ticket', repo: REPO, issue: 7, text: TEXT, event: 'dispatched', state: 'open', labels: [CLAIM], owner: SPEC, builder: BUILDER, authors: [], ...over }) as never;
 
 const relayContext = ({ archived = [] as string[] } = {}) => {
@@ -222,9 +222,8 @@ describe('planTicket: a dispatch comment\'s fire queued before the relay dropped
     await planTicket(dispatched(), ctx);
     assert.deepEqual(sent.map((s) => s.session), [SPEC]);
     assert.ok(sent[0]!.text.startsWith(TEXT), sent[0]!.text);
-    assert.match(sent[0]!.text, new RegExp(`builder is ${BUILDER}`));
-    assert.match(sent[0]!.text, /You are its spec owner\./);
-    assert.match(sent[0]!.text, /notice/);
+    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${BUILDER}) builds it.`), sent[0]!.text);
+    assert.match(sent[0]!.text, /Nothing is asked of you\./);
     assert.doesNotMatch(sent[0]!.text, /sign off/);
     assert.deepEqual(reads, []);
   });
@@ -239,11 +238,11 @@ describe('planTicket: a dispatch comment\'s fire queued before the relay dropped
     const { ctx, sent } = relayContext();
     await planTicket(dispatched({ builder: OTHER, displaced: BUILDER }), ctx);
     assert.deepEqual(sent.map((s) => s.session), [SPEC, BUILDER]);
-    assert.match(sent[0]!.text, new RegExp(`builder is ${OTHER}`));
+    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${OTHER}) builds it.`), sent[0]!.text);
     assert.doesNotMatch(sent[0]!.text, /sign off/);
     const told = sent[1]!.text;
     assert.ok(told.startsWith(TEXT), told);
-    assert.match(told, new RegExp(`no longer build #7: ${OTHER} does`));
+    assert.match(told, /no longer build #7: \[another session\]\(https:\/\/claude.ai\/code\/session_01OTHER\) does/);
     assert.match(told, /stop/i);
     assert.match(told, /sign off unless you know a reason not to/);
     assert.equal(sent[1]!.opts.closing, true);
@@ -264,7 +263,7 @@ describe('planTicket: a dispatch comment\'s fire queued before the relay dropped
     const { ctx, sent } = relayContext();
     await planTicket(dispatched({ builder: OTHER, displaced: SPEC }), ctx);
     assert.deepEqual(sent.map((s) => s.session), [SPEC]);
-    assert.match(sent[0]!.text, new RegExp(`no longer build #7: ${OTHER} does`));
+    assert.match(sent[0]!.text, /no longer build #7: \[another session\]\(https:\/\/claude.ai\/code\/session_01OTHER\) does/);
     assert.match(sent[0]!.text, /remain its spec owner/);
     assert.doesNotMatch(sent[0]!.text, /sign off/);
   });
@@ -381,7 +380,7 @@ describe('planClosingPr: a PR by another session that closes a claimed ticket na
     await planClosingPr(closingPr, ctx);
     assert.deepEqual(dispatchedTo(posted[0]!.body), { builder: OTHER, displaced: null });
     assert.deepEqual(sent.map((m) => m.session), [SPEC]);
-    assert.match(sent[0]!.text, /You are its spec owner\./);
+    assert.ok(sent[0]!.text.includes(`\n\nYou are its spec owner; [its builder](${OTHER}) builds it.\nNothing is asked of you.`), sent[0]!.text);
     assert.doesNotMatch(sent[0]!.text, /no longer build|sign off/);
   });
 
@@ -425,10 +424,10 @@ describe('planClosingPr: a PR by another session that closes a claimed ticket na
     const { ctx, sent } = prContext();
     await planClosingPr(closingPr, ctx);
     assert.deepEqual(sent.map((m) => m.session), [SPEC, BUILDER]);
-    assert.match(sent[0]!.text, new RegExp(`has a new builder: ${OTHER}`));
-    assert.match(sent[0]!.text, /You are its spec owner\./);
+    assert.ok(sent[0]!.text.includes(`[#7](https://github.com/${REPO}/issues/7) A ticket has [a new builder](${OTHER}).`), sent[0]!.text);
+    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${OTHER}) builds it.`), sent[0]!.text);
     assert.doesNotMatch(sent[0]!.text, /sign off/);
-    assert.match(sent[1]!.text, new RegExp(`no longer build #7: ${OTHER} does`));
+    assert.match(sent[1]!.text, /no longer build #7: \[another session\]\(https:\/\/claude.ai\/code\/session_01OTHER\) does/);
     assert.match(sent[1]!.text, /sign off unless you know a reason not to/);
     assert.equal(sent[1]!.opts.closing, true);
     assert.deepEqual(sent.map((m) => m.opts.on), [[7], [7]]);
@@ -507,7 +506,7 @@ describe('a takeover of a PR that closes a ticket posts the dispatch comment on 
     assert.deepEqual(f.comments.map((c) => c.issue), [7]);
     assert.deepEqual(dispatchedTo(f.comments[0]!.body), { builder: OTHER, displaced: null });
     assert.deepEqual(sent.map((m) => m.session), [BUILDER, SPEC]);
-    assert.match(sent[1]!.text, new RegExp(`#7: A ticket \\(https://github.com/${REPO}/issues/7\\) has a new builder: ${OTHER}`));
+    assert.ok(sent[1]!.text.includes(`[#7](https://github.com/${REPO}/issues/7) A ticket has [a new builder](${OTHER}).`), sent[1]!.text);
   });
 
   test('a branch session written into the PR body in place of an archived owner is named on the ticket', async () => {

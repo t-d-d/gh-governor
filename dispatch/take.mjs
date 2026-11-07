@@ -89,12 +89,12 @@ export const takeText = (issue, why) => [
 export const correctionText = (issue, kind, restored) => {
   const done = restored === null
     ? 'Governor removed your link from the body and kept the rest of your edit.'
-    : `Governor put the owner's link, ${restored}, back and kept the rest of your edit.`;
+    : `Governor put [the owner's link](${restored}) back and kept the rest of your edit.`;
   const said = {
-    'edit-owned': `You edited the body of #${issue} and moved its owner link to this session, but you do not own #${issue}: ${restored} does, and is live. Your link was replaced by the owner's, and the rest of your edit kept. Only an issue's owner edits its body.`,
+    'edit-owned': `You edited the body of #${issue} and moved its owner link to this session, but you do not own #${issue}: [its owner](${restored}) does, and is live. Your link was replaced by the owner's, and the rest of your edit kept. Only an issue's owner edits its body.`,
     'edit-builder': `You edited the body of #${issue}, which you build, and moved its owner link to this session. A builder does not edit a ticket's body, and never takes its spec. ${done}`,
     'edit-person': `You edited the body of #${issue}, which a person filed and owns, and ended it with this session's link. A person's issue is the person's, and no session takes it. ${done}`,
-    'edit-pr': `You edited the body of PR #${issue} and moved its session link to this session, but you do not own PR #${issue}: ${restored} does, and is live. ${done} Only a PR's owner edits its body and pushes to its branch.`,
+    'edit-pr': `You edited the body of PR #${issue} and moved its session link to this session, but you do not own PR #${issue}: [its owner](${restored}) does, and is live. ${done} Only a PR's owner edits its body and pushes to its branch.`,
   }[kind];
   return `${said} Next time, comment on the ${kind === 'edit-pr' ? 'PR' : 'issue'} instead.\n\n${SESSION_RULES}`;
 };
@@ -260,7 +260,7 @@ export const takeAfterNotice = async ({ repo, issue, editor, moved, notice, conf
  * @returns {string}
  */
 export const prEditText = (pr, editor) => [
-  `The body of PR #${pr} was edited, and its session link moved from this session to ${editor}.`,
+  `The body of PR #${pr} was edited, and its session link moved from this session to [another session](${editor}).`,
   `You still own PR #${pr}: where the body still names that session, governor writes this session's link back and asks that session to comment instead.`,
   'Read the body to check the rest of the edit says what you mean.',
 ].join(' ');

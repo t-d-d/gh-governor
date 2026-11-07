@@ -33,8 +33,8 @@ session's own last reply is current and needs nothing in the repo.
 - The sign-off rule: the reply's last line, emphasis stripped, starts
   `Signing off` followed by `.`, `:`, `!` or the end of the line
   (`signsOff`). A served repo's sessions are told the line by the standing
-  line governor writes under each message, or by the repo's own `signOff`
-  prompt. With the switch off, the standing line leaves the ask out.
+  line governor writes under each message about a close, a merge or a
+  deploy, or by the repo's own `signOff` prompt. With the switch off, the standing line leaves the ask out.
 - With `sessionRules` on as well, ownership of an issue lapses when its
   owner is archived, and the ask waits only on what the session is doing:
   an open PR it owns, by body link or head branch; a claimed ticket no
@@ -108,4 +108,4 @@ session's own last reply is current and needs nothing in the repo.
   writes: each repo then needs the hook and a credential, and the record
   goes stale.
 
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The sweep and the standing line's ask run only where the repo's file turns the `signOff` switch on since #278. A session that owns an open PR is held from the archive, and told so once where the repo's file asks, since #594. With `sessionRules` on, ownership of an issue lapses at its owner's archive, and the ask waits only on the session's open PRs, its builds and the issues it owns that carry a ready or claim label, narrowing #535, since #612, under PRD #599. Reading candidates' events to find an unsigned post's author follows the rules for reading a reply, and their text is never logged, since #616, under PRD #599. Reading them to find who made a body edit follows the same rules, since #617, under PRD #599. A session the sweep archives with its ticket claimed and no PR has that claim ended, since #527. Reading candidates' events for an unsigned post's author or a body edit's editor runs whatever `sessionRules` says since #674.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The sweep and the standing line's ask run only where the repo's file turns the `signOff` switch on since #278. A session that owns an open PR is held from the archive, and told so once where the repo's file asks, since #594. With `sessionRules` on, ownership of an issue lapses at its owner's archive, and the ask waits only on the session's open PRs, its builds and the issues it owns that carry a ready or claim label, narrowing #535, since #612, under PRD #599. Reading candidates' events to find an unsigned post's author follows the rules for reading a reply, and their text is never logged, since #616, under PRD #599. Reading them to find who made a body edit follows the same rules, since #617, under PRD #599. A session the sweep archives with its ticket claimed and no PR has that claim ended, since #527. Reading candidates' events for an unsigned post's author or a body edit's editor runs whatever `sessionRules` says since #674. The standing line rides only on a message about a close, a merge or a deploy since #680.

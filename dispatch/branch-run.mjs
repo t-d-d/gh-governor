@@ -128,7 +128,7 @@ export const planBranchRun = async ({ invocation: run, reader, onBranch }) => {
   const text = [
     `${name} run ${runId}${attempt}, dispatched on ${branch}, concluded ${run.conclusion}. ${whose}`,
     '',
-    `Run: ${run.url}`,
+    `[Run](${run.url})`,
     ...verdict(run, failed),
     '',
     'If you did not dispatch it, nothing is owed.',

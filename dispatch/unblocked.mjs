@@ -62,6 +62,7 @@ import { createHash } from 'node:crypto';
 import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
+import { sessionLink } from './roles.mjs';
 import { UNREADIED_MARKER, ticketStatus, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 
 /**
@@ -207,7 +208,7 @@ export const unblockedFacts = ({ repo, issue, blocker, pr }, { quote = false } =
   const ref = repo !== undefined && sameRepo(repo, blocker.repo) ? '#' : `${blocker.repo}#`;
   const title = (/** @type {string} */ t) => (quote ? `\`${t.replace(/`/g, "'")}\`` : t);
   const how = blocker.reason === undefined ? 'closed' : `closed as ${blocker.reason.replace(/_/g, ' ')}`;
-  const by = pr === undefined ? 'with no PR' : `by PR ${ref}${pr.number} (${title(pr.title)}, ${pr.url})`;
+  const by = pr === undefined ? 'with no PR' : `by PR [${ref}${pr.number}](${pr.url}) (${title(pr.title)})`;
   return `${ref}${blocker.number} (${title(blocker.title)}) ${how}, ${by}. It blocked #${issue}.`;
 };
 
@@ -327,13 +328,15 @@ export const unblockedNotice = (fire, ask) => {
   const { issue } = fire;
   let who;
   if ('started' in ask) {
-    who = `Governor started a builder for #${issue}${ask.started === null ? '' : `, ${ask.started},`} and asked it to check the spec against ${fire.pr === undefined ? 'this close' : 'what merged'} before it builds.`;
+    who = `Governor started ${ask.started === null ? 'a builder' : `[a builder](${ask.started})`} for #${issue} and asked it to check the spec against ${fire.pr === undefined ? 'this close' : 'what merged'} before it builds.`;
   } else {
-    const one = (/** @type {readonly string[]} */ s) => (s.length === 1 ? `Its builder, ${s[0]},` : `Its builders, ${joined(s)},`);
+    // One builder as a link with `single` for its words, several numbered.
+    const linked = (/** @type {readonly string[]} */ s, /** @type {string} */ single) => (s.length === 1 ? sessionLink(single, String(s[0])) : joined(s.map((b, i) => sessionLink(`builder ${i + 1}`, b))));
+    const one = (/** @type {readonly string[]} */ s) => (s.length === 1 ? linked(s, 'Its builder') : `Its builders, ${linked(s, '')},`);
     const asked = ask.asked.length === 0 ? '' : `${one(ask.asked)} ${ask.asked.length === 1 ? 'was' : 'were'} asked to check its work against ${ask.what}.`;
     const so = ask.asked.length === 0 ? ', so nobody was asked' : '';
     const archived = ask.archived.length === 0 ? '' : `${one(ask.archived)} ${ask.archived.length === 1 ? 'is' : 'are'} archived${ask.unreached.length === 0 ? so : ''}.`;
-    const unreached = ask.unreached.length === 0 ? '' : `Governor could not reach ${ask.unreached.length === 1 ? 'its builder' : 'its builders'}, ${joined(ask.unreached)}${so}.`;
+    const unreached = ask.unreached.length === 0 ? '' : `Governor could not reach ${ask.unreached.length === 1 ? linked(ask.unreached, 'its builder') : `its builders, ${linked(ask.unreached, '')}`}${so}.`;
     who = [asked, archived, unreached].filter((t) => t !== '').join(' ');
   }
   return `${unblockedFacts(fire)}\n\nThis is a notice: it asks nothing of you. You are #${issue}'s spec owner, and may still edit its body where what counts as done has moved. ${who}`;

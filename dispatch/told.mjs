@@ -21,7 +21,7 @@
  */
 
 import { sameSession, sessionId } from './webhook/subscribe.mjs';
-import { rolesFrom, rolesOf, rolesText } from './roles.mjs';
+import { rolesFrom, rolesOf, rolesText, sessionLink } from './roles.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { relayOf } from './trust.mjs';
 
@@ -41,8 +41,8 @@ export const unmarked = (text) => text.replace(/\n*<!-- governor:[^>]*-->/g, '')
 
 /**
  * A spec owner's message of governor's comment on its ticket: the comment,
- * and that the change it asks for, where it asks one, is the spec owner's
- * to make in the body.
+ * and that the spec owner weighs it as it weighs any comment: it edits the
+ * body where it agrees a change is needed, and replies where it does not.
  *
  * @param {number} issue
  * @param {string} comment
@@ -52,7 +52,7 @@ export const specOwnerNote = (issue, comment) => [
   '',
   unmarked(comment),
   '',
-  `You are #${issue}'s spec owner, the session its body's link names. Where the comment asks for a change to the ticket, that change is yours to make in its body.`,
+  rolesText({ issue, owner: null, builders: [] }, { role: 'spec owner', merged: false }, { duty: true }),
 ].join('\n');
 
 /**
@@ -110,12 +110,12 @@ export const builderChangeSends = ({ issue, text, owner, builder, displaced }) =
   const skipped = [];
   const named = (/** @type {string | null} */ session) => session !== null && builder !== null && sameSession(session, builder);
   const gone = displaced !== null && !named(displaced) ? displaced : null;
-  const stops = `You no longer build #${issue}: ${builder ?? 'another session'} does.`;
+  const stops = `You no longer build #${issue}: ${builder === null ? 'another session' : sessionLink('another session', builder)} does.`;
   if (owner !== null && named(owner)) {
     skipped.push(`${sessionId(owner)}, the builder it names`);
   } else if (owner !== null) {
     const ownerBuilt = gone !== null && sameSession(gone, owner);
-    const lines = [text, '', rolesText(rolesFrom({ issue, owner, builders: builder === null ? [] : [builder] }), { role: 'spec owner', merged: false })];
+    const lines = [text, '', rolesText(rolesFrom({ issue, owner, builders: builder === null ? [] : [builder] }), { role: 'spec owner', merged: false }, { notice: !ownerBuilt })];
     if (ownerBuilt) lines.push(`${stops} Stop building it, and leave its branch and PR to that session; you remain its spec owner.`);
     sends.push({ session: owner, text: lines.join('\n'), role: 'spec owner', closing: false });
   }
@@ -138,7 +138,7 @@ export const builderChangeSends = ({ issue, text, owner, builder, displaced }) =
  * @param {{ issue: number, title: string, url: string, builder: string | null }} args
  */
 export const builderChangeText = ({ issue, title, url, builder }) =>
-  `Issue #${issue}: ${title.replace(/\s+/g, ' ').trim()} (${url}) has a new builder: ${builder ?? 'a cloud session the launcher printed no link for'}. Governor's dispatch comment on it records the change for people.`;
+  `[#${issue}](${url}) ${title.replace(/\s+/g, ' ').trim()} has ${builder === null ? 'a new builder, a cloud session the launcher printed no link for' : sessionLink('a new builder', builder)}. Governor's dispatch comment on it records the change for people.`;
 
 /**
  * Tell a change of builder from the turn that posted its dispatch comment

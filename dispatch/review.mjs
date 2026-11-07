@@ -193,7 +193,7 @@ export const ownerMessage = ({ pull, text, acts }) => {
     const said = [
       'Governor\'s PR review commented on your pull request.',
       '',
-      `PR #${pull.number}: ${oneLine(pull.title)} (${pull.html_url})`,
+      `[#${pull.number}](${pull.html_url}) ${oneLine(pull.title)}`,
       '',
       words,
     ].join('\n');

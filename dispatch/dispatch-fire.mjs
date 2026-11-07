@@ -145,10 +145,10 @@ const UNSENT = Object.freeze({ ok: false, answered: null, refused: false, sessio
  */
 const roleNotice = ({ issue, assigner, remark }) => {
   if (assigner !== undefined) return `${assigner} assigned #${issue} to claude, which asks governor to start a session on it. You hold a role on #${issue} and are live, so no session starts, and this notice comes to you in its place. An assignment carries no text: read the ticket and its newest comments for what may be wanted.`;
-  const asked = `An @claude remark on #${issue} asks governor to start a session on it. You hold a role on #${issue} and are live, so no session starts`;
+  const asked = `An @claude comment on #${issue} asks governor to start a session on it. You hold a role on #${issue} and are live, so no session starts`;
   return remark === null
-    ? `${asked}. The remark reaches you as any remark on the ticket does; this notice says only that nobody else was started for it.`
-    : `${asked}, and the remark comes to you instead.\n\n${remark}`;
+    ? `${asked}. The comment reaches you as any comment on the ticket does; this notice says only that nobody else was started for it.`
+    : `${asked}, and the comment comes to you instead.\n\n${remark}`;
 };
 
 /**
@@ -211,7 +211,7 @@ const toRoles = async ({ repo, on, writer, assigner, ticket, prompt }, ctx) => {
   try {
     for (const holder of sends) {
       const { session, role, owns } = holder;
-      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner, remark })}\n\n${rolesText(roles, holder)}`, { source: GITHUB_SOURCE, kind: 'summons-notice', on: [on], owns, strict: true });
+      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner, remark })}\n\n${rolesText(roles, holder, { duty: assigner === undefined && remark !== null, notice: assigner === undefined && remark === null })}`, { source: GITHUB_SOURCE, kind: 'summons-notice', on: [on], owns, strict: true });
       // A refusal is no fault: what failed is handing the notice on.
       if (told.refused && faults(told)) told = { ...told, error: `${session} is archived, and the live session on the head branch of PR ${owns.map((n) => `#${n}`).join(', ')} could not be found or did not take the notice` };
       sent.push(told);

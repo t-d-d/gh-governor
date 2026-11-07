@@ -119,12 +119,18 @@ const bare = (target) => target.replace(/^the /, '');
 /** @param {string} reason @param {Range | null} [range] @returns {Plan} */
 const nobody = (reason, range = null) => ({ reason, notes: [], unnamed: [], triage: null, range, stale: null, advance: null });
 
+/** A name as a Markdown link's words: on one line, its brackets escaped so they cannot end the link. @param {unknown} name */
+const linkText = (name) => oneLine(name).replace(/[[\]]/g, '\\$&');
+
 /** @param {JobRow[]} failed */
 export const jobList = (failed) =>
-  (failed.length === 0 ? ['- none named; the run page says what stopped it'] : failed.map((j) => `- ${j.name} (${j.html_url})`));
+  (failed.length === 0 ? ['- none named; the run page says what stopped it'] : failed.map((j) => `- [${linkText(j.name)}](${j.html_url})`));
 
 /** @param {PullRow} pr */
-const prLine = (pr) => `PR #${pr.number}: ${oneLine(pr.title)} (${pr.html_url})`;
+const prLine = (pr) => `[#${pr.number}](${pr.html_url}) ${oneLine(pr.title)}`;
+
+/** A CI run's page and the commit it tested. @param {WorkflowFire} run */
+const runLine = (run) => `[Run](${run.url}) at commit ${short(run.headSha)}`;
 
 
 /**
@@ -154,7 +160,7 @@ const subscriberText = (heading, facts, told, prompts) => [
  */
 const breakerSubscriberText = (run, pr, failed, owned, prompts) => subscriberText(
   `${run.name} on ${run.branch} failed after PR #${pr.number}, which you subscribe to, merged, and the ${run.name} run before it was green.`,
-  [prLine(pr), `Run: ${run.url}, commit ${short(run.headSha)}`, 'Failed jobs:', ...jobList(failed)],
+  [prLine(pr), runLine(run), 'Failed jobs:', ...jobList(failed)],
   owned ? "The PR's own session" : null,
   prompts,
 );
@@ -169,7 +175,7 @@ const breakerText = (run, pr, failed, prompts) => [
   `${run.name} on ${run.branch} failed after your pull request merged, and the ${run.name} run before it was green: your merge is the likely cause.`,
   '',
   prLine(pr),
-  `Run: ${run.url}, commit ${short(run.headSha)}`,
+  runLine(run),
   'Failed jobs:',
   ...jobList(failed),
   '',
@@ -188,7 +194,7 @@ const breakerText = (run, pr, failed, prompts) => [
 const triageText = (run, suspects, failed, prompts) => [
   `${run.name} on ${run.branch} failed, and the ${run.name} run before it was green. The run tested ${suspects.length} merges; one of them is the likely cause. None of their sessions has been told: this fix is yours.`,
   '',
-  `Run: ${run.url}, commit ${short(run.headSha)}`,
+  runLine(run),
   'Failed jobs:',
   ...jobList(failed),
   'Merges it tested:',
@@ -211,7 +217,7 @@ const bumpTriageText = (run, pr, failed, prompts) => [
   `${run.name} on ${run.branch} failed after a Dependabot bump merged, and the ${run.name} run before it was green: the bump is the likely cause. No session wrote it: this fix is yours.`,
   '',
   prLine(pr),
-  `Run: ${run.url}, commit ${short(run.headSha)}`,
+  runLine(run),
   'Failed jobs:',
   ...jobList(failed),
   '',
@@ -244,7 +250,6 @@ const shippedBefore = ({ triage, tags }) => [...Object.keys(tags).filter((t) => 
 const prodTriageText = (run, target, end, workflows, shipped, failed, prompts) => [
   `${failedAt(run, target, end, workflows.tags)} It shipped ${shipped.length === 1 ? 'one merge' : `${shipped.length} merges`} since the last successful ${bare(target)} deploy. Their sessions signed off once their changes were on ${shippedBefore(workflows)}: this fix is yours.`,
   '',
-  `Run: ${run.url}`,
   'Failed jobs:',
   ...jobList(failed),
   'Merges it shipped:',
@@ -308,10 +313,7 @@ const commit = (sha) => sha.slice(0, 7);
  *
  * @param {RunView} run
  */
-const byWorkflow = (run) => `the [${code(run.name)}](${run.job ?? run.url}) workflow`;
-
-/** The page a green note points at: the job's, where the fire was a job's, else the run's. @param {RunView} run */
-const pageOf = (run) => (run.job === undefined ? [`Run: ${run.url}`] : [`Job: ${run.job}`]);
+const byWorkflow = (run) => `the [${linkText(run.name)}](${run.job ?? run.url}) workflow`;
 
 /**
  * How a green deploy's opening sentence ends: the tag the repo's config
@@ -343,7 +345,7 @@ const deployedTo = (who, run, { target, end, tags }) => `${who} deployed to ${co
  * @param {string} sha
  * @param {Tags} tags
  */
-const failedAt = (run, target, sha, tags) => `The [${code(run.name)}](${run.url}) workflow failed at ${commit(sha)}, ${Object.hasOwn(tags, target) ? `so the ${code(String(tags[target]))} tag did not move.` : `so it did not reach ${code(target)}.`}`;
+const failedAt = (run, target, sha, tags) => `The [${linkText(run.name)}](${run.url}) workflow failed at ${commit(sha)}, ${Object.hasOwn(tags, target) ? `so the ${code(String(tags[target]))} tag did not move.` : `so it did not reach ${code(target)}.`}`;
 
 /** Numbers as a sentence lists them: `#1`, `#1 and #2`, `#1, #2 and #3`. @param {number[]} ns */
 const andList = (ns) => {
@@ -368,7 +370,7 @@ const deploySubscriberText = (run, { target, end, tags }, prs, failed, told, pro
   const heading = run.conclusion === 'success'
     ? deployedTo(`${which} ${one ? 'is' : 'are'}`, run, { target, end, tags })
     : `${failedAt(run, target, end, tags)}\nIt was to deploy ${which.slice(0, -1)}.`;
-  const facts = [...prList(prs), ...pageOf(run), ...(run.conclusion === 'success' ? [] : ['Failed jobs:', ...jobList(failed)])];
+  const facts = [...prList(prs), ...(run.conclusion === 'success' ? [] : ['Failed jobs:', ...jobList(failed)])];
   return subscriberText(heading, facts, toldToo(prs, told), prompts);
 };
 
@@ -393,7 +395,6 @@ const deployText = (run, { target, end, tags }, own, subscribed, failed, told, p
       deployedTo(one ? 'Your change is' : 'Your changes are', run, { target, end, tags }),
       '',
       ...prList(own),
-      ...pageOf(run),
       ...alsoSubscribed(subscribed, told),
       '',
       instruction(prompts, one ? 'deployGreen' : 'deployGreenMany', { pr: last, target: bare(target) }),
@@ -403,7 +404,6 @@ const deployText = (run, { target, end, tags }, own, subscribed, failed, told, p
     failedAt(run, target, end, tags),
     '',
     ...prList(own),
-    `Run: ${run.url}`,
     'Failed jobs:',
     ...jobList(failed),
     ...alsoSubscribed(subscribed, told),
@@ -580,22 +580,25 @@ const planTarget = async (run, coverage, prompts, workflows) => {
 };
 
 /**
- * @typedef {{ ticket: number, title: string, prs: number[], roles: import('./roles.mjs').TicketRoles }} ShippedTicket
+ * @typedef {{ ticket: number, title: string, url: string, prs: number[], roles: import('./roles.mjs').TicketRoles }} ShippedTicket
  *   A ticket a green deploy commented on (dispatch/turn.mjs): the PRs it
  *   shipped that close it, and its roles as every path finds them
  *   (`rolesOf`, dispatch/roles.mjs).
  */
 
 /**
- * One entry naming a ticket and the PRs that closed it, with the "Roles on
- * #N" lines every path writes for the recipient (`holder`).
+ * One entry naming a ticket and the PRs that closed it, with the role
+ * lines every path writes for the recipient (`holder`). A deploy calls on
+ * no role's duty. `notice`: the message asks nothing else of the
+ * recipient, which has no PR of its own in it.
  *
  * @param {ShippedTicket} ticket
  * @param {import('./roles.mjs').RoleHolder} holder
+ * @param {boolean} notice
  */
-const ticketLine = ({ ticket, title, prs, roles }, holder) => [
-  `- Issue #${ticket}: ${oneLine(title)}, which ${prs.length === 1 ? `PR #${prs[0]}` : `PRs ${prs.map((n) => `#${n}`).join(', ')}`} closed.`,
-  ...rolesText(roles, holder).split('\n').map((line) => `  ${line}`),
+const ticketLine = ({ ticket, title, url, prs, roles }, holder, notice) => [
+  `- [#${ticket}](${url}) ${oneLine(title)}, which ${prs.length === 1 ? `PR #${prs[0]}` : `PRs ${prs.map((n) => `#${n}`).join(', ')}`} closed.`,
+  ...rolesText(roles, holder, { notice }).split('\n').map((line) => `  ${line}`),
 ].join('\n');
 
 /**
@@ -639,7 +642,7 @@ export const withTickets = (plan, tickets) => {
       const into = entry.added ? note.prs : (note.about ??= []);
       for (const n of shipped.prs) if (!note.prs.includes(n) && !into.includes(n)) into.push(n);
       note.tickets = [...(note.tickets ?? []), shipped.ticket];
-      entry.lines.push(ticketLine(shipped, holder));
+      entry.lines.push(ticketLine(shipped, holder, entry.added));
     }
   }
   // The ticket's label is the news to its roles, so it names the label.

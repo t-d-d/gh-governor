@@ -92,7 +92,8 @@ export const hookPrompt = (prompt, fire) => [prompt, ...firedLines(fire, `fired 
 /**
  * A fire into the hook's open session: governor's lines alone, since the
  * session started on the hook's prompt. The send puts the hook's relay line
- * above them and the session's standing below (dispatch/deliveries.mjs).
+ * above them, and no standing line below: a hook's fire is not a close, a
+ * merge or a deploy (dispatch/deliveries.mjs).
  *
  * @param {import('./webhook/fire.mjs').HookFire} fire
  */
