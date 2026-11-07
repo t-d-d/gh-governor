@@ -2021,6 +2021,22 @@ describe('fitness: the settings checks decide before the model (dispatcher-revie
     assert.equal(waived.judged.length, 1, 'a waiving label lets the ticket through');
   });
 
+  test('the ticket rules match `labels` and `unless` in any case, as GitHub matches labels', async () => {
+    const forbidden = tagalong({ tickets: { 748: { labels: ['claimed', 'Type: ADR'] } } }, { tickets: { forbid: [{ labels: ['type: adr'] }] } });
+    await reviewTagalong(forbidden);
+    const required = tagalong({ tickets: { 748: { labels: ['claimed', 'SIZE: S'] } } }, { tickets: { require: [{ labels: ['size: s', 'size: m'] }] } });
+    await reviewTagalong(required);
+    const waived = tagalong({ tickets: { 748: { labels: ['claimed', 'epic', 'Split'] } } }, { tickets: { forbid: [{ labels: ['EPIC'], unless: ['split'] }] } });
+    await reviewTagalong(waived);
+    const waivedRequire = tagalong({ tickets: { 748: { labels: ['claimed', 'Chore'] } } }, { tickets: { require: [{ labels: ['size: s'], unless: ['chore'] }] } });
+    await reviewTagalong(waivedRequire);
+    assert.equal(forbidden.judged.length, 0, 'a forbidden label in another case still fails');
+    assert.match(forbidden.comments[0]!.body, /^Waits for a person: the ticket it closes, #748, is `Type: ADR` \(test 1\)/);
+    assert.equal(required.judged.length, 1, 'a required label in another case meets the rule');
+    assert.equal(waived.judged.length, 1, 'an `unless` label in another case waives a forbid');
+    assert.equal(waivedRequire.judged.length, 1, 'an `unless` label in another case waives a require');
+  });
+
   test('a ticket not carrying the repo\'s claim label is told to claim it where it still carries the ready labels, and waits for a person otherwise', async () => {
     const ready = tagalong({ tickets: { 748: { labels: ['ready'] } } });
     await reviewTagalong(ready);
