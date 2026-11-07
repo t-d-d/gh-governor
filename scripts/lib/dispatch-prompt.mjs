@@ -77,7 +77,7 @@ export const promptFor = (number, title, repo, claim, prompts = {}, { signOff = 
     lead ? `Pickup #${number} '${lead}'` : `Pickup #${number}`,
     '',
     instruction(prompts, 'pickup', { issue: number, repo, claim }),
-    ...(asks ? [`${OPEN_PR} ${untilAsked(deployMessages)} ${STOPPED} ${instruction(prompts, 'signOff')}`] : []),
+    ...(asks ? [`${OPEN_PR} this session ${untilAsked(deployMessages)} ${STOPPED} ${instruction(prompts, 'signOff')}`] : []),
   ].join('\n');
 };
 

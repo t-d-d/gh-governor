@@ -9394,6 +9394,14 @@ describe('run — every served repo', () => {
       assert.ok(h.refs.length > 0 && h.refs.every((r) => r === MERGE), h.refs.join(', '));
     });
 
+    test('to a subscriber, says its subscribers to deploys hear each deploy, not that it will', async () => {
+      const h = askmeMerge({ deployMessages: true, subscribeMessages: true }, { 'deploy.yml': deploy });
+      await run({ ...merged, session: 'session_01SUB', subscribed: true }, h.deps as never);
+      const text = (h.messages[0] as { text: string }).text;
+      assert.match(text, /deploys to governor, and governor tells its subscribers to deploys as each deploy finishes/, text);
+      assert.doesNotMatch(text, /tells you/, text);
+    });
+
     test('with deployed labels on, names the labels its shipping jobs apply', async () => {
       const h = askmeMerge({ deployedLabels: true }, { 'deploy.yml': deploy });
       await run(merged, h.deps as never);

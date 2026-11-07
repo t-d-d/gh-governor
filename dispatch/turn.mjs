@@ -1596,14 +1596,16 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    * closing, and asks for the sign-off where nothing else holds it. With it
    * on, the message names the repo's deploy targets, read from its
    * workflows at the merge, or none where that read fails, logged at warn.
+   * A subscriber is told the PR's subscribers to deploys hear them.
    *
    * @param {string} text
    * @param {boolean} closing
    * @param {string | undefined} mergedAt
    * @param {number | undefined} on
+   * @param {boolean} subscribed
    * @returns {Promise<{ text: string, closing: boolean }>}
    */
-  const merging = async (text, closing, mergedAt, on) => {
+  const merging = async (text, closing, mergedAt, on, subscribed) => {
     if (mergedAt === undefined || repo === undefined) return { text, closing };
     const config = configOf(repo);
     if (!turnsOn(config, 'deployMessages')) return { text, closing: true };
@@ -1614,12 +1616,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     } catch (error) {
       deps.log('dispatch-merge-targets', { level: 'warn', repo, on: on ?? null, error: messageOf(error) });
     }
-    return { text: `${text}\n\n${deployNote({ deployedLabels: turnsOn(config, 'deployedLabels'), targets })}`, closing };
+    return { text: `${text}\n\n${deployNote({ deployedLabels: turnsOn(config, 'deployedLabels'), targets, subscribed })}`, closing };
   };
 
   if (invocation.kind === 'message') {
     const { on, event, commit, fallback } = invocation;
-    const { text, closing } = await merging(invocation.text, invocation.closing === true, invocation.mergedAt, on);
+    const { text, closing } = await merging(invocation.text, invocation.closing === true, invocation.mergedAt, on, invocation.subscribed === true);
     // A session's unsigned post, under sessionRules: its author is searched
     // for before the relay, which then drops its UNSIGNED line, and is not
     // relayed its own post (dispatch/author.mjs).

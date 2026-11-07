@@ -12,6 +12,7 @@
  */
 
 import { shippingLabelsOf } from './labels.mjs';
+import { listed } from './roles.mjs';
 import { LABEL_PREFIX } from './webhook/fire.mjs';
 
 /**
@@ -33,8 +34,15 @@ import { LABEL_PREFIX } from './webhook/fire.mjs';
  * @returns {Promise<string[]>}
  */
 export const deployTargets = async (reader, ref) => {
+  // One read per file: a called file is listed in the folder as well.
+  /** @type {Map<string, Promise<string>>} */
+  const texts = new Map();
   /** @param {string} file */
-  const read = (file) => reader.fileAt(`.github/workflows/${file}`, ref);
+  const read = (file) => {
+    let text = texts.get(file);
+    if (text === undefined) texts.set(file, text = reader.fileAt(`.github/workflows/${file}`, ref));
+    return text;
+  };
   /** @type {string[]} */
   const targets = [];
   for (const file of await reader.workflowFiles(ref)) {
@@ -46,23 +54,23 @@ export const deployTargets = async (reader, ref) => {
   return targets;
 };
 
-/** `a`, `a and b`, `a, b and c`. @param {readonly string[]} items */
-const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
-
 /**
  * The paragraph a merge's message gains in a repo with deploy messages on.
  * `targets`: the repo's deploy targets, or null where governor could not
- * read them; none read names none.
+ * read them; none read names none. `subscribed`: the session hears the PR
+ * as a subscriber, and only the PR's subscribers to deploys hear them, so
+ * the note says those are told rather than the session.
  *
- * @param {{ deployedLabels: boolean, targets: readonly string[] | null }} options
+ * @param {{ deployedLabels: boolean, targets: readonly string[] | null, subscribed?: boolean }} options
  * @returns {string}
  */
-export const deployNote = ({ deployedLabels, targets }) => {
+export const deployNote = ({ deployedLabels, targets, subscribed = false }) => {
   const known = targets ?? [];
+  const tells = subscribed ? 'tells its subscribers to deploys' : 'tells you';
   if (deployedLabels) {
     const labels = known.length === 0 ? '' : ` ${listed(known.map((t) => `\`${LABEL_PREFIX}${t}\``))}`;
-    return `As its change deploys, governor labels the tickets it closes${labels}, and tells you as each label is applied.`;
+    return `As its change deploys, governor labels the tickets it closes${labels}, and ${tells} as each label is applied.`;
   }
-  if (known.length === 0) return 'Governor tells you as each deploy of its change finishes.';
-  return `Its change deploys to ${listed(known)}, and governor tells you as each deploy finishes.`;
+  if (known.length === 0) return `Governor ${tells} as each deploy of its change finishes.`;
+  return `Its change deploys to ${listed(known)}, and governor ${tells} as each deploy finishes.`;
 };

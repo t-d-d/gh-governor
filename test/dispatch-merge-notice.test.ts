@@ -70,6 +70,19 @@ describe('deployTargets', () => {
     assert.ok(refs.every((r) => r === MERGE), 'every file read at the merge');
   });
 
+  test('reads each file once, a called file listed in the folder too', async () => {
+    const { reader, refs } = readerOver({ 'deliver.yml': deliver, 'stage.yml': stage });
+    const paths: string[] = [];
+    const fileAt = reader.fileAt;
+    reader.fileAt = async (path: string, ref: string) => {
+      paths.push(path);
+      return fileAt(path, ref);
+    };
+    assert.deepEqual(await deployTargets(reader, MERGE), ['dev', 'prod']);
+    assert.deepEqual([...paths].sort(), ['.github/workflows/deliver.yml', '.github/workflows/stage.yml']);
+    assert.ok(refs.every((r) => r === MERGE));
+  });
+
   test('a repo with one shipping job lists that one target', async () => {
     const own = 'name: Deploy\non:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    name: "Deploy at ${{ github.sha }} · deployed: governor"\n    runs-on: ubuntu-latest\n    steps: []\n';
     assert.deepEqual(await deployTargets(readerOver({ 'ci.yml': ci, 'deploy.yml': own }).reader, MERGE), ['governor']);
@@ -96,6 +109,18 @@ describe('deployNote', () => {
     assert.match(note, /deploys to governor/);
     assert.match(note, /tells you as each deploy finishes/);
     assert.doesNotMatch(note, /deployed: /);
+  });
+
+  // Only a PR's subscribers to deploys hear its deploys: a session that
+  // subscribes to its close alone is not told it will hear them.
+  test('to a subscriber, it says the subscribers to deploys are told, not the session', () => {
+    for (const deployedLabels of [true, false]) {
+      for (const targets of [['dev', 'prod'], null]) {
+        const note = deployNote({ deployedLabels, targets, subscribed: true });
+        assert.match(note, /tells its subscribers to deploys as each/, note);
+        assert.doesNotMatch(note, /tells you/, note);
+      }
+    }
   });
 
   test('three targets read as a list', () => {
