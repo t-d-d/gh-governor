@@ -874,6 +874,89 @@ export const configSchema = fileSchema.transform(toConfig)
 const messageOf = (issue) => (issue.code === 'invalid_key' ? `${issue.message}: ${issue.issues.map((i) => i.message).join(', ')}` : issue.message);
 
 /**
+ * The objects whose keys are entries' names (`section.key`), where a name
+ * written twice would lose the first entry, since JSON.parse keeps the last
+ * of two equal keys without a word.
+ */
+const NAMED_ENTRIES = ['periodics.sessions', 'hooks.sessions', 'issueReviews.reviews'];
+
+/**
+ * The faults for every name written more than once in one of
+ * {@link NAMED_ENTRIES}, each named once, read from text JSON.parse has
+ * already accepted. A key is compared as JSON reads it, escapes undone.
+ * Keys repeated anywhere else are left as JSON.parse reads them.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+const repeatedNames = (text) => {
+  /** @type {string[]} */
+  const faults = [];
+  let i = 0;
+  const space = () => {
+    while (text[i] === ' ' || text[i] === '\t' || text[i] === '\n' || text[i] === '\r') i += 1;
+  };
+  /** @returns {string} */
+  const string = () => {
+    const start = i;
+    i += 1;
+    while (text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+    i += 1;
+    return JSON.parse(text.slice(start, i));
+  };
+  /** @param {string[] | null} path the keys down to the value, kept to depth two */
+  const value = (path) => {
+    space();
+    if (text[i] === '{') {
+      i += 1;
+      const at = path?.length === 2 ? path.join('.') : null;
+      const named = at !== null && NAMED_ENTRIES.includes(at);
+      const seen = new Set();
+      const told = new Set();
+      space();
+      if (text[i] === '}') {
+        i += 1;
+        return;
+      }
+      for (;;) {
+        space();
+        const key = string();
+        if (named && seen.has(key) && !told.has(key)) {
+          faults.push(`${at}: ${JSON.stringify(key)} is repeated, and the file must name each entry once`);
+          told.add(key);
+        }
+        seen.add(key);
+        space();
+        i += 1; // the colon
+        value(path !== null && path.length < 2 ? [...path, key] : null);
+        space();
+        if (text[i++] === '}') return;
+      }
+    }
+    if (text[i] === '[') {
+      i += 1;
+      space();
+      if (text[i] === ']') {
+        i += 1;
+        return;
+      }
+      for (;;) {
+        value(null);
+        space();
+        if (text[i++] === ']') return;
+      }
+    }
+    if (text[i] === '"') {
+      string();
+      return;
+    }
+    while (i < text.length && !' \t\n\r,]}'.includes(text.charAt(i))) i += 1;
+  };
+  value([]);
+  return faults;
+};
+
+/**
  * A config file's text, read: the config, or the fault that keeps the repo
  * unserved. The schema is every repo's, so the repo does not enter.
  *
@@ -888,6 +971,8 @@ export const readConfig = (text) => {
   } catch (error) {
     return { ok: false, fault: `not JSON: ${/** @type {Error} */ (error).message}` };
   }
+  const repeated = repeatedNames(text);
+  if (repeated.length > 0) return { ok: false, fault: repeated.join('; ') };
   const result = configSchema.safeParse(parsed);
   if (!result.success) {
     return { ok: false, fault: result.error.issues.map((i) => `${i.path.join('.') || '(file)'}: ${messageOf(i)}`).join('; ') };

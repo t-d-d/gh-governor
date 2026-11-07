@@ -131,7 +131,7 @@ The file has one rule for where a setting lives. `environment`, `trust` and `wor
 
 - A section turns its feature on, unless it sets `"enabled": false`. A feature with no settings is `{}`. A feature with no section is off.
 - A section that is off needs none of its required settings.
-- A section's named entries are an object keyed by name: `periodics.sessions`, `hooks.sessions` and `issueReviews.reviews`. An entry does not set `name`.
+- A section's named entries are an object keyed by name: `periodics.sessions`, `hooks.sessions` and `issueReviews.reviews`. An entry does not set `name`, and a file that names one entry twice in one of them is refused, with a fault naming the section and the name.
 - A field holding text or `{ "file": "<path>" }` is `prompt`. A section with more than one has `prompts`, keyed by kind.
 - Pickup's labels serve the other features that read them: `unblocked`, `waits`, `prReview` and `issueReviews`. A file that turns one of those on has a `pickup` section with `ready` and `claim`, which may set `"enabled": false` to keep pickup itself off.
 
