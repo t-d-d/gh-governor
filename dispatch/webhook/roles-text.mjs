@@ -69,9 +69,10 @@ export const titleLink = (label, title, url) => {
  * The builders other than the recipient, as links.
  *
  * @param {readonly string[]} others
+ * @param {string} [first] the link text of the only one
  */
-const buildersLinked = (others) => (others.length === 1
-  ? sessionLink('another builder', /** @type {string} */ (others[0]))
+const buildersLinked = (others, first = 'another builder') => (others.length === 1
+  ? sessionLink(first, /** @type {string} */ (others[0]))
   : listed(others.map((b, i) => sessionLink(`builder ${i + 1}`, b))));
 
 /**
@@ -96,14 +97,11 @@ export const rolesText = ({ issue, owner, builders }, { role, merged, session },
   // The recipient: the session handed in, else the spec owner where it holds that role.
   const self = session ?? (role === 'builder' ? null : owner);
   const others = builders.filter((b) => self === null || !sameSession(b, self));
-  const specOwner = owner === null ? 'a person owns its body' : `${sessionLink('its spec owner', owner)} is another session`;
+  const specOwner = owner === null ? 'a person owns its body' : `${sessionLink('its spec owner', owner)} writes its body`;
   const also = others.length === 0 ? '' : ` It also has ${buildersLinked(others)}.`;
   let first;
-  if (role === 'spec owner') {
-    if (others.length === 0) first = 'You are its spec owner.';
-    else if (others.length === 1) first = `You are its spec owner; ${sessionLink('its builder', /** @type {string} */ (others[0]))} is another session.`;
-    else first = `You are its spec owner; ${buildersLinked(others)} are its builders.`;
-  } else if (role === 'builder') first = `You are its builder; ${specOwner}.${also}`;
+  if (role === 'spec owner') first = others.length === 0 ? 'You are its spec owner.' : `You are its spec owner; ${buildersLinked(others, 'its builder')} ${others.length === 1 ? 'is another session' : 'are its builders'}.`;
+  else if (role === 'builder') first = `You are its builder; ${specOwner}.${also}`;
   else first = `You are its spec owner and its builder.${also}`;
   const lines = [first];
   if (duty && role !== 'builder') lines.push(SPEC_OWNER_DUTY);

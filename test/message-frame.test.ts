@@ -57,7 +57,7 @@ describe('the role lines', () => {
     const owner = rolesText(roles, { role: 'spec owner', merged: false, session: SPEC });
     assert.equal(owner, `You are its spec owner; [its builder](${BUILDER}) is another session.`);
     const builder = rolesText(roles, { role: 'builder', merged: false, session: BUILDER });
-    assert.equal(builder, `You are its builder; [its spec owner](${SPEC}) is another session.`);
+    assert.equal(builder, `You are its builder; [its spec owner](${SPEC}) writes its body.`);
     for (const text of [owner, builder]) assert.doesNotMatch(text, BARE_SESSION, text);
   });
 
@@ -73,7 +73,7 @@ describe('the role lines', () => {
     ];
     assert.deepEqual(texts, [
       `You are its spec owner; [builder 1](${BUILDER}) and [builder 2](${OTHER}) are its builders.`,
-      `You are its builder; [its spec owner](${SPEC}) is another session. It also has [another builder](${OTHER}).`,
+      `You are its builder; [its spec owner](${SPEC}) writes its body. It also has [another builder](${OTHER}).`,
       'You are its builder; a person owns its body.',
       `You are its spec owner and its builder. It also has [another builder](${OTHER}).`,
     ]);

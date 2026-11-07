@@ -5948,7 +5948,7 @@ describe('run — a workflow run on main', () => {
           const [own] = to(sent, SESSION);
           assert.match(own!.text, /PR #799/);
           assert.match(own!.text, /#730/);
-          assert.match(own!.text, /^ {2}You are its builder; a person owns its body\.$/m, 'the ticket is closed');
+          assert.match(own!.text, /^ {2}You are its builder; a person owns its body\.$/m, 'the closed ticket\'s roles line reads as an open one\'s');
           assert.match(own!.text, new RegExp(`^- \\[#730 Issue 730\\]\\(https://github\\.com/${REPO}/issues/730\\), which \\[PR #799\\]\\(https://github\\.com/${REPO}/pull/799\\) closed\\.$`, 'm'), 'the title and each PR are links');
           assert.match(own!.text, /Your PR, which closed #730, has merged: act on this message only where it calls for new work\./, 'the roles lines read as on every other path');
           assert.equal(exitCodeFor(r as never), 0);
@@ -11260,7 +11260,7 @@ describe('run — a ticket fire', () => {
     const result = await run(ticketFire(), h.deps as never) as Record<string, any>;
     assert.deepEqual(h.messages.map((m) => m.session), [SPEC, BUILDER]);
     assert.match(h.messages[0]!.text, new RegExp(`^You are its spec owner; \\[its builder\\]\\(${BUILDER}\\) is another session\\.\\n${SPEC_OWNER_DUTY.replace(/\./g, '\\.')}$`, 'm'), h.messages[0]!.text);
-    assert.match(h.messages[1]!.text, new RegExp(`^You are its builder; \\[its spec owner\\]\\(${SPEC}\\) is another session\\.\\n${BUILDER_DUTY.replace(/\./g, '\\.')}$`, 'm'), h.messages[1]!.text);
+    assert.match(h.messages[1]!.text, new RegExp(`^You are its builder; \\[its spec owner\\]\\(${SPEC}\\) writes its body\\.\\n${BUILDER_DUTY.replace(/\./g, '\\.')}$`, 'm'), h.messages[1]!.text);
     assert.equal(result.kind, 'ticket');
     assert.equal(exitCodeFor(result as never), 0);
   });

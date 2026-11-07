@@ -611,7 +611,7 @@ describe('fitness: a ticket\'s roles are found one way (dispatcher-repos.md)', (
   });
 
   test('the role lines are written in one place', () => {
-    const writers = files.filter((f) => /You are its spec owner/.test(source(f)) || /You build it[;.]/.test(source(f)));
+    const writers = files.filter((f) => /You are its spec owner/.test(source(f)) || /You are its builder[;.]/.test(source(f)));
     assert.deepEqual(writers, ['dispatch/webhook/roles-text.mjs']);
   });
 

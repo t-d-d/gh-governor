@@ -99,7 +99,7 @@ describe('rolesText', () => {
   test('a builder whose PR has merged is told so, and acts only where the message calls for new work', () => {
     const [, builder] = roles.holders;
     const text = rolesText(roles, builder!);
-    assert.match(text, /^You are its builder; \[its spec owner\]\(.*SPECOWNER\) is another session\./);
+    assert.match(text, /^You are its builder; \[its spec owner\]\(.*SPECOWNER\) writes its body\./);
     assert.match(text, /Your PR, which closed #7, has merged: act on this message only where it calls for new work\./);
   });
 });

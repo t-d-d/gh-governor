@@ -106,7 +106,7 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     for (const { text } of sent) assert.ok(text.startsWith(TEXT), text);
     assert.ok(sent[0]!.text.includes(`\n\nYou are its spec owner; [its builder](${BUILDER}) is another session.\n${SPEC_DUTY}`), sent[0]!.text);
     assert.doesNotMatch(sent[0]!.text, /As its builder/);
-    assert.ok(sent[1]!.text.includes(`\n\nYou are its builder; [its spec owner](${SPEC}) is another session.\nAs its builder you build it`), sent[1]!.text);
+    assert.ok(sent[1]!.text.includes(`\n\nYou are its builder; [its spec owner](${SPEC}) writes its body.\nAs its builder you build it`), sent[1]!.text);
     assert.doesNotMatch(sent[1]!.text, /You own its spec/);
     assert.match(sent[1]!.text, /do not edit its body/);
     assert.equal(stored.length, 1);
@@ -173,7 +173,7 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     await planTicket(fire({ state: 'closed', closing: true, text: 'Labelled `deployed: prod` by the Deliver workflow.' }), ctx);
     assert.deepEqual(to(sent), [SPEC, PR_OWNER]);
     assert.deepEqual(sent.map((m) => m.opts.closing), [true, true]);
-    assert.ok(sent[1]!.text.includes(`You are its builder; [its spec owner](${SPEC}) is another session.`), sent[1]!.text);
+    assert.ok(sent[1]!.text.includes(`You are its builder; [its spec owner](${SPEC}) writes its body.`), sent[1]!.text);
     assert.doesNotMatch(sent[1]!.text, /As its builder/);
     // A comment on a closed ticket calls on no duty, and says so.
     assert.match(sent[1]!.text, /Nothing is asked of you\./);
