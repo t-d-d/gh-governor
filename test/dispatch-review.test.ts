@@ -1213,7 +1213,7 @@ describe('run: a pass reused at a new head', () => {
     }
   });
 
-  test('a marker with no hash asks the model', async () => {
+  test('a verdict naming no read digest, under a marker with no hash, asks the model', async () => {
     const earlier = await reviewedAt(EARLIER);
     const unhashed = earlier.replace(/ [0-9a-f]{64} -->$/, ' -->');
     assert.match(unhashed, new RegExp(`<!-- governor:pr-review ${EARLIER} ${sha256(BODY)} -->$`));

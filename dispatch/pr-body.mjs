@@ -92,7 +92,7 @@ export const namedOwners = (body) => {
   return { verification: [...new Set(verification)], later: [...new Set(later)] };
 };
 
-const MARKER = /<!-- governor:pr-review ([0-9a-f]{40}) ([0-9a-f]{64})(?: ([0-9a-f]{64}))? -->/;
+const MARKER = /<!-- governor:pr-review [0-9a-f]{40} [0-9a-f]{64}(?: [0-9a-f]{64})? -->/;
 
 /**
  * The marker a review's comment ends with: the head and the body reviewed,
