@@ -228,6 +228,10 @@ describe('readConfig', () => {
     assert.match((readConfig(JSON.stringify({ environment: 'env_1', pickup: { ready: ['x'], claim: 'x' } })) as { fault: string }).fault, /claim label/);
     // A ticket would need the label to be ready and lack it to be picked up.
     assert.match((readConfig(JSON.stringify({ environment: 'env_1', pickup: { ready: ['x', 'afk'], claim: 'y', exclude: ['afk'] } })) as { fault: string }).fault, /exclude cannot name a ready label/);
+    // Labels match in any case, as GitHub matches them, so these are the same label.
+    assert.match((readConfig(JSON.stringify({ environment: 'env_1', pickup: { ready: ['X'], claim: 'x' } })) as { fault: string }).fault, /claim label/);
+    assert.match((readConfig(JSON.stringify({ environment: 'env_1', pickup: { ready: ['x', 'AFK'], claim: 'y', exclude: ['afk'] } })) as { fault: string }).fault, /exclude cannot name a ready label/);
+    assert.ok(!('fault' in readConfig(JSON.stringify({ environment: 'env_1', pickup: { ready: ['X'], claim: 'y', claimRemoves: ['x'] } }))), 'claimRemoves names a ready label in another case');
     // GitHub's issues query splits its labels on commas.
     assert.match((readConfig(JSON.stringify({ environment: 'env_1', pickup: { ready: ['ready, afk'], claim: 'y' } })) as { fault: string }).fault, /comma/);
   });

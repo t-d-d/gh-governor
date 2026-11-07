@@ -623,11 +623,14 @@ const fileSchema = z.strictObject({
       }
     }
     const { pickup } = raw;
-    if (pickup?.ready !== undefined && pickup.claim !== undefined && pickup.ready.includes(pickup.claim)) ctx.addIssue({ code: 'custom', path: ['pickup'], message: 'the claim label cannot be a ready label' });
-    if (pickup !== undefined && !(pickup.claimRemoves ?? []).every((/** @type {string} */ r) => (pickup.ready ?? []).includes(r))) ctx.addIssue({ code: 'custom', path: ['pickup'], message: 'claimRemoves names only ready labels' });
+    // Labels match in any case, as GitHub and `labelRow` match them.
+    const ready = new Set((pickup?.ready ?? []).map((/** @type {string} */ l) => l.toLowerCase()));
+    const isReady = (/** @type {string} */ l) => ready.has(l.toLowerCase());
+    if (pickup?.ready !== undefined && pickup.claim !== undefined && isReady(pickup.claim)) ctx.addIssue({ code: 'custom', path: ['pickup'], message: 'the claim label cannot be a ready label' });
+    if (pickup !== undefined && !(pickup.claimRemoves ?? []).every(isReady)) ctx.addIssue({ code: 'custom', path: ['pickup'], message: 'claimRemoves names only ready labels' });
     // A ready ticket carries every ready label, so excluding one would
     // keep every ticket out.
-    if (pickup !== undefined && (pickup.exclude ?? []).some((/** @type {string} */ e) => (pickup.ready ?? []).includes(e))) ctx.addIssue({ code: 'custom', path: ['pickup'], message: 'exclude cannot name a ready label' });
+    if (pickup !== undefined && (pickup.exclude ?? []).some(isReady)) ctx.addIssue({ code: 'custom', path: ['pickup'], message: 'exclude cannot name a ready label' });
     if (on('prReview') && raw.prReview.prompt === undefined) ctx.addIssue({ code: 'custom', path: ['prReview', 'prompt'], message: 'prReview is on, so its section needs a prompt' });
     if (on('heartbeat') && raw.heartbeat.issue === undefined) ctx.addIssue({ code: 'custom', path: ['heartbeat', 'issue'], message: 'heartbeat is on, so its section needs the issue it records on' });
     if (on('periodics') && Object.keys(raw.periodics.sessions ?? {}).length === 0) ctx.addIssue({ code: 'custom', path: ['periodics', 'sessions'], message: 'periodics is on, so its section lists at least one periodic' });
