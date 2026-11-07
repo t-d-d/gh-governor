@@ -508,6 +508,20 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
   const openList = () => openRows ??= allPages(call, `/repos/${repo}/issues`, { state: 'open' })
     .then((rows) => rows.map((row) => ({ number: row.number, title: row.title, html_url: row.html_url, pull: Boolean(row.pull_request), body: row.body, labels: (row.labels ?? []).map((/** @type {{ name?: unknown } | string} */ l) => (typeof l === 'string' ? l : String(l?.name ?? ''))), ...authorOf(row) })))
     .catch((error) => { openRows = null; openSessions.clear(); throw error; });
+  /**
+   * The open issues of `rows` carrying the claim label `claim` that no open
+   * PR in `rows` closes: the claimed tickets `openNaming` and `openClaimed`
+   * both read.
+   *
+   * @template {{ number: number, pull: boolean, body: unknown, labels: string[] }} R
+   * @param {R[]} rows
+   * @param {string} claim
+   * @returns {R[]}
+   */
+  const claimedOf = (rows, claim) => {
+    const closed = new Set(rows.filter((row) => row.pull).flatMap((row) => closedBy(String(row.body ?? ''), repo)));
+    return rows.filter((row) => !row.pull && row.labels.includes(claim) && !closed.has(row.number));
+  };
   /** Each open issue's and PR's sessions under a trust list, keyed by the list, each body read once per list. @type {Map<string, Promise<Array<OpenRow & { sessions: Set<string> }>>>} */
   const openSessions = new Map();
   /** Each claimed ticket's builder by its newest dispatch comment governor's App posted, its thread read once a reader. @type {Map<number, Promise<string | null>>} */
@@ -831,8 +845,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       };
       const naming = mine.map(({ sessions: _sessions, ...row }) => holds(row));
       if (claim === undefined || claim === '') return naming;
-      const closed = new Set(rows.filter((row) => row.pull).flatMap((row) => closedBy(String(row.body ?? ''), repo)));
-      const claimed = rows.filter((row) => !row.pull && row.labels.includes(claim) && !closed.has(row.number) && !naming.some((n) => n.number === row.number));
+      const claimed = claimedOf(rows, claim).filter((row) => !naming.some((n) => n.number === row.number));
       const building = [];
       for (const row of claimed) {
         if (await dispatchedOf(row.number) === id) building.push({ number: row.number, title: row.title, html_url: row.html_url, pull: false, ...(holding === undefined ? {} : { holds: true }) });
@@ -853,6 +866,18 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       (await openList())
         .filter((row) => row.pull && closedBy(String(row.body ?? ''), repo).includes(number))
         .map((row) => ({ number: row.number, title: row.title, html_url: row.html_url })),
+
+    /**
+     * The open issues carrying the claim label `claim` that no open PR
+     * closes, with their labels, read from the same list as `openNaming`,
+     * once per reader: the tickets whose session may have stopped without
+     * a PR (dispatch/stopped.mjs).
+     *
+     * @param {string} claim
+     * @returns {Promise<Array<{ number: number, title: string, labels: string[] }>>}
+     */
+    openClaimed: async (claim) =>
+      claimedOf(await openList(), claim).map((row) => ({ number: row.number, title: row.title, labels: row.labels })),
 
     /**
      * An issue's comments, oldest first, one page of a hundred. `since`
@@ -1270,18 +1295,19 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
 
     /**
      * An issue's label additions, oldest first, from its events: the label,
-     * the login that added it, whether a bot did, and whether `appId`'s App
+     * when, the login that added it, whether a bot did, and whether `appId`'s App
      * did as its bot (`postedByApp`); a reader without `appId` owns none.
      * Pickup reads who added a ready label (`uncountedReady`,
      * scripts/lib/ready-work.mjs).
      *
      * @param {number} number
-     * @returns {Promise<Array<{ label: string, actor: string, bot: boolean, ours: boolean }>>}
+     * @returns {Promise<Array<{ label: string, at: string, actor: string, bot: boolean, ours: boolean }>>}
      */
     labelAdds: async (number) =>
       (await labelEvents(number, 'labeled'))
         .map((row) => ({
           label: row.label.name,
+          at: String(row.created_at ?? ''),
           actor: String(row.actor?.login ?? ''),
           bot: row.actor?.type === 'Bot',
           ours: postedByApp({ user: row.actor, performed_via_github_app: row.performed_via_github_app }, appId),

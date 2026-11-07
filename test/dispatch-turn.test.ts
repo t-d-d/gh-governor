@@ -27,6 +27,7 @@ import { ownerUnknownSince, sessionNamedIn, subscribeLine } from '../dispatch/we
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { promptFor, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { SIGN_POSTS, UNATTENDED, dispatchMarker, lastDispatch, parseFire, postWords } from '../dispatch/webhook/fire.mjs';
+import { STOPPED_MARKER } from '../dispatch/stopped.mjs';
 import { EDIT_SPEC_OWNER, UNSIGNED } from '../dispatch/webhook/mention.mjs';
 import { SESSION_RULES, SESSION_RULES_BLOCK, SESSION_RULES_FILE, blockIn } from '../dispatch/session-rules.mjs';
 import { WORKFLOW_PATHS, headMerge, workflowFile, workflowFile as workflowFixture } from './helpers/dispatch-workflows.ts';
@@ -271,6 +272,8 @@ const harness = (over: Record<string, unknown> = {}) => {
       },
       // No open PR closes a ticket unless a test says otherwise.
       openClosing: async (_n: number): Promise<Array<{ number: number; title: string; html_url: string }>> => [],
+      // No claimed ticket is open unless a test says otherwise.
+      openClaimed: async (_claim: string): Promise<Array<{ number: number; title: string; labels: string[] }>> => [],
       commit: async (sha: string) => ({ sha, message: 'A commit a person wrote' }),
       fileAt: workflowFile,
       pullFiles: async () => [],
@@ -6851,6 +6854,64 @@ describe('run — sessions that signed off', () => {
     assert.deepEqual(h.messages, []);
     assert.deepEqual([...h.heldTold], []);
     assert.ok(h.logged.some((l) => l.decision === 'held' && l.told === false), JSON.stringify(h.logged.filter((l) => l.event === 'dispatch-signoff')));
+  });
+
+  /** A reader with claimed ticket #31, its newest dispatch comment naming `session`, and no open PR closing it. */
+  const claimedBy = (h: ReturnType<typeof harness>, session: string) => {
+    const base = h.deps.reader;
+    (h.deps as { reader: unknown }).reader = (token: string) => ({
+      ...base(token),
+      openClaimed: async () => [{ number: 31, title: 'T31', labels: ['workflow: under development', 'mode: afk'] }],
+      allComments: async (n: number) => (n === 31 ? [{ id: 1, body: dispatchMarker({ at: '2026-10-01T00:00:00.000Z', sessionUrl: `https://claude.ai/code/${session}` }), created_at: '2026-10-01T00:00:00.000Z', ours: true }] : []),
+      labelAdds: async () => [{ label: 'workflow: under development', at: '2026-09-30T23:59:00.000Z', actor: 'governor-app[bot]' }],
+      // The ticket's body ends with its spec owner's link.
+      ticket: async (n: number) => ({ number: n, id: 9000 + n, title: `T${n}`, body: 'The spec.\n\nhttps://claude.ai/code/session_01SPEC', state: 'open', labels: ['workflow: under development', 'mode: afk'], pull: false, association: 'MEMBER' }),
+    });
+  };
+
+  test('a pickup session the sweep archives with its ticket still claimed and no PR: the ticket loses the claim and the ready labels, and gets one comment', async () => {
+    const h = harness();
+    h.rows.push(sessionRow('cse_01DONE'));
+    h.pages.set('cse_01DONE', cloudSignedOff);
+    claimedBy(h, 'session_01DONE');
+    const sweep = sweepOf(await run(MESSAGE, h.deps as never));
+    assert.deepEqual(sweep.archived, ['session_01DONE']);
+    const stopped = h.comments.filter((c) => c.body.startsWith(`${STOPPED_MARKER}session_01DONE -->`));
+    assert.deepEqual(stopped.map((c) => c.issue), [31]);
+    assert.ok(h.calls.includes('label #31 -mode: afk') && h.calls.includes('label #31 -workflow: under development'), JSON.stringify(h.calls));
+    assert.ok(h.calls.indexOf('archive session_01DONE') < h.calls.indexOf('label #31 -workflow: under development'), 'after the archive');
+    const owner = h.messages.filter((m) => m.session.endsWith('session_01SPEC'));
+    assert.equal(owner.length, 1, 'the spec owner hears the comment, which the relay sends to nobody');
+    assert.match(owner[0]!.text, /without a pull request/);
+    assert.doesNotMatch(owner[0]!.text, /governor:stopped/);
+  });
+
+  test('a claimed ticket whose session the sweep did not archive is left alone after the sign-off sweep', async () => {
+    const h = harness();
+    h.rows.push(sessionRow('cse_01DONE'));
+    h.pages.set('cse_01DONE', cloudSignedOff);
+    claimedBy(h, 'session_01LIVE');
+    await run(MESSAGE, h.deps as never);
+    assert.ok(!h.comments.some((c) => c.body.startsWith(STOPPED_MARKER)));
+    assert.ok(!h.calls.some((c) => c.startsWith('label #31')));
+  });
+
+  test('the bare fire\'s pickup sweep releases a claimed ticket whose session was archived another way, such as by hand', async () => {
+    const h = harness();
+    // `session_01OLD`'s record reads archived in the harness.
+    claimedBy(h, 'session_01OLD');
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.comments.filter((c) => c.body.startsWith(`${STOPPED_MARKER}session_01OLD -->`)).map((c) => c.issue), [31]);
+    assert.equal(h.messages.filter((m) => m.session.endsWith('session_01SPEC')).length, 1, 'the spec owner hears the comment');
+    assert.ok(h.calls.includes('label #31 -workflow: under development'), JSON.stringify(h.calls));
+  });
+
+  test('the bare fire\'s pickup sweep leaves a claimed ticket whose session is not archived', async () => {
+    const h = harness();
+    claimedBy(h, 'session_01LIVE');
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.ok(!h.comments.some((c) => c.body.startsWith(STOPPED_MARKER)));
+    assert.ok(!h.calls.some((c) => c.startsWith('label #31')));
   });
 
   test('archives each idle session in the repo whose last reply signs off, after the turn\'s own work', async () => {

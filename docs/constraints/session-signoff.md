@@ -63,6 +63,11 @@ session's own last reply is current and needs nothing in the repo.
   stopped at the check without raising a PR, and tells a session with an
   open PR that it stays open until governor asks it to sign off. A repo's
   own `pickup` prompt is sent as it is.
+- Once it has archived sessions, the sweep ends the claim of each claimed
+  ticket in a repo turning pickup on whose newest dispatch comment names
+  one of them and that no open PR closes (dispatch/stopped.mjs): one
+  comment under `governor:stopped <session>`, then the ready labels and the
+  claim off. It never holds or archives a session for that ticket.
 - The archive reads the session's row again after its events, and archives
   only an idle one. A session the turn messaged is decided only by a
   `result` newer than the message.
@@ -103,4 +108,4 @@ session's own last reply is current and needs nothing in the repo.
   writes: each repo then needs the hook and a credential, and the record
   goes stale.
 
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The sweep and the standing line's ask run only where the repo's file turns the `signOff` switch on since #278. A session that owns an open PR is held from the archive, and told so once where the repo's file asks, since #594. With `sessionRules` on, ownership of an issue lapses at its owner's archive, and the ask waits only on the session's open PRs, its builds and the issues it owns that carry a ready or claim label, narrowing #535, since #612, under PRD #599. Reading candidates' events to find an unsigned post's author follows the rules for reading a reply, and their text is never logged, since #616, under PRD #599. Reading them to find who made a body edit follows the same rules, since #617, under PRD #599.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The sweep and the standing line's ask run only where the repo's file turns the `signOff` switch on since #278. A session that owns an open PR is held from the archive, and told so once where the repo's file asks, since #594. With `sessionRules` on, ownership of an issue lapses at its owner's archive, and the ask waits only on the session's open PRs, its builds and the issues it owns that carry a ready or claim label, narrowing #535, since #612, under PRD #599. Reading candidates' events to find an unsigned post's author follows the rules for reading a reply, and their text is never logged, since #616, under PRD #599. Reading them to find who made a body edit follows the same rules, since #617, under PRD #599. A session the sweep archives with its ticket claimed and no PR has that claim ended, since #527.
