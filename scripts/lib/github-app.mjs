@@ -1059,6 +1059,20 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
+     * The names of the YAML files in `.github/workflows` at a commit, the
+     * files GitHub runs as workflows. A missing folder throws with GitHub's
+     * 404, and an answer that is no folder throws too.
+     *
+     * @param {string} ref
+     * @returns {Promise<string[]>}
+     */
+    workflowFiles: async (ref) => {
+      const answer = await call('GET', `/repos/${repo}/contents/.github/workflows?ref=${encodeURIComponent(ref)}`);
+      if (!Array.isArray(answer)) throw new Error(`.github/workflows at ${ref} is no folder GitHub listed`);
+      return answer.filter((row) => row?.type === 'file' && typeof row.name === 'string' && /\.ya?ml$/.test(row.name)).map((row) => String(row.name));
+    },
+
+    /**
      * The dispatcher's config file on the default branch (no ref: never a
      * PR head or another branch), or a prompt file it names beside it,
      * or null when GitHub says it is not there. Any other

@@ -846,6 +846,23 @@ describe('routeEvent — subscribers', () => {
       assert.deepEqual(pushed, []);
     });
 
+    // A repo whose file leaves deploy messages off hears of no deploy: the
+    // receiver cannot read the file, so the merge's text claims none, and
+    // the fire carries the merge for the task to add the deploys or the
+    // ask to sign off by the repo's switch.
+    test('a merge names no deploy target and claims no deploy, and carries the merge commit, or the base branch without one', () => {
+      const pr = { ...pullRequest, body: unnamed };
+      const SHA = 'c'.repeat(40);
+      const [merged] = branchFires('pull_request', { action: 'closed', pull_request: { ...pr, merged: true, merge_commit_sha: SHA, base: { ref: 'trunk' } }, sender: member, repository: { full_name: REPO } }) as Array<ByBranch & { mergedAt?: string }>;
+      assert.equal(merged!.mergedAt, SHA);
+      assert.match(merged!.text, /was merged/);
+      assert.doesNotMatch(merged!.text, /dev|prod|deploy/i, merged!.text);
+      const [bare] = branchFires('pull_request', { action: 'closed', pull_request: { ...pr, merged: true, base: { ref: 'trunk' } }, sender: member, repository: { full_name: REPO } }) as Array<ByBranch & { mergedAt?: string }>;
+      assert.equal(bare!.mergedAt, 'trunk');
+      const [closed] = branchFires('pull_request', { action: 'closed', pull_request: { ...pr, merged: false }, sender: member, repository: { full_name: REPO } }) as Array<ByBranch & { mergedAt?: string }>;
+      assert.equal(closed!.mergedAt, undefined);
+    });
+
     test('a mention on it still summons a fresh session, and queues no lookup beside it', () => {
       const { all } = messages('issue_comment', commentEvent({ issue: prIssue(unnamed) }));
       assert.deepEqual(all.map((f) => f.fire.kind), ['dispatch']);
