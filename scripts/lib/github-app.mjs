@@ -337,6 +337,15 @@ const labelNames = (row) =>
 export const RED_CONCLUSIONS = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure']);
 
 /**
+ * A check run's state from its conclusion: red when it ended in a way that
+ * blocks a merge, pending while it has no conclusion, green otherwise.
+ *
+ * @param {unknown} conclusion
+ * @returns {'red' | 'green' | 'pending'}
+ */
+const runState = (conclusion) => (RED_CONCLUSIONS.has(String(conclusion)) ? 'red' : typeof conclusion !== 'string' ? 'pending' : 'green');
+
+/**
  * A row of a workflow's runs list, as a RunRow.
  *
  * @param {any} row
@@ -1104,7 +1113,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       return [
         ...runs.map((r) => ({
           name: String(r?.name ?? ''),
-          state: stateOf(RED_CONCLUSIONS.has(String(r?.conclusion)), typeof r?.conclusion !== 'string'),
+          state: runState(r?.conclusion),
           ...(typeof r?.app?.slug === 'string' && r.app.slug !== '' ? { app: r.app.slug } : {}),
         })),
         ...statuses.map((/** @type {any} */ st) => ({ name: String(st?.context ?? ''), state: stateOf(st?.state === 'failure' || st?.state === 'error', st?.state === 'pending') })),
@@ -1130,8 +1139,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         .filter((/** @type {any} */ r) => r?.name === name && r?.app?.id === appId && Number.isSafeInteger(r?.id))
         .reduce((/** @type {any} */ newest, /** @type {any} */ r) => (newest === null || r.id > newest.id ? r : newest), null);
       if (own === null) return null;
-      const pending = typeof own.conclusion !== 'string';
-      return { state: RED_CONCLUSIONS.has(String(own.conclusion)) ? 'red' : pending ? 'pending' : 'green', title: String(own.output?.title ?? '') };
+      return { state: runState(own.conclusion), title: String(own.output?.title ?? '') };
     },
 
     /**
