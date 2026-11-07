@@ -245,11 +245,12 @@ describe('writing a heartbeat issue: one helper reads it, checks governor\'s mar
 
   test('turn.mjs writes a heartbeat issue only through it, and sweep.mjs leaves the write to the turn', async () => {
     const { readFile } = await import('node:fs/promises');
-    const sweep = await readFile(new URL('../dispatch/sweep.mjs', import.meta.url), 'utf8');
+    const read = (file: string) => readFile(new URL(`../${file}`, import.meta.url), 'utf8');
+    const turn = await read('dispatch/turn.mjs');
+    const sweep = await read('dispatch/sweep.mjs');
+    assert.match(turn, /writeHeartbeatIssue\(/, 'turn.mjs calls the helper');
     assert.doesNotMatch(sweep, /writeHeartbeatIssue|last-run/, 'sweep.mjs writes no heartbeat issue');
-    for (const file of ['dispatch/turn.mjs', 'dispatch/sweep.mjs']) {
-      const text = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
-      if (file === 'dispatch/turn.mjs') assert.match(text, /writeHeartbeatIssue\(/, `${file} calls the helper`);
+    for (const [file, text] of [['dispatch/turn.mjs', turn], ['dispatch/sweep.mjs', sweep]] as const) {
       assert.doesNotMatch(text, /HEARTBEAT_REFUSED|HEARTBEAT_UNWRITTEN|dispatch-heartbeat-refused|dispatch-heartbeat-unwritten/, `${file} logs no heartbeat refusal or failed write of its own`);
     }
   });

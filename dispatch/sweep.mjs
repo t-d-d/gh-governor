@@ -440,16 +440,16 @@ export const planSweep = async (invocation, ctx) => {
       // unblocked) is not the sweep: one per label or per merge would keep the
       // heartbeat fresh while the schedule was dead, and the watchdog reads
       // the heartbeat as the schedule's. Each repo whose file turns the
-      // heartbeat on and whose backlog this fire swept gets pickup's line, judged on that repo's own
-      // claims and launches (another repo's launch going through says nothing
-      // of this one's). `run` writes it into governor's block with the turn's
-      // periodic lines.
+      // heartbeat on and whose backlog this fire swept gets pickup's line,
+      // judged on that repo's own claims and launches (another repo's launch
+      // going through says nothing of this one's): the loop above has
+      // already taken out of `swept` a repo whose backlog was unread or whose
+      // every claim or launch failed. `run` writes the line into governor's
+      // block with the turn's periodic lines.
       if (ctx.bare) {
         for (const { repo, config } of ctx.served) {
-          if (!turnsOn(config, 'heartbeat') || config.heartbeat === undefined || unread.some((u) => u.repo === repo)) continue;
-          const own = pickupOwn(repo);
-          if (own.length > 0 && own.every((d) => d.outcome === 'failed')) continue;
-          if (swept.has(repo)) ctx.beats.push({ repo, beat: { pickup: { at: new Date(ctx.now()).toISOString(), started: startedOf(own) } } });
+          if (!turnsOn(config, 'heartbeat') || config.heartbeat === undefined || !swept.has(repo)) continue;
+          ctx.beats.push({ repo, beat: { pickup: { at: new Date(ctx.now()).toISOString(), started: startedOf(pickupOwn(repo)) } } });
         }
       }
       failed.push(...unread, ...sweepsUnread, ...periodicsUnread, ...waitsUnread);

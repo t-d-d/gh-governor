@@ -5,8 +5,9 @@
  * nothing to do. The rest of the issue's body stays as its owner wrote it.
  *
  * Governor keeps its own block under {@link HEARTBEAT_MARKER}, which the
- * body must already carry, ended by {@link HEARTBEAT_END}: one line for pickup and one per periodic
- * ({@link stampHeartbeat}), each changed only by the fire it reports, and a
+ * body must already carry, ended by {@link HEARTBEAT_END}: one line for
+ * pickup and one per periodic ({@link stampHeartbeat}), each changed only
+ * by the fire it reports, and a
  * periodic's state by the sign-off sweep. A periodic governor has read but
  * not fired yet gets a line at its baseline's time, which only a missing line
  * takes. Where the repo's file turns `sessionRules` on, the bare schedule
@@ -41,8 +42,8 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
  */
 
 /**
- * Read a heartbeat issue, check its body carries {@link HEARTBEAT_MARKER}, and write what
- * `stamp` makes of it. A body without the marker is refused under
+ * Read a heartbeat issue, check its body carries {@link HEARTBEAT_MARKER},
+ * and write what `stamp` makes of it. A body without the marker is refused under
  * {@link HEARTBEAT_REFUSED} with `refusal` as the reason and never written,
  * so a wrong issue number never overwrites a ticket. A stamp that returns
  * undefined changes nothing and writes nothing. A reader, read or write that
