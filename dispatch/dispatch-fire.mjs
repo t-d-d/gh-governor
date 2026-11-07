@@ -212,10 +212,14 @@ const toRoles = async ({ repo, on, writer, assigner, ticket, prompt }, ctx) => {
   const faults = (/** @type {import('./deliveries.mjs').Delivery} */ t) => !taken(t) && t.capped !== true && (!t.refused || t.fallback !== null);
   /** @type {import('./deliveries.mjs').Delivery[]} */
   const sent = [];
+  // A remark on an open ticket calls on each role's duty, as a comment does
+  // on a ticket fire. On a closed ticket nothing is left to build, so the
+  // remark asks what it asks in its own words, with no duty line.
+  const asked = { duty: assigner === undefined && remark !== null && ticket.state === 'open', notice: assigner === undefined && remark === null };
   try {
     for (const holder of sends) {
       const { session, role, owns } = holder;
-      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner, remark })}\n\n${rolesText(roles, holder, { duty: assigner === undefined && remark !== null, notice: assigner === undefined && remark === null })}`, { source: GITHUB_SOURCE, kind: 'summons-notice', on: [on], owns, strict: true });
+      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner, remark })}\n\n${rolesText(roles, holder, asked)}`, { source: GITHUB_SOURCE, kind: 'summons-notice', on: [on], owns, strict: true });
       // A refusal is no fault: what failed is handing the notice on.
       if (told.refused && faults(told)) told = { ...told, error: `${session} is archived, and the live session on the head branch of PR ${owns.map((n) => `#${n}`).join(', ')} could not be found or did not take the notice` };
       sent.push(told);
