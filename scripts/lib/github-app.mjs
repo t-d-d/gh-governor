@@ -1112,6 +1112,29 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
+     * The latest run of the check `name` at `sha` that `appId`'s App posted,
+     * newest by id, with its title: red when it ended in a way that blocks
+     * a merge, pending while it has not ended, green otherwise. Null where
+     * the App has no run of the name there, and for a reader without
+     * `appId`, which cannot tell governor's runs from another App's and
+     * reads nothing. Needs the App's Checks read.
+     *
+     * @param {string} name
+     * @param {string} sha
+     * @returns {Promise<{ state: 'red' | 'green' | 'pending', title: string } | null>}
+     */
+    ownCheck: async (name, sha) => {
+      if (appId === undefined) return null;
+      const runs = await allPages(call, `/repos/${repo}/commits/${sha}/check-runs`, { check_name: name, filter: 'latest', app_id: String(appId) }, undefined, (answer) => answer?.check_runs ?? []);
+      const own = runs
+        .filter((/** @type {any} */ r) => r?.name === name && r?.app?.id === appId && Number.isSafeInteger(r?.id))
+        .reduce((/** @type {any} */ newest, /** @type {any} */ r) => (newest === null || r.id > newest.id ? r : newest), null);
+      if (own === null) return null;
+      const pending = typeof own.conclusion !== 'string';
+      return { state: RED_CONCLUSIONS.has(String(own.conclusion)) ? 'red' : pending ? 'pending' : 'green', title: String(own.output?.title ?? '') };
+    },
+
+    /**
      * Write the check run named `name` at `sha`: in progress, or completed
      * with `state` as its conclusion. Where `appId`'s App has a run of the
      * name at `sha` still in progress, its latest, that run is updated, to

@@ -1625,6 +1625,32 @@ describe('a served repo\'s reads', () => {
     await assert.rejects(githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch }).checkRun({ name: 'governor', sha: 'b'.repeat(40), state: 'success', title: 'Passes.', summary: 'Passes.' }), (error: { status?: number }) => error.status === 403);
   });
 
+  describe('ownCheck reads governor\'s own latest run of a name at a commit, with its title', () => {
+    const SHA = 'c'.repeat(40);
+    const APP = 77;
+    const LIST = `https://api.github.com/repos/t-d-d/askme-mcp/commits/${SHA}/check-runs`;
+    const run = (id: number, over: Record<string, unknown> = {}) => ({ id, name: 'governor', status: 'completed', conclusion: 'failure', app: { id: APP }, output: { title: `run ${id}` }, ...over });
+
+    test('the newest run governor\'s App posted, red, green or pending, with its title; another App\'s run of the name is not governor\'s', async () => {
+      const { fetch, calls } = fakeFetch({ [LIST]: { check_runs: [run(3, { app: { id: 5 } }), run(2), run(1, { conclusion: 'success' })] } });
+      assert.deepEqual(await githubReader({ token: 't', repo: 't-d-d/askme-mcp', appId: APP, fetch }).ownCheck('governor', SHA), { state: 'red', title: 'run 2' });
+      const read = new URL(calls[0]!.url);
+      assert.equal(read.searchParams.get('check_name'), 'governor');
+      assert.equal(read.searchParams.get('app_id'), String(APP));
+      for (const [row, state] of [[run(4, { status: 'in_progress', conclusion: null }), 'pending'], [run(4, { conclusion: 'neutral' }), 'green']] as const) {
+        const one = fakeFetch({ [LIST]: { check_runs: [run(1), row] } });
+        assert.deepEqual(await githubReader({ token: 't', repo: 't-d-d/askme-mcp', appId: APP, fetch: one.fetch }).ownCheck('governor', SHA), { state, title: 'run 4' });
+      }
+    });
+
+    test('none where governor has no run of the name there, or the reader does not know governor\'s App', async () => {
+      const { fetch, calls } = fakeFetch({ [LIST]: { check_runs: [run(3, { app: { id: 5 } })] } });
+      assert.equal(await githubReader({ token: 't', repo: 't-d-d/askme-mcp', appId: APP, fetch }).ownCheck('governor', SHA), null);
+      assert.equal(await githubReader({ token: 't', repo: 't-d-d/askme-mcp', fetch }).ownCheck('governor', SHA), null);
+      assert.equal(calls.length, 1, 'a reader without the App reads nothing');
+    });
+  });
+
   describe('checkRun over a governor run already at the commit', () => {
     const SHA = 'b'.repeat(40);
     const APP = 77;
