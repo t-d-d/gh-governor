@@ -235,13 +235,14 @@ const shippedBefore = ({ triage, tags }) => [...Object.keys(tags).filter((t) => 
  *
  * @param {WorkflowFire} run
  * @param {string} target
+ * @param {string} end The commit the marked job built.
  * @param {Workflows} workflows
  * @param {PullRow[]} shipped
  * @param {JobRow[]} failed
  * @param {Prompts} prompts
  */
-const prodTriageText = (run, target, workflows, shipped, failed, prompts) => [
-  `The ${bare(target)} deploy failed (${run.name})${notShipped(target, run.headSha, workflows.tags)} It shipped ${shipped.length === 1 ? 'one merge' : `${shipped.length} merges`} since the last successful ${bare(target)} deploy. Their sessions signed off once their changes were on ${shippedBefore(workflows)}: this fix is yours.`,
+const prodTriageText = (run, target, end, workflows, shipped, failed, prompts) => [
+  `${failedAt(run, target, end, workflows.tags)} It shipped ${shipped.length === 1 ? 'one merge' : `${shipped.length} merges`} since the last successful ${bare(target)} deploy. Their sessions signed off once their changes were on ${shippedBefore(workflows)}: this fix is yours.`,
   '',
   `Run: ${run.url}`,
   'Failed jobs:',
@@ -295,31 +296,60 @@ const alsoSubscribed = (subscribed, told) => {
   ];
 };
 
+/** A name as code: a target, a label, a tag or a workflow. @param {string} name */
+const code = (name) => `\`${name}\``;
+
+/** A commit as a deploy's opening sentence names it. @param {string} sha */
+const commit = (sha) => sha.slice(0, 7);
+
 /**
- * Where a PR's change is: a tagged target bare (`dev`), any other with its
- * article (`the dispatcher`).
+ * The workflow a deploy's opening sentence names, linked to the job's page
+ * where the fire was a job's, else the run's.
  *
- * @param {string} target
- * @param {Tags} tags
+ * @param {RunView} run
  */
-const onTarget = (target, tags) => (Object.hasOwn(tags, target) || target.startsWith('the ') ? target : `the ${target}`);
+const byWorkflow = (run) => `the [${code(run.name)}](${run.job ?? run.url}) workflow`;
 
 /** The page a green note points at: the job's, where the fire was a job's, else the run's. @param {RunView} run */
 const pageOf = (run) => (run.job === undefined ? [`Run: ${run.url}`] : [`Job: ${run.job}`]);
 
 /**
- * What a green run says of the commit it shipped, and a red one of the
- * commit it did not: the tag the repo's config names for the target, where
- * it names one.
+ * How a green deploy's opening sentence ends: the tag the repo's config
+ * names for the target and the commit it moved to, or the commit alone.
  *
  * @param {string} target
  * @param {string} sha
  * @param {Tags} tags
  */
-const shippedAt = (target, sha, tags) => (Object.hasOwn(tags, target) ? `, and the ${tags[target]} tag is on ${short(sha)}.` : `, built from ${short(sha)}.`);
+const shippedAt = (target, sha, tags) => (Object.hasOwn(tags, target) ? `, which moved the ${code(String(tags[target]))} tag to ${commit(sha)}.` : ` at ${commit(sha)}.`);
 
-/** @param {string} target @param {string} sha @param {Tags} tags */
-const notShipped = (target, sha, tags) => (Object.hasOwn(tags, target) ? `; ${tags[target]} did not move to ${short(sha)}.` : `; ${short(sha)} did not reach ${onTarget(target, tags)}.`);
+/**
+ * A green deploy's opening sentence: `who` (`Your change is`, `PR #1,
+ * which you subscribe to, is`) deployed to the target by the workflow.
+ *
+ * @param {string} who
+ * @param {RunView} run
+ * @param {{ target: string, end: string, tags: Tags }} at
+ */
+const deployedTo = (who, run, { target, end, tags }) => `${who} deployed to ${code(target)} by ${byWorkflow(run)}${shippedAt(target, end, tags)}`;
+
+/**
+ * A red deploy's opening sentence, to every session it tells: the workflow
+ * failed at the commit, so the target's tag did not move, or the commit
+ * did not reach the target.
+ *
+ * @param {RunView} run
+ * @param {string} target
+ * @param {string} sha
+ * @param {Tags} tags
+ */
+const failedAt = (run, target, sha, tags) => `The [${code(run.name)}](${run.url}) workflow failed at ${commit(sha)}, ${Object.hasOwn(tags, target) ? `so the ${code(String(tags[target]))} tag did not move.` : `so it did not reach ${code(target)}.`}`;
+
+/** Numbers as a sentence lists them: `#1`, `#1 and #2`, `#1, #2 and #3`. @param {number[]} ns */
+const andList = (ns) => {
+  const all = ns.map((n) => `#${n}`);
+  return all.length === 1 ? String(all[0]) : `${all.slice(0, -1).join(', ')} and ${all[all.length - 1]}`;
+};
 
 /**
  * A deploy's message to a session that subscribes to every PR it names and
@@ -336,8 +366,8 @@ const deploySubscriberText = (run, { target, end, tags }, prs, failed, told, pro
   const one = prs.length === 1;
   const which = one ? `PR #${prs[0]?.number}, which you subscribe to,` : `PRs ${numbers(prs)}, which you subscribe to,`;
   const heading = run.conclusion === 'success'
-    ? `${which} ${one ? 'is' : 'are'} on ${onTarget(target, tags)}: ${run.name} published ${one ? 'it' : 'them'} (${run.job ?? run.url})${shippedAt(target, end, tags)}`
-    : `The ${bare(target)} deploy after ${which} merged failed (${run.name})${notShipped(target, end, tags)}`;
+    ? deployedTo(`${which} ${one ? 'is' : 'are'}`, run, { target, end, tags })
+    : `${failedAt(run, target, end, tags)}\nIt was to deploy ${which.slice(0, -1)}.`;
   const facts = [...prList(prs), ...pageOf(run), ...(run.conclusion === 'success' ? [] : ['Failed jobs:', ...jobList(failed)])];
   return subscriberText(heading, facts, toldToo(prs, told), prompts);
 };
@@ -360,9 +390,7 @@ const deployText = (run, { target, end, tags }, own, subscribed, failed, told, p
   const last = newest(own).number;
   if (run.conclusion === 'success') {
     return [
-      one
-        ? `Your change is on ${onTarget(target, tags)}: ${run.name} published it (${run.job ?? run.url})${shippedAt(target, end, tags)}`
-        : `Your changes are on ${onTarget(target, tags)}: ${run.name} published them (${run.job ?? run.url})${shippedAt(target, end, tags)}`,
+      deployedTo(one ? 'Your change is' : 'Your changes are', run, { target, end, tags }),
       '',
       ...prList(own),
       ...pageOf(run),
@@ -372,9 +400,7 @@ const deployText = (run, { target, end, tags }, own, subscribed, failed, told, p
     ].join('\n');
   }
   return [
-    one
-      ? `The ${bare(target)} deploy after your pull request merged failed (${run.name})${notShipped(target, end, tags)}`
-      : `The ${bare(target)} deploy after ${own.length} of your pull requests merged failed (${run.name})${notShipped(target, end, tags)}`,
+    failedAt(run, target, end, tags),
     '',
     ...prList(own),
     `Run: ${run.url}`,
@@ -523,7 +549,7 @@ const planTarget = async (run, coverage, prompts, workflows) => {
       reason: null,
       notes: [],
       unnamed: [],
-      triage: { prompt: prodTriageText(run, target, workflows, sorted, failed, prompts), sessionName: oneLine(`${deploy.charAt(0).toUpperCase()}${deploy.slice(1)} deploy red ${short(headSha)}: ${sorted.length} merge${sorted.length === 1 ? '' : 's'}`).slice(0, 100) },
+      triage: { prompt: prodTriageText(run, target, end, workflows, sorted, failed, prompts), sessionName: oneLine(`${deploy.charAt(0).toUpperCase()}${deploy.slice(1)} deploy red ${short(headSha)}: ${sorted.length} merge${sorted.length === 1 ? '' : 's'}`).slice(0, 100) },
       range,
       stale: null,
       advance,
@@ -616,15 +642,17 @@ export const withTickets = (plan, tickets) => {
       entry.lines.push(ticketLine(shipped, holder));
     }
   }
+  // The ticket's label is the news to its roles, so it names the label.
+  const label = code(`${LABEL_PREFIX}${target}`);
   const notes = touched.map(({ note, lines, added }) => {
     if (lines.length === 0) return note;
-    const heading = `Ticket${lines.length === 1 ? '' : 's'} you hold a role on, which this deploy shipped:`;
+    const heading = `Ticket${lines.length === 1 ? '' : 's'} you hold a role on, now labelled ${label}:`;
     if (!added) return { ...note, text: [note.text, '', heading, ...lines].join('\n') };
-    const one = lines.length === 1;
+    const tickets = note.tickets ?? [];
     return {
       ...note,
       text: [
-        `A change to ${one ? 'a ticket' : 'tickets'} you hold a role on is on ${onTarget(target, tags)}: ${run.name} published it (${run.job ?? run.url})${shippedAt(target, end, tags)}`,
+        `${andList(tickets)} ${tickets.length === 1 ? 'is' : 'are'} labelled ${label} by ${byWorkflow(run)}${shippedAt(target, end, tags)}`,
         '',
         ...lines,
       ].join('\n'),

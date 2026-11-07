@@ -224,7 +224,8 @@ describe('planWorkflow — a deploy', () => {
     assert.equal(plan.notes.length, 1);
     const [note] = plan.notes;
     assert.deepEqual([note!.session, note!.prs, note!.closing], [SESSION, [799], true]);
-    assert.match(note!.text, /^Your change is on dev: Deliver published it \(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\/job\/1\), and the deploy\/dev tag is on a1b2c3d4e5f6\./m);
+    assert.match(note!.text, /^Your change is deployed to `dev` by the \[`Deliver`\]\(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\/job\/1\) workflow, which moved the `deploy\/dev` tag to a1b2c3d\.$/m);
+    assert.doesNotMatch(note!.text, /\bthe dev\b|published it/, 'no article before a target, and the workflow is not the subject');
     for (const want of [/PR #799/, /`dev deploy`/]) assert.match(note!.text, want);
     assert.doesNotMatch(note!.text, /finished green/);
     assert.ok(!note!.text.includes(UNATTENDED), 'a deploy note goes to a session that exists (#883)');
@@ -249,10 +250,20 @@ describe('planWorkflow — a deploy', () => {
   test('a red Deliver run tells no session and plans one triage session with the merges it shipped since the last green prod stage', async () => {
     const plan = await planOf(fire('Deliver', 'failure'), reader({ runJobs: async (id: number) => (id === 500 ? [marked(DEV), marked(PROD, 500, 'failure')] : green(id)) }));
     assert.deepEqual(plan.notes, [], 'its merges\' sessions signed off at dev');
-    for (const want of [/The prod deploy failed \(Deliver\)/, /deploy\/prod did not move/, /PR #799/, /actions\/runs\/500/, /Publish at sha500 · deployed: prod/, /new branch/i, /issue/i]) assert.match(plan.triage!.prompt, want);
+    assert.match(plan.triage!.prompt, /^The \[`Deliver`\]\(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\) workflow failed at a1b2c3d, so the `deploy\/prod` tag did not move\. /);
+    for (const want of [/PR #799/, /actions\/runs\/500/, /Publish at sha500 · deployed: prod/, /new branch/i, /issue/i]) assert.match(plan.triage!.prompt, want);
     assert.ok(plan.triage!.prompt.includes(UNATTENDED), 'a triage session is one the dispatcher starts (#883)');
     assert.match(plan.triage!.sessionName, /^Prod deploy red \w+: 1 merge$/);
     assert.equal(plan.advance, null, 'a red run advances no cursor');
+  });
+
+  test('a red Deliver run whose green stage built an older commit names that commit, as the other red messages do, not the run\'s head', async () => {
+    const BUILT = 'b'.repeat(40);
+    const plan = await planOf(fire('Deliver', 'failure'), reader({
+      runJobs: async (id: number) => (id === 500 ? [{ ...marked(DEV), name: `Publish at ${BUILT} · ${DEV}` }, marked(PROD, 500, 'failure')] : green(id)),
+      pullsForCommit: async (sha: string) => (sha === BUILT || sha === SHA ? [pr(799, { merge_commit_sha: sha })] : []),
+    }));
+    assert.match(plan.triage!.prompt, /^The \[`Deliver`\]\([^)]+\) workflow failed at bbbbbbb, so the `deploy\/prod` tag did not move\. /);
   });
 
   // A failed rollback: the compare from the baseline's commit holds nothing, and the PR at its head is still the news.
@@ -288,7 +299,7 @@ describe('planWorkflow — a deploy', () => {
     assert.ok(r.asked.includes(`compare shaP...${SHA}`), r.asked.join(', '));
     assert.deepEqual(r.asked.filter((a) => a.startsWith('pulls')).sort(), ['pulls m1', `pulls ${SHA}`].sort(), 'only the merges of a PR are read');
     assert.deepEqual(plan.notes.map((n) => [n.session, n.prs]).sort(), [['https://claude.ai/code/session_01ONE', [767]], [SESSION, [799]]]);
-    assert.ok(plan.notes.every((n) => /on prod: Deliver published it/.test(n.text) && /deploy\/prod/.test(n.text) && n.closing));
+    assert.ok(plan.notes.every((n) => /is deployed to `prod` by the \[`Deliver`\]/.test(n.text) && /deploy\/prod/.test(n.text) && n.closing));
   });
 
   // A run that stopped after dev is no baseline for prod.
@@ -389,8 +400,8 @@ describe('planWorkflow — a run\'s subscribers', () => {
   test('a subscriber to deploys hears a dev job after the owner, told whose PR it is and which job published it', async () => {
     const plan = await planOf(jobFire('Deliver', DEV), watched(body(['deploys'])));
     assert.deepEqual(plan.notes.map((n) => n.session), [SESSION, REVIEWER]);
-    assert.match(plan.notes[0]!.text, /Your change is on dev/);
-    assert.match(plan.notes[1]!.text, /^PR #799, which you subscribe to, is on dev: Deliver published it \(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\/job\/1\), and the deploy\/dev tag is on a1b2c3d4e5f6\./m);
+    assert.match(plan.notes[0]!.text, /Your change is deployed to `dev`/);
+    assert.match(plan.notes[1]!.text, /^PR #799, which you subscribe to, is deployed to `dev` by the \[`Deliver`\]\(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\/job\/1\) workflow, which moved the `deploy\/dev` tag to a1b2c3d\.$/m);
     assert.doesNotMatch(plan.notes[1]!.text, /Your change/);
     assert.match(plan.notes[1]!.text, /own session has been told/);
     assert.deepEqual(plan.notes[1]!.subscribed, [799], 'a refusal drops it from the PR');
@@ -419,6 +430,13 @@ describe('planWorkflow — a run\'s subscribers', () => {
     }
     const red = await planOf(fire('Dispatch stack', 'failure'), redDispatcher(body(['deploys'])));
     assert.deepEqual(red.notes.map((n) => n.closing), [false, false]);
+  });
+
+  test('a red deploy tells the owner and a subscriber in the same opening sentence, and the subscriber which PR it subscribes to', async () => {
+    const red = await planOf(fire('Dispatch stack', 'failure'), redDispatcher(body(['deploys'])));
+    const opening = /^The \[`Dispatch stack`\]\(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\) workflow failed at a1b2c3d, so it did not reach `the dispatcher`\.$/m;
+    for (const note of red.notes) assert.match(note.text, opening);
+    assert.match(red.notes[1]!.text, /^It was to deploy PR #799, which you subscribe to\.$/m);
   });
 });
 
@@ -466,11 +484,11 @@ describe('planWorkflow — one note per session for a run over several PRs', () 
     const own = plan.notes.find((n) => n.session === OWNER)!;
     assert.deepEqual(own.prs, [767, 799]);
     assert.doesNotMatch(own.text, /PR #786: The change/);
-    assert.match(own.text, /^Your changes are on dev: Deliver published them \(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\/job\/1\), and the deploy\/dev tag is on a1b2c3d4e5f6\./m);
+    assert.match(own.text, /^Your changes are deployed to `dev` by the \[`Deliver`\]\(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\/job\/1\) workflow, which moved the `deploy\/dev` tag to a1b2c3d\.$/m);
     assert.match(own.text, /`dev deploy`/);
     assert.match(own.text, /on PR #799\b/);
     const other = plan.notes.find((n) => n.session === OTHER)!;
-    assert.match(other.text, /Your change is on dev/, 'a single-PR session reads as before');
+    assert.match(other.text, /Your change is deployed to `dev`/, 'a single-PR session reads as before');
     assert.match(other.text, /on PR #786\b/);
   });
 
@@ -479,7 +497,7 @@ describe('planWorkflow — one note per session for a run over several PRs', () 
     const plan = await planOf(jobFire('Deliver', DEV), over(prs, 'success'));
     const toReviewer = plan.notes.filter((n) => n.session === REVIEWER);
     assert.equal(toReviewer.length, 1);
-    assert.match(toReviewer[0]!.text, /^PRs #767, #786, which you subscribe to, are on dev: Deliver published them \(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\/job\/1\)/m);
+    assert.match(toReviewer[0]!.text, /^PRs #767, #786, which you subscribe to, are deployed to `dev` by the \[`Deliver`\]\(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\/job\/1\) workflow, which moved the `deploy\/dev` tag to a1b2c3d\.$/m);
     assert.match(toReviewer[0]!.text, /PR #767/);
     assert.match(toReviewer[0]!.text, /PR #786/);
     assert.deepEqual(toReviewer[0]!.subscribed, [767, 786]);
@@ -492,7 +510,7 @@ describe('planWorkflow — one note per session for a run over several PRs', () 
     ], 'success'));
     const own = plan.notes.filter((n) => n.session === OWNER);
     assert.equal(own.length, 1);
-    assert.match(own[0]!.text, /Your change is on dev/);
+    assert.match(own[0]!.text, /Your change is deployed to `dev`/);
     assert.match(own[0]!.text, /PR #799/);
     assert.match(own[0]!.text, /subscribe[\s\S]*PR #767/i);
     assert.match(own[0]!.text, /on PR #799\b/);
@@ -551,7 +569,7 @@ describe('planWorkflow — every deploy target that ships a PR\'s change', () =>
     const plan = await planOf(shipped('Dispatch stack'), target('Dispatch stack', 'success', { files: { 799: ['dispatch/turn.mjs'], 804: ['src/me.ts'] } }));
     assert.equal(plan.notes.length, 1, String(plan.reason));
     assert.deepEqual(plan.notes[0]!.prs, [799]);
-    assert.match(plan.notes[0]!.text, /^Your change is on the dispatcher: Dispatch stack published it \(https:\/\/x\/500\/job\/1\), built from a1b2c3d4e5f6\./m);
+    assert.match(plan.notes[0]!.text, /^Your change is deployed to `the dispatcher` by the \[`Dispatch stack`\]\(https:\/\/x\/500\/job\/1\) workflow at a1b2c3d\.$/m);
     assert.doesNotMatch(plan.notes[0]!.text, /PR #804/);
     assert.match(plan.notes[0]!.text, /`dispatcher deploy`/);
     assert.equal(plan.notes[0]!.closing, true);
@@ -569,7 +587,7 @@ describe('planWorkflow — every deploy target that ships a PR\'s change', () =>
   test('a red Dispatch stack run tells the PR that changed the dispatcher, as a red dev deploy does', async () => {
     const plan = await planOf(fire('Dispatch stack', 'failure'), target('Dispatch stack', 'failure', { files: { 799: ['scripts/lib/github-app.mjs'], 804: ['scripts/operator-x.mjs'] } }));
     assert.equal(plan.notes.length, 1, String(plan.reason));
-    assert.match(plan.notes[0]!.text, /^The dispatcher deploy after your pull request merged failed \(Dispatch stack\); a1b2c3d4e5f6 did not reach the dispatcher\./m);
+    assert.match(plan.notes[0]!.text, /^The \[`Dispatch stack`\]\(https:\/\/github\.com\/acme\/factory\/actions\/runs\/500\) workflow failed at a1b2c3d, so it did not reach `the dispatcher`\.$/m);
     assert.match(plan.notes[0]!.text, /Failed jobs:/);
     assert.equal(plan.notes[0]!.closing, false);
     assert.equal(plan.triage, null);
@@ -598,7 +616,7 @@ describe('planWorkflow — every deploy target that ships a PR\'s change', () =>
   test('a green release dispatched by hand tells the PRs its paths pick', async () => {
     const plan = await planOf(shipped('Android release'), target('Android release', 'success', { files: { 799: ['clients/android/app/build.gradle.kts'], 804: ['src/me.ts'] } }));
     assert.equal(plan.notes.length, 1, String(plan.reason));
-    assert.match(plan.notes[0]!.text, /Your change is on the play track: Android release published it \(https:\/\/x\/500\/job\/1\)/);
+    assert.match(plan.notes[0]!.text, /^Your change is deployed to `play track` by the \[`Android release`\]\(https:\/\/x\/500\/job\/1\) workflow at a1b2c3d\.$/m);
     assert.equal(plan.notes[0]!.closing, true);
   });
 
