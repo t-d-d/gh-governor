@@ -1,4 +1,8 @@
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 
 // What is wrong with a caller's `with:` against a reusable workflow as it is
@@ -101,4 +105,86 @@ function kind(value: unknown): string {
 // expressions makes GitHub join them into a string.
 function isExpression(value: unknown): boolean {
   return typeof value === 'string' && /^\s*\$\{\{(?:(?!\}\})[\s\S])*\}\}\s*$/.test(value);
+}
+
+// What stops the heartbeat checker a workflow carries at a pinned commit from
+// reading a served repo's config file, given as `config`, at
+// .github/governor.json. The workflow writes its checker out from a quoted
+// CHECKER heredoc and runs that, so this loads the same text and runs its
+// `check` against a fake GitHub that serves the file at that path and at no
+// other. Reading the heartbeat issue the file names shows the checker found
+// and accepted the file, whichever of its versions it is. None means it did.
+export async function pinnedCheckerReadProblems({ cwd, sha, path, config }: {
+  cwd: string,
+  sha: string,
+  path: string,
+  config: string,
+}): Promise<string[]> {
+  const short = sha.slice(0, 12);
+  const shown = spawnSync('git', ['show', `${sha}:${path}`], { cwd, encoding: 'utf8' });
+  if (shown.status !== 0) return [`the pinned commit ${short} has no ${path}`];
+  let doc: unknown;
+  try {
+    doc = yaml.load(shown.stdout);
+  } catch (error) {
+    return [`${path} at ${short} is not valid YAML: ${(error as Error).message.split('\n')[0]}`];
+  }
+  const jobs = isMapping(doc) && isMapping(doc.jobs) ? Object.values(doc.jobs) : [];
+  const runs = jobs.flatMap((job) => (isMapping(job) && Array.isArray(job.steps) ? job.steps : []))
+    .map((step: unknown) => (isMapping(step) ? step.run : undefined))
+    .filter((run): run is string => typeof run === 'string');
+  const text = runs.map((run) => /<<'CHECKER'\n([\s\S]*?)\nCHECKER\n/.exec(run)?.[1]).find((t) => t !== undefined);
+  if (text === undefined) return [`${path} at ${short} carries no heartbeat checker in a quoted CHECKER heredoc`];
+  const dir = mkdtempSync(join(tmpdir(), 'pinned-checker-'));
+  try {
+    const file = join(dir, `heartbeat-check-${short}.mjs`);
+    writeFileSync(file, `${text}\n`);
+    let check: (args: Record<string, unknown>) => Promise<unknown>;
+    try {
+      ({ check } = await import(pathToFileURL(file).href) as { check: typeof check });
+      if (typeof check !== 'function') throw new Error('it exports no check function');
+    } catch (error) {
+      return [`the heartbeat checker at ${short} does not load: ${(error as Error).message.split('\n')[0]}`];
+    }
+    const repo = 'acme/factory';
+    const issue = (JSON.parse(config) as { heartbeat?: { issue?: unknown } }).heartbeat?.issue;
+    const missing: string[] = [];
+    const opened: string[] = [];
+    let readIssue = false;
+    const notFound = (what: string) => Object.assign(new Error(`HTTP 404 for ${what}`), { status: 404 });
+    const api = async (method: string, route: string, body?: { title?: string }) => {
+      const url = new URL(route, 'https://api.invalid');
+      const contents = new RegExp(`^/repos/${repo}/contents/(.+)$`).exec(url.pathname);
+      if (method === 'GET' && contents !== null) {
+        const wanted = decodeURIComponent(contents[1] ?? '');
+        if (wanted !== '.github/governor.json') {
+          missing.push(wanted);
+          throw notFound(wanted);
+        }
+        return { encoding: 'base64', content: Buffer.from(config).toString('base64') };
+      }
+      if (method === 'GET' && url.pathname === `/repos/${repo}/issues/${String(issue)}`) {
+        readIssue = true;
+        return { number: issue, body: '' };
+      }
+      if (method === 'GET') return [];
+      if (method === 'POST' && url.pathname === `/repos/${repo}/issues`) opened.push(String(body?.title));
+      return { number: 900, state: 'open', ...body };
+    };
+    let threw: unknown;
+    try {
+      await check({ api, repo, now: Date.now(), toleranceHours: 3, labels: [], log: () => {} });
+    } catch (error) {
+      threw = error;
+    }
+    if (readIssue && missing.length === 0) return [];
+    const why = missing.length > 0
+      ? `it read ${missing.join(', ')}, which the starter kit does not have`
+      : threw !== undefined
+        ? `it threw ${(threw as Error).message}`
+        : `it opened ${opened.length === 0 ? 'nothing' : opened.map((t) => JSON.stringify(t)).join(', ')}`;
+    return [`the heartbeat checker at ${short} did not read .github/governor.json through to heartbeat issue ${String(issue)}: ${why}`];
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
