@@ -380,7 +380,7 @@ export const lastDispatch = (comments) => {
  *   ({@link postWords}), by which the task matches the tool call that
  *   posted it. The task searches the login's live sessions for its
  *   author, whatever `sessionRules` says (dispatch/author.mjs).
- * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, mergedAt?: string, subscribed?: true, authors?: string[], offer?: string, moved?: MovedLink, unsigned?: UnsignedPost, edited?: UnsignedPost }
+ * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, mergedAt?: string, subscribed?: true, authors?: string[], offer?: string, moved?: MovedLink, unsigned?: UnsignedPost, edited?: UnsignedPost, closedAt?: string }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
  *   `mergedAt`: on a PR's merge, the ref it landed at, its merge commit or
@@ -410,6 +410,10 @@ export const lastDispatch = (comments) => {
  *   (the issue's `updated_at`), its page and the new body's words around
  *   the change (`editWords`, dispatch/webhook/mention.mjs), in the shape of an unsigned post. The task searches for the session
  *   that made the edit, the owner first (dispatch/editor.mjs).
+ *   `closedAt`: on a close, an issue closed or a PR closed without
+ *   merging, when it closed (`closed_at`). The task reads the session's own
+ *   events around it, and a session that made the close is not told of it
+ *   (dispatch/editor.mjs). A reopen and a merge carry none.
  * @typedef {{ kind: 'author', on: number, post: UnsignedPost, authors?: string[] }} AuthorFire
  *   A session's unsigned post on issue or PR `on` that no role hears: the
  *   task searches the login's live sessions for its author and tells it
@@ -451,7 +455,7 @@ export const lastDispatch = (comments) => {
  *   A ticket of the fire's repo that `blocker` blocked, which just closed,
  *   by `pr` where a merge closed it. No body or diff: the fire must fit
  *   the lane ({@link FIRE_BUDGET}).
- * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], builder?: string, displaced?: string, moved?: MovedLink, unsigned?: UnsignedPost, edited?: UnsignedPost }} TicketFire
+ * @typedef {{ kind: 'ticket', issue: number, text: string, event: 'comments' | 'close' | 'edit' | 'dispatched', state: 'open' | 'closed', labels: string[], owner?: string, poster?: string, closing?: true, authors?: string[], builder?: string, displaced?: string, moved?: MovedLink, unsigned?: UnsignedPost, edited?: UnsignedPost, closedAt?: string }} TicketFire
  *   A comment on an issue, the issue closed or reopened, or its body
  *   edited (`edit`), where the issue may be claimed: its spec owner and, on a claimed ticket, its builders
  *   hear it, each told which role it holds (dispatch/ticket-fire.mjs). The
@@ -476,6 +480,8 @@ export const lastDispatch = (comments) => {
  *   `unsigned`: on a comment, where it is a session's unsigned post, as a
  *   message fire's.
  *   `edited`: on an `edit`, the edit's time, page and words, as a
+ *   message fire's.
+ *   `closedAt`: on a `close` that closed the issue, when it closed, as a
  *   message fire's.
  * @typedef {{ kind: 'closingPr', pr: number }} ClosingPrFire
  *   A PR opened, reopened or edited so that its body may come to close a
@@ -537,11 +543,11 @@ export const build = Object.freeze({
    *   text: string, on?: number | undefined, event?: SubscriptionEvent | undefined, commit?: string | undefined,
    *   closing?: boolean | undefined, mergedAt?: string | undefined, subscribed?: boolean | undefined, fallback?: Fallback | undefined,
    *   authors?: string[] | undefined, offer?: string | null | undefined, moved?: MovedLink | undefined,
-   *   unsigned?: UnsignedPost | null | undefined, edited?: UnsignedPost | null | undefined,
+   *   unsigned?: UnsignedPost | null | undefined, edited?: UnsignedPost | null | undefined, closedAt?: string | undefined,
    * }} args
    * @returns {MessageFire}
    */
-  message: ({ session, byBranch, poster, text, on, event, commit, closing, mergedAt, subscribed, fallback, authors, offer, moved, unsigned, edited }) => /** @type {MessageFire} */ ({
+  message: ({ session, byBranch, poster, text, on, event, commit, closing, mergedAt, subscribed, fallback, authors, offer, moved, unsigned, edited, closedAt }) => /** @type {MessageFire} */ ({
     kind: 'message',
     ...(byBranch === true ? { byBranch, ...present({ poster }) } : { session }),
     text,
@@ -558,6 +564,7 @@ export const build = Object.freeze({
       moved,
       unsigned: unsigned ?? undefined,
       edited: edited ?? undefined,
+      closedAt,
     }),
   }),
 
@@ -603,11 +610,11 @@ export const build = Object.freeze({
    *   owner?: string | null | undefined, poster?: string | null | undefined, closing?: boolean | undefined,
    *   authors?: string[] | undefined,
    *   builder?: string | null | undefined, displaced?: string | null | undefined, moved?: MovedLink | undefined,
-   *   unsigned?: UnsignedPost | null | undefined, edited?: UnsignedPost | null | undefined,
+   *   unsigned?: UnsignedPost | null | undefined, edited?: UnsignedPost | null | undefined, closedAt?: string | undefined,
    * }} args
    * @returns {TicketFire}
    */
-  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, builder, displaced, moved, unsigned, edited }) => ({
+  ticket: ({ issue, text, event, state, labels, owner, poster, closing, authors, builder, displaced, moved, unsigned, edited, closedAt }) => ({
     kind: 'ticket',
     issue,
     text,
@@ -624,6 +631,7 @@ export const build = Object.freeze({
       moved,
       unsigned: unsigned ?? undefined,
       edited: edited ?? undefined,
+      closedAt,
     }),
   }),
 
@@ -1036,6 +1044,8 @@ const parseMessage = (e, event) => {
   const moved = e.moved === undefined ? undefined : parseMoved(e.moved, 'a message invocation');
   const unsigned = e.unsigned === undefined ? undefined : parseUnsigned(e.unsigned, 'a message invocation');
   const edited = e.edited === undefined ? undefined : parseUnsigned(e.edited, 'a message invocation\'s edit');
+  if (e.closedAt !== undefined && e.event !== 'close') throw new Error(`a message invocation's closedAt goes only on a close, got: ${JSON.stringify(e.event)}`);
+  if (e.closedAt !== undefined && !isTime(e.closedAt)) throw new Error(`a message invocation's closedAt must be a time, got: ${JSON.stringify(e.closedAt)?.slice(0, 100)}`);
   const to = e.byBranch === true
     ? { byBranch: /** @type {true} */ (true), on: Number(e.on), ...(typeof e.poster === 'string' ? { poster: e.poster } : {}) }
     : { session: /** @type {string} */ (e.session) };
@@ -1055,8 +1065,17 @@ const parseMessage = (e, event) => {
     ...(moved === undefined ? {} : { moved }),
     ...(unsigned === undefined ? {} : { unsigned }),
     ...(edited === undefined ? {} : { edited }),
+    ...(e.closedAt === undefined ? {} : { closedAt: /** @type {string} */ (e.closedAt) }),
   };
 };
+
+/**
+ * Whether a fire's time is one the payload could have given: a string of
+ * at most 40 characters that parses as a date.
+ *
+ * @param {unknown} raw
+ */
+const isTime = (raw) => typeof raw === 'string' && raw.length <= 40 && Number.isFinite(Date.parse(raw));
 
 /** The most a post's first words run to, so a fire carrying them fits the lane. */
 export const POST_WORDS_CHARS = 400;
@@ -1292,6 +1311,8 @@ const parseTicket = (e) => {
   const unsigned = e?.unsigned === undefined ? undefined : parseUnsigned(e.unsigned, 'a ticket invocation');
   if (e?.edited !== undefined && e.event !== 'edit') refuse('edited goes only on an edit');
   const edited = e?.edited === undefined ? undefined : parseUnsigned(e.edited, 'a ticket invocation\'s edit');
+  if (e?.closedAt !== undefined && e.event !== 'close') refuse('closedAt goes only on a close');
+  if (e?.closedAt !== undefined && !isTime(e.closedAt)) refuse('closedAt must be a time');
   const t = /** @type {Record<string, unknown>} */ (e);
   return {
     kind: 'ticket',
@@ -1309,6 +1330,7 @@ const parseTicket = (e) => {
     ...(moved === undefined ? {} : { moved }),
     ...(unsigned === undefined ? {} : { unsigned }),
     ...(edited === undefined ? {} : { edited }),
+    ...(t.closedAt === undefined ? {} : { closedAt: String(t.closedAt) }),
   };
 };
 

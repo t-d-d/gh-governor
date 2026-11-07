@@ -11480,3 +11480,45 @@ describe('run: a body edit that leaves the owner link in place, told to the issu
     assert.ok(h.messages[0]!.text.includes(EDIT_SPEC_OWNER));
   });
 });
+
+describe('run: a close the session made itself is not told to it (#689)', () => {
+  const OWNER = 'https://claude.ai/code/session_01OWNER';
+  const CLOSED = new Date(NOW - 30 * 60 * 1000).toISOString();
+  const text = `Issue #7: The parser was closed (completed) by t-d-d.`;
+  const fire = { kind: 'message', session: OWNER, text, on: 7, event: 'close', closing: true, subscribed: true, authors: ['OWNER'], closedAt: CLOSED };
+  const closeEvents = { data: [{ event_id: 'e-1', event_type: 'assistant', created_at: CLOSED, payload: { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'gh issue close 7 --reason completed' } }] } } }], next_cursor: null };
+  const commentEvents = { data: [{ event_id: 'e-1', event_type: 'assistant', created_at: CLOSED, payload: { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'mcp__github__add_issue_comment', input: { owner: 'acme', repo: 'factory', issue_number: 7, body: 'Done.' } }] } } }], next_cursor: null };
+
+  test('the session closed it: it is not told of its own close', async () => {
+    const h = harness();
+    h.pages.set('cse_01OWNER', closeEvents);
+    const result = await run(fire, h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.messages, []);
+    assert.match(String(result.skipped), /closed it itself/);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('someone else closed it: the session hears it as before', async () => {
+    const h = harness();
+    h.pages.set('cse_01OWNER', commentEvents);
+    await run(fire, h.deps as never);
+    assert.deepEqual(h.messages.map((m) => m.session), [OWNER]);
+    assert.ok(h.messages[0]!.text.includes(text));
+  });
+
+  test('the session\'s events cannot be read: it hears the close as before', async () => {
+    const h = harness();
+    h.deps.sessions.events = async () => { throw new Error('GET events: 502'); };
+    await run(fire, h.deps as never);
+    assert.deepEqual(h.messages.map((m) => m.session), [OWNER]);
+  });
+
+  test('a close with no close time reads no events', async () => {
+    const h = harness();
+    h.pages.set('cse_01OWNER', closeEvents);
+    const { closedAt: _, ...untimed } = fire;
+    await run(untimed, h.deps as never);
+    assert.deepEqual(h.messages.map((m) => m.session), [OWNER]);
+    assert.deepEqual(h.eventsRead.filter((r: { id: string }) => r.id === 'cse_01OWNER'), []);
+  });
+});

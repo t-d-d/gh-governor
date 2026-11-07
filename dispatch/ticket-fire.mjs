@@ -28,6 +28,10 @@
  * session the searches find asked to sign its post or to comment instead
  * of editing. The builder hears every edit.
  *
+ * A close carries its time, and each role about to hear it has its own
+ * events read first: a role that made the close is not told of it, and one
+ * whose events cannot be read hears it as before (dispatch/editor.mjs).
+ *
  * Where the spec owner refuses a comment as archived, nobody owns the
  * ticket, so with `sessionRules` on the session that signed the comment is
  * offered it once the roles have heard it, unless it builds the ticket
@@ -101,6 +105,19 @@ export const planTicket = async (invocation, ctx) => {
   const edit = event === 'edit' && moved === null && owner !== null && invocation.edited !== undefined ? invocation.edited : null;
   const edited = edit === null || owner === null ? null : await ctx.findEditor(issue, edit, owner);
   const ownEdit = edited?.by === 'owner';
+  // A close: each role about to hear it has its own events read, and is not
+  // told of a close it made itself (dispatch/editor.mjs). Each session is
+  // read at most once.
+  const closedAt = event === 'close' ? invocation.closedAt ?? null : null;
+  /** @type {Map<string, Promise<boolean>>} */
+  const closers = new Map();
+  const closedItself = (/** @type {string} */ session) => {
+    if (closedAt === null) return Promise.resolve(false);
+    const id = sessionId(session);
+    let read = closers.get(id);
+    if (read === undefined) closers.set(id, read = ctx.findCloser(issue, closedAt, session).then((found) => found.by === 'self'));
+    return read;
+  };
   const about = { repo, issue, change: event, state, claimed };
   // A comment on an open ticket calls on each role's duty; a close, a
   // reopen or a comment on a closed ticket asks nothing of either, as the
@@ -138,6 +155,7 @@ export const planTicket = async (invocation, ctx) => {
     // The spec owner's message as the receiver queued it before, with no read.
     if (owner !== null && own(owner)) skipped.push(`${sessionId(owner)}'s own post`);
     else if (owner !== null && ownEdit) skipped.push(`${sessionId(owner)}, which made the edit`);
+    else if (owner !== null && await closedItself(owner)) skipped.push(`${sessionId(owner)}, which closed it`);
     else if (owner !== null) sends.push({ session: owner, text: () => `${text}${editLines('spec owner')}\n\n${rolesText({ issue, owner, builders: [] }, { role: 'spec owner', merged: false }, asked)}`, role: null, owns: [] });
   } else {
     const relay = relayOf(config);
@@ -152,6 +170,7 @@ export const planTicket = async (invocation, ctx) => {
       if (role === 'builder' && throughPr) skipped.push(`${sessionId(session)}, which heard the merge that closed it through its PR`);
       else if (own(session)) skipped.push(`${sessionId(session)}'s own post`);
       else if (role === 'spec owner' && ownEdit) skipped.push(`${sessionId(session)}, which made the edit`);
+      else if (await closedItself(session)) skipped.push(`${sessionId(session)}, which closed it`);
       else sends.push({ session, text: (spec) => `${text}${editLines(role)}\n\n${rolesText({ ...roles, owner: spec }, holder, asked)}`, role, owns });
     }
     Object.assign(about, { builders, builder: roles.by });

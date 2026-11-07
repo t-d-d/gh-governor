@@ -399,6 +399,7 @@ const summonedTicket = (issue, bodies, appId) => {
  *   offer?: string | null,
  *   moved?: import('./fire.mjs').MovedLink | undefined,
  *   edited?: import('./fire.mjs').UnsignedPost | null,
+ *   closedAt?: string | undefined,
  *   authors: string[],
  *   reason: string,
  * }} args `issue`: `on` is an issue, whose owner, its filer, hears by subscription.
@@ -415,9 +416,11 @@ const summonedTicket = (issue, bodies, appId) => {
  *   `edited`: on an issue owner's message of a body edit, the edit's time,
  *   page and words ({@link editedOf}), so the task can search for
  *   who made it (dispatch/editor.mjs).
+ *   `closedAt`: on a close, when it closed, so the task can tell whether
+ *   the session made the close itself (dispatch/editor.mjs).
  * @returns {Queued}
  */
-const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, mergedAt, issue = false, unsigned = false, post = null, offer = null, moved, edited = null, authors, reason }) => {
+const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, mergedAt, issue = false, unsigned = false, post = null, offer = null, moved, edited = null, closedAt, authors, reason }) => {
   const role = owner ? 'owner' : 'subscriber';
   const number = Number.isInteger(on?.number) ? on.number : undefined;
   /** @param {string} text @returns {MessageFire} */
@@ -435,6 +438,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
     moved: owner && issue ? moved : undefined,
     unsigned: unsigned ? post : null,
     edited: owner && issue ? edited : null,
+    closedAt,
     fallback: owner && fallback
       ? { prompt: `${text}\n${HANDOFF}\n${UNATTENDED}`, sessionName: sessionName(on?.number, on?.title), issue: number }
       : undefined,
@@ -471,6 +475,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   commit?: string,
  *   closing?: boolean,
  *   mergedAt?: string | undefined,
+ *   closedAt?: string | undefined,
  *   byBranch?: boolean,
  *   sessionPost?: boolean,
  *   unsigned?: boolean,
@@ -492,7 +497,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   ({@link UNSIGNED}). `post`: that post, as each fire carries it.
  * @returns {Fanout}
  */
-const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = false, commit, closing = false, mergedAt, byBranch = false, sessionPost = false, unsigned = false, post = null, issue = false, reason }) => {
+const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = false, commit, closing = false, mergedAt, closedAt, byBranch = false, sessionPost = false, unsigned = false, post = null, issue = false, reason }) => {
   /** @type {Queued[]} */
   const fires = [];
   /** @type {string[]} */
@@ -501,14 +506,14 @@ const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = fals
   const named = kindsOf([by, onAuthor]);
   if (byBranch && sessionNamedIn(body) === null) {
     if (sessionPost && poster === null) skipped.push("a session's post naming no session, taken for the local session's own");
-    else fires.push(messageFire({ prompt, subscriber: { session: null, owner: true }, poster, on, event, fallback, commit, closing, mergedAt, authors: kindsOf([by ?? onAuthor]), reason }));
+    else fires.push(messageFire({ prompt, subscriber: { session: null, owner: true }, poster, on, event, fallback, commit, closing, mergedAt, closedAt, authors: kindsOf([by ?? onAuthor]), reason }));
   }
   for (const subscriber of subscribers) {
     if (poster !== null && sameSession(poster, subscriber.session)) {
       skipped.push(`${sessionId(poster)}'s own post`);
       continue;
     }
-    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, mergedAt, issue, unsigned, post, offer: poster, authors: named, reason }));
+    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, mergedAt, closedAt, issue, unsigned, post, offer: poster, authors: named, reason }));
   }
   const heard = fires.length === 0 && skipped.length === 0 ? [`${reason}: nobody subscribes to ${event}`] : [];
   return { fires, reason: [...fires.map((f) => f.reason), ...skipped, ...heard].join('; ') };
@@ -975,6 +980,16 @@ export const mentionFires = ({ event, payload, appId, relay = RELAY, bodies = re
   return null;
 };
 
+/**
+ * When an issue or a PR closed, as its payload says (`closed_at`), where
+ * that is a time: the task reads a session's events around it to tell
+ * whether the session made the close (dispatch/editor.mjs).
+ *
+ * @param {any} on
+ * @returns {string | undefined}
+ */
+const closedAtOf = (on) => (typeof on?.closed_at === 'string' && on.closed_at.length <= 40 && Number.isFinite(Date.parse(on.closed_at)) ? on.closed_at : undefined);
+
 /** What each `issues` action is to a subscriber. */
 const ISSUE_EVENTS = /** @type {Record<string, SubscriptionEvent>} */ ({ labeled: 'labels', unlabeled: 'labels', closed: 'close', reopened: 'close' });
 
@@ -1021,6 +1036,7 @@ export const issueEventFires = (payload, { relay = RELAY, bodies = relay, appId 
     poster: null,
     prompt: (role) => issueEventPrompt(payload, target, role),
     closing: action === 'closed' || (deployed && issue?.state === 'closed'),
+    ...(action === 'closed' ? { closedAt: closedAtOf(issue) } : {}),
     issue: true,
     reason: `issue #${issue?.number} ${deployed ? `deployed to ${target}` : action}`,
   });
@@ -1066,7 +1082,7 @@ export const pullRequestFires = (payload, { relay = RELAY, bodies = relay, appId
     poster: null,
     prompt: (role) => prClosedPrompt(payload, role),
     closing: !pr?.merged,
-    ...(pr?.merged ? { mergedAt: mergedAt(pr) } : {}),
+    ...(pr?.merged ? { mergedAt: mergedAt(pr) } : { closedAt: closedAtOf(pr) }),
     byBranch: true,
     reason: `#${pr?.number} ${pr?.merged ? 'merged' : 'closed'}`,
   });
@@ -1174,7 +1190,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
   // The spec owner the body names, read only where `bodies` lets its author in.
   const { state, labels, owner = null } = summonedTicket(issue, bodies, appId);
   if (labels.length === 0) return none;
-  /** @type {{ text: (limit: number) => string, event: 'comments' | 'close' | 'edit', poster: string | null, closing: boolean, authors: string[], what: string, moved?: import('./fire.mjs').MovedLink | undefined, unsigned?: import('./fire.mjs').UnsignedPost | null, edited?: import('./fire.mjs').UnsignedPost | null }} */
+  /** @type {{ text: (limit: number) => string, event: 'comments' | 'close' | 'edit', poster: string | null, closing: boolean, authors: string[], what: string, moved?: import('./fire.mjs').MovedLink | undefined, unsigned?: import('./fire.mjs').UnsignedPost | null, edited?: import('./fire.mjs').UnsignedPost | null, closedAt?: string | undefined }} */
   let about;
   if (event === 'issue_comment') {
     const comment = payload?.comment;
@@ -1201,6 +1217,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
       closing: payload.action === 'closed',
       authors: kindsOf([onAuthor]),
       what: `issue #${issue.number} ${payload.action}`,
+      closedAt: payload.action === 'closed' ? closedAtOf(issue) : undefined,
     };
   } else if (event === 'issues' && bodyEdited(payload)) {
     if (!lets(relay, onAuthor)) return none;
@@ -1218,7 +1235,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
     return none;
   }
   /** @param {string} text */
-  const fire = (text) => build.ticket({ issue: issue.number, text, event: about.event, state, labels, owner, poster: about.poster, closing: about.closing, authors: about.authors, moved: about.moved, unsigned: about.unsigned, edited: about.edited });
+  const fire = (text) => build.ticket({ issue: issue.number, text, event: about.event, state, labels, owner, poster: about.poster, closing: about.closing, authors: about.authors, moved: about.moved, unsigned: about.unsigned, edited: about.edited, closedAt: about.closedAt });
   let limit = EXCERPT_CHARS;
   let built = fire(about.text(limit));
   while (fireWeight(built) > FIRE_BUDGET && limit > 1) {
