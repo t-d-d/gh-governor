@@ -1,7 +1,9 @@
 /**
  * This repo's own config file: governor picks up its `mode: afk` tickets,
  * acts on a ticket when its blocker closes, tells a PR's session when a
- * merge into main leaves the PR conflicted, and reviews its pull requests
+ * merge into main leaves the PR conflicted, tells the sessions of the merges
+ * a Deploy run shipped and labels the tickets they close `deployed: governor`,
+ * and reviews its pull requests
  * with merge off. The owner merges every pull request, so a pass here only
  * posts a comment and an approving review, and governor cannot pass a change
  * to itself with nobody looking. A pull request cannot review itself either:
@@ -16,7 +18,7 @@ import { CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.m
 
 const own = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
-test('this repo\'s config file is valid and turns pickup, unblocked, the conflicts check, sign-off and the PR review on', () => {
+test('this repo\'s config file is valid and turns pickup, unblocked, the conflicts check, sign-off, deploy messages, deployed labels and the PR review on', () => {
   const read = readConfig(own(CONFIG_PATH));
   assert.ok(read.ok, JSON.stringify(read));
   // A hold label keeps a ticket out of pickup and out of the spec session a
@@ -27,6 +29,10 @@ test('this repo\'s config file is valid and turns pickup, unblocked, the conflic
   assert.equal(read.config.features.conflicts, true);
   assert.equal(read.config.features.signOff, true);
   assert.equal(read.config.features.prReview, true);
+  // The deploy workflow names its shipping job `… · deployed: governor`, so
+  // with both on a green Deploy run tells each merge's session it shipped.
+  assert.equal(read.config.features.deployMessages, true);
+  assert.equal(read.config.features.deployedLabels, true);
 });
 
 test('this repo\'s review never merges, forbids closing a PRD, and reads its checklist from a file here', async () => {
