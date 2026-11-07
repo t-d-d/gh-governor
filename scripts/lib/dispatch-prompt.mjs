@@ -10,6 +10,7 @@
 // `--name` argv and push the prompt's issue number onto a line of its own.
 import { oneLine } from '../../dispatch/webhook/mention.mjs';
 import { instruction } from '../../dispatch/prompts.mjs';
+import { untilAsked } from './session-signoff.mjs';
 
 /** The model the worker session runs on. */
 export const DEFAULT_MODEL = 'claude-opus-5-5';
@@ -54,7 +55,10 @@ export const sessionName = (number, title) => {
  * such a session to sign off, so where the repo turns `signOff` on, the
  * default goes on to ask it, only where it stopped without raising a PR, in
  * the repo's `signOff` prompt where it sets one. It first tells a session
- * that raised a PR to stay open until governor asks it to sign off. With
+ * that raised a PR to stay open until governor asks it to sign off: once
+ * the PR merges and its change deploys where the repo turns
+ * `deployMessages` on, since a deploy message then asks, or once it merges
+ * where the repo turns it off, since the merge's message then asks. With
  * the switch off it carries no ask, as the standing line does not
  * (docs/constraints/session-signoff.md). A repo's own `pickup` prompt is
  * sent as it is.
@@ -64,16 +68,16 @@ export const sessionName = (number, title) => {
  * @param {string} repo
  * @param {string} claim The label the dispatcher claimed it with: the repo's own (dispatch/repo-config.mjs).
  * @param {Record<string, string | undefined>} [prompts] The repo's config file's prompts.
- * @param {{ signOff?: boolean }} [options] `signOff`: whether the repo's file turns the switch on.
+ * @param {{ signOff?: boolean, deployMessages?: boolean }} [options] `signOff`, `deployMessages`: whether the repo's file turns each switch on.
  */
-export const promptFor = (number, title, repo, claim, prompts = {}, { signOff = false } = {}) => {
+export const promptFor = (number, title, repo, claim, prompts = {}, { signOff = false, deployMessages = false } = {}) => {
   const lead = oneLine(title);
   const asks = signOff && prompts.pickup === undefined;
   return [
     lead ? `Pickup #${number} '${lead}'` : `Pickup #${number}`,
     '',
     instruction(prompts, 'pickup', { issue: number, repo, claim }),
-    ...(asks ? [`${OPEN_PR} ${STOPPED} ${instruction(prompts, 'signOff')}`] : []),
+    ...(asks ? [`${OPEN_PR} this session ${untilAsked(deployMessages)} ${STOPPED} ${instruction(prompts, 'signOff')}`] : []),
   ].join('\n');
 };
 
@@ -82,7 +86,7 @@ export const promptFor = (number, title, repo, claim, prompts = {}, { signOff = 
  * sweep holds a session an open PR names (scripts/lib/session-signoff.mjs),
  * and governor's own message asks it to sign off once the PR is done with.
  */
-const OPEN_PR = 'If you raised a pull request, do not sign off while it is open: this session stays open until governor asks you to sign off, once the pull request merges and its change deploys, or it closes.';
+const OPEN_PR = 'If you raised a pull request, do not sign off while it is open:';
 
 /**
  * The default pickup prompt's lead into the ask to sign off. A builder read

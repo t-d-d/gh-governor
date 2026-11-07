@@ -115,9 +115,19 @@ describe('promptFor: the check before building', () => {
   // later went to a fresh session with none of its context.
   test('tells a session with an open PR to stay open until governor asks it to sign off', () => {
     for (const prompts of [{}, { signOff: 'End with `Signing off.` and nothing after it.' }]) {
-      const prompt = promptFor(700, 'T', 'o/r', CLAIM, prompts, { signOff: true });
+      const prompt = promptFor(700, 'T', 'o/r', CLAIM, prompts, { signOff: true, deployMessages: true });
       assert.match(prompt, /If you raised a pull request, do not sign off while it is open: this session stays open until governor asks you to sign off, once the pull request merges and its change deploys, or it closes\./);
       assert.ok(prompt.indexOf('If you raised a pull request') < prompt.indexOf('If you stopped at the check'), 'the ask stays last');
+    }
+  });
+
+  // A repo with deploy messages off sends no deploy message, so a session
+  // told to wait for one after its merge waited for an ask that never came.
+  test('tells a session to wait for a deploy only where the repo turns deploy messages on', () => {
+    for (const options of [{ signOff: true }, { signOff: true, deployMessages: false }]) {
+      const prompt = promptFor(700, 'T', 'o/r', CLAIM, {}, options);
+      assert.match(prompt, /If you raised a pull request, do not sign off while it is open: this session stays open until governor asks you to sign off, once the pull request merges or closes\./);
+      assert.doesNotMatch(prompt, /deploy/, prompt);
     }
   });
 
