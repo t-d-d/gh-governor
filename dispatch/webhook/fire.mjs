@@ -378,8 +378,8 @@ export const lastDispatch = (comments) => {
  *   footer and names no session: when it was posted (`at`, the payload's
  *   `created_at` or `submitted_at`), its page, and its first words
  *   ({@link postWords}), by which the task matches the tool call that
- *   posted it. Under `sessionRules` the task searches the login's live
- *   sessions for its author (dispatch/author.mjs).
+ *   posted it. The task searches the login's live sessions for its
+ *   author, whatever `sessionRules` says (dispatch/author.mjs).
  * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, mergedAt?: string, subscribed?: true, authors?: string[], offer?: string, moved?: MovedLink, unsigned?: UnsignedPost, edited?: UnsignedPost }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
@@ -405,12 +405,11 @@ export const lastDispatch = (comments) => {
  *   session the new body names.
  *   `unsigned`: the post relayed, where it is a session's unsigned post
  *   ({@link UnsignedPost}). The task searches for its author before it
- *   relays, under `sessionRules`.
+ *   relays.
  *   `edited`: on an issue owner's message of a body edit, the edit's time
  *   (the issue's `updated_at`), its page and the new body's words around
  *   the change (`editWords`, dispatch/webhook/mention.mjs), in the shape of an unsigned post. The task searches for the session
- *   that made the edit, the owner first, under `sessionRules`
- *   (dispatch/editor.mjs).
+ *   that made the edit, the owner first (dispatch/editor.mjs).
  * @typedef {{ kind: 'author', on: number, post: UnsignedPost, authors?: string[] }} AuthorFire
  *   A session's unsigned post on issue or PR `on` that no role hears: the
  *   task searches the login's live sessions for its author and tells it

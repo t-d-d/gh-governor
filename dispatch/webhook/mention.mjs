@@ -68,10 +68,10 @@
  * starts is told in its opening prompt (`SIGN_POSTS`, fire.mjs). A
  * session's post naming no session may be any subscriber's, so it reaches
  * every one, and the message says so ({@link UNSIGNED}). An author that
- * reads its own post back posts nothing and signs the next one. Under
- * `sessionRules` each fire carries the post, and the task searches the
- * login's live sessions for its author before it relays, so it drops the
- * line and skips the author (dispatch/author.mjs); a post no fire relays
+ * reads its own post back posts nothing and signs the next one. Each fire
+ * carries the post, and the task searches the login's live sessions for
+ * its author before it relays, so it skips the author and drops the line
+ * where the search decided (dispatch/author.mjs); a post no fire relays
  * queues an `author` fire ({@link authorFires}). Skipping
  * the owner instead would lose a reviewer session's remark, and an owner
  * that nothing wakes leaves its PR idle.
@@ -755,7 +755,7 @@ const movedLink = (payload, bodies, appId) => {
 /**
  * A ticket's body edited: the spec owner's message, told the edit may be
  * its own ({@link EDIT_SPEC_OWNER}). The fire carries the edit's time
- * ({@link editedOf}): under `sessionRules` the task searches for who made
+ * ({@link editedOf}): the task searches for who made
  * the edit and tells the owner that in place of the line, or tells it
  * nothing where the edit was its own (dispatch/editor.mjs). On a claimed ticket the ticket fire
  * ({@link ticketFires}) replaces it and reaches the builders too. Only the

@@ -1622,10 +1622,15 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   if (invocation.kind === 'message') {
     const { on, event, commit, fallback } = invocation;
     const { text, closing } = await merging(invocation.text, invocation.closing === true, invocation.mergedAt, on, invocation.subscribed === true);
-    // A session's unsigned post, under sessionRules: its author is searched
-    // for before the relay, which then drops its UNSIGNED line, and is not
-    // relayed its own post (dispatch/author.mjs).
-    const post = invocation.unsigned !== undefined && on !== undefined && repo !== undefined && turnsOn(configOf(repo), 'sessionRules') ? invocation.unsigned : null;
+    // What governor asks of a session the searches below find, to sign its
+    // post or to comment instead of editing, runs only under sessionRules:
+    // a session follows rules only where it was told them. The searches
+    // themselves run whatever the switch says.
+    const asks = repo !== undefined && turnsOn(configOf(repo), 'sessionRules');
+    // A session's unsigned post: its author is searched for before the
+    // relay, which then drops its UNSIGNED line where the search decided,
+    // and is not relayed its own post (dispatch/author.mjs).
+    const post = invocation.unsigned !== undefined && on !== undefined && repo !== undefined ? invocation.unsigned : null;
     /** @type {import('./author.mjs').Found | null} */
     let found = null;
     /** The author's nudge, or each candidate's. @type {import('./deliveries.mjs').Delivery[]} */
@@ -1638,13 +1643,13 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // A body edit that moved the issue's owner link, under sessionRules: the
     // notice goes to the old owner, not to the session the new body names,
     // which made the edit (dispatch/take.mjs).
-    const moved = invocation.moved !== undefined && 'session' in invocation && on !== undefined && repo !== undefined && turnsOn(configOf(repo), 'sessionRules') ? invocation.moved : null;
+    const moved = invocation.moved !== undefined && 'session' in invocation && on !== undefined && asks ? invocation.moved : null;
     /** The take's confirmation or the correction. @type {import('./deliveries.mjs').Delivery | null} */
     let took = null;
-    // A body edit that left the owner link in place, under sessionRules:
-    // who made it is searched for, the owner first, and the owner is not
-    // told of its own edit (dispatch/editor.mjs).
-    const edit = invocation.edited !== undefined && moved === null && 'session' in invocation && on !== undefined && repo !== undefined && turnsOn(configOf(repo), 'sessionRules') ? invocation.edited : null;
+    // A body edit that left the owner link in place: who made it is
+    // searched for, the owner first, and the owner is not told of its own
+    // edit (dispatch/editor.mjs).
+    const edit = invocation.edited !== undefined && moved === null && 'session' in invocation && on !== undefined && repo !== undefined ? invocation.edited : null;
     /** @type {import('./editor.mjs').EditFound | null} */
     let edited = null;
     try {
@@ -1653,12 +1658,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       if (moved !== null && moved.from === undefined) {
         told = { ...told, skipped: 'the old body named no owner to tell of the edit' };
       } else if ('session' in invocation && wroteIt(found, invocation.session)) {
-        told = { ...told, skipped: 'the session wrote the post, unsigned: it is told to sign it instead' };
+        told = { ...told, skipped: asks ? 'the session wrote the post, unsigned: it is told to sign it instead' : 'the session wrote the post, unsigned: it is not relayed its own post' };
       } else if (edited?.by === 'owner') {
         told = { ...told, skipped: 'the session made the edit itself: it is not told of its own edit' };
       } else told = await delivery().deliver(
         'byBranch' in invocation ? { pr: invocation.on, ...(invocation.poster === undefined ? {} : { poster: invocation.poster }) } : { session: moved?.from ?? invocation.session },
-        editedText(relayedText(text, found), edited),
+        editedText(relayedText(text, found, asks), edited, asks),
         {
           source: GITHUB_SOURCE,
           kind: 'relay',
@@ -1694,10 +1699,10 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         });
       }
       if (post !== null && found !== null && on !== undefined && repo !== undefined) {
-        nudged = await tellAuthor({ repo, on, post, found, tellOnce: (session, kind) => deps.state.recordTold(session, kind), deliveries: delivery(), log: deps.log });
+        nudged = await tellAuthor({ repo, on, post, found, asks, tellOnce: (session, kind) => deps.state.recordTold(session, kind), deliveries: delivery(), log: deps.log });
       }
       if (edit !== null && edited !== null && on !== undefined && repo !== undefined) {
-        nudged = [...nudged, ...await tellEditor({ repo, on, edit, edited, tellOnce: (session, kind) => deps.state.recordTold(session, kind), deliveries: delivery(), log: deps.log })];
+        nudged = [...nudged, ...await tellEditor({ repo, on, edit, edited, asks, tellOnce: (session, kind) => deps.state.recordTold(session, kind), deliveries: delivery(), log: deps.log })];
       }
     } finally {
       loginStored = await storeIfRefreshed(deps, original, account);

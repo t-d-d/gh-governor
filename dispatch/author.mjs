@@ -1,6 +1,8 @@
 /**
- * The author of a session's unsigned post, under `sessionRules` (PRD #599,
- * "Nudges").
+ * The author of a session's unsigned post (PRD #599, "Nudges"). The
+ * search runs whatever `sessionRules` says; the nudges in steps 3 and 4
+ * run only under it, since a session can follow the rules only where it
+ * was told them.
  *
  * Every session posts as the operator's login, so governor reads a post's
  * signature, the session link above the Claude Code footer, to know which
@@ -31,7 +33,8 @@
  * message fire, dispatch/turn.mjs, or a ticket fire,
  * dispatch/ticket-fire.mjs), before it relays: a role that wrote the post
  * is not relayed it, and the relay drops its `UNSIGNED` line. Where the
- * sessions list cannot be read, the relay keeps the line. A post no role
+ * sessions list cannot be read, the relay keeps the line, as it does with
+ * `sessionRules` off where the search could not decide. A post no role
  * hears queues an `author` fire of its own ({@link planAuthor}).
  *
  * Each message is a correction, so it goes once to a session for each kind
@@ -492,16 +495,18 @@ export const maybeText = (on, url) => [
  *   on: number,
  *   post: UnsignedPost,
  *   found: Found,
+ *   asks?: boolean,
  *   tellOnce: TellOnce,
  *   deliveries: Pick<import('./deliveries.mjs').Deliveries, 'deliver'>,
  *   log: Log,
  * }} args
  * @returns {Promise<import('./deliveries.mjs').Delivery[]>}
  */
-export const tellAuthor = ({ repo, on, post, found, tellOnce, deliveries, log }) => tellFound({
+export const tellAuthor = ({ repo, on, post, found, asks = true, tellOnce, deliveries, log }) => tellFound({
   event: AUTHOR,
   at: { repo, on, post: post.at },
   found,
+  asks,
   nudge: { kind: 'unsigned', text: nudgeText(on, post.url) },
   maybe: { kind: 'unsigned-maybe', text: maybeText(on, post.url) },
   tellOnce: /** @type {(session: string, kind: string) => Promise<boolean>} */ (tellOnce),
@@ -521,14 +526,17 @@ export const tellAuthor = ({ repo, on, post, found, tellOnce, deliveries, log })
  *   found: Found,
  *   nudge: { kind: string, text: string },
  *   maybe: { kind: string, text: string },
+ *   asks?: boolean,
  *   tellOnce: (session: string, kind: string) => Promise<boolean>,
  *   deliveries: Pick<import('./deliveries.mjs').Deliveries, 'deliver'>,
  *   log: Log,
  * }} args `at`: what the log lines say the search was of, its `on` the
- *   issue or PR the corrections are about.
+ *   issue or PR the corrections are about. `asks`: false where the repo's
+ *   file turns `sessionRules` off, so no session has been told the rules
+ *   the nudges ask it to follow: nobody is told, and the line says why.
  * @returns {Promise<import('./deliveries.mjs').Delivery[]>}
  */
-export const tellFound = async ({ event, at, found, nudge, maybe, tellOnce, deliveries, log }) => {
+export const tellFound = async ({ event, at, found, nudge, maybe, asks = true, tellOnce, deliveries, log }) => {
   const on = Number(at.on);
   if (!found.searched) {
     log(event, { ...at, level: 'warn', outcome: 'not searched', reason: found.reason });
@@ -543,7 +551,12 @@ export const tellFound = async ({ event, at, found, nudge, maybe, tellOnce, deli
   const tells = found.author !== null
     ? [{ session: found.author, ...nudge }]
     : found.maybe.map((session) => ({ session, ...maybe }));
-  log(event, { ...at, ...counts, outcome: found.author !== null ? 'author found' : 'undecided', sessions: tells.map((t) => sessionId(t.session)) });
+  const outcome = found.author !== null ? 'author found' : 'undecided';
+  if (!asks) {
+    log(event, { ...at, ...counts, outcome, sessions: tells.map((t) => sessionId(t.session)), reason: 'sessionRules is off: no session is asked to follow rules it was never told' });
+    return [];
+  }
+  log(event, { ...at, ...counts, outcome, sessions: tells.map((t) => sessionId(t.session)) });
   /** @type {import('./deliveries.mjs').Delivery[]} */
   const sent = [];
   for (const { session, kind, text } of tells) {
@@ -569,14 +582,18 @@ export const tellFound = async ({ event, at, found, nudge, maybe, tellOnce, deli
 /**
  * A relayed text without its `UNSIGNED` line, where the search ran: the
  * author, or the candidates, are told by {@link tellAuthor} instead. Where
- * it did not run, the text as it came.
+ * it did not run, the text as it came. With `asks` false (`sessionRules`
+ * off) no candidate is told, so where the search could not decide the
+ * line stays: the post may still be the reader's own.
  *
  * @param {string} text
  * @param {Found | null} found
+ * @param {boolean} [asks]
  */
-export const relayedText = (text, found) => {
+export const relayedText = (text, found, asks = true) => {
   const line = `\n\n${UNSIGNED}`;
-  return found?.searched === true && text.endsWith(line) ? text.slice(0, -line.length) : text;
+  const decided = found?.searched === true && (asks || found.maybe.length === 0);
+  return decided && text.endsWith(line) ? text.slice(0, -line.length) : text;
 };
 
 /**

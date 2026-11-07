@@ -11361,12 +11361,21 @@ describe('run: a session\'s unsigned post relayed to a PR\'s owner, under sessio
     assert.deepEqual(h.messages.filter((m) => m.session === WRITER), []);
   });
 
-  test('with sessionRules off, the relay is as today and no events are read', async () => {
+  test('with sessionRules off, the owner hears it without UNSIGNED, and the writer is not asked to sign it', async () => {
     const h = searching(WRITER, { configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) });
-    await run(fire, h.deps as never);
+    const result = await run(fire, h.deps as never) as Record<string, any>;
     assert.deepEqual(h.messages.map((m) => m.session), [OWNER]);
-    assert.ok(h.messages[0]!.text.includes(UNSIGNED));
-    assert.deepEqual(h.eventsRead.filter((r) => r.id === 'cse_01WRITER'), []);
+    assert.equal(h.messages[0]!.text.includes(UNSIGNED), false);
+    assert.equal(h.correctionsTold.size, 0);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('with sessionRules off, the owner that wrote it is not relayed its own post, nor asked to sign it', async () => {
+    const h = searching(OWNER, { configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) });
+    const result = await run(fire, h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.messages, []);
+    assert.match(String(result.skipped), /wrote the post/);
+    assert.equal(h.correctionsTold.size, 0);
   });
 
   test('an author fire on an expired token refreshes it once, and searches under the refreshed one', async () => {
@@ -11440,11 +11449,29 @@ describe('run: a body edit that leaves the owner link in place, told to the issu
     assert.ok(h.messages[0]!.text.includes(EDIT_SPEC_OWNER));
   });
 
-  test('with sessionRules off, the owner gets today\'s notice and no events are read', async () => {
+  test('with sessionRules off, the owner that made the edit is still not told of it', async () => {
     const h = searching(OWNER, { configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) });
+    const result = await run(fire, h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.messages, []);
+    assert.match(String(result.skipped), /made the edit itself/);
+  });
+
+  test('with sessionRules off, another session made it: the owner is told so, and the editor is not asked to comment instead', async () => {
+    const h = searching(WRITER, { configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) });
+    const result = await run(fire, h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.messages.map((m) => m.session), [OWNER]);
+    assert.match(h.messages[0]!.text, /another session made the edit/i);
+    assert.doesNotMatch(h.messages[0]!.text, /may be your own/);
+    assert.equal(h.correctionsTold.size, 0);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('with sessionRules off, the owner\'s events cannot be read: the owner gets today\'s notice', async () => {
+    const h = searching(WRITER, { configFile: async (repo: string) => (repo === REPO ? RULES_OFF_FILE : null) });
+    const events = h.deps.sessions.events;
+    h.deps.sessions.events = async (id: string, ...rest: unknown[]) => { if (id === 'cse_01OWNER') throw new Error('GET events: 502'); return (events as any)(id, ...rest); };
     await run(fire, h.deps as never);
     assert.deepEqual(h.messages.map((m) => m.session), [OWNER]);
     assert.ok(h.messages[0]!.text.includes(EDIT_SPEC_OWNER));
-    assert.deepEqual(h.eventsRead, []);
   });
 });
