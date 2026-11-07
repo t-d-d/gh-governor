@@ -121,7 +121,7 @@ import { planClosingPr, planTicket } from './ticket-fire.mjs';
 import { offerAfterRefusal, planOffer } from './offer.mjs';
 import { planPrEdit, takeAfterNotice } from './take.mjs';
 import { planAuthor, relayedText, searchAuthor, tellAuthor, wroteIt } from './author.mjs';
-import { editedText, searchEditor, tellEditor } from './editor.mjs';
+import { editedText, searchCloser, searchEditor, tellEditor } from './editor.mjs';
 import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken, turnResends } from '../scripts/lib/github-app.mjs';
@@ -1342,6 +1342,7 @@ const sessionStopped = (deps) => {
  *   cap: number,
  *   findAuthor: import('./author.mjs').FindAuthor,
  *   findEditor: import('./editor.mjs').FindEditor,
+ *   findCloser: import('./editor.mjs').FindCloser,
  * }} TurnContext
  *   `readerFor`: a repo's reader, one a turn. `configOf`: a served repo's
  *   config. `prompts`: the fire's repo's, none for the bare schedule fire.
@@ -1355,7 +1356,8 @@ const sessionStopped = (deps) => {
  *   the login's live sessions for a session's unsigned post in the fire's
  *   repo (dispatch/author.mjs). `findEditor`: the search for who made a
  *   body edit on an issue in the fire's repo, its owner first
- *   (dispatch/editor.mjs).
+ *   (dispatch/editor.mjs). `findCloser`: whether a session made a close
+ *   in the fire's repo itself, by its own events (dispatch/editor.mjs).
  */
 
 /**
@@ -1589,6 +1591,25 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     }
     return searchEditor({ ...search, owner, on, edit });
   };
+  /**
+   * Whether a session made a close in the fire's repo itself, by its own
+   * events (dispatch/editor.mjs). A refresh that fails reads no events: the
+   * session hears the close as before.
+   *
+   * @type {import('./editor.mjs').FindCloser}
+   */
+  const findCloser = async (on, at, session) => {
+    let search;
+    try {
+      search = await sessionSearch();
+    } catch (error) {
+      deps.log('dispatch-closer', { level: 'warn', repo: fireRepo(), on, session: sessionId(session), outcome: 'not searched', reason: `${messageOf(error)}: the session hears the close` });
+      return { by: 'unknown', reason: messageOf(error) };
+    }
+    const found = await searchCloser({ events: search.events, repo: search.repo, session, on, at });
+    if (found.by === 'unknown') deps.log('dispatch-closer', { level: 'warn', repo: search.repo, on, session: sessionId(session), outcome: 'not searched', reason: `${found.reason}: the session hears the close` });
+    return found;
+  };
 
   /**
    * A merge's message by the repo's switches (dispatch/merge-notice.mjs).
@@ -1652,15 +1673,25 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     const edit = invocation.edited !== undefined && moved === null && 'session' in invocation && on !== undefined && repo !== undefined ? invocation.edited : null;
     /** @type {import('./editor.mjs').EditFound | null} */
     let edited = null;
+    // A close: whether the session made it is read from its own events, and
+    // it is not told of its own close (dispatch/editor.mjs). The live
+    // session on a PR's head branch is not known until the send, so it
+    // hears the close as before.
+    const close = invocation.closedAt !== undefined && 'session' in invocation && on !== undefined && repo !== undefined ? invocation.closedAt : null;
+    /** @type {import('./editor.mjs').CloseFound | null} */
+    let closed = null;
     try {
       if (post !== null && on !== undefined) found = await findAuthor(on, post);
       if (edit !== null && on !== undefined && 'session' in invocation) edited = await findEditor(on, edit, invocation.session);
+      if (close !== null && on !== undefined && 'session' in invocation) closed = await findCloser(on, close, invocation.session);
       if (moved !== null && moved.from === undefined) {
         told = { ...told, skipped: 'the old body named no owner to tell of the edit' };
       } else if ('session' in invocation && wroteIt(found, invocation.session)) {
         told = { ...told, skipped: asks ? 'the session wrote the post, unsigned: it is told to sign it instead' : 'the session wrote the post, unsigned: it is not relayed its own post' };
       } else if (edited?.by === 'owner') {
         told = { ...told, skipped: 'the session made the edit itself: it is not told of its own edit' };
+      } else if (closed?.by === 'self') {
+        told = { ...told, skipped: 'the session closed it itself: it is not told of its own close' };
       } else told = await delivery().deliver(
         'byBranch' in invocation ? { pr: invocation.on, ...(invocation.poster === undefined ? {} : { poster: invocation.poster }) } : { session: moved?.from ?? invocation.session },
         editedText(relayedText(text, found, asks), edited, asks),
@@ -2158,6 +2189,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     cap: deps.cap,
     findAuthor,
     findEditor,
+    findCloser,
   };
   const started = deps.now();
   /** The plan a kind's planner returned. @type {Plan | undefined} */
