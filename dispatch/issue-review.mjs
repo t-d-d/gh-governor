@@ -513,13 +513,13 @@ export const applyLabels = async ({ reader, ticket, name, conclusions, every = [
   const anywhere = (/** @type {string} */ c) => every.flatMap((set) => set?.[/** @type {keyof import('./repo-config.mjs').Conclusions} */ (c)] ?? []);
   // GitHub matches label names in any case, so a label the ticket carries
   // in another case is the one named, and is removed by the name it has.
-  const keyed = (/** @type {string[]} */ labels) => new Set(labels.map((l) => l.toLowerCase()));
+  const keyed = (/** @type {string[]} */ labels) => new Set(labels.map(keyOf));
   const own = named(conclusion);
   const ownKeys = keyed([...own, ...anywhere(conclusion)]);
-  const otherKeys = keyed(CONCLUSIONS.filter((c) => c !== conclusion).flatMap((c) => [...named(c), ...anywhere(c)]).filter((l) => !ownKeys.has(l.toLowerCase())));
+  const otherKeys = keyed(CONCLUSIONS.filter((c) => c !== conclusion).flatMap((c) => [...named(c), ...anywhere(c)]).filter((l) => !ownKeys.has(keyOf(l))));
   const carried = keyed(ticket.labels);
-  const removed = ticket.labels.filter((l) => otherKeys.has(l.toLowerCase()));
-  const added = own.filter((l) => !carried.has(l.toLowerCase()));
+  const removed = ticket.labels.filter((l) => otherKeys.has(keyOf(l)));
+  const added = own.filter((l) => !carried.has(keyOf(l)));
   const refused = (/** @type {string} */ what, /** @type {unknown} */ error) => Object.assign(new Error(`${what}, so no comment posted: ${messageOf(error)}`), { status: /** @type {{ status?: number }} */ (error)?.status });
   for (const l of removed) {
     try {

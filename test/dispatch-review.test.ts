@@ -2058,6 +2058,22 @@ describe('fitness: the settings checks decide before the model (dispatcher-revie
     assert.equal(waived.judged.length, 1, 'a waiving label lets the ticket through');
   });
 
+  test('the ticket rules match `labels` and `unless` in any case, as GitHub matches labels', async () => {
+    const forbidden = tagalong({ tickets: { 748: { labels: ['claimed', 'Type: ADR'] } } }, { tickets: { forbid: [{ labels: ['type: adr'] }] } });
+    await reviewTagalong(forbidden);
+    const required = tagalong({ tickets: { 748: { labels: ['claimed', 'SIZE: S'] } } }, { tickets: { require: [{ labels: ['size: s', 'size: m'] }] } });
+    await reviewTagalong(required);
+    const waived = tagalong({ tickets: { 748: { labels: ['claimed', 'epic', 'Split'] } } }, { tickets: { forbid: [{ labels: ['EPIC'], unless: ['split'] }] } });
+    await reviewTagalong(waived);
+    const waivedRequire = tagalong({ tickets: { 748: { labels: ['claimed', 'Chore'] } } }, { tickets: { require: [{ labels: ['size: s'], unless: ['chore'] }] } });
+    await reviewTagalong(waivedRequire);
+    assert.equal(forbidden.judged.length, 0, 'a forbidden label in another case still fails');
+    assert.match(forbidden.comments[0]!.body, /^Waits for a person: the ticket it closes, #748, is `Type: ADR` \(test 1\)/);
+    assert.equal(required.judged.length, 1, 'a required label in another case meets the rule');
+    assert.equal(waived.judged.length, 1, 'an `unless` label in another case waives a forbid');
+    assert.equal(waivedRequire.judged.length, 1, 'an `unless` label in another case waives a require');
+  });
+
   test('a ticket not carrying the repo\'s claim label is told to claim it where it still carries the ready labels, and waits for a person otherwise', async () => {
     const ready = tagalong({ tickets: { 748: { labels: ['ready'] } } });
     await reviewTagalong(ready);
@@ -2066,6 +2082,13 @@ describe('fitness: the settings checks decide before the model (dispatcher-revie
     await reviewTagalong(neither);
     assert.match(neither.comments[0]!.body, /^Waits for a person: the ticket it closes, #748, is not `claimed`, nor ready to claim/);
     assert.deepEqual([ready.judged.length, neither.judged.length], [0, 0]);
+  });
+
+  test('a ticket carrying a label the claim takes off, in another case, is told to claim it, as pickup reads it ready', async () => {
+    const config = JSON.stringify(switched({ environment: 'env_01TAG', pickup: { enabled: false, ready: ['ready'], claim: 'claimed', claimRemoves: ['ready'] }, prReview: { prompt: TAGALONG_CHECKLIST, merge: false } }, { prReview: true, prMessages: true }));
+    const h = tagalong({ config, tickets: { 748: { labels: ['Ready'] } } });
+    await reviewTagalong(h);
+    assert.match(h.comments[0]!.body, /^Waits for its ticket to be claimed: the ticket it closes, #748, is not yet `claimed`/);
   });
 
   test('a change on the repo\'s human-only list fails test 7 in code; one an `unless` label waives does not', async () => {

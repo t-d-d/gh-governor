@@ -253,15 +253,15 @@ export const checkLabel = (check) => (typeof check === 'string' ? `\`${check}\``
 /**
  * Whether a ticket neither claimed nor excluded is still waiting for its
  * claim. Where the repo's claim takes labels off, a ticket still carrying
- * one of them is unclaimed; where it takes none off, a ticket `labelRow`
- * reads as ready is.
+ * one of them, in any case, is unclaimed; where it takes none off, a
+ * ticket `labelRow` reads as ready is.
  *
  * @param {TicketRow} ticket
  * @param {'ready' | 'not-ready'} row The ticket's `labelRow`.
  * @param {string[]} claimRemoves
  */
 const unclaimed = (ticket, row, claimRemoves) => (claimRemoves.length > 0
-  ? claimRemoves.some((l) => ticket.labels.includes(l))
+  ? claimRemoves.some((l) => ticket.labels.some((t) => t.toLowerCase() === l.toLowerCase()))
   : row === 'ready');
 
 /**
@@ -269,16 +269,18 @@ const unclaimed = (ticket, row, claimRemoves) => (claimRemoves.length > 0
  * null: a forbidden label it carries, then a required one it lacks, each
  * unless it carries a label that waives the rule. A readied ADR in a repo
  * whose rules forbid ADRs unless readied is `type: adr` forbidden unless `workflow: ready for development` or
- * `under development`.
+ * `under development`. Labels match in any case, as GitHub matches them,
+ * and a forbidden label is named as the ticket carries it.
  *
  * @param {TicketRow} ticket
  * @param {Rules['tickets']} rules
  * @returns {string | null}
  */
 const ruleBroken = (ticket, { require, forbid }) => {
-  const has = (/** @type {string} */ l) => ticket.labels.includes(l);
+  const carried = new Map(ticket.labels.map((l) => [l.toLowerCase(), l]));
+  const has = (/** @type {string} */ l) => carried.has(l.toLowerCase());
   for (const rule of forbid) {
-    const hit = rule.labels.find(has);
+    const hit = rule.labels.map((l) => carried.get(l.toLowerCase())).find((l) => l !== undefined);
     if (hit !== undefined && !rule.unless.some(has)) return `is \`${hit}\`${rule.unless.length > 0 ? ` (it passes only with one of ${named(rule.unless)})` : ''}`;
   }
   for (const rule of require) {
