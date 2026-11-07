@@ -132,7 +132,6 @@ const context = ({ config = CONFIG, comments = [{ body: MARKER }] as Array<{ bod
 };
 
 const to = (sent: Sent[]) => sent.map((s) => s.session);
-const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 describe('a summons on an issue: the receiver carries the ticket', () => {
   test('an @claude comment on an issue names its state, labels and spec owner', () => {
@@ -240,8 +239,10 @@ describe('a summons on an issue under a repo whose subscribe messages are off', 
     const { ctx, sent } = context({ config: configOf(file) });
     await planDispatch(commented({ labels: [CLAIM] }) as never, ctx);
     assert.deepEqual(to(sent), [SPEC, BUILDER]);
-    assert.match(sent[0]!.text, new RegExp(`\\n${escaped(SPEC_OWNER_DUTY)}`));
-    assert.match(sent[1]!.text, new RegExp(`\\n${escaped(BUILDER_DUTY)}$`));
+    assert.ok(sent[0]!.text.includes(`\n${SPEC_OWNER_DUTY}`), sent[0]!.text);
+    assert.ok(sent[1]!.text.endsWith(`\n${BUILDER_DUTY}`), sent[1]!.text);
+    assert.ok(!sent[0]!.text.includes(BUILDER_DUTY), sent[0]!.text);
+    assert.ok(!sent[1]!.text.includes(SPEC_OWNER_DUTY), sent[1]!.text);
   });
 
   test('on a closed claimed ticket, the remark reaches each role with no duty line, since nothing is left to build', async () => {
