@@ -76,6 +76,16 @@ const ciRun = (over: Partial<CiRun> = {}): CiRun => ({
   id: 900, path: CI, status: 'completed', conclusion: 'success', event: 'pull_request', head_branch: 'claude/x', head_sha: HEAD, html_url: `https://github.com/${REPO}/actions/runs/900`, created_at: '2026-09-26T11:00:00Z', ...over,
 });
 
+type CheckRow = { name: string, state: 'red' | 'green' | 'pending', app?: string };
+/**
+ * The checks the factory's `prReview.requireChecks` lists, posted green at
+ * every head unless a test names a check of the same name, so a review over
+ * the factory's own file is not held waiting for them.
+ */
+const LISTED: CheckRow[] = (JSON.parse(factoryFile(CONFIG_PATH)).prReview.requireChecks as Array<string | { name: string, app: string }>)
+  .map((entry) => (typeof entry === 'string' ? { name: entry, state: 'green' as const } : { name: entry.name, state: 'green' as const, app: entry.app }));
+const withListed = (checks: CheckRow[]): CheckRow[] => [...checks, ...LISTED.filter((l) => !checks.some((c) => c.name === l.name))];
+
 const harness = (over: {
   pulls?: Record<number, Pull | Pull[]>,
   open?: Array<{ number: number, draft: boolean, body?: string, headSha?: string }>,
@@ -173,7 +183,7 @@ const harness = (over: {
       openPulls: async () => over.open ?? [],
       defaultBranch: async () => over.base ?? 'main',
       requiredChecks: async (branch: string) => { requiredReads.push(branch); return over.required ?? []; },
-      checksAt: async (sha: string) => over.checksAt?.(sha) ?? over.checks ?? [],
+      checksAt: async (sha: string) => withListed(over.checksAt?.(sha) ?? over.checks ?? []),
       checkRun: async (run: { name: string, sha: string, state: string, title: string, summary: string }) => {
         if (over.checkRun) await over.checkRun(run);
         checkRuns.push(run);
@@ -2328,6 +2338,24 @@ describe('run, the checks the review section lists (test 8)', () => {
     await reviewTagalong(h);
     assert.equal(h.judged.length, 0);
     assert.match(h.comments[0]!.body, /^Waits for a push: the required check `codeql` is red on its head \(test 8\)\./);
+  });
+
+  test('the factory\'s own file lists both forms, and the review reads each', async () => {
+    const { requireChecks } = JSON.parse(factoryFile(CONFIG_PATH)).prReview;
+    assert.ok(requireChecks.some((entry: unknown) => typeof entry === 'string'), 'a bare name');
+    assert.ok(requireChecks.some((entry: unknown) => typeof entry === 'object' && entry !== null && 'app' in entry), 'a name with its App');
+    const bare = harness({ checks: [{ name: 'lint', state: 'red' }] });
+    await review({ kind: 'review', pr: 767 }, bare);
+    assert.equal(bare.judged.length, 0);
+    assert.match(bare.comments[0]!.body, /^Waits for a push: the required check `lint` is red on its head \(test 8\)\./);
+    const scan = harness({ checks: [{ name: 'CodeQL', state: 'red', app: 'github-code-scanning' }] });
+    await review({ kind: 'review', pr: 767 }, scan);
+    assert.equal(scan.judged.length, 0);
+    assert.match(scan.comments[0]!.body, /^Waits for a push: the required check `CodeQL` from `github-code-scanning` is red on its head \(test 8\)\./);
+    const stand = harness({ checks: [{ name: 'CodeQL', state: 'green', app: 'github-actions' }] });
+    const turn = await review({ kind: 'review', pr: 767 }, stand);
+    assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped'], 'another App\'s run of the name does not meet the entry');
+    assert.match(String(turn.reviews[0]!.reason), /`CodeQL` from `github-code-scanning`.*not finished/);
   });
 
   test('a listed `governor` is left out, as a required one is', async () => {

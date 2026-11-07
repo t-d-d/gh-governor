@@ -392,6 +392,13 @@
       "clients/*/Gemfile",
       "clients/*/Gemfile.lock"
     ],
+    "requireChecks": [
+      "lint",
+      {
+        "name": "CodeQL",
+        "app": "github-code-scanning"
+      }
+    ],
     "merge": true
   },
   "heartbeat": {
