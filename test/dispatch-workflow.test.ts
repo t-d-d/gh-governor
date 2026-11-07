@@ -257,6 +257,15 @@ describe('planWorkflow — a deploy', () => {
     assert.equal(plan.advance, null, 'a red run advances no cursor');
   });
 
+  test('a red Deliver run whose green stage built an older commit names that commit, as the other red messages do, not the run\'s head', async () => {
+    const BUILT = 'b'.repeat(40);
+    const plan = await planOf(fire('Deliver', 'failure'), reader({
+      runJobs: async (id: number) => (id === 500 ? [{ ...marked(DEV), name: `Publish at ${BUILT} · ${DEV}` }, marked(PROD, 500, 'failure')] : green(id)),
+      pullsForCommit: async (sha: string) => (sha === BUILT || sha === SHA ? [pr(799, { merge_commit_sha: sha })] : []),
+    }));
+    assert.match(plan.triage!.prompt, /^The \[`Deliver`\]\([^)]+\) workflow failed at bbbbbbb, so the `deploy\/prod` tag did not move\. /);
+  });
+
   // A failed rollback: the compare from the baseline's commit holds nothing, and the PR at its head is still the news.
   test('a red Deliver run of a commit its baseline already covers still plans its triage session', async () => {
     const plan = await planOf(fire('Deliver', 'failure'), reader({

@@ -235,13 +235,14 @@ const shippedBefore = ({ triage, tags }) => [...Object.keys(tags).filter((t) => 
  *
  * @param {WorkflowFire} run
  * @param {string} target
+ * @param {string} end The commit the marked job built.
  * @param {Workflows} workflows
  * @param {PullRow[]} shipped
  * @param {JobRow[]} failed
  * @param {Prompts} prompts
  */
-const prodTriageText = (run, target, workflows, shipped, failed, prompts) => [
-  `${failedAt(run, target, run.headSha, workflows.tags)} It shipped ${shipped.length === 1 ? 'one merge' : `${shipped.length} merges`} since the last successful ${bare(target)} deploy. Their sessions signed off once their changes were on ${shippedBefore(workflows)}: this fix is yours.`,
+const prodTriageText = (run, target, end, workflows, shipped, failed, prompts) => [
+  `${failedAt(run, target, end, workflows.tags)} It shipped ${shipped.length === 1 ? 'one merge' : `${shipped.length} merges`} since the last successful ${bare(target)} deploy. Their sessions signed off once their changes were on ${shippedBefore(workflows)}: this fix is yours.`,
   '',
   `Run: ${run.url}`,
   'Failed jobs:',
@@ -548,7 +549,7 @@ const planTarget = async (run, coverage, prompts, workflows) => {
       reason: null,
       notes: [],
       unnamed: [],
-      triage: { prompt: prodTriageText(run, target, workflows, sorted, failed, prompts), sessionName: oneLine(`${deploy.charAt(0).toUpperCase()}${deploy.slice(1)} deploy red ${short(headSha)}: ${sorted.length} merge${sorted.length === 1 ? '' : 's'}`).slice(0, 100) },
+      triage: { prompt: prodTriageText(run, target, end, workflows, sorted, failed, prompts), sessionName: oneLine(`${deploy.charAt(0).toUpperCase()}${deploy.slice(1)} deploy red ${short(headSha)}: ${sorted.length} merge${sorted.length === 1 ? '' : 's'}`).slice(0, 100) },
       range,
       stale: null,
       advance,
@@ -641,10 +642,10 @@ export const withTickets = (plan, tickets) => {
       entry.lines.push(ticketLine(shipped, holder));
     }
   }
+  // The ticket's label is the news to its roles, so it names the label.
+  const label = code(`${LABEL_PREFIX}${target}`);
   const notes = touched.map(({ note, lines, added }) => {
     if (lines.length === 0) return note;
-    // The ticket's label is the news to its roles, so it names the label.
-    const label = code(`${LABEL_PREFIX}${target}`);
     const heading = `Ticket${lines.length === 1 ? '' : 's'} you hold a role on, now labelled ${label}:`;
     if (!added) return { ...note, text: [note.text, '', heading, ...lines].join('\n') };
     const tickets = note.tickets ?? [];
