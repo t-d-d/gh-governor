@@ -4,12 +4,11 @@
  * merge into main leaves the PR conflicted, tells the sessions of the merges
  * a Deploy run shipped or failed to ship, labels the tickets they close
  * `deployed: governor`, gives every session the session rules, and reviews
- * its pull requests with merge off. The
- * owner merges every pull request, so a pass here only posts a comment and
- * an approving review, and governor cannot pass a change to itself with
- * nobody looking. A pull request cannot review itself either:
- * the review runs the image deployed from main and reads its checklist from
- * main (CLAUDE.md, Branches and pull requests).
+ * its pull requests with merge off. The owner merges every pull request,
+ * so a pass here only posts a comment and an approving review, and governor
+ * cannot pass a change to itself with nobody looking. A pull request cannot
+ * review itself either: the review runs the image deployed from main and
+ * reads its checklist from main (CLAUDE.md, Branches and pull requests).
  */
 
 import { test } from 'node:test';
