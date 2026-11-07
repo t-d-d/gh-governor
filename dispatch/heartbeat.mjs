@@ -4,11 +4,8 @@
  * outside governor can tell a dispatcher that stopped from one that found
  * nothing to do. The rest of the issue's body stays as its owner wrote it.
  *
- * A file in the `{ issue, marker }` shape gets one `last-run:` line under
- * the repo's own marker, which the schedule turn stamps
- * ({@link stampLastRun}). A file in the `{ issue }` shape gets governor's own
- * block under {@link HEARTBEAT_MARKER}, which the body must already carry,
- * ended by {@link HEARTBEAT_END}: one line for pickup and one per periodic
+ * Governor keeps its own block under {@link HEARTBEAT_MARKER}, which the
+ * body must already carry, ended by {@link HEARTBEAT_END}: one line for pickup and one per periodic
  * ({@link stampHeartbeat}), each changed only by the fire it reports, and a
  * periodic's state by the sign-off sweep. A periodic governor has read but
  * not fired yet gets a line at its baseline's time, which only a missing line
@@ -21,43 +18,6 @@
 
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
-
-const LAST_RUN = /^last-run:\s*(\S+)\s*$/m;
-const LAST_RUN_LINE = /^last-run:[^\n]*$/m;
-
-/**
- * A heartbeat issue's last run, or undefined where none is recorded yet.
- * Throws where the body lacks the marker: that is a wrong issue number, and
- * reading it as "never ran" would report a lapse on a healthy dispatcher.
- *
- * @param {string | null | undefined} body
- * @param {string} marker
- */
-export const readLastRun = (body, marker) => {
-  const text = String(body ?? '');
-  if (!text.includes(marker)) throw new Error(`issue body has no ${marker} marker`);
-  const at = Date.parse(text.match(LAST_RUN)?.[1] ?? '');
-  return Number.isFinite(at) ? new Date(at).toISOString() : undefined;
-};
-
-/**
- * `body` with its `last-run:` line set to `at`, or one added after the
- * marker's line where it has none; the rest of the body as it was. Throws
- * where the body lacks the marker, so a wrong issue number never overwrites
- * someone's ticket.
- *
- * @param {string | null | undefined} body
- * @param {string} marker
- * @param {string | number} at
- */
-export const stampLastRun = (body, marker, at) => {
-  const text = String(body ?? '');
-  if (!text.includes(marker)) throw new Error(`issue body has no ${marker} marker`);
-  const line = `last-run: ${new Date(at).toISOString()}`;
-  if (LAST_RUN_LINE.test(text)) return text.replace(LAST_RUN_LINE, line);
-  const end = text.indexOf('\n', text.indexOf(marker));
-  return end === -1 ? `${text}\n${line}` : `${text.slice(0, end + 1)}${line}\n${text.slice(end + 1)}`;
-};
 
 /**
  * A heartbeat the repo's file names an issue for, refused because the
@@ -81,7 +41,7 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
  */
 
 /**
- * Read a heartbeat issue, check its body carries `marker`, and write what
+ * Read a heartbeat issue, check its body carries {@link HEARTBEAT_MARKER}, and write what
  * `stamp` makes of it. A body without the marker is refused under
  * {@link HEARTBEAT_REFUSED} with `refusal` as the reason and never written,
  * so a wrong issue number never overwrites a ticket. A stamp that returns
@@ -95,7 +55,6 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
  *   reader: () => Promise<IssueWriter>,
  *   repo: string,
  *   issue: number,
- *   marker: string,
  *   refusal: string,
  *   stamp: (body: string) => string | undefined,
  *   log: (event: string, fields: Record<string, unknown>) => void,
@@ -103,12 +62,12 @@ export const HEARTBEAT_UNWRITTEN = 'dispatch-heartbeat-unwritten';
  * }} args
  * @returns {Promise<'written' | 'refused' | 'unchanged' | { unwritten: string }>}
  */
-export const writeHeartbeatIssue = async ({ reader, repo, issue, marker, refusal, stamp, log, level = 'error' }) => {
+export const writeHeartbeatIssue = async ({ reader, repo, issue, refusal, stamp, log, level = 'error' }) => {
   try {
     const github = await reader();
     const { body } = await github.issue(issue);
-    if (!body.includes(marker)) {
-      log(HEARTBEAT_REFUSED, { level, repo, issue, marker, reason: refusal });
+    if (!body.includes(HEARTBEAT_MARKER)) {
+      log(HEARTBEAT_REFUSED, { level, repo, issue, marker: HEARTBEAT_MARKER, reason: refusal });
       return 'refused';
     }
     const next = stamp(body);

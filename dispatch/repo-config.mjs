@@ -35,7 +35,7 @@
 import { z } from 'zod';
 import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, SUMMONERS, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, unknownFills } from './prompts.mjs';
-import { BOT, START, TRUST_VALUES, autoOf, reviewOf, taskKey as taskKeyOf, taskSet } from './trust.mjs';
+import { BOT, START, TRUST_VALUES, autoOf, reviewOf } from './trust.mjs';
 
 /** Where the file lives, on the repo's default branch. */
 export const CONFIG_PATH = '.github/governor.json';
@@ -780,23 +780,21 @@ export const configSchema = fileSchema.transform(toConfig)
   // the file leaves unset is narrowed instead (dispatch/trust.mjs).
   .superRefine((c, ctx) => {
     const auto = c.trust?.auto;
-    const task = taskSet(c);
-    const taskKey = taskKeyOf(c);
-    const taskPath = taskKey.split('.');
+    const task = c.trust?.task;
     const relay = c.trust?.relay;
     /** @param {readonly string[] | undefined} inner @param {readonly string[] | undefined} outer */
     const outside = (inner, outer) => (inner === undefined || outer === undefined ? [] : inner.filter((a) => a !== BOT && !outer.includes(a)));
     const autoTask = outside(auto, task);
-    if (autoTask.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoTask.join(', ')}, which ${taskKey} does not: governor would set going by itself a ticket pickup may not start. Narrow trust.auto, or widen ${taskKey}` });
+    if (autoTask.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoTask.join(', ')}, which trust.task does not: governor would set going by itself a ticket pickup may not start. Narrow trust.auto, or widen trust.task` });
     const autoRelay = outside(auto, relay);
     if (autoRelay.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoRelay.join(', ')}, which trust.relay does not: governor would set work going on a ticket whose comments could not reach its session. Narrow trust.auto, or widen trust.relay` });
     const taskRelay = outside(task, relay);
-    if (taskRelay.length > 0) ctx.addIssue({ code: 'custom', path: taskPath, message: `names ${taskRelay.join(', ')}, which trust.relay does not: pickup would start a ticket whose author's comments could not reach its session. Narrow ${taskKey}, or widen trust.relay` });
+    if (taskRelay.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'task'], message: `names ${taskRelay.join(', ')}, which trust.relay does not: pickup would start a ticket whose author's comments could not reach its session. Narrow trust.task, or widen trust.relay` });
     const review = c.trust?.review;
     const relayReview = outside(relay, review);
     if (relayReview.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'relay'], message: `names ${relayReview.join(', ')}, which trust.review does not: their comments would reach a session whose pull request the PR review may not read. Narrow trust.relay, or widen trust.review` });
     const taskReview = outside(task, review);
-    if (taskReview.length > 0) ctx.addIssue({ code: 'custom', path: taskPath, message: `names ${taskReview.join(', ')}, which trust.review does not: pickup would start work whose pull request the PR review may not read. Narrow ${taskKey}, or widen trust.review` });
+    if (taskReview.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'task'], message: `names ${taskReview.join(', ')}, which trust.review does not: pickup would start work whose pull request the PR review may not read. Narrow trust.task, or widen trust.review` });
     const autoReview = outside(auto, review);
     if (autoReview.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoReview.join(', ')}, which trust.review does not: governor would set work going whose pull request the PR review may not read. Narrow trust.auto, or widen trust.review` });
   });
@@ -821,8 +819,8 @@ export const configSchema = fileSchema.transform(toConfig)
  *   merge: boolean,
  * }} Review The PR review's settings, its checklist read.
  * @typedef {{ file: string }} PromptFile
- * @typedef {{ issue: number, marker?: string }} Heartbeat
- * @typedef {{ sweepHours?: number, by?: string[] }} Pickup
+ * @typedef {{ issue: number }} Heartbeat
+ * @typedef {{ sweepHours?: number }} Pickup
  * @typedef {{ start?: string[], auto?: string[], task?: string[], relay?: string[], review?: string[] }} Trust
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
@@ -844,12 +842,10 @@ export const configSchema = fileSchema.transform(toConfig)
  *   `workflows`: what the repo's workflows are to the dispatcher.
  *   `review`: the PR review's settings, where the file's `prReview`
  *   section has a prompt, which is `checklist` here.
- *   `heartbeat`: the issue governor's heartbeat goes into. The file no
- *   longer sets the older shape's `marker`.
+ *   `heartbeat`: the issue governor's heartbeat goes into.
  *   `waits`: the wait ticket waiting tickets are linked to, where the file
  *   names one.
- *   `pickup`: pickup's sweep interval, where the file sets it. The file no
- *   longer sets the retired `by`.
+ *   `pickup`: pickup's sweep interval, where the file sets it.
  *   `trust`: whose GitHub text governor acts on, where the file sets it.
  *   `signOff`: where the file sets `heldMessage`, the sweep tells a
  *   session the first time it holds it from its sign-off.

@@ -304,7 +304,7 @@ describe('planSchedule: ready labels an outsider\'s issue template added', () =>
 
 /**
  * Pickup starts a ticket only where its author's association is one its
- * repo's `pickup.by` lists: OWNER, MEMBER and COLLABORATOR by default.
+ * repo's `trust.task` lists: OWNER, MEMBER and COLLABORATOR by default.
  */
 describe('planSchedule: who opened the ticket', () => {
   type Strangers = NonNullable<Parameters<typeof planSchedule>[0]['strangers']>;

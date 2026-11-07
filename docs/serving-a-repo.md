@@ -389,7 +389,7 @@ The default is `OWNER`, `MEMBER` and `COLLABORATOR`. So a stranger's issue linke
 "trust": { "auto": ["OWNER"] }
 ```
 
-Or widen it, with the same values pickup reads. Governor refuses `BOT` in it, since no person read a bot's issue. Where the file sets `trust.task` too, every value `auto` names must be in it, or governor refuses the file: it would set going a ticket that pickup may not start. Where the file sets `trust.relay` or `trust.review`, the same holds for each. Where the file leaves `auto` unset and sets a narrower `trust.task`, `pickup.by`, `trust.relay` or `trust.review`, `auto` is narrowed to fit, never widened. The [config check](#the-config-check) warns where `auto` reaches beyond owners, members and collaborators, saying what that opens, and notes where it narrowed an unset `auto`.
+Or widen it, with the same values pickup reads. Governor refuses `BOT` in it, since no person read a bot's issue. Where the file sets `trust.task` too, every value `auto` names must be in it, or governor refuses the file: it would set going a ticket that pickup may not start. Where the file sets `trust.relay` or `trust.review`, the same holds for each. Where the file leaves `auto` unset and sets a narrower `trust.task`, `trust.relay` or `trust.review`, `auto` is narrowed to fit, never widened. The [config check](#the-config-check) warns where `auto` reaches beyond owners, members and collaborators, saying what that opens, and notes where it narrowed an unset `auto`.
 
 ### Whose text reaches a running session
 

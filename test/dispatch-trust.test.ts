@@ -10,6 +10,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
+import * as trust from '../dispatch/trust.mjs';
 import { AUTO, BOT, RELAY, REVIEW, START, autoOf, fitsInside, lets, narrowedLists, relayOf, reviewOf, startNarrowed, startOf, taskOf, trustExposures } from '../dispatch/trust.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
@@ -214,6 +215,14 @@ describe('trust.task in the config file', () => {
     assert.ok(!read.ok);
     assert.match(read.fault, /trust\.task/);
     assert.match(read.fault, /BOT/);
+  });
+
+  test('nothing reads pickup.by: the task list is trust.task alone', () => {
+    assert.equal('taskSet' in trust, false);
+    assert.equal('taskKey' in trust, false);
+    const hand = { pickup: { by: ['OWNER', 'NONE'] } } as never;
+    assert.deepEqual(taskOf(hand), ['OWNER', 'MEMBER', 'COLLABORATOR'], 'a pickup.by no file can hold is not read');
+    assert.deepEqual(fitsInside(hand, 'auto'), []);
   });
 
   test('pickup.by, the retired name of trust.task, is refused, alone or beside it', () => {

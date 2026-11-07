@@ -1371,7 +1371,7 @@ describe('run: pickup selects tickets by who opened them', () => {
         assert.equal(h.eventReads(), 1, `${association}: its label events say whether a person readied it`);
         const skipped = h.logged.find((l) => ['dispatch-pickup', 'dispatch-unblocked'].includes(l.event) && l.issue === 9 && l.outcome === 'skipped');
         assert.ok(skipped !== undefined, JSON.stringify(h.logged));
-        assert.match(String(skipped.reason), new RegExp(`${association} author.*pickup\\.by`));
+        assert.match(String(skipped.reason), new RegExp(`${association} author.*trust\\.task`));
         assert.ok(skipped.level === undefined || skipped.level === 'info', String(skipped.level));
       }
     });
@@ -9676,7 +9676,7 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
   });
 
   test('a body without governor\'s marker gets no write, and an error naming the repo and issue', async () => {
-    // A body in the older shape: a repo's own marker and its last-run line, no governor block.
+    // A body carrying some other marker and a last-run line, and no governor block.
     const h = beating({ body: `<!-- factory:routine-heartbeat:auto-develop -->\nlast-run: ${EARLIER}\n` });
     const result = await run({ source: 'aws.events' }, h.deps as never);
     assert.deepEqual(h.writes, []);

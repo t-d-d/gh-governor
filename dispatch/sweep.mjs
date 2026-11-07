@@ -24,7 +24,6 @@ import { ownerOutcome } from './unblocked.mjs';
 import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
-import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
 import { byOf, failedLaunchesOf, failedReason, sweepDue, sweepHoursOf } from './pickup.mjs';
 import { autoOf, relayOf, startOf } from './trust.mjs';
 import { tellerFor } from './told.mjs';
@@ -123,9 +122,9 @@ const waitLaunch = (ctx, { repo, config, wait, withFallback, unread }) => {
  * of them, and each one's `started` deletes its item once its session
  * started or may have.
  *
- * `done` records each repo's sweep and writes pickup's heartbeat line. The
- * plan's `result` carries `heartbeat`, true once `done` stamped a
- * `last-run:` line in some repo. Its `unread` is complete once `done` has
+ * `done` records each repo's sweep and adds pickup's heartbeat line, which
+ * the turn writes. The plan's `result` carries `heartbeat`, false until the
+ * turn has written a pickup line. Its `unread` is complete once `done` has
  * run: the backlogs, the sweeps, the periodics and the waits, in that order.
  *
  * @param {import('./webhook/fire.mjs').Fire & { kind: 'schedule' }} invocation
@@ -394,7 +393,7 @@ export const planSweep = async (invocation, ctx) => {
     }
   }
 
-  /** The turn's own fields: whether a `last-run:` line was stamped. */
+  /** The turn's own fields: the turn sets `heartbeat` once it writes pickup's line. */
   const result = { heartbeat: false };
   /** What failed the turn, filled in by `done`. @type {Array<{ repo: string, error: string }>} */
   const failed = [];
@@ -440,48 +439,20 @@ export const planSweep = async (invocation, ctx) => {
       // fire naming its repo or its issue (one labelled, or one a close left
       // unblocked) is not the sweep: one per label or per merge would keep the
       // heartbeat fresh while the schedule was dead, and the watchdog reads
-      // the heartbeat as the schedule's. It is written in each repo whose file
-      // turns it on, into the issue the file names, judged on that
-      // repo's own claims and launches (another repo's launch going through
-      // says nothing of this one's), and only where that issue's body already
-      // carries the marker: a wrong number refuses
-      // the write rather than overwrite someone's ticket, and the repo's
-      // watchdog then reports the lapse.
-      // A file in the `{ issue }` shape gets pickup's line in governor's own
-      // block instead, beside the turn's periodic lines, which `run` writes.
-      // One repo's read or write that fails leaves the rest to go, then fails
-      // the turn.
-      /** @type {string[]} */
-      const unwritten = [];
+      // the heartbeat as the schedule's. Each repo whose file turns the
+      // heartbeat on and whose backlog this fire swept gets pickup's line, judged on that repo's own
+      // claims and launches (another repo's launch going through says nothing
+      // of this one's). `run` writes it into governor's block with the turn's
+      // periodic lines.
       if (ctx.bare) {
         for (const { repo, config } of ctx.served) {
           if (!turnsOn(config, 'heartbeat') || config.heartbeat === undefined || unread.some((u) => u.repo === repo)) continue;
           const own = pickupOwn(repo);
           if (own.length > 0 && own.every((d) => d.outcome === 'failed')) continue;
-          const { issue, marker } = config.heartbeat;
-          // The `{ issue }` shape: pickup's line, for a repo whose file turns
-          // pickup on, written with the turn's other lines by `run`.
-          if (marker === undefined) {
-            if (swept.has(repo)) ctx.beats.push({ repo, beat: { pickup: { at: new Date(ctx.now()).toISOString(), started: startedOf(own) } } });
-            continue;
-          }
-          const outcome = await writeHeartbeatIssue({
-            reader: () => ctx.readerFor(repo),
-            repo,
-            issue,
-            marker,
-            refusal: 'the issue\'s body has no marker, so the heartbeat is not written: fix the issue number or marker in the repo\'s .github/governor.json, or add the marker to the issue',
-            stamp: (body) => stampLastRun(body, marker, ctx.now()),
-            log: ctx.log,
-          });
-          if (typeof outcome === 'object') unwritten.push(outcome.unwritten);
-          if (outcome !== 'written') continue;
-          ctx.log('dispatch-heartbeat', { repo, issue });
-          result.heartbeat = true;
+          if (swept.has(repo)) ctx.beats.push({ repo, beat: { pickup: { at: new Date(ctx.now()).toISOString(), started: startedOf(own) } } });
         }
       }
       failed.push(...unread, ...sweepsUnread, ...periodicsUnread, ...waitsUnread);
-      if (unwritten.length !== 0) throw new Error(`heartbeat not written: ${unwritten.join('; ')}`);
     },
   };
 };
