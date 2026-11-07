@@ -42,7 +42,7 @@ import { turnsOn } from './repo-config.mjs';
 import { relayOf, ticketAuthor } from './trust.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { rolesOf } from './roles.mjs';
-import { SESSION_RULES } from './session-rules.mjs';
+import { brokenRule } from './session-rules.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unlinkSession } from './webhook/subscribe.mjs';
 
@@ -79,7 +79,7 @@ export const takeText = (issue, why) => [
 ].join(' ');
 
 /**
- * A correction for a body edit, with the rules under it.
+ * A correction for a body edit, naming the rule it broke.
  *
  * @param {number} issue the issue, or the PR for `edit-pr`
  * @param {Correction} kind
@@ -91,12 +91,12 @@ export const correctionText = (issue, kind, restored) => {
     ? 'Governor removed your link from the body and kept the rest of your edit.'
     : `Governor put [the owner's link](${restored}) back and kept the rest of your edit.`;
   const said = {
-    'edit-owned': `You edited the body of #${issue} and moved its owner link to this session, but you do not own #${issue}: [its owner](${restored}) does, and is live. Your link was replaced by the owner's, and the rest of your edit kept. Only an issue's owner edits its body.`,
+    'edit-owned': `You edited the body of #${issue} and moved its owner link to this session, but you do not own #${issue}: [its owner](${restored}) does, and is live. Your link was replaced by the owner's, and the rest of your edit kept.`,
     'edit-builder': `You edited the body of #${issue}, which you build, and moved its owner link to this session. A builder does not edit a ticket's body, and never takes its spec. ${done}`,
     'edit-person': `You edited the body of #${issue}, which a person filed and owns, and ended it with this session's link. A person's issue is the person's, and no session takes it. ${done}`,
-    'edit-pr': `You edited the body of PR #${issue} and moved its session link to this session, but you do not own PR #${issue}: [its owner](${restored}) does, and is live. ${done} Only a PR's owner edits its body and pushes to its branch.`,
+    'edit-pr': `You edited the body of PR #${issue} and moved its session link to this session, but you do not own PR #${issue}: [its owner](${restored}) does, and is live. ${done}`,
   }[kind];
-  return `${said} Next time, comment on the ${kind === 'edit-pr' ? 'PR' : 'issue'} instead.\n\n${SESSION_RULES}`;
+  return `${said} ${brokenRule(2)} Next time, comment on the ${kind === 'edit-pr' ? 'PR' : 'issue'} instead.`;
 };
 
 /**

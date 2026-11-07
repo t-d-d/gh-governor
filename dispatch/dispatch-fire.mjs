@@ -109,14 +109,17 @@ const unstartedSummons = async ({ repo, on, writer, assigner }, ctx) => {
 };
 
 /**
- * What a summons says to the live session that owns the PR it is on: the
+ * What a summons says to the live session that owns the PR it is on: that
+ * a remark asked for a session, and that it comes to the owner, then the
  * summons's own prompt, which quotes the remark and points at the PR,
- * without the line meant for an unattended fresh session.
+ * without the line meant for an unattended fresh session. The fire's
+ * `writer` is an association, such as `OWNER`, not a name, so it is not
+ * named here.
  *
  * @param {string} prompt
  */
-const ownerText = (prompt) => [
-  'This remark summoned a fresh session on your pull request, but you are the live session that owns it, so no fresh session starts and the remark comes to you.',
+export const ownerText = (prompt) => [
+  'An @claude remark asked for a session on this PR, and it comes to you because you own the PR.',
   '',
   attended(prompt),
 ].join('\n');
@@ -135,20 +138,21 @@ const UNSENT = Object.freeze({ ok: false, answered: null, refused: false, sessio
 
 /**
  * What a summons on an issue tells each live role on it, above the roles:
- * that nobody else starts. Where the repo's `subscribeMessages` is on, a
- * remark reaches the role as any remark on the ticket does, so the notice
- * does not repeat it. Where it is off, nothing else carries the remark, so
- * the notice quotes it, as the summons's own prompt does (`remark`). An
- * assignment carries no text, so its notice says who assigned the ticket.
+ * what asked, and that it comes to the role in place of a fresh session.
+ * Where the repo's `subscribeMessages` is on, a remark reaches the role as
+ * any remark on the ticket does, so the notice does not repeat it. Where it
+ * is off, nothing else carries the remark, so the notice quotes it, as the
+ * summons's own prompt does (`remark`). An assignment carries no text, so
+ * its notice says who assigned the ticket. A remark's writer is known only
+ * by its association, which is no name to tell a session.
  *
  * @param {{ issue: number, assigner?: string | undefined, remark: string | null }} summons
  */
-const roleNotice = ({ issue, assigner, remark }) => {
-  if (assigner !== undefined) return `${assigner} assigned #${issue} to claude, which asks governor to start a session on it. You hold a role on #${issue} and are live, so no session starts, and this notice comes to you in its place. An assignment carries no text: read the ticket and its newest comments for what may be wanted.`;
-  const asked = `An @claude comment on #${issue} asks governor to start a session on it. You hold a role on #${issue} and are live, so no session starts`;
-  return remark === null
-    ? `${asked}. The comment reaches you as any comment on the ticket does; this notice says only that nobody else was started for it.`
-    : `${asked}, and the comment comes to you instead.\n\n${remark}`;
+export const roleNotice = ({ issue, assigner, remark }) => {
+  const why = `it comes to you because you hold a role on #${issue}.`;
+  if (assigner !== undefined) return `${assigner} assigned #${issue} to claude to ask for a session, and ${why} An assignment carries no text, so read the ticket and its newest comments for what is wanted.`;
+  const asked = `An @claude comment on #${issue} asked for a session, and ${why}`;
+  return remark === null ? `${asked} The comment reaches you as any comment on the ticket does.` : `${asked}\n\n${remark}`;
 };
 
 /**
@@ -211,7 +215,7 @@ const toRoles = async ({ repo, on, writer, assigner, ticket, prompt }, ctx) => {
   try {
     for (const holder of sends) {
       const { session, role, owns } = holder;
-      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner, remark })}\n\n${rolesText(roles, holder, { duty: assigner === undefined && remark !== null, notice: assigner === undefined && remark === null })}`, { source: GITHUB_SOURCE, kind: 'summons-notice', on: [on], owns, strict: true });
+      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, assigner, remark })}\n\n${rolesText(roles, holder, { duty: assigner === undefined && remark !== null, notice: assigner === undefined && remark === null, closed: ticket.state === 'closed' })}`, { source: GITHUB_SOURCE, kind: 'summons-notice', on: [on], owns, strict: true });
       // A refusal is no fault: what failed is handing the notice on.
       if (told.refused && faults(told)) told = { ...told, error: `${session} is archived, and the live session on the head branch of PR ${owns.map((n) => `#${n}`).join(', ')} could not be found or did not take the notice` };
       sent.push(told);

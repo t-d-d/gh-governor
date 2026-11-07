@@ -189,7 +189,7 @@ describe('takeText and correctionText', () => {
     assert.doesNotMatch(takeText(7, 'unsigned'), /—/);
   });
 
-  test('each correction says what happened, to comment next time, and carries the rules', () => {
+  test('each correction says what happened, to comment next time, and names the rule it broke', () => {
     const owned = correctionText(7, 'edit-owned', OWNER);
     assert.match(owned, /does not own|you do not own/);
     assert.ok(owned.includes(`[its owner](${OWNER}) does, and is live`), owned);
@@ -199,7 +199,8 @@ describe('takeText and correctionText', () => {
     assert.match(correctionText(7, 'edit-person', null), /person/);
     for (const text of [owned, correctionText(7, 'edit-builder', null), correctionText(7, 'edit-person', null)]) {
       assert.match(text, /comment/);
-      assert.ok(text.includes(SESSION_RULES));
+      assert.ok(text.includes("session rule 2: only an issue's or a PR's owner edits its body."));
+      assert.ok(!text.includes(SESSION_RULES));
       assert.doesNotMatch(text, /—/);
     }
   });
@@ -277,7 +278,7 @@ const context = ({
   return { ctx: ctx as never, sent, writes, logged, told };
 };
 
-const TEXT = 'The body of [#7](https://github.com/acme/factory/issues/7) A ticket was edited by t-d-d.';
+const TEXT = 'The body of [#7 A ticket](https://github.com/acme/factory/issues/7) was edited by t-d-d.';
 const editFire = (over: Record<string, unknown> = {}) => ({ kind: 'ticket', repo: REPO, issue: 7, text: TEXT, event: 'edit', state: 'open', labels: [CLAIM], owner: EDITOR, authors: ['OWNER'], moved: { old: 'owned', from: OWNER }, ...over }) as never;
 const to = (sent: Sent[]) => sent.map((s) => s.session);
 
@@ -288,8 +289,8 @@ describe('planTicket: a body edit that moved the owner link, under sessionRules'
     // #624: the old owner first, then the editor's correction, then the builder.
     assert.deepEqual(to(sent), [OWNER, EDITOR, BUILDER]);
     assert.equal(sent[1]!.text, correctionText(7, 'edit-owned', OWNER), 'the editor hears only its correction, not the notice');
-    assert.match(sent[0]!.text, /body of \[#7\]\(https:\/\/github.com\/acme\/factory\/issues\/7\) A ticket was edited/);
-    assert.match(sent[2]!.text, /body of \[#7\]\(https:\/\/github.com\/acme\/factory\/issues\/7\) A ticket was edited/);
+    assert.match(sent[0]!.text, /body of \[#7 A ticket\]\(https:\/\/github.com\/acme\/factory\/issues\/7\) was edited/);
+    assert.match(sent[2]!.text, /body of \[#7 A ticket\]\(https:\/\/github.com\/acme\/factory\/issues\/7\) was edited/);
   });
 
   test('a live owner keeps its issue: its link is written back, the rest of the edit stays, and the editor is told once', async () => {

@@ -28,7 +28,7 @@ const SPEC = 'https://claude.ai/code/session_01SPECOWNER';
 const BUILDER = 'https://claude.ai/code/session_01BUILDER';
 const PR_OWNER = 'https://claude.ai/code/session_01PROWNER';
 const MARKER = dispatchMarker({ at: new Date(NOW - 60_000).toISOString(), sessionUrl: BUILDER });
-const TEXT = 'A comment on an issue.\n\n[#7](https://github.com/acme/factory/issues/7) A ticket';
+const TEXT = 'A comment on an issue.\n\n[#7 A ticket](https://github.com/acme/factory/issues/7)';
 const SPEC_DUTY = 'You own its spec. If the comment calls for a change you agree with, edit the body. If you disagree, reply on the issue saying why.';
 
 type Sent = { session: string, text: string, opts: Record<string, unknown> };
@@ -154,7 +154,7 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     const { ctx, sent } = context({ merged: 60, owners: { 60: PR_OWNER } });
     await planTicket(fire({ event: 'close', state: 'closed', closing: true }), ctx);
     assert.deepEqual(to(sent), [SPEC]);
-    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${PR_OWNER}) builds it.\nNothing is asked of you.`), sent[0]!.text);
+    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${PR_OWNER}) built it.\nNothing is asked of you.`), sent[0]!.text);
   });
 
   test('a comment on a ticket an open PR closes reaches that PR\'s owner, who hands it on to its branch\'s session if archived', async () => {
@@ -170,10 +170,10 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
   // is open, since its PR's own deploy message is not sent (#543).
   test('governor\'s deploy comment on a closed claimed ticket reaches the spec owner and the merged PR\'s owner, each closing', async () => {
     const { ctx, sent } = context({ merged: 60, owners: { 60: PR_OWNER } });
-    await planTicket(fire({ state: 'closed', closing: true, text: 'Deployed to prod by Deliver.' }), ctx);
+    await planTicket(fire({ state: 'closed', closing: true, text: 'Labelled `deployed: prod` by the Deliver workflow.' }), ctx);
     assert.deepEqual(to(sent), [SPEC, PR_OWNER]);
     assert.deepEqual(sent.map((m) => m.opts.closing), [true, true]);
-    assert.ok(sent[1]!.text.includes(`You build it; [its spec owner](${SPEC}) writes its body.`), sent[1]!.text);
+    assert.ok(sent[1]!.text.includes(`You built it; [its spec owner](${SPEC}) writes its body.`), sent[1]!.text);
     assert.doesNotMatch(sent[1]!.text, /As its builder/);
     // A comment on a closed ticket calls on no duty, and says so.
     assert.match(sent[1]!.text, /Nothing is asked of you\./);

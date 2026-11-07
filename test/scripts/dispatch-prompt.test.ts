@@ -18,10 +18,10 @@ describe('promptFor', () => {
     assert.match(prompt, /Closes #700/);
   });
 
-  // The dispatcher claims the ticket before the launch, so the
-  // session finds it under development and must proceed, not stop.
-  test('tells the session governor claimed the issue for it', () => {
-    assert.match(promptFor(700, TITLE, 'o/r', 'workflow: under development'), /Governor claimed #700 for this session/);
+  // Governor claims the ticket before the launch, so the session finds
+  // it under development, and is told the label is for this session.
+  test('tells the session governor labelled the issue for it', () => {
+    assert.match(promptFor(700, TITLE, 'o/r', 'workflow: under development'), /Governor has labelled #700 `workflow: under development` for this session\./);
   });
 
   test('names the factory\'s claim label when the repo gives none', () => {
@@ -105,7 +105,7 @@ describe('promptFor: the check before building', () => {
 
   test('asks for sign-off only where the session stopped at the check without raising a PR, where the switch is on', () => {
     const prompt = promptFor(700, 'T', 'o/r', CLAIM, {}, { signOff: true });
-    assert.match(prompt, /If you stopped at the check without raising a pull request, no pull request will close to ask you to sign off: Sign this session off unless you know otherwise/);
+    assert.match(prompt, /If you stopped at the check and raised no pull request, sign off now\. Unless you have work not on GitHub/);
     assert.match(prompt, /`Signing off\.`/);
     assert.doesNotMatch(prompt, /If you stopped at the check, no pull request/, 'the ask no longer reads as one for any session that stopped');
   });
@@ -133,8 +133,8 @@ describe('promptFor: the check before building', () => {
 
   test("asks in the repo's signOff prompt where it sets one", () => {
     const prompt = promptFor(700, 'T', 'o/r', CLAIM, { signOff: 'End with `Signing off.` and nothing after it.' }, { signOff: true });
-    assert.match(prompt, /If you stopped at the check without raising a pull request, no pull request will close to ask you to sign off: End with `Signing off\.` and nothing after it\.$/);
-    assert.doesNotMatch(prompt, /unless you know otherwise/);
+    assert.match(prompt, /If you stopped at the check and raised no pull request, sign off now\. End with `Signing off\.` and nothing after it\.$/);
+    assert.doesNotMatch(prompt, /Unless you have work/);
   });
 
   test("sends a repo's own pickup prompt unchanged, whatever the switch says", () => {

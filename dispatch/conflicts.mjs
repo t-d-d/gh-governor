@@ -28,6 +28,7 @@
 import { UNATTENDED } from './webhook/fire.mjs';
 import { AUTO, authorKind, lets } from './trust.mjs';
 import { HANDOFF, oneLine } from './webhook/mention.mjs';
+import { titleLink } from './roles.mjs';
 import { instruction } from './prompts.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { GITHUB_SOURCE } from './deliveries.mjs';
@@ -64,7 +65,7 @@ const CONFLICT_WAIT_MS = 3000;
  * @returns {{ text: string, fallback: import('./webhook/fire.mjs').Fallback }}
  */
 export const conflictMessage = ({ pr, base, head, merged }, prompts = {}) => {
-  const facts = `[#${pr.number}](${pr.html_url}) ${oneLine(pr.title)} conflicts with ${base} since ${base} moved to ${head}, after #${merged.pr} merged (merge commit ${merged.sha}).`;
+  const facts = `${titleLink(`#${pr.number}`, pr.title, pr.html_url)} conflicts with ${base} since ${base} moved to ${head}, after #${merged.pr} merged (merge commit ${merged.sha}).`;
   const ask = instruction(prompts, 'conflicts', { base });
   return {
     text: `${facts}\n\n${ask}`,

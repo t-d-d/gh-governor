@@ -354,7 +354,7 @@ describe('planSchedule over several repos', () => {
     assert.deepEqual(plan.map((d) => `${d.repo}#${d.issue}`), [`${ASKME}#2`, `${REPO}#5`, `${REPO}#7`], 'oldest first, across repos; a ticket carrying its repo\'s claim label is dropped');
     assert.deepEqual(asked, [['mode: afk']]);
     assert.equal(plan[0]?.prompt, promptFor(2, 'Issue 2', ASKME, 'claimed'));
-    assert.match(plan[0]!.prompt, /`claimed` for you/);
+    assert.match(plan[0]!.prompt, /`claimed` for this session/);
   });
 
   test('each ticket opens with its own repo\'s pickup prompt, below the line naming it', async () => {

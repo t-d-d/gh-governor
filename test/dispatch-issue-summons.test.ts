@@ -165,7 +165,7 @@ describe('a summons on an issue starts nothing beside a live spec owner or build
     const plan = await planDispatch(commented() as never, ctx) as any;
     assert.deepEqual(plan.launches, []);
     assert.deepEqual(to(sent), [SPEC]);
-    assert.match(sent[0]!.text, /no session starts/i);
+    assert.match(sent[0]!.text, /comes to you because you hold a role on #7/);
     assert.match(sent[0]!.text, /You are its spec owner\./);
     assert.deepEqual(sent[0]!.opts.on, [7]);
     assert.deepEqual(reads, [], 'an unclaimed ticket\'s spec owner is the only role: nothing is read');

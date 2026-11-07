@@ -89,10 +89,11 @@ export const promptFor = (number, title, repo, claim, prompts = {}, { signOff = 
 const OPEN_PR = 'If you raised a pull request, do not sign off while it is open:';
 
 /**
- * The default pickup prompt's lead into the ask to sign off. A builder read
- * a bare "if you stopped" as an ask to sign off once it stopped, PR or not.
+ * The default pickup prompt's sentence before the ask to sign off, which
+ * says how. A builder read a bare "if you stopped" as an ask to sign off
+ * once it stopped, PR or not, so it names the case: no PR raised.
  */
-const STOPPED = 'If you stopped at the check without raising a pull request, no pull request will close to ask you to sign off:';
+const STOPPED = 'If you stopped at the check and raised no pull request, sign off now.';
 
 /**
  * What one exit status of `dispatch/launch-session.py` means.

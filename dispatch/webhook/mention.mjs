@@ -79,7 +79,7 @@
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
-import { SPEC_OWNER_DUTY, rolesText } from './roles-text.mjs';
+import { SPEC_OWNER_DUTY, rolesText, titleLink } from './roles-text.mjs';
 import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets, postWords, wordsOf, POST_WORDS, POST_WORDS_CHARS } from './fire.mjs';
 import { closingNumbers } from './closing.mjs';
 import { REVIEW_MARKER, postedByApp } from './review-comment.mjs';
@@ -150,7 +150,7 @@ export const defaultBranch = (payload) => (isBranch(payload?.repository?.default
  * turn points the PR body's footer at it (`relinkSession`); the session
  * does so itself where that rewrite failed, and keeps the link there.
  */
-export const HANDOFF = 'The session that wrote this PR is gone; it is yours now. Governor points the PR description\'s session link at you; if it still names another session, put your own link in its place, and keep it there, so later comments reach you.';
+export const HANDOFF = 'The session that wrote this PR is gone, so the PR is yours. Governor has pointed its description\'s session link at you. If it still names another session, put your link there. Keep it there, so later comments reach you.';
 
 /**
  * What a message about a session's post naming no session adds: the
@@ -532,7 +532,7 @@ const closingFor = (role) => (role === 'owner' ? OWN_PR : SUBSCRIBED_PR);
  *
  * @param {any} on
  */
-export const refLine = (on) => `[#${on?.number}](${on?.html_url}) ${oneLine(on?.title)}`;
+export const refLine = (on) => titleLink(`#${on?.number}`, on?.title, on?.html_url);
 
 /**
  * What a relay about an issue ends with, by the recipient's role: a
@@ -654,7 +654,7 @@ const prClosedPrompt = ({ pull_request: pr, sender }, role) => {
   return [
     role === 'owner' ? `Your pull request was ${how}.` : `A pull request you subscribe to was ${how}.`,
     '',
-    `${refLine(pr)}, by ${sender?.login}`,
+    `${refLine(pr)}, ${pr?.merged ? 'merged' : 'closed'} by ${sender?.login}`,
     '',
     pr?.merged
       ? 'Nothing else on it is left to do unless its thread says so.'

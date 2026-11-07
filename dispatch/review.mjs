@@ -88,6 +88,7 @@ import { createHash } from 'node:crypto';
 import { DEPENDABOT, FIRE_BUDGET, UNATTENDED, authorKind, build, fireWeight, lets } from './webhook/fire.mjs';
 import { asksOwner, commentKey, commentText, sentence } from './webhook/review-comment.mjs';
 import { HANDOFF, oneLine } from './webhook/mention.mjs';
+import { titleLink } from './roles.mjs';
 import { checkLabel, checklist, checksFailure, dependabotAnswer } from './checklist.mjs';
 import { bodyDigest, closedBy, closingTickets, foreignClosings, lastReview, namedOwners, proseClosings, reviewMarker } from './pr-body.mjs';
 import { sessionNamedIn } from './webhook/subscribe.mjs';
@@ -193,7 +194,7 @@ export const ownerMessage = ({ pull, text, acts }) => {
     const said = [
       'Governor\'s PR review commented on your pull request.',
       '',
-      `[#${pull.number}](${pull.html_url}) ${oneLine(pull.title)}`,
+      titleLink(`#${pull.number}`, pull.title, pull.html_url),
       '',
       words,
     ].join('\n');

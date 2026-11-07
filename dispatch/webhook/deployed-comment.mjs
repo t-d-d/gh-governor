@@ -8,15 +8,20 @@
  * Pure: no I/O.
  */
 
+import { LABEL_PREFIX } from './fire.mjs';
+import { linkWords } from './roles-text.mjs';
+
 /** The start of the marker every deploy comment ends with. */
 export const DEPLOYED_MARKER = '<!-- governor:deployed ';
 
 /**
- * The deploy comment: one line naming the target, the job and the commit
- * it built, then the marker naming the target.
+ * The deploy comment: one line naming the label, the workflow as a link to
+ * the job, and the commit it built, then the marker naming the target. Only
+ * the marker is read back. A bracket or a backslash in the workflow's name
+ * is escaped, so it cannot end the link's words early.
  *
  * @param {{ target: string, workflow: string, url: string, commit: string }} deploy
  *   `workflow`: the shipping job's workflow's name; `url`: the job's page.
  */
 export const deployedComment = ({ target, workflow, url, commit }) =>
-  `Deployed to ${target} by ${workflow} ([job](${url})), built from ${commit.slice(0, 7)}.\n\n${DEPLOYED_MARKER}${target} -->`;
+  `Labelled \`${LABEL_PREFIX}${target}\` by the [${linkWords(workflow)}](${url}) workflow at ${commit.slice(0, 7)}.\n\n${DEPLOYED_MARKER}${target} -->`;

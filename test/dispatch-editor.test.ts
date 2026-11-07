@@ -286,14 +286,15 @@ describe('tellEditor', () => {
     };
   };
 
-  test('the editor is told once to post its change as a comment, with the rules', async () => {
+  test('the editor is told once to post its change as a comment, naming the rule it broke', async () => {
     const t = teller();
     const edited = { by: 'other' as const, found: { searched: true as const, author: WRITER, maybe: [], candidates: 2, unread: 0 } };
     await tellEditor({ repo: REPO, on: 7, edit: EDIT, edited, tellOnce: t.tellOnce, deliveries: t.deliveries as never, log: t.log });
     assert.deepEqual(t.sent.map((s) => [s.session, s.text]), [[WRITER, editNudgeText(7, ISSUE_URL)]]);
     assert.ok(t.told.has('session_01WRITER#edit-unsigned'));
     assert.match(t.sent[0]!.text, /as a comment/);
-    assert.ok(t.sent[0]!.text.includes(SESSION_RULES));
+    assert.ok(t.sent[0]!.text.includes("session rule 2: only an issue's or a PR's owner edits its body."));
+    assert.ok(!t.sent[0]!.text.includes(SESSION_RULES));
     const again = teller(t.told);
     await tellEditor({ repo: REPO, on: 7, edit: EDIT, edited, tellOnce: again.tellOnce, deliveries: again.deliveries as never, log: again.log });
     assert.deepEqual(again.sent, []);

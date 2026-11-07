@@ -488,7 +488,7 @@ describe('run — what reaches the owner session', () => {
     assert.ok(fires[0]!.text!.includes(withoutMarker(h.comments[0]!.body)), 'the comment\'s text');
     assert.match(fires[0]!.text!, /Do not open a new branch or PR/);
     assert.ok(fires[0]!.fallback, 'the owner is answered either way');
-    assert.match(fires[0]!.fallback!.prompt, /yours now/);
+    assert.match(fires[0]!.fallback!.prompt, /the PR is yours/);
     assert.ok(fires[0]!.fallback!.prompt.includes(withoutMarker(h.comments[0]!.body)));
     assert.doesNotMatch(fires[0]!.fallback!.prompt, /governor:pr-review/);
     assert.equal(fires[0]!.fallback!.issue, 767);
@@ -549,10 +549,10 @@ describe('run — what reaches the owner session', () => {
     const text = `Waits for a description edit: ${'界'.repeat(65000)} (test 3).`;
     const fire = ownerMessage({ pull, text, acts: true });
     assert.ok(fireWeight(fire) <= FIRE_BUDGET, `${fireWeight(fire)} bytes`);
-    assert.match(fire.text, /^Governor's PR review commented on your pull request\.\n\n\[#767\]\(https:\/\/github\.com\/acme\/factory\/pull\/767\) Run the PR review/);
+    assert.match(fire.text, /^Governor's PR review commented on your pull request\.\n\n\[#767 Run the PR review from the dispatcher\]\(https:\/\/github\.com\/acme\/factory\/pull\/767\)/);
     assert.match(fire.text, /Waits for a description edit: 界/);
     assert.match(fire.text, /the review asks this of you/);
-    assert.match(fire.fallback!.prompt, /yours now/);
+    assert.match(fire.fallback!.prompt, /the PR is yours/);
     const short = ownerMessage({ pull, text: 'Waits for a description edit: name the cost (test 3).', acts: true });
     assert.ok(short.text.includes('Waits for a description edit: name the cost (test 3).'), 'a comment that fits is sent whole');
   });
@@ -652,7 +652,7 @@ describe('run — what reaches the owner session', () => {
     assert.equal(refused.launches.length, 1);
     const launch = refused.launches[0] as { prompt: string, sessionName: string };
     assert.ok(launch.prompt.includes(withoutMarker(h.comments[0]!.body)));
-    assert.match(launch.prompt, /yours now/);
+    assert.match(launch.prompt, /the PR is yours/);
     assert.match(launch.sessionName, /#767/);
     assert.equal(exitCodeFor(told as never), 0);
     const sentText = (refused.messages[0] as { text: string }).text;

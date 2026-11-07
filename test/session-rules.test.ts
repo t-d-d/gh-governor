@@ -10,7 +10,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { SESSION_RULES, SESSION_RULES_BLOCK, SESSION_RULES_END, SESSION_RULES_FILE, SESSION_RULES_VERSION, blockIn, rulesFile } from '../dispatch/session-rules.mjs';
+import { SESSION_RULES, SESSION_RULES_BLOCK, SESSION_RULES_END, SESSION_RULES_FILE, SESSION_RULES_VERSION, blockIn, brokenRule, rulesFile } from '../dispatch/session-rules.mjs';
 import { GENERIC_SWITCHES, readConfig, turnsOn } from '../dispatch/repo-config.mjs';
 import { configJsonSchema } from '../scripts/export-config-schema.mjs';
 
@@ -22,6 +22,14 @@ describe('the three rules', () => {
     assert.deepEqual(numbered.map((line) => line.slice(0, 2)), ['1.', '2.', '3.']);
     assert.match(numbered[0]!, /Sign everything you write on GitHub/);
     assert.match(numbered[0]!, /https:\/\/claude\.ai\/code\/session_… URL, alone on the line just above the Claude Code footer/);
+  });
+
+  test('the rule a correction names by its number is the rule of that number', () => {
+    const numbered = SESSION_RULES.split('\n').filter((line) => /^\d\. /.test(line));
+    for (const rule of [1, 2] as const) {
+      const name = /session rule \d: (.+)\.$/.exec(brokenRule(rule))![1]!;
+      assert.ok(numbered[rule - 1]!.startsWith(`${rule}. ${name[0]!.toUpperCase()}${name.slice(1)}`), `${brokenRule(rule)} / ${numbered[rule - 1]}`);
+    }
   });
 
   test('say who edits a body and pushes to a branch, and that signing off gives up the issues a session owns', () => {

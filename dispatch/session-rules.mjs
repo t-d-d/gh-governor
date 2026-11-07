@@ -35,6 +35,24 @@ export const SESSION_RULES = [
   '3. To change an issue or a PR you do not own, comment on it. Where governor tells you nobody owns an issue, you may take it by editing its body so your link ends it.',
 ].join('\n');
 
+/**
+ * Each rule a correction or a nudge names, in a few words. The session
+ * already has the rules whole, in its opening prompt or its `CLAUDE.md`.
+ */
+const RULE_NAMES = Object.freeze({
+  1: 'sign everything you write on GitHub',
+  2: "only an issue's or a PR's owner edits its body",
+});
+
+/**
+ * The line that names the rule a session broke, by its number, in place of
+ * the whole block.
+ *
+ * @param {1 | 2} rule
+ * @param {string} [lead] the words before it, for a message that is not sure the session broke it
+ */
+export const brokenRule = (rule, lead = 'It breaks') => `${lead} session rule ${rule}: ${RULE_NAMES[rule]}.`;
+
 /** The block's end marker. */
 export const SESSION_RULES_END = '<!-- governor:session-rules-end -->';
 

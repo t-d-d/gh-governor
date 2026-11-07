@@ -160,13 +160,14 @@ describe('prEditText and the PR correction', () => {
     assert.doesNotMatch(text, /—/);
   });
 
-  test('the correction says the editor does not own the PR, to comment next time, and carries the rules', () => {
+  test('the correction says the editor does not own the PR, to comment next time, and names the rule it broke', () => {
     const text = correctionText(12, 'edit-pr', OWNER);
     assert.match(text, /PR #12/);
     assert.match(text, /do not own/);
     assert.ok(text.includes(OWNER));
     assert.match(text, /comment/);
-    assert.ok(text.includes(SESSION_RULES));
+    assert.ok(text.includes("session rule 2: only an issue's or a PR's owner edits its body."));
+    assert.ok(!text.includes(SESSION_RULES));
     assert.doesNotMatch(text, /—/);
   });
 });

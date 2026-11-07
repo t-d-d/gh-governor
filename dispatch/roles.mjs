@@ -108,4 +108,4 @@ export const rolesOf = async ({ issue, relay, claim = '', ticket, owner, reader,
   return rolesFrom({ issue, owner: spec, builders: found.sessions, owns: found.owns, by: found.by });
 };
 
-export { BUILDER_DUTY, SPEC_OWNER_DUTY, listed, mergedNote, rolesText, sessionLink } from './webhook/roles-text.mjs';
+export { BUILDER_DUTY, SPEC_OWNER_DUTY, linkWords, listed, mergedNote, rolesText, sessionLink, titleLink } from './webhook/roles-text.mjs';

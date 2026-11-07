@@ -1013,7 +1013,7 @@ describe('run — schedule', () => {
     await run({ source: 'aws.events' }, h.deps as never);
     assert.deepEqual(h.comments.map((c) => c.issue), [7, 9]);
     assert.deepEqual(h.messages.map((m) => m.session), [SPEC_OWNER]);
-    assert.match(h.messages[0]!.text, /\[#7\]\(https:\/\/github\.com\/acme\/factory\/issues\/7\) Issue 7 has \[a new builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\)\./);
+    assert.match(h.messages[0]!.text, /\[#7 Issue 7\]\(https:\/\/github\.com\/acme\/factory\/issues\/7\) has \[a new builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\)\./);
     assert.match(h.messages[0]!.text, /You are its spec owner; \[its builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\) builds it\.\nNothing is asked of you\./);
   });
 
@@ -1040,8 +1040,8 @@ describe('run — schedule', () => {
       `message ${owners[7]}`,
       `message ${owners[9]}`,
     ]);
-    assert.match(h.messages[0]!.text, /\[#7\]\(.*\) .* has \[a new builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\)/);
-    assert.match(h.messages[1]!.text, /\[#9\]\(.*\) .* has \[a new builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\)/);
+    assert.match(h.messages[0]!.text, /\[#7 .*\]\(.*\) has \[a new builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\)/);
+    assert.match(h.messages[1]!.text, /\[#9 .*\]\(.*\) has \[a new builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\)/);
   });
 
   /** Two tickets, each with its own spec owner, so the turn queues two sends after its launches. */
@@ -2477,7 +2477,7 @@ describe('run — an unblocked fire', () => {
     const result = await run(fire(), h.deps as never) as Record<string, unknown>;
     assert.equal(result.row, 'claimed');
     assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK']);
-    assert.match(h.messages[0]!.text, /acme\/tools#41 \(The parser\) closed as completed, by PR \[acme\/tools#52\]/);
+    assert.match(h.messages[0]!.text, /\[acme\/tools#41 The parser\]\(https:\/\/github\.com\/acme\/tools\/issues\/41\) closed as completed, by \[PR acme\/tools#52 Parse it\]/);
     assert.match(h.messages[0]!.text, /against what merged/);
     assert.deepEqual([h.launches, h.comments, labelCalls(h.calls)], [[], [], []]);
   });
@@ -2530,7 +2530,7 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(h.messages.map((m) => m.session), ['https://claude.ai/code/session_01WORK', 'https://claude.ai/code/session_01OWNER']);
     assert.match(h.messages[0]!.text, /against what merged/);
     const notice = h.messages[1]!.text;
-    assert.match(notice, /acme\/tools#41 \(The parser\) closed as completed, by PR \[acme\/tools#52\]/);
+    assert.match(notice, /\[acme\/tools#41 The parser\]\(https:\/\/github\.com\/acme\/tools\/issues\/41\) closed as completed, by \[PR acme\/tools#52 Parse it\]/);
     assert.match(notice, /This is a notice: it asks nothing of you/);
     assert.match(notice, /spec owner/);
     assert.match(notice, /\[Its builder\]\(https:\/\/claude\.ai\/code\/session_01WORK\) was asked to check its work against what merged/);
@@ -2630,7 +2630,7 @@ describe('run — an unblocked fire', () => {
     const result = await run(fire(), h.deps as never) as Record<string, unknown>;
     assert.equal(result.row, 'claimed');
     assert.deepEqual(h.messages.map((m) => m.session), [PR_A]);
-    assert.match(h.messages[0]!.text, /acme\/tools#41 \(The parser\) closed as completed/);
+    assert.match(h.messages[0]!.text, /\[acme\/tools#41 The parser\]\(https:\/\/github\.com\/acme\/tools\/issues\/41\) closed as completed/);
     assert.deepEqual([h.launches, h.comments], [[], []]);
   });
 
@@ -2732,7 +2732,7 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
     const prompt = h.launches[0]!.prompt;
     assert.ok(prompt.startsWith(promptFor(7, 'Issue 7', REPO, CLAIM, FACTORY_PROMPTS, { signOff: true, deployMessages: true })), prompt);
-    assert.match(prompt, /acme\/tools#41 \(The parser\) closed as completed, by PR \[acme\/tools#52\]\(https:\/\/github\.com\/acme\/tools\/pull\/52\) \(Parse it\)/);
+    assert.match(prompt, /\[acme\/tools#41 The parser\]\(https:\/\/github\.com\/acme\/tools\/issues\/41\) closed as completed, by \[PR acme\/tools#52 Parse it\]\(https:\/\/github\.com\/acme\/tools\/pull\/52\)/);
     assert.match(prompt, /Before you build, check the spec against what merged/);
     assert.ok(h.calls.includes(`label #7 +${CLAIM}`), h.calls.join('; '));
     assert.deepEqual(h.comments.map((c) => c.issue), [7]);
@@ -2747,7 +2747,7 @@ describe('run — an unblocked fire', () => {
     assert.equal(h.launches.length, 1);
     assert.deepEqual(h.messages.map((m) => m.session), [SPEC]);
     const notice = h.messages[0]!.text;
-    assert.match(notice, /acme\/tools#41 \(The parser\) closed as completed, by PR \[acme\/tools#52\]/);
+    assert.match(notice, /\[acme\/tools#41 The parser\]\(https:\/\/github\.com\/acme\/tools\/issues\/41\) closed as completed, by \[PR acme\/tools#52 Parse it\]/);
     assert.match(notice, /This is a notice: it asks nothing of you/);
     assert.match(notice, /started \[a builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\) for #7 and asked it to check the spec against what merged/);
   });
@@ -2848,7 +2848,7 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
     const prompt = h.launches[0]!.prompt;
     assert.match(prompt, /^Spec #7 'Issue 7'/);
-    assert.match(prompt, /acme\/tools#41 \(The parser\) closed as completed, by PR \[acme\/tools#52\]/);
+    assert.match(prompt, /\[acme\/tools#41 The parser\]\(https:\/\/github\.com\/acme\/tools\/issues\/41\) closed as completed, by \[PR acme\/tools#52 Parse it\]/);
     assert.match(prompt, new RegExp(`add \`${CLAIM}\` to it first`));
     assert.match(prompt, /as a question/);
     assert.deepEqual(labelCalls(h.calls), [], 'governor claims nothing');
@@ -2887,7 +2887,7 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(h.launches, []);
     assert.deepEqual(h.messages.map((m) => m.session), [OWNER]);
     const text = h.messages[0]!.text;
-    assert.match(text, /acme\/tools#41 \(The parser\) closed as completed, by PR \[acme\/tools#52\]/);
+    assert.match(text, /\[acme\/tools#41 The parser\]\(https:\/\/github\.com\/acme\/tools\/issues\/41\) closed as completed, by \[PR acme\/tools#52 Parse it\]/);
     assert.ok(text.includes(ownerSpecMessage(fire() as never, FACTORY_PROMPTS, FACTORY_CONFIG_LABELS)), text);
     assert.match(text, /your ticket/);
     assert.match(text, new RegExp(`add \`${CLAIM}\` to it first`));
@@ -5871,7 +5871,7 @@ describe('run — a workflow run on main', () => {
         assert.deepEqual(labelled.map((l) => l.ticket).sort(), [730, 736]);
         assert.deepEqual(comments.map((c) => c.issue).sort(), [730, 736]);
         for (const { body } of comments) {
-          assert.equal(body, `Deployed to dev by Deliver ([job](${stage(DEV).html_url})), built from ${SHA_MAIN.slice(0, 7)}.\n\n<!-- governor:deployed dev -->`);
+          assert.equal(body, `Labelled \`deployed: dev\` by the [Deliver](${stage(DEV).html_url}) workflow at ${SHA_MAIN.slice(0, 7)}.\n\n<!-- governor:deployed dev -->`);
         }
       });
 
@@ -5948,7 +5948,8 @@ describe('run — a workflow run on main', () => {
           const [own] = to(sent, SESSION);
           assert.match(own!.text, /PR #799/);
           assert.match(own!.text, /#730/);
-          assert.match(own!.text, /^ {2}You build it; a person owns its body\.$/m);
+          assert.match(own!.text, /^ {2}You built it; a person owns its body\.$/m, 'the ticket is closed');
+          assert.match(own!.text, new RegExp(`^- \\[#730 Issue 730\\]\\(https://github\\.com/${REPO}/issues/730\\), which \\[PR #799\\]\\(https://github\\.com/${REPO}/pull/799\\) closed\\.$`, 'm'), 'the title and each PR are links');
           assert.match(own!.text, /Your PR, which closed #730, has merged: act on this message only where it calls for new work\./, 'the roles lines read as on every other path');
           assert.equal(exitCodeFor(r as never), 0);
           assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 500, 'the range is planned: the cursor moves');
@@ -6510,7 +6511,7 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     assert.match(messages[0]!.session, new RegExp(OWNER));
     const text = messages[0]!.text;
     assert.ok(text.startsWith(DISPATCHER_LABEL), 'labelled as the dispatcher\'s');
-    assert.match(text, /\[#804\]\(https:\/\/github\.com\/acme\/factory\/pull\/804\) PR 804 conflicts/);
+    assert.match(text, /\[#804 PR 804\]\(https:\/\/github\.com\/acme\/factory\/pull\/804\) conflicts/);
     assert.ok(text.includes(`https://github.com/${REPO}/pull/804`));
     assert.ok(text.includes(MAIN), 'names the commit main is at');
     assert.match(text, /#793\b/, 'names the merge that moved main');
@@ -6532,9 +6533,9 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     assert.equal(messages.length, 1);
     assert.equal(launches.length, 1);
     assert.ok(launches[0]!.prompt.includes(MAIN));
-    assert.match(launches[0]!.prompt, /\[#804\]\(https:\/\/github\.com\/acme\/factory\/pull\/804\) PR 804 conflicts/);
+    assert.match(launches[0]!.prompt, /\[#804 PR 804\]\(https:\/\/github\.com\/acme\/factory\/pull\/804\) conflicts/);
     assert.match(launches[0]!.prompt, /resolve the conflicts/);
-    assert.match(launches[0]!.prompt, /yours now/);
+    assert.match(launches[0]!.prompt, /the PR is yours/);
     assert.match(launches[0]!.sessionName, /#804/);
     assert.equal(launches[0]!.branch, 'claude/branch-804', 'the session starts on the PR\'s head branch and pushes there, so it opens no new branch or PR');
     assert.deepEqual(r0.comments, [], 'no dispatch comment: the PR body names the new owner');
@@ -6641,7 +6642,7 @@ describe('run — a merge to main leaves PRs conflicted', () => {
       reader: r0.reader,
       sleep,
       message: async (m: { session: string; text: string }) => {
-        if (/\[#804\]\(https:\/\/github\.com\/acme\/factory\/pull\/804\) PR 804 conflicts/.test(m.text)) throw new Error('the launcher for session_01WROTEIT ran past 120000 ms');
+        if (/\[#804 PR 804\]\(https:\/\/github\.com\/acme\/factory\/pull\/804\) conflicts/.test(m.text)) throw new Error('the launcher for session_01WROTEIT ran past 120000 ms');
         messages.push(m);
         return { status: 0, output: JSON.stringify({ ok: true, session_id: OWNER }) };
       },
@@ -6650,7 +6651,7 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     assert.deepEqual(r.checks.map((c) => [c.pr, c.outcome]), [[804, 'failed'], [810, 'told']]);
     assert.match(String(r.checks[0]!.error), /ran past/);
     assert.equal(messages.length, 1);
-    assert.match(messages[0]!.text, /\[#810\]\(https:\/\/github\.com\/acme\/factory\/pull\/810\) PR 810 conflicts/);
+    assert.match(messages[0]!.text, /\[#810 PR 810\]\(https:\/\/github\.com\/acme\/factory\/pull\/810\) conflicts/);
     assert.deepEqual(logged.filter((l) => l.event === 'dispatch-conflicts').map((l) => [l.pr, l.outcome]), [[804, 'failed'], [810, 'told']]);
     assert.equal(exitCodeFor(r as never), 1);
   });
@@ -6686,7 +6687,7 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     const r = await run(fire, deps as never) as Result;
     assert.ok(slept.length > 0, 'waited before reading again');
     assert.equal(messages.length, 1);
-    assert.match(messages[0]!.text, /\[#804\]\(https:\/\/github\.com\/acme\/factory\/pull\/804\) PR 804 conflicts/);
+    assert.match(messages[0]!.text, /\[#804 PR 804\]\(https:\/\/github\.com\/acme\/factory\/pull\/804\) conflicts/);
     assert.deepEqual(r.checks.map((c) => [c.pr, c.outcome]), [[810, 'skipped'], [804, 'told']]);
     assert.match(String(r.checks[0]!.reason), /not computed|mergeable state/);
   });
@@ -6714,7 +6715,7 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     assert.deepEqual(r.checks.map((c) => [c.pr, c.outcome]), [[804, 'skipped'], [810, 'told']]);
     assert.match(String(r.checks[0]!.reason), /trust\.auto/);
     assert.equal(messages.length, 1);
-    assert.match(messages[0]!.text, /\[#810\]\(https:\/\/github\.com\/acme\/factory\/pull\/810\) PR 810 conflicts/);
+    assert.match(messages[0]!.text, /\[#810 PR 810\]\(https:\/\/github\.com\/acme\/factory\/pull\/810\) conflicts/);
   });
 
   test('a PR by an author who may not summon the dispatcher is not told', async () => {
@@ -9489,7 +9490,7 @@ describe('run — every served repo', () => {
     await run(fire, h.deps as never);
     assert.deepEqual(h.launches.map((l) => [l.repo, l.environment]), [[ASKME, 'env_01ASK']]);
     assert.ok(h.calls.includes(`label ${ASKME}#2 +claimed`), h.calls.join('; '));
-    assert.match(h.launches[0]!.prompt, /acme\/factory#41 \(The parser\) closed as completed, with no PR\. It blocked #2\./);
+    assert.match(h.launches[0]!.prompt, /\[acme\/factory#41 The parser\]\(https:\/\/github\.com\/acme\/factory\/issues\/41\) closed as completed, with no PR\. It blocked #2\./);
   });
 
   test('a red scheduled run in another repo starts a session where its file turns it on, with its prompt or the default', async () => {

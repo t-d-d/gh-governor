@@ -414,13 +414,14 @@ const teller = (told = new Set<string>(), fails: string[] = []) => {
 };
 
 describe('tellAuthor', () => {
-  test('the author is nudged once, with the rules', async () => {
+  test('the author is nudged once, naming the rule it broke', async () => {
     const t = teller();
     const found = { searched: true as const, author: WRITER, maybe: [], candidates: 2, unread: 0 };
     await tellAuthor({ repo: REPO, on: 7, post: POST, found, tellOnce: t.tellOnce, deliveries: t.deliveries as never, log: t.log });
     assert.deepEqual(t.sent.map((s) => [s.session, s.text]), [[WRITER, nudgeText(7, URL_7)]]);
     assert.deepEqual(t.sent[0]!.opts.on, [7]);
-    assert.ok(t.sent[0]!.text.includes(SESSION_RULES));
+    assert.ok(t.sent[0]!.text.includes('session rule 1: sign everything you write on GitHub.'));
+    assert.ok(!t.sent[0]!.text.includes(SESSION_RULES));
     assert.ok(t.sent[0]!.text.includes(URL_7));
     const again = teller(t.told);
     await tellAuthor({ repo: REPO, on: 7, post: POST, found, tellOnce: again.tellOnce, deliveries: again.deliveries as never, log: again.log });

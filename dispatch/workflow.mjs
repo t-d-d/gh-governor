@@ -67,7 +67,7 @@ import { short } from './runs.mjs';
 import { DEPENDABOT, FAILED, LABEL_PREFIX, UNATTENDED } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { sameSession } from './webhook/subscribe.mjs';
-import { rolesText } from './roles.mjs';
+import { linkWords, listed, rolesText, titleLink } from './roles.mjs';
 import { instruction } from './prompts.mjs';
 
 /**
@@ -119,15 +119,13 @@ const bare = (target) => target.replace(/^the /, '');
 /** @param {string} reason @param {Range | null} [range] @returns {Plan} */
 const nobody = (reason, range = null) => ({ reason, notes: [], unnamed: [], triage: null, range, stale: null, advance: null });
 
-/** A name as a Markdown link's words: on one line, its brackets escaped so they cannot end the link. @param {unknown} name */
-const linkText = (name) => oneLine(name).replace(/[[\]]/g, '\\$&');
 
 /** @param {JobRow[]} failed */
 export const jobList = (failed) =>
-  (failed.length === 0 ? ['- none named; the run page says what stopped it'] : failed.map((j) => `- [${linkText(j.name)}](${j.html_url})`));
+  (failed.length === 0 ? ['- none named; the run page says what stopped it'] : failed.map((j) => `- [${linkWords(j.name)}](${j.html_url})`));
 
 /** @param {PullRow} pr */
-const prLine = (pr) => `[#${pr.number}](${pr.html_url}) ${oneLine(pr.title)}`;
+const prLine = (pr) => titleLink(`#${pr.number}`, pr.title, pr.html_url);
 
 /** A CI run's page and the commit it tested. @param {WorkflowFire} run */
 const runLine = (run) => `[Run](${run.url}) at commit ${short(run.headSha)}`;
@@ -313,7 +311,7 @@ const commit = (sha) => sha.slice(0, 7);
  *
  * @param {RunView} run
  */
-const byWorkflow = (run) => `the [${linkText(run.name)}](${run.job ?? run.url}) workflow`;
+const byWorkflow = (run) => `the [${linkWords(run.name)}](${run.job ?? run.url}) workflow`;
 
 /**
  * How a green deploy's opening sentence ends: the tag the repo's config
@@ -345,7 +343,7 @@ const deployedTo = (who, run, { target, end, tags }) => `${who} deployed to ${co
  * @param {string} sha
  * @param {Tags} tags
  */
-const failedAt = (run, target, sha, tags) => `The [${linkText(run.name)}](${run.url}) workflow failed at ${commit(sha)}, ${Object.hasOwn(tags, target) ? `so the ${code(String(tags[target]))} tag did not move.` : `so it did not reach ${code(target)}.`}`;
+const failedAt = (run, target, sha, tags) => `The [${linkWords(run.name)}](${run.url}) workflow failed at ${commit(sha)}, ${Object.hasOwn(tags, target) ? `so the ${code(String(tags[target]))} tag did not move.` : `so it did not reach ${code(target)}.`}`;
 
 /** Numbers as a sentence lists them: `#1`, `#1 and #2`, `#1, #2 and #3`. @param {number[]} ns */
 const andList = (ns) => {
@@ -567,7 +565,7 @@ const planTarget = async (run, coverage, prompts, workflows) => {
       prs: prs.map((p) => p.number),
       subscribed: subscribed.map((p) => p.number),
       session,
-      // Every success asks, "unless you know otherwise": a session whose
+      // Every success asks for sign-off, with its exceptions: a session whose
       // change another target still has to ship waits for it by the
       // github-tooling rule.
       closing: conclusion === 'success',
@@ -580,10 +578,10 @@ const planTarget = async (run, coverage, prompts, workflows) => {
 };
 
 /**
- * @typedef {{ ticket: number, title: string, url: string, prs: number[], roles: import('./roles.mjs').TicketRoles }} ShippedTicket
- *   A ticket a green deploy commented on (dispatch/turn.mjs): the PRs it
- *   shipped that close it, and its roles as every path finds them
- *   (`rolesOf`, dispatch/roles.mjs).
+ * @typedef {{ ticket: number, title: string, url: string, repo: string, closed: boolean, prs: number[], roles: import('./roles.mjs').TicketRoles }} ShippedTicket
+ *   A ticket a green deploy commented on (dispatch/turn.mjs): its repo,
+ *   whether it is closed, the PRs it shipped that close it, and its roles
+ *   as every path finds them (`rolesOf`, dispatch/roles.mjs).
  */
 
 /**
@@ -596,9 +594,9 @@ const planTarget = async (run, coverage, prompts, workflows) => {
  * @param {import('./roles.mjs').RoleHolder} holder
  * @param {boolean} notice
  */
-const ticketLine = ({ ticket, title, url, prs, roles }, holder, notice) => [
-  `- [#${ticket}](${url}) ${oneLine(title)}, which ${prs.length === 1 ? `PR #${prs[0]}` : `PRs ${prs.map((n) => `#${n}`).join(', ')}`} closed.`,
-  ...rolesText(roles, holder, { notice }).split('\n').map((line) => `  ${line}`),
+const ticketLine = ({ ticket, title, url, repo, closed, prs, roles }, holder, notice) => [
+  `- ${titleLink(`#${ticket}`, title, url)}, which ${listed(prs.map((n) => `[PR #${n}](https://github.com/${repo}/pull/${n})`))} closed.`,
+  ...rolesText(roles, holder, { notice, closed }).split('\n').map((line) => `  ${line}`),
 ].join('\n');
 
 /**
