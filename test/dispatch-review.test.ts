@@ -106,6 +106,8 @@ const harness = (over: {
   checks?: Array<{ name: string, state: 'red' | 'green' | 'pending', app?: string }>,
   /** The checks at each head, over `checks`. */
   checksAt?: (sha: string) => Array<{ name: string, state: 'red' | 'green' | 'pending', app?: string }>,
+  /** Governor's own latest `governor` run at the head, with its title: none by default. */
+  own?: { state: 'red' | 'green' | 'pending', title: string } | null,
   /** The runs the CI workflow's list answers at the head: one green run of the factory's `ci.yml` at HEAD by default. */
   ciRuns?: CiRun[],
   /** The check write: GitHub's refusal, for one that throws. */
@@ -174,6 +176,7 @@ const harness = (over: {
       defaultBranch: async () => over.base ?? 'main',
       requiredChecks: async (branch: string) => { requiredReads.push(branch); return over.required ?? []; },
       checksAt: async (sha: string) => over.checksAt?.(sha) ?? over.checks ?? [],
+      ownCheck: async () => over.own ?? null,
       checkRun: async (run: { name: string, sha: string, state: string, title: string, summary: string }) => {
         if (over.checkRun) await over.checkRun(run);
         checkRuns.push(run);
@@ -2119,20 +2122,21 @@ describe('run — required checks still running, or run again', () => {
     await reviewTagalong(red);
     const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
 
-    const same = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'aggregate', state: 'green' }], thread });
+    const own = { state: 'red' as const, title: red.checkRuns.at(-1)!.title };
+    const same = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'aggregate', state: 'green' }], thread, own });
     const turn = await byCommit(same);
     assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped']);
     assert.match(String(turn.reviews[0]!.reason), /same red checks/);
     assert.deepEqual([same.comments.length, same.commentEdits.length, same.checkRuns.length, same.judged.length], [0, 0, 0, 0]);
 
     // The red checks changed: another one turned red, so the fail is said again.
-    const more = tagalong({ open, required: ['gate', 'lint'], checks: [{ name: 'gate', state: 'red' }, { name: 'lint', state: 'red' }], thread });
+    const more = tagalong({ open, required: ['gate', 'lint'], checks: [{ name: 'gate', state: 'red' }, { name: 'lint', state: 'red' }], thread, own });
     assert.deepEqual((await byCommit(more)).reviews.map((r) => r.outcome), ['marker-moved']);
     assert.match(more.commentEdits[0]!.body, /`gate`, `lint` are red/);
     assert.deepEqual(more.checkRuns.map((c) => c.state), ['failure']);
 
     // A re-run that turned it green is read again.
-    const green = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'green' }], thread });
+    const green = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'green' }], thread, own });
     assert.deepEqual((await byCommit(green)).reviews.map((r) => r.outcome), ['passed']);
     assert.equal(green.judged.length, 1);
   });
@@ -2144,7 +2148,8 @@ describe('run — required checks still running, or run again', () => {
     await reviewTagalong(red);
     const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
 
-    const unrecorded = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }], thread, verdicts: { 767: null } });
+    const own = { state: 'red' as const, title: red.checkRuns.at(-1)!.title };
+    const unrecorded = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }], thread, verdicts: { 767: null }, own });
     assert.deepEqual((await byCommit(unrecorded)).reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(unrecorded.checkRuns.map((c) => c.state), ['failure']);
   });
@@ -2157,9 +2162,27 @@ describe('run — required checks still running, or run again', () => {
     const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
 
     // `gate` was re-run, a review in between posted the check in progress, and the re-run ended red again.
-    const waited = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'governor', state: 'pending' }], thread });
+    const own = { state: 'pending' as const, title: 'Waits for its required checks to finish.' };
+    const waited = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'governor', state: 'pending' }], thread, own });
     assert.deepEqual((await byCommit(waited)).reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(waited.checkRuns.map((c) => c.state), ['failure']);
+  });
+
+  test('a check\'s end on the same red checks reviews again where governor\'s latest run at the head says the review did not run: a review that threw or ran out of time is not left promising to run again', async () => {
+    const byCommit = (h: ReturnType<typeof harness>) => review({ kind: 'review', headSha: HEAD, repo: TAGALONG }, h);
+    const open = [{ number: 767, headSha: HEAD, draft: false, body: '' }];
+    const red = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }] });
+    await reviewTagalong(red);
+    const verdict = red.checkRuns.at(-1)!;
+    const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
+
+    // A later review at the head threw, or ran out of time, after the test-8 fail.
+    for (const own of [{ state: 'red' as const, title: 'The PR review did not run.' }, null]) {
+      const errored = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'governor', state: 'red' }], thread, own });
+      assert.deepEqual((await byCommit(errored)).reviews.map((r) => r.outcome), ['marker-moved'], JSON.stringify(own));
+      assert.deepEqual(errored.checkRuns.map((c) => [c.state, c.title]), [['failure', verdict.title]], 'the test-8 verdict is posted again');
+      assert.equal(errored.judged.length, 0);
+    }
   });
 });
 
