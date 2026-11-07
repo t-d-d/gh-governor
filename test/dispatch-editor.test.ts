@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { handle } from '../dispatch/webhook/route.mjs';
 import { parseFire, postWords } from '../dispatch/webhook/fire.mjs';
-import { EDIT_BUILDER, EDIT_SPEC_OWNER, editWords } from '../dispatch/webhook/mention.mjs';
+import { EDIT_BUILDER, EDIT_SPEC_OWNER, editClosedBuilder, editWords } from '../dispatch/webhook/mention.mjs';
 import { SWITCHES, readConfig, type RepoConfig } from '../dispatch/repo-config.mjs';
 import { AUTHOR_AFTER_MS, AUTHOR_BEFORE_MS } from '../dispatch/author.mjs';
 import { editMaybeText, editNudgeText, editedBody, editedText, ownerLine, searchEditor, tellEditor } from '../dispatch/editor.mjs';
@@ -494,5 +494,77 @@ describe('planTicket: a body edit that leaves the owner link in place', () => {
     const { ctx } = context({ edited: { by: 'other', found: { searched: true, author: WRITER, maybe: [], candidates: 1, unread: 0 } }, fails: [WRITER] });
     const plan = await planTicket(fire(), ctx) as any;
     assert.equal(exitCodeFor(plan.answer), 1);
+  });
+});
+
+describe('planTicket: a body edit on a closed ticket', () => {
+  const CLOSED = 'is closed, so this spec change is not yours to build. If it needs new work, comment on #7, and its spec owner decides whether to file a follow-up.';
+
+  test('the words', () => {
+    assert.equal(editClosedBuilder(7), `#7 ${CLOSED}`);
+    assert.doesNotMatch(editClosedBuilder(7), /—/);
+  });
+
+  test('a builder found through the dispatch comment is asked to comment, not to build', async () => {
+    const { ctx, sent } = context({ edited: { by: 'unknown', reason: 'x' } });
+    await planTicket(fire({ state: 'closed' }), ctx);
+    const builder = sent.find((s) => s.session === BUILDER)!;
+    assert.ok(builder.text.includes(editClosedBuilder(7)), builder.text);
+    assert.ok(!builder.text.includes(EDIT_BUILDER), builder.text);
+  });
+
+  test('a builder whose PR merged and closed it is asked to comment, not to build', async () => {
+    const { ctx, sent } = context({ edited: { by: 'unknown', reason: 'x' } });
+    (ctx as any).readerFor = async () => ({
+      openClosing: async () => [],
+      closure: async () => ({ title: 'T', reason: 'completed', pr: { number: 30, title: 'PR', url: 'u30' } }),
+      allComments: async () => [],
+    });
+    (ctx as any).delivery = ((inner) => () => ({ ...inner(), ownerOf: async (pr: number) => ({ session: pr === 30 ? BUILDER : null, branch: 'claude/b', linked: true }) }))((ctx as any).delivery);
+    await planTicket(fire({ state: 'closed' }), ctx);
+    const builder = sent.find((s) => s.session === BUILDER)!;
+    assert.ok(builder.text.includes(editClosedBuilder(7)), builder.text);
+    assert.ok(!builder.text.includes(EDIT_BUILDER), builder.text);
+  });
+
+  test('the spec owner hears the edit as before', async () => {
+    const { ctx, sent } = context({ edited: { by: 'unknown', reason: 'x' } });
+    await planTicket(fire({ state: 'closed' }), ctx);
+    const owner = ownerOf(sent)!;
+    assert.ok(owner.text.includes(EDIT_SPEC_OWNER), owner.text);
+    assert.ok(!owner.text.includes(CLOSED), owner.text);
+  });
+
+  test('a spec owner that also builds it is not told to leave the follow-up to its spec owner', async () => {
+    const { ctx, sent } = context({ edited: { by: 'unknown', reason: 'x' } });
+    (ctx as any).readerFor = async () => ({
+      openClosing: async () => [],
+      closure: async () => ({ pr: null }),
+      allComments: async () => [{ body: `<!-- governor:dispatched ${new Date(AT - 60_000).toISOString()} -->\nDispatched to ${OWNER} at ${new Date(AT - 60_000).toISOString()}.`, ours: true }],
+    });
+    await planTicket(fire({ state: 'closed' }), ctx);
+    assert.deepEqual(sent.map((s) => s.session), [OWNER]);
+    assert.ok(sent[0]!.text.includes(EDIT_SPEC_OWNER), sent[0]!.text);
+    assert.ok(!sent[0]!.text.includes(CLOSED), sent[0]!.text);
+    assert.ok(!sent[0]!.text.includes(EDIT_BUILDER), sent[0]!.text);
+  });
+
+  test('a spec owner that builds it and made the edit hears no empty edit lines', async () => {
+    const { ctx, sent } = context({ edited: { by: 'owner' } });
+    (ctx as any).readerFor = async () => ({
+      openClosing: async () => [],
+      closure: async () => ({ pr: null }),
+      allComments: async () => [{ body: `<!-- governor:dispatched ${new Date(AT - 60_000).toISOString()} -->\nDispatched to ${OWNER} at ${new Date(AT - 60_000).toISOString()}.`, ours: true }],
+    });
+    await planTicket(fire({ state: 'closed' }), ctx);
+    for (const s of sent) assert.doesNotMatch(s.text, /\n\n\n/, s.text);
+  });
+
+  test('on an open ticket the builder still hears EDIT_BUILDER', async () => {
+    const { ctx, sent } = context({ edited: { by: 'unknown', reason: 'x' } });
+    await planTicket(fire(), ctx);
+    const builder = sent.find((s) => s.session === BUILDER)!;
+    assert.ok(builder.text.includes(EDIT_BUILDER), builder.text);
+    assert.ok(!builder.text.includes(CLOSED), builder.text);
   });
 });
