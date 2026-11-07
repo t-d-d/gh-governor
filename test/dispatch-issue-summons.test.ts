@@ -177,7 +177,7 @@ describe('a summons on an issue starts nothing beside a live spec owner or build
     const plan = await planDispatch(commented({ labels: [CLAIM] }) as never, ctx) as any;
     assert.deepEqual(plan.launches, []);
     assert.deepEqual(to(sent), [SPEC, BUILDER]);
-    assert.match(sent[1]!.text, /\nYou build it; \[its spec owner\]\(https:\/\/claude.ai\/code\/session_01SPECOWNER\) writes its body\.\nNothing is asked of you\.$/);
+    assert.match(sent[1]!.text, /\nYou are its builder; \[its spec owner\]\(https:\/\/claude.ai\/code\/session_01SPECOWNER\) is another session\.\nNothing is asked of you\.$/);
   });
 
   test('on a claimed ticket a person wrote, a live builder alone keeps a session from starting', async () => {
@@ -201,7 +201,7 @@ describe('a summons on an issue starts nothing beside a live spec owner or build
     const plan = await planDispatch(commented({ labels: [CLAIM] }) as never, ctx) as any;
     assert.deepEqual(plan.launches, []);
     assert.deepEqual(to(sent), [SPEC]);
-    assert.match(sent[0]!.text, /\nYou are its spec owner and you build it\.\nNothing is asked of you\.$/);
+    assert.match(sent[0]!.text, /\nYou are its spec owner and its builder\.\nNothing is asked of you\.$/);
     assert.deepEqual(sent[0]!.opts.owns, [12]);
   });
 

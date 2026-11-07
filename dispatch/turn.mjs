@@ -2386,7 +2386,7 @@ const shippedRolesOf = async (tickets, { invocation, repo, coverage, commented, 
     try {
       const row = commented.find((c) => c.ticket === ticket)?.row ?? await reader.ticket(ticket);
       const roles = await rolesOf({ issue: ticket, relay, claim, ticket: row, reader, ownerOf });
-      found.push({ ticket, title: row.title, url: `https://github.com/${repo}/issues/${ticket}`, repo, closed: row.state === 'closed', prs, roles });
+      found.push({ ticket, title: row.title, url: `https://github.com/${repo}/issues/${ticket}`, repo, prs, roles });
     } catch (error) {
       failed.push({ ticket, error: messageOf(error) });
     }

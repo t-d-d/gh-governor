@@ -578,9 +578,9 @@ const planTarget = async (run, coverage, prompts, workflows) => {
 };
 
 /**
- * @typedef {{ ticket: number, title: string, url: string, repo: string, closed: boolean, prs: number[], roles: import('./roles.mjs').TicketRoles }} ShippedTicket
+ * @typedef {{ ticket: number, title: string, url: string, repo: string, prs: number[], roles: import('./roles.mjs').TicketRoles }} ShippedTicket
  *   A ticket a green deploy commented on (dispatch/turn.mjs): its repo,
- *   whether it is closed, the PRs it shipped that close it, and its roles
+ *   the PRs it shipped that close it, and its roles
  *   as every path finds them (`rolesOf`, dispatch/roles.mjs).
  */
 
@@ -594,9 +594,9 @@ const planTarget = async (run, coverage, prompts, workflows) => {
  * @param {import('./roles.mjs').RoleHolder} holder
  * @param {boolean} notice
  */
-const ticketLine = ({ ticket, title, url, repo, closed, prs, roles }, holder, notice) => [
+const ticketLine = ({ ticket, title, url, repo, prs, roles }, holder, notice) => [
   `- ${titleLink(`#${ticket}`, title, url)}, which ${listed(prs.map((n) => `[PR #${n}](https://github.com/${repo}/pull/${n})`))} closed.`,
-  ...rolesText(roles, holder, { notice, closed }).split('\n').map((line) => `  ${line}`),
+  ...rolesText(roles, holder, { notice }).split('\n').map((line) => `  ${line}`),
 ].join('\n');
 
 /**

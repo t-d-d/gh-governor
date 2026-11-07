@@ -55,22 +55,29 @@ describe('the role lines', () => {
 
   test('name the recipient\'s role and link the other role\'s session, with no bare session URL', () => {
     const owner = rolesText(roles, { role: 'spec owner', merged: false, session: SPEC });
-    assert.equal(owner, `You are its spec owner; [its builder](${BUILDER}) builds it.`);
+    assert.equal(owner, `You are its spec owner; [its builder](${BUILDER}) is another session.`);
     const builder = rolesText(roles, { role: 'builder', merged: false, session: BUILDER });
-    assert.equal(builder, `You build it; [its spec owner](${SPEC}) writes its body.`);
+    assert.equal(builder, `You are its builder; [its spec owner](${SPEC}) is another session.`);
     for (const text of [owner, builder]) assert.doesNotMatch(text, BARE_SESSION, text);
   });
 
-  test('say "built it" on a closed ticket and "builds it" on an open one', () => {
+  test('carry no verb that depends on the ticket\'s state, so they read the same open, closed or not planned', () => {
     const owner = { role: 'spec owner' as const, merged: false, session: SPEC };
     const builder = { role: 'builder' as const, merged: false, session: BUILDER };
-    assert.equal(rolesText(roles, owner, { closed: true }), `You are its spec owner; [its builder](${BUILDER}) built it.`);
-    assert.equal(rolesText(roles, builder, { closed: true }), `You built it; [its spec owner](${SPEC}) writes its body.`);
     const two = rolesFrom({ issue: 7, owner: SPEC, builders: [BUILDER, OTHER] });
-    assert.equal(rolesText(two, owner, { closed: true }), `You are its spec owner; [builder 1](${BUILDER}) and [builder 2](${OTHER}) built it.`);
-    assert.equal(rolesText(two, builder, { closed: true }), `You built it; [its spec owner](${SPEC}) writes its body. [another builder](${OTHER}) built it too.`);
-    assert.equal(rolesText(rolesFrom({ issue: 7, owner: SPEC, builders: [SPEC] }), { role: 'spec owner and builder', merged: false, session: SPEC }, { closed: true }), 'You are its spec owner and you built it.');
-    assert.equal(rolesText(roles, builder), `You build it; [its spec owner](${SPEC}) writes its body.`);
+    const texts = [
+      rolesText(two, owner),
+      rolesText(two, builder),
+      rolesText(rolesFrom({ issue: 7, owner: null, builders: [BUILDER] }), builder),
+      rolesText(rolesFrom({ issue: 7, owner: SPEC, builders: [SPEC, OTHER] }), { role: 'spec owner and builder', merged: false, session: SPEC }),
+    ];
+    assert.deepEqual(texts, [
+      `You are its spec owner; [builder 1](${BUILDER}) and [builder 2](${OTHER}) are its builders.`,
+      `You are its builder; [its spec owner](${SPEC}) is another session. It also has [another builder](${OTHER}).`,
+      'You are its builder; a person owns its body.',
+      `You are its spec owner and its builder. It also has [another builder](${OTHER}).`,
+    ]);
+    for (const text of texts) assert.doesNotMatch(text, /\b(build|builds|built)\b/, text);
   });
 
   test('a spec owner with no builder is told its role alone', () => {

@@ -412,7 +412,7 @@ describe('planTicket: a body edit that moved the owner link, under sessionRules'
   });
 
   // #624: the builders are told once the take is settled, naming the right spec owner.
-  const rolesLine = (spec: string) => `You build it; [its spec owner](${spec}) writes its body.`;
+  const rolesLine = (spec: string) => `You are its builder; [its spec owner](${spec}) is another session.`;
   const toBuilder = (sent: Sent[]) => sent.filter((s) => s.session === BUILDER);
 
   test('a take on a claimed ticket names the editor as the spec owner in the builder\'s roles line, sent once the take is settled', async () => {
