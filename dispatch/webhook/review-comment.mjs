@@ -70,7 +70,7 @@ const OWNER_MERGES = 'The repo\'s owner merges it.';
 /** A pass's fixed opening. */
 const PASSES = 'Passes the PR review: ';
 
-/** The words around the head a reused pass names, which `passOf` reads back. */
+/** The words around the head a reused pass names. */
 const REUSES = 'Reuses the answer given at ';
 const REUSED_SINCE = ': nothing the model reads has changed since.';
 
@@ -114,39 +114,6 @@ export const commentText = (answer, { conflict, merge = true }) => {
   return answer.editable
     ? `Waits for a description edit: ${reason} (test ${answer.test}). An edit to the description meets it, and the review runs again on the edit.`
     : `Waits for a person: ${reason} (test ${answer.test}). No edit to the description makes it pass. A person merges it.`;
-};
-
-/** A held pass as the review wrote it before it stopped holding merges: still on PRs reviewed then. */
-const HELD_PASS = /^Passes the PR review: ([\s\S]*?) The merge waits for Deploy Prod runs? [^\n]* to end, and the review after it merges\.$/;
-
-/**
- * The pass's reason a held pass comment carries, or null for any other
- * text. Nothing writes one any more, and the review merges on none: it
- * reads its verdict from the state table, never from comment text
- * (dispatch/review.mjs). `passOf` reads a held pass as no pass.
- *
- * @param {string} text
- */
-export const heldPassReason = (text) => HELD_PASS.exec(text.trim())?.[1] ?? null;
-
-const escaped = (/** @type {string} */ text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const PASSED = new RegExp(`^(?:${escaped(PASSES)}|${escaped(CONFLICT)} )([\\s\\S]+?)(?: ${escaped(REUSES)}([0-9a-f]{40})${escaped(REUSED_SINCE)})?(?: ${escaped(OWNER_MERGES)})?$`);
-
-/**
- * The model's pass a comment carries, or null for any other text: a pass,
- * one the owner merges, or a conflict, each with the model's reason, and
- * the head the answer was given at where the comment reused it. A held
- * pass is none. The review relies on no comment's pass: its verdict is in
- * the state table.
- *
- * @param {string} text
- * @returns {{ reason: string, reused: string | null } | null}
- */
-export const passOf = (text) => {
-  const trimmed = text.trim();
-  if (heldPassReason(trimmed) !== null) return null;
-  const found = PASSED.exec(trimmed);
-  return found ? { reason: /** @type {string} */ (found[1]), reused: found[2] ?? null } : null;
 };
 
 const FAIL = /^Waits for (a description edit|a person): [\s\S]* \(test (\d+)\)\. (?:An|No) edit to the description (?:meets|makes it pass)/;
