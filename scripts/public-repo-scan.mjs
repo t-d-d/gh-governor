@@ -43,13 +43,20 @@ const isDoc = (/** @type {string} */ path) => path === 'README.md' || /^docs\/.+
  * ends in the name, such as `~/` and the name, and the name with a file
  * extension or another domain.
  *
- * Three things pass. Its site, the name and `.com`. A `.` that ends a
- * sentence. And a slash after an owner or a URL's `//`: `owner/` and the name
- * is the repo rule's finding, and the site's URL is the site.
+ * A `.` before the name, where no word comes first, makes a dotfile, so
+ * `~/.` and the name is refused too.
+ *
+ * Three things pass. Its site, the name and `.com`, with or without a host
+ * such as `www.` before it, and only when no other domain or extension
+ * follows. A `.` that ends a sentence. And a slash after an owner, or a
+ * URL's `//` before the site: `owner/` and the name is the repo rule's
+ * finding, and the site's URL is the site.
  */
+const SITE = '\\.com(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])';
 const NOT_BARE = new RegExp(
-  `(?<=[A-Za-z0-9_-]|(?<![A-Za-z0-9_./-])/)${OLD_HOME.source}` +
-    `|${OLD_HOME.source}(?=[A-Za-z0-9_:#/\\\\-]|\\.(?!com(?![A-Za-z0-9_-]))[A-Za-z0-9_-])`,
+  `(?<=[A-Za-z0-9_\\\\-]|(?<![A-Za-z0-9_./-])/|(?<![A-Za-z0-9_-])\\.)${OLD_HOME.source}` +
+    `|(?<=//)${OLD_HOME.source}(?!${SITE})` +
+    `|${OLD_HOME.source}(?=[A-Za-z0-9_:#/\\\\-]|(?!${SITE})\\.[A-Za-z0-9_-])`,
   'gi',
 );
 

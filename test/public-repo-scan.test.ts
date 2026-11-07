@@ -62,12 +62,22 @@ describe('scanText', () => {
     assert.deepEqual(kinds(`see ${OLD_HOME}\\infra\\stack.yml`, 'README.md'), ['name']);
   });
 
+  test('refuses the old home\'s name in a doc at the end of a backslash path, a dotfile path or a file URL', () => {
+    assert.deepEqual(kinds(`cd C:\\code\\${OLD_HOME}`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`cd ~/.${OLD_HOME}`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`open file:///${OLD_HOME}`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see https://www.${OLD_HOME}.com and https://${OLD_HOME}.com.`, 'README.md'), []);
+  });
+
   test('passes only the site\'s .com after the old home\'s name in a doc, and refuses a file extension or another domain', () => {
     assert.deepEqual(kinds(`see ${OLD_HOME}.yml`, 'README.md'), ['name']);
     assert.deepEqual(kinds(`see ${OLD_HOME}.ts`, 'README.md'), ['name']);
     assert.deepEqual(kinds(`see ${OLD_HOME}.config.js`, 'README.md'), ['name']);
     assert.deepEqual(kinds(`see ${OLD_HOME}.io`, 'README.md'), ['name']);
     assert.deepEqual(kinds(`see ${OLD_HOME}.community`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}.com.au`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}.com.json`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}.com.`, 'README.md'), []);
     assert.deepEqual(kinds(`see ${OLD_HOME}.com, the site`, 'README.md'), []);
     assert.deepEqual(kinds(`made while building ${OLD_HOME}. Then`, 'README.md'), []);
   });
