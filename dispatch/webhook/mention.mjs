@@ -378,6 +378,7 @@ const summonedTicket = (issue, bodies, appId) => {
  *   fallback: boolean,
  *   commit?: string | undefined,
  *   closing?: boolean,
+ *   mergedAt?: string | undefined,
  *   issue?: boolean,
  *   unsigned?: boolean,
  *   post?: import('./fire.mjs').UnsignedPost | null,
@@ -402,7 +403,7 @@ const summonedTicket = (issue, bodies, appId) => {
  *   who made it (dispatch/editor.mjs).
  * @returns {Queued}
  */
-const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, issue = false, unsigned = false, post = null, offer = null, moved, edited = null, authors, reason }) => {
+const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on, event, fallback, commit, closing, mergedAt, issue = false, unsigned = false, post = null, offer = null, moved, edited = null, authors, reason }) => {
   const role = owner ? 'owner' : 'subscriber';
   const number = Number.isInteger(on?.number) ? on.number : undefined;
   /** @param {string} text @returns {MessageFire} */
@@ -413,6 +414,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
     event,
     commit,
     closing,
+    mergedAt,
     subscribed: !owner || issue,
     authors,
     offer: owner && issue && event === 'comments' ? offer : null,
@@ -439,7 +441,9 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  * session that posted it. `fallback`: the owner's fire carries one, which
  * takes the PR over. `closing`: `on` is finished with (an issue
  * closed, a PR closed unmerged); a reopen is the same event and closes
- * nothing, and a merge leaves CI and the deploys to come.
+ * nothing. A merge is not closing here: `mergedAt`, the ref it landed at,
+ * lets the task ask for the sign-off where the repo sends no deploy
+ * messages, or name the deploys to come where it does (dispatch/merge-notice.mjs).
  *
  * @param {{
  *   on: any,
@@ -452,6 +456,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   fallback?: boolean,
  *   commit?: string,
  *   closing?: boolean,
+ *   mergedAt?: string | undefined,
  *   byBranch?: boolean,
  *   sessionPost?: boolean,
  *   unsigned?: boolean,
@@ -473,7 +478,7 @@ const messageFire = ({ prompt, subscriber: { session, owner }, poster = null, on
  *   ({@link UNSIGNED}). `post`: that post, as each fire carries it.
  * @returns {Fanout}
  */
-const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = false, commit, closing = false, byBranch = false, sessionPost = false, unsigned = false, post = null, issue = false, reason }) => {
+const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = false, commit, closing = false, mergedAt, byBranch = false, sessionPost = false, unsigned = false, post = null, issue = false, reason }) => {
   /** @type {Queued[]} */
   const fires = [];
   /** @type {string[]} */
@@ -482,14 +487,14 @@ const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = fals
   const named = kindsOf([by, onAuthor]);
   if (byBranch && sessionNamedIn(body) === null) {
     if (sessionPost && poster === null) skipped.push("a session's post naming no session, taken for the local session's own");
-    else fires.push(messageFire({ prompt, subscriber: { session: null, owner: true }, poster, on, event, fallback, commit, closing, authors: kindsOf([by ?? onAuthor]), reason }));
+    else fires.push(messageFire({ prompt, subscriber: { session: null, owner: true }, poster, on, event, fallback, commit, closing, mergedAt, authors: kindsOf([by ?? onAuthor]), reason }));
   }
   for (const subscriber of subscribers) {
     if (poster !== null && sameSession(poster, subscriber.session)) {
       skipped.push(`${sessionId(poster)}'s own post`);
       continue;
     }
-    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, issue, unsigned, post, offer: poster, authors: named, reason }));
+    fires.push(messageFire({ prompt, subscriber, on, event, fallback, commit, closing, mergedAt, issue, unsigned, post, offer: poster, authors: named, reason }));
   }
   const heard = fires.length === 0 && skipped.length === 0 ? [`${reason}: nobody subscribes to ${event}`] : [];
   return { fires, reason: [...fires.map((f) => f.reason), ...skipped, ...heard].join('; ') };
@@ -583,7 +588,28 @@ const pushPrompt = ({ pull_request: pr, sender, before, after, repository }, rol
     : SUBSCRIBED_PR,
 ].join('\n');
 
-/** @param {any} payload @param {Role} role */
+/**
+ * The ref a merged PR landed at: its merge commit, or its base branch where
+ * the payload names none, or `HEAD`, the default branch, where it names
+ * neither. The task reads the repo's workflows there (dispatch/merge-notice.mjs).
+ *
+ * @param {any} pr
+ * @returns {string}
+ */
+const mergedAt = (pr) => {
+  if (isCommit(pr?.merge_commit_sha)) return pr.merge_commit_sha;
+  return isBranch(pr?.base?.ref) ? pr.base.ref : 'HEAD';
+};
+
+/**
+ * A PR's close, to its owner and its subscribers to close. A merge's text
+ * says nothing of deploys: the receiver cannot read the repo's switches or
+ * its deploy targets, so the task adds them, or the ask to sign off, by the
+ * fire's `mergedAt` (dispatch/merge-notice.mjs).
+ *
+ * @param {any} payload
+ * @param {Role} role
+ */
 const prClosedPrompt = ({ pull_request: pr, sender }, role) => {
   const how = pr?.merged ? 'merged' : 'closed without merging';
   return [
@@ -592,7 +618,7 @@ const prClosedPrompt = ({ pull_request: pr, sender }, role) => {
     `PR #${pr?.number}: ${oneLine(pr?.title)} (${pr?.html_url}), by ${sender?.login}`,
     '',
     pr?.merged
-      ? 'Its change reaches dev and prod through the deploys, which its subscribers to deploys hear of. Nothing else on it is left to do unless its thread says so.'
+      ? 'Nothing else on it is left to do unless its thread says so.'
       : 'Nothing on it is left to do unless its thread says so.',
   ].join('\n');
 };
@@ -1006,6 +1032,7 @@ export const pullRequestFires = (payload, { relay = RELAY, bodies = relay, appId
     poster: null,
     prompt: (role) => prClosedPrompt(payload, role),
     closing: !pr?.merged,
+    ...(pr?.merged ? { mergedAt: mergedAt(pr) } : {}),
     byBranch: true,
     reason: `#${pr?.number} ${pr?.merged ? 'merged' : 'closed'}`,
   });

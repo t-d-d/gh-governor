@@ -380,9 +380,13 @@ export const lastDispatch = (comments) => {
  *   ({@link postWords}), by which the task matches the tool call that
  *   posted it. The task searches the login's live sessions for its
  *   author, whatever `sessionRules` says (dispatch/author.mjs).
- * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, subscribed?: true, authors?: string[], offer?: string, moved?: MovedLink, unsigned?: UnsignedPost, edited?: UnsignedPost }
+ * @typedef {{ kind: 'message', text: string, fallback?: Fallback, on?: number, event?: SubscriptionEvent, commit?: string, closing?: true, mergedAt?: string, subscribed?: true, authors?: string[], offer?: string, moved?: MovedLink, unsigned?: UnsignedPost, edited?: UnsignedPost }
  *   & ({ session: string } | { byBranch: true, on: number, poster?: string })} MessageFire
  *   `session`, or `byBranch` for the live session on a PR's head branch, which the task finds.
+ *   `mergedAt`: on a PR's merge, the ref it landed at, its merge commit or
+ *   its base branch, where the task reads the repo's deploy targets; the
+ *   task asks for the sign-off instead where the repo turns deploy messages
+ *   off (dispatch/merge-notice.mjs).
  *   `subscribed`: the session hears by subscription, a `governor:subscribe`
  *   line or as an issue's filer, which the repo's subscribe-messages switch
  *   turns on; without it, it is the PR's owner, whose is the PR-messages
@@ -531,13 +535,13 @@ export const build = Object.freeze({
   /**
    * @param {({ session: string, byBranch?: undefined, poster?: undefined } | { session?: undefined, byBranch: true, poster?: string | undefined }) & {
    *   text: string, on?: number | undefined, event?: SubscriptionEvent | undefined, commit?: string | undefined,
-   *   closing?: boolean | undefined, subscribed?: boolean | undefined, fallback?: Fallback | undefined,
+   *   closing?: boolean | undefined, mergedAt?: string | undefined, subscribed?: boolean | undefined, fallback?: Fallback | undefined,
    *   authors?: string[] | undefined, offer?: string | null | undefined, moved?: MovedLink | undefined,
    *   unsigned?: UnsignedPost | null | undefined, edited?: UnsignedPost | null | undefined,
    * }} args
    * @returns {MessageFire}
    */
-  message: ({ session, byBranch, poster, text, on, event, commit, closing, subscribed, fallback, authors, offer, moved, unsigned, edited }) => /** @type {MessageFire} */ ({
+  message: ({ session, byBranch, poster, text, on, event, commit, closing, mergedAt, subscribed, fallback, authors, offer, moved, unsigned, edited }) => /** @type {MessageFire} */ ({
     kind: 'message',
     ...(byBranch === true ? { byBranch, ...present({ poster }) } : { session }),
     text,
@@ -546,6 +550,7 @@ export const build = Object.freeze({
       event,
       commit,
       closing: closing === true ? /** @type {true} */ (true) : undefined,
+      mergedAt,
       subscribed: subscribed === true ? /** @type {true} */ (true) : undefined,
       authors,
       fallback: fallback && present(fallback),
@@ -1019,6 +1024,9 @@ const parseMessage = (e, event) => {
   if (e.subscribed !== undefined && e.subscribed !== true) {
     throw new Error(`a message invocation's subscribed is true or absent, got: ${JSON.stringify(e.subscribed)}`);
   }
+  if (e.mergedAt !== undefined && !isBranch(e.mergedAt)) {
+    throw new Error(`a message invocation's mergedAt must be a commit or a branch, got: ${JSON.stringify(e.mergedAt)}`);
+  }
   if (e.authors !== undefined && !(Array.isArray(e.authors) && e.authors.every((a) => TRUST_SET.has(String(a)) && typeof a === 'string'))) {
     throw new Error(`a message invocation's authors are trust values, got: ${JSON.stringify(e.authors)}`);
   }
@@ -1040,6 +1048,7 @@ const parseMessage = (e, event) => {
     ...(e.event === undefined ? {} : { event: /** @type {SubscriptionEvent} */ (e.event) }),
     ...(e.commit === undefined ? {} : { commit: e.commit }),
     ...(e.closing === true ? { closing: /** @type {true} */ (true) } : {}),
+    ...(e.mergedAt === undefined ? {} : { mergedAt: /** @type {string} */ (e.mergedAt) }),
     ...(e.subscribed === true ? { subscribed: /** @type {true} */ (true) } : {}),
     ...(e.authors === undefined ? {} : { authors: /** @type {string[]} */ ([...e.authors]) }),
     ...(e.offer === undefined ? {} : { offer: /** @type {string} */ (e.offer) }),

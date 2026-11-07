@@ -109,7 +109,7 @@ export const rolesOf = async ({ issue, relay, claim = '', ticket, owner, reader,
 };
 
 /** Items joined as a sentence lists them: `a, b and c`. @param {readonly string[]} items */
-const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
+export const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
 
 /**
  * What a message to a builder whose PR closed the ticket and has merged

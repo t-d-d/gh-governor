@@ -106,6 +106,7 @@ import { ConditionalCheckFailedException, DeleteItemCommand, DynamoDBClient, Get
 import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
+import { deployNote, deployTargets } from './merge-notice.mjs';
 import { ARCHIVE_TIMEOUT_MS, SIGNOFF_LATEST_START_MS, SIGNOFF_WINDOW_MS, accessToken, awaitReplies, heldMessage, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { STOPPED_EVENT, releaseStopped, stoppedOf } from './stopped.mjs';
@@ -158,7 +159,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  * @typedef {import('./launcher.mjs').Launch} Launch
  * @typedef {import('./launcher.mjs').LaunchResult} LaunchResult
  * @typedef {import('./launcher.mjs').PendingRecord} PendingRecord
- * @typedef {import('../scripts/lib/dispatch-router.mjs').Reader & import('./workflow.mjs').WorkflowReader & {
+ * @typedef {import('../scripts/lib/dispatch-router.mjs').Reader & import('./workflow.mjs').WorkflowReader & import('./merge-notice.mjs').WorkflowReader & {
  *   comment: (n: number, body: string) => Promise<void>,
  *   blocking: (n: number) => Promise<Array<import('../scripts/lib/github-app.mjs').BlockerRow & { repo: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }>>,
  *   closure: (n: number) => Promise<{ title: string, reason: string | null, pr: import('./webhook/fire.mjs').ClosingPull | null, closedAt?: string }>,
@@ -972,7 +973,12 @@ const heldBy = (deps, served, tokenFor, send, until) => {
       const capped = await countAgainst({ count: ({ subject, kind }) => deps.state.countMessage(session, subject, kind, deps.now(), deps.messageCeiling ?? MESSAGE_CEILING), log: deps.log }, session, subjects, 'signoff-held');
       if (capped !== null) return { told: false, reason: `held: ${capped}` };
       try {
-        const sent = readSend(await send({ session, text: heldMessage(prs) }, until));
+        // The deploy is waited for where a repo the session names sends deploy messages.
+        const deployMessages = repos.some((repo) => {
+          const config = configIn(served, repo);
+          return config !== undefined && turnsOn(config, 'deployMessages');
+        });
+        const sent = readSend(await send({ session, text: heldMessage(prs, { deployMessages }) }, until));
         return sent.ok ? { told: true } : { told: false, error: sent.error };
       } finally {
         await storeIfRefreshed(deps, credentials, account);
@@ -1584,8 +1590,38 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     return searchEditor({ ...search, owner, on, edit });
   };
 
+  /**
+   * A merge's message by the repo's switches (dispatch/merge-notice.mjs).
+   * With `deployMessages` off no deploy message will come, so the merge is
+   * closing, and asks for the sign-off where nothing else holds it. With it
+   * on, the message names the repo's deploy targets, read from its
+   * workflows at the merge, or none where that read fails, logged at warn.
+   * A subscriber is told the PR's subscribers to deploys hear them.
+   *
+   * @param {string} text
+   * @param {boolean} closing
+   * @param {string | undefined} mergedAt
+   * @param {number | undefined} on
+   * @param {boolean} subscribed
+   * @returns {Promise<{ text: string, closing: boolean }>}
+   */
+  const merging = async (text, closing, mergedAt, on, subscribed) => {
+    if (mergedAt === undefined || repo === undefined) return { text, closing };
+    const config = configOf(repo);
+    if (!turnsOn(config, 'deployMessages')) return { text, closing: true };
+    /** @type {string[] | null} */
+    let targets = null;
+    try {
+      targets = await deployTargets(await getReader(), mergedAt);
+    } catch (error) {
+      deps.log('dispatch-merge-targets', { level: 'warn', repo, on: on ?? null, error: messageOf(error) });
+    }
+    return { text: `${text}\n\n${deployNote({ deployedLabels: turnsOn(config, 'deployedLabels'), targets, subscribed })}`, closing };
+  };
+
   if (invocation.kind === 'message') {
-    const { on, event, commit, closing, text, fallback } = invocation;
+    const { on, event, commit, fallback } = invocation;
+    const { text, closing } = await merging(invocation.text, invocation.closing === true, invocation.mergedAt, on, invocation.subscribed === true);
     // What governor asks of a session the searches below find, to sign its
     // post or to comment instead of editing, runs only under sessionRules:
     // a session follows rules only where it was told them. The searches
@@ -1634,7 +1670,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           fallback,
           takeover: true,
           on: on === undefined ? [] : [on],
-          closing: closing === true,
+          closing,
           dropFrom: event === undefined || on === undefined ? [] : [on],
           commit,
           // The owner's message, not a subscriber's: an archived owner's

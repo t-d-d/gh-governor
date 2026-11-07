@@ -244,6 +244,13 @@ describe('a subscriber\'s message invocation', () => {
     assert.deepEqual(parseFire({ ...base, event: 'close', merged: 'yes' }), { ...base, event: 'close' });
   });
 
+  test('keeps the ref a merge landed at, and refuses one that is no ref', () => {
+    const fire = { ...base, on: 724, event: 'close', mergedAt: 'c'.repeat(40) };
+    assert.deepEqual(parseFire(fire), fire);
+    assert.deepEqual(parseFire({ ...base, on: 724, event: 'close', mergedAt: 'trunk' }), { ...base, on: 724, event: 'close', mergedAt: 'trunk' });
+    for (const mergedAt of ['', 'a b', 7, true]) assert.throws(() => parseFire({ ...base, event: 'close', mergedAt }), /mergedAt/, String(mergedAt));
+  });
+
   test('refuses an event outside the vocabulary, an on that is not a number, and a commit that is not one', () => {
     assert.throws(() => parseFire({ ...base, event: 'everything' }), /event/);
     assert.throws(() => parseFire({ ...base, on: '724' }), /on/);
