@@ -987,7 +987,7 @@ const checkRules = async (deps, tokenFor, served) => {
 /**
  * Write each repo's changes into its governor heartbeat block
  * (dispatch/heartbeat.mjs), one read and at most one write a repo: only in a
- * repo whose file turns the heartbeat on in the `{ issue }` shape, and only
+ * repo whose file turns the heartbeat on, and only
  * where what the block records changes. A body without governor's marker
  * gets no write and an error naming the repo and issue, so a wrong number
  * never overwrites a ticket. A read or write that fails is logged, leaves
@@ -1006,7 +1006,7 @@ const writeBeats = async (deps, tokenFor, served, beats) => {
   const unwritten = [];
   for (const { repo, config } of served) {
     const heartbeat = config.heartbeat;
-    if (!turnsOn(config, 'heartbeat') || heartbeat === undefined || heartbeat.marker !== undefined) continue;
+    if (!turnsOn(config, 'heartbeat') || heartbeat === undefined) continue;
     const own = beats.filter((b) => b.repo.toLowerCase() === repo.toLowerCase()).map((b) => b.beat);
     if (own.length === 0) continue;
     /** @type {import('./heartbeat.mjs').Beat} */
@@ -1024,7 +1024,6 @@ const writeBeats = async (deps, tokenFor, served, beats) => {
       reader: async () => deps.reader(await tokenFor(repo), await deps.appId(), repo),
       repo,
       issue,
-      marker: HEARTBEAT_MARKER,
       refusal: `the issue's body has no ${HEARTBEAT_MARKER} marker, so the heartbeat is not written: fix the issue number in the repo's ${CONFIG_PATH}, or add the marker to the issue`,
       stamp: (body) => {
         const next = stampHeartbeat(body, beat);

@@ -157,7 +157,7 @@ export const SUMMONERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 export const ASSOCIATIONS = /** @type {const} */ (['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'MANNEQUIN', 'NONE']);
 
 /**
- * Whose tickets pickup starts where a repo's file sets no `pickup.by`: the
+ * Whose tickets pickup starts where a repo's file sets no `trust.task`: the
  * authors with a say, so a stranger's ticket is not built even once someone
  * with a say readies it.
  *

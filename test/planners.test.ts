@@ -534,7 +534,7 @@ describe('planSweep: the bare schedule fire\'s plan', () => {
     assert.deepEqual(swept, [{ repo: REPO, at: new Date(NOW).toISOString() }]);
     assert.deepEqual(beats, [{ repo: REPO, beat: { pickup: { at: new Date(NOW).toISOString(), started: 1 } } }]);
     assert.deepEqual(plan.unread, []);
-    assert.equal(plan.result.heartbeat, false, 'the { issue } shape\'s line is run\'s to write');
+    assert.equal(plan.result.heartbeat, false, 'pickup\'s line is run\'s to write');
   });
 
   test('done leaves the sweep unrecorded where a ticket\'s launch failed or the window left it, and writes pickup\'s line all the same', async () => {
