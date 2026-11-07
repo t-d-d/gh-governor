@@ -22,7 +22,6 @@
 
 import { sameSession, sessionId } from './webhook/subscribe.mjs';
 import { rolesFrom, rolesOf, rolesText, sessionLink } from './roles.mjs';
-import { SPEC_OWNER_DUTY } from './webhook/mention.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { relayOf } from './trust.mjs';
 
@@ -53,7 +52,7 @@ export const specOwnerNote = (issue, comment) => [
   '',
   unmarked(comment),
   '',
-  `You are #${issue}'s spec owner, the session its body's link names. ${SPEC_OWNER_DUTY}`,
+  rolesText({ issue, owner: null, builders: [] }, { role: 'spec owner', merged: false }, { duty: true }),
 ].join('\n');
 
 /**

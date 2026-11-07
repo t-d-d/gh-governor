@@ -174,7 +174,9 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     assert.deepEqual(to(sent), [SPEC, PR_OWNER]);
     assert.deepEqual(sent.map((m) => m.opts.closing), [true, true]);
     assert.ok(sent[1]!.text.includes(`You build it; [its spec owner](${SPEC}) writes its body.`), sent[1]!.text);
-    assert.doesNotMatch(sent[1]!.text, /As its builder|Nothing is asked/);
+    assert.doesNotMatch(sent[1]!.text, /As its builder/);
+    // A comment on a closed ticket calls on no duty, and says so.
+    assert.match(sent[1]!.text, /Nothing is asked of you\./);
   });
 
   test('a claimed ticket with neither role found: nobody is sent anything', async () => {

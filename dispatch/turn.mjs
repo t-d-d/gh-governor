@@ -1866,7 +1866,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
             deps.log('dispatch-workflow', { ...about, untold: owed.slice(i).map((n) => ({ session: n.session, prs: n.prs })), reason: `out of time: past ${WORKFLOW_SEND_WINDOW_MS} ms, another delivery might outrun the deadline` });
             break;
           }
-          const { ok, answered, refused, error, fallback, capped } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, kind: invocation.kind === 'job' ? 'deploy' : 'ci', fallback: note.fallback, on: [...note.prs, ...(note.about ?? []), ...(note.tickets ?? [])], closing: note.closing, standing: note.closing || invocation.kind === 'job', dropFrom: note.subscribed, owns: note.owns ?? note.prs.filter((n) => !note.subscribed.includes(n)) });
+          const { ok, answered, refused, error, fallback, capped } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, kind: invocation.kind === 'job' ? 'deploy' : 'ci', fallback: note.fallback, on: [...note.prs, ...(note.about ?? []), ...(note.tickets ?? [])], closing: note.closing, dropFrom: note.subscribed, owns: note.owns ?? note.prs.filter((n) => !note.subscribed.includes(n)) });
           // A note held at the ceiling is no fault (dispatch/cli.mjs), and stays owed to a later run.
           deliveries.push({ prs: note.prs, session: note.session, ok, answered, refused, error, fallback, ...(capped ? { capped } : {}) });
           // As dispatch/cli.mjs counts a fault: a refusal with no fallback is a gone session, told enough.

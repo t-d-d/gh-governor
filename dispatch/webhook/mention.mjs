@@ -125,11 +125,16 @@ const SUBSCRIBED_ISSUE = 'You subscribe to this issue. Decide what it needs from
 
 export { SPEC_OWNER_DUTY };
 
-/** The role line of the session an issue's body names, which holds no other role the receiver can see. */
-const SPEC_OWNER = rolesText({ issue: 0, owner: null, builders: [] }, { role: 'spec owner', merged: false });
+/**
+ * The role lines of the session an issue's body names, which holds no
+ * other role the receiver can see.
+ *
+ * @param {{ duty?: boolean, notice?: boolean }} [asked]
+ */
+const specOwnerLines = (asked) => rolesText({ issue: 0, owner: null, builders: [] }, { role: 'spec owner', merged: false }, asked);
 
 /** What an issue's spec owner is told of a comment on it, open or closed. @param {any} issue */
-const ownedIssueComment = (issue) => rolesText({ issue: issue?.number, owner: null, builders: [] }, { role: 'spec owner', merged: false }, issue?.state === 'closed' ? { notice: true } : { duty: true });
+const ownedIssueComment = (issue) => specOwnerLines(issue?.state === 'closed' ? { notice: true } : { duty: true });
 
 /**
  * The repo's default branch, off a delivery's `repository`, or null where
@@ -678,7 +683,7 @@ const issueEventPrompt = ({ action, issue, label, sender }, target, role = 'subs
     }[String(action)]} by ${sender?.login}`;
   return [
     `${refLine(issue)} ${what}.`,
-    ...issueClose(role, SUBSCRIBED_ISSUE, rolesText({ issue: issue?.number, owner: null, builders: [] }, { role: 'spec owner', merged: false }, { notice: true })),
+    ...issueClose(role, SUBSCRIBED_ISSUE, specOwnerLines({ notice: true })),
   ].join('\n');
 };
 
@@ -809,7 +814,7 @@ export const bodyEditFires = (payload, { relay = RELAY, bodies = relay, appId } 
   // `comments` only drops an archived spec owner from the body's subscribe
   // lines, as a comment's message does.
   const fire = messageFire({
-    prompt: () => `${bodyEditPrompt(payload)}\n\n${SPEC_OWNER}\n\n${EDIT_SPEC_OWNER}`,
+    prompt: () => `${bodyEditPrompt(payload)}\n\n${specOwnerLines()}\n\n${EDIT_SPEC_OWNER}`,
     subscriber: { session: owner, owner: true },
     on: issue,
     event: 'comments',

@@ -12,6 +12,7 @@ import { rolesFrom, rolesText } from '../dispatch/roles.mjs';
 import { builderChangeSends, builderChangeText, specOwnerNote } from '../dispatch/told.mjs';
 import { unblockedNotice } from '../dispatch/unblocked.mjs';
 import { PROMPTS } from '../dispatch/prompts.mjs';
+import { jobList } from '../dispatch/workflow.mjs';
 import { SIGN_POSTS } from '../dispatch/webhook/fire.mjs';
 import { HANDOFF, UNSIGNED, issueEventFires, mentionFires, ticketFires } from '../dispatch/webhook/mention.mjs';
 
@@ -159,5 +160,11 @@ describe('no message says "the dispatcher"', () => {
     for (const text of [DISPATCHER_LABEL, hookLabel('h'), SIGN_POSTS, UNSIGNED, HANDOFF, ...defaults]) {
       assert.doesNotMatch(text, /\bdispatcher\b/i, text);
     }
+  });
+});
+
+describe('a job as a message names it', () => {
+  test('is a link whose words cannot end early on a bracket in its name', () => {
+    assert.deepEqual(jobList([{ name: 'test [linux]', html_url: 'https://github.com/acme/factory/actions/runs/1/job/2' } as never]), ['- [test \\[linux\\]](https://github.com/acme/factory/actions/runs/1/job/2)']);
   });
 });

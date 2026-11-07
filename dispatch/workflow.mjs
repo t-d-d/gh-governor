@@ -119,9 +119,12 @@ const bare = (target) => target.replace(/^the /, '');
 /** @param {string} reason @param {Range | null} [range] @returns {Plan} */
 const nobody = (reason, range = null) => ({ reason, notes: [], unnamed: [], triage: null, range, stale: null, advance: null });
 
+/** A name as a Markdown link's words: on one line, its brackets escaped so they cannot end the link. @param {unknown} name */
+const linkText = (name) => oneLine(name).replace(/[[\]]/g, '\\$&');
+
 /** @param {JobRow[]} failed */
 export const jobList = (failed) =>
-  (failed.length === 0 ? ['- none named; the run page says what stopped it'] : failed.map((j) => `- [${oneLine(j.name)}](${j.html_url})`));
+  (failed.length === 0 ? ['- none named; the run page says what stopped it'] : failed.map((j) => `- [${linkText(j.name)}](${j.html_url})`));
 
 /** @param {PullRow} pr */
 const prLine = (pr) => `[#${pr.number}](${pr.html_url}) ${oneLine(pr.title)}`;
@@ -310,7 +313,7 @@ const commit = (sha) => sha.slice(0, 7);
  *
  * @param {RunView} run
  */
-const byWorkflow = (run) => `the [${oneLine(run.name)}](${run.job ?? run.url}) workflow`;
+const byWorkflow = (run) => `the [${linkText(run.name)}](${run.job ?? run.url}) workflow`;
 
 /**
  * How a green deploy's opening sentence ends: the tag the repo's config
@@ -342,7 +345,7 @@ const deployedTo = (who, run, { target, end, tags }) => `${who} deployed to ${co
  * @param {string} sha
  * @param {Tags} tags
  */
-const failedAt = (run, target, sha, tags) => `The [${oneLine(run.name)}](${run.url}) workflow failed at ${commit(sha)}, ${Object.hasOwn(tags, target) ? `so the ${code(String(tags[target]))} tag did not move.` : `so it did not reach ${code(target)}.`}`;
+const failedAt = (run, target, sha, tags) => `The [${linkText(run.name)}](${run.url}) workflow failed at ${commit(sha)}, ${Object.hasOwn(tags, target) ? `so the ${code(String(tags[target]))} tag did not move.` : `so it did not reach ${code(target)}.`}`;
 
 /** Numbers as a sentence lists them: `#1`, `#1 and #2`, `#1, #2 and #3`. @param {number[]} ns */
 const andList = (ns) => {

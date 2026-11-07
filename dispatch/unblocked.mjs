@@ -62,6 +62,7 @@ import { createHash } from 'node:crypto';
 import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
+import { sessionLink } from './roles.mjs';
 import { UNREADIED_MARKER, ticketStatus, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 
 /**
@@ -329,12 +330,13 @@ export const unblockedNotice = (fire, ask) => {
   if ('started' in ask) {
     who = `Governor started ${ask.started === null ? 'a builder' : `[a builder](${ask.started})`} for #${issue} and asked it to check the spec against ${fire.pr === undefined ? 'this close' : 'what merged'} before it builds.`;
   } else {
-    const linked = (/** @type {readonly string[]} */ s) => (s.length === 1 ? [`[its builder](${s[0]})`] : s.map((b, i) => `[builder ${i + 1}](${b})`));
-    const one = (/** @type {readonly string[]} */ s) => (s.length === 1 ? `${linked(s)[0]?.replace(/^\[i/, '[I')}` : `Its builders, ${joined(linked(s))},`);
+    // One builder as a link with `single` for its words, several numbered.
+    const linked = (/** @type {readonly string[]} */ s, /** @type {string} */ single) => (s.length === 1 ? sessionLink(single, String(s[0])) : joined(s.map((b, i) => sessionLink(`builder ${i + 1}`, b))));
+    const one = (/** @type {readonly string[]} */ s) => (s.length === 1 ? linked(s, 'Its builder') : `Its builders, ${linked(s, '')},`);
     const asked = ask.asked.length === 0 ? '' : `${one(ask.asked)} ${ask.asked.length === 1 ? 'was' : 'were'} asked to check its work against ${ask.what}.`;
     const so = ask.asked.length === 0 ? ', so nobody was asked' : '';
     const archived = ask.archived.length === 0 ? '' : `${one(ask.archived)} ${ask.archived.length === 1 ? 'is' : 'are'} archived${ask.unreached.length === 0 ? so : ''}.`;
-    const unreached = ask.unreached.length === 0 ? '' : `Governor could not reach ${ask.unreached.length === 1 ? linked(ask.unreached)[0] : `its builders, ${joined(linked(ask.unreached))}`}${so}.`;
+    const unreached = ask.unreached.length === 0 ? '' : `Governor could not reach ${ask.unreached.length === 1 ? linked(ask.unreached, 'its builder') : `its builders, ${linked(ask.unreached, '')}`}${so}.`;
     who = [asked, archived, unreached].filter((t) => t !== '').join(' ');
   }
   return `${unblockedFacts(fire)}\n\nThis is a notice: it asks nothing of you. You are #${issue}'s spec owner, and may still edit its body where what counts as done has moved. ${who}`;

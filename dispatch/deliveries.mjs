@@ -547,7 +547,7 @@ export const deliveries = (deps) => {
   };
 
   /**
-   * One send, the session's standing under the text: the CLI's answer, the
+   * One send, with the session's standing under the text where `about` asks for it: the CLI's answer, the
    * reason when it is no, and whether the CLI answered at all. A CLI that
    * printed no answer (a crash, a dead login, a network fault) refused
    * nothing: the session may be live. A failure that is not a refusal is

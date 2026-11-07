@@ -2442,7 +2442,7 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(h.messages.map((m) => m.session), [SPEC_OWNER]);
     assert.match(h.messages[0]!.text, /Governor commented on #7:/);
     assert.match(h.messages[0]!.text, /closed as not planned/);
-    assert.match(h.messages[0]!.text, /You are #7's spec owner/);
+    assert.match(h.messages[0]!.text, /You are its spec owner\./);
   });
 
   test('not planned, and still blocked by another open issue: the comment says it is still blocked, and nothing starts', async () => {

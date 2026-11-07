@@ -52,7 +52,7 @@
 
 import { GITHUB_SOURCE } from './deliveries.mjs';
 import { relayOf } from './trust.mjs';
-import { rolesFrom, rolesOf, rolesText } from './roles.mjs';
+import { rolesOf, rolesText } from './roles.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
@@ -102,10 +102,11 @@ export const planTicket = async (invocation, ctx) => {
   const edited = edit === null || owner === null ? null : await ctx.findEditor(issue, edit, owner);
   const ownEdit = edited?.by === 'owner';
   const about = { repo, issue, change: event, state, claimed };
-  // A comment on an open ticket calls on each role's duty; a close or a
-  // reopen asks nothing of either, and a body edit's own lines say what
-  // each role does with it.
-  const asked = { duty: event === 'comments' && state === 'open', notice: event === 'close' };
+  // A comment on an open ticket calls on each role's duty; a close, a
+  // reopen or a comment on a closed ticket asks nothing of either, as the
+  // receiver tells an unlabelled issue's spec owner, and a body edit's own
+  // lines say what each role does with it.
+  const asked = { duty: event === 'comments' && state === 'open', notice: event === 'close' || (event === 'comments' && state !== 'open') };
   /**
    * Each send's text is written from the spec owner it names, which a take
    * changes before the builders are told.
@@ -137,7 +138,7 @@ export const planTicket = async (invocation, ctx) => {
     // The spec owner's message as the receiver queued it before, with no read.
     if (owner !== null && own(owner)) skipped.push(`${sessionId(owner)}'s own post`);
     else if (owner !== null && ownEdit) skipped.push(`${sessionId(owner)}, which made the edit`);
-    else if (owner !== null) sends.push({ session: owner, text: () => `${text}${editLines('spec owner')}\n\n${rolesText(rolesFrom({ issue, owner }), { role: 'spec owner', merged: false }, asked)}`, role: null, owns: [] });
+    else if (owner !== null) sends.push({ session: owner, text: () => `${text}${editLines('spec owner')}\n\n${rolesText({ issue, owner, builders: [] }, { role: 'spec owner', merged: false }, asked)}`, role: null, owns: [] });
   } else {
     const relay = relayOf(config);
     const reader = await ctx.readerFor(repo);
