@@ -12,5 +12,6 @@
     "tickets": { "forbid": [{ "labels": ["type: prd"] }] },
     "merge": false
   },
-  "signOff": {}
+  "signOff": {},
+  "sessionRules": {}
 }
