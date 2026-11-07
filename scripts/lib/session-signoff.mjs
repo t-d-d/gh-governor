@@ -39,16 +39,29 @@ import { archived, newestFirst, reposOf } from './session-branch.mjs';
 export const SIGN_OFF = 'Signing off.';
 
 /**
+ * When governor asks a session whose PR is open to sign off: after the
+ * deploy where the repo turns deploy messages on, since a deploy message
+ * asks, and at the merge where it does not, since nothing else will come.
+ * The held message and the pickup prompt (scripts/lib/dispatch-prompt.mjs)
+ * both say it, each after its own "this session".
+ *
+ * @param {boolean} deployMessages Whether the repo's file turns the switch on.
+ */
+export const untilAsked = (deployMessages) => `stays open until governor asks you to sign off, once the pull request ${deployMessages ? 'merges and its change deploys, or it closes' : 'merges or closes'}.`;
+
+/**
  * The one message a session gets the first time the sweep holds it: its
- * reply signed off, but an open PR names it.
+ * reply signed off, but an open PR names it. It says the session waits for
+ * a deploy only where a repo it names turns deploy messages on.
  *
  * @param {readonly number[]} prs
+ * @param {{ deployMessages?: boolean }} [options]
  */
-export const heldMessage = (prs) => {
+export const heldMessage = (prs, { deployMessages = false } = {}) => {
   const named = prs.map((pr) => `#${pr}`).join(', ');
   return [
     `Governor read your sign-off, but this session was not archived: ${prs.length === 1 ? 'pull request' : 'pull requests'} ${named}, whose body names this session, ${prs.length === 1 ? 'is' : 'are'} still open.`,
-    'This session stays open until governor asks you to sign off, once the pull request merges and its change deploys, or it closes. Until then, governor sends you its reviews, conflicts and CI runs.',
+    `This session ${untilAsked(deployMessages)} Until then, governor sends you its reviews, conflicts and CI runs.`,
     'Governor sends this message once. You need not reply.',
   ].join('\n\n');
 };

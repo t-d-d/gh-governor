@@ -66,12 +66,13 @@ import { START } from '../../dispatch/trust.mjs';
  */
 
 /**
- * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, by?: readonly string[], start?: readonly string[], prompts?: Record<string, string | undefined>, signOff?: boolean, failed?: ReadonlyMap<number, string> }} Source
+ * @typedef {{ repo: string, reader: Reader, labels: import('./ready-work.mjs').Labels, by?: readonly string[], start?: readonly string[], prompts?: Record<string, string | undefined>, signOff?: boolean, deployMessages?: boolean, failed?: ReadonlyMap<number, string> }} Source
  *   A served repo's tickets: its reader, its config file's ready, claim and
  *   excluded labels, whose tickets pickup starts (`byOf`,
  *   dispatch/pickup.mjs; `PICKUP_BY` where unset), who may ready one
  *   (`startOf`, dispatch/trust.mjs; `START` where unset), its prompts, whether
- *   its file turns `signOff` on, which the pickup prompt's ask reads, and
+ *   its file turns `signOff` on, which the pickup prompt's ask reads, whether
+ *   it turns `deployMessages` on, which says when that ask comes, and
  *   the tickets its failed-launch records hold (`failed`).
  */
 
@@ -270,7 +271,7 @@ export const planSchedule = async ({ sources, cap, now, only, seen = [], unread,
   for (const candidate of candidates) {
     const full = plan.length >= cap;
     if (full && cut === undefined) break;
-    const { repo, labels, prompts, signOff } = candidate.source;
+    const { repo, labels, prompts, signOff, deployMessages } = candidate.source;
     if (failed.has(repo) || (full && cut?.has(repo))) continue;
     if (full) {
       // Past the cap a read that fails starts nothing, so it is no refusal:
@@ -283,7 +284,7 @@ export const planSchedule = async ({ sources, cap, now, only, seen = [], unread,
     plan.push({
       issue: candidate.number,
       repo,
-      prompt: promptFor(candidate.number, candidate.title, repo, labels.claim, prompts, { signOff: signOff === true }),
+      prompt: promptFor(candidate.number, candidate.title, repo, labels.claim, prompts, { signOff: signOff === true, deployMessages: deployMessages === true }),
       sessionName: sessionName(candidate.number, candidate.title),
     });
   }

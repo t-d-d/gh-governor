@@ -552,6 +552,18 @@ describe('githubReader', () => {
     await assert.rejects(reader.fileAt('docs/notes/big.md', 'm0'), /no file/);
   });
 
+  test('workflowFiles names the YAML files in .github/workflows at a commit; an answer that is no folder throws', async () => {
+    const { fetch, calls } = fakeFetch({
+      'https://api.github.com/repos/acme/factory/contents/.github/workflows': (_init: RequestInit | undefined, url: string) => (new URL(url).searchParams.get('ref') === 'm0'
+        ? [{ type: 'file', name: 'ci.yml' }, { type: 'file', name: 'deploy.yaml' }, { type: 'file', name: 'README.md' }, { type: 'dir', name: 'scripts' }]
+        : { type: 'file', name: 'workflows' }),
+    });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual(await reader.workflowFiles('m0'), ['ci.yml', 'deploy.yaml']);
+    assert.equal(new URL(calls[0]!.url).searchParams.get('ref'), 'm0');
+    await assert.rejects(reader.workflowFiles('m1'), /no folder/);
+  });
+
   // The subscriptions' reads and write.
   // The search API allows an installation about thirty calls a minute, and
   // other callers of the App spend it too; the issues list is on the core

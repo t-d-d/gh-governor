@@ -954,7 +954,7 @@ describe('run — schedule', () => {
     const { deps, launches } = harness();
     const result = turn(await run({ source: 'aws.events' }, deps as never));
     assert.deepEqual(launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7'), sessionName(9, 'Issue 9')]);
-    assert.equal(launches[0]?.prompt, signed(promptFor(7, 'Issue 7', REPO, FACTORY_CONFIG_LABELS.claim, FACTORY_PROMPTS, { signOff: true })));
+    assert.equal(launches[0]?.prompt, signed(promptFor(7, 'Issue 7', REPO, FACTORY_CONFIG_LABELS.claim, FACTORY_PROMPTS, { signOff: true, deployMessages: true })));
     assert.deepEqual(result.dispatched.map((d) => d.issue), [7, 9]);
   });
 
@@ -2730,7 +2730,7 @@ describe('run — an unblocked fire', () => {
     assert.equal((result as unknown as Record<string, unknown>).row, 'ready');
     assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(7, 'Issue 7')]);
     const prompt = h.launches[0]!.prompt;
-    assert.ok(prompt.startsWith(promptFor(7, 'Issue 7', REPO, CLAIM, FACTORY_PROMPTS, { signOff: true })), prompt);
+    assert.ok(prompt.startsWith(promptFor(7, 'Issue 7', REPO, CLAIM, FACTORY_PROMPTS, { signOff: true, deployMessages: true })), prompt);
     assert.match(prompt, /acme\/tools#41 \(The parser\) closed as completed, by PR acme\/tools#52 \(Parse it, https:\/\/github\.com\/acme\/tools\/pull\/52\)/);
     assert.match(prompt, /Before you build, check the spec against what merged/);
     assert.ok(h.calls.includes(`label #7 +${CLAIM}`), h.calls.join('; '));
@@ -6774,6 +6774,20 @@ describe('run — sessions that signed off', () => {
     assert.deepEqual(h.archives, []);
   });
 
+  // A repo with deploy messages off sends no deploy message to wait for.
+  test('the held message says the session waits for a deploy only where the repo turns deploy messages on', async () => {
+    const file = switched(JSON.parse(FACTORY_FILE), { deployMessages: false });
+    const h = harness({ configFile: async (repo: string) => (repo === REPO ? JSON.stringify(file) : null) });
+    h.rows.push(sessionRow('cse_01OWNER'));
+    h.pages.set('cse_01OWNER', cloudSignedOff);
+    naming(h, 'session_01OWNER', [{ number: 587, pull: true }]);
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.messages.map((m) => m.session), ['session_01OWNER']);
+    const text = h.messages[0]!.text;
+    assert.match(text, /stays open until governor asks you to sign off, once the pull request merges or closes\./);
+    assert.doesNotMatch(text, /deploy/, text);
+  });
+
   test('the held message counts against the session and its PRs, and is not sent where a pair is at the ceiling', async () => {
     const h = harness();
     h.rows.push(sessionRow('cse_01OWNER'));
@@ -9115,6 +9129,16 @@ describe('run — every served repo', () => {
     assert.deepEqual(h.messages, []);
   });
 
+  test('a pickup prompt tells a session to wait for a deploy only where its repo turns deploy messages on', async () => {
+    for (const deployMessages of [true, false]) {
+      const h = twoRepos({ cap: 1, askmeFile: JSON.stringify(switched(JSON.parse(ASKME_FILE), { pickup: true, signOff: true, deployMessages })) });
+      await run({ source: 'aws.events' }, h.deps as never);
+      const prompt = h.launches[0]!.prompt;
+      assert.equal(/merges and its change deploys/.test(prompt), deployMessages, prompt);
+      assert.equal(/merges or closes/.test(prompt), !deployMessages, prompt);
+    }
+  });
+
   // The receiver holds no token, so it cannot read a repo's ready labels: in
   // any repo but the factory every label a person adds is a schedule fire naming
   // it, and the turn ends at once when it is not one of the repo's.
@@ -9338,6 +9362,78 @@ describe('run — every served repo', () => {
       assert.doesNotMatch(text, /§ Lessons/, text);
       if ('signOff' in prompts) assert.ok(text.endsWith(prompts.signOff), text);
     }
+  });
+
+  describe('a merge', () => {
+    const MERGE = 'c'.repeat(40);
+    const merged = { ...owners, text: 'Your pull request was merged.\n\nNothing else on it is left to do unless its thread says so.', event: 'close', mergedAt: MERGE };
+    const deploy = 'name: Deploy\non:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    name: "Deploy at ${{ github.sha }} · deployed: governor"\n    runs-on: ubuntu-latest\n    steps: []\n';
+    /** askme-mcp with `features` on, its workflows `files` (or a read that fails), recording the refs read at. */
+    const askmeMerge = (features: Record<string, boolean>, files: Record<string, string> | Error) => {
+      const h = twoRepos({ askmeFile: askmeWith({ prMessages: true, signOff: true, ...features }) });
+      const refs: string[] = [];
+      const base = h.deps.reader as unknown as (token: string, appId: number, repo: string) => Record<string, unknown>;
+      (h.deps as { reader: unknown }).reader = (token: string, appId: number, repo: string) => ({
+        ...base(token, appId, repo),
+        workflowFiles: async (ref: string) => {
+          refs.push(ref);
+          if (files instanceof Error) throw files;
+          return Object.keys(files);
+        },
+        fileAt: async (path: string, ref: string) => {
+          refs.push(ref);
+          if (files instanceof Error) throw files;
+          return files[path.replace('.github/workflows/', '')]!;
+        },
+      });
+      return { ...h, refs };
+    };
+
+    // A repo with deploy messages off sends no deploy message, so the merge
+    // itself is the last news a session gets of its PR.
+    test('in a repo with deploy messages off, asks the session to sign off, reads no workflow and claims no deploy', async () => {
+      const h = askmeMerge({}, { 'deploy.yml': deploy });
+      await run(merged, h.deps as never);
+      const text = (h.messages[0] as { text: string }).text;
+      assert.ok(text.endsWith(standingLine([], { repo: ASKME, closing: true, prompts: {} })), text);
+      assert.match(text, /Signing off\./);
+      assert.doesNotMatch(text, /deploy/i, text);
+      assert.deepEqual(h.refs, [], 'no workflow read');
+    });
+
+    test('in a repo with deploy messages on, lists its own deploy targets read at the merge, and asks for no sign-off', async () => {
+      const h = askmeMerge({ deployMessages: true }, { 'deploy.yml': deploy });
+      await run(merged, h.deps as never);
+      const text = (h.messages[0] as { text: string }).text;
+      assert.match(text, /deploys to governor, and governor tells you as each deploy finishes/);
+      assert.doesNotMatch(text, /\bdev\b|\bprod\b/, text);
+      assert.doesNotMatch(text, /Signing off/, text);
+      assert.ok(text.endsWith(standingLine([], { repo: ASKME, closing: false, prompts: {} })), text);
+      assert.ok(h.refs.length > 0 && h.refs.every((r) => r === MERGE), h.refs.join(', '));
+    });
+
+    test('to a subscriber, says its subscribers to deploys hear each deploy, not that it will', async () => {
+      const h = askmeMerge({ deployMessages: true, subscribeMessages: true }, { 'deploy.yml': deploy });
+      await run({ ...merged, session: 'session_01SUB', subscribed: true }, h.deps as never);
+      const text = (h.messages[0] as { text: string }).text;
+      assert.match(text, /deploys to governor, and governor tells its subscribers to deploys as each deploy finishes/, text);
+      assert.doesNotMatch(text, /tells you/, text);
+    });
+
+    test('with deployed labels on, names the labels its shipping jobs apply', async () => {
+      const h = askmeMerge({ deployedLabels: true }, { 'deploy.yml': deploy });
+      await run(merged, h.deps as never);
+      assert.match((h.messages[0] as { text: string }).text, /`deployed: governor`/);
+    });
+
+    test('where the workflows cannot be read, names no target and still asks for no sign-off, logged at warn', async () => {
+      const h = askmeMerge({ deployMessages: true }, new Error('GET /contents failed: 502'));
+      await run(merged, h.deps as never);
+      const text = (h.messages[0] as { text: string }).text;
+      assert.match(text, /Governor tells you as each deploy of its change finishes\./);
+      assert.doesNotMatch(text, /Signing off/, text);
+      assert.ok(h.logged.some((l) => l.event === 'dispatch-merge-targets' && l.level === 'warn' && /502/.test(String(l.error))), JSON.stringify(h.logged));
+    });
   });
 
   test('a repo with the App and no file gets no message and no summons', async () => {

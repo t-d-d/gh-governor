@@ -377,7 +377,7 @@ export const planUnblocked = async (invocation, ctx) => {
     // read that fails refuses the fire, never reads as no record.
     const now = ctx.now();
     const failed = await failedLaunchesOf(ctx.state, repo, now);
-    const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, by: byOf(config), start: startOf(config), prompts: ctx.prompts, signOff: turnsOn(config, 'signOff'), failed }], cap: 1, now, only: [issue], outsiders, strangers, unstarted, unlooked, heldFailed });
+    const planned = await planSchedule({ sources: [{ repo, reader, labels: config.labels, by: byOf(config), start: startOf(config), prompts: ctx.prompts, signOff: turnsOn(config, 'signOff'), deployMessages: turnsOn(config, 'deployMessages'), failed }], cap: 1, now, only: [issue], outsiders, strangers, unstarted, unlooked, heldFailed });
     for (const held of heldFailed) ctx.log('dispatch-pickup', { level: 'info', repo: held.repo, issue: held.issue, outcome: 'skipped', reason: failedReason(held.until) });
     // Where the spec owner's notice below names the builder, it is the spec
     // owner's one message of the launch: the dispatch comment tells nobody.
