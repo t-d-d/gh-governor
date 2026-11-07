@@ -120,11 +120,13 @@ import { RED_CONCLUSIONS } from '../scripts/lib/github-app.mjs';
  *   checkRun: (run: { name: string, sha: string, state: CheckState, title: string, summary: string }) => Promise<void>,
  *   requiredChecks: (branch: string) => Promise<string[]>,
  *   checksAt: (sha: string) => Promise<Array<{ name: string, state: 'red' | 'green' | 'pending', app?: string }>>,
+ *   ownCheck: (name: string, sha: string) => Promise<{ state: 'red' | 'green' | 'pending', title: string } | null>,
  *   ciRuns: (path: string, sha: string) => Promise<Array<import('../scripts/lib/github-app.mjs').RunRow & { path: string }>>,
  * }} ReviewReader
  *   `requiredChecks`: the status checks a branch's protection and rulesets
  *   require. `checksAt`: the latest check runs and statuses at a commit,
- *   each red, green or pending, a check run with the slug of its App. `ciRuns`: a workflow's runs at a commit,
+ *   each red, green or pending, a check run with the slug of its App. `ownCheck`: governor's own
+ *   latest run of a check at a commit, with its title, or null. `ciRuns`: a workflow's runs at a commit,
  *   newest first.
  * @typedef {{ headSha: string, bodySha: string, readSha: string | null, pass: { reason: string, at: string } | null, again: boolean, owed?: Owed | null }} Verdict
  *   What a review that commented decided, as the next review relies on it:
@@ -585,13 +587,16 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     // A check's end at a head whose last review failed test 8 on these same
     // red checks says nothing again: another App answering the `governor`
     // check with a check of its own would otherwise loop. A re-run that
-    // changes which checks are red, or turns them green, is still read, and
-    // so is one where governor's own check there is in progress: a review
-    // that waited on the re-run would otherwise leave it waiting.
+    // changes which checks are red, or turns them green, is still read. So
+    // is one where governor's own latest `governor` run there is anything
+    // but that fail: one in progress is a review that waited on the re-run,
+    // and one saying the review did not run promises it runs again.
     const sameRed = checksFailure(checks.red, redCi);
     if (byCommit && sameRed !== null && verdict !== null && sameHead && verdict.again && last !== null && last.text === commentText(sameRed, { conflict: false })) {
-      const waiting = (await reader.checksAt(pull.headSha)).some((c) => c.name === CHECK && c.state === 'pending');
-      if (!waiting) return skip(`#${number} failed test 8 at ${pull.headSha.slice(0, 12)} on the same red checks: a check's end there changes nothing`);
+      const own = await reader.ownCheck(CHECK, pull.headSha);
+      if (own !== null && own.state === 'red' && own.title === firstSentence(last.text)) {
+        return skip(`#${number} failed test 8 at ${pull.headSha.slice(0, 12)} on the same red checks: a check's end there changes nothing`);
+      }
     }
 
     // A required check would wait on a PR that gets no check at all, so it

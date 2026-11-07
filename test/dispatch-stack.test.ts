@@ -1185,13 +1185,14 @@ describe('.github/workflows/deploy.yml', () => {
   });
 
   // Every step after the probe is the rollback, so a green probe is the end
-  // of a green deploy. The page alone also runs on a cancel, and only once
-  // the rollback started, which a green probe never starts.
+  // of a green deploy. The page alone also runs on a cancel: once the
+  // rollback started, which a green probe never starts, or during the probe
+  // itself, which then never went green.
   test('runs nothing after a green probe', () => {
     const after = steps.slice(steps.findIndex(withId('probe')) + 1);
     assert.ok(after.length > 0, 'nothing follows the probe');
     for (const step of after) {
-      const guard = step.id === 'page' ? /^\$\{\{ always\(\) && steps\.rollback\.outcome != '' && steps\.rollback\.outcome != 'skipped' && [^|]*\}\}$/ : /^\$\{\{ failure\(\) && /;
+      const guard = step.id === 'page' ? /^\$\{\{ always\(\) && \(\(steps\.rollback\.outcome != '' && steps\.rollback\.outcome != 'skipped' && [^|]*\) \|\| \(steps\.probe\.outcome == 'cancelled' && [^|]*\)\) \}\}$/ : /^\$\{\{ failure\(\) && /;
       assert.match(step.if ?? '', guard, `'${step.name}' can run after a green probe`);
     }
   });
@@ -1392,7 +1393,7 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
   // governor may be down until the rollback's probe passes.
   test('pages the operator when the run is cancelled after the rollback started and before its probe passed', () => {
     const page = steps.find(withId('page'));
-    assert.equal(page?.if, "${{ always() && steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && !(steps.repoint.outcome == 'success' && steps.reprobe.outcome == 'success') }}");
+    assert.equal(page?.if, "${{ always() && ((steps.rollback.outcome != '' && steps.rollback.outcome != 'skipped' && !(steps.repoint.outcome == 'success' && steps.reprobe.outcome == 'success')) || (steps.probe.outcome == 'cancelled' && steps.apply.outputs.changed == 'true')) }}");
     for (const cancelKeepsFailure of [false, true]) {
       const reading = cancelKeepsFailure ? 'the job still read as failed' : 'the job read as cancelled';
       assert.deepEqual(after(runDeploy({ cancelKeepsFailure, outcomes: { probe: 'failure', rollback: 'cancelled' } }).ran, 'probe'), ['rollback', 'page'], `a run cancelled during the rollback's apply pages no one, with ${reading}`);
@@ -1402,10 +1403,45 @@ describe('.github/workflows/deploy.yml: the rollback after a red probe', () => {
     }
   });
 
-  test('a run cancelled before the rollback started pages no one', () => {
-    assert.equal(runDeploy({ outcomes: { probe: 'cancelled' } }).ran.at(-1), 'probe');
+  test('a run cancelled before the apply finished pages no one', () => {
     assert.equal(runDeploy({ outcomes: { apply: 'cancelled' } }).ran.at(-1), 'apply');
     assert.equal(runDeploy({ outcomes: { previous: 'cancelled' } }).ran.at(-1), 'previous');
+  });
+
+  // A cancel by hand or by the job's timeout during the first probe leaves
+  // the probe `cancelled`, not `failure`, so nothing rolls back, and the new
+  // stack runs with no probe passed on it. A new image that hangs the probe
+  // is the likeliest way to reach the timeout there. Rolling back after a
+  // cancel would have to finish inside the cancel's grace period and the
+  // deploy role's one-hour session, so the run pages instead, and a person
+  // rolls back or deploys again.
+  test('pages the operator, and rolls nothing back, when the run is cancelled during the probe after an apply that changed the stack', () => {
+    for (const cancelKeepsFailure of [false, true]) {
+      const reading = cancelKeepsFailure ? 'the job still read as failed' : 'the job read as cancelled';
+      assert.deepEqual(after(runDeploy({ cancelKeepsFailure, outcomes: { probe: 'cancelled' } }).ran, 'probe'), ['page'], `a run cancelled during the probe pages no one, with ${reading}`);
+      // A red step between the apply and the probe leaves the job failed before the cancel.
+      assert.deepEqual(after(runDeploy({ cancelKeepsFailure, outcomes: { point: 'failure', probe: 'cancelled' } }).ran, 'probe'), ['page'], `a run cancelled during the probe after a red step pages no one, with ${reading}`);
+      // A first apply has no stack to roll back to, but its image is still unprobed.
+      assert.deepEqual(after(runDeploy({ cancelKeepsFailure, previousImage: '', outcomes: { probe: 'cancelled' } }).ran, 'probe'), ['page'], `a first apply cancelled during its probe pages no one, with ${reading}`);
+    }
+  });
+
+  test('a run cancelled during the probe pages no one when the apply changed nothing, or on a probe-only run', () => {
+    assert.equal(runDeploy({ changed: false, outcomes: { probe: 'cancelled' } }).ran.at(-1), 'probe');
+    assert.equal(runDeploy({ probeOnly: true, outcomes: { probe: 'cancelled' } }).ran.at(-1), 'probe');
+  });
+
+  test('the page says when the run was cancelled during its probe, before any probe passed on the new stack', () => {
+    const page = steps.find(withId('page'));
+    assert.equal(page?.env?.PROBE_OUTCOME, '${{ steps.probe.outcome }}');
+    const run = page?.run ?? '';
+    assert.match(run, /if \[ "\$PROBE_OUTCOME" = cancelled \]; then/);
+    // The cancelled probe's branch comes first: no rollback ran, so the others do not apply.
+    assert.ok(run.indexOf('"$PROBE_OUTCOME" = cancelled') < run.indexOf('"$ROLLBACK_OUTCOME" = failure'));
+    const branch = run.slice(run.indexOf('"$PROBE_OUTCOME" = cancelled'), run.indexOf('"$ROLLBACK_OUTCOME" = failure'));
+    assert.match(branch, /SUBJECT="\[governor\] [^"]*cancelled during its probe/);
+    assert.match(branch, /no probe has passed/i);
+    assert.match(branch, /roll[^"]*back[^"]*deploy again/i, 'the page does not say what the operator can do');
   });
 
   // `job.status` may read `failure` or `cancelled` after a cancel that

@@ -556,7 +556,10 @@ export const holdWait = async ({ reader, state, repo, issue, labels, now, log, p
  * item's date come, the ticket is an ended wait with no line: its link comes
  * off and its item goes. With a line
  * that has passed or cannot be read, its link comes off, as a turn that
- * failed to take it off left it.
+ * failed to take it off left it. A row whose read, comment, item write or
+ * link removal fails is logged and returned in `unread`, and the rows after
+ * it still run. A blocking list that cannot be read is logged and returned
+ * in `unread` once, and no row runs.
  *
  * With `auto`, the repo's `trust.auto` (dispatch/trust.mjs): a ticket whose
  * author it does not let in gets its comment, but no spec work, and its
@@ -679,9 +682,19 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
   unread.push(...failed.sort((a, b) => a.issue - b.issue).map(({ error }) => ({ repo, error })));
   if (links !== undefined && blocking !== undefined) {
     const waiting = new Set(items.map((i) => i.issue));
+    /** @type {Awaited<ReturnType<LinkReader['blocking']>>} */
+    let rows = [];
     try {
-      const rows = (await blocking(links.board)).filter((r) => r.state === 'open' && (r.repo ?? repo).toLowerCase() === repo.toLowerCase() && !waiting.has(r.number));
-      for (const { number } of rows) {
+      rows = (await blocking(links.board)).filter((r) => r.state === 'open' && (r.repo ?? repo).toLowerCase() === repo.toLowerCase() && !waiting.has(r.number));
+    } catch (error) {
+      const message = messageOf(error);
+      log(WAIT_UNHANDLED, { level: 'error', repo, board: links.board, error: message, reason: 'the tickets the wait ticket blocks could not be read, so the next fire tries again' });
+      unread.push({ repo, error: `wait ticket #${links.board}: ${message}` });
+    }
+    // Each row catches its own failure, so one that throws does not keep a
+    // later row's stale link on through the sweep.
+    for (const { number } of rows) {
+      try {
         const ticket = await ticketOf(reader, number);
         if (ticket === null || ticket.state !== 'open') continue;
         // No line: a person's link, told once and left alone. A date that
@@ -696,11 +709,11 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
           log(WAIT, { repo, issue: number, until, outcome: written ? 'linked by hand: parked' : 'linked by hand: an item stood already' });
         }
         else if (!('until' in ticket.wait) || !isWaiting({ wait: ticket.wait }, now)) await links.hide(number);
+      } catch (error) {
+        const message = messageOf(error);
+        log(WAIT_UNHANDLED, { level: 'error', repo, board: links.board, issue: number, error: message, reason: 'a ticket the wait ticket blocks could not be read or told, so the next fire tries again' });
+        unread.push({ repo, error: `wait ticket #${links.board}, row #${number}: ${message}` });
       }
-    } catch (error) {
-      const message = messageOf(error);
-      log(WAIT_UNHANDLED, { level: 'error', repo, board: links.board, error: message, reason: 'the tickets the wait ticket blocks could not be read or told, so the next fire tries again' });
-      unread.push({ repo, error: `wait ticket #${links.board}: ${message}` });
     }
   }
   return { specs, unread };

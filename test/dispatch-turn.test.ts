@@ -3851,6 +3851,50 @@ describe('run: a waiting ticket linked to the wait ticket', () => {
     assert.deepEqual(linkCalls(waiting), [], 'a wait still to come keeps its link');
   });
 
+  test('a blocking row that fails does not stop a later row\'s stale link coming off before the sweep, and each failed row is reported', async () => {
+    const rows = [6, 7, 8].map((n) => ({ number: n, state: 'open', title: `Issue ${n}`, repo: REPO }));
+    const h = linksTurn({ ticket: ticketWith({}), linked: true, blocking: rows });
+    const reader = h.deps.reader;
+    h.deps.reader = ((...a: unknown[]) => {
+      const r = (reader as (...b: unknown[]) => Record<string, unknown>)(...a);
+      return {
+        ...r,
+        ticket: async (n: number) => {
+          if (n === 6) throw new Error('GET /repos/acme/factory/issues/6 failed: 502 Bad Gateway');
+          if (n === 8) return { ...ticketWith({ wait: { until: PAST } }), number: 8, id: 9008, title: 'Issue 8' };
+          return (r.ticket as (n: number) => Promise<unknown>)(n);
+        },
+        blockers: async (n: number) => (n === 8 ? [{ number: WAIT_TICKET, id: BOARD_ID, state: 'open', title: 'Waits' }] : (r.blockers as (n: number) => Promise<unknown>)(n)),
+        comment: async (n: number) => { throw new Error(`POST /repos/acme/factory/issues/${n}/comments failed: 403 Forbidden`); },
+      };
+    }) as never;
+    const result = await run({ source: 'aws.events' }, h.deps as never) as Record<string, unknown>;
+    const unlink = h.calls.indexOf(`unblock #8 from ${BOARD_ID}`);
+    assert.ok(unlink >= 0 && unlink < h.calls.indexOf('read the backlog'), h.calls.join('; '));
+    const failed = h.logged.filter((l) => l.event === 'dispatch-wait-unhandled' && l.board === WAIT_TICKET);
+    assert.deepEqual(failed.map((l) => l.issue), [6, 7], JSON.stringify(h.logged));
+    const unread = (result.unread as Array<{ repo: string, error: string }>).filter((u) => u.error.startsWith(`wait ticket #${WAIT_TICKET}`));
+    assert.deepEqual(unread, [
+      { repo: REPO, error: `wait ticket #${WAIT_TICKET}, row #6: GET /repos/acme/factory/issues/6 failed: 502 Bad Gateway` },
+      { repo: REPO, error: `wait ticket #${WAIT_TICKET}, row #7: POST /repos/acme/factory/issues/7/comments failed: 403 Forbidden` },
+    ]);
+  });
+
+  test('a wait ticket whose blocking list cannot be read is logged and reported once, and the sweep still runs', async () => {
+    const h = linksTurn({ ticket: ticketWith({}), linked: true });
+    const reader = h.deps.reader;
+    h.deps.reader = ((...a: unknown[]) => ({
+      ...(reader as (...b: unknown[]) => Record<string, unknown>)(...a),
+      blocking: async () => { throw new Error(`GET /repos/acme/factory/issues/${WAIT_TICKET}/dependencies/blocking failed: 502 Bad Gateway`); },
+    })) as never;
+    const result = await run({ source: 'aws.events' }, h.deps as never) as Record<string, unknown>;
+    assert.ok(h.calls.includes('read the backlog'), h.calls.join('; '));
+    const failed = h.logged.filter((l) => l.event === 'dispatch-wait-unhandled' && l.board === WAIT_TICKET);
+    assert.deepEqual(failed.map((l) => l.issue), [undefined], JSON.stringify(h.logged));
+    const unread = (result.unread as Array<{ repo: string, error: string }>).filter((u) => u.error.startsWith(`wait ticket #${WAIT_TICKET}`));
+    assert.deepEqual(unread, [{ repo: REPO, error: `wait ticket #${WAIT_TICKET}: GET /repos/acme/factory/issues/${WAIT_TICKET}/dependencies/blocking failed: 502 Bad Gateway` }]);
+  });
+
   test('a line that turns relative takes the wait ticket\'s link off: its own blocker shows in the sidebar', async () => {
     const h = linksTurn({ ticket: ticketWith({ wait: { after: { days: 3, issue: 143 } } as never, labels: ['type: prd'] }), linked: true, item: LATER });
     await run(fire, h.deps as never);

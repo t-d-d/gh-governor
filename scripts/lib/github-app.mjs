@@ -337,6 +337,15 @@ const labelNames = (row) =>
 export const RED_CONCLUSIONS = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure']);
 
 /**
+ * A check run's state from its conclusion: red when it ended in a way that
+ * blocks a merge, pending while it has no conclusion, green otherwise.
+ *
+ * @param {unknown} conclusion
+ * @returns {'red' | 'green' | 'pending'}
+ */
+const runState = (conclusion) => (RED_CONCLUSIONS.has(String(conclusion)) ? 'red' : typeof conclusion !== 'string' ? 'pending' : 'green');
+
+/**
  * A row of a workflow's runs list, as a RunRow.
  *
  * @param {any} row
@@ -1129,11 +1138,33 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
       return [
         ...runs.map((r) => ({
           name: String(r?.name ?? ''),
-          state: stateOf(RED_CONCLUSIONS.has(String(r?.conclusion)), typeof r?.conclusion !== 'string'),
+          state: runState(r?.conclusion),
           ...(typeof r?.app?.slug === 'string' && r.app.slug !== '' ? { app: r.app.slug } : {}),
         })),
         ...statuses.map((/** @type {any} */ st) => ({ name: String(st?.context ?? ''), state: stateOf(st?.state === 'failure' || st?.state === 'error', st?.state === 'pending') })),
       ];
+    },
+
+    /**
+     * The latest run of the check `name` at `sha` that `appId`'s App posted,
+     * newest by id, with its title: red when it ended in a way that blocks
+     * a merge, pending while it has not ended, green otherwise. Null where
+     * the App has no run of the name there, and for a reader without
+     * `appId`, which cannot tell governor's runs from another App's and
+     * reads nothing. Needs the App's Checks read.
+     *
+     * @param {string} name
+     * @param {string} sha
+     * @returns {Promise<{ state: 'red' | 'green' | 'pending', title: string } | null>}
+     */
+    ownCheck: async (name, sha) => {
+      if (appId === undefined) return null;
+      const runs = await allPages(call, `/repos/${repo}/commits/${sha}/check-runs`, { check_name: name, filter: 'latest', app_id: String(appId) }, undefined, (answer) => answer?.check_runs ?? []);
+      const own = runs
+        .filter((/** @type {any} */ r) => r?.name === name && r?.app?.id === appId && Number.isSafeInteger(r?.id))
+        .reduce((/** @type {any} */ newest, /** @type {any} */ r) => (newest === null || r.id > newest.id ? r : newest), null);
+      if (own === null) return null;
+      return { state: runState(own.conclusion), title: String(own.output?.title ?? '') };
     },
 
     /**
