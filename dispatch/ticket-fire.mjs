@@ -80,20 +80,20 @@ export const planTicket = async (invocation, ctx) => {
   const repo = fireRepoOf(invocation);
   const { issue, event, state, labels, poster, closing } = invocation;
   const config = ctx.configOf(repo);
-  // What governor asks of a session the searches below find, to sign its
-  // post or to comment instead of editing, runs only under sessionRules:
-  // a session follows rules only where it was told them. The searches
-  // themselves run whatever the switch says.
+  // The searches below run whatever sessionRules says, and the asks only
+  // under it, as in the message turn (dispatch/turn.mjs).
   const asks = turnsOn(config, 'sessionRules');
+  const claimed = labels.includes(config.labels.claim) && config.labels.claim !== '';
   // A session's unsigned comment: its author is searched for first, is not
   // relayed its own post, and the relay drops its UNSIGNED line where the
-  // search decided (dispatch/author.mjs).
-  const post = event === 'comments' && invocation.unsigned !== undefined ? invocation.unsigned : null;
+  // search decided (dispatch/author.mjs). With nothing to ask and no role
+  // that could hear the comment, the search would decide nothing.
+  const post = event === 'comments' && invocation.unsigned !== undefined && (asks || claimed || (invocation.owner ?? null) !== null) ? invocation.unsigned : null;
   const found = post === null ? null : await ctx.findAuthor(issue, post);
   const text = relayedText(invocation.text, found, asks);
   // A body edit that moved the owner link: under sessionRules the old
   // owner is the spec owner, and the session the new body names made the edit.
-  const moved = event === 'edit' && invocation.moved !== undefined && turnsOn(config, 'sessionRules') ? invocation.moved : null;
+  const moved = event === 'edit' && invocation.moved !== undefined && asks ? invocation.moved : null;
   const editor = moved === null ? null : invocation.owner ?? null;
   const owner = moved === null ? invocation.owner ?? null : moved.from ?? null;
   // A body edit that left the owner link in place: who made it is searched
@@ -101,7 +101,6 @@ export const planTicket = async (invocation, ctx) => {
   const edit = event === 'edit' && moved === null && owner !== null && invocation.edited !== undefined ? invocation.edited : null;
   const edited = edit === null || owner === null ? null : await ctx.findEditor(issue, edit, owner);
   const ownEdit = edited?.by === 'owner';
-  const claimed = labels.includes(config.labels.claim) && config.labels.claim !== '';
   const about = { repo, issue, change: event, state, claimed };
   /**
    * Each send's text is written from the spec owner it names, which a take

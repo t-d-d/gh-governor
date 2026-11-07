@@ -1643,7 +1643,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     // A body edit that moved the issue's owner link, under sessionRules: the
     // notice goes to the old owner, not to the session the new body names,
     // which made the edit (dispatch/take.mjs).
-    const moved = invocation.moved !== undefined && 'session' in invocation && on !== undefined && repo !== undefined && turnsOn(configOf(repo), 'sessionRules') ? invocation.moved : null;
+    const moved = invocation.moved !== undefined && 'session' in invocation && on !== undefined && asks ? invocation.moved : null;
     /** The take's confirmation or the correction. @type {import('./deliveries.mjs').Delivery | null} */
     let took = null;
     // A body edit that left the owner link in place: who made it is

@@ -557,6 +557,14 @@ describe('planTicket: an unsigned comment on a claimed ticket', () => {
     assert.ok(sent[0]!.text.includes(UNSIGNED));
   });
 
+  test('with sessionRules off, nothing is searched where no session could hear the comment', async () => {
+    const { ctx, sent, searched } = context({ config: RULES_OFF, found: { searched: true, author: WRITER, maybe: [], candidates: 2, unread: 0 } });
+    const plan = await planTicket(ticketFire({ labels: ['mode: afk'], owner: undefined }), ctx) as any;
+    assert.equal(searched(), 0);
+    assert.deepEqual(sent, []);
+    assert.equal(exitCodeFor(plan.answer), 0);
+  });
+
   test('a nudge that faults fails the turn', async () => {
     const { ctx } = context({ found: { searched: true, author: WRITER, maybe: [], candidates: 1, unread: 0 }, fails: [WRITER] });
     const plan = await planTicket(ticketFire(), ctx) as any;
