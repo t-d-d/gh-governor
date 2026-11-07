@@ -77,14 +77,23 @@ const ciRun = (over: Partial<CiRun> = {}): CiRun => ({
 });
 
 type CheckRow = { name: string, state: 'red' | 'green' | 'pending', app?: string };
-/**
- * The checks the factory's `prReview.requireChecks` lists, posted green at
- * every head unless a test names a check of the same name, so a review over
- * the factory's own file is not held waiting for them.
- */
-const LISTED: CheckRow[] = (JSON.parse(factoryFile(CONFIG_PATH)).prReview.requireChecks as Array<string | { name: string, app: string }>)
+type ListedEntry = string | { name: string, app: string };
+const entryName = (entry: ListedEntry): string => (typeof entry === 'string' ? entry : entry.name);
+/** The checks the factory's `prReview.requireChecks` lists, each green. */
+const LISTED: CheckRow[] = (JSON.parse(factoryFile(CONFIG_PATH)).prReview.requireChecks as ListedEntry[])
   .map((entry) => (typeof entry === 'string' ? { name: entry, state: 'green' as const } : { name: entry.name, state: 'green' as const, app: entry.app }));
-const withListed = (checks: CheckRow[]): CheckRow[] => [...checks, ...LISTED.filter((l) => !checks.some((c) => c.name === l.name))];
+/**
+ * The factory's listed checks that `config` still lists, posted green at
+ * every head unless a test names a check of the same name, so a review over
+ * the factory's own file is not held waiting for them. A repo whose file
+ * does not list them gets none, so a test of a check not posted there is
+ * not met by a green one it never wrote.
+ */
+const listedIn = (config: string): CheckRow[] => {
+  const entries = (JSON.parse(config).prReview?.requireChecks ?? []) as ListedEntry[];
+  return LISTED.filter((l) => entries.some((e) => entryName(e) === l.name));
+};
+const withListed = (checks: CheckRow[], listed: CheckRow[]): CheckRow[] => [...checks, ...listed.filter((l) => !checks.some((c) => c.name === l.name))];
 
 const harness = (over: {
   pulls?: Record<number, Pull | Pull[]>,
@@ -113,9 +122,9 @@ const harness = (over: {
   base?: string,
   /** The checks the base requires, and the checks at the head. */
   required?: string[],
-  checks?: Array<{ name: string, state: 'red' | 'green' | 'pending', app?: string }>,
+  checks?: CheckRow[],
   /** The checks at each head, over `checks`. */
-  checksAt?: (sha: string) => Array<{ name: string, state: 'red' | 'green' | 'pending', app?: string }>,
+  checksAt?: (sha: string) => CheckRow[],
   /** The runs the CI workflow's list answers at the head: one green run of the factory's `ci.yml` at HEAD by default. */
   ciRuns?: CiRun[],
   /** The check write: GitHub's refusal, for one that throws. */
@@ -183,7 +192,7 @@ const harness = (over: {
       openPulls: async () => over.open ?? [],
       defaultBranch: async () => over.base ?? 'main',
       requiredChecks: async (branch: string) => { requiredReads.push(branch); return over.required ?? []; },
-      checksAt: async (sha: string) => withListed(over.checksAt?.(sha) ?? over.checks ?? []),
+      checksAt: async (sha: string) => withListed(over.checksAt?.(sha) ?? over.checks ?? [], listedIn(over.config ?? factoryFile(CONFIG_PATH))),
       checkRun: async (run: { name: string, sha: string, state: string, title: string, summary: string }) => {
         if (over.checkRun) await over.checkRun(run);
         checkRuns.push(run);
