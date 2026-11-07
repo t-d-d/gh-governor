@@ -1168,8 +1168,8 @@ describe('routeEvent — subscribers', () => {
     const text = deployedComment({ target: 'prod', workflow: 'Deliver', url: 'https://github.com/acme/factory/actions/runs/500/job/2', commit: 'a'.repeat(40) });
     const commented = (on: Record<string, unknown>, by: Record<string, unknown> = app) => messages('issue_comment', commentEvent({ issue: on }, { ...by, body: text }));
 
-    test('the comment is one line naming the target, the job and the commit, then the governor:deployed marker', () => {
-      assert.equal(text, `Deployed to prod by Deliver ([job](https://github.com/acme/factory/actions/runs/500/job/2)), built from aaaaaaa.\n\n<!-- governor:deployed prod -->`);
+    test('the comment is one line naming the label, the workflow as a link to the job and the commit, then the governor:deployed marker', () => {
+      assert.equal(text, 'Labelled `deployed: prod` by the [Deliver](https://github.com/acme/factory/actions/runs/500/job/2) workflow at aaaaaaa.\n\n<!-- governor:deployed prod -->');
     });
 
     test('reaches no session through the relay, on a closed issue or an open one', () => {

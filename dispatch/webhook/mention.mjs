@@ -150,7 +150,7 @@ export const defaultBranch = (payload) => (isBranch(payload?.repository?.default
  * turn points the PR body's footer at it (`relinkSession`); the session
  * does so itself where that rewrite failed, and keeps the link there.
  */
-export const HANDOFF = 'The session that wrote this PR is gone; it is yours now. Governor points the PR description\'s session link at you; if it still names another session, put your own link in its place, and keep it there, so later comments reach you.';
+export const HANDOFF = 'The session that wrote this PR is gone, so the PR is yours. Governor has pointed its description\'s session link at you. If it still names another session, put your link there. Keep it there, so later comments reach you.';
 
 /**
  * What a message about a session's post naming no session adds: the
@@ -654,7 +654,7 @@ const prClosedPrompt = ({ pull_request: pr, sender }, role) => {
   return [
     role === 'owner' ? `Your pull request was ${how}.` : `A pull request you subscribe to was ${how}.`,
     '',
-    `${refLine(pr)}, by ${sender?.login}`,
+    `${refLine(pr)}, ${pr?.merged ? 'merged' : 'closed'} by ${sender?.login}`,
     '',
     pr?.merged
       ? 'Nothing else on it is left to do unless its thread says so.'

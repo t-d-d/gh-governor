@@ -41,7 +41,7 @@ export const PROMPTS = Object.freeze({
   pickup: {
     text: [
       'Implement GitHub issue #{issue} in {repo} through to a reviewable PR.',
-      'Governor claimed #{issue} for this session: it is `{claim}` for you, so proceed on it.',
+      'Governor has labelled #{issue} `{claim}` for this session.',
       'If earlier sessions worked on #{issue}, read the comments they left on it first, and carry on from any branch they pushed rather than start again.',
       'Before you build, read #{issue} against the code. If the code already does what it asks, or the work is far larger than the ticket reads, comment on #{issue} saying which and what you found, and stop without building. Leave `{claim}` on #{issue}, so pickup does not start it again: once this session ends, governor takes the claim off and leaves the ticket for a person to decide.',
       "Never edit #{issue}'s body: its spec belongs to its owner, the session whose link ends it, or else whoever wrote it. Where the spec looks wrong or out of date, say so in a comment on #{issue} and in your PR description, and build against what the code needs.",
@@ -52,7 +52,7 @@ export const PROMPTS = Object.freeze({
   },
   // The standing line's ask, when nothing else names the session (dispatch/deliveries.mjs).
   signOff: {
-    text: `Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make \`${SIGN_OFF}\` the last line of your reply, and governor archives the session.`,
+    text: `Unless you have work not on GitHub or in another repo, still owe a check, or the operator is working with you, make \`${SIGN_OFF}\` the last line of your reply. Governor then archives the session.`,
     fills: [],
     replaces: "the standing line's ask to sign off",
   },

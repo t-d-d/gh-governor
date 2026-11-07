@@ -189,7 +189,7 @@ describe('takeText and correctionText', () => {
     assert.doesNotMatch(takeText(7, 'unsigned'), /—/);
   });
 
-  test('each correction says what happened, to comment next time, and carries the rules', () => {
+  test('each correction says what happened, to comment next time, and names the rule it broke', () => {
     const owned = correctionText(7, 'edit-owned', OWNER);
     assert.match(owned, /does not own|you do not own/);
     assert.ok(owned.includes(`[its owner](${OWNER}) does, and is live`), owned);
@@ -199,7 +199,8 @@ describe('takeText and correctionText', () => {
     assert.match(correctionText(7, 'edit-person', null), /person/);
     for (const text of [owned, correctionText(7, 'edit-builder', null), correctionText(7, 'edit-person', null)]) {
       assert.match(text, /comment/);
-      assert.ok(text.includes(SESSION_RULES));
+      assert.ok(text.includes("session rule 2: only an issue's or a PR's owner edits its body."));
+      assert.ok(!text.includes(SESSION_RULES));
       assert.doesNotMatch(text, /—/);
     }
   });

@@ -21,7 +21,7 @@
  *    the post's time, from the payload, so a fire run late finds the same
  *    author.
  * 3. **One match**, every other candidate read and ruled out: that session
- *    is told once to edit its post to add its link, with the rules
+ *    is told once to edit its post to add its link, naming the rule it broke
  *    ({@link nudgeText}).
  * 4. **Undecided**, where two candidates posted there or a candidate's
  *    events could not be read: each candidate not ruled out is told once
@@ -45,7 +45,7 @@
 
 import { z } from 'zod';
 import { GITHUB_SOURCE } from './deliveries.mjs';
-import { SESSION_RULES } from './session-rules.mjs';
+import { brokenRule } from './session-rules.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { archived, reposOf } from '../scripts/lib/session-branch.mjs';
@@ -455,17 +455,15 @@ export const searchAuthor = async ({ list, events, repo, on, post, match = poste
 };
 
 /**
- * The message to the session found to have written an unsigned post, with
- * the rules under it.
+ * The message to the session found to have written an unsigned post,
+ * naming the rule it broke.
  *
  * @param {number} on
  * @param {string} url the post's page
  */
 export const nudgeText = (on, url) => [
   `Your [post](${url}) on #${on} ends in the Claude Code footer and names no session, so governor had to search for who wrote it, and found this session.`,
-  "Edit the post to add this session's link, its https://claude.ai/code/session_… URL, alone on the line just above the Claude Code footer, and sign every post from now on.",
-  '',
-  SESSION_RULES,
+  `${brokenRule(1)} Edit the post to add this session's link, its https://claude.ai/code/session_… URL, alone on the line just above the Claude Code footer, and sign every post from now on.`,
 ].join('\n');
 
 /**
@@ -477,9 +475,7 @@ export const nudgeText = (on, url) => [
  */
 export const maybeText = (on, url) => [
   `A [post](${url}) on #${on} ends in the Claude Code footer and names no session. Governor searched the sessions working in this repo and could not tell which wrote it: it may be yours.`,
-  "If you wrote it, edit it to add this session's link alone on the line just above the Claude Code footer, and sign every post from now on. If you did not, there is nothing to do.",
-  '',
-  SESSION_RULES,
+  `${brokenRule(1, 'If you wrote it, it breaks')} Edit it to add this session's link alone on the line just above the Claude Code footer, and sign every post from now on. If you did not write it, there is nothing to do.`,
 ].join('\n');
 
 /**

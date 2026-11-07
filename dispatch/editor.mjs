@@ -37,7 +37,7 @@
  */
 
 import { NUMBER_KEYS, escaped, judgeCommands, readCandidate, readsOnly, repoNamedIn, searchAuthor, shellBody, tellFound } from './author.mjs';
-import { SESSION_RULES } from './session-rules.mjs';
+import { brokenRule } from './session-rules.mjs';
 import { EDIT_SPEC_OWNER } from './webhook/mention.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 
@@ -157,9 +157,7 @@ export const editedText = (text, edited, asks = true) => {
  */
 export const editNudgeText = (on, url) => [
   `You edited the body of [#${on}](${url}), which another session owns. An edit names only the operator's login, so governor searched the sessions working in this repo for who made it, and found this session.`,
-  "An issue's body is its owner's to edit. Post your change as a comment on the issue instead, signed with this session's link, so its owner can decide whether the body takes it, and comment rather than edit from now on.",
-  '',
-  SESSION_RULES,
+  `${brokenRule(2)} Post your change as a comment on the issue instead, signed with this session's link, so its owner can decide whether the body takes it, and comment rather than edit from now on.`,
 ].join('\n');
 
 /**
@@ -171,9 +169,7 @@ export const editNudgeText = (on, url) => [
  */
 export const editMaybeText = (on, url) => [
   `The body of [#${on}](${url}) was edited, and not by the session that owns it. Governor searched the sessions working in this repo and could not tell which made the edit: it may be yours.`,
-  "If you made it, post your change as a comment on the issue instead, signed with this session's link, and leave the body to its owner from now on. If you did not, there is nothing to do.",
-  '',
-  SESSION_RULES,
+  `${brokenRule(2, 'If you made it, it breaks')} Post your change as a comment on the issue instead, signed with this session's link, and leave the body to its owner from now on. If you did not make it, there is nothing to do.`,
 ].join('\n');
 
 /**

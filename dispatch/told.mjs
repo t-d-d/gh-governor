@@ -138,7 +138,7 @@ export const builderChangeSends = ({ issue, text, owner, builder, displaced }) =
  * @param {{ issue: number, title: string, url: string, builder: string | null }} args
  */
 export const builderChangeText = ({ issue, title, url, builder }) =>
-  `[#${issue}](${url}) ${title.replace(/\s+/g, ' ').trim()} has ${builder === null ? 'a new builder, a cloud session the launcher printed no link for' : sessionLink('a new builder', builder)}. Governor's dispatch comment on it records the change for people.`;
+  `[#${issue}](${url}) ${title.replace(/\s+/g, ' ').trim()} has ${builder === null ? 'a new builder, a cloud session the launcher printed no link for' : sessionLink('a new builder', builder)}.`;
 
 /**
  * Tell a change of builder from the turn that posted its dispatch comment

@@ -92,7 +92,7 @@ describe('the role lines', () => {
 describe('a change of builder', () => {
   test('links the new builder and the displaced one, and the spec owner\'s notice says nothing is asked', () => {
     const text = builderChangeText({ issue: 7, title: 'The ticket', url: URL, builder: BUILDER });
-    assert.equal(text, `[#7](${URL}) The ticket has [a new builder](${BUILDER}). Governor's dispatch comment on it records the change for people.`);
+    assert.equal(text, `[#7](${URL}) The ticket has [a new builder](${BUILDER}).`);
     const { sends } = builderChangeSends({ issue: 7, text, owner: SPEC, builder: BUILDER, displaced: OTHER });
     for (const send of sends) assert.doesNotMatch(send.text, BARE_SESSION, send.text);
     const owner = sends.find((s) => s.role === 'spec owner');

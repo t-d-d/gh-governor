@@ -5871,7 +5871,7 @@ describe('run — a workflow run on main', () => {
         assert.deepEqual(labelled.map((l) => l.ticket).sort(), [730, 736]);
         assert.deepEqual(comments.map((c) => c.issue).sort(), [730, 736]);
         for (const { body } of comments) {
-          assert.equal(body, `Deployed to dev by Deliver ([job](${stage(DEV).html_url})), built from ${SHA_MAIN.slice(0, 7)}.\n\n<!-- governor:deployed dev -->`);
+          assert.equal(body, `Labelled \`deployed: dev\` by the [Deliver](${stage(DEV).html_url}) workflow at ${SHA_MAIN.slice(0, 7)}.\n\n<!-- governor:deployed dev -->`);
         }
       });
 
@@ -6534,7 +6534,7 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     assert.ok(launches[0]!.prompt.includes(MAIN));
     assert.match(launches[0]!.prompt, /\[#804\]\(https:\/\/github\.com\/acme\/factory\/pull\/804\) PR 804 conflicts/);
     assert.match(launches[0]!.prompt, /resolve the conflicts/);
-    assert.match(launches[0]!.prompt, /yours now/);
+    assert.match(launches[0]!.prompt, /the PR is yours/);
     assert.match(launches[0]!.sessionName, /#804/);
     assert.equal(launches[0]!.branch, 'claude/branch-804', 'the session starts on the PR\'s head branch and pushes there, so it opens no new branch or PR');
     assert.deepEqual(r0.comments, [], 'no dispatch comment: the PR body names the new owner');
