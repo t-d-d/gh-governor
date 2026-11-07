@@ -67,7 +67,7 @@ import { short } from './runs.mjs';
 import { DEPENDABOT, FAILED, LABEL_PREFIX, UNATTENDED } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { sameSession } from './webhook/subscribe.mjs';
-import { rolesText } from './roles.mjs';
+import { listed, rolesText, titleLink } from './roles.mjs';
 import { instruction } from './prompts.mjs';
 
 /**
@@ -127,7 +127,7 @@ export const jobList = (failed) =>
   (failed.length === 0 ? ['- none named; the run page says what stopped it'] : failed.map((j) => `- [${linkText(j.name)}](${j.html_url})`));
 
 /** @param {PullRow} pr */
-const prLine = (pr) => `[#${pr.number}](${pr.html_url}) ${oneLine(pr.title)}`;
+const prLine = (pr) => titleLink(`#${pr.number}`, pr.title, pr.html_url);
 
 /** A CI run's page and the commit it tested. @param {WorkflowFire} run */
 const runLine = (run) => `[Run](${run.url}) at commit ${short(run.headSha)}`;
@@ -580,10 +580,10 @@ const planTarget = async (run, coverage, prompts, workflows) => {
 };
 
 /**
- * @typedef {{ ticket: number, title: string, url: string, prs: number[], roles: import('./roles.mjs').TicketRoles }} ShippedTicket
- *   A ticket a green deploy commented on (dispatch/turn.mjs): the PRs it
- *   shipped that close it, and its roles as every path finds them
- *   (`rolesOf`, dispatch/roles.mjs).
+ * @typedef {{ ticket: number, title: string, url: string, repo: string, closed: boolean, prs: number[], roles: import('./roles.mjs').TicketRoles }} ShippedTicket
+ *   A ticket a green deploy commented on (dispatch/turn.mjs): its repo,
+ *   whether it is closed, the PRs it shipped that close it, and its roles
+ *   as every path finds them (`rolesOf`, dispatch/roles.mjs).
  */
 
 /**
@@ -596,9 +596,9 @@ const planTarget = async (run, coverage, prompts, workflows) => {
  * @param {import('./roles.mjs').RoleHolder} holder
  * @param {boolean} notice
  */
-const ticketLine = ({ ticket, title, url, prs, roles }, holder, notice) => [
-  `- [#${ticket}](${url}) ${oneLine(title)}, which ${prs.length === 1 ? `PR #${prs[0]}` : `PRs ${prs.map((n) => `#${n}`).join(', ')}`} closed.`,
-  ...rolesText(roles, holder, { notice }).split('\n').map((line) => `  ${line}`),
+const ticketLine = ({ ticket, title, url, repo, closed, prs, roles }, holder, notice) => [
+  `- ${titleLink(`#${ticket}`, title, url)}, which ${listed(prs.map((n) => `[PR #${n}](https://github.com/${repo}/pull/${n})`))} closed.`,
+  ...rolesText(roles, holder, { notice, closed }).split('\n').map((line) => `  ${line}`),
 ].join('\n');
 
 /**

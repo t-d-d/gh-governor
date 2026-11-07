@@ -62,7 +62,7 @@ import { createHash } from 'node:crypto';
 import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
-import { sessionLink } from './roles.mjs';
+import { sessionLink, titleLink } from './roles.mjs';
 import { UNREADIED_MARKER, ticketStatus, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 
 /**
@@ -198,8 +198,9 @@ const labelsSay = (on, labels) => {
 /**
  * What closed and how: the blocker and the PR that closed it, each by the
  * blocker's repo where that is not the ticket's, and its close reason.
- * `quote`: each title as code, for a comment GitHub renders, so an
- * `@handle` or `#N` in a title neither notifies nor links.
+ * In a message, each is a link whose words hold its title. `quote`: each
+ * title as code, for a comment GitHub renders, so an `@handle` or `#N` in
+ * a title neither notifies nor links.
  *
  * @param {UnblockedFire & { repo?: string }} fire
  * @param {{ quote?: boolean }} [options]
@@ -208,6 +209,10 @@ export const unblockedFacts = ({ repo, issue, blocker, pr }, { quote = false } =
   const ref = repo !== undefined && sameRepo(repo, blocker.repo) ? '#' : `${blocker.repo}#`;
   const title = (/** @type {string} */ t) => (quote ? `\`${t.replace(/`/g, "'")}\`` : t);
   const how = blocker.reason === undefined ? 'closed' : `closed as ${blocker.reason.replace(/_/g, ' ')}`;
+  if (!quote) {
+    const by = pr === undefined ? 'with no PR' : `by ${titleLink(`PR ${ref}${pr.number}`, pr.title, pr.url)}`;
+    return `${titleLink(`${ref}${blocker.number}`, blocker.title, `https://github.com/${blocker.repo}/issues/${blocker.number}`)} ${how}, ${by}. It blocked #${issue}.`;
+  }
   const by = pr === undefined ? 'with no PR' : `by PR [${ref}${pr.number}](${pr.url}) (${title(pr.title)})`;
   return `${ref}${blocker.number} (${title(blocker.title)}) ${how}, ${by}. It blocked #${issue}.`;
 };

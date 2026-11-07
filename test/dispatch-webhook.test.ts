@@ -362,7 +362,7 @@ describe('routeEvent — a mention', () => {
   test('a comment on a PR a session wrote is a message into that session, carrying the prompt and a fallback', () => {
     const { fire, reason } = messageOf('issue_comment', commentEvent({ issue: prIssue(`## Outcome\n\nThe grant.${footer}`) }));
     assert.equal(fire.session, SESSION_LINK);
-    assert.match(fire.text, /\[#724\]\(https:\/\/github\.com\/acme\/factory\/pull\/724\) Grant the public InvokeFunction/);
+    assert.match(fire.text, /\[#724 Grant the public InvokeFunction\]\(https:\/\/github\.com\/acme\/factory\/pull\/724\)/);
     assert.match(fire.text, /issuecomment-77/);
     assert.ok(fire.fallback?.prompt.startsWith(fire.text), 'the fresh session, if it comes to that, gets the same prompt');
     assert.match(String(fire.fallback?.prompt), /session that wrote this PR is gone/, 'and is told to take the PR over, footer included');
@@ -542,7 +542,7 @@ describe('routeEvent — a mention', () => {
 
   test('a review comment summons a session pointed at the file, the line and the branch', () => {
     const fire = dispatchOf('pull_request_review_comment', reviewCommentEvent());
-    assert.match(fire.prompt, /\[#724\]\(https:\/\/github\.com\/acme\/factory\/pull\/724\) Grant the public InvokeFunction/);
+    assert.match(fire.prompt, /\[#724 Grant the public InvokeFunction\]\(https:\/\/github\.com\/acme\/factory\/pull\/724\)/);
     assert.match(fire.prompt, /infra\/governor\.cfn\.yml/);
     assert.match(fire.prompt, /line 458/i);
     assert.match(fire.prompt, /claude\/kind-galileo-xanzvu/);
@@ -551,7 +551,7 @@ describe('routeEvent — a mention', () => {
 
   test('a review summons a session told the review\'s state and branch', () => {
     const fire = dispatchOf('pull_request_review', reviewEvent());
-    assert.match(fire.prompt, /\[#724\]\(https:\/\/github\.com\/acme\/factory\/pull\/724\) Grant the public InvokeFunction/);
+    assert.match(fire.prompt, /\[#724 Grant the public InvokeFunction\]\(https:\/\/github\.com\/acme\/factory\/pull\/724\)/);
     assert.match(fire.prompt, /changes_requested/);
     assert.match(fire.prompt, /claude\/kind-galileo-xanzvu/);
     assert.match(fire.prompt, /pullrequestreview-99/);
@@ -989,7 +989,7 @@ describe('routeEvent — subscribers', () => {
       assert.equal(m.event, 'pushes');
       assert.equal(m.commit, '2222222222222222222222222222222222222222');
       assert.equal(m.fallback, undefined, 'a push is nothing a fresh session is started for');
-      assert.match(m.text, /\[#724\]\(https:\/\/github\.com\/acme\/factory\/pull\/724\) Grant the public InvokeFunction/);
+      assert.match(m.text, /\[#724 Grant the public InvokeFunction\]\(https:\/\/github\.com\/acme\/factory\/pull\/724\)/);
       assert.match(m.text, /compare\/1{40}\.\.\.2{40}/);
     }
     assert.match(sent[0]!.text, /your pull request/i);
@@ -1095,7 +1095,7 @@ describe('routeEvent — subscribers', () => {
     const comment = messages('issue_comment', commentEvent({ issue: issue() }, { body: 'Is this still wanted?' }));
     assert.deepEqual(comment.sent.map((m) => [m.session, m.event, m.on]), [[FILER, 'comments', 717]]);
     assert.equal(comment.sent[0]!.fallback, undefined);
-    assert.match(comment.sent[0]!.text, /\[#717\]\(https:\/\/github\.com\/acme\/factory\/issues\/717\) An issue/);
+    assert.match(comment.sent[0]!.text, /\[#717 An issue\]\(https:\/\/github\.com\/acme\/factory\/issues\/717\)/);
     assert.match(comment.sent[0]!.text, /still wanted/);
 
     const labelled = messages('issues', { action: 'labeled', label: { name: 'type: bug' }, issue: issue(), sender: member, repository: { full_name: REPO } });
@@ -1141,7 +1141,7 @@ describe('routeEvent — subscribers', () => {
     const lines = [subscribeLine(FILER, ['deploys']), subscribeLine(REVIEWER, ['labels'])].join('\n');
     const sent = deployed(`Filed.\n\n${lines}${footer}`).sent;
     assert.deepEqual(sent.map((m) => [m.session, m.event, m.on, m.closing]), [[FILER, 'deploys', 717, true]], 'no labels subscriber, no filer by default; asks for sign-off as a close does');
-    assert.match(sent[0]!.text, /\[#717\]\(https:\/\/github\.com\/acme\/factory\/issues\/717\) An issue/);
+    assert.match(sent[0]!.text, /\[#717 An issue\]\(https:\/\/github\.com\/acme\/factory\/issues\/717\)/);
     assert.match(sent[0]!.text, /\bprod\b/);
     assert.match(sent[0]!.text.split('\n')[0]!, / reached prod, labelled "deployed: prod" by governor-app\[bot\]\.$/, 'a deploy, not a label');
     assert.doesNotMatch(sent[0]!.text, /was labelled/, 'a deploy, not a label');

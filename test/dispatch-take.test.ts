@@ -278,7 +278,7 @@ const context = ({
   return { ctx: ctx as never, sent, writes, logged, told };
 };
 
-const TEXT = 'The body of [#7](https://github.com/acme/factory/issues/7) A ticket was edited by t-d-d.';
+const TEXT = 'The body of [#7 A ticket](https://github.com/acme/factory/issues/7) was edited by t-d-d.';
 const editFire = (over: Record<string, unknown> = {}) => ({ kind: 'ticket', repo: REPO, issue: 7, text: TEXT, event: 'edit', state: 'open', labels: [CLAIM], owner: EDITOR, authors: ['OWNER'], moved: { old: 'owned', from: OWNER }, ...over }) as never;
 const to = (sent: Sent[]) => sent.map((s) => s.session);
 
@@ -289,8 +289,8 @@ describe('planTicket: a body edit that moved the owner link, under sessionRules'
     // #624: the old owner first, then the editor's correction, then the builder.
     assert.deepEqual(to(sent), [OWNER, EDITOR, BUILDER]);
     assert.equal(sent[1]!.text, correctionText(7, 'edit-owned', OWNER), 'the editor hears only its correction, not the notice');
-    assert.match(sent[0]!.text, /body of \[#7\]\(https:\/\/github.com\/acme\/factory\/issues\/7\) A ticket was edited/);
-    assert.match(sent[2]!.text, /body of \[#7\]\(https:\/\/github.com\/acme\/factory\/issues\/7\) A ticket was edited/);
+    assert.match(sent[0]!.text, /body of \[#7 A ticket\]\(https:\/\/github.com\/acme\/factory\/issues\/7\) was edited/);
+    assert.match(sent[2]!.text, /body of \[#7 A ticket\]\(https:\/\/github.com\/acme\/factory\/issues\/7\) was edited/);
   });
 
   test('a live owner keeps its issue: its link is written back, the rest of the edit stays, and the editor is told once', async () => {

@@ -106,7 +106,7 @@ export const planTicket = async (invocation, ctx) => {
   // reopen or a comment on a closed ticket asks nothing of either, as the
   // receiver tells an unlabelled issue's spec owner, and a body edit's own
   // lines say what each role does with it.
-  const asked = { duty: event === 'comments' && state === 'open', notice: event === 'close' || (event === 'comments' && state !== 'open') };
+  const asked = { duty: event === 'comments' && state === 'open', notice: event === 'close' || (event === 'comments' && state !== 'open'), closed: state === 'closed' };
   /**
    * Each send's text is written from the spec owner it names, which a take
    * changes before the builders are told.

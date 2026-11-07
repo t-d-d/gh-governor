@@ -8,7 +8,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { builderChangeText } from '../dispatch/told.mjs';
 import { PROMPTS } from '../dispatch/prompts.mjs';
-import { HANDOFF, pullRequestFires } from '../dispatch/webhook/mention.mjs';
+import { HANDOFF, pullRequestFires, refLine } from '../dispatch/webhook/mention.mjs';
+import { titleLink } from '../dispatch/webhook/roles-text.mjs';
 import { ownerText, roleNotice } from '../dispatch/dispatch-fire.mjs';
 import { promptFor } from '../scripts/lib/dispatch-prompt.mjs';
 import { correctionText } from '../dispatch/take.mjs';
@@ -40,19 +41,19 @@ describe('a PR\'s close', () => {
 
   test('says who merged it, so the login does not read as the PR\'s author', () => {
     const text = close(true);
-    assert.match(text, /The fix, merged by bob/);
+    assert.match(text, /\[#12 The fix\]\(https:\/\/github\.com\/acme\/factory\/pull\/12\), merged by bob/);
     assert.doesNotMatch(text, /, by bob/);
   });
 
   test('says who closed it', () => {
-    assert.match(close(false), /The fix, closed by bob/);
+    assert.match(close(false), /\[#12 The fix\]\(https:\/\/github\.com\/acme\/factory\/pull\/12\), closed by bob/);
   });
 });
 
 describe('a change of builder', () => {
   test('says the issue has a new builder and nothing about the comment kept for people', () => {
     const text = builderChangeText({ issue: 7, title: 'The ticket', url: URL, builder: BUILDER });
-    assert.equal(text, `[#7](${URL}) The ticket has [a new builder](${BUILDER}).`);
+    assert.equal(text, `[#7 The ticket](${URL}) has [a new builder](${BUILDER}).`);
   });
 });
 
@@ -168,5 +169,30 @@ describe('the deployed comment', () => {
   test('names the label with the prefix the label is read by', () => {
     const text = deployedComment({ target: 'prod', workflow: 'Deploy', url: 'https://x.test/j', commit: 'abcdef1234' });
     assert.ok(text.includes(`\`${LABEL_PREFIX}prod\``), text);
+  });
+});
+
+describe('an issue or PR named with its title', () => {
+  test('carries the title inside the link', () => {
+    assert.equal(refLine({ number: 7, title: 'The  ticket\n', html_url: URL }), `[#7 The ticket](${URL})`);
+    assert.equal(titleLink('PR #12', 'The fix', PR_URL), `[PR #12 The fix](${PR_URL})`);
+  });
+
+  test('drops backticks from the title, since a code span in link text shows raw brackets', () => {
+    assert.equal(refLine({ number: 7, title: 'Run `npm test` first', html_url: URL }), `[#7 Run npm test first](${URL})`);
+  });
+
+  test('a bracket or backslash in the title cannot end the link\'s words early', () => {
+    assert.equal(refLine({ number: 7, title: 'Fix [x] \\', html_url: URL }), `[#7 Fix \\[x\\] \\\\](${URL})`);
+  });
+
+  test('a PR\'s close puts the title inside the link', () => {
+    const pr = {
+      number: 12, title: 'The fix', html_url: PR_URL, merged: true, merged_at: '2026-11-07T10:00:00Z',
+      body: `Closes #7\n\n${SPEC}\n\n${FOOTER}`, user: { login: 'alice', type: 'User' }, author_association: 'OWNER',
+      head: { ref: 'fix', sha: 'a'.repeat(40) }, base: { ref: 'main' },
+    };
+    const { fires } = pullRequestFires({ action: 'closed', pull_request: pr, sender: { login: 'bob', type: 'User' }, repository: { full_name: 'acme/factory', default_branch: 'main' } });
+    assert.match(JSON.stringify(fires.map((f) => f.fire)), /\[#12 The fix\]\(https:\/\/github\.com\/acme\/factory\/pull\/12\), merged by bob/);
   });
 });

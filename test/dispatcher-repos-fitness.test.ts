@@ -319,7 +319,7 @@ const plan = async (invocation: unknown, coverage: unknown, prompts: Record<stri
 const note = async (invocation: unknown, coverage: unknown, prompts: Record<string, string>) => (await plan(invocation, coverage, prompts)).notes[0]!.text;
 const triage = async (invocation: unknown, coverage: unknown, prompts: Record<string, string>) => (await plan(invocation, coverage, prompts)).triage!.prompt;
 const UNBLOCKED = { kind: 'unblocked' as const, repo: FACTORY, issue: 7, blocker: { repo: ASKME, number: 41, title: 'The parser', reason: 'completed' }, pr: { number: 52, title: 'Parse it', url: 'https://github.com/t-d-d/askme-mcp/pull/52' } };
-const CLOSE_FACTS = ['t-d-d/askme-mcp#41 (The parser) closed as completed', 'PR [t-d-d/askme-mcp#52](https://github.com/t-d-d/askme-mcp/pull/52) (Parse it)', 'It blocked #7.'];
+const CLOSE_FACTS = ['[t-d-d/askme-mcp#41 The parser](https://github.com/t-d-d/askme-mcp/issues/41) closed as completed', '[PR t-d-d/askme-mcp#52 Parse it](https://github.com/t-d-d/askme-mcp/pull/52)', 'It blocked #7.'];
 const RUN_FACTS = [RUN_URL, 'backend'];
 
 /** Every kind: the message built with `prompts`, and the facts it carries whatever the prompt. */
@@ -334,18 +334,18 @@ const KINDS: Record<string, { build: (prompts: Record<string, string>) => Promis
   unblockedClaimed: { build: (p) => unblockedMessage(UNBLOCKED, p), facts: CLOSE_FACTS },
   unblockedNotPlanned: { build: (p) => notPlannedComment({ ...UNBLOCKED, blocker: { ...UNBLOCKED.blocker, reason: 'not_planned' } }, p), facts: ['t-d-d/askme-mcp#41 (`The parser`) closed as not planned'] },
   redScheduledRun: { build: (p) => redRunPrompt('A scheduled run of Emulator on main ended failure.', p), facts: ['A scheduled run of Emulator on main ended failure.', UNATTENDED] },
-  ciBreaker: { build: (p) => note(red('CI'), coverageOf([pull(1)]), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1'] },
-  ciTriage: { build: (p) => triage(red('CI'), coverageOf([pull(1), pull(2)]), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1', '[#2](https://github.com/acme/factory/pull/2) PR 2', UNATTENDED] },
-  ciBumpTriage: { build: (p) => triage(red('CI'), coverageOf([pull(1, DEPENDABOT)]), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1', UNATTENDED] },
-  prodTriage: { build: (p) => triage(red('Deliver'), coverageOf([pull(1)], { label: PROD }), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1', UNATTENDED] },
-  deployGreen: { build: (p) => note(shipped, coverageOf([pull(1)], { label: 'deployed: dev' }), p), facts: ['[#1](https://github.com/acme/factory/pull/1) PR 1', 'Your change is deployed to `dev`'] },
-  deployGreenMany: { build: (p) => note(shipped, coverageOf([pull(1), pull(2)], { label: 'deployed: dev' }), p), facts: ['[#1](https://github.com/acme/factory/pull/1) PR 1', '[#2](https://github.com/acme/factory/pull/2) PR 2', 'Your changes are deployed to `dev`'] },
-  deployRed: { build: (p) => note(red('Deliver'), coverageOf([pull(1)], { label: 'deployed: dev' }), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1'] },
-  deployRedMany: { build: (p) => note(red('Deliver'), coverageOf([pull(1), pull(2)], { label: 'deployed: dev' }), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1', '[#2](https://github.com/acme/factory/pull/2) PR 2'] },
-  subscribed: { build: (p) => note(shipped, coverageOf([pull(1)], { label: 'deployed: dev', subscribed: true }), p), facts: ['[#1](https://github.com/acme/factory/pull/1) PR 1', 'which you subscribe to'] },
+  ciBreaker: { build: (p) => note(red('CI'), coverageOf([pull(1)]), p), facts: [...RUN_FACTS, '[#1 PR 1](https://github.com/acme/factory/pull/1)'] },
+  ciTriage: { build: (p) => triage(red('CI'), coverageOf([pull(1), pull(2)]), p), facts: [...RUN_FACTS, '[#1 PR 1](https://github.com/acme/factory/pull/1)', '[#2 PR 2](https://github.com/acme/factory/pull/2)', UNATTENDED] },
+  ciBumpTriage: { build: (p) => triage(red('CI'), coverageOf([pull(1, DEPENDABOT)]), p), facts: [...RUN_FACTS, '[#1 PR 1](https://github.com/acme/factory/pull/1)', UNATTENDED] },
+  prodTriage: { build: (p) => triage(red('Deliver'), coverageOf([pull(1)], { label: PROD }), p), facts: [...RUN_FACTS, '[#1 PR 1](https://github.com/acme/factory/pull/1)', UNATTENDED] },
+  deployGreen: { build: (p) => note(shipped, coverageOf([pull(1)], { label: 'deployed: dev' }), p), facts: ['[#1 PR 1](https://github.com/acme/factory/pull/1)', 'Your change is deployed to `dev`'] },
+  deployGreenMany: { build: (p) => note(shipped, coverageOf([pull(1), pull(2)], { label: 'deployed: dev' }), p), facts: ['[#1 PR 1](https://github.com/acme/factory/pull/1)', '[#2 PR 2](https://github.com/acme/factory/pull/2)', 'Your changes are deployed to `dev`'] },
+  deployRed: { build: (p) => note(red('Deliver'), coverageOf([pull(1)], { label: 'deployed: dev' }), p), facts: [...RUN_FACTS, '[#1 PR 1](https://github.com/acme/factory/pull/1)'] },
+  deployRedMany: { build: (p) => note(red('Deliver'), coverageOf([pull(1), pull(2)], { label: 'deployed: dev' }), p), facts: [...RUN_FACTS, '[#1 PR 1](https://github.com/acme/factory/pull/1)', '[#2 PR 2](https://github.com/acme/factory/pull/2)'] },
+  subscribed: { build: (p) => note(shipped, coverageOf([pull(1)], { label: 'deployed: dev', subscribed: true }), p), facts: ['[#1 PR 1](https://github.com/acme/factory/pull/1)', 'which you subscribe to'] },
   conflicts: {
     build: (p) => { const m = conflictMessage({ pr: { number: 1, title: 'PR 1', html_url: 'u1' }, base: 'main', head: 'c'.repeat(40), merged: { pr: 2, sha: SHA } }, p); assert.ok(m.fallback.prompt.includes(m.text.split('\n\n')[1]!), 'the fallback carries the instruction'); return m.text; },
-    facts: ['[#1](u1) PR 1', 'c'.repeat(40), '#2 merged', SHA],
+    facts: ['[#1 PR 1](u1)', 'c'.repeat(40), '#2 merged', SHA],
   },
 };
 

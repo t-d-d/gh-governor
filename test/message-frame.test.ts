@@ -61,6 +61,18 @@ describe('the role lines', () => {
     for (const text of [owner, builder]) assert.doesNotMatch(text, BARE_SESSION, text);
   });
 
+  test('say "built it" on a closed ticket and "builds it" on an open one', () => {
+    const owner = { role: 'spec owner' as const, merged: false, session: SPEC };
+    const builder = { role: 'builder' as const, merged: false, session: BUILDER };
+    assert.equal(rolesText(roles, owner, { closed: true }), `You are its spec owner; [its builder](${BUILDER}) built it.`);
+    assert.equal(rolesText(roles, builder, { closed: true }), `You built it; [its spec owner](${SPEC}) writes its body.`);
+    const two = rolesFrom({ issue: 7, owner: SPEC, builders: [BUILDER, OTHER] });
+    assert.equal(rolesText(two, owner, { closed: true }), `You are its spec owner; [builder 1](${BUILDER}) and [builder 2](${OTHER}) built it.`);
+    assert.equal(rolesText(two, builder, { closed: true }), `You built it; [its spec owner](${SPEC}) writes its body. [another builder](${OTHER}) built it too.`);
+    assert.equal(rolesText(rolesFrom({ issue: 7, owner: SPEC, builders: [SPEC] }), { role: 'spec owner and builder', merged: false, session: SPEC }, { closed: true }), 'You are its spec owner and you built it.');
+    assert.equal(rolesText(roles, builder), `You build it; [its spec owner](${SPEC}) writes its body.`);
+  });
+
   test('a spec owner with no builder is told its role alone', () => {
     assert.equal(rolesText(rolesFrom({ issue: 7, owner: SPEC }), { role: 'spec owner', merged: false }), 'You are its spec owner.');
   });
@@ -92,7 +104,7 @@ describe('the role lines', () => {
 describe('a change of builder', () => {
   test('links the new builder and the displaced one, and the spec owner\'s notice says nothing is asked', () => {
     const text = builderChangeText({ issue: 7, title: 'The ticket', url: URL, builder: BUILDER });
-    assert.equal(text, `[#7](${URL}) The ticket has [a new builder](${BUILDER}).`);
+    assert.equal(text, `[#7 The ticket](${URL}) has [a new builder](${BUILDER}).`);
     const { sends } = builderChangeSends({ issue: 7, text, owner: SPEC, builder: BUILDER, displaced: OTHER });
     for (const send of sends) assert.doesNotMatch(send.text, BARE_SESSION, send.text);
     const owner = sends.find((s) => s.role === 'spec owner');
@@ -111,7 +123,7 @@ describe('a blocker\'s close notice', () => {
   test('links each builder and the PR, with no bare session URL', () => {
     const started = unblockedNotice(fire, { started: BUILDER });
     assert.match(started, new RegExp(`\\[a builder\\]\\(${BUILDER}\\)`));
-    assert.match(started, /\[#12\]\(https:\/\/github\.com\/acme\/factory\/pull\/12\)/);
+    assert.match(started, /\[PR #12 Fix\]\(https:\/\/github\.com\/acme\/factory\/pull\/12\)/);
     const asked = unblockedNotice(fire, { asked: [BUILDER, OTHER], archived: [], unreached: [SPEC], what: 'what merged' });
     for (const text of [started, asked]) assert.doesNotMatch(text, BARE_SESSION, text);
   });
@@ -132,7 +144,7 @@ describe('a relay about an issue to its spec owner', () => {
   test('a close names the spec owner\'s role, links the issue, and asks nothing', () => {
     const { fires } = issueEventFires({ action: 'closed', issue: issue({ state: 'closed', state_reason: 'completed' }), sender: member });
     const text = String((fires[0]?.fire as { text?: string }).text);
-    assert.equal(text, `[#7](${URL}) The ticket was closed (completed) by alice.\n\nYou are its spec owner.\nNothing is asked of you.`);
+    assert.equal(text, `[#7 The ticket](${URL}) was closed (completed) by alice.\n\nYou are its spec owner.\nNothing is asked of you.`);
     assert.doesNotMatch(text, /subscribe/i);
   });
 
@@ -150,7 +162,7 @@ describe('a relay about an issue to its spec owner', () => {
     const { fires } = ticketFires({ event: 'issue_comment', payload: { action: 'created', issue: issue({ labels: [{ name: 'claimed' }] }), comment } });
     const text = fires[0]?.fire.text ?? '';
     assert.doesNotMatch(text, /subscribe|spec owner/i, text);
-    assert.match(text, new RegExp(`^A comment on an issue\\.\\n\\n\\[#7\\]\\(${URL}\\) The ticket\\n`));
+    assert.match(text, new RegExp(`^A comment on an issue\\.\\n\\n\\[#7 The ticket\\]\\(${URL}\\)\\n`));
   });
 });
 

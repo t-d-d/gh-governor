@@ -213,7 +213,7 @@ const toRoles = async ({ repo, on, writer, assigner, ticket, prompt }, ctx) => {
   try {
     for (const holder of sends) {
       const { session, role, owns } = holder;
-      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, writer, assigner, remark })}\n\n${rolesText(roles, holder, { duty: assigner === undefined && remark !== null, notice: assigner === undefined && remark === null })}`, { source: GITHUB_SOURCE, kind: 'summons-notice', on: [on], owns, strict: true });
+      let told = await ctx.delivery().deliver({ session }, `${roleNotice({ issue: on, writer, assigner, remark })}\n\n${rolesText(roles, holder, { duty: assigner === undefined && remark !== null, notice: assigner === undefined && remark === null, closed: ticket.state === 'closed' })}`, { source: GITHUB_SOURCE, kind: 'summons-notice', on: [on], owns, strict: true });
       // A refusal is no fault: what failed is handing the notice on.
       if (told.refused && faults(told)) told = { ...told, error: `${session} is archived, and the live session on the head branch of PR ${owns.map((n) => `#${n}`).join(', ')} could not be found or did not take the notice` };
       sent.push(told);

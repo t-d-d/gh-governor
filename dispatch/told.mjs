@@ -21,7 +21,7 @@
  */
 
 import { sameSession, sessionId } from './webhook/subscribe.mjs';
-import { rolesFrom, rolesOf, rolesText, sessionLink } from './roles.mjs';
+import { rolesFrom, rolesOf, rolesText, sessionLink, titleLink } from './roles.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { relayOf } from './trust.mjs';
 
@@ -138,7 +138,7 @@ export const builderChangeSends = ({ issue, text, owner, builder, displaced }) =
  * @param {{ issue: number, title: string, url: string, builder: string | null }} args
  */
 export const builderChangeText = ({ issue, title, url, builder }) =>
-  `[#${issue}](${url}) ${title.replace(/\s+/g, ' ').trim()} has ${builder === null ? 'a new builder, a cloud session the launcher printed no link for' : sessionLink('a new builder', builder)}.`;
+  `${titleLink(`#${issue}`, title, url)} has ${builder === null ? 'a new builder, a cloud session the launcher printed no link for' : sessionLink('a new builder', builder)}.`;
 
 /**
  * Tell a change of builder from the turn that posted its dispatch comment

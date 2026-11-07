@@ -549,7 +549,7 @@ describe('run — what reaches the owner session', () => {
     const text = `Waits for a description edit: ${'界'.repeat(65000)} (test 3).`;
     const fire = ownerMessage({ pull, text, acts: true });
     assert.ok(fireWeight(fire) <= FIRE_BUDGET, `${fireWeight(fire)} bytes`);
-    assert.match(fire.text, /^Governor's PR review commented on your pull request\.\n\n\[#767\]\(https:\/\/github\.com\/acme\/factory\/pull\/767\) Run the PR review/);
+    assert.match(fire.text, /^Governor's PR review commented on your pull request\.\n\n\[#767 Run the PR review from the dispatcher\]\(https:\/\/github\.com\/acme\/factory\/pull\/767\)/);
     assert.match(fire.text, /Waits for a description edit: 界/);
     assert.match(fire.text, /the review asks this of you/);
     assert.match(fire.fallback!.prompt, /the PR is yours/);

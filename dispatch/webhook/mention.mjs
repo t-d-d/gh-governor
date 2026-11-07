@@ -79,7 +79,7 @@
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
-import { SPEC_OWNER_DUTY, rolesText } from './roles-text.mjs';
+import { SPEC_OWNER_DUTY, rolesText, titleLink } from './roles-text.mjs';
 import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets, postWords, wordsOf, POST_WORDS, POST_WORDS_CHARS } from './fire.mjs';
 import { closingNumbers } from './closing.mjs';
 import { REVIEW_MARKER, postedByApp } from './review-comment.mjs';
@@ -532,7 +532,7 @@ const closingFor = (role) => (role === 'owner' ? OWN_PR : SUBSCRIBED_PR);
  *
  * @param {any} on
  */
-export const refLine = (on) => `[#${on?.number}](${on?.html_url}) ${oneLine(on?.title)}`;
+export const refLine = (on) => titleLink(`#${on?.number}`, on?.title, on?.html_url);
 
 /**
  * What a relay about an issue ends with, by the recipient's role: a

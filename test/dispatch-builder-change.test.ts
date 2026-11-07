@@ -192,7 +192,7 @@ describe('the receiver: a PR that comes to close a ticket queues a closingPr fir
 
 type Sent = { session: string, text: string, opts: Record<string, unknown> };
 
-const TEXT = '[#7](https://github.com/acme/factory/issues/7) A ticket has a new builder.';
+const TEXT = '[#7 A ticket](https://github.com/acme/factory/issues/7) has a new builder.';
 const dispatched = (over: Record<string, unknown> = {}) => ({ kind: 'ticket', repo: REPO, issue: 7, text: TEXT, event: 'dispatched', state: 'open', labels: [CLAIM], owner: SPEC, builder: BUILDER, authors: [], ...over }) as never;
 
 const relayContext = ({ archived = [] as string[] } = {}) => {
@@ -424,7 +424,7 @@ describe('planClosingPr: a PR by another session that closes a claimed ticket na
     const { ctx, sent } = prContext();
     await planClosingPr(closingPr, ctx);
     assert.deepEqual(sent.map((m) => m.session), [SPEC, BUILDER]);
-    assert.ok(sent[0]!.text.includes(`[#7](https://github.com/${REPO}/issues/7) A ticket has [a new builder](${OTHER}).`), sent[0]!.text);
+    assert.ok(sent[0]!.text.includes(`[#7 A ticket](https://github.com/${REPO}/issues/7) has [a new builder](${OTHER}).`), sent[0]!.text);
     assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${OTHER}) builds it.`), sent[0]!.text);
     assert.doesNotMatch(sent[0]!.text, /sign off/);
     assert.match(sent[1]!.text, /no longer build #7: \[another session\]\(https:\/\/claude.ai\/code\/session_01OTHER\) does/);
@@ -506,7 +506,7 @@ describe('a takeover of a PR that closes a ticket posts the dispatch comment on 
     assert.deepEqual(f.comments.map((c) => c.issue), [7]);
     assert.deepEqual(dispatchedTo(f.comments[0]!.body), { builder: OTHER, displaced: null });
     assert.deepEqual(sent.map((m) => m.session), [BUILDER, SPEC]);
-    assert.ok(sent[1]!.text.includes(`[#7](https://github.com/${REPO}/issues/7) A ticket has [a new builder](${OTHER}).`), sent[1]!.text);
+    assert.ok(sent[1]!.text.includes(`[#7 A ticket](https://github.com/${REPO}/issues/7) has [a new builder](${OTHER}).`), sent[1]!.text);
   });
 
   test('a branch session written into the PR body in place of an archived owner is named on the ticket', async () => {

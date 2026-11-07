@@ -43,14 +43,31 @@ export const NOTHING_ASKED = 'Nothing is asked of you.';
 export const sessionLink = (text, session) => `[${text}](${session})`;
 
 /**
+ * An issue or a PR as a message names it with its title: one Markdown link
+ * whose words are the label and the title. The title is on one line, its
+ * backticks dropped, since the app shows a link whose words hold a code
+ * span as raw brackets, and a bracket or backslash in it escaped, so it
+ * cannot end the link's words early.
+ *
+ * @param {string} label such as `#7` or `PR #12`
+ * @param {unknown} title
+ * @param {string} url
+ */
+export const titleLink = (label, title, url) => {
+  const words = String(title ?? '').replace(/`/g, '').replace(/\s+/g, ' ').trim().replace(/[[\]\\]/g, '\\$&');
+  return `[${words === '' ? label : `${label} ${words}`}](${url})`;
+};
+
+/**
  * The builders other than the recipient, as links, and the verb that fits them.
  *
  * @param {readonly string[]} others
  * @param {string} first the link text of the first, or the only one
+ * @param {boolean} closed the ticket is closed, so they built it
  */
-const buildersLinked = (others, first) => {
-  if (others.length === 1) return `${sessionLink(first, /** @type {string} */ (others[0]))} builds it`;
-  return `${listed(others.map((b, i) => sessionLink(`builder ${i + 1}`, b)))} build it`;
+const buildersLinked = (others, first, closed) => {
+  if (others.length === 1) return `${sessionLink(first, /** @type {string} */ (others[0]))} ${closed ? 'built' : 'builds'} it`;
+  return `${listed(others.map((b, i) => sessionLink(`builder ${i + 1}`, b)))} ${closed ? 'built' : 'build'} it`;
 };
 
 /**
@@ -61,22 +78,24 @@ const buildersLinked = (others, first) => {
  * the message asks nothing of the recipient, and says so. A message that
  * asks something of its own passes neither, and says nothing more. A
  * builder whose PR has merged is told so, and acts on the message only
- * where it calls for new work.
+ * where it calls for new work. `closed`: the ticket is closed, so its
+ * builders built it rather than build it.
  *
  * @param {{ issue: number, owner: string | null, builders: readonly string[] }} roles
  * @param {{ role: 'spec owner' | 'builder' | 'spec owner and builder', merged: boolean, session?: string }} holder
- * @param {{ duty?: boolean, notice?: boolean }} [options]
+ * @param {{ duty?: boolean, notice?: boolean, closed?: boolean }} [options]
  * @returns {string}
  */
-export const rolesText = ({ issue, owner, builders }, { role, merged, session }, { duty = false, notice = false } = {}) => {
+export const rolesText = ({ issue, owner, builders }, { role, merged, session }, { duty = false, notice = false, closed = false } = {}) => {
   // The recipient: the session handed in, else the spec owner where it holds that role.
   const self = session ?? (role === 'builder' ? null : owner);
   const others = builders.filter((b) => self === null || !sameSession(b, self));
   const specOwner = owner === null ? 'a person owns its body' : `${sessionLink('its spec owner', owner)} writes its body`;
   let first;
-  if (role === 'spec owner') first = others.length === 0 ? 'You are its spec owner.' : `You are its spec owner; ${buildersLinked(others, 'its builder')}.`;
-  else if (role === 'builder') first = `You build it; ${specOwner}.${others.length === 0 ? '' : ` ${buildersLinked(others, 'another builder')} too.`}`;
-  else first = `You are its spec owner and you build it.${others.length === 0 ? '' : ` ${buildersLinked(others, 'another builder')} too.`}`;
+  const build = closed ? 'built' : 'build';
+  if (role === 'spec owner') first = others.length === 0 ? 'You are its spec owner.' : `You are its spec owner; ${buildersLinked(others, 'its builder', closed)}.`;
+  else if (role === 'builder') first = `You ${build} it; ${specOwner}.${others.length === 0 ? '' : ` ${buildersLinked(others, 'another builder', closed)} too.`}`;
+  else first = `You are its spec owner and you ${build} it.${others.length === 0 ? '' : ` ${buildersLinked(others, 'another builder', closed)} too.`}`;
   const lines = [first];
   if (duty && role !== 'builder') lines.push(SPEC_OWNER_DUTY);
   if (duty && role !== 'spec owner') lines.push(BUILDER_DUTY);
