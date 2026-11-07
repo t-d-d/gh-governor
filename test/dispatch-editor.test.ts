@@ -535,6 +535,31 @@ describe('planTicket: a body edit on a closed ticket', () => {
     assert.ok(!owner.text.includes(CLOSED), owner.text);
   });
 
+  test('a spec owner that also builds it is not told to leave the follow-up to its spec owner', async () => {
+    const { ctx, sent } = context({ edited: { by: 'unknown', reason: 'x' } });
+    (ctx as any).readerFor = async () => ({
+      openClosing: async () => [],
+      closure: async () => ({ pr: null }),
+      allComments: async () => [{ body: `<!-- governor:dispatched ${new Date(AT - 60_000).toISOString()} -->\nDispatched to ${OWNER} at ${new Date(AT - 60_000).toISOString()}.`, ours: true }],
+    });
+    await planTicket(fire({ state: 'closed' }), ctx);
+    assert.deepEqual(sent.map((s) => s.session), [OWNER]);
+    assert.ok(sent[0]!.text.includes(EDIT_SPEC_OWNER), sent[0]!.text);
+    assert.ok(!sent[0]!.text.includes(CLOSED), sent[0]!.text);
+    assert.ok(!sent[0]!.text.includes(EDIT_BUILDER), sent[0]!.text);
+  });
+
+  test('a spec owner that builds it and made the edit hears no empty edit lines', async () => {
+    const { ctx, sent } = context({ edited: { by: 'owner' } });
+    (ctx as any).readerFor = async () => ({
+      openClosing: async () => [],
+      closure: async () => ({ pr: null }),
+      allComments: async () => [{ body: `<!-- governor:dispatched ${new Date(AT - 60_000).toISOString()} -->\nDispatched to ${OWNER} at ${new Date(AT - 60_000).toISOString()}.`, ours: true }],
+    });
+    await planTicket(fire({ state: 'closed' }), ctx);
+    for (const s of sent) assert.doesNotMatch(s.text, /\n\n\n/, s.text);
+  });
+
   test('on an open ticket the builder still hears EDIT_BUILDER', async () => {
     const { ctx, sent } = context({ edited: { by: 'unknown', reason: 'x' } });
     await planTicket(fire(), ctx);

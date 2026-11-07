@@ -122,12 +122,18 @@ export const planTicket = async (invocation, ctx) => {
   const own = (/** @type {string} */ session) => (poster !== undefined && sameSession(session, poster)) || (editor !== null && sameSession(session, editor)) || wroteIt(found, session);
   // What a body edit tells each role, under what happened. The spec owner
   // hears nothing of its own edit. A closed ticket's builder is asked to
-  // comment, not to build: a follow-up is the spec owner's to file.
-  const builderLine = state === 'closed' ? editClosedBuilder(issue) : EDIT_BUILDER;
-  const editLines = (/** @type {TicketRole} */ role) => (event !== 'edit' ? '' : `\n\n${[
-    ...(role === 'builder' || ownEdit ? [] : [ownerLine(edited, asks)]),
-    ...(role === 'spec owner' ? [] : [builderLine]),
-  ].join('\n')}`);
+  // comment, not to build: a follow-up is the spec owner's to file, so a
+  // session that holds both roles hears only the spec owner's line.
+  const builderLine = (/** @type {TicketRole} */ role) => {
+    if (role === 'spec owner') return [];
+    if (state !== 'closed') return [EDIT_BUILDER];
+    return role === 'builder' ? [editClosedBuilder(issue)] : [];
+  };
+  const editLines = (/** @type {TicketRole} */ role) => {
+    if (event !== 'edit') return '';
+    const lines = [...(role === 'builder' || ownEdit ? [] : [ownerLine(edited, asks)]), ...builderLine(role)];
+    return lines.length === 0 ? '' : `\n\n${lines.join('\n')}`;
+  };
   if (event === 'dispatched') {
     // A dispatch comment's fire queued before the relay dropped governor's
     // comments: the builder it names never hears it.
