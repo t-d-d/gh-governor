@@ -20,7 +20,8 @@
  * part. The spec owner acts on a remark that changes what counts as done,
  * by editing the body. The builder acts on a remark about the build, and
  * never edits the body. A body edit tells the spec owner the edit may be
- * its own, and the builder that the spec changed. Where the edit left the
+ * its own, and the builder that the spec changed, or, on a closed ticket,
+ * to comment on it rather than build. Where the edit left the
  * owner link in place, governor first searches for who made it, whatever
  * `sessionRules` says (dispatch/editor.mjs): the spec owner is not told of
  * its own edit, is told someone else made one, and keeps the old line only
@@ -57,7 +58,7 @@ import { fireRepoOf } from './repos.mjs';
 import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 import { relayedBody, sameSession, sessionId } from './webhook/subscribe.mjs';
-import { EDIT_BUILDER } from './webhook/mention.mjs';
+import { EDIT_BUILDER, editClosedBuilder } from './webhook/mention.mjs';
 import { builderChangeSends, tellBuilderChange } from './told.mjs';
 import { offerIssue } from './offer.mjs';
 import { settleMove } from './take.mjs';
@@ -120,10 +121,12 @@ export const planTicket = async (invocation, ctx) => {
   let builders = [];
   const own = (/** @type {string} */ session) => (poster !== undefined && sameSession(session, poster)) || (editor !== null && sameSession(session, editor)) || wroteIt(found, session);
   // What a body edit tells each role, under what happened. The spec owner
-  // hears nothing of its own edit.
+  // hears nothing of its own edit. A closed ticket's builder is asked to
+  // comment, not to build: a follow-up is the spec owner's to file.
+  const builderLine = state === 'closed' ? editClosedBuilder(issue) : EDIT_BUILDER;
   const editLines = (/** @type {TicketRole} */ role) => (event !== 'edit' ? '' : `\n\n${[
     ...(role === 'builder' || ownEdit ? [] : [ownerLine(edited, asks)]),
-    ...(role === 'spec owner' ? [] : [EDIT_BUILDER]),
+    ...(role === 'spec owner' ? [] : [builderLine]),
   ].join('\n')}`);
   if (event === 'dispatched') {
     // A dispatch comment's fire queued before the relay dropped governor's
