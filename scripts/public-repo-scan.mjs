@@ -38,11 +38,20 @@ const isDoc = (/** @type {string} */ path) => path === 'README.md' || /^docs\/.+
 
 /**
  * In a doc, the name is refused unless it stands bare: joined to a word, a
- * variable, a marker, an issue or a path (`-`, `_`, `:`, `#` or `/`) it names
- * the old code or the repo, not the service. Its site, the name and `.com`,
- * passes.
+ * variable, a marker, an issue or a path (`-`, `_`, `:`, `#`, `/` or `\`) it
+ * names the old code or the repo, not the service. That covers a path that
+ * ends in the name, such as `~/` and the name, and the name with a file
+ * extension or another domain.
+ *
+ * Three things pass. Its site, the name and `.com`. A `.` that ends a
+ * sentence. And a slash after an owner or a URL's `//`: `owner/` and the name
+ * is the repo rule's finding, and the site's URL is the site.
  */
-const NOT_BARE = new RegExp(`(?<=[A-Za-z0-9_-])${OLD_HOME.source}|${OLD_HOME.source}(?=[A-Za-z0-9_:#/-])`, 'gi');
+const NOT_BARE = new RegExp(
+  `(?<=[A-Za-z0-9_-]|(?<![A-Za-z0-9_./-])/)${OLD_HOME.source}` +
+    `|${OLD_HOME.source}(?=[A-Za-z0-9_:#/\\\\-]|\\.(?!com(?![A-Za-z0-9_-]))[A-Za-z0-9_-])`,
+  'gi',
+);
 
 /** @type {Array<{ kind: string, pattern: RegExp, allow?: (match: string) => boolean, inDoc?: RegExp }>} */
 const RULES = [
