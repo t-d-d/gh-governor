@@ -21,6 +21,7 @@ import { launchPlan } from '../dispatch/launch-plan.mjs';
 import { dispatchMarker, parseFire } from '../dispatch/webhook/fire.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { relinkSession, sessionNamedIn } from '../dispatch/webhook/subscribe.mjs';
+import { BUILDER_DUTY, SPEC_OWNER_DUTY } from '../dispatch/roles.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
 const REPO = 'acme/factory';
@@ -231,6 +232,32 @@ describe('a summons on an issue under a repo whose subscribe messages are off', 
     assert.doesNotMatch(sent[0]!.text, /reaches you as any comment/);
     assert.match(sent[0]!.text, /\nYou are its spec owner\.\nYou own its spec\. If the comment calls for a change you agree with, edit the body\./);
     assert.doesNotMatch(sent[0]!.text, /Nothing is asked of you/);
+  });
+
+  test('on an open claimed ticket, each role hears its duty with the remark', async () => {
+    const { subscribeMessages: _off, ...file } = FILE;
+    const { ctx, sent } = context({ config: configOf(file) });
+    await planDispatch(commented({ labels: [CLAIM] }) as never, ctx);
+    assert.deepEqual(to(sent), [SPEC, BUILDER]);
+    assert.ok(sent[0]!.text.includes(`\n${SPEC_OWNER_DUTY}`), sent[0]!.text);
+    assert.ok(sent[1]!.text.endsWith(`\n${BUILDER_DUTY}`), sent[1]!.text);
+    assert.ok(!sent[0]!.text.includes(BUILDER_DUTY), sent[0]!.text);
+    assert.ok(!sent[1]!.text.includes(SPEC_OWNER_DUTY), sent[1]!.text);
+  });
+
+  test('on a closed claimed ticket, the remark reaches each role with no duty line, since nothing is left to build', async () => {
+    const { subscribeMessages: _off, ...file } = FILE;
+    const { ctx, sent } = context({ config: configOf(file) });
+    const plan = await planDispatch(commented({ labels: [CLAIM], state: 'closed' }) as never, ctx) as any;
+    assert.deepEqual(plan.launches, []);
+    assert.deepEqual(to(sent), [SPEC, BUILDER]);
+    for (const { text } of sent) {
+      assert.match(text, /does this need the empty case too\?/);
+      assert.ok(!text.includes(BUILDER_DUTY), text);
+      assert.ok(!text.includes(SPEC_OWNER_DUTY), text);
+    }
+    assert.match(sent[0]!.text, /\nYou are its spec owner; \[its builder\]\(https:\/\/claude.ai\/code\/session_01BUILDER\) is another session\.$/);
+    assert.match(sent[1]!.text, /\nYou are its builder; \[its spec owner\]\(https:\/\/claude.ai\/code\/session_01SPECOWNER\) writes its body\.$/);
   });
 
   test('with them on, the notice does not repeat the remark', async () => {
