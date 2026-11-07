@@ -80,6 +80,15 @@ describe('a config file that repeats a named entry', () => {
     assert.ok(!read.fault.includes('repeated'), read.fault);
   });
 
+  test('a deeply nested value is a schema fault, and the read does not throw', () => {
+    // JSON.parse accepts nesting deeper than a recursive scan's stack.
+    const depth = 100_000;
+    const text = factoryFile(CONFIG_PATH).replace(/^\{/, `{"x": ${'['.repeat(depth)}${']'.repeat(depth)},`);
+    const read = readConfig(text);
+    assert.ok(!read.ok);
+    assert.ok(!read.fault.includes('repeated'), read.fault);
+  });
+
   test('a top-level key holding a dot is not a named section', () => {
     const text = factoryFile(CONFIG_PATH).replace(/^\{/, '{"periodics.sessions": {"a": 1, "a": 2},');
     const read = readConfig(text);

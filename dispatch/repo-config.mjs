@@ -896,61 +896,81 @@ const repeatedNames = (text) => {
   const space = () => {
     while (text[i] === ' ' || text[i] === '\t' || text[i] === '\n' || text[i] === '\r') i += 1;
   };
-  /** @returns {string} */
-  const string = () => {
-    const start = i;
+  /** Steps past the string at `i`, a key or a value, without reading it. */
+  const pastString = () => {
     i += 1;
     while (text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
     i += 1;
+  };
+  /** @returns {string} */
+  const string = () => {
+    const start = i;
+    pastString();
     return JSON.parse(text.slice(start, i));
   };
-  /** @param {string[] | null} path the keys down to the value, kept to depth two */
-  const value = (path) => {
+  /**
+   * Steps past a value no named entry lies in. It counts brackets rather
+   * than recursing, since JSON.parse accepts nesting deeper than the stack.
+   */
+  const skip = () => {
     space();
-    if (text[i] === '{') {
-      i += 1;
-      const at = path?.length === 2 ? path.join('.') : null;
-      const named = at !== null && NAMED_ENTRIES.includes(at);
-      const seen = new Set();
-      const told = new Set();
-      space();
-      if (text[i] === '}') {
-        i += 1;
-        return;
-      }
-      for (;;) {
-        space();
-        const key = string();
-        if (named && seen.has(key) && !told.has(key)) {
-          faults.push(`${at}: ${JSON.stringify(key)} is repeated, and the file must name each entry once`);
-          told.add(key);
-        }
-        seen.add(key);
-        space();
-        i += 1; // the colon
-        value(path !== null && path.length < 2 ? [...path, key] : null);
-        space();
-        if (text[i++] === '}') return;
-      }
-    }
-    if (text[i] === '[') {
-      i += 1;
-      space();
-      if (text[i] === ']') {
-        i += 1;
-        return;
-      }
-      for (;;) {
-        value(null);
-        space();
-        if (text[i++] === ']') return;
-      }
-    }
     if (text[i] === '"') {
-      string();
+      pastString();
       return;
     }
-    while (i < text.length && !' \t\n\r,]}'.includes(text.charAt(i))) i += 1;
+    if (text[i] !== '{' && text[i] !== '[') {
+      while (i < text.length && !' \t\n\r,]}'.includes(text.charAt(i))) i += 1;
+      return;
+    }
+    let depth = 0;
+    do {
+      const c = text[i];
+      if (c === '"') {
+        pastString();
+        continue;
+      }
+      if (c === '{' || c === '[') depth += 1;
+      else if (c === '}' || c === ']') depth -= 1;
+      i += 1;
+    } while (depth > 0);
+  };
+  /**
+   * Reads the value at `i` where it is an object at depth two or less, the
+   * only depths a named entry's key sits at, and skips it otherwise.
+   *
+   * @param {string[]} path the keys down to the value
+   */
+  const value = (path) => {
+    space();
+    if (text[i] !== '{') {
+      skip();
+      return;
+    }
+    i += 1;
+    const at = path.length === 2 ? path.join('.') : null;
+    const named = at !== null && NAMED_ENTRIES.includes(at);
+    const seen = new Set();
+    const told = new Set();
+    space();
+    if (text[i] === '}') {
+      i += 1;
+      return;
+    }
+    for (;;) {
+      space();
+      const key = string();
+      if (named && seen.has(key) && !told.has(key)) {
+        faults.push(`${at}: ${JSON.stringify(key)} is repeated, and the file must name each entry once`);
+        told.add(key);
+      }
+      seen.add(key);
+      space();
+      i += 1; // the colon
+      if (path.length < 2) value([...path, key]);
+      else skip();
+      space();
+      if (text[i++] === '}') return;
+    }
   };
   value([]);
   return faults;
