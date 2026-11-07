@@ -3,12 +3,12 @@
  * acts on a ticket when its blocker closes, tells a PR's session when a
  * merge into main leaves the PR conflicted, tells the sessions of the merges
  * a Deploy run shipped or failed to ship, labels the tickets they close
- * `deployed: governor`, and reviews its pull requests with merge off. The
- * owner merges every pull request, so a pass here only posts a comment and
- * an approving review, and governor cannot pass a change to itself with
- * nobody looking. A pull request cannot review itself either:
- * the review runs the image deployed from main and reads its checklist from
- * main (CLAUDE.md, Branches and pull requests).
+ * `deployed: governor`, gives every session the session rules, and reviews
+ * its pull requests with merge off. The owner merges every pull request,
+ * so a pass here only posts a comment and an approving review, and governor
+ * cannot pass a change to itself with nobody looking. A pull request cannot
+ * review itself either: the review runs the image deployed from main and
+ * reads its checklist from main (CLAUDE.md, Branches and pull requests).
  */
 
 import { test } from 'node:test';
@@ -16,10 +16,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
 import { shippingLabelsOf, ticketLabelOf } from '../dispatch/labels.mjs';
+import { blockIn, rulesFile } from '../dispatch/session-rules.mjs';
 
 const own = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
-test('this repo\'s config file is valid and turns pickup, unblocked, the conflicts check, sign-off, deploy messages, deployed labels and the PR review on', () => {
+test('this repo\'s config file is valid and turns pickup, unblocked, the conflicts check, sign-off, the session rules, deploy messages, deployed labels and the PR review on', () => {
   const read = readConfig(own(CONFIG_PATH));
   assert.ok(read.ok, JSON.stringify(read));
   // A hold label keeps a ticket out of pickup and out of the spec session a
@@ -29,12 +30,23 @@ test('this repo\'s config file is valid and turns pickup, unblocked, the conflic
   assert.equal(read.config.features.unblocked, true);
   assert.equal(read.config.features.conflicts, true);
   assert.equal(read.config.features.signOff, true);
+  // Every session posts as the operator's login, so only a signed post or
+  // body edit tells governor which session made it.
+  assert.equal(read.config.features.sessionRules, true);
   assert.equal(read.config.features.prReview, true);
   // A green Deploy run tells each merge's session it shipped; with the
   // labels on, it also labels the tickets those merges close and tells
   // their spec owners and builders.
   assert.equal(read.config.features.deployMessages, true);
   assert.equal(read.config.features.deployedLabels, true);
+});
+
+test('this repo\'s CLAUDE.md carries the current session rules block, so the config check does not warn', () => {
+  // Sessions a person starts read the rules only there.
+  const read = readConfig(own(CONFIG_PATH));
+  assert.ok(read.ok, JSON.stringify(read));
+  assert.equal(rulesFile(read.config), 'CLAUDE.md');
+  assert.equal(blockIn(own(rulesFile(read.config))), 'current');
 });
 
 test('this repo\'s deploy workflow carries the two marks its deploy messages and labels read', async () => {
