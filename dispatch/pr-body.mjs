@@ -110,22 +110,18 @@ export const bodyDigest = (body) => createHash('sha256').update(body).digest('he
 
 /**
  * The newest review on the thread: the last comment the dispatcher's own
- * App posted carrying a marker, with what it named and its text without the
- * marker, which the review edits in place. A person's or another bot's
- * comment carrying a marker is not one. The review's verdict is in the
- * state table, never read from this text: a person with write access can
- * edit governor's comment too. `readSha` is null for a marker
- * that names no digest of what the model read: one from before markers
- * carried it, or a review decided in code.
+ * App posted carrying a marker, and its text without the marker, which the
+ * review edits in place. A person's or another bot's comment carrying a
+ * marker is not one. The review's verdict is in the state table, never read
+ * from this comment: a person with write access can edit governor's comment
+ * too.
  *
  * @param {ThreadRow[]} thread Oldest first.
- * @returns {{ id: number, headSha: string, bodySha: string, readSha: string | null, text: string } | null}
+ * @returns {{ id: number, text: string } | null}
  */
 export const lastReview = (thread) => {
   for (const row of [...thread].reverse()) {
-    if (!row.ours) continue;
-    const found = MARKER.exec(row.body);
-    if (found) return { id: row.id, headSha: /** @type {string} */ (found[1]), bodySha: /** @type {string} */ (found[2]), readSha: found[3] ?? null, text: row.body.replace(MARKER, '').trim() };
+    if (row.ours && MARKER.test(row.body)) return { id: row.id, text: row.body.replace(MARKER, '').trim() };
   }
   return null;
 };
