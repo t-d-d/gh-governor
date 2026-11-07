@@ -64,7 +64,7 @@ const sameRepo = (a, repo) => typeof a === 'string' && a.toLowerCase() === repo;
  * @param {string} repo lower-cased
  * @returns {{ held: string[], any: boolean }}
  */
-const branchesOf = (row, repo) => {
+export const branchesOf = (row, repo) => {
   const current = row?.external_metadata?.current_branches;
   const entries = current && typeof current === 'object' ? Object.entries(current) : [];
   const infos = gitInfos(row);

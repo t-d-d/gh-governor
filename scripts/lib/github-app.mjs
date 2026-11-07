@@ -846,6 +846,23 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         .map((row) => ({ number: row.number, title: row.title, html_url: row.html_url })),
 
     /**
+     * The open issues carrying the claim label `claim` that no open PR
+     * closes, with their labels, read from the same list as `openNaming`,
+     * once per reader: the tickets whose session may have stopped without
+     * a PR (dispatch/stopped.mjs).
+     *
+     * @param {string} claim
+     * @returns {Promise<Array<{ number: number, title: string, labels: string[] }>>}
+     */
+    openClaimed: async (claim) => {
+      const rows = await openList();
+      const closed = new Set(rows.filter((row) => row.pull).flatMap((row) => closedBy(String(row.body ?? ''), repo)));
+      return rows
+        .filter((row) => !row.pull && row.labels.includes(claim) && !closed.has(row.number))
+        .map((row) => ({ number: row.number, title: row.title, labels: row.labels }));
+    },
+
+    /**
      * An issue's comments, oldest first, one page of a hundred. `since`
      * (ISO time) narrows it to comments updated at or after that moment:
      * the endpoint pages oldest first, so without it a long thread's newest

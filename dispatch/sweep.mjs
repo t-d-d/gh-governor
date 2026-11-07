@@ -28,6 +28,7 @@ import { stampLastRun, writeHeartbeatIssue } from './heartbeat.mjs';
 import { byOf, failedLaunchesOf, failedReason, sweepDue, sweepHoursOf } from './pickup.mjs';
 import { autoOf, relayOf, startOf } from './trust.mjs';
 import { tellerFor } from './told.mjs';
+import { STOPPED_EVENT, releaseStopped } from './stopped.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 
 /** A fallback outcome that started the spec session. */
@@ -202,6 +203,13 @@ export const planSweep = async (invocation, ctx) => {
         continue;
       }
       swept.set(repo, new Date(now).toISOString());
+      // A claimed ticket whose pickup session ended without a PR, archived
+      // by hand or by an earlier sweep, loses its claim (dispatch/stopped.mjs).
+      try {
+        await releaseStopped({ repo, config, reader: await ctx.readerFor(repo), stopped: ctx.stopped(repo), log: ctx.log });
+      } catch (error) {
+        ctx.log(STOPPED_EVENT, { level: 'error', repo, outcome: 'unread', error: messageOf(error), reason: 'its claimed tickets could not be read; the next sweep looks again' });
+      }
     }
     // The tickets whose last launch started nothing inside the hour, held
     // however their ready labels came back. A read that fails refuses the
