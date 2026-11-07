@@ -107,7 +107,7 @@ import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-s
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
 import { ARCHIVE_TIMEOUT_MS, SIGNOFF_LATEST_START_MS, SIGNOFF_WINDOW_MS, accessToken, awaitReplies, heldMessage, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
-import { archived, branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
+import { branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { STOPPED_EVENT, releaseStopped, stoppedOf } from './stopped.mjs';
 import { WAIT_PROMPT, holdWait, waitLinks } from './waits.mjs';
 import { tellerFor } from './told.mjs';
@@ -176,7 +176,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   addLabels: (n: number, labels: string[]) => Promise<void>,
  *   removeLabel: (n: number, label: string) => Promise<void>,
  *   labelRemovals: (n: number) => Promise<Array<{ label: string, at: string, ours: boolean }>>,
- *   labelAdds: (n: number) => Promise<Array<{ label: string, actor: string }>>,
+ *   labelAdds: (n: number) => Promise<Array<{ label: string, at: string, actor: string }>>,
  *   repoOwnerType: () => Promise<string>,
  *   outsideCollaborators: () => Promise<string[]>,
  *   addBlocker: (n: number, blockerId: number) => Promise<void>,
@@ -724,6 +724,8 @@ const turnOf = async (event, deps, built) => {
   // turn's own work, so a slow read holds neither a launch nor the sweep.
   // It catches its own failures, so it never rejects.
   const rulesChecked = bare ? checkRules(deps, tokenFor, served) : Promise.resolve([]);
+  /** What the turn hands back for the work after it: the spec owner's teller, where the turn got that far. @type {Reach} */
+  const reach = { teller: null };
   /** @type {Awaited<ReturnType<typeof turnFor>>} */
   let turned;
   try {
@@ -742,7 +744,7 @@ const turnOf = async (event, deps, built) => {
         if (refusedAsArchived(sent)) woken.delete(session);
         return sent;
       },
-    }, finder, { served, bare, refusal, repo, beats: turnBeats, start: launches.start, budgeted });
+    }, finder, { served, bare, refusal, repo, beats: turnBeats, start: launches.start, budgeted, reach });
   } catch (error) {
     // A periodic that launched has moved its record, so no later fire
     // writes its line: it goes before the turn fails.
@@ -793,28 +795,7 @@ const turnOf = async (event, deps, built) => {
   // no PR: the release ends that claim in each signing repo turning pickup
   // on (dispatch/stopped.mjs). The sweep archived these sessions, so they
   // read as archived whatever their record says yet.
-  if (signoffs.archived.length > 0) {
-    const only = new Set(signoffs.archived);
-    const stopped = sessionStopped(deps);
-    for (const { repo: own, config: owned } of served.filter((s) => signing.includes(s.repo) && turnsOn(s.config, 'pickup'))) {
-      try {
-        const read = stopped(own);
-        await releaseStopped({
-          repo: own,
-          config: owned,
-          reader: deps.reader(await tokenFor(own), await deps.appId(), own),
-          stopped: async (session) => {
-            const state = await read(session);
-            return state === null ? null : { ...state, archived: true };
-          },
-          log: deps.log,
-          only,
-        });
-      } catch (error) {
-        deps.log(STOPPED_EVENT, { level: 'error', repo: own, outcome: 'unread', error: messageOf(error), reason: 'its claimed tickets could not be read after the sign-off sweep; the pickup sweep looks again' });
-      }
-    }
-  }
+  if (signoffs.archived.length > 0) await releaseArchived({ ...deps, secret }, served.filter((s) => signing.includes(s.repo) && turnsOn(s.config, 'pickup')), tokenFor, new Set(signoffs.archived), reach.teller);
   // Only a periodic's line names a session, so only those repos are read.
   const marked = signoffs.archived.length === 0 ? { written: [], unwritten: [] } : await writeBeats(deps, tokenFor, served, served.filter((s) => turnsOn(s.config, 'periodics')).map((s) => ({ repo: s.repo, beat: { signedOff: signoffs.archived } })));
   const heartbeatUnwritten = [...beaten.unwritten, ...marked.unwritten];
@@ -827,6 +808,58 @@ const turnOf = async (event, deps, built) => {
     ...(heartbeatUnwritten.length === 0 ? {} : { heartbeatUnwritten }),
     signoffs,
   };
+};
+
+/**
+ * The release after the sign-off sweep (dispatch/stopped.mjs): each of
+ * `served`'s claimed tickets whose newest dispatch comment names a session
+ * in `only`, which the sweep has just archived, so each reads as archived
+ * whatever its record says yet. A spec owner's message runs the CLI after
+ * the turn stored its login, so a refresh it makes goes back to the secret
+ * here, as the held message's does. Nothing here throws: a repo whose
+ * tickets cannot be read is logged, and the pickup sweep looks again.
+ *
+ * @param {Deps} deps The turn's deps, with the turn's `secret`.
+ * @param {import('./repos.mjs').Served[]} served
+ * @param {(repo: string) => Promise<string>} tokenFor
+ * @param {ReadonlySet<string>} only
+ * @param {Reach['teller']} teller
+ * @returns {Promise<void>}
+ */
+const releaseArchived = async (deps, served, tokenFor, only, teller) => {
+  if (served.length === 0) return;
+  /** @type {ReturnType<typeof readStoredLogin> | null} */
+  let stored = null;
+  try {
+    stored = readStoredLogin(await deps.secret.get());
+  } catch (error) {
+    deps.log(STOPPED_EVENT, { level: 'error', outcome: 'unread', error: messageOf(error), reason: 'the stored login could not be read before the release after the sign-off sweep; the pickup sweep looks again' });
+    return;
+  }
+  const stopped = sessionStopped(deps);
+  try {
+    for (const { repo, config } of served) {
+      try {
+        const read = stopped(repo);
+        await releaseStopped({
+          repo,
+          config,
+          reader: deps.reader(await tokenFor(repo), await deps.appId(), repo),
+          stopped: async (session) => {
+            const state = await read(session);
+            return state === null ? null : { ...state, archived: true };
+          },
+          log: deps.log,
+          only,
+          ...(teller === null ? {} : { tell: teller(repo) }),
+        });
+      } catch (error) {
+        deps.log(STOPPED_EVENT, { level: 'error', repo, outcome: 'unread', error: messageOf(error), reason: 'its claimed tickets could not be read after the sign-off sweep; the pickup sweep looks again' });
+      }
+    }
+  } finally {
+    await storeIfRefreshed(deps, stored.credentials, stored.account);
+  }
 };
 
 /**
@@ -909,6 +942,8 @@ const unrelayed = (fire, relay) => {
 };
 
 /**
+ * @typedef {{ teller: ((repo: string) => import('./told.mjs').Tell) | null }} Reach
+ *   What a turn hands back to `run` for the work after it.
  * @typedef {{ repo: string, beat: import('./heartbeat.mjs').Beat }} RepoBeat
  *   What a turn changes in one repo's governor heartbeat block.
  */
@@ -1178,15 +1213,30 @@ const loginToken = (deps, what) => {
  * @returns {import('./periodics.mjs').Open}
  */
 const runOpen = (deps) => {
-  const tokenOf = loginToken(deps, 'read the last run\'s session');
+  const read = sessionRead(deps, 'read the last run\'s session', 'the last run\'s session');
+  return async (session) => {
+    const state = stoppedOf(await read(session), '');
+    return state !== null && !state.archived;
+  };
+};
+
+/**
+ * A session's own record, under the login's token, refreshed at most once
+ * for the reader this builds: the record as the API answers it, or null
+ * for a session it no longer has. A name that is no session link throws,
+ * saying `what` it was.
+ *
+ * @param {Deps} deps
+ * @param {string} why what the token is for
+ * @param {string} what what the session is, for a name that is no link
+ * @returns {(session: string) => Promise<unknown>}
+ */
+const sessionRead = (deps, why, what) => {
+  const tokenOf = loginToken(deps, why);
   return async (session) => {
     const id = /^session_([A-Za-z0-9]+)$/.exec(sessionId(session))?.[1];
-    if (id === undefined) throw new Error(`the last run's session is not a session link: ${session}`);
-    const row = sessionRecord(await deps.sessions.get(`cse_${id}`, await tokenOf()));
-    if (row === null) return false;
-    const fields = /** @type {Record<string, unknown>} */ (typeof row === 'object' ? row : {});
-    if (typeof (fields.session_status ?? fields.status) !== 'string') throw new Error(`the last run's session record carries no status: it ${typeof row === 'object' ? `has ${Object.keys(fields).join(', ')}` : `is ${typeof row}`}`);
-    return !archived(row);
+    if (id === undefined) throw new Error(`${what} is not a session link: ${session}`);
+    return sessionRecord(await deps.sessions.get(`cse_${id}`, await tokenOf()));
   };
 };
 
@@ -1202,12 +1252,8 @@ const runOpen = (deps) => {
  * @returns {(repo: string) => (session: string) => Promise<import('./stopped.mjs').Stopped>}
  */
 const sessionStopped = (deps) => {
-  const tokenOf = loginToken(deps, 'read a stopped pickup session');
-  return (repo) => async (session) => {
-    const id = /^session_([A-Za-z0-9]+)$/.exec(sessionId(session))?.[1];
-    if (id === undefined) throw new Error(`the dispatch comment's session is not a session link: ${session}`);
-    return stoppedOf(sessionRecord(await deps.sessions.get(`cse_${id}`, await tokenOf())), repo);
-  };
+  const read = sessionRead(deps, 'read a stopped pickup session', 'the dispatch comment\'s session');
+  return (repo) => async (session) => stoppedOf(await read(session), repo);
 };
 
 /**
@@ -1304,15 +1350,17 @@ const sessionStopped = (deps) => {
  * @param {import('./webhook/fire.mjs').Fire} invocation
  * @param {Deps} deps
  * @param {(token: string) => import('../scripts/lib/session-branch.mjs').FindOnBranch} finder
- * @param {{ served: import('./repos.mjs').Served[], bare: boolean, refusal: string | null, repo: string | undefined, beats: RepoBeat[], start: import('./launcher.mjs').Launcher['start'], budgeted: import('./launcher.mjs').Budgeted }} scope
+ * @param {{ served: import('./repos.mjs').Served[], bare: boolean, refusal: string | null, repo: string | undefined, beats: RepoBeat[], start: import('./launcher.mjs').Launcher['start'], budgeted: import('./launcher.mjs').Budgeted, reach?: Reach }} scope
  *   `repo`: the fire's, none for the bare schedule fire. `beats`: where the
  *   bare fire adds what it changes in each repo's governor heartbeat block,
  *   for `run` to write, whether the turn returns or throws. `start`: the
  *   turn's launcher, through which every session it starts goes.
  *   `budgeted`: the turn's launch budget, which message sends and the PR
- *   review's model run share with the launcher.
+ *   review's model run share with the launcher. `reach`: where the turn
+ *   puts the spec owner's teller for a served repo, for the release after
+ *   the sign-off sweep.
  */
-const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, beats, start, budgeted }) => {
+const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, beats, start, budgeted, reach }) => {
   if (invocation.kind === 'probe') throw new Error('a probe is not a turn: run answers it');
   /**
    * The fire's repo. The bare schedule fire names none, and reads
@@ -1429,6 +1477,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     }
     return other;
   };
+
+  if (reach !== undefined) reach.teller = (own) => tellerFor({ readerFor, configOf, delivery, log: deps.log }, own, GITHUB_SOURCE);
 
   /** The login's token for the author search, read at most once a turn. */
   const authorToken = loginToken(deps, 'search the sessions for a post\'s author');

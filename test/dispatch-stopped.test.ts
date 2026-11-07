@@ -24,13 +24,15 @@ const marker = (sessionUrl: string, id = 1): Comment => ({ id, body: dispatchMar
 const post = (id: number, body: string, ours = false): Comment => ({ id, body, created_at: AT, ours });
 
 /** A reader over open claimed tickets and their threads, recording what it is asked to change. */
-const fakeReader = (tickets: Record<number, { labels: string[], comments: Comment[] }>, { failRemove = [] as string[], failComment = false } = {}) => {
+const fakeReader = (tickets: Record<number, { labels: string[], comments: Comment[], adds?: Array<{ label: string, at: string }> }>, { failRemove = [] as string[], failComment = false } = {}) => {
   const calls: string[] = [];
   return {
     calls,
     reader: {
       openClaimed: async (claim: string) => Object.entries(tickets).filter(([, t]) => t.labels.includes(claim)).map(([n, t]) => ({ number: Number(n), title: `Ticket ${n}`, labels: [...t.labels] })),
       allComments: async (n: number) => tickets[n]?.comments ?? [],
+      // Pickup claimed each ticket just before its dispatch comment, unless a test says otherwise.
+      labelAdds: async (n: number) => tickets[n]?.adds ?? [{ label: 'claimed', at: '2026-11-01T09:59:00.000Z' }],
       removeLabel: async (n: number, label: string) => {
         if (failRemove.includes(label)) throw new Error('GitHub answered 502');
         calls.push(`remove #${n} ${label}`);
@@ -78,6 +80,23 @@ describe('releaseStopped', () => {
     assert.match(comment, /session_01GONE/);
     assert.match(comment, /https:\/\/github\.com\/acme\/factory\/issues\/7#issuecomment-2/);
     assert.match(comment, /claude\/issue-7/);
+  });
+
+  test('the spec owner hears the comment, which the relay sends to nobody', async () => {
+    const tickets = { 7: { labels: ['claimed'], comments: [marker(GONE)] } };
+    const { reader } = fakeReader(tickets);
+    const told: Array<[number, string]> = [];
+    await releaseStopped({ repo: FACTORY, config: config(), reader, stopped: sessions({ session_01GONE: { archived: true } }).stopped, log, tell: async (issue: number, comment: string) => { told.push([issue, comment]); } });
+    assert.deepEqual(told.map(([n]) => n), [7]);
+    assert.equal(told[0]?.[1], tickets[7].comments.at(-1)?.body);
+  });
+
+  test('a claim added after the dispatch comment is not the stopped session\'s, and is left alone', async () => {
+    const tickets = { 7: { labels: ['claimed'], comments: [marker(GONE)], adds: [{ label: 'claimed', at: '2026-11-01T09:59:00.000Z' }, { label: 'claimed', at: '2026-11-03T08:00:00.000Z' }] } };
+    const { reader, calls } = fakeReader(tickets);
+    const done = await releaseStopped({ repo: FACTORY, config: config(), reader, stopped: sessions({ session_01GONE: { archived: true } }).stopped, log });
+    assert.deepEqual(calls, []);
+    assert.deepEqual(done.released, []);
   });
 
   test('a session the API no longer has counts as ended', async () => {

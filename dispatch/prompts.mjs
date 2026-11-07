@@ -32,7 +32,9 @@ export const PROMPTS = Object.freeze({
   // A pickup session's opening prompt, after the line naming its issue (scripts/lib/dispatch-prompt.mjs).
   // The check comes first: a ticket the code already settles, or one far
   // larger than it reads, gets a comment and no build. It keeps its claim, so
-  // pickup does not start it again, and a person decides.
+  // pickup does not start it again; once the session is archived, governor
+  // ends the claim and leaves the ticket for a person (dispatch/stopped.mjs).
+  // A later session reads what the earlier ones left on the ticket.
   // The builder never writes the body: the body is what the PR is reviewed
   // against, and Claude Code ends any body a session writes with its own
   // link, which would take the ticket from its spec owner.
@@ -41,7 +43,7 @@ export const PROMPTS = Object.freeze({
       'Implement GitHub issue #{issue} in {repo} through to a reviewable PR.',
       'The dispatcher claimed #{issue} for this session: it is `{claim}` for you, so proceed on it.',
       'If earlier sessions worked on #{issue}, read the comments they left on it first, and carry on from any branch they pushed rather than start again.',
-      'Before you build, read #{issue} against the code. If the code already does what it asks, or the work is far larger than the ticket reads, comment on #{issue} saying which and what you found, and stop without building. Leave `{claim}` on #{issue}, so pickup does not start it again and a person decides.',
+      'Before you build, read #{issue} against the code. If the code already does what it asks, or the work is far larger than the ticket reads, comment on #{issue} saying which and what you found, and stop without building. Leave `{claim}` on #{issue}, so pickup does not start it again: once this session ends, governor takes the claim off and leaves the ticket for a person to decide.',
       "Never edit #{issue}'s body: its spec belongs to its owner, the session whose link ends it, or else whoever wrote it. Where the spec looks wrong or out of date, say so in a comment on #{issue} and in your PR description, and build against what the code needs.",
       'Unattended session: push and raise the PR without asking, `Closes #{issue}`.',
     ].join('\n'),

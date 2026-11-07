@@ -953,7 +953,7 @@ describe('githubReader', () => {
     assert.equal((await reader.ticket(13)).association, 'NONE');
   });
 
-  test('labelAdds pages through an issue\'s events for its label additions, each with the login that added it, whether a bot did, and whether the reader\'s own App did', async () => {
+  test('labelAdds pages through an issue\'s events for its label additions, each with when, the login that added it, whether a bot did, and whether the reader\'s own App did', async () => {
     const { fetch, calls } = fakeFetch({
       'https://api.github.com/repos/acme/factory/issues/10/events': (_init: RequestInit | undefined, url: string) => {
         const page = Number(new URL(url).searchParams.get('page'));
@@ -969,9 +969,9 @@ describe('githubReader', () => {
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', appId: 5075844, fetch });
     assert.deepEqual(await reader.labelAdds(10), [
-      { label: 'mode: afk', actor: 'stranger', bot: false, ours: false },
-      { label: 'workflow: ready for development', actor: 'governor-app[bot]', bot: true, ours: true },
-      { label: 'mode: afk', actor: 'github-actions[bot]', bot: true, ours: false },
+      { label: 'mode: afk', at: 'b', actor: 'stranger', bot: false, ours: false },
+      { label: 'workflow: ready for development', at: 'c', actor: 'governor-app[bot]', bot: true, ours: true },
+      { label: 'mode: afk', at: 'd', actor: 'github-actions[bot]', bot: true, ours: false },
     ]);
     assert.equal(calls.length, 2);
     // A reader that does not know its App owns no add.

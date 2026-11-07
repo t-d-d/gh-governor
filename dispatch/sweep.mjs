@@ -206,7 +206,7 @@ export const planSweep = async (invocation, ctx) => {
       // A claimed ticket whose pickup session ended without a PR, archived
       // by hand or by an earlier sweep, loses its claim (dispatch/stopped.mjs).
       try {
-        await releaseStopped({ repo, config, reader: await ctx.readerFor(repo), stopped: ctx.stopped(repo), log: ctx.log });
+        await releaseStopped({ repo, config, reader: await ctx.readerFor(repo), stopped: ctx.stopped(repo), log: ctx.log, tell: tellerFor(ctx, repo, GITHUB_SOURCE) });
       } catch (error) {
         ctx.log(STOPPED_EVENT, { level: 'error', repo, outcome: 'unread', error: messageOf(error), reason: 'its claimed tickets could not be read; the next sweep looks again' });
       }

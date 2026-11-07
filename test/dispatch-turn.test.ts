@@ -6743,6 +6743,9 @@ describe('run — sessions that signed off', () => {
       ...base(token),
       openClaimed: async () => [{ number: 31, title: 'T31', labels: ['workflow: under development', 'mode: afk'] }],
       allComments: async (n: number) => (n === 31 ? [{ id: 1, body: dispatchMarker({ at: '2026-10-01T00:00:00.000Z', sessionUrl: `https://claude.ai/code/${session}` }), created_at: '2026-10-01T00:00:00.000Z', ours: true }] : []),
+      labelAdds: async () => [{ label: 'workflow: under development', at: '2026-09-30T23:59:00.000Z', actor: 'governor-app[bot]' }],
+      // The ticket's body ends with its spec owner's link.
+      ticket: async (n: number) => ({ number: n, id: 9000 + n, title: `T${n}`, body: 'The spec.\n\nhttps://claude.ai/code/session_01SPEC', state: 'open', labels: ['workflow: under development', 'mode: afk'], pull: false, association: 'MEMBER' }),
     });
   };
 
@@ -6757,6 +6760,10 @@ describe('run — sessions that signed off', () => {
     assert.deepEqual(stopped.map((c) => c.issue), [31]);
     assert.ok(h.calls.includes('label #31 -mode: afk') && h.calls.includes('label #31 -workflow: under development'), JSON.stringify(h.calls));
     assert.ok(h.calls.indexOf('archive session_01DONE') < h.calls.indexOf('label #31 -workflow: under development'), 'after the archive');
+    const owner = h.messages.filter((m) => m.session.endsWith('session_01SPEC'));
+    assert.equal(owner.length, 1, 'the spec owner hears the comment, which the relay sends to nobody');
+    assert.match(owner[0]!.text, /without a pull request/);
+    assert.doesNotMatch(owner[0]!.text, /governor:stopped/);
   });
 
   test('a claimed ticket whose session the sweep did not archive is left alone after the sign-off sweep', async () => {
@@ -6775,6 +6782,7 @@ describe('run — sessions that signed off', () => {
     claimedBy(h, 'session_01OLD');
     await run({ kind: 'schedule' }, h.deps as never);
     assert.deepEqual(h.comments.filter((c) => c.body.startsWith(`${STOPPED_MARKER}session_01OLD -->`)).map((c) => c.issue), [31]);
+    assert.equal(h.messages.filter((m) => m.session.endsWith('session_01SPEC')).length, 1, 'the spec owner hears the comment');
     assert.ok(h.calls.includes('label #31 -workflow: under development'), JSON.stringify(h.calls));
   });
 

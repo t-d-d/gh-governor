@@ -22,6 +22,11 @@
  * bare schedule fire's pickup sweep looks at every claimed ticket of a repo
  * it sweeps (dispatch/sweep.mjs), which finds a session archived by hand.
  *
+ * The comment is a record for people, which the relay sends to nobody, so
+ * the turn tells the ticket's spec owner the comment itself
+ * (dispatch/told.mjs). A claim added after the dispatch comment, by a person
+ * or by a launch whose own dispatch comment never posted, is left alone.
+ *
  * The comment is the record: governor reads the thread for its marker
  * before it writes another, so it posts once per stopped session. It goes
  * before the labels, so a comment that fails takes nothing off and the next
@@ -52,6 +57,7 @@ export const STOPPED_EVENT = 'dispatch-stopped';
  *   allComments: (n: number) => Promise<Array<{ id: number, body: string, created_at: string, ours: boolean }>>,
  *   removeLabel: (n: number, label: string) => Promise<void>,
  *   comment: (n: number, body: string) => Promise<void>,
+ *   labelAdds: (n: number) => Promise<Array<{ label: string, at: string }>>,
  * }} StoppedReader
  */
 
@@ -112,10 +118,13 @@ const signedBy = (session) => new RegExp(`https://claude\\.ai/code/${session}(?!
  *   stopped: (session: string) => Promise<Stopped>,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  *   only?: ReadonlySet<string>,
+ *   tell?: (issue: number, comment: string) => Promise<void>,
  * }} args
+ *   `tell`: the ticket's spec owner hears the comment, which the relay
+ *   sends to nobody (dispatch/told.mjs). It never throws.
  * @returns {Promise<{ released: Array<{ issue: number, session: string }>, unread: Array<{ repo: string, issue: number, error: string }> }>}
  */
-export const releaseStopped = async ({ repo, config, reader, stopped, log, only }) => {
+export const releaseStopped = async ({ repo, config, reader, stopped, log, only, tell }) => {
   /** @type {Array<{ issue: number, session: string }>} */
   const released = [];
   /** @type {Array<{ repo: string, issue: number, error: string }>} */
@@ -126,8 +135,9 @@ export const releaseStopped = async ({ repo, config, reader, stopped, log, only 
     const issue = ticket.number;
     try {
       const comments = await reader.allComments(issue);
-      const dispatched = lastDispatch(comments)?.sessionUrl ?? null;
-      if (dispatched === null) {
+      const newest = lastDispatch(comments);
+      const dispatched = newest?.sessionUrl ?? null;
+      if (newest === null || dispatched === null) {
         if (only === undefined) log(STOPPED_EVENT, { level: 'info', repo, issue, outcome: 'left', reason: 'no dispatch comment of governor\'s names its session' });
         continue;
       }
@@ -143,16 +153,27 @@ export const releaseStopped = async ({ repo, config, reader, stopped, log, only 
       // The ready labels first and the claim last: a ready label that
       // stays then keeps the claim on, so pickup cannot start the ticket
       // before the next sweep finishes the release.
+      // A claim added after the dispatch comment is not that session's: a
+      // person took the ticket by hand, or a later launch's comment never
+      // posted. Pickup claims before it launches, so the session's own
+      // claim is older than its dispatch comment.
+      const reclaimed = (await reader.labelAdds(issue)).filter((a) => a.label === claim).some((a) => Date.parse(a.at) > Date.parse(newest.at));
+      if (reclaimed) {
+        log(STOPPED_EVENT, { level: 'info', repo, issue, session, outcome: 'left', reason: 'its claim was added after the dispatch comment that names the session' });
+        continue;
+      }
       const takeOff = [...ready.filter((l) => l !== claim && ticket.labels.includes(l)), claim];
       if (!told) {
         const last = comments.filter((c) => !c.ours && signedBy(session).test(c.body)).at(-1);
-        await reader.comment(issue, stoppedComment({
+        const text = stoppedComment({
           session,
           removed: [claim, ...takeOff.slice(0, -1)],
           ready,
           last: last === undefined ? null : `https://github.com/${repo}/issues/${issue}#issuecomment-${last.id}`,
           branches: state?.branches ?? [],
-        }));
+        });
+        await reader.comment(issue, text);
+        if (tell !== undefined) await tell(issue, text);
       }
       /** @type {Array<{ label: string, error: string }>} */
       const stayed = [];
