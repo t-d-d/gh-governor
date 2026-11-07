@@ -91,7 +91,7 @@ describe('the receiver: a ticket\'s body edit reaches its roles', () => {
     const [ticket, ...more] = ofKind(fires, 'ticket');
     assert.deepEqual(more, []);
     assert.deepEqual([ticket!.issue, ticket!.event, ticket!.state, ticket!.owner], [7, 'edit', 'open', SPEC]);
-    assert.match(ticket!.text, /body of issue #7/i);
+    assert.match(ticket!.text, /body of \[#7\]\(https:\/\/github.com\/acme\/factory\/issues\/7\) A ticket was edited by/);
     assert.match(ticket!.text, /t-d-d/);
     assert.deepEqual(parseFire(ticket), ticket);
   });
@@ -167,7 +167,7 @@ const context = () => {
   return { ctx: ctx as never, sent };
 };
 
-const TEXT = 'The body of issue #7 was edited.\n\nIssue #7: A ticket (https://github.com/acme/factory/issues/7), edited by t-d-d';
+const TEXT = 'The body of [#7](https://github.com/acme/factory/issues/7) A ticket was edited by t-d-d.';
 const fire = (over: Record<string, unknown> = {}) => ({ kind: 'ticket', repo: REPO, issue: 7, text: TEXT, event: 'edit', state: 'open', labels: [CLAIM], owner: SPEC, authors: ['OWNER'], ...over }) as never;
 
 describe('planTicket: a body edit reaches the spec owner and the builder', () => {
@@ -201,6 +201,7 @@ describe('planTicket: a body edit reaches the spec owner and the builder', () =>
     await planTicket(fire({ labels: ['mode: afk'] }), ctx);
     assert.deepEqual(sent.map((s) => s.session), [SPEC]);
     assert.match(sent[0]!.text, /may be your own/);
+    assert.match(sent[0]!.text, /\n\nYou are its spec owner\.$/);
   });
 
   test('a spec owner that is also the builder hears it once, told both', async () => {

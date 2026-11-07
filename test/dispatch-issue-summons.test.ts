@@ -177,7 +177,7 @@ describe('a summons on an issue starts nothing beside a live spec owner or build
     const plan = await planDispatch(commented({ labels: [CLAIM] }) as never, ctx) as any;
     assert.deepEqual(plan.launches, []);
     assert.deepEqual(to(sent), [SPEC, BUILDER]);
-    assert.match(sent[1]!.text, /You are its builder\./);
+    assert.match(sent[1]!.text, /\nYou build it; \[its spec owner\]\(https:\/\/claude.ai\/code\/session_01SPECOWNER\) writes its body\.\nNothing is asked of you\.$/);
   });
 
   test('on a claimed ticket a person wrote, a live builder alone keeps a session from starting', async () => {
@@ -201,7 +201,7 @@ describe('a summons on an issue starts nothing beside a live spec owner or build
     const plan = await planDispatch(commented({ labels: [CLAIM] }) as never, ctx) as any;
     assert.deepEqual(plan.launches, []);
     assert.deepEqual(to(sent), [SPEC]);
-    assert.match(sent[0]!.text, /You are its spec owner and its builder\./);
+    assert.match(sent[0]!.text, /\nYou are its spec owner and you build it\.\nNothing is asked of you\.$/);
     assert.deepEqual(sent[0]!.opts.owns, [12]);
   });
 
@@ -228,13 +228,16 @@ describe('a summons on an issue under a repo whose subscribe messages are off', 
     assert.deepEqual(plan.launches, []);
     assert.deepEqual(to(sent), [SPEC]);
     assert.match(sent[0]!.text, /does this need the empty case too\?/);
-    assert.doesNotMatch(sent[0]!.text, /reaches you as any remark/);
+    assert.doesNotMatch(sent[0]!.text, /reaches you as any comment/);
+    assert.match(sent[0]!.text, /\nYou are its spec owner\.\nYou own its spec\. If the comment calls for a change you agree with, edit the body\./);
+    assert.doesNotMatch(sent[0]!.text, /Nothing is asked of you/);
   });
 
   test('with them on, the notice does not repeat the remark', async () => {
     const { ctx, sent } = context();
     await planDispatch(commented() as never, ctx);
     assert.doesNotMatch(sent[0]!.text, /does this need the empty case too\?/);
+    assert.match(sent[0]!.text, /\nYou are its spec owner\.\nNothing is asked of you\.$/);
   });
 });
 

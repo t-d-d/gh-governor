@@ -28,7 +28,8 @@ const SPEC = 'https://claude.ai/code/session_01SPECOWNER';
 const BUILDER = 'https://claude.ai/code/session_01BUILDER';
 const PR_OWNER = 'https://claude.ai/code/session_01PROWNER';
 const MARKER = dispatchMarker({ at: new Date(NOW - 60_000).toISOString(), sessionUrl: BUILDER });
-const TEXT = 'A comment on an issue you subscribe to.\n\nIssue #7: A ticket (https://github.com/acme/factory/issues/7)';
+const TEXT = 'A comment on an issue.\n\n[#7](https://github.com/acme/factory/issues/7) A ticket';
+const SPEC_DUTY = 'You own its spec. If the comment calls for a change you agree with, edit the body. If you disagree, reply on the issue saying why.';
 
 type Sent = { session: string, text: string, opts: Record<string, unknown> };
 
@@ -81,11 +82,11 @@ const context = ({ comments = [{ body: MARKER }] as Array<{ body: string }>, clo
 const to = (sent: Sent[]) => sent.map((s) => s.session);
 
 describe('planTicket: a ticket fire reaches the spec owner and the builders', () => {
-  test('an unclaimed ticket: the spec owner is sent the text as before, and nothing is read from GitHub', async () => {
+  test('an unclaimed ticket: the spec owner is sent the text with its role, and nothing is read from GitHub', async () => {
     const { ctx, sent, reads } = context();
     const plan = await planTicket(fire({ labels: ['mode: afk'] }), ctx) as any;
     assert.deepEqual(to(sent), [SPEC]);
-    assert.equal(sent[0]!.text, TEXT);
+    assert.equal(sent[0]!.text, `${TEXT}\n\nYou are its spec owner.\n${SPEC_DUTY}`);
     assert.deepEqual(sent[0]!.opts.on, [7]);
     assert.deepEqual(reads, []);
     assert.equal(plan.answer.kind, 'ticket');
@@ -98,16 +99,15 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     assert.deepEqual([to(sent), reads], [[], []]);
   });
 
-  test('a person\'s comment on a claimed ticket reaches its builder and its spec owner, each told both roles and its own', async () => {
+  test('a person\'s comment on a claimed ticket reaches its builder and its spec owner, each told its own role and linked to the other\'s session', async () => {
     const { ctx, sent, stored } = context();
     await planTicket(fire(), ctx);
     assert.deepEqual(to(sent), [SPEC, BUILDER]);
-    for (const { text } of sent) {
-      assert.ok(text.startsWith(TEXT), text);
-      assert.ok(text.includes(SPEC) && text.includes(BUILDER), text);
-    }
-    assert.match(sent[0]!.text, /You are its spec owner\./);
-    assert.match(sent[1]!.text, /You are its builder\./);
+    for (const { text } of sent) assert.ok(text.startsWith(TEXT), text);
+    assert.ok(sent[0]!.text.includes(`\n\nYou are its spec owner; [its builder](${BUILDER}) builds it.\n${SPEC_DUTY}`), sent[0]!.text);
+    assert.doesNotMatch(sent[0]!.text, /As its builder/);
+    assert.ok(sent[1]!.text.includes(`\n\nYou build it; [its spec owner](${SPEC}) writes its body.\nAs its builder you build it`), sent[1]!.text);
+    assert.doesNotMatch(sent[1]!.text, /You own its spec/);
     assert.match(sent[1]!.text, /do not edit its body/);
     assert.equal(stored.length, 1);
   });
@@ -116,7 +116,7 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     const { ctx, sent } = context();
     await planTicket(fire({ poster: BUILDER }), ctx);
     assert.deepEqual(to(sent), [SPEC]);
-    assert.match(sent[0]!.text, new RegExp(`builder is ${BUILDER}`));
+    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${BUILDER}) builds it.`), sent[0]!.text);
   });
 
   test('the spec owner\'s own signed comment reaches the builder, and not the spec owner', async () => {
@@ -129,14 +129,14 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     const { ctx, sent } = context();
     await planTicket(fire({ owner: undefined }), ctx);
     assert.deepEqual(to(sent), [BUILDER]);
-    assert.match(sent[0]!.text, /no session link ends its body/);
+    assert.match(sent[0]!.text, /\n\nYou build it; a person owns its body\./);
   });
 
   test('one session holding both roles, a spec session building its own ticket: one message, saying so', async () => {
     const { ctx, sent } = context({ comments: [] });
     await planTicket(fire(), ctx);
     assert.deepEqual(to(sent), [SPEC]);
-    assert.match(sent[0]!.text, /You are its spec owner and its builder\./);
+    assert.match(sent[0]!.text, /\n\nYou are its spec owner and you build it\.\nYou own its spec\..*\nAs its builder you build it/);
   });
 
   test('a close or a reopen of a claimed ticket reaches both', async () => {
@@ -145,6 +145,8 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
       await planTicket(fire({ event: 'close', state, ...(closing ? { closing } : {}) }), ctx);
       assert.deepEqual(to(sent), [SPEC, BUILDER], state);
       for (const s of sent) assert.equal(s.opts.closing, closing === true, state);
+      for (const s of sent) assert.match(s.text, /\nNothing is asked of you\.$/, state);
+      for (const s of sent) assert.doesNotMatch(s.text, /You own its spec|As its builder/, state);
     }
   });
 
@@ -152,7 +154,7 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     const { ctx, sent } = context({ merged: 60, owners: { 60: PR_OWNER } });
     await planTicket(fire({ event: 'close', state: 'closed', closing: true }), ctx);
     assert.deepEqual(to(sent), [SPEC]);
-    assert.match(sent[0]!.text, new RegExp(`builder is ${PR_OWNER}`));
+    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${PR_OWNER}) builds it.\nNothing is asked of you.`), sent[0]!.text);
   });
 
   test('a comment on a ticket an open PR closes reaches that PR\'s owner, who hands it on to its branch\'s session if archived', async () => {
@@ -171,7 +173,8 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     await planTicket(fire({ state: 'closed', closing: true, text: 'Deployed to prod by Deliver.' }), ctx);
     assert.deepEqual(to(sent), [SPEC, PR_OWNER]);
     assert.deepEqual(sent.map((m) => m.opts.closing), [true, true]);
-    assert.match(sent[1]!.text, /You are its builder/);
+    assert.ok(sent[1]!.text.includes(`You build it; [its spec owner](${SPEC}) writes its body.`), sent[1]!.text);
+    assert.doesNotMatch(sent[1]!.text, /As its builder|Nothing is asked/);
   });
 
   test('a claimed ticket with neither role found: nobody is sent anything', async () => {
@@ -205,7 +208,7 @@ describe('planTicket: a ticket fire reaches the spec owner and the builders', ()
     await planTicket(fire(), ctx);
     assert.deepEqual(to(sent), [SPEC]);
     assert.deepEqual(sent[0]!.opts.owns, [60]);
-    assert.match(sent[0]!.text, /You are its spec owner and its builder\./);
+    assert.match(sent[0]!.text, /\n\nYou are its spec owner and you build it\.\nYou own its spec\..*\nAs its builder you build it/);
   });
 
   test('a body edit on a ticket a merged PR closed reaches that PR\'s builder, told its PR has merged', async () => {

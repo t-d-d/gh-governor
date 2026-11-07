@@ -20,8 +20,8 @@ describe('promptFor', () => {
 
   // The dispatcher claims the ticket before the launch, so the
   // session finds it under development and must proceed, not stop.
-  test('tells the session the dispatcher claimed the issue for it', () => {
-    assert.match(promptFor(700, TITLE, 'o/r', 'workflow: under development'), /dispatcher claimed #700 for this session/);
+  test('tells the session governor claimed the issue for it', () => {
+    assert.match(promptFor(700, TITLE, 'o/r', 'workflow: under development'), /Governor claimed #700 for this session/);
   });
 
   test('names the factory\'s claim label when the repo gives none', () => {

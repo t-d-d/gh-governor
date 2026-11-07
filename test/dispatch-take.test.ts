@@ -192,6 +192,7 @@ describe('takeText and correctionText', () => {
   test('each correction says what happened, to comment next time, and carries the rules', () => {
     const owned = correctionText(7, 'edit-owned', OWNER);
     assert.match(owned, /does not own|you do not own/);
+    assert.ok(owned.includes(`[its owner](${OWNER}) does, and is live`), owned);
     assert.match(owned, /link was replaced by the owner's|put the owner's link back/);
     assert.match(correctionText(7, 'edit-builder', OWNER), /builder does not edit/);
     assert.match(correctionText(7, 'edit-builder', null), /removed your link/);
@@ -276,7 +277,7 @@ const context = ({
   return { ctx: ctx as never, sent, writes, logged, told };
 };
 
-const TEXT = 'The body of issue #7 was edited.\n\nIssue #7: A ticket (https://github.com/acme/factory/issues/7), edited by t-d-d';
+const TEXT = 'The body of [#7](https://github.com/acme/factory/issues/7) A ticket was edited by t-d-d.';
 const editFire = (over: Record<string, unknown> = {}) => ({ kind: 'ticket', repo: REPO, issue: 7, text: TEXT, event: 'edit', state: 'open', labels: [CLAIM], owner: EDITOR, authors: ['OWNER'], moved: { old: 'owned', from: OWNER }, ...over }) as never;
 const to = (sent: Sent[]) => sent.map((s) => s.session);
 
@@ -287,8 +288,8 @@ describe('planTicket: a body edit that moved the owner link, under sessionRules'
     // #624: the old owner first, then the editor's correction, then the builder.
     assert.deepEqual(to(sent), [OWNER, EDITOR, BUILDER]);
     assert.equal(sent[1]!.text, correctionText(7, 'edit-owned', OWNER), 'the editor hears only its correction, not the notice');
-    assert.match(sent[0]!.text, /body of issue #7 was edited/);
-    assert.match(sent[2]!.text, /body of issue #7 was edited/);
+    assert.match(sent[0]!.text, /body of \[#7\]\(https:\/\/github.com\/acme\/factory\/issues\/7\) A ticket was edited/);
+    assert.match(sent[2]!.text, /body of \[#7\]\(https:\/\/github.com\/acme\/factory\/issues\/7\) A ticket was edited/);
   });
 
   test('a live owner keeps its issue: its link is written back, the rest of the edit stays, and the editor is told once', async () => {
@@ -410,7 +411,7 @@ describe('planTicket: a body edit that moved the owner link, under sessionRules'
   });
 
   // #624: the builders are told once the take is settled, naming the right spec owner.
-  const rolesLine = (spec: string) => `Roles on #7: its spec owner is ${spec}; its builder is ${BUILDER}.`;
+  const rolesLine = (spec: string) => `You build it; [its spec owner](${spec}) writes its body.`;
   const toBuilder = (sent: Sent[]) => sent.filter((s) => s.session === BUILDER);
 
   test('a take on a claimed ticket names the editor as the spec owner in the builder\'s roles line, sent once the take is settled', async () => {

@@ -79,6 +79,7 @@
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
+import { SPEC_OWNER_DUTY, rolesText } from './roles-text.mjs';
 import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets, postWords, wordsOf, POST_WORDS, POST_WORDS_CHARS } from './fire.mjs';
 import { closingNumbers } from './closing.mjs';
 import { REVIEW_MARKER, postedByApp } from './review-comment.mjs';
@@ -122,19 +123,13 @@ const SUBSCRIBED_PR = 'You subscribe to this pull request; it is not yours. Deci
 
 const SUBSCRIBED_ISSUE = 'You subscribe to this issue. Decide what it needs from you: a reply on the issue, a change to work of yours it bears on, or nothing.';
 
-/**
- * What a ticket's spec owner is told where a comment calls on it: the
- * spec is its to judge, and a comment it disagrees with gets a reply, not
- * an edit. The role lines (dispatch/roles.mjs) and governor's own comment's
- * note (dispatch/told.mjs) say the same.
- */
-export const SPEC_OWNER_DUTY = 'You own its spec. If the comment calls for a change you agree with, edit the body. If you disagree, reply on the issue saying why.';
+export { SPEC_OWNER_DUTY };
 
-/** The line naming the spec owner's role, to the session an issue's body names. */
-const SPEC_OWNER = 'You are its spec owner.';
+/** The role line of the session an issue's body names, which holds no other role the receiver can see. */
+const SPEC_OWNER = rolesText({ issue: 0, owner: null, builders: [] }, { role: 'spec owner', merged: false });
 
 /** What an issue's spec owner is told of a comment on it, open or closed. @param {any} issue */
-const ownedIssueComment = (issue) => (issue?.state === 'closed' ? `${SPEC_OWNER} Nothing is asked of you.` : `${SPEC_OWNER}\n${SPEC_OWNER_DUTY}`);
+const ownedIssueComment = (issue) => rolesText({ issue: issue?.number, owner: null, builders: [] }, { role: 'spec owner', merged: false }, issue?.state === 'closed' ? { notice: true } : { duty: true });
 
 /**
  * The repo's default branch, off a delivery's `repository`, or null where
@@ -683,7 +678,7 @@ const issueEventPrompt = ({ action, issue, label, sender }, target, role = 'subs
     }[String(action)]} by ${sender?.login}`;
   return [
     `${refLine(issue)} ${what}.`,
-    ...issueClose(role, SUBSCRIBED_ISSUE, `${SPEC_OWNER} Nothing is asked of you.`),
+    ...issueClose(role, SUBSCRIBED_ISSUE, rolesText({ issue: issue?.number, owner: null, builders: [] }, { role: 'spec owner', merged: false }, { notice: true })),
   ].join('\n');
 };
 

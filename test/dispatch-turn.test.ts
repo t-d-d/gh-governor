@@ -5948,7 +5948,7 @@ describe('run — a workflow run on main', () => {
           const [own] = to(sent, SESSION);
           assert.match(own!.text, /PR #799/);
           assert.match(own!.text, /#730/);
-          assert.match(own!.text, /^  You build it; a person owns its body\.$/m);
+          assert.match(own!.text, /^ {2}You build it; a person owns its body\.$/m);
           assert.match(own!.text, /Your PR, which closed #730, has merged: act on this message only where it calls for new work\./, 'the roles lines read as on every other path');
           assert.equal(exitCodeFor(r as never), 0);
           assert.equal(h.cursors.get(DEV_CURSOR)?.runId, 500, 'the range is planned: the cursor moves');

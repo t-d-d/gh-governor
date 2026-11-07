@@ -147,9 +147,9 @@ describe('the texts', () => {
   const across = { kind: 'unblocked' as const, repo: 't-d-d/askme', issue: 7, blocker: { repo: FACTORY, number: 41, title: 'The parser' } };
 
   test('the facts name the blocker, how it closed and the PR, by its repo where that is not the ticket\'s', () => {
-    assert.equal(unblockedFacts(fire), '#41 (The parser) closed as completed, by PR #52 (Parse it, https://github.com/acme/factory/pull/52). It blocked #7.');
+    assert.equal(unblockedFacts(fire), '#41 (The parser) closed as completed, by PR [#52](https://github.com/acme/factory/pull/52) (Parse it). It blocked #7.');
     assert.equal(unblockedFacts(across), 'acme/factory#41 (The parser) closed, with no PR. It blocked #7.');
-    assert.equal(unblockedFacts({ ...across, pr }), 'acme/factory#41 (The parser) closed, by PR acme/factory#52 (Parse it, https://github.com/acme/factory/pull/52). It blocked #7.');
+    assert.equal(unblockedFacts({ ...across, pr }), 'acme/factory#41 (The parser) closed, by PR [acme/factory#52](https://github.com/acme/factory/pull/52) (Parse it). It blocked #7.');
   });
 
   test('a ready ticket\'s prompt is pickup\'s, then the facts and the ask to check the spec first', () => {
@@ -185,23 +185,23 @@ describe('the texts', () => {
   });
 
   test('a claimed session hears the blocker closed and by which PR', () => {
-    assert.match(unblockedMessage(fire, {}), /#41.*PR #52[\s\S]*against what merged/);
+    assert.match(unblockedMessage(fire, {}), /#41.*PR \[#52\]\(https:\/\/github\.com\/acme\/factory\/pull\/52\) \(Parse it\)[\s\S]*against what merged/);
   });
 
   test('a spec owner\'s notice says it asks nothing, and names who was asked', () => {
     const started = unblockedNotice(fire, { started: 'https://claude.ai/code/session_01NEW' });
-    assert.match(started, /#41.*PR #52/);
+    assert.match(started, /#41.*PR \[#52\]\(https:\/\/github\.com\/acme\/factory\/pull\/52\)/);
     assert.match(started, /This is a notice: it asks nothing of you\. You are #7's spec owner, and may still edit its body/);
-    assert.match(started, /started a builder for #7, https:\/\/claude\.ai\/code\/session_01NEW, and asked it to check the spec against what merged/);
+    assert.match(started, /started \[a builder\]\(https:\/\/claude\.ai\/code\/session_01NEW\) for #7 and asked it to check the spec against what merged/);
     assert.match(unblockedNotice(fire, { started: null }), /started a builder for #7 and asked it/);
     const { pr: _pr, ...handClosed } = fire;
     assert.match(unblockedNotice(handClosed, { started: null }), /with no PR[\s\S]*check the spec against this close before it builds/);
     const two = unblockedNotice(fire, { asked: ['A', 'B'], archived: [], unreached: [], what: 'what merged' });
-    assert.match(two, /Its builders, A and B, were asked to check its work against what merged\./);
+    assert.match(two, /Its builders, \[builder 1\]\(A\) and \[builder 2\]\(B\), were asked to check its work against what merged\./);
     const mixed = unblockedNotice(fire, { asked: ['A'], archived: ['B'], unreached: [], what: 'what merged' });
-    assert.match(mixed, /Its builder, A, was asked[\s\S]*Its builder, B, is archived\.$/);
-    assert.match(unblockedNotice(fire, { asked: [], archived: ['B'], unreached: [], what: 'this close' }), /Its builder, B, is archived, so nobody was asked\.$/);
-    assert.match(unblockedNotice(fire, { asked: [], archived: [], unreached: ['C'], what: 'this close' }), /could not reach its builder, C, so nobody was asked\.$/);
+    assert.match(mixed, /\[Its builder\]\(A\) was asked[\s\S]*\[Its builder\]\(B\) is archived\.$/);
+    assert.match(unblockedNotice(fire, { asked: [], archived: ['B'], unreached: [], what: 'this close' }), /\[Its builder\]\(B\) is archived, so nobody was asked\.$/);
+    assert.match(unblockedNotice(fire, { asked: [], archived: [], unreached: ['C'], what: 'this close' }), /could not reach \[its builder\]\(C\), so nobody was asked\.$/);
   });
 
   test('a not-planned close leaves a comment naming the blocker', () => {
@@ -261,7 +261,7 @@ describe('the texts', () => {
   test('the comment quotes each title as code, so a mention in it notifies nobody', () => {
     const text = notPlannedComment({ kind: 'unblocked', repo: FACTORY, issue: 7, blocker: { ...closed, title: 'Ask @alice about `#9`', reason: 'not_planned' }, pr: { ...pr, title: 'Ping @team' } }, {});
     assert.match(text, /\(`Ask @alice about '#9'`\)/);
-    assert.match(text, /\(`Ping @team`, https/);
+    assert.match(text, /\[#52\]\(https:\/\/github\.com\/acme\/factory\/pull\/52\) \(`Ping @team`\)/);
     assert.doesNotMatch(text.replace(/`[^`]*`/g, ''), /@/);
   });
 });

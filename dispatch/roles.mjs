@@ -21,7 +21,6 @@
 import { buildersOf } from './builders.mjs';
 import { ticketAuthor } from './trust.mjs';
 import { relayedBody, sameSession, sessionNamedIn } from './webhook/subscribe.mjs';
-import { SPEC_OWNER_DUTY } from './webhook/mention.mjs';
 
 /** @typedef {'spec owner' | 'builder' | 'spec owner and builder'} TicketRole */
 
@@ -109,72 +108,4 @@ export const rolesOf = async ({ issue, relay, claim = '', ticket, owner, reader,
   return rolesFrom({ issue, owner: spec, builders: found.sessions, owns: found.owns, by: found.by });
 };
 
-/** Items joined as a sentence lists them: `a, b and c`. @param {readonly string[]} items */
-export const listed = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
-
-/**
- * What a message to a builder whose PR closed the ticket and has merged
- * says, on every path that messages it: such a builder still hears the
- * ticket's events, since a repo may keep a ticket open past a merge.
- *
- * @param {number} issue
- */
-export const mergedNote = (issue) => `Your PR, which closed #${issue}, has merged: act on this message only where it calls for new work.`;
-
-/** What a ticket's builder is told where a comment calls on it. */
-export const BUILDER_DUTY = 'As its builder you build it, on its branch and PR, and do not edit its body: act on what bears on the build, and record where your work differs from the body in your PR description.';
-
-/** What a message that asks nothing of a role holder says, in place of a duty line. */
-export const NOTHING_ASKED = 'Nothing is asked of you.';
-
-/**
- * A session as a message names it: a Markdown link to its page, with
- * `text` as the link's words.
- *
- * @param {string} text
- * @param {string} session
- */
-export const sessionLink = (text, session) => `[${text}](${session})`;
-
-/**
- * The builders other than the recipient, as links, and the verb that fits them.
- *
- * @param {readonly string[]} others
- * @param {string} first the link text of the first, or the only one
- */
-const buildersLinked = (others, first) => {
-  if (others.length === 1) return `${sessionLink(first, /** @type {string} */ (others[0]))} builds it`;
-  return `${listed(others.map((b, i) => sessionLink(`builder ${i + 1}`, b)))} build it`;
-};
-
-/**
- * What a message about a ticket adds under what happened: the role the
- * recipient (`holder`) holds, with a link to each session that holds the
- * other role. `duty`: the event calls on the role, a comment on an open
- * ticket, so each role the recipient holds gets its duty line. `notice`:
- * the message asks nothing of the recipient, and says so. A message that
- * asks something of its own passes neither, and says nothing more. A
- * builder whose PR has merged is told so, and acts on the message only
- * where it calls for new work.
- *
- * @param {TicketRoles} roles
- * @param {Pick<RoleHolder, 'role' | 'merged'> & { session?: string }} holder
- * @param {{ duty?: boolean, notice?: boolean }} [options]
- * @returns {string}
- */
-export const rolesText = ({ issue, owner, builders }, { role, merged, session }, { duty = false, notice = false } = {}) => {
-  // The recipient: the session handed in, else the spec owner where it holds that role.
-  const self = session ?? (role === 'builder' ? null : owner);
-  const others = builders.filter((b) => self === null || !sameSession(b, self));
-  const specOwner = owner === null ? 'a person owns its body' : `${sessionLink('its spec owner', owner)} writes its body`;
-  let first;
-  if (role === 'spec owner') first = others.length === 0 ? 'You are its spec owner.' : `You are its spec owner; ${buildersLinked(others, 'its builder')}.`;
-  else if (role === 'builder') first = `You build it; ${specOwner}.${others.length === 0 ? '' : ` ${buildersLinked(others, 'another builder')} too.`}`;
-  else first = `You are its spec owner and you build it.${others.length === 0 ? '' : ` ${buildersLinked(others, 'another builder')} too.`}`;
-  const lines = [first];
-  if (duty && role !== 'builder') lines.push(SPEC_OWNER_DUTY);
-  if (duty && role !== 'spec owner') lines.push(BUILDER_DUTY);
-  if (role !== 'spec owner' && merged) lines.push(mergedNote(issue));
-  if (notice && !duty) lines.push(NOTHING_ASKED);
-  return lines.join('\n');
-};
+export { BUILDER_DUTY, NOTHING_ASKED, listed, mergedNote, rolesText, sessionLink } from './webhook/roles-text.mjs';

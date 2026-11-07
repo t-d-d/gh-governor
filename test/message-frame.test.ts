@@ -131,13 +131,13 @@ describe('a relay about an issue to its spec owner', () => {
   test('a close names the spec owner\'s role, links the issue, and asks nothing', () => {
     const { fires } = issueEventFires({ action: 'closed', issue: issue({ state: 'closed', state_reason: 'completed' }), sender: member });
     const text = String((fires[0]?.fire as { text?: string }).text);
-    assert.equal(text, `[#7](${URL}) The ticket was closed (completed) by alice.\n\nYou are its spec owner. Nothing is asked of you.`);
+    assert.equal(text, `[#7](${URL}) The ticket was closed (completed) by alice.\n\nYou are its spec owner.\nNothing is asked of you.`);
     assert.doesNotMatch(text, /subscribe/i);
   });
 
   test('a comment names the spec owner\'s role and its duty, not a subscriber\'s ask', () => {
     const comment = { id: 1, body: 'A thought.', html_url: `${URL}#issuecomment-1`, user: { login: 'bob', type: 'User' }, author_association: 'MEMBER' };
-    const { fires } = mentionFires({ event: 'issue_comment', payload: { action: 'created', issue: issue(), comment } });
+    const { fires } = mentionFires({ event: 'issue_comment', payload: { action: 'created', issue: issue(), comment } })!;
     const text = String((fires[0]?.fire as { text?: string }).text);
     assert.doesNotMatch(text, /subscribe/i, text);
     assert.match(text, /You are its spec owner\.\nYou own its spec\./);

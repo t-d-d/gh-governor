@@ -134,8 +134,8 @@ const depsOver = (fetch: typeof globalThis.fetch) => {
 
 describe('fitness: a turn calls GitHub only for its fire\'s repo (dispatcher-repos.md)', () => {
   for (const [repo, file, fires] of [
-    [ASKME, ASKME_FILE, [{ kind: 'schedule', repo: ASKME }, { kind: 'dispatch', repo: ASKME, prompt: 'hello' }, { kind: 'message', repo: ASKME, session: 'session_01ABC', text: 'hi' }]],
-    [FACTORY, FACTORY_FILE, [{ kind: 'schedule', repo: FACTORY, issue: 2 }, { kind: 'review', repo: FACTORY, pr: 3 }, { kind: 'message', repo: FACTORY, session: 'session_01ABC', text: 'hi' }]],
+    [ASKME, ASKME_FILE, [{ kind: 'schedule', repo: ASKME }, { kind: 'dispatch', repo: ASKME, prompt: 'hello' }, { kind: 'message', repo: ASKME, session: 'session_01ABC', text: 'hi', closing: true }]],
+    [FACTORY, FACTORY_FILE, [{ kind: 'schedule', repo: FACTORY, issue: 2 }, { kind: 'review', repo: FACTORY, pr: 3 }, { kind: 'message', repo: FACTORY, session: 'session_01ABC', text: 'hi', closing: true }]],
   ] as const) {
     for (const fire of fires) {
       test(`${JSON.stringify(fire)} reads and writes under ${repo} alone`, async () => {
@@ -319,13 +319,13 @@ const plan = async (invocation: unknown, coverage: unknown, prompts: Record<stri
 const note = async (invocation: unknown, coverage: unknown, prompts: Record<string, string>) => (await plan(invocation, coverage, prompts)).notes[0]!.text;
 const triage = async (invocation: unknown, coverage: unknown, prompts: Record<string, string>) => (await plan(invocation, coverage, prompts)).triage!.prompt;
 const UNBLOCKED = { kind: 'unblocked' as const, repo: FACTORY, issue: 7, blocker: { repo: ASKME, number: 41, title: 'The parser', reason: 'completed' }, pr: { number: 52, title: 'Parse it', url: 'https://github.com/t-d-d/askme-mcp/pull/52' } };
-const CLOSE_FACTS = ['t-d-d/askme-mcp#41 (The parser) closed as completed', 'PR t-d-d/askme-mcp#52 (Parse it', 'It blocked #7.'];
+const CLOSE_FACTS = ['t-d-d/askme-mcp#41 (The parser) closed as completed', 'PR [t-d-d/askme-mcp#52](https://github.com/t-d-d/askme-mcp/pull/52) (Parse it)', 'It blocked #7.'];
 const RUN_FACTS = [RUN_URL, 'backend'];
 
 /** Every kind: the message built with `prompts`, and the facts it carries whatever the prompt. */
 const KINDS: Record<string, { build: (prompts: Record<string, string>) => Promise<string> | string, facts: string[] }> = {
   pickup: { build: (p) => promptFor(7, 'Title', FACTORY, 'claimed', p), facts: ["Pickup #7 'Title'"] },
-  signOff: { build: (p) => standingLine([], { repo: FACTORY, closing: true, prompts: p }), facts: ['No other open PR or issue in acme/factory names this session.'] },
+  signOff: { build: (p) => standingLine([], { repo: FACTORY, closing: true, prompts: p }), facts: ['No other open PR or issue in acme/factory names you.'] },
   unblockedReady: { build: (p) => readyPrompt(promptFor(7, 'Title', FACTORY, 'claimed'), UNBLOCKED, p), facts: ["Pickup #7 'Title'", ...CLOSE_FACTS] },
   unblockedSpec: { build: (p) => specPrompt({ fire: UNBLOCKED, title: 'Title', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: p }), facts: ["Spec #7 'Title'", ...CLOSE_FACTS, UNATTENDED] },
   waitEndedSpec: { build: (p) => waitSpecPrompt({ issue: 7, title: 'Title', until: '2026-11-05', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: p }), facts: ["Spec #7 'Title'", "#7's wait has ended: its `Blocked until:` line named 2026-11-05", UNATTENDED] },
@@ -334,18 +334,18 @@ const KINDS: Record<string, { build: (prompts: Record<string, string>) => Promis
   unblockedClaimed: { build: (p) => unblockedMessage(UNBLOCKED, p), facts: CLOSE_FACTS },
   unblockedNotPlanned: { build: (p) => notPlannedComment({ ...UNBLOCKED, blocker: { ...UNBLOCKED.blocker, reason: 'not_planned' } }, p), facts: ['t-d-d/askme-mcp#41 (`The parser`) closed as not planned'] },
   redScheduledRun: { build: (p) => redRunPrompt('A scheduled run of Emulator on main ended failure.', p), facts: ['A scheduled run of Emulator on main ended failure.', UNATTENDED] },
-  ciBreaker: { build: (p) => note(red('CI'), coverageOf([pull(1)]), p), facts: [...RUN_FACTS, 'PR #1: PR 1'] },
-  ciTriage: { build: (p) => triage(red('CI'), coverageOf([pull(1), pull(2)]), p), facts: [...RUN_FACTS, 'PR #1: PR 1', 'PR #2: PR 2', UNATTENDED] },
-  ciBumpTriage: { build: (p) => triage(red('CI'), coverageOf([pull(1, DEPENDABOT)]), p), facts: [...RUN_FACTS, 'PR #1: PR 1', UNATTENDED] },
-  prodTriage: { build: (p) => triage(red('Deliver'), coverageOf([pull(1)], { label: PROD }), p), facts: [...RUN_FACTS, 'PR #1: PR 1', UNATTENDED] },
-  deployGreen: { build: (p) => note(shipped, coverageOf([pull(1)], { label: 'deployed: dev' }), p), facts: ['PR #1: PR 1', 'Your change is deployed to `dev`'] },
-  deployGreenMany: { build: (p) => note(shipped, coverageOf([pull(1), pull(2)], { label: 'deployed: dev' }), p), facts: ['PR #1: PR 1', 'PR #2: PR 2', 'Your changes are deployed to `dev`'] },
-  deployRed: { build: (p) => note(red('Deliver'), coverageOf([pull(1)], { label: 'deployed: dev' }), p), facts: [...RUN_FACTS, 'PR #1: PR 1'] },
-  deployRedMany: { build: (p) => note(red('Deliver'), coverageOf([pull(1), pull(2)], { label: 'deployed: dev' }), p), facts: [...RUN_FACTS, 'PR #1: PR 1', 'PR #2: PR 2'] },
-  subscribed: { build: (p) => note(shipped, coverageOf([pull(1)], { label: 'deployed: dev', subscribed: true }), p), facts: ['PR #1: PR 1', 'which you subscribe to'] },
+  ciBreaker: { build: (p) => note(red('CI'), coverageOf([pull(1)]), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1'] },
+  ciTriage: { build: (p) => triage(red('CI'), coverageOf([pull(1), pull(2)]), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1', '[#2](https://github.com/acme/factory/pull/2) PR 2', UNATTENDED] },
+  ciBumpTriage: { build: (p) => triage(red('CI'), coverageOf([pull(1, DEPENDABOT)]), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1', UNATTENDED] },
+  prodTriage: { build: (p) => triage(red('Deliver'), coverageOf([pull(1)], { label: PROD }), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1', UNATTENDED] },
+  deployGreen: { build: (p) => note(shipped, coverageOf([pull(1)], { label: 'deployed: dev' }), p), facts: ['[#1](https://github.com/acme/factory/pull/1) PR 1', 'Your change is deployed to `dev`'] },
+  deployGreenMany: { build: (p) => note(shipped, coverageOf([pull(1), pull(2)], { label: 'deployed: dev' }), p), facts: ['[#1](https://github.com/acme/factory/pull/1) PR 1', '[#2](https://github.com/acme/factory/pull/2) PR 2', 'Your changes are deployed to `dev`'] },
+  deployRed: { build: (p) => note(red('Deliver'), coverageOf([pull(1)], { label: 'deployed: dev' }), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1'] },
+  deployRedMany: { build: (p) => note(red('Deliver'), coverageOf([pull(1), pull(2)], { label: 'deployed: dev' }), p), facts: [...RUN_FACTS, '[#1](https://github.com/acme/factory/pull/1) PR 1', '[#2](https://github.com/acme/factory/pull/2) PR 2'] },
+  subscribed: { build: (p) => note(shipped, coverageOf([pull(1)], { label: 'deployed: dev', subscribed: true }), p), facts: ['[#1](https://github.com/acme/factory/pull/1) PR 1', 'which you subscribe to'] },
   conflicts: {
     build: (p) => { const m = conflictMessage({ pr: { number: 1, title: 'PR 1', html_url: 'u1' }, base: 'main', head: 'c'.repeat(40), merged: { pr: 2, sha: SHA } }, p); assert.ok(m.fallback.prompt.includes(m.text.split('\n\n')[1]!), 'the fallback carries the instruction'); return m.text; },
-    facts: ['PR #1 (PR 1, u1)', 'c'.repeat(40), '#2 merged', SHA],
+    facts: ['[#1](u1) PR 1', 'c'.repeat(40), '#2 merged', SHA],
   },
 };
 
@@ -384,7 +384,7 @@ describe('fitness: every prompt key has a default, and the defaults are generic 
  */
 const FACTORY_LOGS = "Read the failed jobs' logs (the ops-tooling skill says how) and find the cause.";
 const FACTORY_TEXTS: Record<string, [Record<string, string | number>, string]> = {
-  pickup: [{ issue: 7, repo: FACTORY, claim: 'workflow: under development' }, 'Implement GitHub issue #7 in acme/factory through to a reviewable PR.\nThe dispatcher claimed #7 for this session: it is `workflow: under development` for you, so proceed on it.\nIf earlier sessions worked on #7, read the comments they left on it first, and carry on from any branch they pushed rather than start again.\nBefore you build, read #7 against the code. If the code already does what it asks, or the work is far larger than the ticket reads, comment on #7 saying which and what you found, and stop without building. Leave `workflow: under development` on #7, so pickup does not start it again: once this session ends, governor takes the claim off and leaves the ticket for a person to decide.\nNever edit #7\'s body: its spec belongs to its owner, the session whose link ends it, or else whoever wrote it. Where the spec looks wrong or out of date, say so in a comment on #7 and in your PR description, and build against what the code needs.\nUnattended session: push and raise the PR without asking, `Closes #7`.'],
+  pickup: [{ issue: 7, repo: FACTORY, claim: 'workflow: under development' }, 'Implement GitHub issue #7 in acme/factory through to a reviewable PR.\nGovernor claimed #7 for this session: it is `workflow: under development` for you, so proceed on it.\nIf earlier sessions worked on #7, read the comments they left on it first, and carry on from any branch they pushed rather than start again.\nBefore you build, read #7 against the code. If the code already does what it asks, or the work is far larger than the ticket reads, comment on #7 saying which and what you found, and stop without building. Leave `workflow: under development` on #7, so pickup does not start it again: once this session ends, governor takes the claim off and leaves the ticket for a person to decide.\nNever edit #7\'s body: its spec belongs to its owner, the session whose link ends it, or else whoever wrote it. Where the spec looks wrong or out of date, say so in a comment on #7 and in your PR description, and build against what the code needs.\nUnattended session: push and raise the PR without asking, `Closes #7`.'],
   signOff: [{}, 'Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make `Signing off.` the last line of your reply, and the dispatcher archives the session. Above it, write any `Lesson:` lines CLAUDE.md § Lessons calls for; usually there are none.'],
   unblockedReady: [{}, "Before you build, check the spec against what merged. Where the merge changed what the ticket builds on, say so in a comment on the ticket and in your PR description. Never edit the ticket's body, whether or not a session link ends it: its spec owner updates the spec."],
   unblockedSpec: [{ issue: 7, ready: '`workflow: ready for development` and `mode: afk`', claim: 'workflow: under development' }, "Rewrite #7's spec from what merged (CLAUDE.md § After your PR merges). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it `workflow: ready for development` and `mode: afk` and stop, or add `workflow: under development` to it first and take it through to a PR, `Closes #7`."],
@@ -610,9 +610,9 @@ describe('fitness: a ticket\'s roles are found one way (dispatcher-repos.md)', (
     }
   });
 
-  test('the "Roles on #N" lines are written in one place', () => {
-    const writers = files.filter((f) => /Roles on #\$\{/.test(source(f)) || /its builder is \$\{/.test(source(f)));
-    assert.deepEqual(writers, ['dispatch/roles.mjs']);
+  test('the role lines are written in one place', () => {
+    const writers = files.filter((f) => /You are its spec owner/.test(source(f)) || /You build it[;.]/.test(source(f)));
+    assert.deepEqual(writers, ['dispatch/webhook/roles-text.mjs']);
   });
 
   for (const path of ['dispatch/ticket-fire.mjs', 'dispatch/dispatch-fire.mjs', 'dispatch/turn.mjs', 'dispatch/unblocked-fire.mjs', 'dispatch/told.mjs']) {
