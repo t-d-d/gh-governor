@@ -112,6 +112,29 @@ describe('owner unknown', () => {
     assert.equal(sessionNamedIn(marked), null);
   });
 
+  // The marker's pattern runs on bodies anyone writes, before any read-limit
+  // check. Unanchored, it retried the rest of the line from every index.
+  test('a long line without a marker is read in time linear in its length', () => {
+    const long = 'x'.repeat(65536);
+    const started = performance.now();
+    assert.equal(ownerUnknownSince(long), null);
+    assert.throws(() => relinkSession(`${long}\n${OWNER}`, FILER), /too long/);
+    assert.throws(() => markOwnerUnknown(`${long}x`, AT), /too long/);
+    const took = performance.now() - started;
+    assert.ok(took < 200, `${took} ms for a line of ${long.length} characters`);
+  });
+
+  test('every marker line is removed and the last read back, at the body\'s start, middle and end', () => {
+    const line = (at: string) => `_Said so._ <!-- governor:owner-unknown ${at} -->`;
+    const marked = [line(AT), 'The change.', line(AT), '', line(LATER)].join('\n');
+    assert.equal(ownerUnknownSince(marked), LATER);
+    const relinked = relinkSession(marked, FILER);
+    assert.ok(relinked.startsWith('The change.\n'), relinked);
+    assert.doesNotMatch(relinked, /governor:owner-unknown|Said so/);
+    assert.equal(sessionNamedIn(relinked), FILER);
+    assert.equal(ownerUnknownSince(`${'x'.repeat(60000)}\n${line(AT)}`), AT, 'a marker after a long line is still read');
+  });
+
   test('a marker inside a quote, or one whose time does not parse, is not read', () => {
     const marked = markOwnerUnknown(body, AT);
     const quoted = `${marked.split('\n').map((l) => `> ${l}`).join('\n')}\n\nA reply.`;
