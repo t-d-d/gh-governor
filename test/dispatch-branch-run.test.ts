@@ -135,8 +135,8 @@ describe('planBranchRun', () => {
       const plan = await planBranchRun({ invocation: invocation({ conclusion }), reader });
       const text = String(plan.text);
       assert.ok(text.includes(conclusion), text);
-      assert.match(text, /share \(https:\/\/github\.com\/acme\/factory\/actions\/runs\/600\/job\/1\)/);
-      assert.match(text, /probe \(https:\/\/github\.com\/acme\/factory\/actions\/runs\/600\/job\/3\)/, 'a timed-out job is a failed job');
+      assert.match(text, /^- \[share\]\(https:\/\/github\.com\/acme\/factory\/actions\/runs\/600\/job\/1\)$/m);
+      assert.match(text, /^- \[probe\]\(https:\/\/github\.com\/acme\/factory\/actions\/runs\/600\/job\/3\)$/m, 'a timed-out job is a failed job');
       assert.doesNotMatch(text, /\bimage\b/, 'a job that passed is not a failed job');
       assert.doesNotMatch(text, /\bbilling\b/, 'a cancelled job is a fail-fast\'s echo');
       assert.match(text, /Read the failed jobs' logs and find the cause\./);

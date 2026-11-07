@@ -549,7 +549,7 @@ describe('run — what reaches the owner session', () => {
     const text = `Waits for a description edit: ${'界'.repeat(65000)} (test 3).`;
     const fire = ownerMessage({ pull, text, acts: true });
     assert.ok(fireWeight(fire) <= FIRE_BUDGET, `${fireWeight(fire)} bytes`);
-    assert.match(fire.text, /^Governor's PR review commented on your pull request\.\n\nPR #767: /);
+    assert.match(fire.text, /^Governor's PR review commented on your pull request\.\n\n\[#767\]\(https:\/\/github\.com\/acme\/factory\/pull\/767\) Run the PR review/);
     assert.match(fire.text, /Waits for a description edit: 界/);
     assert.match(fire.text, /the review asks this of you/);
     assert.match(fire.fallback!.prompt, /yours now/);
@@ -655,7 +655,9 @@ describe('run — what reaches the owner session', () => {
     assert.match(launch.prompt, /yours now/);
     assert.match(launch.sessionName, /#767/);
     assert.equal(exitCodeFor(told as never), 0);
-    assert.ok((refused.messages[0] as { text: string }).text.endsWith(standingLine([], { repo: REPO, closing: false })), 'the standing line');
+    const sentText = (refused.messages[0] as { text: string }).text;
+    assert.ok(!sentText.includes(standingLine([], { repo: REPO, closing: false })), 'a review comment closes nothing, so no standing line');
+    assert.doesNotMatch(sentText, /names you|naming you/, 'no standing line in any form');
   });
 
   test('a pass\'s fire, refused, with no live session on the branch: nobody starts', async () => {
