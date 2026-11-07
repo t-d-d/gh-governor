@@ -5,6 +5,7 @@
   "prMessages": {},
   "subscribeMessages": {},
   "unblocked": {},
+  "deployMessages": { "deployedLabels": true },
   "conflicts": {},
   "prReview": {
     "prompt": { "file": ".claude/skills/pr-review/SKILL.md" },

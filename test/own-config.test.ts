@@ -1,10 +1,12 @@
 /**
  * This repo's own config file: governor picks up its `mode: afk` tickets,
  * acts on a ticket when its blocker closes, tells a PR's session when a
- * merge into main leaves the PR conflicted, and reviews its pull requests
- * with merge off. The owner merges every pull request, so a pass here only
- * posts a comment and an approving review, and governor cannot pass a change
- * to itself with nobody looking. A pull request cannot review itself either:
+ * merge into main leaves the PR conflicted, tells the sessions of the merges
+ * a Deploy run shipped or failed to ship, labels the tickets they close
+ * `deployed: governor`, and reviews its pull requests with merge off. The
+ * owner merges every pull request, so a pass here only posts a comment and
+ * an approving review, and governor cannot pass a change to itself with
+ * nobody looking. A pull request cannot review itself either:
  * the review runs the image deployed from main and reads its checklist from
  * main (CLAUDE.md, Branches and pull requests).
  */
@@ -13,10 +15,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
+import { shippingLabelsOf, ticketLabelOf } from '../dispatch/labels.mjs';
 
 const own = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
-test('this repo\'s config file is valid and turns pickup, unblocked, the conflicts check, sign-off and the PR review on', () => {
+test('this repo\'s config file is valid and turns pickup, unblocked, the conflicts check, sign-off, deploy messages, deployed labels and the PR review on', () => {
   const read = readConfig(own(CONFIG_PATH));
   assert.ok(read.ok, JSON.stringify(read));
   // A hold label keeps a ticket out of pickup and out of the spec session a
@@ -27,6 +30,20 @@ test('this repo\'s config file is valid and turns pickup, unblocked, the conflic
   assert.equal(read.config.features.conflicts, true);
   assert.equal(read.config.features.signOff, true);
   assert.equal(read.config.features.prReview, true);
+  // A green Deploy run tells each merge's session it shipped; with the
+  // labels on, it also labels the tickets those merges close and tells
+  // their spec owners and builders.
+  assert.equal(read.config.features.deployMessages, true);
+  assert.equal(read.config.features.deployedLabels, true);
+});
+
+test('this repo\'s deploy workflow carries the two marks its deploy messages and labels read', async () => {
+  // Without them the switches above are on and nothing is ever heard: the
+  // shipping job's name must end `· deployed: governor`, and the workflow
+  // must declare a top-level TICKET_LABEL_PATHS, as a push-started deploy.
+  const text = own('.github/workflows/deploy.yml');
+  assert.deepEqual(ticketLabelOf(text), { paths: 'all', merge: true });
+  assert.deepEqual(await shippingLabelsOf(text, async (file) => own(`.github/workflows/${file}`)), ['deployed: governor']);
 });
 
 test('this repo\'s review never merges, forbids closing a PRD, and reads its checklist from a file here', async () => {
