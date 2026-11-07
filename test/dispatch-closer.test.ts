@@ -131,6 +131,8 @@ describe('closedIt: a tool call that closed the issue or PR', () => {
     assert.ok(closedIt({ name: 'Bash', input: { command: 'gh issue close 7' } }, REPO, 7));
     assert.ok(closedIt({ name: 'Bash', input: { command: 'gh issue close 7 --reason "not planned" --comment "Done"' } }, REPO, 7));
     assert.ok(closedIt({ name: 'Bash', input: { command: 'gh issue close -R acme/factory 7' } }, REPO, 7));
+    assert.ok(closedIt({ name: 'Bash', input: { command: 'gh issue close --reason "not planned" 7' } }, REPO, 7));
+    assert.ok(closedIt({ name: 'Bash', input: { command: "gh pr close -c 'Superseded by a new branch' 7" } }, REPO, 7));
     assert.ok(closedIt({ name: 'Bash', input: { command: 'gh pr close 7 --delete-branch' } }, REPO, 7));
     assert.ok(closedIt({ name: 'Bash', input: { command: 'gh issue close https://github.com/acme/factory/issues/7' } }, REPO, 7));
     assert.ok(closedIt({ name: 'Bash', input: { command: 'gh pr close https://github.com/acme/factory/pull/7' } }, REPO, 7));
@@ -140,6 +142,8 @@ describe('closedIt: a tool call that closed the issue or PR', () => {
     assert.ok(closedIt({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/issues/7 -f state=closed' } }, REPO, 7));
     assert.ok(closedIt({ name: 'Bash', input: { command: 'gh api --method PATCH repos/{owner}/{repo}/issues/7 -f state=closed -f state_reason=completed' } }, REPO, 7));
     assert.ok(closedIt({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/pulls/7 -f state=closed' } }, REPO, 7));
+    assert.ok(closedIt({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/issues/7 -f "state=closed"' } }, REPO, 7));
+    assert.ok(closedIt({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/issues/7 --raw-field state=closed' } }, REPO, 7));
     assert.ok(closedIt({ name: 'Bash', input: { command: "gh api -X PATCH repos/acme/factory/issues/7 --input - <<'EOF'\n{\"state\": \"closed\"}\nEOF" } }, REPO, 7));
   });
 
@@ -156,6 +160,8 @@ describe('closedIt: a tool call that closed the issue or PR', () => {
     assert.equal(closedIt({ name: 'Bash', input: { command: 'gh pr merge 7 --squash' } }, REPO, 7), null);
     assert.equal(closedIt({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/issues/7 -f state=open' } }, REPO, 7), null);
     assert.equal(closedIt({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/issues/7 -f body="closed state"' } }, REPO, 7), null);
+    assert.equal(closedIt({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/issues/7 -f body="Set state: closed once deployed"' } }, REPO, 7), null);
+    assert.equal(closedIt({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/issues/7 -f body="state=closed"' } }, REPO, 7), null);
     assert.equal(closedIt({ name: 'Bash', input: { command: 'gh api repos/acme/factory/issues/7/comments -f body="state=closed"' } }, REPO, 7), null);
     assert.equal(closedIt({ name: 'Bash', input: { command: 'gh api -X GET repos/acme/factory/issues -f state=closed' } }, REPO, 7), null);
     assert.equal(closedIt({ name: 'Bash', input: { command: 'gh api -X PATCH repos/acme/factory/issues/71 -f state=closed' } }, REPO, 7), null);

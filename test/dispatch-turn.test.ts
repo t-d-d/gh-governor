@@ -11511,6 +11511,11 @@ describe('run: a close the session made itself is not told to it (#689)', () => 
     h.deps.sessions.events = async () => { throw new Error('GET events: 502'); };
     await run(fire, h.deps as never);
     assert.deepEqual(h.messages.map((m) => m.session), [OWNER]);
+    const lines = h.logged.filter((l) => l.event === 'dispatch-closer');
+    assert.equal(lines.length, 1, JSON.stringify(h.logged));
+    assert.equal(lines[0]!.level, 'warn');
+    assert.equal(lines[0]!.session, 'session_01OWNER');
+    assert.match(String(lines[0]!.reason), /events read failed/);
   });
 
   test('a close with no close time reads no events', async () => {

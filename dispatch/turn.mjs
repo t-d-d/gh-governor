@@ -1603,9 +1603,12 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     try {
       search = await sessionSearch();
     } catch (error) {
+      deps.log('dispatch-closer', { level: 'warn', repo: fireRepo(), on, session: sessionId(session), outcome: 'not searched', reason: `${messageOf(error)}: the session hears the close` });
       return { by: 'unknown', reason: messageOf(error) };
     }
-    return searchCloser({ events: search.events, repo: search.repo, session, on, at });
+    const found = await searchCloser({ events: search.events, repo: search.repo, session, on, at });
+    if (found.by === 'unknown') deps.log('dispatch-closer', { level: 'warn', repo: search.repo, on, session: sessionId(session), outcome: 'not searched', reason: `${found.reason}: the session hears the close` });
+    return found;
   };
 
   /**

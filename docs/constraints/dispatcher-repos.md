@@ -438,7 +438,8 @@ spends the one claude.ai login.
   closed the issue or PR (`closedIt`): `gh issue close` or `gh pr close`,
   a REST write that sets `state` to `closed`, or a GitHub tool that does.
   Found: the session is not told. Not found, or events that cannot be
-  read: it hears the close as before. Only the session about to be told
+  read: it hears the close as before, and an unreadable read logs
+  `dispatch-closer` at warn. Only the session about to be told
   is read, nobody else's message changes, nobody is nudged, and the check
   runs whatever `sessionRules` says. A PR's close sent to the live session
   on its head branch is not checked, since the turn learns that session

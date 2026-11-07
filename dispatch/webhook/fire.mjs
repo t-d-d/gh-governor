@@ -1074,8 +1074,9 @@ const parseMessage = (e, event) => {
  * at most 40 characters that parses as a date.
  *
  * @param {unknown} raw
+ * @returns {raw is string}
  */
-const isTime = (raw) => typeof raw === 'string' && raw.length <= 40 && Number.isFinite(Date.parse(raw));
+export const isTime = (raw) => typeof raw === 'string' && raw.length <= 40 && Number.isFinite(Date.parse(raw));
 
 /** The most a post's first words run to, so a fire carrying them fits the lane. */
 export const POST_WORDS_CHARS = 400;

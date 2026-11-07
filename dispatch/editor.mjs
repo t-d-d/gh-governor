@@ -244,7 +244,8 @@ export const tellEditor = async ({ repo, on, edit, edited, asks = true, tellOnce
  * reopen and a merge carry no close time and are not checked, nor is a
  * PR's close sent to the live session on its head branch, which the turn
  * does not know until it sends. Text read from a session's events is never
- * logged.
+ * logged: where they cannot be read, the turn logs a `dispatch-closer` line
+ * at warn that names the session and a reason that quotes no event.
  */
 
 /**
@@ -256,8 +257,12 @@ export const tellEditor = async ({ repo, on, edit, edited, asks = true, tellOnce
  *   Whether `session` closed the fire's repo's issue or PR `on` at `at`.
  */
 
-/** A shell write that sets the state to closed: a field, or JSON. */
-const STATE_CLOSED = /\bstate\\?["']?\s*[=:]\s*\\?["']?closed\b/i;
+/**
+ * A shell write that sets the state to closed: a `state` field of its own
+ * (`-f state=closed`), or a JSON `"state": "closed"`, its quotes escaped or
+ * not. A body that only mentions the words is no close.
+ */
+const STATE_CLOSED = /\s(?:-[fF]|--field|--raw-field)[\s=]+["']?state=closed\b|\\?"state\\?"\s*:\s*\\?"closed\\?"/i;
 
 /**
  * Whether a tool call closed `repo`'s issue or PR `on`: `{ text: null }`,
@@ -282,7 +287,8 @@ export const closedIt = (call, repo, on) => {
   const [owner = '', name = ''] = repo.toLowerCase().split('/');
   if (typeof input.command === 'string') {
     const path = new RegExp(`repos/(?:${escaped(owner)}/${escaped(name)}|\\{owner\\}/\\{repo\\})/(?:issues|pulls)/${on}(?![0-9/])`, 'i');
-    const cli = new RegExp(`\\bgh\\s+(?:issue|pr)\\s+close\\s+(?:-\\S+(?:\\s+[^-\\s]\\S*)?\\s+)*(?:#?|https://github\\.com/${escaped(owner)}/${escaped(name)}/(?:issues|pull)/)${on}(?![0-9])`, 'i');
+    // A flag's value may be quoted and hold spaces, as `--reason "not planned"`.
+    const cli = new RegExp(`\\bgh\\s+(?:issue|pr)\\s+close\\s+(?:-\\S+(?:\\s+(?:"[^"]*"|'[^']*'|[^-\\s"']\\S*))?\\s+)*(?:#?|https://github\\.com/${escaped(owner)}/${escaped(name)}/(?:issues|pull)/)${on}(?![0-9])`, 'i');
     return judgeCommands(input.command, (command) => {
       if (cli.test(command) && repoNamedIn(command, repo)) return { text: null };
       return path.test(command) && !readsOnly(command) && STATE_CLOSED.test(command) ? { text: null } : null;

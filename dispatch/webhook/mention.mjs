@@ -80,7 +80,7 @@
  */
 
 import { SPEC_OWNER_DUTY, rolesText, titleLink } from './roles-text.mjs';
-import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, fireWeight, lets, postWords, wordsOf, POST_WORDS, POST_WORDS_CHARS } from './fire.mjs';
+import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, isTime, fireWeight, lets, postWords, wordsOf, POST_WORDS, POST_WORDS_CHARS } from './fire.mjs';
 import { closingNumbers } from './closing.mjs';
 import { REVIEW_MARKER, postedByApp } from './review-comment.mjs';
 import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, unsignedSessionBody, withoutQuotes } from './subscribe.mjs';
@@ -988,7 +988,7 @@ export const mentionFires = ({ event, payload, appId, relay = RELAY, bodies = re
  * @param {any} on
  * @returns {string | undefined}
  */
-const closedAtOf = (on) => (typeof on?.closed_at === 'string' && on.closed_at.length <= 40 && Number.isFinite(Date.parse(on.closed_at)) ? on.closed_at : undefined);
+const closedAtOf = (on) => (isTime(on?.closed_at) ? on.closed_at : undefined);
 
 /** What each `issues` action is to a subscriber. */
 const ISSUE_EVENTS = /** @type {Record<string, SubscriptionEvent>} */ ({ labeled: 'labels', unlabeled: 'labels', closed: 'close', reopened: 'close' });
