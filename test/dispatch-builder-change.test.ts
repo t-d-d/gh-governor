@@ -222,7 +222,7 @@ describe('planTicket: a dispatch comment\'s fire queued before the relay dropped
     await planTicket(dispatched(), ctx);
     assert.deepEqual(sent.map((s) => s.session), [SPEC]);
     assert.ok(sent[0]!.text.startsWith(TEXT), sent[0]!.text);
-    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${BUILDER}) builds it.`), sent[0]!.text);
+    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${BUILDER}) is another session.`), sent[0]!.text);
     assert.match(sent[0]!.text, /Nothing is asked of you\./);
     assert.doesNotMatch(sent[0]!.text, /sign off/);
     assert.deepEqual(reads, []);
@@ -238,7 +238,7 @@ describe('planTicket: a dispatch comment\'s fire queued before the relay dropped
     const { ctx, sent } = relayContext();
     await planTicket(dispatched({ builder: OTHER, displaced: BUILDER }), ctx);
     assert.deepEqual(sent.map((s) => s.session), [SPEC, BUILDER]);
-    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${OTHER}) builds it.`), sent[0]!.text);
+    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${OTHER}) is another session.`), sent[0]!.text);
     assert.doesNotMatch(sent[0]!.text, /sign off/);
     const told = sent[1]!.text;
     assert.ok(told.startsWith(TEXT), told);
@@ -380,7 +380,7 @@ describe('planClosingPr: a PR by another session that closes a claimed ticket na
     await planClosingPr(closingPr, ctx);
     assert.deepEqual(dispatchedTo(posted[0]!.body), { builder: OTHER, displaced: null });
     assert.deepEqual(sent.map((m) => m.session), [SPEC]);
-    assert.ok(sent[0]!.text.includes(`\n\nYou are its spec owner; [its builder](${OTHER}) builds it.\nNothing is asked of you.`), sent[0]!.text);
+    assert.ok(sent[0]!.text.includes(`\n\nYou are its spec owner; [its builder](${OTHER}) is another session.\nNothing is asked of you.`), sent[0]!.text);
     assert.doesNotMatch(sent[0]!.text, /no longer build|sign off/);
   });
 
@@ -425,7 +425,7 @@ describe('planClosingPr: a PR by another session that closes a claimed ticket na
     await planClosingPr(closingPr, ctx);
     assert.deepEqual(sent.map((m) => m.session), [SPEC, BUILDER]);
     assert.ok(sent[0]!.text.includes(`[#7 A ticket](https://github.com/${REPO}/issues/7) has [a new builder](${OTHER}).`), sent[0]!.text);
-    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${OTHER}) builds it.`), sent[0]!.text);
+    assert.ok(sent[0]!.text.includes(`You are its spec owner; [its builder](${OTHER}) is another session.`), sent[0]!.text);
     assert.doesNotMatch(sent[0]!.text, /sign off/);
     assert.match(sent[1]!.text, /no longer build #7: \[another session\]\(https:\/\/claude.ai\/code\/session_01OTHER\) does/);
     assert.match(sent[1]!.text, /sign off unless you know a reason not to/);
