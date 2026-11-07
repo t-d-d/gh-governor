@@ -426,8 +426,11 @@ export const sessionNamedIn = (body) => ownerLink(ownerText(String(body ?? '')))
  * and GitHub would show the sentence after it raw. The whole line is
  * governor's, and goes with the marker, line ending and all. A line ends at
  * a carriage return too, as the reader's lines do ({@link lineSpans}).
+ * A match starts only at a line's start: unanchored, a long line with no
+ * marker was scanned again from each of its characters, in time that grows
+ * with the square of its length.
  */
-const OWNER_UNKNOWN = /[^\r\n]*<!--[ \t]*governor:owner-unknown[ \t]+(\S+)[ \t]*-->[^\r\n]*(?:\r\n|\r|\n|$)/g;
+const OWNER_UNKNOWN = /(?<![^\r\n])[^\r\n]*<!--[ \t]*governor:owner-unknown[ \t]+(\S+)[ \t]*-->[^\r\n]*(?:\r\n|\r|\n|$)/g;
 
 /**
  * The body with every owner-unknown line removed.
