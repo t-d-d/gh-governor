@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,22 +19,10 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
   path: string,
   passed: Record<string, unknown>,
 }): string[] {
-  const git = (...args: string[]) => {
-    const run = spawnSync('git', args, { cwd, encoding: 'utf8' });
-    if (run.error !== undefined) throw run.error;
-    return run;
-  };
+  const git = gitIn(cwd);
   const short = sha.slice(0, 12);
-  const shallow = () => git('rev-parse', '--is-shallow-repository').stdout.trim() === 'true';
-  const unshallow = 'run git fetch --unshallow origin, or check out with fetch-depth: 0';
-  if (git('cat-file', '-e', `${sha}^{commit}`).status !== 0) {
-    // git refuses --unshallow in a full clone, where a stale origin/main
-    // is the only way to lack the pin.
-    if (shallow()) {
-      return [`the pinned commit ${short} is not in this clone: ${unshallow}`];
-    }
-    return [`the pinned commit ${short} is not in this clone: run git fetch origin`];
-  }
+  const missing = missingPin(git, sha);
+  if (missing !== undefined) return [missing];
   if (git('rev-parse', '--verify', '--quiet', `${main}^{commit}`).status !== 0) {
     return [`there is no ${main} in this clone: run git fetch origin main`];
   }
@@ -43,18 +31,13 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
     // A shallow clone can hold the pin and main without the history that
     // joins them, so a failed check there says nothing about the pin.
     const branch = main.replace(/^origin\//, '');
-    problems.push(shallow()
-      ? `this clone is shallow, so it cannot tell whether the pinned commit ${short} is on ${branch}: ${unshallow}`
+    problems.push(isShallow(git)
+      ? `this clone is shallow, so it cannot tell whether the pinned commit ${short} is on ${branch}: ${UNSHALLOW}`
       : `the pinned commit ${short} is not on ${branch}`);
   }
-  const shown = git('show', `${sha}:${path}`);
-  if (shown.status !== 0) return [...problems, `the pinned commit ${short} has no ${path}`];
-  let doc: unknown;
-  try {
-    doc = yaml.load(shown.stdout);
-  } catch (error) {
-    return [...problems, `${path} at ${short} is not valid YAML: ${(error as Error).message.split('\n')[0]}`];
-  }
+  const pinned = pinnedDoc(git, sha, path);
+  if ('problem' in pinned) return [...problems, pinned.problem];
+  const { doc } = pinned;
   const on = (doc as { on?: unknown } | null | undefined)?.on;
   const callable = on === 'workflow_call'
     || (Array.isArray(on) && on.includes('workflow_call'))
@@ -84,6 +67,49 @@ export function pinnedInputProblems({ cwd, main, sha, path, passed }: {
     if (input.required === true && !Object.hasOwn(passed, key)) problems.push(`the checker at ${short} requires input ${key}`);
   }
   return problems;
+}
+
+type Git = (...args: string[]) => SpawnSyncReturns<string>;
+
+// git run in `cwd`. It throws where git itself cannot run, so a missing git
+// is never read as a missing commit.
+function gitIn(cwd: string): Git {
+  return (...args: string[]) => {
+    const run = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    if (run.error !== undefined) throw run.error;
+    return run;
+  };
+}
+
+const UNSHALLOW = 'run git fetch --unshallow origin, or check out with fetch-depth: 0';
+
+function isShallow(git: Git): boolean {
+  return git('rev-parse', '--is-shallow-repository').stdout.trim() === 'true';
+}
+
+// Why this clone does not hold the pinned commit, with how to fetch it, or
+// undefined where it does.
+function missingPin(git: Git, sha: string): string | undefined {
+  if (git('cat-file', '-e', `${sha}^{commit}`).status === 0) return undefined;
+  const short = sha.slice(0, 12);
+  // git refuses --unshallow in a full clone, where a stale origin/main
+  // is the only way to lack the pin.
+  return isShallow(git)
+    ? `the pinned commit ${short} is not in this clone: ${UNSHALLOW}`
+    : `the pinned commit ${short} is not in this clone: run git fetch origin`;
+}
+
+// The file at `path` in the pinned commit, read as YAML, or the one sentence
+// that says why it cannot be.
+function pinnedDoc(git: Git, sha: string, path: string): { doc: unknown } | { problem: string } {
+  const short = sha.slice(0, 12);
+  const shown = git('show', `${sha}:${path}`);
+  if (shown.status !== 0) return { problem: `the pinned commit ${short} has no ${path}` };
+  try {
+    return { doc: yaml.load(shown.stdout) };
+  } catch (error) {
+    return { problem: `${path} at ${short} is not valid YAML: ${(error as Error).message.split('\n')[0]}` };
+  }
 }
 
 // YAML reads a mapping as a plain object, and a timestamp as a Date, which
@@ -121,70 +147,92 @@ export async function pinnedCheckerReadProblems({ cwd, sha, path, config }: {
   config: string,
 }): Promise<string[]> {
   const short = sha.slice(0, 12);
-  const shown = spawnSync('git', ['show', `${sha}:${path}`], { cwd, encoding: 'utf8' });
-  if (shown.status !== 0) return [`the pinned commit ${short} has no ${path}`];
-  let doc: unknown;
+  let issue: unknown;
   try {
-    doc = yaml.load(shown.stdout);
+    issue = (JSON.parse(config) as { heartbeat?: { issue?: unknown } } | null)?.heartbeat?.issue;
   } catch (error) {
-    return [`${path} at ${short} is not valid YAML: ${(error as Error).message.split('\n')[0]}`];
+    return [`the config given is not valid JSON: ${(error as Error).message}`];
   }
+  const git = gitIn(cwd);
+  const missingCommit = missingPin(git, sha);
+  if (missingCommit !== undefined) return [missingCommit];
+  const pinned = pinnedDoc(git, sha, path);
+  if ('problem' in pinned) return [pinned.problem];
+  const { doc } = pinned;
   const jobs = isMapping(doc) && isMapping(doc.jobs) ? Object.values(doc.jobs) : [];
   const runs = jobs.flatMap((job) => (isMapping(job) && Array.isArray(job.steps) ? job.steps : []))
     .map((step: unknown) => (isMapping(step) ? step.run : undefined))
     .filter((run): run is string => typeof run === 'string');
-  const text = runs.map((run) => /<<'CHECKER'\n([\s\S]*?)\nCHECKER\n/.exec(run)?.[1]).find((t) => t !== undefined);
+  const text = runs.map((run) => /<<'CHECKER'\n([\s\S]*?)\nCHECKER(?:\n|$)/.exec(run)?.[1]).find((t) => t !== undefined);
   if (text === undefined) return [`${path} at ${short} carries no heartbeat checker in a quoted CHECKER heredoc`];
   const dir = mkdtempSync(join(tmpdir(), 'pinned-checker-'));
   try {
     const file = join(dir, `heartbeat-check-${short}.mjs`);
     writeFileSync(file, `${text}\n`);
-    let check: (args: Record<string, unknown>) => Promise<unknown>;
+    // The checker is old code run in this process. Its only way out is the
+    // api it is handed, so a fetch of its own fails here, not on the network.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (input) => Promise.reject(new Error(`it reached for the network at ${String(input instanceof Request ? input.url : input)}`));
     try {
-      ({ check } = await import(pathToFileURL(file).href) as { check: typeof check });
-      if (typeof check !== 'function') throw new Error('it exports no check function');
-    } catch (error) {
-      return [`the heartbeat checker at ${short} does not load: ${(error as Error).message.split('\n')[0]}`];
-    }
-    const repo = 'acme/factory';
-    const issue = (JSON.parse(config) as { heartbeat?: { issue?: unknown } }).heartbeat?.issue;
-    const missing: string[] = [];
-    const opened: string[] = [];
-    let readIssue = false;
-    const notFound = (what: string) => Object.assign(new Error(`HTTP 404 for ${what}`), { status: 404 });
-    const api = async (method: string, route: string, body?: { title?: string }) => {
-      const url = new URL(route, 'https://api.invalid');
-      const contents = new RegExp(`^/repos/${repo}/contents/(.+)$`).exec(url.pathname);
-      if (method === 'GET' && contents !== null) {
-        const wanted = decodeURIComponent(contents[1] ?? '');
-        if (wanted !== '.github/governor.json') {
-          missing.push(wanted);
-          throw notFound(wanted);
-        }
-        return { encoding: 'base64', content: Buffer.from(config).toString('base64') };
+      let check: (args: Record<string, unknown>) => Promise<unknown>;
+      try {
+        ({ check } = await import(pathToFileURL(file).href) as { check: typeof check });
+        if (typeof check !== 'function') throw new Error('it exports no check function');
+      } catch (error) {
+        return [`the heartbeat checker at ${short} does not load: ${(error as Error).message.split('\n')[0]}`];
       }
-      if (method === 'GET' && url.pathname === `/repos/${repo}/issues/${String(issue)}`) {
-        readIssue = true;
-        return { number: issue, body: '' };
-      }
-      if (method === 'GET') return [];
-      if (method === 'POST' && url.pathname === `/repos/${repo}/issues`) opened.push(String(body?.title));
-      return { number: 900, state: 'open', ...body };
-    };
-    let threw: unknown;
-    try {
-      await check({ api, repo, now: Date.now(), toleranceHours: 3, labels: [], log: () => {} });
-    } catch (error) {
-      threw = error;
+      return await runChecker({ check, short, config, issue });
+    } finally {
+      globalThis.fetch = realFetch;
     }
-    if (readIssue && missing.length === 0) return [];
-    const why = missing.length > 0
-      ? `it read ${missing.join(', ')}, which the starter kit does not have`
-      : threw !== undefined
-        ? `it threw ${(threw as Error).message}`
-        : `it opened ${opened.length === 0 ? 'nothing' : opened.map((t) => JSON.stringify(t)).join(', ')}`;
-    return [`the heartbeat checker at ${short} did not read .github/governor.json through to heartbeat issue ${String(issue)}: ${why}`];
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// Runs a loaded checker's `check` against a fake GitHub that serves `config`
+// at .github/governor.json and no other path.
+async function runChecker({ check, short, config, issue }: {
+  check: (args: Record<string, unknown>) => Promise<unknown>,
+  short: string,
+  config: string,
+  issue: unknown,
+}): Promise<string[]> {
+  const repo = 'acme/factory';
+  const missing: string[] = [];
+  const opened: string[] = [];
+  let readIssue = false;
+  const notFound = (what: string) => Object.assign(new Error(`HTTP 404 for ${what}`), { status: 404 });
+  const api = async (method: string, route: string, body?: { title?: string }) => {
+    const url = new URL(route, 'https://api.invalid');
+    const contents = new RegExp(`^/repos/${repo}/contents/(.+)$`).exec(url.pathname);
+    if (method === 'GET' && contents !== null) {
+      const wanted = decodeURIComponent(contents[1] ?? '');
+      if (wanted !== '.github/governor.json') {
+        missing.push(wanted);
+        throw notFound(wanted);
+      }
+      return { encoding: 'base64', content: Buffer.from(config).toString('base64') };
+    }
+    if (method === 'GET' && url.pathname === `/repos/${repo}/issues/${String(issue)}`) {
+      readIssue = true;
+      return { number: issue, body: '' };
+    }
+    if (method === 'GET') return [];
+    if (method === 'POST' && url.pathname === `/repos/${repo}/issues`) opened.push(String(body?.title));
+    return { number: 900, state: 'open', ...body };
+  };
+  let threw: unknown;
+  try {
+    await check({ api, repo, now: Date.now(), toleranceHours: 3, labels: [], log: () => {} });
+  } catch (error) {
+    threw = error;
+  }
+  if (readIssue && missing.length === 0) return [];
+  const why = missing.length > 0
+    ? `it read ${missing.join(', ')}, which the starter kit does not have`
+    : threw !== undefined
+      ? `it threw ${(threw as Error).message}`
+      : `it opened ${opened.length === 0 ? 'nothing' : opened.map((t) => JSON.stringify(t)).join(', ')}`;
+  return [`the heartbeat checker at ${short} did not read .github/governor.json through to heartbeat issue ${String(issue)}: ${why}`];
 }
