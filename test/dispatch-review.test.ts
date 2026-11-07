@@ -17,9 +17,9 @@ import { LAUNCH_TIMEOUT_MS, REVIEW_MARK_WINDOW_MS, REVIEW_WINDOW_MS, redactTrans
 import { CONFIG_PATH, readConfig, resolveFiles } from '../dispatch/repo-config.mjs';
 import { standingLine } from '../dispatch/deliveries.mjs';
 import { ANSWER_SCHEMA, PR_FRAME, parseReview, readDigest } from '../dispatch/checklist.mjs';
-import { bodyDigest, lastReview, reviewMarker } from '../dispatch/pr-body.mjs';
-import { readFileSync } from 'node:fs';
-import { asksOwner, commentKey, commentText, mergeConflictText, passOf } from '../dispatch/webhook/review-comment.mjs';
+import { bodyDigest, reviewMarker } from '../dispatch/pr-body.mjs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { asksOwner, commentKey, commentText, mergeConflictText } from '../dispatch/webhook/review-comment.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { FIRE_BUDGET, fireWeight } from '../dispatch/webhook/fire.mjs';
@@ -57,16 +57,15 @@ type Verdict = { headSha: string, bodySha: string, readSha: string | null, pass:
 type Owed = { comment: string, message: { kind: string, text: string, on: number, fallback?: unknown }, tries: number };
 
 /**
- * The item the review that wrote a thread's last marker comment put
- * beside it, or null where governor's App wrote none: a test that seeds a
- * thread seeds the table with it.
+ * The item a review put in the state table beside its comment, over
+ * `over`: the head and the body it read, no read digest and no pass. A test
+ * that seeds a thread with governor's comment seeds this beside it, as the
+ * review reads its verdict from the table and never from the comment.
  */
-const verdictOf = (thread: Thread[]): Verdict | null => {
-  const last = lastReview(thread as never);
-  if (last === null) return null;
-  const passed = last.readSha === null ? null : passOf(last.text);
-  return { headSha: last.headSha, bodySha: last.bodySha, readSha: last.readSha, pass: passed === null ? null : { reason: passed.reason, at: passed.reused ?? last.headSha }, again: commentKey(last.text) === 'push', at: '2026-09-26T11:00:00.000Z' };
-};
+const itemAt = (head = HEAD, over: Partial<Verdict> = {}): Verdict => ({ headSha: head, bodySha: sha256(BODY), readSha: null, pass: null, again: false, at: '2026-09-26T11:00:00.000Z', ...over });
+
+/** The item the last review in `h` wrote, as a later turn reads it back. */
+const writtenBy = (h: { verdictWrites: Array<{ verdict: Omit<Verdict, 'at'> }> }): Verdict => ({ ...h.verdictWrites.at(-1)!.verdict, at: '2026-09-26T11:00:00.000Z' });
 
 /** The factory's CI workflow, as its file's `workflows.ci` names it. */
 const CI = '.github/workflows/ci.yml';
@@ -75,6 +74,25 @@ type CiRun = { id: number, path: string, status: string, conclusion: string | nu
 const ciRun = (over: Partial<CiRun> = {}): CiRun => ({
   id: 900, path: CI, status: 'completed', conclusion: 'success', event: 'pull_request', head_branch: 'claude/x', head_sha: HEAD, html_url: `https://github.com/${REPO}/actions/runs/900`, created_at: '2026-09-26T11:00:00Z', ...over,
 });
+
+type CheckRow = { name: string, state: 'red' | 'green' | 'pending', app?: string };
+type ListedEntry = string | { name: string, app: string };
+const entryName = (entry: ListedEntry): string => (typeof entry === 'string' ? entry : entry.name);
+/** The checks the factory's `prReview.requireChecks` lists, each green. */
+const LISTED: CheckRow[] = (JSON.parse(factoryFile(CONFIG_PATH)).prReview.requireChecks as ListedEntry[])
+  .map((entry) => (typeof entry === 'string' ? { name: entry, state: 'green' as const } : { name: entry.name, state: 'green' as const, app: entry.app }));
+/**
+ * The factory's listed checks that `config` still lists, posted green at
+ * every head unless a test names a check of the same name, so a review over
+ * the factory's own file is not held waiting for them. A repo whose file
+ * does not list them gets none, so a test of a check not posted there is
+ * not met by a green one it never wrote.
+ */
+const listedIn = (config: string): CheckRow[] => {
+  const entries = (JSON.parse(config).prReview?.requireChecks ?? []) as ListedEntry[];
+  return LISTED.filter((l) => entries.some((e) => entryName(e) === l.name));
+};
+const withListed = (checks: CheckRow[], listed: CheckRow[]): CheckRow[] => [...checks, ...listed.filter((l) => !checks.some((c) => c.name === l.name))];
 
 const harness = (over: {
   pulls?: Record<number, Pull | Pull[]>,
@@ -103,9 +121,9 @@ const harness = (over: {
   base?: string,
   /** The checks the base requires, and the checks at the head. */
   required?: string[],
-  checks?: Array<{ name: string, state: 'red' | 'green' | 'pending', app?: string }>,
+  checks?: CheckRow[],
   /** The checks at each head, over `checks`. */
-  checksAt?: (sha: string) => Array<{ name: string, state: 'red' | 'green' | 'pending', app?: string }>,
+  checksAt?: (sha: string) => CheckRow[],
   /** Governor's own latest `governor` run at the head, with its title: none by default. */
   own?: { state: 'red' | 'green' | 'pending', title: string } | null,
   /** The runs the CI workflow's list answers at the head: one green run of the factory's `ci.yml` at HEAD by default. */
@@ -175,7 +193,7 @@ const harness = (over: {
       openPulls: async () => over.open ?? [],
       defaultBranch: async () => over.base ?? 'main',
       requiredChecks: async (branch: string) => { requiredReads.push(branch); return over.required ?? []; },
-      checksAt: async (sha: string) => over.checksAt?.(sha) ?? over.checks ?? [],
+      checksAt: async (sha: string) => withListed(over.checksAt?.(sha) ?? over.checks ?? [], listedIn(over.config ?? factoryFile(CONFIG_PATH))),
       ownCheck: async () => over.own ?? null,
       checkRun: async (run: { name: string, sha: string, state: string, title: string, summary: string }) => {
         if (over.checkRun) await over.checkRun(run);
@@ -257,7 +275,7 @@ const harness = (over: {
         const written = verdictWrites.filter((w) => w.pr === pr).at(-1);
         if (written !== undefined) return { ...written.verdict, at: `written-${verdictWrites.length}` };
         if (over.verdicts !== undefined && pr in over.verdicts) return over.verdicts[pr] ?? null;
-        return verdictOf(over.threads?.[pr] ?? over.thread ?? []);
+        return null;
       },
       recordVerdict: async (repo: string, pr: number, read: Verdict | null, verdict: Omit<Verdict, 'at'>) => {
         if (over.verdictWrite !== undefined) throw new Error(over.verdictWrite);
@@ -488,7 +506,7 @@ describe('run — what reaches the owner session', () => {
   });
 
   test('a fail said already is an edit in place, which queues nothing', async () => {
-    const h = harness({ answers: [{ ...COSTS, reason: 'no cost is named for the module' }], thread: [{ id: 41, body: marked(textOf(COSTS), MOVED), created_at: 't', ours: true }] });
+    const h = harness({ answers: [{ ...COSTS, reason: 'no cost is named for the module' }], thread: [{ id: 41, body: marked(textOf(COSTS), MOVED), created_at: 't', ours: true }], verdicts: { 767: itemAt(MOVED) } });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(h.comments, []);
@@ -827,14 +845,14 @@ describe('run: an owner\'s message the lane refused is owed', () => {
 
 describe('run — what a review skips, saying nothing', () => {
   test('a draft, a closed PR, a PR into another branch, and a head and body the last marker already names', async () => {
-    for (const [pull, thread, why] of [
-      [pullRow({ draft: true }), [], /draft/],
+    for (const [pull, thread, item, why] of [
+      [pullRow({ draft: true }), [], null, /draft/],
       // A stacked PR: a pass would merge it into its base branch, not main.
-      [pullRow({ base: 'claude/the-pr-below' }), [], /into claude\/the-pr-below, not main/],
-      [pullRow({ state: 'closed' }), [], /closed/],
-      [pullRow(), [{ id: 5, body: marked('Waits for a person: x (test 3).'), created_at: 't', ours: true }], /already reviewed/],
+      [pullRow({ base: 'claude/the-pr-below' }), [], null, /into claude\/the-pr-below, not main/],
+      [pullRow({ state: 'closed' }), [], null, /closed/],
+      [pullRow(), [{ id: 5, body: marked('Waits for a person: x (test 3).'), created_at: 't', ours: true }], itemAt(), /already reviewed/],
     ] as const) {
-      const h = harness({ pulls: { 767: pull }, thread: [...thread] });
+      const h = harness({ pulls: { 767: pull }, thread: [...thread], verdicts: { 767: item } });
       const result = await review({ kind: 'review', pr: 767 }, h);
       assert.deepEqual(result.reviews.map((r) => r.outcome), ['skipped']);
       assert.match(String(result.reviews[0]!.reason), why);
@@ -859,11 +877,11 @@ describe('run — what a review skips, saying nothing', () => {
   });
 
   test('a new body or a new head under the last marker is read again', async () => {
-    for (const thread of [
-      [{ id: 5, body: marked('Waits for a person: x (test 3).', MOVED), created_at: 't', ours: true }],
-      [{ id: 5, body: marked('Waits for a person: x (test 3).', HEAD, 'an older body'), created_at: 't', ours: true }],
-    ]) {
-      const h = harness({ thread });
+    for (const [thread, item] of [
+      [[{ id: 5, body: marked('Waits for a person: x (test 3).', MOVED), created_at: 't', ours: true }], itemAt(MOVED)],
+      [[{ id: 5, body: marked('Waits for a person: x (test 3).', HEAD, 'an older body'), created_at: 't', ours: true }], itemAt(HEAD, { bodySha: sha256('an older body') })],
+    ] as const) {
+      const h = harness({ thread: [...thread], verdicts: { 767: item } });
       await review({ kind: 'review', pr: 767 }, h);
       assert.equal(h.judged.length, 1);
     }
@@ -995,7 +1013,7 @@ describe('run — a Dependabot PR', () => {
     const first = harness({ pulls: { 767: dependabotRow() }, files });
     await review({ kind: 'review', pr: 767 }, first);
     const said = first.comments[0]!.body;
-    const h = harness({ pulls: { 767: dependabotRow({ headSha: MOVED }) }, files, ciRuns: [ciRun({ head_sha: MOVED })], thread: [{ id: 9, body: said, created_at: 't', ours: true }] });
+    const h = harness({ pulls: { 767: dependabotRow({ headSha: MOVED }) }, files, ciRuns: [ciRun({ head_sha: MOVED })], thread: [{ id: 9, body: said, created_at: 't', ours: true }], verdicts: { 767: writtenBy(first) } });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(h.comments, []);
@@ -1035,7 +1053,7 @@ describe('run — a fail said already', () => {
   const said = 'Waits for a person: the change adds an IAM grant (test 3). No edit to the description meets this one. A person merges it.';
 
   test('the same test and editable moves the marker in the existing comment to the head and body just reviewed', async () => {
-    const h = harness({ answers: [IAM], thread: [{ id: 41, body: marked(said, MOVED), created_at: 't', ours: true }] });
+    const h = harness({ answers: [IAM], thread: [{ id: 41, body: marked(said, MOVED), created_at: 't', ours: true }], verdicts: { 767: itemAt(MOVED) } });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(h.comments, []);
@@ -1044,7 +1062,7 @@ describe('run — a fail said already', () => {
 
   test('the same test and editable, reworded, edits the existing comment to the new words and posts nothing', async () => {
     const reworded: Answer = { ...IAM, reason: 'it grants a new IAM permission to the task role' };
-    const h = harness({ answers: [reworded], thread: [{ id: 41, body: marked(said, MOVED), created_at: 't', ours: true }] });
+    const h = harness({ answers: [reworded], thread: [{ id: 41, body: marked(said, MOVED), created_at: 't', ours: true }], verdicts: { 767: itemAt(MOVED) } });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(h.comments, []);
@@ -1053,7 +1071,7 @@ describe('run — a fail said already', () => {
 
   test('a different test, or the same test with a different editable, is a new comment', async () => {
     for (const answer of [{ ...IAM, test: 5 }, COSTS] as Answer[]) {
-      const h = harness({ answers: [answer], thread: [{ id: 41, body: marked(said, MOVED), created_at: 't', ours: true }] });
+      const h = harness({ answers: [answer], thread: [{ id: 41, body: marked(said, MOVED), created_at: 't', ours: true }], verdicts: { 767: itemAt(MOVED) } });
       const result = await review({ kind: 'review', pr: 767 }, h);
       assert.deepEqual(result.reviews.map((r) => r.outcome), ['commented'], JSON.stringify(answer));
       assert.equal(h.comments.length, 1);
@@ -1063,7 +1081,7 @@ describe('run — a fail said already', () => {
 
   test('a fail after a conflict comment is a new comment', async () => {
     const conflict = textOf({ answer: 'pass', reason: 'closes #748 as written' }, true);
-    const h = harness({ answers: [IAM], thread: [{ id: 41, body: marked(conflict, MOVED), created_at: 't', ours: true }] });
+    const h = harness({ answers: [IAM], thread: [{ id: 41, body: marked(conflict, MOVED), created_at: 't', ours: true }], verdicts: { 767: itemAt(MOVED) } });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['commented']);
     assert.equal(h.comments.length, 1);
@@ -1075,7 +1093,7 @@ describe('run — a conflict said already', () => {
   const said = textOf({ answer: 'pass', reason: 'closes #748 as written' }, true);
 
   test('a conflict after a conflict comment, reworded, edits that comment to the new words and posts nothing', async () => {
-    const h = harness({ pulls: { 767: pullRow({ mergeable: false }) }, thread: [{ id: 41, body: marked(said, HEAD, 'an older body'), created_at: 't', ours: true }] });
+    const h = harness({ pulls: { 767: pullRow({ mergeable: false }) }, thread: [{ id: 41, body: marked(said, HEAD, 'an older body'), created_at: 't', ours: true }], verdicts: { 767: itemAt(HEAD, { bodySha: sha256('an older body') }) } });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(h.comments, []);
@@ -1085,7 +1103,7 @@ describe('run — a conflict said already', () => {
 
   test('a conflict after a merge to main\'s conflict comment edits that comment and posts nothing: the owner was told of it', async () => {
     const merged = mergeConflictText({ mainSha: MOVED, merged: 793 });
-    const h = harness({ pulls: { 767: pullRow({ mergeable: false }) }, thread: [{ id: 41, body: marked(merged, HEAD, `${BODY}\n${merged}`), created_at: 't', ours: true }] });
+    const h = harness({ pulls: { 767: pullRow({ mergeable: false }) }, thread: [{ id: 41, body: marked(merged, HEAD, `${BODY}\n${merged}`), created_at: 't', ours: true }], verdicts: { 767: itemAt(HEAD, { bodySha: sha256(`${BODY}\n${merged}`) }) } });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(h.comments, []);
@@ -1093,7 +1111,7 @@ describe('run — a conflict said already', () => {
   });
 
   test('a conflict after a fail comment is a new comment', async () => {
-    const h = harness({ pulls: { 767: pullRow({ mergeable: false }) }, thread: [{ id: 41, body: marked(textOf(IAM), MOVED), created_at: 't', ours: true }] });
+    const h = harness({ pulls: { 767: pullRow({ mergeable: false }) }, thread: [{ id: 41, body: marked(textOf(IAM), MOVED), created_at: 't', ours: true }], verdicts: { 767: itemAt(MOVED) } });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['conflict']);
     assert.equal(h.comments.length, 1);
@@ -1117,21 +1135,26 @@ describe('run: a pass reused at a new head', () => {
   /** Each file's text at the merge base and at `head`, the quoted rule changed from `before` to `after`. */
   const ruleTexts = (head: string, before = 'The old rule.', after = 'The new rule.') => ({ [`${MERGE_BASE}:${QUOTED}`]: before, [`${head}:${QUOTED}`]: after });
   type Over = Parameters<typeof harness>[0];
-  /** The review's comment at EARLIER, by a turn reviewing the PR there, over `over`. */
-  const reviewedAt = async (head: string, over: Over = {}, thread: Thread[] = []) => {
-    const h = harness({ pulls: { 767: pullRow({ headSha: head, mergeable: false }) }, ciRuns: [ciRun({ head_sha: head })], thread, ...over });
+  /** The item each comment's review wrote beside it, by the comment. */
+  const items = new Map<string, Verdict>();
+  /** The review's comment at `head`, by a turn reviewing the PR there, over `over`. */
+  const reviewedAt = async (head: string, over: Over = {}) => {
+    const h = harness({ pulls: { 767: pullRow({ headSha: head, mergeable: false }) }, ciRuns: [ciRun({ head_sha: head })], ...over });
     await review({ kind: 'review', pr: 767 }, h);
     const said = h.comments[0]?.body ?? h.commentEdits[0]?.body;
     assert.ok(said !== undefined, 'the earlier review posted a comment');
+    items.set(said, writtenBy(h));
     return said;
   };
   const ours = (body: string): Thread[] => [{ id: 41, body, created_at: 't', ours: true }];
+  /** A thread holding an earlier review's comment, and that review's item in the state table. */
+  const seen = (said: string) => ({ thread: ours(said), verdicts: { 767: items.get(said)! } });
 
   test('a PR passed at one head, given a new head with the same body, tickets and file list, passes at the new head with no model call', async () => {
     // The #414 shape: a conflict at the earlier head, the model's pass in it, and a push that only merges main.
     const earlier = await reviewedAt(EARLIER);
     assert.match(earlier, /^Passes the PR review, but conflicts with its base/);
-    const h = harness({ thread: ours(earlier) });
+    const h = harness({ ...seen(earlier) });
     const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
     assert.deepEqual(h.judged, [], 'no model call');
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
@@ -1144,9 +1167,9 @@ describe('run: a pass reused at a new head', () => {
   test('a pass the owner merges is reused too, and a reused pass again at a later head names the head the answer was given at', async () => {
     const earlier = await reviewedAt(EARLIER, { config: tagalongFile(), tickets: { 748: { labels: ['claimed'] } }, pulls: { 767: pullRow({ headSha: EARLIER }) } });
     assert.match(earlier, /^Passes the PR review: .* The repo's owner merges it\./);
-    const middle = await reviewedAt(HEAD, { config: tagalongFile(), tickets: { 748: { labels: ['claimed'] } }, pulls: { 767: pullRow() }, answers: () => { throw new Error('the model was asked'); } }, ours(earlier));
+    const middle = await reviewedAt(HEAD, { config: tagalongFile(), tickets: { 748: { labels: ['claimed'] } }, pulls: { 767: pullRow() }, answers: () => { throw new Error('the model was asked'); }, ...seen(earlier) });
     assert.match(middle, new RegExp(`^Passes the PR review: ${PASS.reason}\\. Reuses the answer given at ${EARLIER}: nothing the model reads has changed since\\. The repo's owner merges it\\.\\n\\n<!-- governor:pr-review ${HEAD} `));
-    const h = tagalong({ pulls: { 767: pullRow({ headSha: LATER }) }, ciRuns: [ciRun({ head_sha: LATER })], thread: ours(middle) });
+    const h = tagalong({ pulls: { 767: pullRow({ headSha: LATER }) }, ciRuns: [ciRun({ head_sha: LATER })], ...seen(middle) });
     const result = await reviewTagalong(h);
     assert.deepEqual(h.judged, []);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['passed']);
@@ -1157,7 +1180,7 @@ describe('run: a pass reused at a new head', () => {
   test('a quoted file the same at the base and the head reuses the pass', async () => {
     const files: FileRow[] = [...FILES, { filename: QUOTED, status: 'modified' }];
     const earlier = await reviewedAt(EARLIER, { files, texts: ruleTexts(EARLIER) });
-    const h = harness({ files, texts: ruleTexts(HEAD), thread: ours(earlier) });
+    const h = harness({ files, texts: ruleTexts(HEAD), ...seen(earlier) });
     await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(h.judged, []);
     assert.match(h.comments[0]!.body, /^Passes the PR review: .* Reuses the answer given at /);
@@ -1176,7 +1199,7 @@ describe('run: a pass reused at a new head', () => {
       ['the title', { files, texts: ruleTexts(HEAD), pulls: { 767: pullRow({ title: 'Another title' }) } }],
     ];
     for (const [what, over] of changes) {
-      const h = harness({ ...over, thread: ours(earlier) });
+      const h = harness({ ...over, ...seen(earlier) });
       await review({ kind: 'review', pr: 767 }, h);
       assert.equal(h.judged.length, 1, what);
       assert.doesNotMatch(h.comments[0]?.body ?? '', /Reuses the answer/, what);
@@ -1186,7 +1209,7 @@ describe('run: a pass reused at a new head', () => {
   test('a new head whose last review failed asks the model', async () => {
     const earlier = await reviewedAt(EARLIER, { answers: [COSTS], pulls: { 767: pullRow({ headSha: EARLIER }) } });
     assert.match(earlier, /^Waits for a description edit: /);
-    const h = harness({ thread: ours(earlier) });
+    const h = harness({ ...seen(earlier) });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.equal(h.judged.length, 1);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
@@ -1194,16 +1217,16 @@ describe('run: a pass reused at a new head', () => {
 
   test('a tests-in-code fail at the new head still fails, whatever the earlier pass', async () => {
     const earlier = await reviewedAt(EARLIER);
-    const red = harness({ thread: ours(earlier), required: ['gate'], checks: [{ name: 'gate', state: 'red' }] });
+    const red = harness({ ...seen(earlier), required: ['gate'], checks: [{ name: 'gate', state: 'red' }] });
     await review({ kind: 'review', pr: 767 }, red);
     assert.match(red.comments[0]!.body, /^Waits for a push: the required check `gate` is red on its head \(test 8\)/);
     assert.deepEqual(red.checkRuns.map((c) => c.state), ['failure']);
-    const conflict = harness({ thread: ours(earlier), pulls: { 767: pullRow({ mergeable: false }) } });
+    const conflict = harness({ ...seen(earlier), pulls: { 767: pullRow({ mergeable: false }) } });
     const conflicted = await review({ kind: 'review', pr: 767 }, conflict);
     assert.deepEqual(conflicted.reviews.map((r) => r.outcome), ['marker-moved'], 'the conflict comment is edited to the new head');
     assert.deepEqual(conflict.merges, []);
     assert.deepEqual(conflict.checkRuns.map((c) => c.state), ['failure']);
-    const human = harness({ thread: ours(earlier), files: [...FILES, { filename: 'infra/stack.yml', status: 'modified' }] });
+    const human = harness({ ...seen(earlier), files: [...FILES, { filename: 'infra/stack.yml', status: 'modified' }] });
     await review({ kind: 'review', pr: 767 }, human);
     assert.match(human.comments[0]!.body, /^Waits for a person: `infra\/stack\.yml` is on the human-only list/);
     for (const h of [red, conflict, human]) {
@@ -1212,18 +1235,19 @@ describe('run: a pass reused at a new head', () => {
     }
   });
 
-  test('a marker with no hash asks the model', async () => {
+  test('a verdict naming no read digest, under a marker with no hash, asks the model', async () => {
     const earlier = await reviewedAt(EARLIER);
     const unhashed = earlier.replace(/ [0-9a-f]{64} -->$/, ' -->');
     assert.match(unhashed, new RegExp(`<!-- governor:pr-review ${EARLIER} ${sha256(BODY)} -->$`));
-    const h = harness({ thread: ours(unhashed) });
+    // The review that wrote it put no read digest in the table either: a verdict naming none offers nothing.
+    const h = harness({ thread: ours(unhashed), verdicts: { 767: { ...items.get(earlier)!, readSha: null } } });
     await review({ kind: 'review', pr: 767 }, h);
     assert.equal(h.judged.length, 1);
   });
 
   test('a body edited since the pass asks the model', async () => {
     const earlier = await reviewedAt(EARLIER);
-    const h = harness({ thread: ours(earlier), pulls: { 767: pullRow({ body: `${BODY}\n\nOne more line.` }) } });
+    const h = harness({ ...seen(earlier), pulls: { 767: pullRow({ body: `${BODY}\n\nOne more line.` }) } });
     await review({ kind: 'review', pr: 767 }, h);
     assert.equal(h.judged.length, 1);
   });
@@ -1240,6 +1264,15 @@ describe('fitness: run — the review reads its earlier verdict from the state t
   const EARLIER = 'e'.repeat(40);
   const FAIL_ITEM = (head: string, readSha: string | null = READ): Verdict => ({ headSha: head, bodySha: sha256(BODY), readSha, pass: null, again: false, at: '2026-09-26T11:00:00.000Z' });
   const reused = (head: string) => `${textOf(PASS)} Reuses the answer given at ${head}: nothing the model reads has changed since.`;
+
+  test('no production module exports a parser that reads a pass or a held pass back from comment text', async () => {
+    const comment = await import('../dispatch/webhook/review-comment.mjs') as Record<string, unknown>;
+    for (const name of ['passOf', 'heldPassReason']) assert.equal(comment[name], undefined, `review-comment.mjs exports ${name}`);
+    for (const file of readdirSync(new URL('../dispatch/', import.meta.url), { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.mjs'))) {
+      const text = readFileSync(new URL(`../dispatch/${file}`, import.meta.url), 'utf8');
+      assert.doesNotMatch(text, /\b(passOf|heldPassReason|HELD_PASS)\b/, `dispatch/${file} reads a pass from comment text`);
+    }
+  });
 
   test('a fail comment edited into a pass, its marker carrying the read digest, is offered for no reuse at a new head: the model is asked', async () => {
     const edited = asked(textOf(PASS), EARLIER);
@@ -1418,8 +1451,8 @@ describe('fitness: run — no run but the CI workflow\'s at the head holds a mer
   });
 
   test('a held pass on an older head or body is judged again', async () => {
-    for (const body of [marked(HELD, MOVED), marked(HELD, HEAD, 'an older body')]) {
-      const h = harness({ thread: [{ id: 41, body, created_at: 't', ours: true }] });
+    for (const [body, item] of [[marked(HELD, MOVED), itemAt(MOVED)], [marked(HELD, HEAD, 'an older body'), itemAt(HEAD, { bodySha: sha256('an older body') })]] as const) {
+      const h = harness({ thread: [{ id: 41, body, created_at: 't', ours: true }], verdicts: { 767: item } });
       const result = await review({ kind: 'review', pr: 767 }, h);
       assert.equal(h.judged.length, 1);
       assert.deepEqual(result.reviews.map((r) => r.outcome), ['merged']);
@@ -1553,7 +1586,7 @@ describe('run — the author session\'s part of a PR a person merges', () => {
     const before = harness({ pulls: { 767: pullRow({ body: PROSE }) }, files: [HOOK] });
     await review({ kind: 'review', pr: 767 }, before);
     const fixed = PROSE.replace('`Closes #12 and #13`', 'a closing keyword in code');
-    const h = harness({ pulls: { 767: pullRow({ body: fixed }) }, files: [HOOK], thread: [{ id: 41, body: before.comments[0]!.body, created_at: 't', ours: true }] });
+    const h = harness({ pulls: { 767: pullRow({ body: fixed }) }, files: [HOOK], thread: [{ id: 41, body: before.comments[0]!.body, created_at: 't', ours: true }], verdicts: { 767: writtenBy(before) } });
     const result = await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(result.reviews.map((r) => r.outcome), ['commented']);
     assert.deepEqual(h.commentEdits, []);
@@ -1566,7 +1599,7 @@ describe('run — the author session\'s part of a PR a person merges', () => {
     const before = harness({ files: [HOOK] });
     await review({ kind: 'review', pr: 767 }, before);
     assert.match(before.comments[0]!.body, person);
-    const h = harness({ pulls: { 767: pullRow({ body: PROSE }) }, files: [HOOK], thread: [{ id: 41, body: before.comments[0]!.body, created_at: 't', ours: true }] });
+    const h = harness({ pulls: { 767: pullRow({ body: PROSE }) }, files: [HOOK], thread: [{ id: 41, body: before.comments[0]!.body, created_at: 't', ours: true }], verdicts: { 767: writtenBy(before) } });
     await review({ kind: 'review', pr: 767 }, h);
     assert.deepEqual(h.commentEdits, []);
     assert.match(h.comments[0]!.body, edit);
@@ -1656,7 +1689,8 @@ describe('run — a review of every open PR', () => {
           786: pullRow({ number: 786, headSha: OTHER_HEAD, state: 'closed' }),
         },
         // #781 was reviewed at its head with its body, and passed.
-        threads: { 781: [{ id: 9, body: marked(textOf(PASS)), created_at: 't', ours: true }] },
+        threads: { 781: [{ id: 9, body: asked(textOf(PASS)), created_at: 't', ours: true }] },
+        verdicts: { 781: itemAt(HEAD, { readSha: READ, pass: { reason: PASS.reason, at: HEAD } }) },
         required: ['gate'],
         checksAt: (sha) => [{ name: 'gate', state: sha === PENDING_HEAD ? 'pending' : 'green' }],
         // The CI run at each head has finished green: only #784's required check waits.
@@ -1957,7 +1991,7 @@ describe('fitness: the review posts its verdict as the `governor` check (dispatc
       ['closed', harness({ pulls: { 767: pullRow({ state: 'closed' }) } }), { pr: 767 }],
       ['draft', harness({ pulls: { 767: pullRow({ draft: true }) } }), { pr: 767 }],
       ['base', harness({ pulls: { 767: pullRow({ base: 'claude/below' }) } }), { pr: 767 }],
-      ['reviewed', harness({ thread: reviewed }), { pr: 767 }],
+      ['reviewed', harness({ thread: reviewed, verdicts: { 767: itemAt() } }), { pr: 767 }],
       ['moved', harness({ pulls: { 767: pullRow({ headSha: MOVED }) } }), { pr: 767, headSha: HEAD }],
       ['dependabot', tagalong({ pulls: { 767: dependabotRow({ mergeable: false }) }, files: [{ filename: 'package-lock.json', status: 'modified' }] }, { dependabot: ['/package-lock.json'] }), { pr: 767, repo: TAGALONG }],
     ] as const) {
@@ -1974,7 +2008,7 @@ describe('fitness: the review posts its verdict as the `governor` check (dispatc
       assert.deepEqual(turn.reviews.map((r) => r.outcome), ['passed'], state);
       assert.equal(h.judged.length, 1, state);
     }
-    const bodyEdited = tagalong({ required: ['governor'], checks: [{ name: 'governor', state: 'red' }], thread: [{ id: 7, body: marked(textOf(COSTS), HEAD, 'an older body'), created_at: 'a', ours: true }] });
+    const bodyEdited = tagalong({ required: ['governor'], checks: [{ name: 'governor', state: 'red' }], thread: [{ id: 7, body: marked(textOf(COSTS), HEAD, 'an older body'), created_at: 'a', ours: true }], verdicts: { 767: itemAt(HEAD, { bodySha: sha256('an older body') }) } });
     assert.deepEqual((await reviewTagalong(bodyEdited)).reviews.map((r) => r.outcome), ['passed'], 'its own earlier failure is no red required check');
   });
 
@@ -2024,6 +2058,22 @@ describe('fitness: the settings checks decide before the model (dispatcher-revie
     assert.equal(waived.judged.length, 1, 'a waiving label lets the ticket through');
   });
 
+  test('the ticket rules match `labels` and `unless` in any case, as GitHub matches labels', async () => {
+    const forbidden = tagalong({ tickets: { 748: { labels: ['claimed', 'Type: ADR'] } } }, { tickets: { forbid: [{ labels: ['type: adr'] }] } });
+    await reviewTagalong(forbidden);
+    const required = tagalong({ tickets: { 748: { labels: ['claimed', 'SIZE: S'] } } }, { tickets: { require: [{ labels: ['size: s', 'size: m'] }] } });
+    await reviewTagalong(required);
+    const waived = tagalong({ tickets: { 748: { labels: ['claimed', 'epic', 'Split'] } } }, { tickets: { forbid: [{ labels: ['EPIC'], unless: ['split'] }] } });
+    await reviewTagalong(waived);
+    const waivedRequire = tagalong({ tickets: { 748: { labels: ['claimed', 'Chore'] } } }, { tickets: { require: [{ labels: ['size: s'], unless: ['chore'] }] } });
+    await reviewTagalong(waivedRequire);
+    assert.equal(forbidden.judged.length, 0, 'a forbidden label in another case still fails');
+    assert.match(forbidden.comments[0]!.body, /^Waits for a person: the ticket it closes, #748, is `Type: ADR` \(test 1\)/);
+    assert.equal(required.judged.length, 1, 'a required label in another case meets the rule');
+    assert.equal(waived.judged.length, 1, 'an `unless` label in another case waives a forbid');
+    assert.equal(waivedRequire.judged.length, 1, 'an `unless` label in another case waives a require');
+  });
+
   test('a ticket not carrying the repo\'s claim label is told to claim it where it still carries the ready labels, and waits for a person otherwise', async () => {
     const ready = tagalong({ tickets: { 748: { labels: ['ready'] } } });
     await reviewTagalong(ready);
@@ -2032,6 +2082,13 @@ describe('fitness: the settings checks decide before the model (dispatcher-revie
     await reviewTagalong(neither);
     assert.match(neither.comments[0]!.body, /^Waits for a person: the ticket it closes, #748, is not `claimed`, nor ready to claim/);
     assert.deepEqual([ready.judged.length, neither.judged.length], [0, 0]);
+  });
+
+  test('a ticket carrying a label the claim takes off, in another case, is told to claim it, as pickup reads it ready', async () => {
+    const config = JSON.stringify(switched({ environment: 'env_01TAG', pickup: { enabled: false, ready: ['ready'], claim: 'claimed', claimRemoves: ['ready'] }, prReview: { prompt: TAGALONG_CHECKLIST, merge: false } }, { prReview: true, prMessages: true }));
+    const h = tagalong({ config, tickets: { 748: { labels: ['Ready'] } } });
+    await reviewTagalong(h);
+    assert.match(h.comments[0]!.body, /^Waits for its ticket to be claimed: the ticket it closes, #748, is not yet `claimed`/);
   });
 
   test('a change on the repo\'s human-only list fails test 7 in code; one an `unless` label waives does not', async () => {
@@ -2108,10 +2165,11 @@ describe('run — required checks still running, or run again', () => {
     const red = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }] });
     await reviewTagalong(red);
     const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
-    const green = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'green' }], thread });
+    const verdicts = { 767: writtenBy(red) };
+    const green = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'green' }], thread, verdicts });
     assert.deepEqual((await reviewTagalong(green)).reviews.map((r) => r.outcome), ['passed']);
     assert.equal(green.judged.length, 1);
-    const still = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }], thread });
+    const still = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }], thread, verdicts });
     assert.deepEqual((await reviewTagalong(still)).reviews.map((r) => r.outcome), ['marker-moved'], 'still red: the comment stands, edited in place');
   });
 
@@ -2121,22 +2179,23 @@ describe('run — required checks still running, or run again', () => {
     const red = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }] });
     await reviewTagalong(red);
     const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
+    const verdicts = { 767: writtenBy(red) };
 
     const own = { state: 'red' as const, title: red.checkRuns.at(-1)!.title };
-    const same = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'aggregate', state: 'green' }], thread, own });
+    const same = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'aggregate', state: 'green' }], thread, verdicts, own });
     const turn = await byCommit(same);
     assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped']);
     assert.match(String(turn.reviews[0]!.reason), /same red checks/);
     assert.deepEqual([same.comments.length, same.commentEdits.length, same.checkRuns.length, same.judged.length], [0, 0, 0, 0]);
 
     // The red checks changed: another one turned red, so the fail is said again.
-    const more = tagalong({ open, required: ['gate', 'lint'], checks: [{ name: 'gate', state: 'red' }, { name: 'lint', state: 'red' }], thread, own });
+    const more = tagalong({ open, required: ['gate', 'lint'], checks: [{ name: 'gate', state: 'red' }, { name: 'lint', state: 'red' }], thread, verdicts, own });
     assert.deepEqual((await byCommit(more)).reviews.map((r) => r.outcome), ['marker-moved']);
     assert.match(more.commentEdits[0]!.body, /`gate`, `lint` are red/);
     assert.deepEqual(more.checkRuns.map((c) => c.state), ['failure']);
 
     // A re-run that turned it green is read again.
-    const green = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'green' }], thread, own });
+    const green = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'green' }], thread, verdicts, own });
     assert.deepEqual((await byCommit(green)).reviews.map((r) => r.outcome), ['passed']);
     assert.equal(green.judged.length, 1);
   });
@@ -2160,10 +2219,11 @@ describe('run — required checks still running, or run again', () => {
     const red = tagalong({ required: ['gate'], checks: [{ name: 'gate', state: 'red' }] });
     await reviewTagalong(red);
     const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
+    const verdicts = { 767: writtenBy(red) };
 
     // `gate` was re-run, a review in between posted the check in progress, and the re-run ended red again.
     const own = { state: 'pending' as const, title: 'Waits for its required checks to finish.' };
-    const waited = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'governor', state: 'pending' }], thread, own });
+    const waited = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'governor', state: 'pending' }], thread, verdicts, own });
     assert.deepEqual((await byCommit(waited)).reviews.map((r) => r.outcome), ['marker-moved']);
     assert.deepEqual(waited.checkRuns.map((c) => c.state), ['failure']);
   });
@@ -2175,10 +2235,11 @@ describe('run — required checks still running, or run again', () => {
     await reviewTagalong(red);
     const verdict = red.checkRuns.at(-1)!;
     const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
+    const verdicts = { 767: writtenBy(red) };
 
     // A later review at the head threw, or ran out of time, after the test-8 fail.
     for (const own of [{ state: 'red' as const, title: 'The PR review did not run.' }, null]) {
-      const errored = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'governor', state: 'red' }], thread, own });
+      const errored = tagalong({ open, required: ['gate'], checks: [{ name: 'gate', state: 'red' }, { name: 'governor', state: 'red' }], thread, verdicts, own });
       assert.deepEqual((await byCommit(errored)).reviews.map((r) => r.outcome), ['marker-moved'], JSON.stringify(own));
       assert.deepEqual(errored.checkRuns.map((c) => [c.state, c.title]), [['failure', verdict.title]], 'the test-8 verdict is posted again');
       assert.equal(errored.judged.length, 0);
@@ -2245,10 +2306,11 @@ describe('run — the CI workflow\'s run at the head (test 8)', () => {
     const red = harness({ ciRuns: [ciRun({ conclusion: 'failure' })] });
     await review({ kind: 'review', pr: 767 }, red);
     const thread = [{ id: 7, body: red.comments[0]!.body, created_at: 'a', ours: true }];
-    const green = harness({ thread });
+    const verdicts = { 767: writtenBy(red) };
+    const green = harness({ thread, verdicts });
     assert.deepEqual((await review({ kind: 'review', pr: 767 }, green)).reviews.map((r) => r.outcome), ['merged']);
     assert.equal(green.judged.length, 1);
-    const still = harness({ ciRuns: [ciRun({ conclusion: 'failure' })], thread });
+    const still = harness({ ciRuns: [ciRun({ conclusion: 'failure' })], thread, verdicts });
     assert.deepEqual((await review({ kind: 'review', pr: 767 }, still)).reviews.map((r) => r.outcome), ['marker-moved'], 'still red: the comment stands, edited in place');
   });
 
@@ -2353,6 +2415,24 @@ describe('run, the checks the review section lists (test 8)', () => {
     assert.match(h.comments[0]!.body, /^Waits for a push: the required check `codeql` is red on its head \(test 8\)\./);
   });
 
+  test('the factory\'s own file lists both forms, and the review reads each', async () => {
+    const { requireChecks } = JSON.parse(factoryFile(CONFIG_PATH)).prReview;
+    assert.ok(requireChecks.some((entry: unknown) => typeof entry === 'string'), 'a bare name');
+    assert.ok(requireChecks.some((entry: unknown) => typeof entry === 'object' && entry !== null && 'app' in entry), 'a name with its App');
+    const bare = harness({ checks: [{ name: 'lint', state: 'red' }] });
+    await review({ kind: 'review', pr: 767 }, bare);
+    assert.equal(bare.judged.length, 0);
+    assert.match(bare.comments[0]!.body, /^Waits for a push: the required check `lint` is red on its head \(test 8\)\./);
+    const scan = harness({ checks: [{ name: 'CodeQL', state: 'red', app: 'github-code-scanning' }] });
+    await review({ kind: 'review', pr: 767 }, scan);
+    assert.equal(scan.judged.length, 0);
+    assert.match(scan.comments[0]!.body, /^Waits for a push: the required check `CodeQL` from `github-code-scanning` is red on its head \(test 8\)\./);
+    const stand = harness({ checks: [{ name: 'CodeQL', state: 'green', app: 'github-actions' }] });
+    const turn = await review({ kind: 'review', pr: 767 }, stand);
+    assert.deepEqual(turn.reviews.map((r) => r.outcome), ['skipped'], 'another App\'s run of the name does not meet the entry');
+    assert.match(String(turn.reviews[0]!.reason), /`CodeQL` from `github-code-scanning`.*not finished/);
+  });
+
   test('a listed `governor` is left out, as a required one is', async () => {
     const h = tagalong({ checks: [{ name: 'governor', state: 'red' }] }, { requireChecks: ['governor'] });
     assert.deepEqual((await reviewTagalong(h)).reviews.map((r) => r.outcome), ['passed']);
@@ -2378,24 +2458,17 @@ describe('run — any served repo\'s review', () => {
 });
 
 describe('the comment\'s parts', () => {
-  test('passOf reads the model\'s pass back from a pass, one the owner merges, a conflict and a reused pass, and nothing from a fail or a held pass', () => {
+  test('a reused pass names the head the answer was given at, whether it merges, the owner merges it, or it conflicts', () => {
     const at = 'e'.repeat(40);
-    const reason = 'closes #748 as written. Nothing is left open';
-    const passes = { answer: 'pass', reason } as const;
-    assert.deepEqual(passOf(textOf(passes)), { reason: `${reason}.`, reused: null });
-    assert.deepEqual(passOf(commentText(passes, { conflict: false, merge: false })), { reason: `${reason}.`, reused: null });
-    assert.deepEqual(passOf(textOf(passes, true)), { reason: `${reason}.`, reused: null });
+    const passes = { answer: 'pass', reason: 'closes #748 as written. Nothing is left open', reused: at } as const;
     for (const conflict of [false, true]) {
       for (const merge of [false, true]) {
-        const text = commentText({ ...passes, reused: at }, { conflict, merge });
-        assert.match(text, new RegExp(`Reuses the answer given at ${at}: nothing the model reads has changed since\\.`));
-        assert.deepEqual(passOf(text), { reason: `${reason}.`, reused: at }, text);
+        const text = commentText(passes, { conflict, merge });
+        assert.match(text, new RegExp(`closes #748 as written\\. Nothing is left open\\. Reuses the answer given at ${at}: nothing the model reads has changed since\\.`), text);
+        assert.match(text, conflict ? /^Passes the PR review, but conflicts with its base/ : /^Passes the PR review: /, text);
+        assert.equal(/The repo's owner merges it\.$/.test(text), !conflict && !merge, text);
       }
     }
-    assert.equal(passOf(textOf(IAM)), null);
-    assert.equal(passOf(textOf(COSTS)), null);
-    assert.equal(passOf(HELD), null);
-    assert.equal(passOf(mergeConflictText({ mainSha: MOVED, merged: 793 })), null, 'a merge to main\'s conflict carries no answer of the model\'s');
   });
 
   test('commentKey names a fail comment by its test and editable, and a conflict comment as one, never by the reason', () => {

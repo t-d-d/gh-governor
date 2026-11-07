@@ -80,8 +80,9 @@ export const ticketOf = (key) => {
  * deadline (dispatch/cli.mjs), so the refreshed login is stored. Two launches
  * at the full budget both start; a DispatchCap above two runs out of window.
  * The spec owners' messages of their new builders go after the heartbeat,
- * once the loop ends, and this window does not count them: they have only
- * what is left before the deadline.
+ * once the loop ends, and this window does not count them: each send has
+ * its own limit (`MESSAGE_TIMEOUT_MS`, dispatch/turn.mjs), and none runs
+ * past `SENDS_LATEST_MS`, so the login is still stored before the deadline.
  */
 export const SCHEDULE_LAUNCH_WINDOW_MS = 7 * 60 * 1000;
 

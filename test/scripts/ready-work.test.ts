@@ -254,6 +254,14 @@ describe('labelRow, the ready-label rule the selection, the claim and the unbloc
     const labels = { ...FACTORY_LABELS, exclude: ['type: prd', 'needs: design'] };
     assert.equal(labelRow([READY, 'mode: afk', 'needs: design'], labels), 'excluded');
   });
+
+  test('labels match in any case, as GitHub matches them', () => {
+    const shouted = { ready: ['Workflow: Ready For Development', 'MODE: AFK'], claim: 'Workflow: Under Development', exclude: ['Type: PRD'] };
+    assert.equal(labelRow([READY, 'mode: afk'], shouted), 'ready', 'a ready label in another case');
+    assert.equal(labelRow([READY, 'mode: afk', 'workflow: under development'], shouted), 'claimed', 'the claim label in another case');
+    assert.equal(labelRow([READY, 'mode: afk', 'type: prd'], shouted), 'excluded', 'an excluded label in another case');
+    assert.equal(labelRow(['WORKFLOW: READY FOR DEVELOPMENT', 'Mode: Afk', 'TYPE: prd'], FACTORY_LABELS), 'excluded', 'the ticket\'s labels in another case');
+  });
 });
 
 /**

@@ -97,16 +97,20 @@ export const MAX_RELATIVE_DAYS = 36500;
  * ready label for the claim, but a worker that only adds leaves both, and
  * the ready label alone would dispatch it again.
  *
+ * Labels match in any case, as GitHub matches them: a repo whose
+ * `exclude` says `Type: PRD` keeps out a ticket labelled `type: prd`.
+ *
  * @param {readonly string[] | undefined} on The ticket's label names. None
  *   read is the same answer as none.
  * @param {Labels} labels
  * @returns {LabelState}
  */
 export const labelRow = (on, labels) => {
-  const names = on ?? [];
-  if (labels.exclude.some((label) => names.includes(label))) return 'excluded';
-  if (names.includes(labels.claim)) return 'claimed';
-  if (labels.ready.every((label) => names.includes(label))) return 'ready';
+  const names = new Set((on ?? []).map((label) => label.toLowerCase()));
+  const has = (/** @type {string} */ label) => names.has(label.toLowerCase());
+  if (labels.exclude.some(has)) return 'excluded';
+  if (has(labels.claim)) return 'claimed';
+  if (labels.ready.every(has)) return 'ready';
   return 'not-ready';
 };
 

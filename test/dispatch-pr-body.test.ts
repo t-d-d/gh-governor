@@ -135,15 +135,15 @@ describe('the PR body\'s grammar', () => {
       { id: 3, body: marked('New.'), created_at: 'c', ours: true },
       { id: 4, body: 'Another bot, no marker.', created_at: 'd', ours: true },
     ];
-    assert.deepEqual(lastReview(thread), { id: 3, headSha: HEAD, bodySha: sha256(BODY), readSha: null, text: 'New.' });
+    assert.deepEqual(lastReview(thread), { id: 3, text: 'New.' });
     assert.equal(lastReview([]), null);
   });
 
-  test('a marker may carry the digest of what the model read, which lastReview names', () => {
+  test('a marker may carry the digest of what the model read, which lastReview leaves out: the review reads its verdict from the state table', () => {
     const read = 'c'.repeat(64);
     const body = `New.\n\n${reviewMarker(HEAD, bodyDigest(BODY), read)}`;
     assert.ok(body.endsWith(`<!-- governor:pr-review ${HEAD} ${sha256(BODY)} ${read} -->`));
-    assert.deepEqual(lastReview([{ id: 3, body, created_at: 'c', ours: true }]), { id: 3, headSha: HEAD, bodySha: sha256(BODY), readSha: read, text: 'New.' });
+    assert.deepEqual(lastReview([{ id: 3, body, created_at: 'c', ours: true }]), { id: 3, text: 'New.' });
   });
 
 

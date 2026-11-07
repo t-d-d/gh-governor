@@ -213,7 +213,8 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   uuid: () => string,
  *   launchTimeoutMs?: number,
  *   probe: () => Promise<{ ok: boolean, detail: string }>,
- *   message: (message: { session: string, text: string }) => Promise<LaunchResult>,
+ *   message: (message: { session: string, text: string }, limits?: SendLimits) => Promise<LaunchResult>,
+ *   messageTimeoutMs?: number,
  *   review: (run: { system: string, prompt: string, schema: object }) => Promise<LaunchResult>,
  *   transcript: (run: { sessionId: string } & ({ pr: number } | { key: string })) => Promise<{ key: string } | { skipped: string }>,
  *   sleep: (ms: number) => Promise<void>,
@@ -449,6 +450,58 @@ const budgetedBy = (deps) => async (begin, name, until, onOver) => {
   const ms = Math.min(deps.launchTimeoutMs, (until ?? Infinity) - deps.now());
   if (ms <= 0) throw new Error(`no budget left to start ${name}: the calls sharing it used it up`);
   return withinBudget(begin(), ms, name, onOver);
+};
+
+/**
+ * What a message send is held to. `signal`: aborts when the send runs out
+ * of time, and the CLI's child is stopped with it. `until`: when the
+ * delivery the send belongs to runs out of budget.
+ *
+ * @typedef {{ signal?: AbortSignal, until?: number }} SendLimits
+ * @typedef {(message: { session: string, text: string }, until?: number) => Promise<LaunchResult>} SendLimited
+ */
+
+/**
+ * The turn's message send, held to the shortest of its own limit
+ * (`messageTimeoutMs`), the launch budget, what is left of its delivery's
+ * budget, and the turn's cut-off for sends, `sendsEnd`. A send that runs
+ * out is aborted, which stops its CLI, and answers as a send the CLI
+ * printed no answer for: logged at error, and the caller goes on to its
+ * next message, as it does after a refusal. Past the cut-off a send does
+ * not start at all, so a turn whose sends all hang still stores the
+ * refreshed login before the task's deadline (dispatch/cli.mjs) exits
+ * from its timer.
+ *
+ * @param {Pick<Deps, 'message' | 'messageTimeoutMs' | 'launchTimeoutMs' | 'now' | 'log'>} deps
+ * @param {number} sendsEnd
+ * @returns {SendLimited}
+ */
+const limitedSend = (deps, sendsEnd) => async (message, until = Infinity) => {
+  const { session } = message;
+  /** @param {string} reason */
+  const stopped = (reason) => {
+    deps.log('dispatch-message-timeout', { level: 'error', session, reason });
+    return { status: null, output: `governor stopped the send: ${reason}`, stopped: /** @type {const} */ (true) };
+  };
+  const now = deps.now();
+  if (now >= sendsEnd) return stopped(`no time left in the turn: sends stop ${SENDS_LATEST_MS} ms in, so the login is stored before the deadline`);
+  const ms = Math.min(deps.messageTimeoutMs ?? Infinity, deps.launchTimeoutMs ?? Infinity, until - now, sendsEnd - now);
+  if (ms <= 0) return stopped('no budget left for the send: the calls sharing it used it up');
+  const stop = new AbortController();
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  /** @type {Promise<LaunchResult>} */
+  const over = new Promise((resolveOver) => {
+    timer = setTimeout(() => {
+      stop.abort();
+      resolveOver(stopped(`it ran past ${ms} ms`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([deps.message(message, { signal: stop.signal }), over]);
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 /**
@@ -699,6 +752,8 @@ const turnOf = async (event, deps, built) => {
   };
   /** The turn's one launch budget. */
   const budgeted = budgetedBy(deps);
+  /** Every message send the turn makes, each under its limit and none past the cut-off. */
+  const sendLimited = limitedSend(deps, started + SENDS_LATEST_MS);
   /** The turn's one launcher (dispatch/launcher.mjs). */
   const launches = launcher({
     cli: deps.launch,
@@ -735,10 +790,10 @@ const turnOf = async (event, deps, built) => {
       githubToken: tokenFor,
       // The launcher in place of the CLI, so nothing below starts a session past it.
       launch: launches.start,
-      message: async (message) => {
+      message: async (message, limits) => {
         const session = sessionId(message.session);
         if (!woken.has(session)) woken.set(session, deps.now());
-        const sent = await deps.message(message);
+        const sent = await sendLimited(message, limits?.until);
         // An archived session cannot reply: neither wait for it nor defer it.
         // A resend counts too: the first send may have blipped.
         if (refusedAsArchived(sent)) woken.delete(session);
@@ -786,7 +841,7 @@ const turnOf = async (event, deps, built) => {
     log: deps.log,
     woken,
     repos: signing,
-    ...heldBy({ ...deps, secret }, served, tokenFor, budgeted, started + SIGNOFF_LATEST_START_MS + SIGNOFF_WINDOW_MS),
+    ...heldBy({ ...deps, secret }, served, tokenFor, sendLimited, started + SIGNOFF_LATEST_START_MS + SIGNOFF_WINDOW_MS),
     list: (token) => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
     lookup: sweepLookup(deps),
     events,
@@ -878,11 +933,11 @@ const releaseArchived = async (deps, served, tokenFor, only, teller) => {
  * @param {Deps} deps The turn's deps, with the turn's `secret`.
  * @param {import('./repos.mjs').Served[]} served
  * @param {(repo: string) => Promise<string>} tokenFor
- * @param {import('./launcher.mjs').Budgeted} budgeted
+ * @param {SendLimited} send The turn's send ({@link limitedSend}).
  * @param {number} until
  * @returns {{ holds: import('../scripts/lib/session-signoff.mjs').Holds, onHeld: import('../scripts/lib/session-signoff.mjs').OnHeld }}
  */
-const heldBy = (deps, served, tokenFor, budgeted, until) => {
+const heldBy = (deps, served, tokenFor, send, until) => {
   /** @type {Map<string, Promise<Reader>>} */
   const readers = new Map();
   /** @param {string} repo The served repo's own spelling, so the turn's token for it is reused. */
@@ -917,7 +972,7 @@ const heldBy = (deps, served, tokenFor, budgeted, until) => {
       const capped = await countAgainst({ count: ({ subject, kind }) => deps.state.countMessage(session, subject, kind, deps.now(), deps.messageCeiling ?? MESSAGE_CEILING), log: deps.log }, session, subjects, 'signoff-held');
       if (capped !== null) return { told: false, reason: `held: ${capped}` };
       try {
-        const sent = readSend(await budgeted(() => deps.message({ session, text: heldMessage(prs) }), session, until));
+        const sent = readSend(await send({ session, text: heldMessage(prs) }, until));
         return sent.ok ? { told: true } : { told: false, error: sent.error };
       } finally {
         await storeIfRefreshed(deps, credentials, account);
@@ -1437,7 +1492,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
    */
   const deliveriesOf = (own) => turnDeliveries({
     ...own,
-    send: (message, until) => budgeted(() => deps.message(message), message.session, until),
+    send: (message, until) => deps.message(message, { until }),
     count: ({ session, subject, kind }) => deps.state.countMessage(session, subject, kind, deps.now(), deps.messageCeiling ?? MESSAGE_CEILING),
     sessions: sessionsFinder,
     now: deps.now,
@@ -2111,6 +2166,22 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
  * starts no launch past SCHEDULE_LAUNCH_WINDOW_MS, whatever its cap.
  */
 export const LAUNCH_TIMEOUT_MS = 6 * 60 * 1000;
+
+/**
+ * One message send's own limit (`claude -p --cloud <session>`): a send
+ * that has not answered by then is stopped and counts as failed, so one
+ * hung send cannot hold up the messages queued after it.
+ */
+export const MESSAGE_TIMEOUT_MS = 2 * 60 * 1000;
+
+/**
+ * How long into a turn a message send may still run, counted from the
+ * turn's start. Every send is cut to end by then, and none starts after,
+ * so the store-back of the refreshed login, the heartbeat lines and the
+ * sign-off sweep, which skips itself this late, still end inside the
+ * task's deadline (dispatch/cli.mjs).
+ */
+export const SENDS_LATEST_MS = 15 * 60 * 1000;
 
 /**
  * How long into an event's turn a periodic the event brought due may still
@@ -3153,15 +3224,18 @@ export const realDeps = () => {
     routines: routinesApi,
     uuid: () => randomUUID(),
     launchTimeoutMs: LAUNCH_TIMEOUT_MS,
+    messageTimeoutMs: MESSAGE_TIMEOUT_MS,
     // No pseudo-terminal: with --print the CLI sends the text to the session
     // and prints one JSON line, {ok, session_id, url} or {ok: false, error}.
     // The text goes on stdin, which the CLI reads as the prompt: as an
     // argument, one beginning with `-` (a markdown list) is an unknown option.
-    message: async ({ session, text }) => {
+    // A send that runs out of time aborts `signal`, which stops the child.
+    message: async ({ session, text }, limits) => {
       const child = spawn('claude', ['-p', '--cloud', session, '--output-format', 'json'], {
         cwd,
         env: cliEnv(env, home, account),
         stdio: ['pipe', 'pipe', 'pipe'],
+        ...(limits?.signal === undefined ? {} : { signal: limits.signal }),
       });
       // A CLI that refuses before reading stdin closes the pipe on us; the
       // answer is what it printed and its status, not the write that failed.
