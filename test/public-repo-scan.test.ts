@@ -51,6 +51,37 @@ describe('scanText', () => {
     assert.deepEqual(kinds(`see <https://${OLD_HOME}.com/about>`, 'README.md'), []);
   });
 
+  test('refuses the old home\'s name in a doc at the end of a path, and still passes its site and an owner/name repo once', () => {
+    assert.deepEqual(kinds(`cd ~/${OLD_HOME}`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`/${OLD_HOME} holds the stack`, 'docs/how-it-works.md'), ['name']);
+    assert.deepEqual(kinds(`see the ${OLD_HOME[0]!.toUpperCase()}${OLD_HOME.slice(1)} at <https://${OLD_HOME}.com>`, 'README.md'), []);
+    assert.deepEqual(kinds(`see owner/${OLD_HOME}`, 'README.md'), ['repo']);
+  });
+
+  test('refuses the old home\'s name in a doc when a backslash path follows it', () => {
+    assert.deepEqual(kinds(`see ${OLD_HOME}\\infra\\stack.yml`, 'README.md'), ['name']);
+  });
+
+  test('refuses the old home\'s name in a doc at the end of a backslash path, a dotfile path or a file URL', () => {
+    assert.deepEqual(kinds(`cd C:\\code\\${OLD_HOME}`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`cd ~/.${OLD_HOME}`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`open file:///${OLD_HOME}`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see https://www.${OLD_HOME}.com and https://${OLD_HOME}.com.`, 'README.md'), []);
+  });
+
+  test('passes only the site\'s .com after the old home\'s name in a doc, and refuses a file extension or another domain', () => {
+    assert.deepEqual(kinds(`see ${OLD_HOME}.yml`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}.ts`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}.config.js`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}.io`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}.community`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}.com.au`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}.com.json`, 'README.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}.com.`, 'README.md'), []);
+    assert.deepEqual(kinds(`see ${OLD_HOME}.com, the site`, 'README.md'), []);
+    assert.deepEqual(kinds(`made while building ${OLD_HOME}. Then`, 'README.md'), []);
+  });
+
   test('refuses the private repo\'s owner/name path and its GitHub URL, in any case, in every file', () => {
     for (const path of ['README.md', 'docs/how-it-works.md', 'scripts/x.mjs']) {
       assert.deepEqual(kinds(`see owner/${OLD_HOME}`, path).filter((k) => k !== 'name'), ['repo'], path);
