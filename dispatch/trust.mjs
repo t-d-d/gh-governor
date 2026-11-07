@@ -15,8 +15,7 @@
  * pickup starts a ready ticket (`byOf`, dispatch/pickup.mjs), and a summons
  * starts a session (dispatch/dispatch-fire.mjs), only where its author is in
  * it ({@link taskOf}). It defaults to the authors with a say, and may never
- * hold `BOT`. The older `pickup.by` is read as it, and a file may not set
- * both (dispatch/repo-config.mjs).
+ * hold `BOT` (dispatch/repo-config.mjs).
  *
  * `relay` is whose text may reach a session that is already running: a
  * comment or review, and a session link or `governor:subscribe` line in the
@@ -72,7 +71,7 @@ export const REVIEW = Object.freeze([...SUMMONERS]);
 export const START = Object.freeze([...SUMMONERS]);
 
 /**
- * @typedef {{ trust?: { start?: readonly string[] | undefined, auto?: readonly string[] | undefined, task?: readonly string[] | undefined, relay?: readonly string[] | undefined, review?: readonly string[] | undefined } | undefined, pickup?: { by?: readonly string[] | undefined } | undefined }} TrustConfig
+ * @typedef {{ trust?: { start?: readonly string[] | undefined, auto?: readonly string[] | undefined, task?: readonly string[] | undefined, relay?: readonly string[] | undefined, review?: readonly string[] | undefined } | undefined }} TrustConfig
  */
 
 /**
@@ -135,36 +134,20 @@ export const relayOf = (config) => {
 };
 
 /**
- * The task list as the file sets it: `trust.task`, or the older `pickup.by`
- * read as it. The schema refuses a file that sets both.
- *
- * @param {TrustConfig} config
- * @returns {readonly string[] | undefined}
- */
-export const taskSet = (config) => config.trust?.task ?? config.pickup?.by;
-
-/**
- * The name a file gives its task list, where it sets one.
- *
- * @param {TrustConfig} config
- */
-export const taskKey = (config) => (config.trust?.task === undefined ? 'pickup.by' : 'trust.task');
-
-/**
  * A repo's `trust.task`: whose issue or PR may become work when a person
  * sets it going, by readying it or by a summons on it. The list the file
- * sets, as `trust.task` or the older `pickup.by`, else the default narrowed
+ * sets, else the default narrowed
  * to fit the relay list, which a `trust.relay` or `trust.review` the file
  * sets narrows.
  *
  * @param {TrustConfig} config
  * @returns {readonly string[]}
  */
-export const taskOf = (config) => taskSet(config) ?? within(PICKUP_BY, [relayOf(config)]);
+export const taskOf = (config) => config.trust?.task ?? within(PICKUP_BY, [relayOf(config)]);
 
 /**
  * The lists the file sets above `list` in the chain `auto` ⊆ `task` ⊆
- * `relay` ⊆ `review`, by the names the file gives them: what an unset
+ * `relay` ⊆ `review`, by their names: what an unset
  * `list` is narrowed to fit.
  *
  * @param {TrustConfig} config
@@ -172,7 +155,7 @@ export const taskOf = (config) => taskSet(config) ?? within(PICKUP_BY, [relayOf(
  * @returns {string[]}
  */
 export const fitsInside = (config, list) => [
-  ...(list === 'auto' && taskSet(config) !== undefined ? [taskKey(config)] : []),
+  ...(list === 'auto' && config.trust?.task !== undefined ? ['trust.task'] : []),
   ...(list !== 'relay' && config.trust?.relay !== undefined ? ['trust.relay'] : []),
   ...(config.trust?.review === undefined ? [] : ['trust.review']),
 ];
@@ -199,7 +182,7 @@ export const narrowedLists = (config) => {
   const relay = relayOf(config);
   return [
     ...(config.trust?.auto === undefined && auto.length < AUTO.length ? [{ list: /** @type {const} */ ('auto'), to: auto }] : []),
-    ...(taskSet(config) === undefined && task.length < PICKUP_BY.length ? [{ list: /** @type {const} */ ('task'), to: task }] : []),
+    ...(config.trust?.task === undefined && task.length < PICKUP_BY.length ? [{ list: /** @type {const} */ ('task'), to: task }] : []),
     ...(config.trust?.relay === undefined && relay.length < RELAY.length ? [{ list: /** @type {const} */ ('relay'), to: relay }] : []),
   ];
 };
@@ -231,8 +214,6 @@ export const trustExposures = (config) => {
   const lines = [];
   const auto = (config.trust?.auto ?? []).filter((a) => !SUMMONERS.has(a));
   if (auto.length > 0) lines.push(`trust.auto: lets in ${named(auto)} authors, beyond owners, members and collaborators: ${OPENS.auto}`);
-  // Only the list under its own name: the retired pickup.by, which the
-  // check never warned of, is left as it was.
   const task = (config.trust?.task ?? []).filter((a) => !SUMMONERS.has(a));
   if (task.length > 0) lines.push(`trust.task: lets in ${named(task)} authors, beyond owners, members and collaborators: ${OPENS.task}`);
   const relay = (config.trust?.relay ?? []).filter((a) => !SUMMONERS.has(a));

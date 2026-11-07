@@ -101,7 +101,7 @@ export const sweepHoursOf = (config) => config.pickup?.sweepHours ?? SWEEP_HOURS
 
 /**
  * Whose tickets pickup may start in a repo: the `author_association`
- * values its file lists in `trust.task` or the older `pickup.by`, or `PICKUP_BY`
+ * values its file lists in `trust.task`, or `PICKUP_BY`
  * (dispatch/webhook/fire.mjs) where it lists none, narrowed to fit a
  * `trust.relay` the file sets (`taskOf`, dispatch/trust.mjs).
  *

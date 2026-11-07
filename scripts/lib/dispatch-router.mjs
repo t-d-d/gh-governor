@@ -92,7 +92,7 @@ export const outsiderReason = ({ labels, author, association }) =>
  * @param {{ association: string }} stranger
  */
 export const strangerReason = ({ association }) =>
-  `opened by a ${association} author, and the repo's trust.task (or the older pickup.by it reads as it), or where it sets neither the default narrowed to fit its trust.relay, does not list ${association}, so no work is started on it`;
+  `opened by a ${association} author, and the repo's trust.task, or where it sets none the default narrowed to fit its trust.relay, does not list ${association}, so no work is started on it`;
 
 /**
  * The schedule's plan: eligible issues oldest first, up to the cap,

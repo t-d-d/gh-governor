@@ -1,15 +1,14 @@
 /**
- * A served repo's heartbeat issue (dispatch/heartbeat.mjs). In today's
- * `{ issue, marker }` shape governor keeps one `last-run:` line under the
- * repo's own marker. In the `{ issue }` shape it keeps its own block under
- * `<!-- governor:heartbeat -->`: one line for pickup and one per periodic,
- * which a check outside governor reads back. The turn that writes them is in
+ * A served repo's heartbeat issue (dispatch/heartbeat.mjs). Governor keeps
+ * its own block under `<!-- governor:heartbeat -->`: one line for pickup and
+ * one per periodic, which a check outside governor reads back. The turn that writes them is in
  * test/dispatch-turn.test.ts.
  */
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { HEARTBEAT_END, HEARTBEAT_MARKER, HEARTBEAT_REFUSED, HEARTBEAT_UNWRITTEN, readHeartbeat, readLastRun, stampHeartbeat, stampLastRun, writeHeartbeatIssue } from '../dispatch/heartbeat.mjs';
+import { HEARTBEAT_END, HEARTBEAT_MARKER, HEARTBEAT_REFUSED, HEARTBEAT_UNWRITTEN, readHeartbeat, stampHeartbeat, writeHeartbeatIssue } from '../dispatch/heartbeat.mjs';
+import * as heartbeat from '../dispatch/heartbeat.mjs';
 
 const AT = '2026-10-29T20:00:00.000Z';
 const EARLIER = '2026-10-28T08:00:00.000Z';
@@ -17,19 +16,10 @@ const SESSION = 'https://claude.ai/code/session_01RUN';
 const OTHER = 'https://claude.ai/code/session_01OTHER';
 const BODY = `The operator's words.\n\n${HEARTBEAT_MARKER}\n\nKeep this issue open.\n`;
 
-describe('the old shape: one last-run line under the repo\'s marker', () => {
-  const MARKER = '<!-- factory:routine-heartbeat -->';
-
-  test('adds the line after the marker, then moves it, keeping the rest of the body', () => {
-    const once = stampLastRun(`${MARKER}\n\nKeep this closed.\n`, MARKER, AT);
-    assert.equal(once, `${MARKER}\nlast-run: ${AT}\n\nKeep this closed.\n`);
-    assert.equal(readLastRun(once, MARKER), AT);
-    assert.equal(stampLastRun(once, MARKER, EARLIER), once.replace(AT, EARLIER));
-  });
-
-  test('a body without the marker is refused', () => {
-    assert.throws(() => stampLastRun('someone\'s ticket', MARKER, AT), /marker/);
-    assert.throws(() => readLastRun('someone\'s ticket', MARKER), /marker/);
+describe('the older shape is gone', () => {
+  test('nothing reads or stamps a last-run line under a repo\'s own marker', () => {
+    assert.equal('readLastRun' in heartbeat, false);
+    assert.equal('stampLastRun' in heartbeat, false);
   });
 });
 
@@ -198,8 +188,9 @@ describe('the session rules line: which file lacks the current block (#611)', ()
   });
 });
 
-describe('writing a heartbeat issue: one helper reads it, checks its marker and writes it', () => {
-  const MARKER = '<!-- factory:routine-heartbeat -->';
+describe('writing a heartbeat issue: one helper reads it, checks governor\'s marker and writes it', () => {
+  const MARKER = HEARTBEAT_MARKER;
+  const stamp = (b: string) => stampHeartbeat(b, { pickup: { at: AT, started: 1 } });
   /** A reader over one issue body, recording each write. */
   const fakeReader = (body: string, fail?: 'read' | 'write') => {
     const writes: string[] = [];
@@ -217,16 +208,16 @@ describe('writing a heartbeat issue: one helper reads it, checks its marker and 
   test('writes the stamped body into a body carrying the marker', async () => {
     const github = fakeReader(`${MARKER}\n`);
     const { lines, log } = logs();
-    const outcome = await writeHeartbeatIssue({ reader: async () => github, repo: 'acme/factory', issue: 7, marker: MARKER, refusal: 'no marker', stamp: (b) => stampLastRun(b, MARKER, AT), log });
+    const outcome = await writeHeartbeatIssue({ reader: async () => github, repo: 'acme/factory', issue: 7, refusal: 'no marker', stamp, log });
     assert.equal(outcome, 'written');
-    assert.deepEqual(github.writes, [`${MARKER}\nlast-run: ${AT}\n`]);
+    assert.deepEqual(github.writes, [stamp(`${MARKER}\n`)]);
     assert.deepEqual(lines, []);
   });
 
-  test('a body without the marker is refused and never written', async () => {
-    const github = fakeReader('Someone\'s ticket.\n');
+  test('a body carrying only some other marker is refused and never written', async () => {
+    const github = fakeReader('Someone\'s ticket.\n<!-- factory:routine-heartbeat -->\n');
     const { lines, log } = logs();
-    const outcome = await writeHeartbeatIssue({ reader: async () => github, repo: 'acme/factory', issue: 7, marker: MARKER, refusal: 'no marker', stamp: () => 'overwritten', log });
+    const outcome = await writeHeartbeatIssue({ reader: async () => github, repo: 'acme/factory', issue: 7, refusal: 'no marker', stamp: () => 'overwritten', log });
     assert.equal(outcome, 'refused');
     assert.deepEqual(github.writes, []);
     assert.deepEqual(lines, [[HEARTBEAT_REFUSED, { level: 'error', repo: 'acme/factory', issue: 7, marker: MARKER, reason: 'no marker' }]]);
@@ -235,7 +226,7 @@ describe('writing a heartbeat issue: one helper reads it, checks its marker and 
   test('a stamp that changes nothing writes nothing', async () => {
     const github = fakeReader(`${MARKER}\n`);
     const { lines, log } = logs();
-    assert.equal(await writeHeartbeatIssue({ reader: async () => github, repo: 'acme/factory', issue: 7, marker: MARKER, refusal: 'no marker', stamp: () => undefined, log }), 'unchanged');
+    assert.equal(await writeHeartbeatIssue({ reader: async () => github, repo: 'acme/factory', issue: 7, refusal: 'no marker', stamp: () => undefined, log }), 'unchanged');
     assert.deepEqual(github.writes, []);
     assert.deepEqual(lines, []);
   });
@@ -245,18 +236,21 @@ describe('writing a heartbeat issue: one helper reads it, checks its marker and 
       const github = fakeReader(`${MARKER}\n`, fail === 'reader' ? undefined : fail);
       const { lines, log } = logs();
       const reader = fail === 'reader' ? async () => { throw new Error('no token'); } : async () => github;
-      const outcome = await writeHeartbeatIssue({ reader, repo: 'acme/factory', issue: 7, marker: MARKER, refusal: 'no marker', stamp: (b) => stampLastRun(b, MARKER, AT), log });
+      const outcome = await writeHeartbeatIssue({ reader, repo: 'acme/factory', issue: 7, refusal: 'no marker', stamp, log });
       const error = fail === 'reader' ? 'no token' : `${fail} refused`;
       assert.deepEqual(outcome, { unwritten: `acme/factory#7: ${error}` });
       assert.deepEqual(lines, [[HEARTBEAT_UNWRITTEN, { level: 'error', repo: 'acme/factory', issue: 7, error }]]);
     });
   }
 
-  test('turn.mjs and sweep.mjs write a heartbeat issue only through it', async () => {
+  test('turn.mjs writes a heartbeat issue only through it, and sweep.mjs leaves the write to the turn', async () => {
     const { readFile } = await import('node:fs/promises');
-    for (const file of ['dispatch/turn.mjs', 'dispatch/sweep.mjs']) {
-      const text = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
-      assert.match(text, /writeHeartbeatIssue\(/, `${file} calls the helper`);
+    const read = (file: string) => readFile(new URL(`../${file}`, import.meta.url), 'utf8');
+    const turn = await read('dispatch/turn.mjs');
+    const sweep = await read('dispatch/sweep.mjs');
+    assert.match(turn, /writeHeartbeatIssue\(/, 'turn.mjs calls the helper');
+    assert.doesNotMatch(sweep, /writeHeartbeatIssue|last-run/, 'sweep.mjs writes no heartbeat issue');
+    for (const [file, text] of [['dispatch/turn.mjs', turn], ['dispatch/sweep.mjs', sweep]] as const) {
       assert.doesNotMatch(text, /HEARTBEAT_REFUSED|HEARTBEAT_UNWRITTEN|dispatch-heartbeat-refused|dispatch-heartbeat-unwritten/, `${file} logs no heartbeat refusal or failed write of its own`);
     }
   });

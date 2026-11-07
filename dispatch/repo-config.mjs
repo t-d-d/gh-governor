@@ -35,7 +35,7 @@
 import { z } from 'zod';
 import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, SUMMONERS, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, unknownFills } from './prompts.mjs';
-import { BOT, START, TRUST_VALUES, autoOf, reviewOf, taskKey as taskKeyOf, taskSet } from './trust.mjs';
+import { BOT, START, TRUST_VALUES, autoOf, reviewOf } from './trust.mjs';
 
 /** Where the file lives, on the repo's default branch. */
 export const CONFIG_PATH = '.github/governor.json';
@@ -783,23 +783,21 @@ export const configSchema = fileSchema.transform(toConfig)
   // the file leaves unset is narrowed instead (dispatch/trust.mjs).
   .superRefine((c, ctx) => {
     const auto = c.trust?.auto;
-    const task = taskSet(c);
-    const taskKey = taskKeyOf(c);
-    const taskPath = taskKey.split('.');
+    const task = c.trust?.task;
     const relay = c.trust?.relay;
     /** @param {readonly string[] | undefined} inner @param {readonly string[] | undefined} outer */
     const outside = (inner, outer) => (inner === undefined || outer === undefined ? [] : inner.filter((a) => a !== BOT && !outer.includes(a)));
     const autoTask = outside(auto, task);
-    if (autoTask.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoTask.join(', ')}, which ${taskKey} does not: governor would set going by itself a ticket pickup may not start. Narrow trust.auto, or widen ${taskKey}` });
+    if (autoTask.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoTask.join(', ')}, which trust.task does not: governor would set going by itself a ticket pickup may not start. Narrow trust.auto, or widen trust.task` });
     const autoRelay = outside(auto, relay);
     if (autoRelay.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoRelay.join(', ')}, which trust.relay does not: governor would set work going on a ticket whose comments could not reach its session. Narrow trust.auto, or widen trust.relay` });
     const taskRelay = outside(task, relay);
-    if (taskRelay.length > 0) ctx.addIssue({ code: 'custom', path: taskPath, message: `names ${taskRelay.join(', ')}, which trust.relay does not: pickup would start a ticket whose author's comments could not reach its session. Narrow ${taskKey}, or widen trust.relay` });
+    if (taskRelay.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'task'], message: `names ${taskRelay.join(', ')}, which trust.relay does not: pickup would start a ticket whose author's comments could not reach its session. Narrow trust.task, or widen trust.relay` });
     const review = c.trust?.review;
     const relayReview = outside(relay, review);
     if (relayReview.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'relay'], message: `names ${relayReview.join(', ')}, which trust.review does not: their comments would reach a session whose pull request the PR review may not read. Narrow trust.relay, or widen trust.review` });
     const taskReview = outside(task, review);
-    if (taskReview.length > 0) ctx.addIssue({ code: 'custom', path: taskPath, message: `names ${taskReview.join(', ')}, which trust.review does not: pickup would start work whose pull request the PR review may not read. Narrow ${taskKey}, or widen trust.review` });
+    if (taskReview.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'task'], message: `names ${taskReview.join(', ')}, which trust.review does not: pickup would start work whose pull request the PR review may not read. Narrow trust.task, or widen trust.review` });
     const autoReview = outside(auto, review);
     if (autoReview.length > 0) ctx.addIssue({ code: 'custom', path: ['trust', 'auto'], message: `names ${autoReview.join(', ')}, which trust.review does not: governor would set work going whose pull request the PR review may not read. Narrow trust.auto, or widen trust.review` });
   });
@@ -824,8 +822,8 @@ export const configSchema = fileSchema.transform(toConfig)
  *   merge: boolean,
  * }} Review The PR review's settings, its checklist read.
  * @typedef {{ file: string }} PromptFile
- * @typedef {{ issue: number, marker?: string }} Heartbeat
- * @typedef {{ sweepHours?: number, by?: string[] }} Pickup
+ * @typedef {{ issue: number }} Heartbeat
+ * @typedef {{ sweepHours?: number }} Pickup
  * @typedef {{ start?: string[], auto?: string[], task?: string[], relay?: string[], review?: string[] }} Trust
  * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
@@ -847,12 +845,10 @@ export const configSchema = fileSchema.transform(toConfig)
  *   `workflows`: what the repo's workflows are to the dispatcher.
  *   `review`: the PR review's settings, where the file's `prReview`
  *   section has a prompt, which is `checklist` here.
- *   `heartbeat`: the issue governor's heartbeat goes into. The file no
- *   longer sets the older shape's `marker`.
+ *   `heartbeat`: the issue governor's heartbeat goes into.
  *   `waits`: the wait ticket waiting tickets are linked to, where the file
  *   names one.
- *   `pickup`: pickup's sweep interval, where the file sets it. The file no
- *   longer sets the retired `by`.
+ *   `pickup`: pickup's sweep interval, where the file sets it.
  *   `trust`: whose GitHub text governor acts on, where the file sets it.
  *   `signOff`: where the file sets `heldMessage`, the sweep tells a
  *   session the first time it holds it from its sign-off.
@@ -877,6 +873,109 @@ export const configSchema = fileSchema.transform(toConfig)
 const messageOf = (issue) => (issue.code === 'invalid_key' ? `${issue.message}: ${issue.issues.map((i) => i.message).join(', ')}` : issue.message);
 
 /**
+ * The objects whose keys are entries' names (`section.key`), where a name
+ * written twice would lose the first entry, since JSON.parse keeps the last
+ * of two equal keys without a word.
+ */
+const NAMED_ENTRIES = ['periodics.sessions', 'hooks.sessions', 'issueReviews.reviews'];
+
+/**
+ * The faults for every name written more than once in one of
+ * {@link NAMED_ENTRIES}, each named once, read from text JSON.parse has
+ * already accepted. A key is compared as JSON reads it, escapes undone.
+ * Keys repeated anywhere else are left as JSON.parse reads them.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+const repeatedNames = (text) => {
+  /** @type {string[]} */
+  const faults = [];
+  let i = 0;
+  const space = () => {
+    while (text[i] === ' ' || text[i] === '\t' || text[i] === '\n' || text[i] === '\r') i += 1;
+  };
+  /** Steps past the string at `i`, a key or a value, without reading it. */
+  const pastString = () => {
+    i += 1;
+    while (text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+    i += 1;
+  };
+  /** @returns {string} */
+  const string = () => {
+    const start = i;
+    pastString();
+    return JSON.parse(text.slice(start, i));
+  };
+  /**
+   * Steps past a value no named entry lies in. It counts brackets rather
+   * than recursing, since JSON.parse accepts nesting deeper than the stack.
+   */
+  const skip = () => {
+    space();
+    if (text[i] === '"') {
+      pastString();
+      return;
+    }
+    if (text[i] !== '{' && text[i] !== '[') {
+      while (i < text.length && !' \t\n\r,]}'.includes(text.charAt(i))) i += 1;
+      return;
+    }
+    let depth = 0;
+    do {
+      const c = text[i];
+      if (c === '"') {
+        pastString();
+        continue;
+      }
+      if (c === '{' || c === '[') depth += 1;
+      else if (c === '}' || c === ']') depth -= 1;
+      i += 1;
+    } while (depth > 0);
+  };
+  /**
+   * Reads the value at `i` where it is an object at depth two or less, the
+   * only depths a named entry's key sits at, and skips it otherwise.
+   *
+   * @param {string[]} path the keys down to the value
+   */
+  const value = (path) => {
+    space();
+    if (text[i] !== '{') {
+      skip();
+      return;
+    }
+    i += 1;
+    const at = path.length === 2 ? path.join('.') : null;
+    const named = at !== null && NAMED_ENTRIES.includes(at);
+    const seen = new Set();
+    const told = new Set();
+    space();
+    if (text[i] === '}') {
+      i += 1;
+      return;
+    }
+    for (;;) {
+      space();
+      const key = string();
+      if (named && seen.has(key) && !told.has(key)) {
+        faults.push(`${at}: ${JSON.stringify(key)} is repeated, and the file must name each entry once`);
+        told.add(key);
+      }
+      seen.add(key);
+      space();
+      i += 1; // the colon
+      if (path.length < 2) value([...path, key]);
+      else skip();
+      space();
+      if (text[i++] === '}') return;
+    }
+  };
+  value([]);
+  return faults;
+};
+
+/**
  * A config file's text, read: the config, or the fault that keeps the repo
  * unserved. The schema is every repo's, so the repo does not enter.
  *
@@ -891,6 +990,8 @@ export const readConfig = (text) => {
   } catch (error) {
     return { ok: false, fault: `not JSON: ${/** @type {Error} */ (error).message}` };
   }
+  const repeated = repeatedNames(text);
+  if (repeated.length > 0) return { ok: false, fault: repeated.join('; ') };
   const result = configSchema.safeParse(parsed);
   if (!result.success) {
     return { ok: false, fault: result.error.issues.map((i) => `${i.path.join('.') || '(file)'}: ${messageOf(i)}`).join('; ') };

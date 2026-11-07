@@ -1450,7 +1450,7 @@ describe('run: pickup selects tickets by who opened them', () => {
         assert.equal(h.eventReads(), 1, `${association}: its label events say whether a person readied it`);
         const skipped = h.logged.find((l) => ['dispatch-pickup', 'dispatch-unblocked'].includes(l.event) && l.issue === 9 && l.outcome === 'skipped');
         assert.ok(skipped !== undefined, JSON.stringify(h.logged));
-        assert.match(String(skipped.reason), new RegExp(`${association} author.*pickup\\.by`));
+        assert.match(String(skipped.reason), new RegExp(`${association} author.*trust\\.task`));
         assert.ok(skipped.level === undefined || skipped.level === 'info', String(skipped.level));
       }
     });
@@ -9514,7 +9514,7 @@ describe('fitness: the heartbeat writes only the issue the repo names, on the sc
 });
 
 /**
- * The heartbeat in the `{ issue }` shape (dispatch/heartbeat.mjs): governor
+ * The heartbeat (dispatch/heartbeat.mjs): governor
  * keeps its own block under `<!-- governor:heartbeat -->`, one line for
  * pickup and one per periodic. A line's fire time changes only on the fire
  * that line reports: pickup's on the bare schedule fire's sweep, a
@@ -9702,7 +9702,7 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
   const MERGE = { kind: 'conflicts', pr: 793, sha: SHA, base: 'main', counted: 'merges' };
   const merged = (n: number) => Array.from({ length: n }, (_, i) => ({ number: 800 + i, title: `Merge ${i}`, at: ago(HOUR - i) }));
 
-  /** The factory in the `{ issue }` shape, its heartbeat issue's body kept across turns; every write. */
+  /** The factory with its heartbeat on, its heartbeat issue's body kept across turns; every write. */
   const beating = ({ body = BODY, merges = [] as unknown[], file = FILE, ...over }: { body?: string; merges?: unknown[]; file?: string; [key: string]: unknown } = {}) => {
     const issue = { body };
     const writes: string[] = [];
@@ -9857,7 +9857,7 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
   });
 
   test('a body without governor\'s marker gets no write, and an error naming the repo and issue', async () => {
-    // A body in the older shape: a repo's own marker and its last-run line, no governor block.
+    // A body carrying some other marker and a last-run line, and no governor block.
     const h = beating({ body: `<!-- factory:routine-heartbeat:auto-develop -->\nlast-run: ${EARLIER}\n` });
     const result = await run({ source: 'aws.events' }, h.deps as never);
     assert.deepEqual(h.writes, []);
@@ -9930,7 +9930,7 @@ describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval 
   const EARLIER = '2026-09-20T08:00:00.000Z';
   const BODY = `${HEARTBEAT_MARKER}\n- pickup: last sweep ${EARLIER}, started 1 session\n${HEARTBEAT_END}\n`;
 
-  /** The factory with pickup's settings as given beside its labels (no sweepHours when undefined), its heartbeat in the `{ issue }` shape, its body kept. */
+  /** The factory with pickup's settings as given beside its labels (no sweepHours when undefined), its heartbeat on, its body kept. */
   const sweeping = (pickup: unknown, over: Record<string, unknown> = {}) => {
     const file = JSON.parse(FACTORY_FILE);
     delete file.pickup.sweepHours;
@@ -10841,7 +10841,7 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
   const REVIEW = 'Ticket review';
   const HOOK = (FACTORY_CONFIG.hooks as Array<{ name: string; keyVersion: number }>)[0]!;
   const BODY = `${HEARTBEAT_MARKER}\n\nKeep this issue open.\n`;
-  /** The factory in the heartbeat's `{ issue }` shape, so pickup's line and each periodic's are read back; every periodic starts through the launcher. */
+  /** The factory with its heartbeat on, so pickup's line and each periodic's are read back; every periodic starts through the launcher. */
   const FILE = (() => {
     const file = JSON.parse(FACTORY_FILE);
     file.heartbeat = { issue: BEAT.issue };

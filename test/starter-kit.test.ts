@@ -63,7 +63,6 @@ describe('the starter kit\'s config file', () => {
     assert.equal(features.heartbeat, true);
     assert.equal(features.periodics, true);
     assert.ok(heartbeat !== undefined && Number.isInteger(heartbeat.issue));
-    assert.equal(heartbeat.marker, undefined, 'the older shape keeps only a last-run line, not a line per fire');
     assert.deepEqual(Object.keys((JSON.parse(text) as { heartbeat: object }).heartbeat), ['issue']);
   });
 

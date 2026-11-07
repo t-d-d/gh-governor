@@ -131,7 +131,7 @@ The file has one rule for where a setting lives. `environment`, `trust` and `wor
 
 - A section turns its feature on, unless it sets `"enabled": false`. A feature with no settings is `{}`. A feature with no section is off.
 - A section that is off needs none of its required settings.
-- A section's named entries are an object keyed by name: `periodics.sessions`, `hooks.sessions` and `issueReviews.reviews`. An entry does not set `name`.
+- A section's named entries are an object keyed by name: `periodics.sessions`, `hooks.sessions` and `issueReviews.reviews`. An entry does not set `name`, and a file that names one entry twice in one of them is refused, with a fault naming the section and the name.
 - A field holding text or `{ "file": "<path>" }` is `prompt`. A section with more than one has `prompts`, keyed by kind.
 - Pickup's labels serve the other features that read them: `unblocked`, `waits`, `prReview` and `issueReviews`. A file that turns one of those on has a `pickup` section with `ready` and `claim`, which may set `"enabled": false` to keep pickup itself off.
 
@@ -389,7 +389,7 @@ The default is `OWNER`, `MEMBER` and `COLLABORATOR`. So a stranger's issue linke
 "trust": { "auto": ["OWNER"] }
 ```
 
-Or widen it, with the same values pickup reads. Governor refuses `BOT` in it, since no person read a bot's issue. Where the file sets `trust.task` too, every value `auto` names must be in it, or governor refuses the file: it would set going a ticket that pickup may not start. Where the file sets `trust.relay` or `trust.review`, the same holds for each. Where the file leaves `auto` unset and sets a narrower `trust.task`, `pickup.by`, `trust.relay` or `trust.review`, `auto` is narrowed to fit, never widened. The [config check](#the-config-check) warns where `auto` reaches beyond owners, members and collaborators, saying what that opens, and notes where it narrowed an unset `auto`.
+Or widen it, with the same values pickup reads. Governor refuses `BOT` in it, since no person read a bot's issue. Where the file sets `trust.task` too, every value `auto` names must be in it, or governor refuses the file: it would set going a ticket that pickup may not start. Where the file sets `trust.relay` or `trust.review`, the same holds for each. Where the file leaves `auto` unset and sets a narrower `trust.task`, `trust.relay` or `trust.review`, `auto` is narrowed to fit, never widened. The [config check](#the-config-check) warns where `auto` reaches beyond owners, members and collaborators, saying what that opens, and notes where it narrowed an unset `auto`.
 
 ### Whose text reaches a running session
 
