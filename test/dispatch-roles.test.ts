@@ -92,14 +92,14 @@ describe('rolesText', () => {
 
   test('names both roles and the recipient\'s, the same on every path', () => {
     const text = rolesText(roles, { role: 'spec owner', merged: false });
-    assert.equal(text, `You are its spec owner; [its builder](${BUILDER}) builds it.`);
+    assert.equal(text, `You are its spec owner; [its builder](${BUILDER}) is another session.`);
     assert.doesNotMatch(text, /has merged/);
   });
 
   test('a builder whose PR has merged is told so, and acts only where the message calls for new work', () => {
     const [, builder] = roles.holders;
     const text = rolesText(roles, builder!);
-    assert.match(text, /^You build it; \[its spec owner\]\(.*SPECOWNER\) writes its body\./);
+    assert.match(text, /^You are its builder; \[its spec owner\]\(.*SPECOWNER\) writes its body\./);
     assert.match(text, /Your PR, which closed #7, has merged: act on this message only where it calls for new work\./);
   });
 });

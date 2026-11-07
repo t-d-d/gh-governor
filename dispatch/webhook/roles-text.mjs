@@ -66,15 +66,16 @@ export const titleLink = (label, title, url) => {
 };
 
 /**
- * The builders other than the recipient, as links, and the verb that fits them.
+ * The builders other than the recipient, as a sentence that names them
+ * with links and no verb that depends on the ticket's state, since a
+ * ticket closed as not planned was never built.
  *
- * @param {readonly string[]} others
- * @param {string} first the link text of the first, or the only one
- * @param {boolean} closed the ticket is closed, so they built it
+ * @param {readonly string[]} others at least one
+ * @param {'its' | 'its other'} which how the sentence names them
  */
-const buildersLinked = (others, first, closed) => {
-  if (others.length === 1) return `${sessionLink(first, /** @type {string} */ (others[0]))} ${closed ? 'built' : 'builds'} it`;
-  return `${listed(others.map((b, i) => sessionLink(`builder ${i + 1}`, b)))} ${closed ? 'built' : 'build'} it`;
+const buildersNamed = (others, which) => {
+  if (others.length === 1) return which === 'its' ? `${sessionLink('its builder', /** @type {string} */ (others[0]))} is another session` : `Its other builder is ${sessionLink('another session', /** @type {string} */ (others[0]))}`;
+  return `${which === 'its' ? 'its' : 'Its other'} builders are ${listed(others.map((b, i) => sessionLink(`builder ${i + 1}`, b)))}`;
 };
 
 /**
@@ -85,24 +86,24 @@ const buildersLinked = (others, first, closed) => {
  * the message asks nothing of the recipient, and says so. A message that
  * asks something of its own passes neither, and says nothing more. A
  * builder whose PR has merged is told so, and acts on the message only
- * where it calls for new work. `closed`: the ticket is closed, so its
- * builders built it rather than build it.
+ * where it calls for new work. The lines read the same on an open
+ * ticket, a closed one and one closed as not planned.
  *
  * @param {{ issue: number, owner: string | null, builders: readonly string[] }} roles
  * @param {{ role: 'spec owner' | 'builder' | 'spec owner and builder', merged: boolean, session?: string }} holder
- * @param {{ duty?: boolean, notice?: boolean, closed?: boolean }} [options]
+ * @param {{ duty?: boolean, notice?: boolean }} [options]
  * @returns {string}
  */
-export const rolesText = ({ issue, owner, builders }, { role, merged, session }, { duty = false, notice = false, closed = false } = {}) => {
+export const rolesText = ({ issue, owner, builders }, { role, merged, session }, { duty = false, notice = false } = {}) => {
   // The recipient: the session handed in, else the spec owner where it holds that role.
   const self = session ?? (role === 'builder' ? null : owner);
   const others = builders.filter((b) => self === null || !sameSession(b, self));
   const specOwner = owner === null ? 'a person owns its body' : `${sessionLink('its spec owner', owner)} writes its body`;
+  const more = others.length === 0 ? '' : ` ${buildersNamed(others, 'its other')}.`;
   let first;
-  const build = closed ? 'built' : 'build';
-  if (role === 'spec owner') first = others.length === 0 ? 'You are its spec owner.' : `You are its spec owner; ${buildersLinked(others, 'its builder', closed)}.`;
-  else if (role === 'builder') first = `You ${build} it; ${specOwner}.${others.length === 0 ? '' : ` ${buildersLinked(others, 'another builder', closed)} too.`}`;
-  else first = `You are its spec owner and you ${build} it.${others.length === 0 ? '' : ` ${buildersLinked(others, 'another builder', closed)} too.`}`;
+  if (role === 'spec owner') first = others.length === 0 ? 'You are its spec owner.' : `You are its spec owner; ${buildersNamed(others, 'its')}.`;
+  else if (role === 'builder') first = `You are its builder; ${specOwner}.${more}`;
+  else first = `You are its spec owner and its builder.${more}`;
   const lines = [first];
   if (duty && role !== 'builder') lines.push(SPEC_OWNER_DUTY);
   if (duty && role !== 'spec owner') lines.push(BUILDER_DUTY);

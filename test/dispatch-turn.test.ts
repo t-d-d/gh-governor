@@ -1014,7 +1014,7 @@ describe('run — schedule', () => {
     assert.deepEqual(h.comments.map((c) => c.issue), [7, 9]);
     assert.deepEqual(h.messages.map((m) => m.session), [SPEC_OWNER]);
     assert.match(h.messages[0]!.text, /\[#7 Issue 7\]\(https:\/\/github\.com\/acme\/factory\/issues\/7\) has \[a new builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\)\./);
-    assert.match(h.messages[0]!.text, /You are its spec owner; \[its builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\) builds it\.\nNothing is asked of you\./);
+    assert.match(h.messages[0]!.text, /You are its spec owner; \[its builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\) is another session\.\nNothing is asked of you\./);
   });
 
   // Each send is a CLI call: sent between launches, it would spend the
@@ -5948,7 +5948,7 @@ describe('run — a workflow run on main', () => {
           const [own] = to(sent, SESSION);
           assert.match(own!.text, /PR #799/);
           assert.match(own!.text, /#730/);
-          assert.match(own!.text, /^ {2}You built it; a person owns its body\.$/m, 'the ticket is closed');
+          assert.match(own!.text, /^ {2}You are its builder; a person owns its body\.$/m, 'the ticket is closed');
           assert.match(own!.text, new RegExp(`^- \\[#730 Issue 730\\]\\(https://github\\.com/${REPO}/issues/730\\), which \\[PR #799\\]\\(https://github\\.com/${REPO}/pull/799\\) closed\\.$`, 'm'), 'the title and each PR are links');
           assert.match(own!.text, /Your PR, which closed #730, has merged: act on this message only where it calls for new work\./, 'the roles lines read as on every other path');
           assert.equal(exitCodeFor(r as never), 0);
@@ -11259,8 +11259,8 @@ describe('run — a ticket fire', () => {
     const h = withThread();
     const result = await run(ticketFire(), h.deps as never) as Record<string, any>;
     assert.deepEqual(h.messages.map((m) => m.session), [SPEC, BUILDER]);
-    assert.match(h.messages[0]!.text, new RegExp(`^You are its spec owner; \\[its builder\\]\\(${BUILDER}\\) builds it\\.\\n${SPEC_OWNER_DUTY.replace(/\./g, '\\.')}$`, 'm'), h.messages[0]!.text);
-    assert.match(h.messages[1]!.text, new RegExp(`^You build it; \\[its spec owner\\]\\(${SPEC}\\) writes its body\\.\\n${BUILDER_DUTY.replace(/\./g, '\\.')}$`, 'm'), h.messages[1]!.text);
+    assert.match(h.messages[0]!.text, new RegExp(`^You are its spec owner; \\[its builder\\]\\(${BUILDER}\\) is another session\\.\\n${SPEC_OWNER_DUTY.replace(/\./g, '\\.')}$`, 'm'), h.messages[0]!.text);
+    assert.match(h.messages[1]!.text, new RegExp(`^You are its builder; \\[its spec owner\\]\\(${SPEC}\\) writes its body\\.\\n${BUILDER_DUTY.replace(/\./g, '\\.')}$`, 'm'), h.messages[1]!.text);
     assert.equal(result.kind, 'ticket');
     assert.equal(exitCodeFor(result as never), 0);
   });
