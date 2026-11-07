@@ -339,7 +339,7 @@ const scheduledRedFire = (run, main) => {
   const prompt = [
     `A scheduled run of ${name} on ${main} ended ${run.conclusion}. Nobody dispatched it, so no session is watching it: it is yours.`,
     '',
-    `Run: ${run.html_url}, commit ${commit}`,
+    `[Run](${run.html_url}) at commit ${commit}`,
     ...(typeof run.path === 'string' ? [`Workflow: ${run.path}`] : []),
   ].join('\n');
   return one({

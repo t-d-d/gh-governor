@@ -64,7 +64,7 @@ const CONFLICT_WAIT_MS = 3000;
  * @returns {{ text: string, fallback: import('./webhook/fire.mjs').Fallback }}
  */
 export const conflictMessage = ({ pr, base, head, merged }, prompts = {}) => {
-  const facts = `PR #${pr.number} (${oneLine(pr.title)}, ${pr.html_url}) conflicts with ${base} since ${base} moved to ${head}, after #${merged.pr} merged (merge commit ${merged.sha}).`;
+  const facts = `[#${pr.number}](${pr.html_url}) ${oneLine(pr.title)} conflicts with ${base} since ${base} moved to ${head}, after #${merged.pr} merged (merge commit ${merged.sha}).`;
   const ask = instruction(prompts, 'conflicts', { base });
   return {
     text: `${facts}\n\n${ask}`,

@@ -1671,6 +1671,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           takeover: true,
           on: on === undefined ? [] : [on],
           closing,
+          // A merge may lead to a sign-off, after its deploys where they
+          // come, so it carries the standing line as a close does.
+          standing: closing || invocation.mergedAt !== undefined,
           dropFrom: event === undefined || on === undefined ? [] : [on],
           commit,
           // The owner's message, not a subscriber's: an archived owner's
@@ -1829,7 +1832,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         owedTickets = [...new Set([...(before.tickets ?? []), ...commented.map((c) => c.ticket)])].sort((a, b) => a - b);
         const tried = before.failed.map(sessionId);
         const looked = await shippedRolesOf(owedTickets.filter((t) => tried.filter((f) => f === `#${t}`).length < WORKFLOW_SEND_TRIES), {
-          invocation, coverage, commented, reader, config, ownerOf: (pr) => delivery().ownerOf(pr),
+          invocation, repo: fireRepo(), coverage, commented, reader, config, ownerOf: (pr) => delivery().ownerOf(pr),
         });
         for (const { ticket, error } of looked.failed) {
           const gaveUp = tried.filter((f) => f === `#${ticket}`).length + 1 >= WORKFLOW_SEND_TRIES;
@@ -1863,7 +1866,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
             deps.log('dispatch-workflow', { ...about, untold: owed.slice(i).map((n) => ({ session: n.session, prs: n.prs })), reason: `out of time: past ${WORKFLOW_SEND_WINDOW_MS} ms, another delivery might outrun the deadline` });
             break;
           }
-          const { ok, answered, refused, error, fallback, capped } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, kind: invocation.kind === 'job' ? 'deploy' : 'ci', fallback: note.fallback, on: [...note.prs, ...(note.about ?? []), ...(note.tickets ?? [])], closing: note.closing, dropFrom: note.subscribed, owns: note.owns ?? note.prs.filter((n) => !note.subscribed.includes(n)) });
+          const { ok, answered, refused, error, fallback, capped } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, kind: invocation.kind === 'job' ? 'deploy' : 'ci', fallback: note.fallback, on: [...note.prs, ...(note.about ?? []), ...(note.tickets ?? [])], closing: note.closing, standing: note.closing || invocation.kind === 'job', dropFrom: note.subscribed, owns: note.owns ?? note.prs.filter((n) => !note.subscribed.includes(n)) });
           // A note held at the ceiling is no fault (dispatch/cli.mjs), and stays owed to a later run.
           deliveries.push({ prs: note.prs, session: note.session, ok, answered, refused, error, fallback, ...(capped ? { capped } : {}) });
           // As dispatch/cli.mjs counts a fault: a refusal with no fallback is a gone session, told enough.
@@ -2359,11 +2362,11 @@ const labelTickets = async (invocation, reader, coverage, deps, about) => {
  * the turn holds its cursor and the next turn looks again.
  *
  * @param {number[]} tickets
- * @param {{ invocation: import('./webhook/fire.mjs').WorkflowFire | import('./webhook/fire.mjs').JobFire, coverage: import('./coverage.mjs').Coverage, commented: Commented[], reader: Reader, config: import('./repo-config.mjs').RepoConfig, ownerOf: (pr: number) => Promise<{ session: string | null }> }} ctx
+ * @param {{ invocation: import('./webhook/fire.mjs').WorkflowFire | import('./webhook/fire.mjs').JobFire, repo: string, coverage: import('./coverage.mjs').Coverage, commented: Commented[], reader: Reader, config: import('./repo-config.mjs').RepoConfig, ownerOf: (pr: number) => Promise<{ session: string | null }> }} ctx
  * @returns {Promise<{ found: import('./workflow.mjs').ShippedTicket[], failed: Array<{ ticket: number, error: string }>, skipped: number[] }>}
  *   `skipped`: each ticket no PR of the range closes, which names nobody.
  */
-const shippedRolesOf = async (tickets, { invocation, coverage, commented, reader, config, ownerOf }) => {
+const shippedRolesOf = async (tickets, { invocation, repo, coverage, commented, reader, config, ownerOf }) => {
   /** @type {import('./workflow.mjs').ShippedTicket[]} */
   const found = [];
   /** @type {Array<{ ticket: number, error: string }>} */
@@ -2383,7 +2386,7 @@ const shippedRolesOf = async (tickets, { invocation, coverage, commented, reader
     try {
       const row = commented.find((c) => c.ticket === ticket)?.row ?? await reader.ticket(ticket);
       const roles = await rolesOf({ issue: ticket, relay, claim, ticket: row, reader, ownerOf });
-      found.push({ ticket, title: row.title, prs, roles });
+      found.push({ ticket, title: row.title, url: `https://github.com/${repo}/issues/${ticket}`, prs, roles });
     } catch (error) {
       failed.push({ ticket, error: messageOf(error) });
     }

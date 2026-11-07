@@ -123,6 +123,20 @@ const SUBSCRIBED_PR = 'You subscribe to this pull request; it is not yours. Deci
 const SUBSCRIBED_ISSUE = 'You subscribe to this issue. Decide what it needs from you: a reply on the issue, a change to work of yours it bears on, or nothing.';
 
 /**
+ * What a ticket's spec owner is told where a comment calls on it: the
+ * spec is its to judge, and a comment it disagrees with gets a reply, not
+ * an edit. The role lines (dispatch/roles.mjs) and governor's own comment's
+ * note (dispatch/told.mjs) say the same.
+ */
+export const SPEC_OWNER_DUTY = 'You own its spec. If the comment calls for a change you agree with, edit the body. If you disagree, reply on the issue saying why.';
+
+/** The line naming the spec owner's role, to the session an issue's body names. */
+const SPEC_OWNER = 'You are its spec owner.';
+
+/** What an issue's spec owner is told of a comment on it, open or closed. @param {any} issue */
+const ownedIssueComment = (issue) => (issue?.state === 'closed' ? `${SPEC_OWNER} Nothing is asked of you.` : `${SPEC_OWNER}\n${SPEC_OWNER_DUTY}`);
+
+/**
  * The repo's default branch, off a delivery's `repository`, or null where
  * the payload names none: nothing takes it for `main`.
  *
@@ -136,14 +150,14 @@ export const defaultBranch = (payload) => (isBranch(payload?.repository?.default
  * turn points the PR body's footer at it (`relinkSession`); the session
  * does so itself where that rewrite failed, and keeps the link there.
  */
-export const HANDOFF = 'The session that wrote this PR is gone; it is yours now. The dispatcher points the PR description\'s session link at you; if it still names another session, put your own link in its place, and keep it there, so later remarks reach you.';
+export const HANDOFF = 'The session that wrote this PR is gone; it is yours now. Governor points the PR description\'s session link at you; if it still names another session, put your own link in its place, and keep it there, so later comments reach you.';
 
 /**
  * What a message about a session's post naming no session adds: the
  * recipient may be its author, and is told to sign its posts so the next one
  * is skipped.
  */
-export const UNSIGNED = `This post ends in the Claude Code footer and names no session, so the dispatcher cannot tell which session wrote it. If you wrote it, it has come back to you: post nothing about it. ${SIGN_POSTS}`;
+export const UNSIGNED = `This post ends in the Claude Code footer and names no session, so governor cannot tell which session wrote it. If you wrote it, it has come back to you: post nothing about it. ${SIGN_POSTS}`;
 
 /** A review with no text still says something when its state is one of these. */
 const VERDICTS = new Set(['approved', 'changes_requested']);
@@ -190,7 +204,7 @@ const splitQuote = (text) => {
  * Whom a prompt addresses: a fresh session a mention summoned, the PR's
  * owner, or a subscriber.
  *
- * @typedef {'mention' | 'owner' | 'subscriber'} Role
+ * @typedef {'mention' | 'owner' | 'subscriber' | 'ticket'} Role
  * @typedef {import('./fire.mjs').SubscriptionEvent} SubscriptionEvent
  * @typedef {{ login?: string, type?: string }} User
  * @typedef {{ body?: unknown, user?: User, author_association?: unknown, performed_via_github_app?: { id?: unknown } | null }} Written
@@ -504,7 +518,7 @@ const fanOut = ({ on, body, by, onAuthor, event, poster, prompt, fallback = fals
  * The first line of a prompt to a subscriber or the owner: what was
  * written, and on whose.
  *
- * @param {'owner' | 'subscriber'} role
+ * @param {Role} role
  * @param {string} what
  */
 const heading = (role, what) => (role === 'owner' ? `A ${what} on your pull request.` : `A ${what} on a pull request you subscribe to.`);
@@ -512,25 +526,50 @@ const heading = (role, what) => (role === 'owner' ? `A ${what} on your pull requ
 /** @param {Role} role */
 const closingFor = (role) => (role === 'owner' ? OWN_PR : SUBSCRIBED_PR);
 
+/**
+ * An issue or a PR as a message names it: a Markdown link on its number,
+ * then its title.
+ *
+ * @param {any} on
+ */
+export const refLine = (on) => `[#${on?.number}](${on?.html_url}) ${oneLine(on?.title)}`;
+
+/**
+ * What a relay about an issue ends with, by the recipient's role: a
+ * mention's ask, a subscriber's, or the spec owner's role and what the
+ * event asks of it. A ticket fire's text ends with none: the task adds
+ * each role's lines (dispatch/ticket-fire.mjs).
+ *
+ * @param {Role} role
+ * @param {string} mention what a mention asks
+ * @param {string} owner what the spec owner is told
+ * @returns {string[]}
+ */
+const issueClose = (role, mention, owner) => {
+  if (role === 'ticket') return [];
+  return ['', role === 'mention' ? mention : role === 'owner' ? owner : SUBSCRIBED_ISSUE];
+};
+
 /** @param {any} payload @param {Role} [role] @param {number} [limit] */
 const issueCommentPrompt = ({ issue, comment }, role = 'mention', limit = EXCERPT_CHARS) => [
-  role === 'mention' ? `An issue comment mentioned ${MENTION}.` : 'A comment on an issue you subscribe to.',
+  role === 'mention' ? `An issue comment mentioned ${MENTION}.` : role === 'subscriber' ? 'A comment on an issue you subscribe to.' : 'A comment on an issue.',
   '',
-  `Issue #${issue?.number}: ${oneLine(issue?.title)} (${issue?.html_url})`,
-  `Comment by ${comment?.user?.login} (${comment?.html_url}):`,
+  refLine(issue),
+  `[Comment](${comment?.html_url}) by ${comment?.user?.login}:`,
   excerpt(comment?.body, limit),
-  '',
-  role === 'mention'
-    ? `Do what the comment asks. If it needs code changes, create a branch, implement them, and open a PR linking issue #${issue?.number}. If it is a question, answer it as a comment on issue #${issue?.number}.`
-    : SUBSCRIBED_ISSUE,
+  ...issueClose(
+    role,
+    `Do what the comment asks. If it needs code changes, create a branch, implement them, and open a PR linking issue #${issue?.number}. If it is a question, answer it as a comment on issue #${issue?.number}.`,
+    ownedIssueComment(issue),
+  ),
 ].join('\n');
 
 /** @param {any} payload @param {Role} [role] @param {number} [limit] */
 const prCommentPrompt = ({ issue, comment }, role = 'mention', limit = EXCERPT_CHARS) => [
   role === 'mention' ? `A comment on a pull request mentioned ${MENTION}.` : heading(role, 'comment'),
   '',
-  `PR #${issue?.number}: ${oneLine(issue?.title)} (${issue?.html_url})`,
-  `Comment by ${comment?.user?.login} (${comment?.html_url}):`,
+  refLine(issue),
+  `[Comment](${comment?.html_url}) by ${comment?.user?.login}:`,
   excerpt(comment?.body, limit),
   '',
   role === 'mention'
@@ -542,8 +581,8 @@ const prCommentPrompt = ({ issue, comment }, role = 'mention', limit = EXCERPT_C
 const reviewCommentPrompt = ({ pull_request: pr, comment }, role = 'mention', limit = EXCERPT_CHARS) => [
   role === 'mention' ? `A PR review comment mentioned ${MENTION}.` : heading(role, 'review comment'),
   '',
-  `PR #${pr?.number}: ${oneLine(pr?.title)} (${pr?.html_url}), head branch "${pr?.head?.ref}"`,
-  `Review comment by ${comment?.user?.login} on ${comment?.path} line ${comment?.line ?? comment?.original_line ?? '?'} (${comment?.html_url}):`,
+  `${refLine(pr)}, head branch "${pr?.head?.ref}"`,
+  `[Review comment](${comment?.html_url}) by ${comment?.user?.login} on ${comment?.path} line ${comment?.line ?? comment?.original_line ?? '?'}:`,
   excerpt(comment?.body, limit),
   '',
   role === 'mention'
@@ -555,8 +594,8 @@ const reviewCommentPrompt = ({ pull_request: pr, comment }, role = 'mention', li
 const reviewPrompt = ({ pull_request: pr, review }, role = 'mention', limit = EXCERPT_CHARS) => [
   role === 'mention' ? `A PR review mentioned ${MENTION}.` : heading(role, 'review'),
   '',
-  `PR #${pr?.number}: ${oneLine(pr?.title)} (${pr?.html_url}), head branch "${pr?.head?.ref}"`,
-  `Review by ${review?.user?.login}, state ${review?.state} (${review?.html_url}):`,
+  `${refLine(pr)}, head branch "${pr?.head?.ref}"`,
+  `[Review](${review?.html_url}) by ${review?.user?.login}, state ${review?.state}:`,
   excerpt(review?.body, limit),
   '',
   role === 'mention'
@@ -568,7 +607,7 @@ const reviewPrompt = ({ pull_request: pr, review }, role = 'mention', limit = EX
 const issuePrompt = ({ issue }) => [
   `An issue was opened or assigned that mentions ${MENTION}.`,
   '',
-  `Issue #${issue?.number}: ${oneLine(issue?.title)} (${issue?.html_url})`,
+  refLine(issue),
   `Labels: ${(issue?.labels ?? []).map((/** @type {{ name?: string }} */ l) => l?.name).filter(Boolean).join(', ') || 'none'}`,
   'Body:',
   excerpt(issue?.body),
@@ -580,7 +619,7 @@ const issuePrompt = ({ issue }) => [
 const pushPrompt = ({ pull_request: pr, sender, before, after, repository }, role) => [
   role === 'owner' ? 'A push to your pull request.' : 'A push to a pull request you subscribe to.',
   '',
-  `PR #${pr?.number}: ${oneLine(pr?.title)} (${pr?.html_url}), head branch "${pr?.head?.ref}"`,
+  `${refLine(pr)}, head branch "${pr?.head?.ref}"`,
   `Pushed by ${sender?.login}: ${repository?.html_url}/compare/${before}...${after}`,
   '',
   role === 'owner'
@@ -615,7 +654,7 @@ const prClosedPrompt = ({ pull_request: pr, sender }, role) => {
   return [
     role === 'owner' ? `Your pull request was ${how}.` : `A pull request you subscribe to was ${how}.`,
     '',
-    `PR #${pr?.number}: ${oneLine(pr?.title)} (${pr?.html_url}), by ${sender?.login}`,
+    `${refLine(pr)}, by ${sender?.login}`,
     '',
     pr?.merged
       ? 'Nothing else on it is left to do unless its thread says so.'
@@ -623,29 +662,28 @@ const prClosedPrompt = ({ pull_request: pr, sender }, role) => {
   ].join('\n');
 };
 
-/** @param {any} payload @param {string | null} target The `deployed: ` label's target, if one was added. */
-const issueEventPrompt = ({ action, issue, label, sender }, target) => {
-  if (target !== null) {
-    return [
-      `The change of an issue you subscribe to reached ${target}.`,
-      '',
-      `Issue #${issue?.number}: ${oneLine(issue?.title)} (${issue?.html_url}), labelled "${label?.name}" by ${sender?.login}`,
-      '',
-      SUBSCRIBED_ISSUE,
-    ].join('\n');
-  }
-  const what = {
-    labeled: `was labelled "${label?.name}"`,
-    unlabeled: `lost the label "${label?.name}"`,
-    closed: `was closed${issue?.state_reason ? ` (${String(issue.state_reason).replace(/_/g, ' ')})` : ''}`,
-    reopened: 'was reopened',
-  }[String(action)];
+/**
+ * An issue labelled, unlabelled, closed or reopened, or its change
+ * deployed, in one line naming the issue as a link, then what it asks of
+ * the recipient by its role ({@link issueClose}). None of these events
+ * asks anything of the spec owner.
+ *
+ * @param {any} payload
+ * @param {string | null} target The `deployed: ` label's target, if one was added.
+ * @param {Role} [role]
+ */
+const issueEventPrompt = ({ action, issue, label, sender }, target, role = 'subscriber') => {
+  const what = target !== null
+    ? `reached ${target}, labelled "${label?.name}" by ${sender?.login}`
+    : `${{
+      labeled: `was labelled "${label?.name}"`,
+      unlabeled: `lost the label "${label?.name}"`,
+      closed: `was closed${issue?.state_reason ? ` (${String(issue.state_reason).replace(/_/g, ' ')})` : ''}`,
+      reopened: 'was reopened',
+    }[String(action)]} by ${sender?.login}`;
   return [
-    `An issue you subscribe to ${what}.`,
-    '',
-    `Issue #${issue?.number}: ${oneLine(issue?.title)} (${issue?.html_url}), by ${sender?.login}`,
-    '',
-    SUBSCRIBED_ISSUE,
+    `${refLine(issue)} ${what}.`,
+    ...issueClose(role, SUBSCRIBED_ISSUE, `${SPEC_OWNER} Nothing is asked of you.`),
   ].join('\n');
 };
 
@@ -664,11 +702,7 @@ export const EDIT_BUILDER = 'Its spec changed. Build against the body as it now 
  *
  * @param {any} payload
  */
-const bodyEditPrompt = ({ issue, sender }) => [
-  `The body of issue #${issue?.number} was edited.`,
-  '',
-  `Issue #${issue?.number}: ${oneLine(issue?.title)} (${issue?.html_url}), edited by ${sender?.login}`,
-].join('\n');
+const bodyEditPrompt = ({ issue, sender }) => `The body of ${refLine(issue)} was edited by ${sender?.login}.`;
 
 /**
  * Whether an `issues` delivery is a body edit that reaches a ticket's
@@ -780,7 +814,7 @@ export const bodyEditFires = (payload, { relay = RELAY, bodies = relay, appId } 
   // `comments` only drops an archived spec owner from the body's subscribe
   // lines, as a comment's message does.
   const fire = messageFire({
-    prompt: () => `${bodyEditPrompt(payload)}\n\n${EDIT_SPEC_OWNER}`,
+    prompt: () => `${bodyEditPrompt(payload)}\n\n${SPEC_OWNER}\n\n${EDIT_SPEC_OWNER}`,
     subscriber: { session: owner, owner: true },
     on: issue,
     event: 'comments',
@@ -985,7 +1019,7 @@ export const issueEventFires = (payload, { relay = RELAY, bodies = relay, appId 
     onAuthor,
     event,
     poster: null,
-    prompt: () => issueEventPrompt(payload, target),
+    prompt: (role) => issueEventPrompt(payload, target, role),
     closing: action === 'closed' || (deployed && issue?.state === 'closed'),
     issue: true,
     reason: `issue #${issue?.number} ${deployed ? `deployed to ${target}` : action}`,
@@ -1150,7 +1184,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
     const body = String(comment?.body ?? '');
     const unsigned = unsignedPost(body);
     about = {
-      text: (limit) => `${issueCommentPrompt(payload, 'subscriber', limit)}${unsigned ? `\n\n${UNSIGNED}` : ''}`,
+      text: (limit) => `${issueCommentPrompt(payload, 'ticket', limit)}${unsigned ? `\n\n${UNSIGNED}` : ''}`,
       event: 'comments',
       poster: postedBy(body),
       closing: false,
@@ -1161,7 +1195,7 @@ export const ticketFires = ({ event, payload, appId, relay = RELAY, bodies = rel
   } else if (event === 'issues' && (payload?.action === 'closed' || payload?.action === 'reopened')) {
     if (!lets(relay, onAuthor)) return none;
     about = {
-      text: () => issueEventPrompt(payload, null),
+      text: () => issueEventPrompt(payload, null, 'ticket'),
       event: 'close',
       poster: null,
       closing: payload.action === 'closed',

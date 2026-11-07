@@ -232,7 +232,7 @@ export const UNATTENDED = 'Unattended session: nobody answers a question here. D
  * refused message goes on, as it is, to the fresh session that takes the
  * PR over, and a cloud session knows its own link.
  */
-export const SIGN_POSTS = "On every comment, review and reply you post on GitHub, put this session's link, its https://claude.ai/code/session_… URL, alone on the line just above the Claude Code footer. The dispatcher reads the link there, so it does not send you your own posts.";
+export const SIGN_POSTS = "On every comment, review and reply you post on GitHub, put this session's link, its https://claude.ai/code/session_… URL, alone on the line just above the Claude Code footer. Governor reads the link there, so it does not send you your own posts.";
 
 /**
  * The lane's one message group: FIFO within it is what serialises the

@@ -156,7 +156,7 @@ export const editedText = (text, edited, asks = true) => {
  * @param {string} url the issue's page
  */
 export const editNudgeText = (on, url) => [
-  `You edited the body of issue #${on} (${url}), which another session owns. An edit names only the operator's login, so governor searched the sessions working in this repo for who made it, and found this session.`,
+  `You edited the body of [#${on}](${url}), which another session owns. An edit names only the operator's login, so governor searched the sessions working in this repo for who made it, and found this session.`,
   "An issue's body is its owner's to edit. Post your change as a comment on the issue instead, signed with this session's link, so its owner can decide whether the body takes it, and comment rather than edit from now on.",
   '',
   SESSION_RULES,
@@ -170,7 +170,7 @@ export const editNudgeText = (on, url) => [
  * @param {string} url the issue's page
  */
 export const editMaybeText = (on, url) => [
-  `The body of issue #${on} (${url}) was edited, and not by the session that owns it. Governor searched the sessions working in this repo and could not tell which made the edit: it may be yours.`,
+  `The body of [#${on}](${url}) was edited, and not by the session that owns it. Governor searched the sessions working in this repo and could not tell which made the edit: it may be yours.`,
   "If you made it, post your change as a comment on the issue instead, signed with this session's link, and leave the body to its owner from now on. If you did not, there is nothing to do.",
   '',
   SESSION_RULES,

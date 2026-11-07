@@ -462,7 +462,7 @@ export const searchAuthor = async ({ list, events, repo, on, post, match = poste
  * @param {string} url the post's page
  */
 export const nudgeText = (on, url) => [
-  `Your post on #${on} (${url}) ends in the Claude Code footer and names no session, so governor had to search for who wrote it, and found this session.`,
+  `Your [post](${url}) on #${on} ends in the Claude Code footer and names no session, so governor had to search for who wrote it, and found this session.`,
   "Edit the post to add this session's link, its https://claude.ai/code/session_… URL, alone on the line just above the Claude Code footer, and sign every post from now on.",
   '',
   SESSION_RULES,
@@ -476,7 +476,7 @@ export const nudgeText = (on, url) => [
  * @param {string} url the post's page
  */
 export const maybeText = (on, url) => [
-  `A post on #${on} (${url}) ends in the Claude Code footer and names no session. Governor searched the sessions working in this repo and could not tell which wrote it: it may be yours.`,
+  `A [post](${url}) on #${on} ends in the Claude Code footer and names no session. Governor searched the sessions working in this repo and could not tell which wrote it: it may be yours.`,
   "If you wrote it, edit it to add this session's link alone on the line just above the Claude Code footer, and sign every post from now on. If you did not, there is nothing to do.",
   '',
   SESSION_RULES,
