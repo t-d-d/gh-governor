@@ -42,12 +42,13 @@ export const SESSION_LATE = 'dispatch-session-late';
  *   of the default branch (dispatch/launch-session.py). `connectors`: a periodic's
  *   claude.ai connectors, which start it as a run of its routine
  *   (dispatch/routines.mjs), the periodic named by `sessionName`.
- * @typedef {{ status: number | null, output: string, missing?: string[], refused?: true, routine?: string }} LaunchResult
+ * @typedef {{ status: number | null, output: string, missing?: string[], refused?: true, routine?: string, stopped?: true }} LaunchResult
  *   `missing`: the connectors a routine launch named that the account has
  *   not connected. It started nothing. `refused`: the routines API refused
  *   a routine launch before the fire. It started nothing. `routine`: the id
  *   of the routine a routine launch fired, through which its run session is
- *   found.
+ *   found. `stopped`: a message send the turn stopped because it ran out
+ *   of time, or did not start because none was left.
  * @typedef {(event: string, context?: Record<string, unknown>) => void} Log
  */
 

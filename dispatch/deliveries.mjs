@@ -306,6 +306,8 @@ export const readSend = (sent) => {
   return {
     /** @type {true | undefined} Set only on a send the ceiling held. */
     capped: undefined,
+    /** Set only on a send the turn stopped for time (`limitedSend`, dispatch/turn.mjs). */
+    stopped: sent.stopped,
     ok,
     answered: answer !== null,
     sessionUrl: typeof answer?.url === 'string' ? answer.url : null,
@@ -548,7 +550,9 @@ export const deliveries = (deps) => {
    * in the turn (a fault that outlasts one resend is not a blip, and would
    * double every later send's time): one blip lost a message and paged
    * (2026-09-28, the CLI answering `{"ok":false,"error":""}` with the next
-   * send 46 s later accepted).
+   * send 46 s later accepted). A send the turn stopped for time is not
+   * sent again: a hang is not a blip, and a resend would spend its whole
+   * limit a second time.
    *
    * Before anything is sent, the message counts against the session and
    * each of its subjects ({@link counted}); a pair at the ceiling holds it.
@@ -567,7 +571,7 @@ export const deliveries = (deps) => {
     const first = await once();
     // Budget allowing: the wait and another send as slow as the first. A
     // resend cut shorter would time out and leave its child running.
-    if (first.ok || refusedBy(first) || resendFailed || until - deps.now() < RESEND_DELAY_MS + (deps.now() - began)) return first;
+    if (first.ok || refusedBy(first) || first.stopped === true || resendFailed || until - deps.now() < RESEND_DELAY_MS + (deps.now() - began)) return first;
     deps.log('dispatch-message-retry', { session, error: first.error, status: first.status });
     await deps.sleep(RESEND_DELAY_MS);
     const second = await once();
