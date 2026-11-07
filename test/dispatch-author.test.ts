@@ -454,6 +454,12 @@ describe('relayedText', () => {
     assert.equal(relayedText(text, { searched: false, reason: 'the sessions list could not be read' }), text);
     assert.equal(relayedText(text, null), text);
   });
+  test('with the asks off, keeps the UNSIGNED line where the search could not decide, since no candidate is told', () => {
+    assert.equal(relayedText(text, { searched: true, author: null, maybe: [OWNER, WRITER], candidates: 2, unread: 0 }, false), text);
+    assert.equal(relayedText(text, { searched: true, author: WRITER, maybe: [], candidates: 2, unread: 0 }, false), 'A comment on an issue you subscribe to.');
+    assert.equal(relayedText(text, { searched: true, author: null, maybe: [], candidates: 2, unread: 0 }, false), 'A comment on an issue you subscribe to.');
+    assert.equal(relayedText(text, { searched: true, author: null, maybe: [OWNER, WRITER], candidates: 2, unread: 0 }), 'A comment on an issue you subscribe to.');
+  });
 });
 
 /** A TurnContext for planTicket and planAuthor, its search answering `found`. */
@@ -527,10 +533,26 @@ describe('planTicket: an unsigned comment on a claimed ticket', () => {
     assert.ok(sent[0]!.text.includes(UNSIGNED));
   });
 
-  test('with sessionRules off, the relay is as today and nothing is searched', async () => {
-    const { ctx, sent, searched } = context({ config: RULES_OFF, found: { searched: true, author: OWNER, maybe: [], candidates: 1, unread: 0 } });
+  test('with sessionRules off, a spec owner that wrote it is not relayed its own post, and is not asked to sign it', async () => {
+    const told = new Set<string>();
+    const { ctx, sent, searched } = context({ config: RULES_OFF, told, found: { searched: true, author: OWNER, maybe: [], candidates: 1, unread: 0 } });
+    const plan = await planTicket(ticketFire(), ctx) as any;
+    assert.equal(searched(), 1);
+    assert.deepEqual(sent, []);
+    assert.deepEqual([...told], []);
+    assert.equal(exitCodeFor(plan.answer), 0);
+  });
+
+  test('with sessionRules off, another session wrote it: the owner hears it without UNSIGNED, and the writer is not asked to sign it', async () => {
+    const { ctx, sent } = context({ config: RULES_OFF, found: { searched: true, author: WRITER, maybe: [], candidates: 2, unread: 0 } });
     await planTicket(ticketFire(), ctx);
-    assert.equal(searched(), 0);
+    assert.deepEqual(sent.map((s) => s.session), [OWNER]);
+    assert.ok(!sent[0]!.text.includes(UNSIGNED));
+  });
+
+  test('with sessionRules off, undecided: the relay keeps UNSIGNED and no candidate is told', async () => {
+    const { ctx, sent } = context({ config: RULES_OFF, found: { searched: true, author: null, maybe: [OWNER, WRITER], candidates: 2, unread: 0 } });
+    await planTicket(ticketFire(), ctx);
     assert.deepEqual(sent.map((s) => s.session), [OWNER]);
     assert.ok(sent[0]!.text.includes(UNSIGNED));
   });

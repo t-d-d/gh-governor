@@ -251,6 +251,13 @@ describe('ownerLine and editedText', () => {
       assert.match(line, /read the body again before you next edit it/i);
       assert.doesNotMatch(line, /—/);
     }
+    // With sessionRules off nobody is asked to comment instead, so the owner is not told governor asks it.
+    const plain = ownerLine({ by: 'other', found: { searched: true, author: WRITER, maybe: [], candidates: 1, unread: 0 } }, false);
+    assert.match(plain, /another session made the edit/i);
+    assert.doesNotMatch(plain, /governor tells it/i);
+    assert.match(author, /governor tells it/i);
+    assert.equal(ownerLine({ by: 'other', found: { searched: true, author: null, maybe: [], candidates: 1, unread: 0 } }, false), person);
+    assert.equal(editedText(TEXT, { by: 'other', found: { searched: true, author: WRITER, maybe: [], candidates: 1, unread: 0 } }, false), `The body of issue #7 was edited.\n\n${plain}`);
     assert.equal(editedText(TEXT, null), TEXT);
     assert.equal(editedText(TEXT, { by: 'other', found: { searched: true, author: null, maybe: [], candidates: 0, unread: 0 } }), `The body of issue #7 was edited.\n\n${person}`);
   });
@@ -309,6 +316,17 @@ describe('tellEditor', () => {
       { by: 'other' as const, found: { searched: false as const, reason: 'x' } },
     ]) await tellEditor({ repo: REPO, on: 7, edit: EDIT, edited, tellOnce: t.tellOnce, deliveries: t.deliveries as never, log: t.log });
     assert.deepEqual(t.sent, []);
+  });
+
+  test('with the asks off, nobody is told, whatever was found', async () => {
+    const t = teller();
+    for (const edited of [
+      { by: 'other' as const, found: { searched: true as const, author: WRITER, maybe: [], candidates: 1, unread: 0 } },
+      { by: 'other' as const, found: { searched: true as const, author: null, maybe: [WRITER, OTHER], candidates: 2, unread: 0 } },
+    ]) assert.deepEqual(await tellEditor({ repo: REPO, on: 7, edit: EDIT, edited, asks: false, tellOnce: t.tellOnce, deliveries: t.deliveries as never, log: t.log }), []);
+    assert.deepEqual(t.sent, []);
+    assert.deepEqual([...t.told], []);
+    assert.ok(t.logged.every((l) => /sessionRules/.test(String(l.reason))), JSON.stringify(t.logged));
   });
 
   test('the texts use no em dash, and no event text is logged', async () => {
@@ -436,10 +454,38 @@ describe('planTicket: a body edit that leaves the owner link in place', () => {
     assert.ok(!sent[0]!.text.includes(EDIT_SPEC_OWNER));
   });
 
-  test('with sessionRules off, nothing is searched and the owner gets today\'s notice', async () => {
+  test('with sessionRules off, an owner whose own events show the edit is still not told of it', async () => {
     const { ctx, sent, searched } = context({ config: RULES_OFF, edited: { by: 'owner' } });
     await planTicket(fire(), ctx);
-    assert.equal(searched(), 0);
+    assert.equal(searched(), 1);
+    assert.deepEqual(sent.map((s) => s.session), [BUILDER]);
+    const unclaimed = context({ config: RULES_OFF, edited: { by: 'owner' } });
+    await planTicket(fire({ labels: ['mode: afk'] }), unclaimed.ctx);
+    assert.deepEqual(unclaimed.sent, []);
+  });
+
+  test('with sessionRules off, another session\'s edit is told to the owner, and nobody is asked to comment instead', async () => {
+    const told = new Set<string>();
+    const { ctx, sent } = context({ config: RULES_OFF, told, edited: { by: 'other', found: { searched: true, author: WRITER, maybe: [], candidates: 2, unread: 0 } } });
+    const plan = await planTicket(fire(), ctx) as any;
+    assert.deepEqual(sent.map((s) => s.session), [OWNER, BUILDER]);
+    assert.match(ownerOf(sent)!.text, /another session made the edit/i);
+    assert.doesNotMatch(ownerOf(sent)!.text, /may be your own|governor tells it/i);
+    assert.deepEqual([...told], []);
+    assert.equal(exitCodeFor(plan.answer), 0);
+  });
+
+  test('with sessionRules off, undecided candidates are not told the edit may be theirs', async () => {
+    const { ctx, sent } = context({ config: RULES_OFF, edited: { by: 'other', found: { searched: true, author: null, maybe: [WRITER, OTHER], candidates: 2, unread: 0 } } });
+    await planTicket(fire(), ctx);
+    assert.deepEqual(sent.map((s) => s.session), [OWNER, BUILDER]);
+    assert.match(ownerOf(sent)!.text, /someone else/i);
+  });
+
+  test('with sessionRules off, an owner whose events cannot be read gets today\'s notice', async () => {
+    const { ctx, sent } = context({ config: RULES_OFF, edited: { by: 'unknown', reason: 'the events read failed' } });
+    await planTicket(fire(), ctx);
+    assert.deepEqual(sent.map((s) => s.session), [OWNER, BUILDER]);
     assert.ok(ownerOf(sent)!.text.includes(EDIT_SPEC_OWNER));
   });
 

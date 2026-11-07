@@ -1,7 +1,8 @@
 /**
- * Who made a ticket's body edit that leaves the owner link in place, under
- * `sessionRules` (PRD #599, "A body edit that leaves the owner link in
- * place").
+ * Who made a ticket's body edit that leaves the owner link in place (PRD
+ * #599, "A body edit that leaves the owner link in place"). The search
+ * runs whatever `sessionRules` says; the nudges in step 3 run only under
+ * it, and without it the owner is not told the editor was asked anything.
  *
  * Every session edits as the operator's login, so an `issues` `edited`
  * delivery cannot say whose edit it was, and the spec owner used to be told
@@ -118,15 +119,18 @@ const AGAIN = 'Read the body again before you next edit it, so you do not write 
 /**
  * What the spec owner is told of the edit's author, in place of
  * `EDIT_SPEC_OWNER`: that line itself where nothing was searched or the
- * owner's events could not be read.
+ * owner's events could not be read. With `asks` false (`sessionRules`
+ * off) the editor is not told to comment instead, so the line does not
+ * say it is.
  *
  * @param {EditFound | null} edited
+ * @param {boolean} [asks]
  */
-export const ownerLine = (edited) => {
+export const ownerLine = (edited, asks = true) => {
   if (edited === null || edited.by !== 'other') return EDIT_SPEC_OWNER;
   const { found } = edited;
   if (!found.searched) return `Someone else made the edit, not this session. ${AGAIN}`;
-  if (found.author !== null) return `Another session made the edit, not this one. A session should comment on an issue it does not own, and governor tells it so. ${AGAIN}`;
+  if (found.author !== null) return `Another session made the edit, not this one. ${asks ? 'A session should comment on an issue it does not own, and governor tells it so. ' : ''}${AGAIN}`;
   if (found.maybe.length > 0) return `Someone else made the edit, not this session. Governor could not tell which session made it. ${AGAIN}`;
   return `Someone else made the edit, not this session, most likely a person. ${AGAIN}`;
 };
@@ -138,10 +142,11 @@ export const ownerLine = (edited) => {
  *
  * @param {string} text
  * @param {EditFound | null} edited
+ * @param {boolean} [asks] as {@link ownerLine} reads it
  */
-export const editedText = (text, edited) => {
+export const editedText = (text, edited, asks = true) => {
   const line = `\n\n${EDIT_SPEC_OWNER}`;
-  return edited?.by === 'other' && text.endsWith(line) ? `${text.slice(0, -line.length)}\n\n${ownerLine(edited)}` : text;
+  return edited?.by === 'other' && text.endsWith(line) ? `${text.slice(0, -line.length)}\n\n${ownerLine(edited, asks)}` : text;
 };
 
 /**
@@ -175,21 +180,23 @@ export const editMaybeText = (on, url) => [
  * Tell what a search for a body edit's editor found: nothing where the
  * owner made it or its events could not be read, else the editor its nudge
  * or each candidate not ruled out that the edit may be its own, each once.
- * Returns each delivery sent. Logs {@link EDITOR} lines naming sessions
- * and counts, never text.
+ * Returns each delivery sent. With `asks` false (`sessionRules` off)
+ * nobody is told. Logs {@link EDITOR} lines naming sessions and counts,
+ * never text.
  *
  * @param {{
  *   repo: string,
  *   on: number,
  *   edit: BodyEdit,
  *   edited: EditFound,
+ *   asks?: boolean,
  *   tellOnce: (session: string, kind: string) => Promise<boolean>,
  *   deliveries: Pick<import('./deliveries.mjs').Deliveries, 'deliver'>,
  *   log: import('./author.mjs').Log,
  * }} args
  * @returns {Promise<import('./deliveries.mjs').Delivery[]>}
  */
-export const tellEditor = async ({ repo, on, edit, edited, tellOnce, deliveries, log }) => {
+export const tellEditor = async ({ repo, on, edit, edited, asks = true, tellOnce, deliveries, log }) => {
   const at = { repo, on, edit: edit.at };
   if (edited.by === 'owner') {
     log(EDITOR, { ...at, outcome: 'the owner made it', reason: 'it is not told of its own edit' });
@@ -205,6 +212,7 @@ export const tellEditor = async ({ repo, on, edit, edited, tellOnce, deliveries,
     found: edited.found,
     nudge: { kind: 'edit-unsigned', text: editNudgeText(on, edit.url) },
     maybe: { kind: 'edit-unsigned-maybe', text: editMaybeText(on, edit.url) },
+    asks,
     tellOnce,
     deliveries,
     log,

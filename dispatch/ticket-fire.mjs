@@ -9,8 +9,8 @@
  * message was before, and nothing is read from GitHub. On a claimed ticket
  * the spec owner and each builder the one lookup finds
  * (dispatch/builders.mjs) are sent it, each told who holds both roles and
- * which it holds. A session never hears its own signed post, nor, under
- * `sessionRules`, an unsigned one the search found it wrote
+ * which it holds. A session never hears its own signed post, nor an
+ * unsigned one the search found it wrote, whatever `sessionRules` says
  * (dispatch/author.mjs). A builder
  * whose PR's merge closed the ticket hears the close through its PR, and
  * not again from the ticket. A comment governor's App posted is no ticket
@@ -20,11 +20,13 @@
  * part. The spec owner acts on a remark that changes what counts as done,
  * by editing the body. The builder acts on a remark about the build, and
  * never edits the body. A body edit tells the spec owner the edit may be
- * its own, and the builder that the spec changed. Under `sessionRules`,
- * where the edit left the owner link in place, governor first searches for
- * who made it (dispatch/editor.mjs): the spec owner is not told of its own
- * edit, is told someone else made one, and keeps the old line only where
- * its events could not be read. The builder hears every edit.
+ * its own, and the builder that the spec changed. Where the edit left the
+ * owner link in place, governor first searches for who made it, whatever
+ * `sessionRules` says (dispatch/editor.mjs): the spec owner is not told of
+ * its own edit, is told someone else made one, and keeps the old line only
+ * where its events could not be read. Only under `sessionRules` is a
+ * session the searches find asked to sign its post or to comment instead
+ * of editing. The builder hears every edit.
  *
  * Where the spec owner refuses a comment as archived, nobody owns the
  * ticket, so with `sessionRules` on the session that signed the comment is
@@ -78,20 +80,25 @@ export const planTicket = async (invocation, ctx) => {
   const repo = fireRepoOf(invocation);
   const { issue, event, state, labels, poster, closing } = invocation;
   const config = ctx.configOf(repo);
-  // A session's unsigned comment, under sessionRules: its author is searched
-  // for first, is not relayed its own post, and the relay drops its
-  // UNSIGNED line (dispatch/author.mjs).
-  const post = event === 'comments' && invocation.unsigned !== undefined && turnsOn(config, 'sessionRules') ? invocation.unsigned : null;
+  // What governor asks of a session the searches below find, to sign its
+  // post or to comment instead of editing, runs only under sessionRules:
+  // a session follows rules only where it was told them. The searches
+  // themselves run whatever the switch says.
+  const asks = turnsOn(config, 'sessionRules');
+  // A session's unsigned comment: its author is searched for first, is not
+  // relayed its own post, and the relay drops its UNSIGNED line where the
+  // search decided (dispatch/author.mjs).
+  const post = event === 'comments' && invocation.unsigned !== undefined ? invocation.unsigned : null;
   const found = post === null ? null : await ctx.findAuthor(issue, post);
-  const text = relayedText(invocation.text, found);
+  const text = relayedText(invocation.text, found, asks);
   // A body edit that moved the owner link: under sessionRules the old
   // owner is the spec owner, and the session the new body names made the edit.
   const moved = event === 'edit' && invocation.moved !== undefined && turnsOn(config, 'sessionRules') ? invocation.moved : null;
   const editor = moved === null ? null : invocation.owner ?? null;
   const owner = moved === null ? invocation.owner ?? null : moved.from ?? null;
-  // A body edit that left the owner link in place, under sessionRules: who
-  // made it is searched for, the owner first (dispatch/editor.mjs).
-  const edit = event === 'edit' && moved === null && owner !== null && invocation.edited !== undefined && turnsOn(config, 'sessionRules') ? invocation.edited : null;
+  // A body edit that left the owner link in place: who made it is searched
+  // for, the owner first (dispatch/editor.mjs).
+  const edit = event === 'edit' && moved === null && owner !== null && invocation.edited !== undefined ? invocation.edited : null;
   const edited = edit === null || owner === null ? null : await ctx.findEditor(issue, edit, owner);
   const ownEdit = edited?.by === 'owner';
   const claimed = labels.includes(config.labels.claim) && config.labels.claim !== '';
@@ -111,7 +118,7 @@ export const planTicket = async (invocation, ctx) => {
   // What a body edit tells each role, under what happened. The spec owner
   // hears nothing of its own edit.
   const editLines = (/** @type {TicketRole} */ role) => (event !== 'edit' ? '' : `\n\n${[
-    ...(role === 'builder' || ownEdit ? [] : [ownerLine(edited)]),
+    ...(role === 'builder' || ownEdit ? [] : [ownerLine(edited, asks)]),
     ...(role === 'spec owner' ? [] : [EDIT_BUILDER]),
   ].join('\n')}`);
   if (event === 'dispatched') {
@@ -145,7 +152,7 @@ export const planTicket = async (invocation, ctx) => {
     }
     Object.assign(about, { builders, builder: roles.by });
   }
-  if (sends.length === 0 && editor === null && found === null && edited?.by !== 'other') {
+  if (sends.length === 0 && editor === null && (found === null || !asks) && (edited?.by !== 'other' || !asks)) {
     ctx.log('dispatch-ticket', { ...about, outcome: 'nobody told', ...(skipped.length === 0 ? { reason: 'no role on the ticket is held by a session' } : { skipped }) });
     return { answer: { kind: invocation.kind, messaged: null, dispatched: [] } };
   }
@@ -189,7 +196,7 @@ export const planTicket = async (invocation, ctx) => {
     for (const one of first) await send(one, owner);
     // The spec owner refused as archived: nobody owns the ticket, so the
     // session that signed the comment is offered it (dispatch/offer.mjs).
-    if (ownerGone && event === 'comments' && poster !== undefined && turnsOn(config, 'sessionRules')) {
+    if (ownerGone && event === 'comments' && poster !== undefined && asks) {
       offered = await offerIssue({ repo, issue, session: poster, why: 'archived', builders, deliveries: ctx.delivery(), log: ctx.log });
     }
     // The edit moved the owner link: the take confirmed, or the old link
@@ -214,10 +221,10 @@ export const planTicket = async (invocation, ctx) => {
       for (const one of after) await send(one, taken ? editor : owner);
     }
     if (post !== null && found !== null) {
-      nudged = await tellAuthor({ repo, on: issue, post, found, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries: ctx.delivery(), log: ctx.log });
+      nudged = await tellAuthor({ repo, on: issue, post, found, asks, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries: ctx.delivery(), log: ctx.log });
     }
     if (edit !== null && edited !== null) {
-      nudged = [...nudged, ...await tellEditor({ repo, on: issue, edit, edited, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries: ctx.delivery(), log: ctx.log })];
+      nudged = [...nudged, ...await tellEditor({ repo, on: issue, edit, edited, asks, tellOnce: (session, kind) => ctx.state.recordTold(session, kind), deliveries: ctx.delivery(), log: ctx.log })];
     }
   } finally {
     loginStored = await ctx.storeLogin();
