@@ -536,7 +536,7 @@ describe('planWorkflow — one note per session for a run over several PRs', () 
  * workflow file declares, not from a list of workflow names. A
  * green job tells the PRs whose files the target's paths pick; a red run of
  * a target a merge starts tells them too; a red hand-dispatched release
- * tells nobody. Every success asks for sign-off, "unless you know otherwise".
+ * tells nobody. Every success asks for sign-off, with its exceptions.
  */
 describe('planWorkflow — every deploy target that ships a PR\'s change', () => {
   const BASE = 'b'.repeat(40);

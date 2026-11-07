@@ -567,7 +567,7 @@ const planTarget = async (run, coverage, prompts, workflows) => {
       prs: prs.map((p) => p.number),
       subscribed: subscribed.map((p) => p.number),
       session,
-      // Every success asks, "unless you know otherwise": a session whose
+      // Every success asks for sign-off, with its exceptions: a session whose
       // change another target still has to ship waits for it by the
       // github-tooling rule.
       closing: conclusion === 'success',

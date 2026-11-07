@@ -16,6 +16,7 @@ import { maybeText, nudgeText } from '../dispatch/author.mjs';
 import { editMaybeText, editNudgeText } from '../dispatch/editor.mjs';
 import { SESSION_RULES } from '../dispatch/session-rules.mjs';
 import { DEPLOYED_MARKER, deployedComment } from '../dispatch/webhook/deployed-comment.mjs';
+import { LABEL_PREFIX } from '../dispatch/webhook/fire.mjs';
 
 const SPEC = 'https://claude.ai/code/session_01SPECOWNER';
 const BUILDER = 'https://claude.ai/code/session_01BUILDER';
@@ -92,13 +93,13 @@ describe('the pickup prompt', () => {
 
   test('gives stopping without a PR a plain sentence of its own', () => {
     const text = promptFor(7, 'The ticket', 'acme/factory', 'claimed', {}, { signOff: true, deployMessages: true });
-    assert.match(text, / If you stopped at the check and raised no pull request, nothing will ask you to sign off\. /);
+    assert.match(text, / If you stopped at the check and raised no pull request, there is no pull request to wait for\. /);
     assert.doesNotMatch(text, /no pull request will close/);
   });
 
   test('a repo\'s own sign-off prompt still follows the sentence', () => {
     const text = promptFor(7, 'The ticket', 'acme/factory', 'claimed', { signOff: 'Say goodbye.' }, { signOff: true });
-    assert.match(text, /nothing will ask you to sign off\. Say goodbye\.$/);
+    assert.match(text, /there is no pull request to wait for\. Say goodbye\.$/);
   });
 });
 
@@ -140,6 +141,12 @@ describe('corrections and nudges', () => {
     for (const kind of ['nudge', 'maybe'] as const) assert.ok(texts[kind].includes(RULE_1), texts[kind]);
     for (const kind of ['edit-owned', 'edit-builder', 'edit-person', 'edit-pr', 'editNudge', 'editMaybe'] as const) assert.ok(texts[kind].includes(RULE_2), texts[kind]);
   });
+
+  test('a message that is not sure the session did it asks only on that condition', () => {
+    assert.match(texts.maybe, / If you wrote it, edit it to add this session's link /);
+    assert.match(texts.editMaybe, / If you made it, post your change as a comment /);
+    for (const text of [texts.maybe, texts.editMaybe]) assert.doesNotMatch(text, /\. (Edit|Post) /, text);
+  });
 });
 
 describe('the deployed comment', () => {
@@ -151,5 +158,15 @@ describe('the deployed comment', () => {
   test('a bracket in the workflow\'s name does not end the link early', () => {
     const text = deployedComment({ target: 'prod', workflow: 'Ship [prod]', url: 'https://x.test/j', commit: 'abcdef1234' });
     assert.match(text, /the \[Ship \\\[prod\\\]\]\(https:\/\/x\.test\/j\) workflow/);
+  });
+
+  test('a backslash ending the workflow\'s name does not escape the link\'s closing bracket', () => {
+    const text = deployedComment({ target: 'prod', workflow: 'Ship \\', url: 'https://x.test/j', commit: 'abcdef1234' });
+    assert.ok(text.includes('the [Ship \\\\](https://x.test/j) workflow'), text);
+  });
+
+  test('names the label with the prefix the label is read by', () => {
+    const text = deployedComment({ target: 'prod', workflow: 'Deploy', url: 'https://x.test/j', commit: 'abcdef1234' });
+    assert.ok(text.includes(`\`${LABEL_PREFIX}prod\``), text);
   });
 });

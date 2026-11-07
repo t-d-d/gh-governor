@@ -92,7 +92,7 @@ const OPEN_PR = 'If you raised a pull request, do not sign off while it is open:
  * The default pickup prompt's lead into the ask to sign off. A builder read
  * a bare "if you stopped" as an ask to sign off once it stopped, PR or not.
  */
-const STOPPED = 'If you stopped at the check and raised no pull request, nothing will ask you to sign off.';
+const STOPPED = 'If you stopped at the check and raised no pull request, there is no pull request to wait for.';
 
 /**
  * What one exit status of `dispatch/launch-session.py` means.

@@ -169,7 +169,7 @@ export const editNudgeText = (on, url) => [
  */
 export const editMaybeText = (on, url) => [
   `The body of [#${on}](${url}) was edited, and not by the session that owns it. Governor searched the sessions working in this repo and could not tell which made the edit: it may be yours.`,
-  `${brokenRule(2, 'If you made it, it breaks')} Post your change as a comment on the issue instead, signed with this session's link, and leave the body to its owner from now on. If you did not make it, there is nothing to do.`,
+  `${brokenRule(2, 'An edit like this breaks')} If you made it, post your change as a comment on the issue instead, signed with this session's link, and leave the body to its owner from now on. If you did not make it, there is nothing to do.`,
 ].join('\n');
 
 /**

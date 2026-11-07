@@ -475,7 +475,7 @@ export const nudgeText = (on, url) => [
  */
 export const maybeText = (on, url) => [
   `A [post](${url}) on #${on} ends in the Claude Code footer and names no session. Governor searched the sessions working in this repo and could not tell which wrote it: it may be yours.`,
-  `${brokenRule(1, 'If you wrote it, it breaks')} Edit it to add this session's link alone on the line just above the Claude Code footer, and sign every post from now on. If you did not write it, there is nothing to do.`,
+  `${brokenRule(1, 'A post like this breaks')} If you wrote it, edit it to add this session's link alone on the line just above the Claude Code footer, and sign every post from now on. If you did not write it, there is nothing to do.`,
 ].join('\n');
 
 /**
