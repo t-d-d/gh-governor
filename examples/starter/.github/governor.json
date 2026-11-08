@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/c9a699d6f5914185df986815b959c9e010251a99/schema/governor.schema.json",
+  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/fda1887811d641f79cea18d4b1fa0f09ef65a238/schema/governor.schema.json",
   "environment": "my-env",
   "pickup": { "ready": ["mode: afk"], "claim": "claimed", "claimRemoves": [], "sweepHours": 1 },
   "summons": {},
