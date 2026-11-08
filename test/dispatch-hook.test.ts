@@ -848,7 +848,7 @@ describe('the config file\'s hooks', () => {
   });
 });
 
-describe('fitness: a hook fire arrives on its own path, signed with its hook key, and carries data, never a prompt (dispatcher-repos.md)', () => {
+describe('fitness: a hook fire arrives on its own path, signed with its hook key, and carries data, never a prompt (hooks-and-routines.md)', () => {
   test('an unlisted owner\'s signed hook queues nothing and pages nobody', async () => {
     const { deps, queued, logged } = harness();
     const response = await handle(fire(TEXT, { repo: 'stranger/repo' }), deps);

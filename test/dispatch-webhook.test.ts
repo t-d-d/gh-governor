@@ -2275,7 +2275,7 @@ describe('fitness: the receiver drops a fire only where the repo\'s hook-table i
  * fire. Whatever the item cannot say, the fire is queued and the task
  * decides, as before.
  */
-describe('fitness: a label queues a selection fire only where the repo\'s hook-table item lists it as a ready label, or cannot say (dispatcher-repos.md)', () => {
+describe('fitness: a label queues a selection fire only where the repo\'s hook-table item lists it as a ready label, or cannot say (served-repos.md)', () => {
   const WATCHER = 'https://claude.ai/code/session_01WATCHES';
   const issue = { ...issuesEvent('labeled').issue, body: `Filed.\n\n${subscribeLine(WATCHER)}` };
   const labelled = (name: string, sender: Record<string, unknown> = member) => ({ ...issuesEvent('labeled', { issue, label: { name }, sender }), repository: { full_name: REPO } });
@@ -2360,7 +2360,7 @@ describe('fitness: a label queues a selection fire only where the repo\'s hook-t
  * queues, so one removal is one fire. The receiver judges the ticket's
  * labels in the payload against the repo's hook-table item, as for a label.
  */
-describe('fitness: a blocker unlinked from a ready ticket queues its selection fire (dispatcher-repos.md)', () => {
+describe('fitness: a blocker unlinked from a ready ticket queues its selection fire (served-repos.md)', () => {
   const on = new Map(SWITCHES.map((name) => [name, true]));
   type Item = { switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null } | null;
   const listed = async () => ({ switches: on, ready: READY });
@@ -2492,7 +2492,7 @@ describe('fitness: a blocker unlinked from a ready ticket queues its selection f
  * repo's hook-table item, and drops only an author outside the three: the
  * task judges every fire again from the file.
  */
-describe('fitness: only text from an author trust.relay lets in reaches a running session (dispatcher-repos.md)', () => {
+describe('fitness: only text from an author trust.relay lets in reaches a running session (trust.md)', () => {
   const OWNER = 'https://claude.ai/code/session_01OWNERAAA';
   const WATCHER = 'https://claude.ai/code/session_01WATCHES';
   const footer = `\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n${OWNER}`;
@@ -2705,7 +2705,7 @@ describe('routeEvent: the issue review\'s fire', () => {
  * drops any other label change's fire. Where the item cannot say, it queues
  * the fire and the task decides.
  */
-describe('fitness: dispatcher-review.md, a label change queues an issue review only for a label a review names', () => {
+describe('fitness: served-repos.md, a label change queues an issue review only for a label a review names', () => {
   const at = { full_name: REPO, default_branch: 'main' };
   const REVIEW_LABELS = { labeled: ['triage: go', 'type: bug'], unlabeled: ['claimed', 'type: bug'] };
   type ReviewLabels = { labeled: readonly string[], unlabeled: readonly string[] } | null | undefined;

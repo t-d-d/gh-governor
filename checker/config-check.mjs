@@ -28,7 +28,7 @@
  * anyone has read it.
  *
  * Governor itself still reads only the default branch
- * (docs/constraints/dispatcher-repos.md): this check reads the head inside
+ * (docs/constraints/served-repos.md): this check reads the head inside
  * the served repo's own Actions run, and governor never sees what it reads.
  */
 

@@ -29,7 +29,7 @@ const FOOTER = `🤖 Generated with [Claude Code](https://claude.com/claude-code
 /** The builder a thread whose one comment is `marker` names, or null. */
 const builder = (marker: string) => lastDispatch([{ id: 1, body: marker, created_at: AT, ours: true }])?.sessionUrl ?? null;
 
-describe('fitness: governor reads no old-prefix marker (dispatcher-repos.md)', () => {
+describe('fitness: governor reads no old-prefix marker (ticket-roles.md)', () => {
   test('the old prefix is the extracted repo\'s name and a colon, and governor writes none of it', () => {
     assert.match(dispatchMarker({ at: AT, sessionUrl: SESSION }), /<!-- governor:dispatched /);
     assert.match(subscribeLine(SESSION, undefined), /<!-- governor:subscribe /);

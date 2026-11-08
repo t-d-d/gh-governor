@@ -1,6 +1,6 @@
 /**
  * Only scripts/lib/ready-work.mjs combines the readiness checks
- * (docs/constraints/dispatcher-repos.md). This rule refuses a check taken
+ * (docs/constraints/ticket-readiness.md). This rule refuses a check taken
  * from ready-work.mjs by any import form, so the checks, the kept callers and
  * the message live in one rule rather than two that could disagree.
  *

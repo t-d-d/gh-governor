@@ -150,7 +150,7 @@ export const fromDispatcher = (text, source) => `${relayLabel(source)}\n\n${text
  * the session may sign off: which other PRs and issues of the session's
  * are open, as links on one line, or that none is. It names the repo
  * searched, so the session knows the claim stops at GitHub and at `repo`: a
- * turn searches only its fire's repo (docs/constraints/dispatcher-repos.md),
+ * turn searches only its fire's repo (docs/constraints/served-repos.md),
  * and a session that works in two must not read one's silence as the
  * other's. Any other message carries no standing line: it matters only
  * where the session decides whether to sign off.

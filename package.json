@@ -7,8 +7,9 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "gate": "npm run scan && npm run lint && npm run types && npm test",
+    "gate": "npm run scan && npm run constraints && npm run lint && npm run types && npm test",
     "scan": "node scripts/public-repo-scan.mjs",
+    "constraints": "node scripts/constraints-check.mjs",
     "lint": "eslint . --max-warnings 0",
     "types": "tsc -p .",
     "test": "node --experimental-strip-types --no-warnings=ExperimentalWarning --test --test-concurrency=4 'test/**/*.test.ts'"

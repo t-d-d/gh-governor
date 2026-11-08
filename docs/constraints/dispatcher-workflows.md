@@ -1,5 +1,5 @@
 # Dispatcher workflows
-Relevance: How governor reads a served repo's CI and deploys: a shipping job's name, TICKET_LABEL_PATHS, the config file's `workflows` and `deployMessages`, workflow and merge routing: dispatch/**
+Relevance: How governor reads a served repo's CI and deploys: a shipping job's name, TICKET_LABEL_PATHS, the config file's `workflows` and `deployMessages`: dispatch/{workflow,coverage,conflicts,merge-notice,turn}.mjs, dispatch/webhook/**
 Decision: Governor reads each served repo's CI, deploys and default branch from that repo's own workflows, config file and event payloads.
 
 Why: Served repos name their workflows differently: one runs CI as
@@ -55,7 +55,7 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
 - **No run but the PR's own CI run at its head holds a merge.** Where the
   file names `ci`, turns `prReview` on and does not set `prReview.waitForCi`
   to `false`, the latest run of that workflow at the PR's head is test 8's,
-  as a required check is (dispatcher-review.md). A deploy, or any other run, holds no merge: the
+  as a required check is (pr-review.md). A deploy, or any other run, holds no merge: the
   review merges a pass whatever else is running.
 - **The receiver forwards, from every served repo:**
   - a completed red run on the default branch;
@@ -88,17 +88,9 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   each commented ticket's roles through `rolesOf` (dispatch/roles.mjs), and `withTickets` (dispatch/workflow.mjs) adds
   them to the PRs' notes, one per session. The receiver's drop of the
   deploy comment is `deployComment` in dispatch/webhook/mention.mjs.
-- test/dispatch-webhook.test.ts pins the receiver's payload-only routing, a
-  `trunk` repo's included, and the drop by the repo's switches after it, in
-  `fitness: the receiver drops a fire only where the repo's hook-table item
-  says its switch is off (dispatcher-workflows.md)`;
-  test/dispatch-turn.test.ts a cursor per repo, file and label.
-- The drop: `droppedBy` in dispatch/webhook/switches.mjs, which also holds
-  `switchOf`, called by `handle` in dispatch/webhook/route.mjs.
-- test/dispatch-review.test.ts pins that the review reads only the CI
-  workflow's runs at the PR's head, and none where the file names no `ci`
-  or sets `prReview.waitForCi` to `false`,
-  in the `fitness:` block that names this file.
+- The receiver's routing and its drop by the repo's switches, and the
+  review's read of only the CI run at the head, are held by the `fitness:`
+  tests that name this file.
 
 ## Do not
 
@@ -110,7 +102,7 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
 - Do not assume `main`: a repo whose default branch is `trunk` would route
   nothing, or route runs on a branch that is not its default.
 - Do not keep a list of repos with CI in a stack parameter: onboarding then
-  needs a deploy, which dispatcher-repos.md rules out.
+  needs a deploy, which served-repos.md rules out.
 - Do not gate workflow or merge events in the receiver by a list of repos,
   nor read a config file there: the task reads the file and writes the
   switches the receiver drops by to the hook table.
@@ -124,4 +116,4 @@ sessions of a red CI run, a deploy or a merge that broke their PR.
   the head is the one exception, because its end queues the review again.
 
 Judgment: that a served repo's workflows write the job-name suffix and `TICKET_LABEL_PATHS`, no check here sees: governor cannot read another repo's files at that repo's merge time.
-History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The receiver drops a fire whose switch the repo's hook-table item says is off, the conflicts check never, since #147. The PR's own CI run at its head holds its merge, as test 8, since #398: a repo whose plan cannot require a check would otherwise merge a pass on red CI. The CI run at the head holds a merge only where `prReview.waitForCi` is not `false` since #459: a repo whose CI runs only after the merge has no run at a PR's head, so every PR waited forever. The deploy targets and tags moved from `workflows` to the `deployMessages` section, and `workflows` keeps only `ci`, since #525. The shipping turn alone tells every session that hears a green deploy, the ticket's roles included, and the receiver relays governor's deploy comment to no session, since #564, under PRD #535: two turns deciding could lose a deploy or tell it twice (#558). With `sessionRules` on, an issue a session owns holds the green deploy's ask to sign off only where it carries a ready or claim label, since #612, under PRD #599.
+History: Extracted into this repo, October 2026. Earlier decisions are in a private repo. The receiver drops a fire whose switch the repo's hook-table item says is off, the conflicts check never, since #147. The PR's own CI run at its head holds its merge, as test 8, since #398: a repo whose plan cannot require a check would otherwise merge a pass on red CI. The CI run at the head holds a merge only where `prReview.waitForCi` is not `false` since #459: a repo whose CI runs only after the merge has no run at a PR's head, so every PR waited forever. The deploy targets and tags moved from `workflows` to the `deployMessages` section, and `workflows` keeps only `ci`, since #525. The shipping turn alone tells every session that hears a green deploy, the ticket's roles included, and the receiver relays governor's deploy comment to no session, since #564, under PRD #535: two turns deciding could lose a deploy or tell it twice (#558). The Examples were cut to fit the size cap in #698. With `sessionRules` on, an issue a session owns holds the green deploy's ask to sign off only where it carries a ready or claim label, since #612, under PRD #599.

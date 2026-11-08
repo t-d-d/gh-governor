@@ -745,7 +745,7 @@ const heldBy = (issue, repo) => {
  * covers whatever this misses.
  *
  * The App's one webhook carries every installation's deliveries
- * (docs/constraints/dispatcher-repos.md). A repository whose owner is off the list queues nothing; any
+ * (docs/constraints/served-repos.md). A repository whose owner is off the list queues nothing; any
  * other's fires each name it. The receiver holds no token, so it reads no
  * config file: the turn applies the repo's (dispatch/repo-config.mjs). It
  * filters a workflow or merge event on facts in the payload alone, the

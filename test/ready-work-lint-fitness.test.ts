@@ -1,6 +1,6 @@
 /**
  * Only scripts/lib/ready-work.mjs combines the readiness checks, and
- * `ticketStatus` is what keeps a ticket out (docs/constraints/dispatcher-repos.md).
+ * `ticketStatus` is what keeps a ticket out (docs/constraints/ticket-readiness.md).
  * The repo's eslint config refuses a new caller of the checks in dispatch/
  * or scripts/, through one rule that reads a static import, an export-from
  * and an `import()` alike. Two callers stay: dispatch/checklist.mjs reads `labelRow`,
@@ -25,7 +25,7 @@ const refusals = async (path: string, code: string) => {
   return results.flatMap((r) => r.messages).filter((m) => m.ruleId === RULE).map((m) => m.message);
 };
 
-describe('fitness: lint refuses a new caller of the readiness checks (dispatcher-repos.md)', () => {
+describe('fitness: lint refuses a new caller of the readiness checks (ticket-readiness.md)', () => {
   for (const name of CHECKS) {
     test(`a file in dispatch/ may not import ${name}`, async () => {
       const found = await refusals('dispatch/new-path.mjs', `import { ${name} } from '../scripts/lib/ready-work.mjs';\nexport const x = ${name};\n`);
@@ -85,7 +85,7 @@ describe('fitness: lint refuses a new caller of the readiness checks (dispatcher
   });
 });
 
-describe('fitness: lint refuses a dynamic import of the readiness checks (dispatcher-repos.md)', () => {
+describe('fitness: lint refuses a dynamic import of the readiness checks (ticket-readiness.md)', () => {
   for (const name of CHECKS) {
     test(`a file in dispatch/ may not destructure ${name} from import()`, async () => {
       const found = await refusals('dispatch/new-path.mjs', `const { ${name} } = await import('../scripts/lib/ready-work.mjs');\nexport const x = ${name};\n`);
@@ -155,7 +155,7 @@ describe('fitness: lint refuses a dynamic import of the readiness checks (dispat
   });
 });
 
-describe('fitness: lint refuses a require of ready-work.mjs (dispatcher-repos.md)', () => {
+describe('fitness: lint refuses a require of ready-work.mjs (ticket-readiness.md)', () => {
   test('a require of ready-work.mjs is refused, whatever it takes', async () => {
     const found = await refusals('dispatch/new-path.mjs', `import { createRequire } from 'node:module';\nexport const x = createRequire(import.meta.url)('../scripts/lib/ready-work.mjs').isBlocked;\n`);
     assert.equal(found.length, 1, 'a createRequire call passed lint');
@@ -181,7 +181,7 @@ describe('fitness: lint refuses a require of ready-work.mjs (dispatcher-repos.md
   });
 });
 
-describe('fitness: a query or fragment does not hide the module from a static import (dispatcher-repos.md)', () => {
+describe('fitness: a query or fragment does not hide the module from a static import (ticket-readiness.md)', () => {
   test('a static import or export-from with a suffix is refused', async () => {
     assert.equal((await refusals('dispatch/new-path.mjs', `import { isBlocked } from '../scripts/lib/ready-work.mjs?v=1';\nexport const x = isBlocked;\n`)).length, 1);
     assert.equal((await refusals('dispatch/new-path.mjs', `import { isBlocked } from '../scripts/lib/ready-work.mjs#x';\nexport const x = isBlocked;\n`)).length, 1);

@@ -287,7 +287,7 @@ describe('the issueReviews config', () => {
   });
 });
 
-describe('fitness: dispatcher-review.md, the config check warns of an issue review trust.review never lets in', () => {
+describe('the config check warns of an issue review trust.review never lets in', () => {
   const outsiders = ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'NONE'];
   const checkOf = async (over: Record<string, unknown>) => {
     const text = JSON.stringify(shaped({ environment: 'env_1', pickup: { enabled: false, ready: ['mode: afk'], claim: 'claimed' }, ...over }));
@@ -322,7 +322,7 @@ describe('fitness: dispatcher-review.md, the config check warns of an issue revi
   });
 });
 
-describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a config may name', () => {
+describe('fitness: issue-reviews.md and trust.md, the conclusions a config may name', () => {
   const base = { environment: 'env_1', pickup: { enabled: false, ready: ['mode: afk', 'triage: build'], claim: 'claimed' } };
   const text = (over: Record<string, unknown>) => JSON.stringify(shaped({ ...base, ...over }));
   const refused = async (over: Record<string, unknown>, ...words: RegExp[]) => {
@@ -430,7 +430,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   });
 });
 
-describe('fitness: dispatcher-repos.md, an issue review\'s prompts are prompt values read from the default branch', () => {
+describe('fitness: repo-config.md, an issue review\'s prompts are prompt values read from the default branch', () => {
   const config = (issueReviews: Array<{ name: string } & Record<string, unknown>>) => {
     const read = readConfig(JSON.stringify({ environment: 'env_1', pickup: { enabled: false, ready: ['mode: afk'], claim: 'claimed' }, issueReviews: section(issueReviews) }));
     assert.ok(read.ok, JSON.stringify(read));
@@ -478,7 +478,7 @@ describe('fitness: dispatcher-repos.md, an issue review\'s prompts are prompt va
   });
 });
 
-describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions a byLabel entry may name', () => {
+describe('fitness: issue-reviews.md and trust.md, the conclusions a byLabel entry may name', () => {
   const base = { environment: 'env_1', pickup: { enabled: false, ready: ['mode: afk', 'triage: build'], claim: 'claimed' } };
   const text = (over: Record<string, unknown>) => JSON.stringify(shaped({ ...base, ...over }));
   const refused = async (over: Record<string, unknown>, ...words: RegExp[]) => {
@@ -523,7 +523,7 @@ describe('fitness: dispatcher-review.md and dispatcher-repos.md, the conclusions
   });
 });
 
-describe('fitness: dispatcher-review.md, an issue review\'s prompts and labels per issue label', () => {
+describe('an issue review\'s prompts and labels per issue label', () => {
   const BUG: TypeEntry = { labels: ['type: bug'], prompt: 'Bugs name their repro.', conclusions: { success: ['triaged', 'triage: build'] } };
   const SMALL: TypeEntry = { labels: ['size: small', 'size: tiny'], prompt: 'Small tickets name one file.', conclusions: { neutral: ['small: needs a person'], success: ['small: passed'] } };
   const review = (over: Partial<Review> = {}): Review => ({ name: 'triage', when: {}, conclusions: TRIAGE, ...over });
@@ -870,7 +870,7 @@ describe('reviewIssue: a run that does not answer', () => {
   });
 });
 
-describe('fitness: dispatcher-review.md, the loop guard stops a review that keeps failing', () => {
+describe('fitness: issue-reviews.md, the loop guard stops a review that keeps failing', () => {
   /** The review's markers on the thread, oldest first, one comment each. */
   const rounds = (...conclusions: string[]) => conclusions.map((c, i) => posted('triage', c, `a${i}`, true, i + 1));
   const guard = (name = 'triage', ours = true, id = 99): Thread => ({ id, body: `Stopped.\n\n${loopMarker(name)}`, created_at: '2026-11-02T00:00:00Z', ours });
@@ -993,7 +993,7 @@ describe('fitness: dispatcher-review.md, the loop guard stops a review that keep
   });
 });
 
-describe('fitness: dispatcher-review.md, a conclusion applies the labels the repo names', () => {
+describe('fitness: issue-reviews.md, a conclusion applies the labels the repo names', () => {
   const triage = (when: Review['when'] = {}): Review => ({ name: 'triage', when, conclusions: TRIAGE });
 
   test('a run removes the labels the other two conclusions name, then adds its own, then posts its comment, and touches no other label', async () => {
@@ -1167,7 +1167,7 @@ describe('reviewIssue: what it logs and keeps', () => {
  * label's fire, and a label change that leaves the review's key alone makes
  * no model call.
  */
-describe('fitness: dispatcher-review.md, a label change runs the review the label brings the issue into', () => {
+describe('a label change runs the review the label brings the issue into', () => {
   test('an issue labelled into a review\'s selector after it opened is reviewed on that label\'s fire, and a second label change with the body unchanged makes no model call', async () => {
     const h = harness({ live: true, ticket: { labels: [] }, reviews: [{ name: 'triage', when: { labels: ['mode: afk'] } }] });
     const opened = await h.review();

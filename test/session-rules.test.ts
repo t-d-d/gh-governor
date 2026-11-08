@@ -130,12 +130,10 @@ describe('the published block', () => {
   });
 });
 
-describe('fitness: dispatcher-repos.md lists the session rules switch and the block\'s markers', () => {
-  const text = read('docs/constraints/dispatcher-repos.md');
-
-  test('the switch list names the session rules, and the marker list both markers', () => {
-    assert.match(text, /sign-off and the session rules\s+\(`GENERIC_SWITCHES`\)/);
-    assert.ok(text.includes('`governor:session-rules v<n>`'));
-    assert.ok(text.includes('`governor:session-rules-end`'));
+describe('the session rules switch and the block\'s markers', () => {
+  test('the switch list names the session rules, and both markers are governor: markers', () => {
+    assert.ok(GENERIC_SWITCHES.includes('sessionRules'));
+    assert.ok(SESSION_RULES_BLOCK.startsWith(`<!-- governor:session-rules v${SESSION_RULES_VERSION} -->`));
+    assert.equal(SESSION_RULES_END, '<!-- governor:session-rules-end -->');
   });
 });

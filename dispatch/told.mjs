@@ -4,7 +4,7 @@
  * A comment governor's App posts on an issue is a record for people, and the
  * relay sends it to nobody (dispatch/webhook/mention.mjs). The turn that
  * posts it decides, once, which roles should hear it, and messages them
- * itself (docs/constraints/dispatcher-repos.md):
+ * itself (docs/constraints/ticket-roles.md):
  *
  * - a change of builder, the dispatch comment, tells the spec owner, and the
  *   builder it displaced, which is asked to stop and sign off

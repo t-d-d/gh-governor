@@ -18,8 +18,8 @@
 #
 # No served repo's checklist, lists or code: each review turn reads the
 # repo's own review settings and checklist from its default branch
-# (docs/constraints/dispatcher-review.md), and each repo's file names the
-# issue its heartbeat goes into (docs/constraints/dispatcher-repos.md).
+# (docs/constraints/pr-review.md), and each repo's file names the
+# issue its heartbeat goes into (docs/constraints/heartbeat.md).
 #
 # Runs as its own user: the CLI writes its config and the login under HOME,
 # and nothing here needs root. The entrypoint takes its fires off the lane
