@@ -703,6 +703,16 @@ export const EDIT_SPEC_OWNER = 'The edit names only a login, and sessions edit a
 export const EDIT_BUILDER = 'Its spec changed. Build against the body as it now reads, and record in your PR description where your work differs from it.';
 
 /**
+ * What a closed ticket's builder is told of a body edit, in place of
+ * {@link EDIT_BUILDER}, whether or not its PR merged. A spec change on a
+ * closed ticket is the spec owner's to turn into a follow-up, so the
+ * builder comments rather than builds, and two sessions never build one change.
+ *
+ * @param {number} issue
+ */
+export const editClosedBuilder = (issue) => `#${issue} is closed, so this spec change is not yours to build. If it needs new work, comment on #${issue}, and its spec owner decides whether to file a follow-up.`;
+
+/**
  * A ticket's body edited: what happened, before what each role is told.
  *
  * @param {any} payload
