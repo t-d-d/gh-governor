@@ -34,6 +34,33 @@ export const BUILDER_DUTY = 'As its builder you build it, on its branch and PR, 
 export const NOTHING_ASKED = 'Nothing is asked of you.';
 
 /**
+ * Whether a message about a ticket calls on each role's duty or says it
+ * asks nothing ({@link rolesText}'s `duty` and `notice`), decided here for
+ * every path that sends one: the ticket fire, a summons's notice and the
+ * receiver's relay to an issue's spec owner.
+ *
+ * - `comment`: a comment, sent as itself. On an open ticket it calls on
+ *   each role's duty. On a closed one nothing is left to build, so it asks
+ *   nothing, and says so.
+ * - `quoted`: a comment quoted under the message's own words. On an open
+ *   ticket it calls on each role's duty. On a closed one it asks what it
+ *   asks in its own words, with neither line.
+ * - `notice`: a message that only tells, such as a close, or a summons
+ *   whose comment reaches the role on its own. It asks nothing, and says so.
+ * - `own`: a message whose own lines say what it asks, such as a reopen, a
+ *   body edit or an assignment. It gets neither line.
+ *
+ * @param {'comment' | 'quoted' | 'notice' | 'own'} message
+ * @param {boolean} open whether the ticket is open
+ * @returns {{ duty: boolean, notice: boolean }}
+ */
+export const askedOf = (message, open) => {
+  if (message === 'comment') return { duty: open, notice: !open };
+  if (message === 'quoted') return { duty: open, notice: false };
+  return { duty: false, notice: message === 'notice' };
+};
+
+/**
  * A session as a message names it: a Markdown link to its page, with
  * `text` as the link's words.
  *

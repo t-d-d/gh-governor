@@ -79,7 +79,7 @@
  * Pure: no I/O. route.mjs calls it for the events it applies to.
  */
 
-import { SPEC_OWNER_DUTY, rolesText, titleLink } from './roles-text.mjs';
+import { SPEC_OWNER_DUTY, askedOf, rolesText, titleLink } from './roles-text.mjs';
 import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, isTime, fireWeight, lets, postWords, wordsOf, POST_WORDS, POST_WORDS_CHARS } from './fire.mjs';
 import { closingNumbers } from './closing.mjs';
 import { REVIEW_MARKER, postedByApp } from './review-comment.mjs';
@@ -134,7 +134,7 @@ export { SPEC_OWNER_DUTY };
 const specOwnerLines = (asked) => rolesText({ issue: 0, owner: null, builders: [] }, { role: 'spec owner', merged: false }, asked);
 
 /** What an issue's spec owner is told of a comment on it, open or closed. @param {any} issue */
-const ownedIssueComment = (issue) => specOwnerLines(issue?.state === 'closed' ? { notice: true } : { duty: true });
+const ownedIssueComment = (issue) => specOwnerLines(askedOf('comment', issue?.state !== 'closed'));
 
 /**
  * The repo's default branch, off a delivery's `repository`, or null where
@@ -688,7 +688,7 @@ const issueEventPrompt = ({ action, issue, label, sender }, target, role = 'subs
     }[String(action)]} by ${sender?.login}`;
   return [
     `${refLine(issue)} ${what}.`,
-    ...issueClose(role, SUBSCRIBED_ISSUE, specOwnerLines({ notice: true })),
+    ...issueClose(role, SUBSCRIBED_ISSUE, specOwnerLines(askedOf('notice', issue?.state === 'open'))),
   ].join('\n');
 };
 
