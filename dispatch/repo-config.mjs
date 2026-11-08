@@ -126,7 +126,7 @@ export const PROMPT_KEYS = Object.freeze(Object.fromEntries(Object.entries(SECTI
 
 /**
  * What each switch turns on, as the config file's JSON Schema describes its
- * section, and the section table in docs/serving-a-repo.md says it
+ * section, and docs/config-reference.md, generated from it, says it
  * (test/config-schema.test.ts).
  *
  * @type {Readonly<Record<string, string>>}
@@ -139,7 +139,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   redScheduledRun: 'A fresh session on a scheduled run on the default branch that went red.',
   unblocked: 'What a blocker\'s close does to a ticket that is not ready to pick up: a comment when the blocker closed as not planned, a message to a claimed ticket\'s session, and the spec work on a not-ready ticket. The session whose link ends the ticket\'s body owns it and is asked to rewrite its own spec; a fresh session rewrites it only where the body names no session or that session is archived, so nobody takes a ticket from its owner.',
   ciMessages: 'A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`.',
-  deployMessages: 'A shipping job, or a red deploy, tells the sessions of the merges it shipped.',
+  deployMessages: 'A shipping job, or a red deploy, tells the sessions of the merges it shipped. Governor sees a deploy only where the deploy workflow marks it. The shipping job\'s name ends ` · deployed: <target>`, a middle dot with one space each side, with `at <sha>`, the whole 40-character commit in lower case, before the dot when the job ships a commit other than the run\'s head. Mark only the job whose success means the change is live, never a rollback. The workflow also sets a top-level `TICKET_LABEL_PATHS` env, which picks the shipped PRs that hear of it: `all`, `trigger` for those that changed a file under its `on.push.paths`, or globs, one per line. The first marked run only sets the baseline.',
   branchRunMessages: 'A run dispatched on a branch tells the session that wrote its commit.',
   conflicts: 'A merge into the default branch tells each PR it left conflicted.',
   deployedLabels: 'Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, for people to read; the shipping job messages each such ticket\'s spec owner and builders itself. Default false.',
@@ -606,7 +606,7 @@ const fileSchema = z.strictObject({
   workflows: workflowsSchema.optional().meta({ description: 'What the repo\'s workflows are to governor: `ci`.' }),
   ...Object.fromEntries(Object.entries(sectionSchemas).map(([name, schema]) => [name, schema.optional().meta({ description: /** @type {string} */ (SWITCH_DESCRIPTIONS[name]) })])),
   issueReviews: issueReviewsSchema.optional()
-    .meta({ description: 'The issue reviews: `reviews`, each keyed by its name, with its selector `when`, the labels each of its `conclusions` adds, and optionally its own `prompt` and checks and labels per label (`byLabel`), and `enabled`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion\'s labels. Governor runs them where the file has this section, unless `enabled` is `false`.' }),
+    .meta({ description: 'The issue reviews: `reviews`, each keyed by its name, with its selector `when`, the labels each of its `conclusions` adds, and optionally its own `prompt` and checks and labels per label (`byLabel`), and `enabled`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion\'s labels. Governor runs them where the file has this section, unless `enabled` is `false`. Pickup meets a review only through its labels: list a review\'s `success` label in `pickup.ready` where a ticket should wait for the review to pass it, its `neutral` labels in `pickup.exclude`, and the claim label in its `when.exclude`.' }),
 })
   // Each section that is on has its required settings. Pickup's labels
   // serve every feature in LABEL_READERS, so one of them on needs them too.
@@ -697,7 +697,7 @@ const toConfig = (file) => {
 /**
  * The file's schema. It is the same in every repo: no switch is any one
  * repo's. Each key's description is what the exported JSON Schema shows on
- * hover, and the key table in docs/serving-a-repo.md says the same
+ * hover, and docs/config-reference.md, generated from it, says the same
  * (test/config-schema.test.ts). `$schema` names that JSON Schema for an
  * editor, and {@link readConfig} drops it unread; any other unknown key, and
  * `$schema` below the top, is a fault. A file in the layout before #525,

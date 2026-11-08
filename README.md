@@ -198,7 +198,8 @@ Thomas Dickinson · [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/
 
 | Page | Read it to |
 |---|---|
-| [Serving a repo](docs/serving-a-repo.md) | Opt a repo in, and look up every key and section in `governor.json`. |
+| [Serving a repo](docs/serving-a-repo.md) | Opt a repo in: the starter kit, the session rules, the config check and the heartbeat checker. |
+| [Config reference](docs/config-reference.md) | Every key and section in `governor.json`, generated from the schema. |
 | [Running your own governor](docs/self-hosting.md) | Deploy governor to your own AWS account. |
 | [Hooks](docs/hooks.md) | Start a session from outside GitHub with a signed request. |
 | [How governor works](https://t-d-d.github.io/gh-governor/overview.html) | Get the shape of it: the lane, a turn, who owns a ticket and a PR, and how a repo opts in. |
