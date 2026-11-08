@@ -16,10 +16,12 @@
  * drop the old one. Every repo already pinned keeps working at each step.
  *
  * Matching inputs is not enough for the heartbeat pin. The checker the
- * workflow carries at the pin reads the served repo's config file, and a pin
+ * workflow runs at the pin reads the served repo's config file, and a pin
  * from before that file was .github/governor.json reads another path. So
- * the check also runs the carried checker at the pin against the starter's
- * governor.json, served where the starter kit puts it.
+ * the check also runs the pinned checker against the starter's
+ * governor.json, served where the starter kit puts it: the copy an older
+ * workflow carries, or checker/heartbeat-check.mjs at the commit, which a
+ * newer one fetches.
  */
 
 import { test, describe, before, after } from 'node:test';
@@ -270,13 +272,23 @@ const checkerReading = (path: string) => `export const check = async ({ api, rep
   await api('GET', \`/repos/\${repo}/issues/\${config.heartbeat.issue}\`);
 };`;
 
+// A heartbeat workflow that fetches this repo at the commit and runs its
+// checker/heartbeat-check.mjs, as the real workflow does.
+const fetcherAt = () => yaml.dump({
+  name: 'heartbeat check',
+  on: { workflow_call: { inputs: { commit: { type: 'string', required: true }, ...TODAY } } },
+  jobs: { check: { 'runs-on': 'ubuntu-24.04', steps: [{ run: 'git fetch -q --depth 1 https://github.com/t-d-d/gh-governor.git "$GOVERNOR_COMMIT"' }, { run: 'node "$RUNNER_TEMP/governor/checker/heartbeat-check.mjs"' }] } },
+});
+
 // A throwaway repo whose main holds, in turn: a workflow carrying a checker
 // that reads .github/governor.json, one carrying a checker that reads the
 // old .github/dispatch.json, one whose step carries no checker, one whose
 // checker does not load, one whose heredoc ends its step with no new line
-// after it, and one whose checker calls fetch as it loads.
+// after it, one whose checker calls fetch as it loads, one that fetches the
+// commit and runs its checker/heartbeat-check.mjs, which reads
+// .github/governor.json, and one that runs that file at a commit without it.
 function carriersRepo() {
-  const { dir, commit, cleanup } = throwawayRepo('starter-pin-carrier-');
+  const { dir, git, commit, cleanup } = throwawayRepo('starter-pin-carrier-');
   const reads = commit(carrierAt(checkerReading('.github/governor.json')));
   const old = commit(carrierAt(checkerReading('.github/dispatch.json')));
   const none = commit(checkerAt(TODAY));
@@ -287,7 +299,13 @@ function carriersRepo() {
     jobs: { check: { 'runs-on': 'ubuntu-24.04', steps: [{ run: `cat > "$RUNNER_TEMP/heartbeat-check.mjs" <<'CHECKER'\n${checkerReading('.github/governor.json')}\nCHECKER` }] } },
   }));
   const fetching = commit(carrierAt(`await fetch('https://api.invalid/');\n${checkerReading('.github/governor.json')}`));
-  return { dir, reads, old, none, broken, unterminated, fetching, cleanup };
+  const fetcherNoFile = commit(fetcherAt());
+  mkdirSync(join(dir, 'checker'), { recursive: true });
+  writeFileSync(join(dir, 'checker/heartbeat-check.mjs'), `${checkerReading('.github/governor.json')}\n`);
+  git('add', '.');
+  git('commit', '-qm', 'checker file');
+  const fetcher = git('rev-parse', 'HEAD');
+  return { dir, reads, old, none, broken, unterminated, fetching, fetcher, fetcherNoFile, cleanup };
 }
 
 const STARTER_CONFIG = readFileSync(join(REPO_ROOT, 'examples/starter/.github/governor.json'), 'utf8');
@@ -312,7 +330,7 @@ describe('pinnedCheckerReadProblems', () => {
 
   test('reports a workflow at the pin whose step carries no checker', async () => {
     assert.ok(repo !== undefined);
-    assert.deepEqual(await problems((r) => r.none), [`${CHECKER} at ${repo.none.slice(0, 12)} carries no heartbeat checker in a quoted CHECKER heredoc`]);
+    assert.deepEqual(await problems((r) => r.none), [`${CHECKER} at ${repo.none.slice(0, 12)} neither carries a heartbeat checker in a quoted CHECKER heredoc nor runs checker/heartbeat-check.mjs from this repo at the commit`]);
   });
 
   test('reports a checker at the pin that does not load, without throwing', async () => {
@@ -331,6 +349,15 @@ describe('pinnedCheckerReadProblems', () => {
     const got = await problems((r) => r.fetching);
     assert.equal(got.length, 1, JSON.stringify(got));
     assert.match(got[0] ?? '', new RegExp(`^the heartbeat checker at ${repo.fetching.slice(0, 12)} does not load: .*reached for the network`));
+  });
+
+  test('runs checker/heartbeat-check.mjs at the commit where the workflow fetches this repo and runs it', async () => {
+    assert.deepEqual(await problems((r) => r.fetcher), []);
+  });
+
+  test('reports a workflow at the pin that runs checker/heartbeat-check.mjs from a commit without it', async () => {
+    assert.ok(repo !== undefined);
+    assert.deepEqual(await problems((r) => r.fetcherNoFile), [`${CHECKER} at ${repo.fetcherNoFile.slice(0, 12)} runs checker/heartbeat-check.mjs, which the commit does not have`]);
   });
 
   test('reports a pinned commit the clone does not hold, and says how to fetch it', async () => {

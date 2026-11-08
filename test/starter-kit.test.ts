@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
 import { CONFIG_PATH, GENERIC_SWITCHES, SECTIONS, namesEnvironment, readConfig, turnsOn } from '../dispatch/repo-config.mjs';
-import { readConfig as checkerReadConfig } from '../checker/heartbeat-check.mjs';
+import { checkConfigOf } from '../checker/heartbeat-check.mjs';
 import { globMatches } from '../dispatch/checklist.mjs';
 
 const STARTER = 'examples/starter/';
@@ -131,7 +131,7 @@ describe('the starter kit\'s config file', () => {
   });
 
   test('reads in the heartbeat checker, which watches pickup and every periodic', () => {
-    const checked = checkerReadConfig(text);
+    const checked = checkConfigOf(text);
     assert.ok(checked.ok, JSON.stringify(checked));
     assert.notEqual(checked.config.pickupHours, null);
     assert.equal(checked.config.periodics.length, 3);
@@ -245,7 +245,7 @@ describe('the starter kit\'s dark-factory config file', () => {
   });
 
   test('reads in the heartbeat checker, which watches pickup and every periodic', () => {
-    const checked = checkerReadConfig(text);
+    const checked = checkConfigOf(text);
     assert.ok(checked.ok, JSON.stringify(checked));
     assert.notEqual(checked.config.pickupHours, null);
     assert.equal(checked.config.periodics.length, 3);
