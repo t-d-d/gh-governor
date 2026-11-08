@@ -45,17 +45,20 @@
 <main>
   <h1>Governor pages</h1>
   <p>
-    Pages for <a href="https://github.com/t-d-d/gh-governor">gh-governor</a>
-    whose diagrams need motion or controls, which Markdown on GitHub cannot show.
-    The narrative is <a href="https://github.com/t-d-d/gh-governor/blob/main/docs/how-it-works.md">docs/how-it-works.md</a>,
-    which links here where a page helps.
+    Pages for <a href="https://github.com/t-d-d/gh-governor">gh-governor</a>:
+    a short overview, and diagrams that need motion or controls, which Markdown on GitHub cannot show.
+    <a href="overview.html">How governor works</a> is the place to start.
   </p>
   <p class="muted">
     Each page is one HTML file in <code>docs/pages/</code>, published from main after the gate passes.
   </p>
+  <!-- A page is self-contained, with its CSS and JS inline and no build step, and adds a line below.
+       The public-repo scan reads a hex colour of four or more digits and no letter as an issue number, so write colours as rgb().
+       A pull request that changes a page links a preview from raw.githack.com, built from its branch. -->
 
   <ul class="pages">
     <!-- One item per page: <li><a href="name.html">Title</a><span>What it shows.</span></li> -->
+    <li><a href="overview.html">How governor works</a><span>A short tour: what governor does, the lane and a turn, who owns a ticket and a pull request, and how a repo opts in.</span></li>
     <li><a href="fire-lane.html">The fire lane</a><span>How a fire travels from the receiver to the one queue and the dispatcher task, and how the starter starts that task, in five animated scenes.</span></li>
   </ul>
 </main>

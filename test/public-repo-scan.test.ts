@@ -30,7 +30,7 @@ describe('scanText', () => {
 
   test('passes the service\'s bare name and its site in a doc: the README or Markdown under docs/', () => {
     assert.deepEqual(kinds(`Distilled from ${OLD_HOME[0]!.toUpperCase()}${OLD_HOME.slice(1)}, <https://${OLD_HOME}.com>.`, 'README.md'), []);
-    assert.deepEqual(kinds(`made while building ${OLD_HOME}`, 'docs/how-it-works.md'), []);
+    assert.deepEqual(kinds(`made while building ${OLD_HOME}`, 'docs/serving-a-repo.md'), []);
     assert.deepEqual(kinds(`made while building ${OLD_HOME}`, 'docs/constraints/public-repo.md'), []);
     assert.deepEqual(kinds(`made while building ${OLD_HOME}`, 'docs/pages/x.html'), ['name']);
   });
@@ -38,22 +38,22 @@ describe('scanText', () => {
   test('refuses the old home\'s name in a doc when it is not bare: a variable, a marker, an issue or a longer name', () => {
     assert.deepEqual(kinds(`${OLD_HOME.toUpperCase()}_LABELS`, 'README.md'), ['name']);
     assert.deepEqual(kinds(`<!-- ${OLD_HOME}:subscribe -->`, 'README.md'), ['name']);
-    assert.deepEqual(kinds(`see ${OLD_HOME}#12`, 'docs/how-it-works.md'), ['name']);
-    assert.deepEqual(kinds(`see acme/${OLD_HOME}-infra`, 'docs/how-it-works.md'), ['name']);
+    assert.deepEqual(kinds(`see ${OLD_HOME}#12`, 'docs/serving-a-repo.md'), ['name']);
+    assert.deepEqual(kinds(`see acme/${OLD_HOME}-infra`, 'docs/serving-a-repo.md'), ['name']);
     assert.deepEqual(kinds(`the old-${OLD_HOME} setup`, 'README.md'), ['name']);
   });
 
   test('refuses the old home\'s name in a doc when a path follows it, and still passes the bare name and its site', () => {
     assert.deepEqual(kinds(`see ${OLD_HOME}/infra/stack.yml`, 'README.md'), ['name']);
-    assert.deepEqual(kinds(`see ${OLD_HOME}/infra/stack.yml`, 'docs/how-it-works.md'), ['name']);
-    assert.deepEqual(kinds(`made while building ${OLD_HOME}/`, 'docs/how-it-works.md'), ['name']);
-    assert.deepEqual(kinds(`made while building ${OLD_HOME}.`, 'docs/how-it-works.md'), []);
+    assert.deepEqual(kinds(`see ${OLD_HOME}/infra/stack.yml`, 'docs/serving-a-repo.md'), ['name']);
+    assert.deepEqual(kinds(`made while building ${OLD_HOME}/`, 'docs/serving-a-repo.md'), ['name']);
+    assert.deepEqual(kinds(`made while building ${OLD_HOME}.`, 'docs/serving-a-repo.md'), []);
     assert.deepEqual(kinds(`see <https://${OLD_HOME}.com/about>`, 'README.md'), []);
   });
 
   test('refuses the old home\'s name in a doc at the end of a path, and still passes its site and an owner/name repo once', () => {
     assert.deepEqual(kinds(`cd ~/${OLD_HOME}`, 'README.md'), ['name']);
-    assert.deepEqual(kinds(`/${OLD_HOME} holds the stack`, 'docs/how-it-works.md'), ['name']);
+    assert.deepEqual(kinds(`/${OLD_HOME} holds the stack`, 'docs/serving-a-repo.md'), ['name']);
     assert.deepEqual(kinds(`see the ${OLD_HOME[0]!.toUpperCase()}${OLD_HOME.slice(1)} at <https://${OLD_HOME}.com>`, 'README.md'), []);
     assert.deepEqual(kinds(`see owner/${OLD_HOME}`, 'README.md'), ['repo']);
   });
@@ -83,7 +83,7 @@ describe('scanText', () => {
   });
 
   test('refuses the private repo\'s owner/name path and its GitHub URL, in any case, in every file', () => {
-    for (const path of ['README.md', 'docs/how-it-works.md', 'scripts/x.mjs']) {
+    for (const path of ['README.md', 'docs/serving-a-repo.md', 'scripts/x.mjs']) {
       assert.deepEqual(kinds(`see owner/${OLD_HOME}`, path).filter((k) => k !== 'name'), ['repo'], path);
       assert.deepEqual(kinds(`see Owner/${OLD_HOME.toUpperCase()}.git`, path).filter((k) => k !== 'name'), ['repo'], path);
       assert.deepEqual(kinds(`https://github.com/owner/${OLD_HOME}/pull/12`, path).filter((k) => k !== 'name'), ['repo'], path);

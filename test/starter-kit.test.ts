@@ -382,9 +382,7 @@ test('docs/serving-a-repo.md\'s starter kit section describes the triage review 
   assert.doesNotMatch(section, /issue review every/);
 });
 
-test('the README and docs/how-it-works.md name the backlog review, not a periodic ticket review', () => {
+test('the README names the backlog review, not a periodic ticket review', () => {
   assert.match(read('README.md'), /weekly backlog review/);
   assert.doesNotMatch(read('README.md'), /weekly ticket review/);
-  assert.match(read('docs/how-it-works.md'), /periodic "Backlog review"/);
-  assert.doesNotMatch(read('docs/how-it-works.md'), /periodic "Ticket review"/);
 });
