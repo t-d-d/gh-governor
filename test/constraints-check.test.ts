@@ -95,6 +95,10 @@ describe('checkConstraints', () => {
     assert.deepEqual(kinds({ ...files, 'test/x.test.ts': "const f = 'docs/constraints/promotion-gate.md';" }), []);
   });
 
+  test('reads a prose word with a slash, such as read/write, as no glob', () => {
+    assert.deepEqual(kinds({ 'docs/constraints/thing.md': constraint({ relevance: 'A read/write of the thing: dispatch/thing.mjs' }) }), []);
+  });
+
   test('fails a Relevance: path that matches no tracked file', () => {
     assert.deepEqual(kinds({ 'docs/constraints/thing.md': constraint({ relevance: 'Changing it: dispatch/{thing,gone}.mjs' }) }), ['relevance-path']);
     assert.deepEqual(kinds({ 'docs/constraints/thing.md': constraint({ relevance: 'Changing it: dispatch/gone/**' }) }), ['relevance-path']);

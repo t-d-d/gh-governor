@@ -65,15 +65,16 @@ export const expandBraces = (glob) => {
 const matches = (/** @type {string} */ glob, /** @type {string} */ path) => expandBraces(glob).some((g) => globMatches(g, path));
 
 /**
- * The file globs a `Relevance:` line names: each word holding a `/`, or a
- * bare file name, with backticks and trailing punctuation taken off.
+ * The file globs a `Relevance:` line names: each word holding a `/` and a
+ * `*`, `.` or `{`, so prose such as read/write is no glob, or a bare file
+ * name, with backticks and trailing punctuation taken off.
  *
  * @param {string} line
  */
 export const relevanceGlobs = (line) =>
   line.split(/\s+/)
     .map((word) => word.replace(/^[`(]+/, '').replace(/[`),.;:]+$/, ''))
-    .filter((word) => word.includes('/') || /^[\w.-]+\.(?:json|ya?ml|mjs|js|ts|md)$/.test(word));
+    .filter((word) => (word.includes('/') && /[*.{]/.test(word)) || /^[\w.-]+\.(?:json|ya?ml|mjs|js|ts|md)$/.test(word));
 
 /** @param {string} text */
 const rulesPaths = (text) => [...text.matchAll(/^\s*-\s*"([^"]+)"\s*$/gm)].map((m) => m[1] ?? '');
