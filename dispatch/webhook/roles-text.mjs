@@ -45,10 +45,12 @@ export const NOTHING_ASKED = 'Nothing is asked of you.';
  * - `quoted`: a comment quoted under the message's own words. On an open
  *   ticket it calls on each role's duty. On a closed one it asks what it
  *   asks in its own words, with neither line.
- * - `notice`: a message that only tells, such as a close, or a summons
- *   whose comment reaches the role on its own. It asks nothing, and says so.
- * - `own`: a message whose own lines say what it asks, such as a reopen, a
- *   body edit or an assignment. It gets neither line.
+ * - `notice`: a message that only tells, such as a close, a summons whose
+ *   comment reaches the role on its own, or the receiver's relay of a
+ *   label, a close or a reopen to an issue's spec owner. It asks nothing,
+ *   and says so, whether the ticket is open or closed.
+ * - `own`: a message whose own lines say what it asks, such as the ticket
+ *   fire's reopen, a body edit or an assignment. It gets neither line.
  *
  * @param {'comment' | 'quoted' | 'notice' | 'own'} message
  * @param {boolean} open whether the ticket is open
