@@ -430,7 +430,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-errors
-      AlarmDescription: '[tripwire] A dispatcher turn failed, and a failed turn is not retried. Read /governor for the dispatch-failed line it logged; its reason and error say why. A login refused is a re-mint: node scripts/mint-claude-login.mjs. A GitHub read refused means the App lost a permission or an installation: accept the permission on the installation or install the App again. For any other reason, mend what the error names. Where the fire''s work still matters, run it again by hand with node scripts/run-turn.mjs.'
+      AlarmDescription: '[tripwire] A dispatcher turn failed, and a failed turn is not retried. Read /governor for the dispatch-failed line it logged; its reason and error say why. A login refused is a re-mint: node scripts/mint-claude-login.mjs. A GitHub read refused means the App lost a permission or an installation: accept the permission on the installation or install the App again. For any other reason, mend what the error names. Where the fire''s work still matters, redeliver its webhook from the App''s Advanced, Recent Deliveries page, or run a schedule, dispatch or message fire by hand with node scripts/run-turn.mjs.'
       Namespace: governor
       MetricName: Failures
       Statistic: Sum
@@ -1321,7 +1321,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-lane-stalled
-      AlarmDescription: '[tripwire] A fire has waited on governor-fires.fifo for 45 minutes. Read /aws/lambda/governor-starter for start-failed lines, and /governor for the running task''s fire-taken and dispatch lines. If tasks are not starting, mend what start-failed names. If a task runs but takes no fire, stop it with aws ecs stop-task --cluster governor, and the backstop starts a fresh one within a minute.'
+      AlarmDescription: '[tripwire] A fire has waited on governor-fires.fifo for 45 minutes. Read /aws/lambda/governor-starter for start-failed lines, and /governor for the running task''s fire-taken and dispatch lines. If tasks are not starting, mend what start-failed names. If a task runs but takes no fire, stop it with aws ecs stop-task --cluster governor --task <its task ARN>, and the backstop starts a fresh one within a minute.'
       Namespace: AWS/SQS
       MetricName: ApproximateAgeOfOldestMessage
       Dimensions:

@@ -85,7 +85,7 @@
   </p>
   <ul>
     <li>starts a Claude Code cloud session on each ticket that is ready, once its blockers are closed;</li>
-    <li>passes every comment, review, CI result, conflict and deploy on a pull request to the session that wrote it;</li>
+    <li>passes every comment, review, CI result and conflict on a pull request to the session that owns it, and tells that session when its change ships;</li>
     <li>reviews pull requests against the repo's own checklist, and can merge the ones that pass;</li>
     <li>runs recurring sessions, such as a code review every few merges;</li>
     <li>archives a session once it says it is done.</li>

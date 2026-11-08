@@ -122,7 +122,8 @@ describe('the overview page', () => {
 describe('the docs', () => {
   test('hold no docs/how-it-works.md, and nothing links to it', () => {
     assert.throws(() => readFileSync(join(REPO_ROOT, 'docs/how-it-works.md')), /ENOENT/);
-    const files = ['README.md', ...readdirSync(join(REPO_ROOT, 'docs')).filter((n) => n.endsWith('.md')).map((n) => `docs/${n}`), 'docs/pages/index.html'];
+    const docs = readdirSync(join(REPO_ROOT, 'docs'), { recursive: true, encoding: 'utf8' }).filter((n) => /\.(?:md|html)$/.test(n)).map((n) => `docs/${n}`);
+    const files = ['README.md', ...docs];
     const linking = files.filter((file) => readFileSync(join(REPO_ROOT, file), 'utf8').includes('how-it-works'));
     assert.deepEqual(linking, []);
   });

@@ -1,6 +1,6 @@
 # Running your own governor
 
-What governor runs on, and the steps to deploy your own. Once it runs, [Serving a repo](serving-a-repo.md) says how a repo opts in. [How governor works](https://t-d-d.github.io/gh-governor/overview.html) is a short overview. Once it is deployed, the last sections cover running a turn by hand, minting the login again, the alarms and troubleshooting.
+What governor runs on, the steps to deploy your own, and, once it runs, how to run a turn by hand, mint the login again, read the alarms and troubleshoot. [Serving a repo](serving-a-repo.md) says how a repo opts in, and [How governor works](https://t-d-d.github.io/gh-governor/overview.html) is a short overview.
 
 - [How governor runs](#how-governor-runs)
 - [Fork and deploy](#fork-and-deploy)
@@ -183,7 +183,7 @@ What follows covers what no alarm reports.
 
 **A mention did nothing.** Read the App's Recent Deliveries. `200` carries the reason. `202` queued a fire: the receiver's `webhook-queued` line names its message id, and the task's `fire-taken` line for that id in `/governor` opens its turn. With no `fire-taken` line, `/aws/lambda/governor-starter` says whether a task started. No delivery at all means the App is not subscribed to that event: tick it in the App's settings.
 
-**A ready ticket was not picked up.** Check that the repo's file turns `pickup` on and lists the ticket's labels as ready, and that the ticket has no open blocker, no claim label, no label the file's `exclude` lists, and no `Blocked until:` line with a date still to come. Check that `trust.task` lists its author's association, and, where the repo narrows `trust.start`, that the person who readied it is let in. A ready label added by a bot other than governor's App does not count: someone with triage access must add it again. `dispatch-pickup` and `dispatch-plan` in `/governor` say what the fire planned and why.
+**A ready ticket was not picked up.** Check that the repo's file turns `pickup` on and lists the ticket's labels as ready, and that the ticket has no open blocker, no claim label, no label the file's `exclude` lists, and no `Blocked until:` line with a date still to come. Check that `trust.task` lists its author's association, and, where the repo narrows `trust.start`, that the person who readied it is let in. A ready label counts only when someone with a say added it last: one added by an issue template, by a bot other than governor's App, or by no event GitHub records does not count, and someone with triage access must add it again. `dispatch-pickup` and `dispatch-plan` in `/governor` say what the fire planned and why.
 
 **A session was not archived.** Its last reply's last line must start `Signing off`, and the session must be idle. `dispatch-signoff` in `/governor` names each candidate and the decision.
 

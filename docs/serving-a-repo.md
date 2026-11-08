@@ -233,7 +233,7 @@ A new periodic starts its first session one day limit, or one count, after the f
 "hooks": { "sessions": { "operator-prod": { "prompt": { "file": "ops/prod-alarm.md" }, "keyVersion": 1, "perHour": 20 } } }
 ```
 
-A section's `prompt`, or each of its `prompts`, replaces the instruction in one kind of message the feature sends. Each value is text, or `{ "file": "<path>" }` read from the default branch. A kind the file leaves out gets its default from [dispatch/prompts.mjs](../dispatch/prompts.mjs), which also lists the facts each kind may name as `{fact}`.
+A section's `prompt`, or each of its `prompts`, replaces the instruction in one kind of message the feature sends. Each value is text, or `{ "file": "<path>" }` read from the default branch. Which key each kind sits under is `SECTION_PROMPTS` in [dispatch/repo-config.mjs](../dispatch/repo-config.mjs). A kind the file leaves out gets its default from [dispatch/prompts.mjs](../dispatch/prompts.mjs), which also lists the facts each kind may name as `{fact}`.
 
 [test/fixtures/factory/.github/governor.json](../test/fixtures/factory/.github/governor.json) is a full file with every feature on.
 
