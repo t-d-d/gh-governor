@@ -268,14 +268,14 @@ describe('the starter kit\'s workflow', () => {
     assert.match(String(uses[0]), /^t-d-d\/gh-governor\/\.github\/workflows\/heartbeat-check\.yml@[0-9a-f]{40}$/);
   });
 
-  // A checker from before the commit input carries its own copy and takes
-  // none. One that takes it fetches governor at that commit, so a commit
-  // other than the pin would run another commit's checker.
-  test('passes the commit after @ as its commit input, where it passes one', () => {
+  // The checker requires a commit input and fetches governor at it, so a
+  // workflow without one fails to start, and a commit other than the pin
+  // would run another commit's checker.
+  test('passes the commit after @ as its commit input', () => {
     for (const job of Object.values(workflow.jobs)) {
-      if (job.with?.commit === undefined) continue;
       const pin = /@([0-9a-f]{40})$/.exec(String(job.uses))?.[1];
-      assert.equal(job.with.commit, pin, 'the commit input is the commit after @');
+      assert.ok(pin !== undefined, String(job.uses));
+      assert.equal(job.with?.commit, pin, 'the commit input is the commit after @');
     }
   });
 
