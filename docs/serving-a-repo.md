@@ -17,7 +17,7 @@ Each served repo turns on the features it wants, one section of its config file 
 
 How dark the factory runs is the repo's choice: with pickup and the PR review on and `merge` true, a ticket can go from label to merged commit with no person, except where its PR touches a path the repo leaves to a person.
 
-One behaviour needs no switch. A ticket whose body opens with `Blocked until: 2026-11-05`, or `Blocked until: 3 days after #143 closes` for a linked blocker, is not started before then. The `waits` section adds a comment when the wait ends.
+One behaviour needs no switch. A ticket whose body opens with `Blocked until: 2026-11-05`, or `Blocked until: 3 days after #143 closes` for a linked blocker, is not started before then. The wait ends at 00:00 UTC on the date, and only the body's first non-empty line counts. A date governor cannot read, such as `next week`, holds the ticket too, and governor comments once to say so. The `waits` section adds a comment when the wait ends.
 
 `trust` says whose text governor acts on, by GitHub `author_association`: who may set work going, whose tickets may become work, whose text reaches a session, and whose PRs the review reads. The default is the repo's owners, members and collaborators. The config check warns where a list reaches further, and says what that opens.
 
@@ -110,7 +110,7 @@ jobs:
       labels: heartbeat
 ```
 
-It reads the lines governor keeps on the heartbeat issue, and opens an issue, labelled with `labels`, when pickup's sweep or a periodic runs more than `tolerance-hours` past its limit, when a line governor should keep is missing, or when the heartbeat cannot be read. It keeps one issue open for each, and closes it once the line is fresh again. Governor fires every hour, so keep the tolerance above one hour. It reads the config file with governor's own reader at the pinned commit, so a file that governor at that commit would refuse, such as one using a newer key, is a fault: move the pin when the file takes up a new key. A workflow pinned to a commit before the `commit` input carries its own copy of the checker and takes none. It runs on the caller's own token, holds no secret, and uses no action.
+It reads the lines governor keeps on the heartbeat issue, and opens an issue, labelled with `labels`, when pickup's sweep or a periodic runs more than `tolerance-hours` past its limit, when a line governor should keep is missing, or when the heartbeat cannot be read. It keeps one issue open for each, and closes it once the line is fresh again. Pickup's line appears after governor's next sweep, and a periodic's when governor first reads it. Until a line appears, the checker measures from when `governor.json` last changed. Governor fires every hour, so keep the tolerance above one hour. It reads the config file with governor's own reader at the pinned commit, so a file that governor at that commit would refuse, such as one using a newer key, is a fault: move the pin when the file takes up a new key. A workflow pinned to a commit before the `commit` input carries its own copy of the checker and takes none. It runs on the caller's own token, holds no secret, and uses no action.
 
 ### The config check
 

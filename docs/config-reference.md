@@ -46,7 +46,7 @@ A session per ready ticket, picked up on its label, on the close of its last ope
 | `pickup.claimRemoves` | list of string | `[]` | The ready labels the claim takes off, and a failed launch puts back. Default none. |
 | `pickup.exclude` | list of string | `["type: prd"]` | Labels that keep a ticket out: a ticket carrying any of them is never picked up, and a blocker's close starts no session for it. It cannot name a ready label. Default `["type: prd"]`. A hold label, one that marks a ticket as needing a person or staying not ready (`mode: human`, say), belongs here, or a blocker's close starts a session to rewrite that ticket's spec. |
 | `pickup.sweepHours` | whole number, at least 1 |  | How many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default one, which sweeps at every fire. |
-| `pickup.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a pickup session's opening prompt, below `Pickup #N 'title'`. It may name the facts {issue}, {repo} and {claim}, which governor writes in. The text, or { "file": "<path>" }. |
+| `pickup.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a pickup session's opening prompt, below `Pickup #N 'title'`. It may name the facts {issue}, {repo} and {claim}, which governor writes in. The text, or { "file": "&lt;path>" }. |
 
 ## `summons`
 
@@ -71,7 +71,7 @@ Messages to sessions subscribed by a `governor:subscribe` line, and to an issue'
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `subscribeMessages.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
-| `subscribeMessages.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a CI or deploy notice's ask to a subscriber. It may name no fact. The text, or { "file": "<path>" }. |
+| `subscribeMessages.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a CI or deploy notice's ask to a subscriber. It may name no fact. The text, or { "file": "&lt;path>" }. |
 
 ## `redScheduledRun`
 
@@ -80,7 +80,7 @@ A fresh session on a scheduled run on the default branch that went red.
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `redScheduledRun.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
-| `redScheduledRun.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red scheduled run's session prompt, below the run. It may name no fact. The text, or { "file": "<path>" }. |
+| `redScheduledRun.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red scheduled run's session prompt, below the run. It may name no fact. The text, or { "file": "&lt;path>" }. |
 
 ## `unblocked`
 
@@ -90,11 +90,11 @@ What a blocker's close does to a ticket that is not ready to pick up: a comment 
 |---|---|---|---|
 | `unblocked.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
 | `unblocked.prompts` | object (`ready`, `spec`, `ownerSpec`, `claimed`, `notPlanned`) |  | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `ready`, `spec`, `ownerSpec`, `claimed`, `notPlanned`. |
-| `unblocked.prompts.ready` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a ready ticket's ask, below its pickup prompt and the facts of its blocker's close. It may name no fact. The text, or { "file": "<path>" }. |
-| `unblocked.prompts.spec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its blocker's close. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "<path>" }. |
-| `unblocked.prompts.ownerSpec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of the ask to a not-ready ticket's owner, the session its body names, below the facts of its blocker's close. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "<path>" }. |
-| `unblocked.prompts.claimed` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a claimed ticket's session's ask, below the facts of its blocker's close. It may name the fact {issue}, which governor writes in. The text, or { "file": "<path>" }. |
-| `unblocked.prompts.notPlanned` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of the ask in the comment, and message, when a ticket's blocker closed as not planned. It may name no fact. The text, or { "file": "<path>" }. |
+| `unblocked.prompts.ready` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a ready ticket's ask, below its pickup prompt and the facts of its blocker's close. It may name no fact. The text, or { "file": "&lt;path>" }. |
+| `unblocked.prompts.spec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its blocker's close. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "&lt;path>" }. |
+| `unblocked.prompts.ownerSpec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of the ask to a not-ready ticket's owner, the session its body names, below the facts of its blocker's close. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "&lt;path>" }. |
+| `unblocked.prompts.claimed` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a claimed ticket's session's ask, below the facts of its blocker's close. It may name the fact {issue}, which governor writes in. The text, or { "file": "&lt;path>" }. |
+| `unblocked.prompts.notPlanned` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of the ask in the comment, and message, when a ticket's blocker closed as not planned. It may name no fact. The text, or { "file": "&lt;path>" }. |
 
 ## `ciMessages`
 
@@ -104,13 +104,13 @@ A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`
 |---|---|---|---|
 | `ciMessages.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
 | `ciMessages.prompts` | object (`breaker`, `triage`, `bumpTriage`) |  | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `breaker`, `triage`, `bumpTriage`. |
-| `ciMessages.prompts.breaker` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red CI run's ask to its one suspect's session. It may name the fact {pr}, which governor writes in. The text, or { "file": "<path>" }. |
-| `ciMessages.prompts.triage` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red CI run's fresh session over several suspects. It may name no fact. The text, or { "file": "<path>" }. |
-| `ciMessages.prompts.bumpTriage` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red CI run's fresh session over a Dependabot bump. It may name the fact {pr}, which governor writes in. The text, or { "file": "<path>" }. |
+| `ciMessages.prompts.breaker` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red CI run's ask to its one suspect's session. It may name the fact {pr}, which governor writes in. The text, or { "file": "&lt;path>" }. |
+| `ciMessages.prompts.triage` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red CI run's fresh session over several suspects. It may name no fact. The text, or { "file": "&lt;path>" }. |
+| `ciMessages.prompts.bumpTriage` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red CI run's fresh session over a Dependabot bump. It may name the fact {pr}, which governor writes in. The text, or { "file": "&lt;path>" }. |
 
 ## `deployMessages`
 
-A shipping job, or a red deploy, tells the sessions of the merges it shipped. Governor sees a deploy only where the deploy workflow marks it. The shipping job's name ends ` · deployed: <target>`, a middle dot with one space each side, with `at <sha>`, the whole 40-character commit, before the dot when the job ships a commit other than the run's head. Mark only the job whose success means the change is live, never a rollback. The workflow also sets a top-level `TICKET_LABEL_PATHS` env, which picks the shipped PRs that hear of it: `all`, `trigger` for those that changed a file under its `on.push.paths`, or globs, one per line. The first marked run only sets the baseline.
+A shipping job, or a red deploy, tells the sessions of the merges it shipped. Governor sees a deploy only where the deploy workflow marks it. The shipping job's name ends ` · deployed: <target>`, a middle dot with one space each side, with `at <sha>`, the whole 40-character commit in lower case, before the dot when the job ships a commit other than the run's head. Mark only the job whose success means the change is live, never a rollback. The workflow also sets a top-level `TICKET_LABEL_PATHS` env, which picks the shipped PRs that hear of it: `all`, `trigger` for those that changed a file under its `on.push.paths`, or globs, one per line. The first marked run only sets the baseline.
 
 | Key | Type | Default | What it holds |
 |---|---|---|---|
@@ -119,11 +119,11 @@ A shipping job, or a red deploy, tells the sessions of the merges it shipped. Go
 | `deployMessages.tags` | object of string, keyed by name | `{}` | The tag each deploy target's deploy moves, keyed by target, which deploy messages name. Default none. |
 | `deployMessages.deployedLabels` | boolean |  | Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, for people to read; the shipping job messages each such ticket's spec owner and builders itself. Default false. |
 | `deployMessages.prompts` | object (`triage`, `green`, `greenMany`, `red`, `redMany`) |  | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `triage`, `green`, `greenMany`, `red`, `redMany`. |
-| `deployMessages.prompts.triage` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a failed `triage` target's fresh session. It may name no fact. The text, or { "file": "<path>" }. |
-| `deployMessages.prompts.green` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a green deploy's ask, for one PR. It may name the facts {pr} and {target}, which governor writes in. The text, or { "file": "<path>" }. |
-| `deployMessages.prompts.greenMany` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a green deploy's ask, for several PRs. It may name the facts {pr} and {target}, which governor writes in. The text, or { "file": "<path>" }. |
-| `deployMessages.prompts.red` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red deploy's ask, for one PR. It may name the fact {pr}, which governor writes in. The text, or { "file": "<path>" }. |
-| `deployMessages.prompts.redMany` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red deploy's ask, for several PRs. It may name the fact {pr}, which governor writes in. The text, or { "file": "<path>" }. |
+| `deployMessages.prompts.triage` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a failed `triage` target's fresh session. It may name no fact. The text, or { "file": "&lt;path>" }. |
+| `deployMessages.prompts.green` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a green deploy's ask, for one PR. It may name the facts {pr} and {target}, which governor writes in. The text, or { "file": "&lt;path>" }. |
+| `deployMessages.prompts.greenMany` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a green deploy's ask, for several PRs. It may name the facts {pr} and {target}, which governor writes in. The text, or { "file": "&lt;path>" }. |
+| `deployMessages.prompts.red` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red deploy's ask, for one PR. It may name the fact {pr}, which governor writes in. The text, or { "file": "&lt;path>" }. |
+| `deployMessages.prompts.redMany` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red deploy's ask, for several PRs. It may name the fact {pr}, which governor writes in. The text, or { "file": "&lt;path>" }. |
 
 ## `branchRunMessages`
 
@@ -140,7 +140,7 @@ A merge into the default branch tells each PR it left conflicted.
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `conflicts.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
-| `conflicts.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a conflicted PR's ask, to its session or the fallback's. It may name the fact {base}, which governor writes in. The text, or { "file": "<path>" }. |
+| `conflicts.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a conflicted PR's ask, to its session or the fallback's. It may name the fact {base}, which governor writes in. The text, or { "file": "&lt;path>" }. |
 
 ## `prReview`
 
@@ -149,7 +149,7 @@ The PR review: its prompt, and the lists it checks a PR against. Needs `prompt` 
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `prReview.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
-| `prReview.prompt` | text, or `{ "file": "<path>" }` |  | Required when on. The review model's system prompt, after governor's fixed frame and before a suffix naming what the code decided: the text, or { "file": "<path>" }. |
+| `prReview.prompt` | text, or `{ "file": "<path>" }` |  | Required when on. The review model's system prompt, after governor's fixed frame and before a suffix naming what the code decided: the text, or { "file": "&lt;path>" }. |
 | `prReview.humanOnly` | list of object (`glob`, `reason`, `unless`) | `[]` | Paths a PR may not change without a person: a PR changing a matching path waits for one, unless every ticket it closes carries one of the entry's `unless` labels and the PR is not from a session governor started. Default none. |
 | `prReview.humanOnly[].glob` | string, required |  | The paths a PR may not change without a person, as a glob. |
 | `prReview.humanOnly[].reason` | string, required |  | Why a person must see a change to these paths, which the review says. |
@@ -164,7 +164,7 @@ The PR review: its prompt, and the lists it checks a PR against. Needs `prompt` 
 | `prReview.quote` | list of string | `[]` | Globs of changed files the review model reads whole, at the merge base and at the head. Only a modified file is quoted: one added, removed or renamed waits for a person. A `!` entry takes a path back out. Default none. |
 | `prReview.decides` | list of string | `[]` | Labels of a ticket that may decide a quoted file's change: its body's first line, `Constraint now lives at <path>, …`, names the files it decides, which then pass unread. Default none. |
 | `prReview.dependabot` | list of string | `[]` | Globs of the manifests a Dependabot PR may change and pass with no model. Default none. |
-| `prReview.requireChecks` | list of string, or object (`name`, `app`) | `[]` | Checks the review treats as required, beside any the default branch requires on GitHub: a name, which a check run from any App or a commit status context meets, or `{ "name", "app" }`, which only that App's check run of the name meets. One red on the PR's head fails the review for a push; one not finished, or not posted, holds the review with `governor` in progress until it ends. A name GitHub also requires counts once, and the review's own `governor` check is left out. Default none. |
+| `prReview.requireChecks` | list, each string, or object (`name`, `app`) | `[]` | Checks the review treats as required, beside any the default branch requires on GitHub: a name, which a check run from any App or a commit status context meets, or `{ "name", "app" }`, which only that App's check run of the name meets. One red on the PR's head fails the review for a push; one not finished, or not posted, holds the review with `governor` in progress until it ends. A name GitHub also requires counts once, and the review's own `governor` check is left out. Default none. |
 | `prReview.requireChecks[].name` | string, required |  | The check run's name. |
 | `prReview.requireChecks[].app` | string, required |  | The slug of the GitHub App that must post it, such as `github-actions` or `github-code-scanning`: lowercase letters, digits and hyphens, the last part of its `github.com/apps/<slug>` page. A run of the name from any other App, and a commit status of the name, does not count. |
 | `prReview.waitForCi` | boolean | `true` | Whether the review waits for the `workflows.ci` run at the PR's head: one red fails it for a push, one not finished, or none at the head, holds it with `governor` in progress. Set it false where the CI workflow does not run on pull requests, such as one that runs only on a push to the default branch; the review then reads no workflow runs, and still reads the required checks and `requireChecks`. A red CI run on the default branch still drives `ciMessages`. Default true. |
@@ -187,7 +187,7 @@ A session per periodic in `sessions`, each time its day limit passes or one of i
 |---|---|---|---|
 | `periodics.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
 | `periodics.sessions` | object of object (`prompt`, `days`, `counts`, `gapHours`, `connectors`), keyed by name |  | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed, each keyed by its name: one line, with no space at either end. Its session is named after it, and governor keys its record by it. At least one when on. |
-| `periodics.sessions.<name>.prompt` | text, or `{ "file": "<path>" }`, required |  | What the periodic's session runs: the text, or { "file": "<path>" }. Governor adds a line under it giving the last fire's time, and lists what each count counted since then. |
+| `periodics.sessions.<name>.prompt` | text, or `{ "file": "<path>" }`, required |  | What the periodic's session runs: the text, or { "file": "&lt;path>" }. Governor adds a line under it giving the last fire's time, and lists what each count counted since then. |
 | `periodics.sessions.<name>.days` | whole number, at least 1, required |  | Required. The day limit, in whole days, at least one: the periodic is due on the sweep nearest that many days after its last fire. |
 | `periodics.sessions.<name>.counts` | object (`merges`, `issuesOpened`, `issuesClosed`) |  | Counts that bring the periodic due before its day limit, once any reaches its number since the last fire: `merges`, `issuesOpened` and `issuesClosed`. At its day limit, a periodic whose counts counted nothing starts no session. |
 | `periodics.sessions.<name>.counts.merges` | whole number, at least 1 |  | Pull requests merged into the default branch since the last fire that bring the periodic due, a whole number of at least one. |
@@ -204,7 +204,7 @@ A session on a hook's prompt when a signed request fires one of the hooks `sessi
 |---|---|---|---|
 | `hooks.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
 | `hooks.sessions` | object of object (`prompt`, `keyVersion`, `perHour`), keyed by name |  | The sessions an outside system starts with a signed request, each keyed by its name: lower-case letters, digits and hyphens. The name ends the hook's URL, and its session is named after it. Each may cap its fires with `perHour`. At least one when on. |
-| `hooks.sessions.<name>.prompt` | text, or `{ "file": "<path>" }`, required |  | What the hook's session runs: the text, or { "file": "<path>" }. Governor adds lines under it saying which hook fired and when, and quoting the caller's text as the caller's data. |
+| `hooks.sessions.<name>.prompt` | text, or `{ "file": "<path>" }`, required |  | What the hook's session runs: the text, or { "file": "&lt;path>" }. Governor adds lines under it saying which hook fired and when, and quoting the caller's text as the caller's data. |
 | `hooks.sessions.<name>.keyVersion` | whole number, 1 to 999999999, required |  | Required. The version of the hook's key a request must be signed with, a positive whole number of at most nine digits. Raising it revokes the key before it. It is not a secret. |
 | `hooks.sessions.<name>.perHour` | whole number, 1 to 100 |  | The most fires governor queues for the hook in one clock hour, a positive whole number up to 100. A fire past it gets 429. Default 20. |
 
@@ -217,8 +217,8 @@ When a ticket's `Blocked until:` date passes and it is not ready, one comment sa
 | `waits.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
 | `waits.issue` | whole number, at least 1 |  | The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing. |
 | `waits.prompts` | object (`spec`, `ownerSpec`) |  | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `spec`, `ownerSpec`. |
-| `waits.prompts.spec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "<path>" }. |
-| `waits.prompts.ownerSpec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of the ask to a not-ready ticket's owner, the session its body names, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "<path>" }. |
+| `waits.prompts.spec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "&lt;path>" }. |
+| `waits.prompts.ownerSpec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of the ask to a not-ready ticket's owner, the session its body names, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "&lt;path>" }. |
 
 ## `signOff`
 
@@ -227,7 +227,7 @@ Governor archives an idle session in the repo whose last reply ends `Signing off
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `signOff.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
-| `signOff.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of the standing line's ask to sign off. It may name no fact. The text, or { "file": "<path>" }. |
+| `signOff.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of the standing line's ask to sign off. It may name no fact. The text, or { "file": "&lt;path>" }. |
 | `signOff.heldMessage` | boolean |  | Whether governor messages a session the first time the sweep holds it: its reply signed off, but an open PR's body names it, so it was not archived, and it stays open until governor asks it to sign off. Governor sends this once per session. Default false: every hold is only logged. |
 
 ## `sessionRules`
@@ -255,10 +255,10 @@ The issue reviews: `reviews`, each keyed by its name, with its selector `when`, 
 | `issueReviews.reviews.<name>.conclusions.success` | list of string | `[]` | The labels a `success` adds: the ticket passes. Default none. |
 | `issueReviews.reviews.<name>.conclusions.failure` | list of string | `[]` | The labels a `failure` adds: the ticket waits for an edit by whoever filed it. Default none. |
 | `issueReviews.reviews.<name>.conclusions.neutral` | list of string | `[]` | The labels a `neutral` adds: the ticket waits for a person. Default none. |
-| `issueReviews.reviews.<name>.prompt` | text, or `{ "file": "<path>" }` |  | The review's own prompt, after governor's fixed frame: the text, or { "file": "<path>" }. Default governor's own checklist. |
+| `issueReviews.reviews.<name>.prompt` | text, or `{ "file": "<path>" }` |  | The review's own prompt, after governor's fixed frame: the text, or { "file": "&lt;path>" }. Default governor's own checklist. |
 | `issueReviews.reviews.<name>.byLabel` | list of object (`labels`, `prompt`, `conclusions`) |  | Checks and labels per label, each entry matched by label. A ticket gets the review's prompt and then each matching entry's, in list order; one matching none gets the review's alone. For each conclusion, the labels come from the first matching entry that names it, and otherwise from `conclusions`. |
 | `issueReviews.reviews.<name>.byLabel[].labels` | list of string, required |  | The labels that match a ticket carrying any of them, in any case. At least one. |
-| `issueReviews.reviews.<name>.byLabel[].prompt` | text, or `{ "file": "<path>" }` |  | Checks a matching ticket gets after the review's own prompt: the text, or { "file": "<path>" }. Default none. |
+| `issueReviews.reviews.<name>.byLabel[].prompt` | text, or `{ "file": "<path>" }` |  | Checks a matching ticket gets after the review's own prompt: the text, or { "file": "&lt;path>" }. Default none. |
 | `issueReviews.reviews.<name>.byLabel[].conclusions` | object (`success`, `failure`, `neutral`) |  | The conclusions whose labels this entry overrides, each a list, each label starting with the review's name, a colon and a space. A conclusion it leaves out takes its labels from an entry later in the list that matches, or from the review's `conclusions`. |
 | `issueReviews.reviews.<name>.byLabel[].conclusions.success` | list of string |  | The labels a `success` adds on a matching ticket, in place of the review's. |
 | `issueReviews.reviews.<name>.byLabel[].conclusions.failure` | list of string |  | The labels a `failure` adds on a matching ticket, in place of the review's. |

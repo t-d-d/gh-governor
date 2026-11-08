@@ -80,6 +80,8 @@ const typeOf = (node) => {
   if (node.anyOf !== undefined) return node.anyOf.map(typeOf).join(', or ');
   if (node.enum !== undefined) return `one of ${listed(node.enum)}`;
   if (node.type === 'array' && node.items?.enum !== undefined) return `list of any of ${listed(node.items.enum)}`;
+  // A list whose items take one of several shapes: "list of string, or object" would read as a list or an object.
+  if (node.type === 'array' && node.items?.anyOf !== undefined && !isTextOrFile(node.items)) return `list, each ${typeOf(node.items)}`;
   if (node.type === 'array') return `list of ${node.items === undefined ? 'values' : typeOf(node.items)}`;
   if (node.type === 'object') {
     if (node.properties === undefined && typeof node.additionalProperties === 'object') return `object of ${typeOf(node.additionalProperties)}, keyed by name`;
@@ -96,8 +98,18 @@ const typeOf = (node) => {
   return node.type ?? 'any';
 };
 
+/**
+ * Text with each `<` outside a code span written `&lt;`, so GitHub shows a
+ * placeholder such as `<path>` rather than reading it as an HTML tag and
+ * dropping it. Inside a code span the entity would show as written, so
+ * spans are left alone.
+ *
+ * @param {string} text
+ */
+const prose = (text) => text.split(/(`[^`]*`)/).map((part, i) => (i % 2 === 1 ? part : part.replaceAll('<', '&lt;'))).join('');
+
 /** A table cell: one line, with no bar to end it early. @param {string} text */
-const cell = (text) => text.replace(/\s*\n\s*/g, ' ').replaceAll('|', '\\|');
+const cell = (text) => prose(text.replace(/\s*\n\s*/g, ' ').replaceAll('|', '\\|'));
 
 /**
  * The rows below a node: each key's path, type, default and description.
@@ -144,7 +156,7 @@ export const referenceText = () => {
     'This page covers the shape only. Governor also refuses a file that breaks a rule across keys, such as a claim label that is also a ready label, and the config check runs every rule.',
   ];
   for (const [key, node] of Object.entries(schema.properties ?? {})) {
-    lines.push('', `## \`${key}\``, '', node.description ?? '');
+    lines.push('', `## \`${key}\``, '', prose(node.description ?? ''));
     const below = rows(node, key);
     if (below.length > 0) lines.push('', '| Key | Type | Default | What it holds |', '|---|---|---|---|', ...below);
   }
