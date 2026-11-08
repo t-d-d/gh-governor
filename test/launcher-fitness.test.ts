@@ -1,6 +1,6 @@
 /**
  * Governor records every session it starts (docs/constraints/dispatcher-state.md),
- * and the review leans on that record (docs/constraints/dispatcher-review.md):
+ * and the review leans on that record (docs/constraints/pr-review.md):
  * a PR whose session governor started keeps its human-only paths whatever
  * its ticket's label. The launcher (dispatch/launcher.mjs) writes that
  * record for every launch, so a launch that goes around it starts a session
@@ -115,7 +115,7 @@ const launchOf = (deps: ts.Node | undefined) => {
   return at > last(ts.isSpreadAssignment) ? (deps.properties[at] as ts.PropertyAssignment).initializer.getText() : undefined;
 };
 
-describe('fitness: every launch goes through the launcher (dispatcher-review.md)', () => {
+describe('fitness: every launch goes through the launcher (pr-review.md)', () => {
   test('turn.mjs, cli.mjs and the planners read a launch and start or record a session only in realDeps, dynamoState and the launcher() call\'s options', () => {
     const found = FILES.flatMap((path) => outside(path, TEXT[path]!).found);
     assert.deepEqual(found, []);

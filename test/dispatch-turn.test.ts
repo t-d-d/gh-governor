@@ -2651,7 +2651,7 @@ describe('run — an unblocked fire', () => {
   };
 
   // A PR's owner is the live session its body links, else the live session
-  // on its head branch (dispatcher-repos.md): a linked builder that answers
+  // on its head branch (ticket-roles.md): a linked builder that answers
   // archived hands the close to the session on the branch, whose link then
   // goes into the PR body, before the owner link is tried.
   test('claimed, and the open PR\'s linked session archived: the live session on its head branch hears the close, and is written into the PR body', async () => {
@@ -5105,7 +5105,7 @@ const withFakeClaude = async (lines: string[], body: () => Promise<void>) => {
  * the rest of the turn (scripts/lib/github-app.mjs). That holds only where
  * every GitHub client the turn builds shares the one switch.
  */
-describe('fitness: a turn\'s GitHub clients share one resend switch (dispatcher-repos.md)', () => {
+describe('fitness: a turn\'s GitHub clients share one resend switch (github-calls.md)', () => {
   test('every GitHub client realDeps builds is handed the turn\'s one resend switch', () => {
     // Every client turn.mjs builds, wherever: each call is one line, and one
     // built from a variable (`githubReader(args)`) shows no switch, so fails.
@@ -5148,7 +5148,7 @@ describe('realDeps().message', () => {
  * fake `claude` on PATH answers with its arguments and the text of the
  * file it was given as the system prompt, read before the runner removes it.
  */
-describe('fitness: dispatcher-review.md, the review runner replaces Claude Code\'s system prompt', () => {
+describe('fitness: pr-review.md, the review runner replaces Claude Code\'s system prompt', () => {
   test('passes --system-prompt-file with the system prompt\'s text, never --append-system-prompt-file', async () => {
     await withFakeClaude([
       "const { readFileSync } = require('node:fs');",
@@ -9561,7 +9561,7 @@ describe('run — every served repo', () => {
  * is not the sweep and writes nothing, or a label or a merge would keep the
  * heartbeat fresh while the schedule was dead.
  */
-describe('fitness: the heartbeat writes only the issue the repo names, on the schedule fire (dispatcher-repos.md)', () => {
+describe('fitness: the heartbeat writes only the issue the repo names, on the schedule fire (heartbeat.md)', () => {
   const ASKME = 't-d-d/askme-mcp';
   const ASKME_BEAT = { issue: 12 };
   const ASKME_FILE = JSON.stringify({ environment: 'env_01ASK', pickup: { ready: ['mode: afk'], claim: 'claimed' }, heartbeat: ASKME_BEAT });
@@ -9649,7 +9649,7 @@ describe('fitness: the heartbeat writes only the issue the repo names, on the sc
  * heartbeat; a current block, or the switch off, clears it. It never stops
  * the repo being served, and a read that fails changes nothing.
  */
-describe('fitness: the hourly sweep checks each served repo\'s session rules block (dispatcher-repos.md)', () => {
+describe('fitness: the hourly sweep checks each served repo\'s session rules block (heartbeat.md)', () => {
   const AT = new Date(NOW).toISOString();
   const OLD_BLOCK = '<!-- governor:session-rules v0 -->\nOld rules.\n<!-- governor:session-rules-end -->';
   const RULES_FILE_SET = (() => {
@@ -9799,7 +9799,7 @@ describe('fitness: the hourly sweep checks each served repo\'s session rules blo
   }
 });
 
-describe('fitness: every fire is recorded on the governor heartbeat, and only by the fire it reports (dispatcher-repos.md)', () => {
+describe('fitness: every fire is recorded on the governor heartbeat, and only by the fire it reports (heartbeat.md)', () => {
   const FACTORY_PERIODICS = FACTORY_CONFIG.periodics as Array<{ name: string; days: number }>;
   const RETRO = FACTORY_PERIODICS.find((p) => p.name === 'Weekly retro')!;
   const REVIEW = FACTORY_PERIODICS.find((p) => p.name === 'Ticket review')!;
@@ -10042,7 +10042,7 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
  * table waits for the sweep.
  * Pickup's heartbeat line records each sweep, and only a sweep.
  */
-describe('fitness: the bare fire sweeps a repo\'s ready tickets at the interval its file sets (dispatcher-repos.md)', () => {
+describe('the bare fire sweeps a repo\'s ready tickets at the interval its file sets', () => {
   const HOUR = 60 * 60 * 1000;
   const ago = (ms: number) => new Date(NOW - ms).toISOString();
   const AT = new Date(NOW).toISOString();
@@ -11203,7 +11203,7 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
  * drops only an author outside the three; the task judges every fire again
  * from the file, which the item may lag.
  */
-describe('fitness: a message fire reaches its session only where the file\'s trust.relay lets in whom it was judged by (dispatcher-repos.md)', () => {
+describe('fitness: a message fire reaches its session only where the file\'s trust.relay lets in whom it was judged by (trust.md)', () => {
   const withRelay = (relay: string[]) => async (repo: string) => (repo === REPO ? JSON.stringify({ ...JSON.parse(FACTORY_FILE), trust: { relay } }) : null);
   const message = (authors?: string[]) => ({ kind: 'message', session: 'session_01ABC', text: 'A remark.', on: 724, event: 'comments', ...(authors === undefined ? {} : { authors }) });
 

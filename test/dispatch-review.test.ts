@@ -1262,7 +1262,7 @@ describe('run: a pass reused at a new head', () => {
  * state table, and the comment stays the record people read. Comment text
  * edited to a pass neither merges nor is offered for reuse.
  */
-describe('fitness: run — the review reads its earlier verdict from the state table, never from comment text (dispatcher-review.md)', () => {
+describe('fitness: run, the review reads its earlier verdict from the state table, never from comment text (pr-review.md)', () => {
   const EARLIER = 'e'.repeat(40);
   const FAIL_ITEM = (head: string, readSha: string | null = READ): Verdict => ({ headSha: head, bodySha: sha256(BODY), readSha, pass: null, again: false, at: '2026-09-26T11:00:00.000Z' });
   const reused = (head: string) => `${textOf(PASS)} Reuses the answer given at ${head}: nothing the model reads has changed since.`;
@@ -1673,7 +1673,7 @@ describe('run — a review of every open PR', () => {
   // A PR the window kept the turn from reaching would otherwise wait, with
   // no check, on a ruleset that requires `governor`: it fails loudly
   // instead, through the review's usual skips.
-  describe('fitness: a PR the review turn ran out of time for fails the `governor` check (dispatcher-review.md)', () => {
+  describe('fitness: a PR the review turn ran out of time for fails the `governor` check (pr-review.md)', () => {
     const OTHER_HEAD = 'cccccccccccccccccccccccccccccccccccccccc';
     const PENDING_HEAD = 'dddddddddddddddddddddddddddddddddddddddd';
     const late = (over: Parameters<typeof harness>[0] = {}) => {
@@ -1862,7 +1862,7 @@ const tagalong = (over: Parameters<typeof harness>[0] = {}, review: Record<strin
 };
 const reviewTagalong = (h: ReturnType<typeof harness>) => review({ kind: 'review', pr: 767, repo: TAGALONG }, h);
 
-describe('fitness: a pass merges only where merge is on, and approves nothing (dispatcher-review.md)', () => {
+describe('fitness: a pass merges only where merge is on, and approves nothing (pr-review.md)', () => {
   test('a pass in a repo whose file sets merge false is the comment and the check, with no merge call and no approval', async () => {
     const h = tagalong();
     const turn = await reviewTagalong(h);
@@ -1909,7 +1909,7 @@ describe('fitness: a pass merges only where merge is on, and approves nothing (d
  * it. `neutral` passes a required check, so only a pull request handed to
  * a person gets it.
  */
-describe('fitness: the review posts its verdict as the `governor` check (dispatcher-review.md)', () => {
+describe('fitness: the review posts its verdict as the `governor` check (pr-review.md)', () => {
   const HOOK: FileRow = { filename: '.claude/skills/pii-tokenise/hooks/register.js', status: 'modified' };
   const PROSE = 'Closes #748\n\n## Left for later\n\n- Dismissed: `Closes #12 and #13` read as prose.\n\nhttps://claude.ai/code/session_01OWNER';
 
@@ -2046,7 +2046,7 @@ describe('fitness: the review posts its verdict as the `governor` check (dispatc
   });
 });
 
-describe('fitness: the settings checks decide before the model (dispatcher-review.md)', () => {
+describe('fitness: the settings checks decide before the model (pr-review.md)', () => {
   test('a ticket breaking the repo\'s ticket rules fails test 1 in code, the rule\'s own labels named', async () => {
     const forbidden = tagalong({ tickets: { 748: { labels: ['claimed', 'epic'] } } }, { tickets: { forbid: [{ labels: ['epic'] }] } });
     await reviewTagalong(forbidden);

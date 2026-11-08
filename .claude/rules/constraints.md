@@ -2,6 +2,7 @@
 paths:
   - "dispatch/**"
   - "scripts/**"
+  - "checker/**"
   - "infra/**"
   - "eslint-rules/**"
   - "test/**"

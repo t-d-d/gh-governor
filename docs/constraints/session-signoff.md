@@ -9,7 +9,7 @@ session's own last reply is current and needs nothing in the repo.
 ## Rules
 
 - The sweep's candidates are the login's idle, unarchived sessions in a
-  served repo whose file turns the `signOff` switch on (dispatcher-repos.md),
+  served repo whose file turns the `signOff` switch on (repo-config.md),
   the repo read from the list row's `config` (`sources[].url`,
   `outcomes[].git_info.repo`: `reposOf`), as the deployed list answers it. The list and record answer no `session_context`: the
   account tools' `session_context` reshapes these fields. A turn that names
@@ -75,7 +75,7 @@ session's own last reply is current and needs nothing in the repo.
 - The reply's text is never logged: a sweep line carries the session id and
   the decision.
 - Reading candidates' events to find an unsigned post's author, whatever
-  `sessionRules` says (dispatcher-repos.md, dispatch/author.mjs), follows the
+  `sessionRules` says (dispatch/author.mjs), follows the
   rules for reading a reply: the same events endpoint and paging, newest
   first, up to `AUTHOR_PAGES` pages, a page that repeats an event or holds
   a newer one unreadable, and a read that fails or leaves the schema

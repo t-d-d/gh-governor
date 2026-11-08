@@ -2,7 +2,7 @@
  * Issue reviews: governor reads each ticket as it opens, with a model that
  * has seen neither the filer's context nor the code, and comments whether
  * it passes, waits for an edit, or waits for a person
- * (docs/constraints/dispatcher-review.md).
+ * (docs/constraints/issue-reviews.md).
  *
  * An `issueReview` fire names an issue opened, reopened, with its body
  * edited, or with a label added or removed that a review names

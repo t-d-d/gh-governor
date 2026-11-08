@@ -5,7 +5,7 @@ import requireCliEnv from "./eslint-rules/require-cli-env.mjs";
 import noReadinessChecks from "./eslint-rules/no-readiness-checks.mjs";
 
 // Only scripts/lib/ready-work.mjs combines the readiness checks, through
-// `ticketStatus` (docs/constraints/dispatcher-repos.md). A caller elsewhere
+// `ticketStatus` (docs/constraints/ticket-readiness.md). A caller elsewhere
 // asks it, `mayPickUp` or `mayStartSpec`, so no path puts the checks
 // together in its own order.
 const READINESS_CHECKS = ["isBlocked", "isWaiting", "waitHolds", "heldUnreadied", "labelRow"];

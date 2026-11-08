@@ -1,7 +1,7 @@
 /**
  * The dispatcher serves a repo only when an owner on its list installed the
  * App and the repo's default branch carries a valid config file, and a turn
- * acts only on its fire's repo (docs/constraints/dispatcher-repos.md).
+ * acts only on its fire's repo (docs/constraints/served-repos.md).
  * These hold the rule across dispatch/repos.mjs,
  * dispatch/repo-config.mjs and dispatch/turn.mjs:
  *
@@ -45,7 +45,7 @@ const FACTORY_FILE = factoryFile(CONFIG_PATH);
 const ASKME_FILE = JSON.stringify({ environment: 'env_01ASK', pickup: { ready: ['mode: afk'], claim: 'claimed' }, summons: {}, prMessages: {}, subscribeMessages: {} });
 const NOW = Date.parse('2026-10-27T12:00:00Z');
 
-describe('fitness: the factory\'s config file, shaped like a served repo\'s, passes the committed schema (dispatcher-repos.md)', () => {
+describe('fitness: the factory\'s config file, shaped like a served repo\'s, passes the committed schema (repo-config.md)', () => {
   test('every feature on', () => {
     const read = readConfig(FACTORY_FILE);
     assert.ok(read.ok, JSON.stringify(read));
@@ -55,7 +55,7 @@ describe('fitness: the factory\'s config file, shaped like a served repo\'s, pas
   });
 });
 
-describe('fitness: a repo without the file, or with a file that fails the schema, is not served (dispatcher-repos.md)', () => {
+describe('fitness: a repo without the file, or with a file that fails the schema, is not served (served-repos.md)', () => {
   const reads = (file: string | null) => ({
     owners: ['acme', 't-d-d'],
     token: async () => 'ghs',
@@ -132,7 +132,7 @@ const depsOver = (fetch: typeof globalThis.fetch) => {
   };
 };
 
-describe('fitness: a turn calls GitHub only for its fire\'s repo (dispatcher-repos.md)', () => {
+describe('fitness: a turn calls GitHub only for its fire\'s repo (served-repos.md)', () => {
   for (const [repo, file, fires] of [
     [ASKME, ASKME_FILE, [{ kind: 'schedule', repo: ASKME }, { kind: 'dispatch', repo: ASKME, prompt: 'hello' }, { kind: 'message', repo: ASKME, session: 'session_01ABC', text: 'hi', closing: true }]],
     [FACTORY, FACTORY_FILE, [{ kind: 'schedule', repo: FACTORY, issue: 2 }, { kind: 'review', repo: FACTORY, pr: 3 }, { kind: 'message', repo: FACTORY, session: 'session_01ABC', text: 'hi', closing: true }]],
@@ -198,7 +198,7 @@ describe('fitness: a turn calls GitHub only for its fire\'s repo (dispatcher-rep
 });
 
 /**
- * An unlisted owner queues nothing (dispatcher-repos.md). The App is public, so
+ * An unlisted owner queues nothing (served-repos.md). The App is public, so
  * anyone can install it and its webhook delivers their events here: the
  * owner list is the one guard on the login's allowance. Every delivery shape
  * the receiver routes is replayed from an unlisted owner's repo, and must
@@ -207,7 +207,7 @@ describe('fitness: a turn calls GitHub only for its fire\'s repo (dispatcher-rep
  * HOOK_EVENTS names every event the App subscribes to, and each has a
  * fixture here, so a new event lands with one.
  */
-describe('fitness: an unlisted owner queues nothing (dispatcher-repos.md)', () => {
+describe('fitness: an unlisted owner queues nothing (served-repos.md)', () => {
   const SECRET = 'whsec_fitness';
   const SHA = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
   const OWNER = 'https://claude.ai/code/session_01OWNERAAA';
@@ -349,7 +349,7 @@ const KINDS: Record<string, { build: (prompts: Record<string, string>) => Promis
   },
 };
 
-describe('fitness: a prompt replaces only the instruction (dispatcher-repos.md)', () => {
+describe('fitness: a prompt replaces only the instruction (repo-config.md)', () => {
   test('every message kind the schema names is built here', () => {
     assert.deepEqual(Object.keys(KINDS).sort(), Object.keys(PROMPTS).sort());
   });
@@ -369,7 +369,7 @@ describe('fitness: a prompt replaces only the instruction (dispatcher-repos.md)'
   }
 });
 
-describe('fitness: every prompt key has a default, and the defaults are generic (dispatcher-repos.md)', () => {
+describe('fitness: every prompt key has a default, and the defaults are generic (repo-config.md)', () => {
   test('each default names no repo\'s skill, file or section', () => {
     for (const [kind, { text }] of Object.entries(PROMPTS)) {
       assert.ok(text.trim() !== '', kind);
@@ -415,7 +415,7 @@ const FACTORY_SERVED = await (async () => {
   return resolved;
 })();
 
-describe('fitness: a repo\'s prompts reach its messages word for word (dispatcher-repos.md)', () => {
+describe('fitness: a repo\'s prompts reach its messages word for word (repo-config.md)', () => {
   const read = FACTORY_SERVED;
   test('every kind is pinned', () => {
     assert.deepEqual(Object.keys(FACTORY_TEXTS).sort(), Object.keys(PROMPTS).sort());
@@ -425,7 +425,7 @@ describe('fitness: a repo\'s prompts reach its messages word for word (dispatche
   }
 });
 
-describe('fitness: governor\'s own routes answer to trust.auto, and no route keeps its own rule (dispatcher-repos.md)', () => {
+describe('fitness: governor\'s own routes answer to trust.auto, and no route keeps its own rule (trust.md)', () => {
   const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
   for (const path of ['dispatch/conflicts.mjs', 'dispatch/waits.mjs', 'dispatch/unblocked-fire.mjs', 'dispatch/periodics.mjs', 'dispatch/sweep.mjs']) {
@@ -444,7 +444,7 @@ describe('fitness: governor\'s own routes answer to trust.auto, and no route kee
  * gate, `relayedBody` (dispatch/webhook/subscribe.mjs), which hands the
  * readers an empty body for an author it does not let in.
  */
-describe('fitness: a body names a session to route by only through relayedBody (dispatcher-repos.md)', () => {
+describe('fitness: a body names a session to route by only through relayedBody (trust.md)', () => {
   const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
   const READERS = /\b(sessionNamedIn|subscribersFor|sessionsNamedIn)\(([^)]*)/g;
   /**
@@ -477,7 +477,7 @@ describe('fitness: a body names a session to route by only through relayedBody (
   });
 });
 
-describe('fitness: the receiver relays no comment governor\'s App posts (dispatcher-repos.md)', () => {
+describe('fitness: the receiver relays no comment governor\'s App posts (ticket-roles.md)', () => {
   const SECRET = 'whsec_fitness';
   const APP_ID = 5075844;
   const CLAIM = 'claimed';
@@ -588,7 +588,7 @@ describe('fitness: the receiver relays no comment governor\'s App posts (dispatc
  * (dispatch/roles.mjs), and the builder lookup it wraps is called from
  * nowhere else.
  */
-describe('fitness: a ticket\'s roles are found one way (dispatcher-repos.md)', () => {
+describe('fitness: a ticket\'s roles are found one way (ticket-roles.md)', () => {
   const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
   const files = [
     ...readdirSync(new URL('../dispatch/', import.meta.url)).filter((f) => f.endsWith('.mjs')).map((f) => `dispatch/${f}`),

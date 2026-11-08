@@ -1,6 +1,6 @@
 /**
  * The PR review runs from each served repo's own `review` settings, and
- * never the repo's code (docs/constraints/dispatcher-review.md):
+ * never the repo's code (docs/constraints/pr-review.md):
  *
  * - the dispatcher image carries no repo's checklist or lists: no `.claude/`
  *   path;
@@ -115,7 +115,7 @@ const codeEvaluators = (root: string, ...entries: string[]) => [...importClosure
 /** The modules a review reads and judges with. */
 const REVIEW_MODULES = ['dispatch/review.mjs', 'dispatch/issue-review.mjs', 'dispatch/checklist.mjs', 'dispatch/cli-answer.mjs', 'dispatch/repo-config.mjs', 'dispatch/pr-body.mjs', 'dispatch/webhook/review-comment.mjs'];
 
-describe('fitness: a review runs no served repo\'s code (dispatcher-review.md)', () => {
+describe('fitness: a review runs no served repo\'s code (pr-review.md)', () => {
   test('the task image copies no .claude/ path: each review reads the repo\'s own', () => {
     const copied = [...read('dispatch/Dockerfile').matchAll(/^COPY\s+(.+?)\s+\S+\s*$/gm)].flatMap((m) => m[1]!.split(/\s+/));
     assert.ok(copied.length > 0);
