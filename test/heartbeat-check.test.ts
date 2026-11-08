@@ -138,6 +138,10 @@ describe('reading the config file', () => {
     assert.deepEqual(checker.checkConfigOf(JSON.stringify(file)), { ok: true, config: { issue: 412, pickupHours: 1, periodics: [] } });
     switched(file, { pickup: false, periodics: true });
     assert.equal((checker.checkConfigOf(JSON.stringify(file)) as { config: { pickupHours: unknown } }).config.pickupHours, null);
+    // A feature with no section is off, as one with `"enabled": false` is.
+    const bare = factory();
+    delete bare.periodics;
+    assert.deepEqual((checker.checkConfigOf(JSON.stringify(bare)) as { config: { periodics: unknown } }).config.periodics, []);
   });
 
   // The checker reads the file with governor's code at the caller's pinned
@@ -150,7 +154,8 @@ describe('reading the config file', () => {
     const read = checker.checkConfigOf(JSON.stringify(file));
     assert.equal(read.ok, false);
     assert.match((read as { fault: string }).fault, /^\.github\/governor\.json is a file governor refuses: /);
-    assert.ok((read as { fault: string }).fault.endsWith((governor as { fault: string }).fault), JSON.stringify(read));
+    assert.ok((read as { fault: string }).fault.includes(`refuses: ${(governor as { fault: string }).fault}. `), JSON.stringify(read));
+    assert.match((read as { fault: string }).fault, /move the pin$/);
   });
 
   test('a file it cannot use is a fault, never silence', () => {

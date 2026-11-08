@@ -56,7 +56,7 @@ const DAY_MS = 24 * HOUR_MS;
  */
 export const checkConfigOf = (text) => {
   const read = readConfig(text);
-  if (!read.ok) return { ok: false, fault: `${CONFIG_PATH} is a file governor refuses: ${read.fault}` };
+  if (!read.ok) return { ok: false, fault: `${CONFIG_PATH} is a file governor refuses: ${read.fault}. Where governor serves the repo all the same, the file uses something newer than the commit this check is pinned to, so move the pin` };
   const { config } = read;
   if (!turnsOn(config, 'heartbeat') || config.heartbeat === undefined) return { ok: false, fault: `${CONFIG_PATH} does not turn the heartbeat on with a heartbeat section naming its issue` };
   return {
