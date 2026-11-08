@@ -1,7 +1,8 @@
 # Checks governor's heartbeat issue every hour, and keeps an issue open for
 # pickup or any periodic that has stopped firing. The checker runs here, on
 # this repo's own token, pinned to a commit of gh-governor. To move to a
-# newer checker, change the commit after `@`.
+# newer checker, change the commit after `@` and in `commit:` together, so
+# the workflow and the checker it fetches come from the same commit.
 name: heartbeat
 
 on:
@@ -15,7 +16,8 @@ permissions:
 
 jobs:
   check:
-    uses: t-d-d/gh-governor/.github/workflows/heartbeat-check.yml@c9a699d6f5914185df986815b959c9e010251a99
+    uses: t-d-d/gh-governor/.github/workflows/heartbeat-check.yml@fda1887811d641f79cea18d4b1fa0f09ef65a238
     with:
+      commit: fda1887811d641f79cea18d4b1fa0f09ef65a238
       tolerance-hours: 3
       labels: heartbeat
