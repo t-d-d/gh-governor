@@ -57,7 +57,7 @@
 
 import { GITHUB_SOURCE } from './deliveries.mjs';
 import { relayOf } from './trust.mjs';
-import { rolesOf, rolesText } from './roles.mjs';
+import { askedOf, rolesOf, rolesText } from './roles.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { closedBy } from './pr-body.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
@@ -120,11 +120,9 @@ export const planTicket = async (invocation, ctx) => {
     return read;
   };
   const about = { repo, issue, change: event, state, claimed };
-  // A comment on an open ticket calls on each role's duty; a close, a
-  // reopen or a comment on a closed ticket asks nothing of either, as the
-  // receiver tells an unlabelled issue's spec owner, and a body edit's own
-  // lines say what each role does with it.
-  const asked = { duty: event === 'comments' && state === 'open', notice: event === 'close' || (event === 'comments' && state !== 'open') };
+  // A close asks nothing; a reopen's and a body edit's own lines say what
+  // each role does with it.
+  const asked = askedOf(event === 'comments' ? 'comment' : event === 'close' ? 'notice' : 'own', state === 'open');
   /**
    * Each send's text is written from the spec owner it names, which a take
    * changes before the builders are told.

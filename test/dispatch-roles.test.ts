@@ -6,7 +6,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { rolesFrom, rolesOf, rolesText } from '../dispatch/roles.mjs';
+import { askedOf, rolesFrom, rolesOf, rolesText } from '../dispatch/roles.mjs';
 import { ticketAuthor } from '../dispatch/trust.mjs';
 import { dispatchMarker, RELAY } from '../dispatch/webhook/fire.mjs';
 
@@ -101,5 +101,30 @@ describe('rolesText', () => {
     const text = rolesText(roles, builder!);
     assert.match(text, /^You are its builder; \[its spec owner\]\(.*SPECOWNER\) writes its body\./);
     assert.match(text, /Your PR, which closed #7, has merged: act on this message only where it calls for new work\./);
+  });
+});
+
+describe('askedOf', () => {
+  test('a comment on an open ticket calls on each role\'s duty', () => {
+    assert.deepEqual(askedOf('comment', true), { duty: true, notice: false });
+  });
+
+  test('a comment on a closed ticket asks nothing, and says so', () => {
+    assert.deepEqual(askedOf('comment', false), { duty: false, notice: true });
+  });
+
+  test('a comment quoted under a message\'s own words gets the duty lines only on an open ticket', () => {
+    assert.deepEqual(askedOf('quoted', true), { duty: true, notice: false });
+    assert.deepEqual(askedOf('quoted', false), { duty: false, notice: false });
+  });
+
+  test('a notice asks nothing on any ticket, and says so', () => {
+    assert.deepEqual(askedOf('notice', true), { duty: false, notice: true });
+    assert.deepEqual(askedOf('notice', false), { duty: false, notice: true });
+  });
+
+  test('a message whose own lines say what it asks gets neither', () => {
+    assert.deepEqual(askedOf('own', true), { duty: false, notice: false });
+    assert.deepEqual(askedOf('own', false), { duty: false, notice: false });
   });
 });

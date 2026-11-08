@@ -38,7 +38,7 @@ import { startKinds } from './start.mjs';
 import { reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 import { RED, UNATTENDED } from './webhook/fire.mjs';
 import { redRunPrompt } from './workflow.mjs';
-import { rolesOf, rolesText } from './roles.mjs';
+import { askedOf, rolesOf, rolesText } from './roles.mjs';
 
 /**
  * Whether the scheduled run before `scheduled`, of the same workflow on
@@ -212,10 +212,10 @@ const toRoles = async ({ repo, on, writer, assigner, ticket, prompt }, ctx) => {
   const faults = (/** @type {import('./deliveries.mjs').Delivery} */ t) => !taken(t) && t.capped !== true && (!t.refused || t.fallback !== null);
   /** @type {import('./deliveries.mjs').Delivery[]} */
   const sent = [];
-  // A remark on an open ticket calls on each role's duty, as a comment does
-  // on a ticket fire. On a closed ticket nothing is left to build, so the
-  // remark asks what it asks in its own words, with no duty line.
-  const asked = { duty: assigner === undefined && remark !== null && ticket.state === 'open', notice: assigner === undefined && remark === null };
+  // An assignment's notice says what it asks. A remark the notice quotes
+  // is a quoted comment, and one that reaches the role on its own leaves
+  // the notice asking nothing.
+  const asked = askedOf(assigner !== undefined ? 'own' : remark === null ? 'notice' : 'quoted', ticket.state === 'open');
   try {
     for (const holder of sends) {
       const { session, role, owns } = holder;
