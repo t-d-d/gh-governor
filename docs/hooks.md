@@ -2,7 +2,7 @@
 
 A hook lets a system outside GitHub, such as a cloud alarm, start a session in the repo. The repo lists the hook in its file, and the caller sends governor one HTTPS request signed with that hook's key. The request carries data. The prompt is the file's, so a pull request reviews what the session is told.
 
-This page is for a hook's caller, and for the owner who mints its key. The `hooks.sessions` a repo keeps in its file is in [Serving a repo](serving-a-repo.md#the-schema).
+This page is for a hook's caller, and for the owner who mints its key. The `hooks.sessions` a repo keeps in its file is in [the config reference](config-reference.md#hooks).
 
 **The request.** `POST <receiver URL>/hooks/<owner>/<repo>/<hook>`, where the receiver URL is the stack's `WebhookUrl` output, with a JSON body and one header:
 

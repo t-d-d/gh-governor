@@ -330,13 +330,13 @@ test('docs/serving-a-repo.md describes the config check beside the heartbeat che
   const section = readme.slice(at, readme.indexOf('\n## ', at));
   assert.match(section, /\.github\/workflows\/config-check\.yml/);
   assert.match(section, /commit: <commit>/);
-  const optIn = readme.slice(readme.indexOf('## How a repo opts in'), readme.indexOf('### The schema'));
+  const optIn = readme.slice(readme.indexOf('## How a repo opts in'), readme.indexOf('### The session rules'));
   assert.match(optIn, /config-check\.yml/);
 });
 
 test('docs/serving-a-repo.md\'s "How a repo opts in" points at the starter kit and the heartbeat issue\'s marker', () => {
   const readme = read('docs/serving-a-repo.md');
-  const section = readme.slice(readme.indexOf('## How a repo opts in'), readme.indexOf('### The schema'));
+  const section = readme.slice(readme.indexOf('## How a repo opts in'), readme.indexOf('### The session rules'));
   assert.match(section, /\(\.\.\/examples\/starter\/?\)/);
   assert.match(section, /<!-- governor:heartbeat -->/);
 });
