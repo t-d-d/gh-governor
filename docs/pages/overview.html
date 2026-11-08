@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How governor works</title>
+<style>
+  :root {
+    --bg: rgb(255 255 255);
+    --fg: rgb(31 35 40);
+    --muted: rgb(89 99 110);
+    --link: rgb(9 105 218);
+    --rule: rgb(209 217 224);
+    --panel: rgb(246 248 250);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: rgb(13 17 23);
+      --fg: rgb(230 237 243);
+      --muted: rgb(145 152 161);
+      --link: rgb(68 147 248);
+      --rule: rgb(61 68 77);
+      --panel: rgb(22 27 34);
+    }
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    max-width: 44rem;
+    margin: 0 auto;
+    padding: 2rem 1rem 3rem;
+  }
+  h1 { font-size: 1.8rem; margin: 0 0 0.5rem; line-height: 1.2; }
+  h2 { font-size: 1.25rem; margin: 2.25rem 0 0.5rem; padding-top: 1rem; border-top: 1px solid var(--rule); }
+  p, ul, ol { margin: 0 0 1rem; }
+  li { margin: 0 0 0.4rem; }
+  a { color: var(--link); }
+  .lede { color: var(--muted); font-size: 1.05rem; }
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 0.5rem;
+    list-style: none;
+    padding: 0;
+    counter-reset: step;
+  }
+  .flow li {
+    counter-increment: step;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
+    margin: 0;
+    font-size: 0.95rem;
+  }
+  .flow li::before {
+    content: counter(step);
+    display: block;
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+  dl { margin: 0 0 1rem; }
+  dt { font-weight: 600; margin-top: 0.75rem; }
+  dd { margin: 0.2rem 0 0 0; }
+  footer { margin-top: 2.5rem; color: var(--muted); font-size: 0.95rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>How governor works</h1>
+  <p class="lede">
+    A short tour of governor: what it does, how an event becomes work, who owns a ticket and a pull request, and how a repo opts in.
+    The detail lives in the code, its tests and the repo's docs.
+  </p>
+
+  <h2>What governor does</h2>
+  <p>
+    Governor does the work around a coding agent that a team lead would do.
+    It watches the repos that install its GitHub App, and for each one it:
+  </p>
+  <ul>
+    <li>starts a Claude Code cloud session on each ticket that is ready, once its blockers are closed;</li>
+    <li>passes every comment, review, CI result, conflict and deploy on a pull request to the session that wrote it;</li>
+    <li>reviews pull requests against the repo's own checklist, and can merge the ones that pass;</li>
+    <li>runs recurring sessions, such as a code review every few merges;</li>
+    <li>archives a session once it says it is done.</li>
+  </ul>
+  <p>
+    It runs for one person, on their own Claude subscription and their own AWS account.
+  </p>
+
+  <h2>The lane and a turn</h2>
+  <p>
+    Everything governor reacts to, a GitHub webhook, the hourly schedule or a signed request from outside GitHub, becomes a <em>fire</em>.
+    A small receiver checks each request and puts its fire on one queue, the lane.
+  </p>
+  <ol class="flow">
+    <li>Something happens on GitHub, or the hour comes round.</li>
+    <li>The receiver checks it and queues a fire on the lane.</li>
+    <li>A starter makes sure one task is running.</li>
+    <li>The task takes the fires one at a time.</li>
+    <li>Each fire runs as one turn, then the next.</li>
+  </ol>
+  <p>
+    A <em>turn</em> is one fire's work. It loads the stored claude.ai login, reads the repo's config file, does what the fire asks if the repo turns that feature on, saves the login back, and archives any session that has signed off.
+  </p>
+  <p>
+    There is one lane and one task because there is one login. Every turn refreshes it, and each refresh replaces the old token, so two turns at once would leave one of them holding a dead login.
+    The task stops after a quiet minute and starts again when the next fire arrives.
+  </p>
+  <p>
+    <a href="fire-lane.html">The fire lane</a> animates a fire's trip from the receiver to the task, a burst of fires, and a task that fails to start.
+  </p>
+
+  <h2>Who owns what</h2>
+  <p>
+    Governor needs to know which session to tell about each event. A session claims a ticket or a pull request by putting its own link at the end of the body, and governor reads ownership from there.
+  </p>
+  <dl>
+    <dt>A ticket's spec owner</dt>
+    <dd>The session whose link ends the ticket's body, or the person who wrote it. Only the spec owner edits the body. Anyone else who wants it changed comments on the ticket.</dd>
+    <dt>A ticket's builder</dt>
+    <dd>The session governor started to build the ticket. It hears the comments on the ticket, and when its change ships.</dd>
+    <dt>A pull request's owner</dt>
+    <dd>The session its body links, or else the live session working on its branch. Only the owner pushes to the branch. Every remark, review, CI result and conflict on the pull request goes to the owner. If the owner has been archived, governor hands the pull request to a fresh session.</dd>
+    <dt>The person</dt>
+    <dd>The repo's owner writes and approves the specs, and merges whatever the repo leaves to a person. The repo's policy decides how much that is.</dd>
+  </dl>
+  <p>
+    A session signs off by ending its last reply with "Signing off." Governor then archives it, and the tickets it owned are free for another session to take.
+  </p>
+
+  <h2>How a repo opts in</h2>
+  <ol>
+    <li>Install governor's GitHub App on the repo, and give the Claude GitHub App access to it too.</li>
+    <li>Add a config file to the repo's GitHub folder. Each feature is one section in it, and a feature with no section is off. The starter kit has a complete file to copy.</li>
+    <li>Label a ticket as ready. Governor starts a session on it and comments the session's link on the ticket.</li>
+  </ol>
+  <p>
+    A change to the policy is a pull request to that file. Governor reads it from the default branch on its next turn, with no deploy.
+  </p>
+
+  <footer>
+    More in the repo: <a href="https://github.com/t-d-d/gh-governor/blob/main/docs/serving-a-repo.md">Serving a repo</a>,
+    <a href="https://github.com/t-d-d/gh-governor/blob/main/docs/self-hosting.md">Running your own governor</a>,
+    and the <a href="https://github.com/t-d-d/gh-governor">README</a>.
+    The full list of pages is on the <a href="index.html">index</a>.
+  </footer>
+</main>
+</body>
+</html>

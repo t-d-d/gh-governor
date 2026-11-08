@@ -1,9 +1,13 @@
 # Running your own governor
 
-What governor runs on, and the steps to deploy your own. Once it runs, [Serving a repo](serving-a-repo.md) says how a repo opts in. [How governor works](how-it-works.md) covers each fire, the alarms and troubleshooting.
+What governor runs on, and the steps to deploy your own. Once it runs, [Serving a repo](serving-a-repo.md) says how a repo opts in. [How governor works](https://t-d-d.github.io/gh-governor/overview.html) is a short overview. Once it is deployed, the last sections cover running a turn by hand, minting the login again, the alarms and troubleshooting.
 
 - [How governor runs](#how-governor-runs)
 - [Fork and deploy](#fork-and-deploy)
+- [Invoking by hand](#invoking-by-hand)
+- [Minting the login](#minting-the-login)
+- [Alarms](#alarms)
+- [Troubleshooting](#troubleshooting)
 
 ## How governor runs
 
@@ -136,4 +140,51 @@ Confirm the alerts subscription from the email AWS sends to the alert address. U
 
 The App's **Advanced → Recent Deliveries** shows each delivery's answer: `202` queued a fire, `200` queued nothing and says why, `401` is a key that does not match.
 
-To start a turn by hand, `node scripts/run-turn.mjs --kind schedule` runs a sweep now, and `--kind probe` checks the runtime. [docs/how-it-works.md](how-it-works.md#invoking-by-hand) has the rest, and the alarms.
+## Invoking by hand
+
+```bash
+node scripts/run-turn.mjs --kind probe                                     # check the runtime
+node scripts/run-turn.mjs --kind schedule                                  # sweep every served repo whose interval has passed, now
+node scripts/run-turn.mjs --kind schedule --repo owner/name                # one repo's pickup and sweep
+node scripts/run-turn.mjs --kind dispatch --repo owner/name --prompt '…' --session-name '…'   # one session, no ticket
+node scripts/run-turn.mjs --kind message --repo owner/name --session <session_… or URL> --text '…'  # text into a session
+```
+
+Every kind but `probe` and a bare `schedule` needs `--repo`: nothing falls back to a default repo. The script needs the AWS CLI signed in as an identity that may run the task and send to the queue.
+
+A probe starts its own task, waits for it to stop, prints its log and exits with its exit code. Every other kind queues a fire behind whatever is already waiting. The script waits for that fire's turn, prints the task's log for it, and exits with the turn's exit code. `--no-wait` returns at once. Start a task any other way only when `aws ecs list-tasks --cluster governor` shows none and the queue is empty.
+
+A message wakes an idle session within seconds. An archived session refuses it.
+
+When governor is down, open a session by hand from the claude.ai app or with `claude --cloud`.
+
+## Minting the login
+
+On a laptop or in CloudShell, with `claude` and the AWS CLI signed in as an identity that may write `governor/claude-login`:
+
+```bash
+node scripts/mint-claude-login.mjs --profile <p>   # laptop
+node scripts/mint-claude-login.mjs                 # CloudShell
+```
+
+It first checks that the AWS identity can reach the secret, and stops if not. It signs in under a throwaway config directory, so the login the machine already holds is never read or written. Pick the subscription option and sign in as the account the sessions run under. It refuses a setup-token, writes the secret, and prints the scopes and both expiries.
+
+Never sign that login out: a sign-out revokes the stored copy too. Each refresh moves the access token's expiry but not the refresh expiry, which is fixed about two weeks after the mint. Past it, governor stops, so mint again before then. `governor-login-expiring` pages three days ahead.
+
+## Alarms
+
+Every alarm in [infra/governor.cfn.yml](../infra/governor.cfn.yml) emails the alert address through the `governor-alerts` topic, once the subscription is confirmed. Each email carries the alarm's description, which says what fired, which log to read, and what to do.
+
+A message an archived session refused is not an error, and neither is a review the login's session limit refused. Neither pages.
+
+## Troubleshooting
+
+What follows covers what no alarm reports.
+
+**A mention did nothing.** Read the App's Recent Deliveries. `200` carries the reason. `202` queued a fire: the receiver's `webhook-queued` line names its message id, and the task's `fire-taken` line for that id in `/governor` opens its turn. With no `fire-taken` line, `/aws/lambda/governor-starter` says whether a task started. No delivery at all means the App is not subscribed to that event: tick it in the App's settings.
+
+**A ready ticket was not picked up.** Check that the repo's file turns `pickup` on and lists the ticket's labels as ready, and that the ticket has no open blocker, no claim label, no label the file's `exclude` lists, and no `Blocked until:` line with a date still to come. Check that `trust.task` lists its author's association, and, where the repo narrows `trust.start`, that the person who readied it is let in. A ready label added by a bot other than governor's App does not count: someone with triage access must add it again. `dispatch-pickup` and `dispatch-plan` in `/governor` say what the fire planned and why.
+
+**A session was not archived.** Its last reply's last line must start `Signing off`, and the session must be idle. `dispatch-signoff` in `/governor` names each candidate and the decision.
+
+**A task was slow to start.** Each task's ECS stop event is in `/governor` as an `ECS Task State Change` line. The image pull is `pullStartedAt` to `pullStoppedAt`, and the whole start is `createdAt` to `startedAt`. Find the line by the task ARN that the starter's `task-started` line names. ECS forgets a stopped task after about an hour, so `aws ecs describe-tasks` answers only for a recent one.
