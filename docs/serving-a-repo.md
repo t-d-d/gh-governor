@@ -90,7 +90,7 @@ The dark factory keeps `hooks` off, since a hook needs a key the owner mints aft
 
 ### The heartbeat checker
 
-Governor cannot report that it has stopped, so the check runs in the served repo, on GitHub Actions. The repo calls the reusable workflow [.github/workflows/heartbeat-check.yml](../.github/workflows/heartbeat-check.yml) on a schedule of its own, pinned to a commit of this repo:
+Governor cannot report that it has stopped, so the check runs in the served repo, on GitHub Actions. The repo calls the reusable workflow [.github/workflows/heartbeat-check.yml](../.github/workflows/heartbeat-check.yml) on a schedule of its own, pinned to a commit of this repo. It passes the same commit as `commit`, because a called workflow cannot learn which commit it runs from:
 
 ```yaml
 name: heartbeat
@@ -105,11 +105,12 @@ jobs:
   check:
     uses: t-d-d/gh-governor/.github/workflows/heartbeat-check.yml@<commit>
     with:
+      commit: <commit>
       tolerance-hours: 3
       labels: heartbeat
 ```
 
-It reads the lines governor keeps on the heartbeat issue, and opens an issue, labelled with `labels`, when pickup's sweep or a periodic runs more than `tolerance-hours` past its limit, when a line governor should keep is missing, or when the heartbeat cannot be read. It keeps one issue open for each, and closes it once the line is fresh again. Governor fires every hour, so keep the tolerance above one hour. It runs on the caller's own token, holds no secret, and uses no action.
+It reads the lines governor keeps on the heartbeat issue, and opens an issue, labelled with `labels`, when pickup's sweep or a periodic runs more than `tolerance-hours` past its limit, when a line governor should keep is missing, or when the heartbeat cannot be read. It keeps one issue open for each, and closes it once the line is fresh again. Governor fires every hour, so keep the tolerance above one hour. It reads the config file with governor's own reader at the pinned commit, so a file that governor at that commit would refuse, such as one using a newer key, is a fault: move the pin when the file takes up a new key. A workflow pinned to a commit before the `commit` input carries its own copy of the checker and takes none. It runs on the caller's own token, holds no secret, and uses no action.
 
 ### The config check
 

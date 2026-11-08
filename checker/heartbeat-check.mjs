@@ -2,8 +2,8 @@
  * The heartbeat checker. It runs in a served repo, never in governor: a
  * checker inside governor stops whenever governor stops, so it could not
  * report governor stopping. The repo calls the reusable workflow
- * .github/workflows/heartbeat-check.yml, pinned to a commit of this repo,
- * and that workflow carries a copy of this file, which it runs on the
+ * .github/workflows/heartbeat-check.yml, pinned to a commit of this repo.
+ * That workflow fetches this repo at the commit and runs this file on the
  * caller's own token.
  *
  * It reads the caller's config file from the default branch, and the
@@ -19,189 +19,54 @@
  * cannot read the file or the issue keeps one issue open saying why, so a
  * broken check is never silence.
  *
- * It reads only the keys it needs, without governor's strict schema, so a
- * file using a key added after the caller's pinned commit still reads. It
- * runs on whatever node the runner has, with no dependency, so it imports
- * nothing but node's own modules.
+ * It reads the file with governor's own `readConfig`
+ * (dispatch/repo-config.mjs), pickup's interval with pickup's own default
+ * (dispatch/pickup.mjs), and the issue with governor's own `readHeartbeat`,
+ * all at the caller's pinned commit, so there is no second reader to keep in
+ * step. A file that commit's governor would refuse is a fault here too.
  */
 
 import { pathToFileURL } from 'node:url';
-
-/** Where governor's block starts in the heartbeat issue. */
-export const HEARTBEAT_MARKER = '<!-- governor:heartbeat -->';
-
-/** Where governor's block ends. */
-export const HEARTBEAT_END = '<!-- governor:heartbeat-end -->';
-
-/** The served repo's config file, read from its default branch. */
-export const CONFIG_PATH = '.github/governor.json';
-
-/** Pickup's sweep interval when the file sets none: dispatch/pickup.mjs's, copied, since this runs in another repo. */
-export const SWEEP_HOURS = 1;
+import { STATES, readHeartbeat } from '../dispatch/heartbeat.mjs';
+import { sweepHoursOf } from '../dispatch/pickup.mjs';
+import { CONFIG_PATH, readConfig, turnsOn } from '../dispatch/repo-config.mjs';
+import { messageOf } from '../scripts/lib/error-message.mjs';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
 /**
- * @typedef {'merges' | 'issuesOpened' | 'issuesClosed'} Count
- * @typedef {{ days: number } | { count: Count, number: number }} Limit
- * @typedef {'open' | 'signed off' | 'held' | 'nothing to do' | 'not fired'} RunState
- * @typedef {{ at: string, started: number }} PickupLine
- * @typedef {{ name: string, at: string, by?: Limit, session: string | null, state: RunState }} PeriodicLine
- * @typedef {{ file: string, block: 'missing' | 'old' }} RulesLine
- * @typedef {{ pickup?: PickupLine, periodics: PeriodicLine[], rules?: RulesLine }} Heartbeat
+ * @typedef {import('../dispatch/heartbeat.mjs').Heartbeat} Heartbeat
+ * @typedef {import('../dispatch/heartbeat.mjs').PeriodicLine} PeriodicLine
  */
-
-// The line format is governor's, in dispatch/heartbeat.mjs. A test runs
-// governor's writer and this reader over the same lines.
-
-/** What a line calls each count, one and many. */
-const COUNTED = /** @type {Record<Count, [string, string]>} */ ({
-  merges: ['merge', 'merges'],
-  issuesOpened: ['issue opened', 'issues opened'],
-  issuesClosed: ['issue closed', 'issues closed'],
-});
-
-/** What a line calls each state. */
-const STATES = /** @type {Record<RunState, string>} */ ({
-  open: 'open',
-  'signed off': 'signed off',
-  held: 'held while that session is open',
-  'nothing to do': 'nothing to do',
-  'not fired': 'not fired yet',
-});
-
-/** What the session rules line says of each block that is not current. */
-const RULES_BLOCKS = /** @type {Record<RulesLine['block'], string>} */ ({
-  missing: 'has no session rules block',
-  old: 'has an old session rules block',
-});
-
-/** Each block's text, back to its key. */
-const RULES_BLOCK_OF = /** @type {Record<string, RulesLine['block']>} */ (Object.fromEntries(Object.entries(RULES_BLOCKS).map(([k, v]) => [v, k])));
-
-const PICKUP = /^- pickup: last sweep (\S+), started (\d+) sessions?$/;
-const PERIODIC = new RegExp([
-  '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (last fire|first read) (\\S+)',
-  '(?:, by (?:its day limit of (\\d+) days?|(\\d+) (merges?|issues? opened|issues? closed)))?',
-  `, session (\\S+), (${Object.values(STATES).join('|')})$`,
-].join(''));
-const RULES = new RegExp(`^- session rules: ("(?:[^"\\\\]|\\\\.)*") (${Object.values(RULES_BLOCKS).join('|')})$`);
-
-/**
- * One line of the block, read; null for a line governor did not write.
- *
- * @param {string} text
- * @returns {{ pickup: PickupLine } | { periodic: PeriodicLine } | { rules: RulesLine } | null}
- */
-const lineOf = (text) => {
-  const pickup = PICKUP.exec(text);
-  if (pickup !== null) return { pickup: { at: String(pickup[1]), started: Number(pickup[2]) } };
-  const rules = RULES.exec(text);
-  if (rules !== null) return { rules: { file: JSON.parse(String(rules[1])), block: /** @type {RulesLine['block']} */ (RULES_BLOCK_OF[String(rules[2])]) } };
-  const m = PERIODIC.exec(text);
-  if (m === null) return null;
-  const [, name, read, at, days, number, counted, session, state] = m;
-  // Governor writes `first read` only with `not fired yet`, and `last fire`
-  // only with a fire's state: a line mixing them is not governor's.
-  if ((read === 'first read') !== (state === STATES['not fired'])) return null;
-  const count = /** @type {Count | undefined} */ (Object.keys(COUNTED).find((k) => COUNTED[/** @type {Count} */ (k)].includes(String(counted))));
-  /** @type {Limit | undefined} */
-  const by = days !== undefined ? { days: Number(days) } : count !== undefined ? { count, number: Number(number) } : undefined;
-  return {
-    periodic: {
-      name: JSON.parse(String(name)),
-      at: String(at),
-      ...(by === undefined ? {} : { by }),
-      session: session === 'none' ? null : String(session),
-      state: /** @type {RunState} */ (Object.keys(STATES).find((k) => STATES[/** @type {RunState} */ (k)] === state)),
-    },
-  };
-};
-
-/**
- * What governor's block in a heartbeat issue's body records. Throws where
- * the body lacks governor's marker.
- *
- * @param {string | null | undefined} body
- * @returns {Heartbeat}
- */
-export const readHeartbeat = (body) => {
-  const text = String(body ?? '');
-  const start = text.indexOf(HEARTBEAT_MARKER);
-  if (start === -1) throw new Error(`the issue's body has no ${HEARTBEAT_MARKER} marker`);
-  const open = start + HEARTBEAT_MARKER.length;
-  const end = text.indexOf(HEARTBEAT_END, open);
-  const lines = end === -1 ? [] : text.slice(open, end).split('\n').map((l) => l.trim()).filter((l) => l !== '');
-  /** @type {Heartbeat} */
-  const beat = { periodics: [] };
-  for (const l of lines) {
-    const line = lineOf(l);
-    if (line === null) continue;
-    if ('pickup' in line) beat.pickup = line.pickup;
-    else if ('rules' in line) beat.rules = line.rules;
-    else beat.periodics = [...beat.periodics.filter((p) => p.name !== line.periodic.name), line.periodic];
-  }
-  return beat;
-};
 
 /**
  * @typedef {{ issue: number, pickupHours: number | null, periodics: Array<{ name: string, days: number }> }} CheckConfig
  *   `pickupHours`: pickup's sweep interval, null where pickup is off.
  */
 
-/** @param {unknown} v @returns {v is Record<string, unknown>} */
-const isObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
-
-/** @param {unknown} v */
-const positive = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
-
 /**
- * The keys of the config file the check needs, read leniently: any other
- * key, known or not, is ignored.
+ * What the check needs of a config file, read by governor's `readConfig`:
+ * the heartbeat issue, pickup's interval where pickup is on, and each
+ * periodic's day limit where the periodics are on. A file governor refuses,
+ * or one that leaves the heartbeat off, is a fault.
  *
  * @param {string} text
  * @returns {{ ok: true, config: CheckConfig } | { ok: false, fault: string }}
  */
-export const readConfig = (text) => {
-  /** @type {unknown} */
-  let file;
-  try {
-    file = JSON.parse(text);
-  } catch (error) {
-    return { ok: false, fault: `${CONFIG_PATH} does not parse as JSON: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  if (!isObject(file)) return { ok: false, fault: `${CONFIG_PATH} is not a JSON object` };
-  // A section turns its feature on unless it sets `"enabled": false`.
-  /** @param {string} name @returns {Record<string, unknown> | null} The section, where it is on. */
-  const on = (name) => {
-    const section = file[name];
-    return isObject(section) && section.enabled !== false ? section : null;
+export const checkConfigOf = (text) => {
+  const read = readConfig(text);
+  if (!read.ok) return { ok: false, fault: `${CONFIG_PATH} is a file governor refuses: ${read.fault}. Where governor serves the repo all the same, the file uses something newer than the commit this check is pinned to, so move the pin` };
+  const { config } = read;
+  if (!turnsOn(config, 'heartbeat') || config.heartbeat === undefined) return { ok: false, fault: `${CONFIG_PATH} does not turn the heartbeat on with a heartbeat section naming its issue` };
+  return {
+    ok: true,
+    config: {
+      issue: config.heartbeat.issue,
+      pickupHours: turnsOn(config, 'pickup') ? sweepHoursOf(config) : null,
+      periodics: turnsOn(config, 'periodics') ? config.periodics.map(({ name, days }) => ({ name, days })) : [],
+    },
   };
-  const heartbeat = on('heartbeat');
-  if (heartbeat === null) return { ok: false, fault: `${CONFIG_PATH} does not turn the heartbeat on with a heartbeat section naming its issue` };
-  const { issue } = heartbeat;
-  if (!Number.isInteger(issue) || !positive(issue)) return { ok: false, fault: `${CONFIG_PATH}'s heartbeat.issue is not an issue number` };
-  /** @type {number | null} */
-  let pickupHours = null;
-  const pickup = on('pickup');
-  if (pickup !== null) {
-    const hours = pickup.sweepHours;
-    if (hours !== undefined && !positive(hours)) return { ok: false, fault: `${CONFIG_PATH}'s pickup.sweepHours is not a number of hours` };
-    pickupHours = /** @type {number | undefined} */ (hours) ?? SWEEP_HOURS;
-  }
-  /** @type {CheckConfig['periodics']} */
-  const periodics = [];
-  const periodic = on('periodics');
-  if (periodic !== null) {
-    if (!isObject(periodic.sessions)) return { ok: false, fault: `${CONFIG_PATH}'s periodics.sessions is not an object keyed by name` };
-    // Governor keys each periodic's line by its name, the key it is held under.
-    for (const [name, p] of Object.entries(periodic.sessions)) {
-      if (!isObject(p) || !positive(p.days)) return { ok: false, fault: `${CONFIG_PATH}'s periodic "${name}" has no days` };
-      periodics.push({ name, days: /** @type {number} */ (p.days) });
-    }
-  }
-  return { ok: true, config: { issue: /** @type {number} */ (issue), pickupHours, periodics } };
 };
 
 /** @param {number} n @param {string} one @param {string} many */
@@ -384,9 +249,6 @@ export const configChangedAt = async (api, repo) => {
   return Number.isFinite(at) ? Math.max(at, madeAt) : madeAt;
 };
 
-/** @param {unknown} error */
-const messageOf = (error) => (error instanceof Error ? error.message : String(error));
-
 /**
  * One run of the check over a served repo. Throws where it cannot list,
  * open, update or close its issues, so the workflow goes red.
@@ -432,7 +294,7 @@ export const check = async ({ api, repo, now, toleranceHours, labels, log }) => 
     const status = /** @type {{ status?: number }} */ (error).status;
     return fault(status === 404 ? `The default branch has no ${CONFIG_PATH}.` : `Reading ${CONFIG_PATH} from the default branch failed: ${messageOf(error)}`);
   }
-  const read = readConfig(text);
+  const read = checkConfigOf(text);
   if (!read.ok) return fault(`${read.fault}.`);
   const { config } = read;
   /** @type {Heartbeat} */
