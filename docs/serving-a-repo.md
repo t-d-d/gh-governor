@@ -494,7 +494,7 @@ A review's `prompt` replaces governor's default prompt, after governor's fixed f
 
 ### The heartbeat checker
 
-Governor cannot report that it has stopped, so the check runs in the served repo, on GitHub Actions. The repo calls the reusable workflow [.github/workflows/heartbeat-check.yml](../.github/workflows/heartbeat-check.yml) on a schedule of its own, pinned to a commit of this repo:
+Governor cannot report that it has stopped, so the check runs in the served repo, on GitHub Actions. The repo calls the reusable workflow [.github/workflows/heartbeat-check.yml](../.github/workflows/heartbeat-check.yml) on a schedule of its own, pinned to a commit of this repo. It passes the same commit as `commit`, because a called workflow cannot learn which commit it runs from:
 
 ```yaml
 name: heartbeat
@@ -509,13 +509,16 @@ jobs:
   check:
     uses: t-d-d/gh-governor/.github/workflows/heartbeat-check.yml@<commit>
     with:
+      commit: <commit>
       tolerance-hours: 3
       labels: heartbeat
 ```
 
+A workflow pinned to an older commit carries its own copy of the checker and takes no `commit`. Such a repo keeps that checker until it moves its pin. When it does, it adds `commit:` with the same commit, and the workflow refuses to start without it.
+
 What it reads:
 
-- `.github/governor.json` from the default branch. It reads only the `heartbeat`, `pickup` and `periodics` sections, each on unless it sets `"enabled": false`, and in them `heartbeat.issue`, `pickup.sweepHours` and each periodic's name and `days`, and ignores every other key. A file using a key added after the pinned commit still reads.
+- `.github/governor.json` from the default branch, with governor's own reader at the pinned commit. It uses the `heartbeat`, `pickup` and `periodics` sections, each on unless it sets `"enabled": false`, and in them `heartbeat.issue`, `pickup.sweepHours` and each periodic's name and `days`. A file that governor at the pinned commit would refuse, such as one using a key added after it, is a fault, so move the pin when the file takes up a new key.
 - The heartbeat issue the file names, and the lines governor keeps under its `<!-- governor:heartbeat -->` marker. The session rules line, which says the repo's `CLAUDE.md` lacks the current block, is read and opens no issue. A checker pinned to a commit older than the line skips it.
 - When `.github/governor.json` last changed on the default branch, only for a pickup sweep or periodic that has no line yet. A change brought in by a merge commit counts from the merge, not from when its branch commit was made. It reads up to 1,000 commits of the branch's history for this, and past that uses the commit's own date.
 
@@ -529,11 +532,11 @@ What its issues say:
 - **Pickup's sweep is overdue.** Pickup's last sweep is older than `pickup.sweepHours`, or an hour when unset, plus the tolerance. The issue gives the last sweep's time.
 - **A periodic is overdue.** Its last fire is older than its `days` plus the tolerance. The issue names the periodic, gives its last fire time and state, and says whether governor holds it for an open session, with that session's link. A periodic governor has read but never fired is measured from when governor first read it, and its issue says it has never fired.
 - **No line.** The file lists pickup or a periodic with no line on the heartbeat issue, and the file last changed longer ago than its limit plus the tolerance. A checker pinned to a commit older than the `not fired yet` state skips such a line, and treats the periodic as having none.
-- **The heartbeat could not be read.** The config file is missing, unreadable, does not parse, or does not turn the heartbeat on in the `{ "issue": <number> }` shape, or the heartbeat issue cannot be read or lacks governor's marker. The issue says which.
+- **The heartbeat could not be read.** The config file is missing or unreadable, governor at the pinned commit refuses it, or it does not turn the heartbeat on, or the heartbeat issue cannot be read or lacks governor's marker. The issue says which, in governor's words where governor refuses the file.
 
 The check keeps one issue open for each of these and updates it on each run. It closes the issue, with a comment, once the line is fresh again, the heartbeat reads again, or the file no longer lists the line. While the heartbeat cannot be read, it leaves the other issues as they are. Runs in a repo queue rather than overlap, so two never open the same issue. A failure to list, open or close its issues fails the run.
 
-It runs on the caller's own token, `contents: read` and `issues: write`, and holds no secret or id. It uses no action. The step carries [checker/heartbeat-check.mjs](../checker/heartbeat-check.mjs) and runs it on the runner's node.
+It runs on the caller's own token, `contents: read` and `issues: write`, and holds no secret or id. It uses no action. Its steps fetch this repo at the commit with git, install the task's dependencies with npm, and run [checker/heartbeat-check.mjs](../checker/heartbeat-check.mjs), as the config check does.
 
 ### The config check
 

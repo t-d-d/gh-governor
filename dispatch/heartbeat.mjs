@@ -121,8 +121,8 @@ const COUNTED = /** @type {Record<Count, [string, string]>} */ ({
   issuesClosed: ['issue closed', 'issues closed'],
 });
 
-/** What a line calls each state. */
-const STATES = /** @type {Record<RunState, string>} */ ({
+/** What a line calls each state: the heartbeat checker's issues quote it too. */
+export const STATES = /** @type {Record<RunState, string>} */ ({
   open: 'open',
   'signed off': 'signed off',
   held: 'held while that session is open',
