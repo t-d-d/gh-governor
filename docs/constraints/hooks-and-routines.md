@@ -1,5 +1,5 @@
 # Hooks and routines
-Relevance: A hook a served repo's caller fires, or a periodic that runs as a routine with connectors: dispatch/{hooks,routines}.mjs, dispatch/webhook/hook.mjs, scripts/hook-key.mjs
+Relevance: A hook a served repo's caller fires, or a periodic that runs as a routine with connectors: dispatch/{hooks,routines,periodics}.mjs, dispatch/webhook/hook.mjs, scripts/hook-key.mjs
 Decision: A hook is signed with a key derived from one stack secret and carries data, never a prompt; a periodic's routine stays disabled, so governor alone fires it.
 
 Why: A hook's caller is outside the repo, so its text is data, and a key in

@@ -1,5 +1,5 @@
 # Dispatcher workflows
-Relevance: How governor reads a served repo's CI and deploys: a shipping job's name, TICKET_LABEL_PATHS, the config file's `workflows` and `deployMessages`: dispatch/{workflow,coverage,conflicts,merge-notice,turn}.mjs, dispatch/webhook/**
+Relevance: How governor reads a served repo's CI and deploys: a shipping job's name, TICKET_LABEL_PATHS, the config file's `workflows` and `deployMessages`: dispatch/{workflow,coverage,conflicts,merge-notice,turn,labels,runs}.mjs, dispatch/webhook/**
 Decision: Governor reads each served repo's CI, deploys and default branch from that repo's own workflows, config file and event payloads.
 
 Why: Served repos name their workflows differently: one runs CI as

@@ -1,5 +1,5 @@
 # Who hears an event
-Relevance: A PR's owner, a ticket's roles, a message to a session, or a comment or marker governor writes: dispatch/{deliveries,roles,builders,told}.mjs, dispatch/webhook/{mention,roles-text}.mjs
+Relevance: A PR's owner, a ticket's roles, a message to a session, or a comment or marker governor writes: dispatch/{deliveries,roles,builders,told,take,editor}.mjs, dispatch/webhook/{mention,roles-text}.mjs
 Decision: A PR's owner and a ticket's roles are each found by one lookup, and the turn that posts a governor comment tells the sessions that should hear it.
 
 Why: Two lookups, or two turns deciding who hears one fact, can disagree, and

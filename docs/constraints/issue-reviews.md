@@ -10,9 +10,9 @@ turn.
 
 ## Rules
 
-- An issue review is one `claude -p` with no tools and no checkout, its
-  system prompt governor's fixed frame and then the repo's settings. It
-  answers `success`, `failure` or `neutral` under a schema.
+- An issue review starts no session. It is one `claude -p` inside the turn,
+  with no tools and no checkout, its system prompt governor's fixed frame
+  and then the repo's settings. It answers `success`, `failure` or `neutral` under a schema.
 - The model applies no label. Governor applies the labels the review's
   `conclusions` names for its answer, in code, before the comment, and
   removes the labels the other conclusions name. It touches no other label.

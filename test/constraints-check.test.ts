@@ -83,6 +83,13 @@ describe('checkConstraints', () => {
     assert.deepEqual(kinds({ ...files, 'dispatch/x.mjs': '// docs/constraints/thing.md and (thing.md)' }), []);
   });
 
+  test('fails a constraint file named without a hyphen that does not resolve, in a fitness describe or a constraint file', () => {
+    const files = { 'docs/constraints/thing.md': constraint() };
+    assert.deepEqual(kinds({ ...files, 'test/x.test.ts': "describe('fitness: a rule (gone.md)', () => {});" }), ['unresolved']);
+    assert.deepEqual(kinds({ ...files, 'docs/constraints/other.md': constraint({ body: ['## Rules', '', '- As the other file says (gone.md).'] }) }), ['unresolved']);
+    assert.deepEqual(kinds({ ...files, 'docs/constraints/other.md': constraint({ body: ['## Rules', '', '- As the other file says (thing.md).'] }) }), []);
+  });
+
   test('reads a test\'s full constraint path as a fixture, not a citation', () => {
     const files = { 'docs/constraints/thing.md': constraint() };
     assert.deepEqual(kinds({ ...files, 'test/x.test.ts': "const f = 'docs/constraints/promotion-gate.md';" }), []);

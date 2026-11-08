@@ -1262,7 +1262,7 @@ describe('run: a pass reused at a new head', () => {
  * state table, and the comment stays the record people read. Comment text
  * edited to a pass neither merges nor is offered for reuse.
  */
-describe('fitness: run — the review reads its earlier verdict from the state table, never from comment text (pr-review.md)', () => {
+describe('fitness: run, the review reads its earlier verdict from the state table, never from comment text (pr-review.md)', () => {
   const EARLIER = 'e'.repeat(40);
   const FAIL_ITEM = (head: string, readSha: string | null = READ): Verdict => ({ headSha: head, bodySha: sha256(BODY), readSha, pass: null, again: false, at: '2026-09-26T11:00:00.000Z' });
   const reused = (head: string) => `${textOf(PASS)} Reuses the answer given at ${head}: nothing the model reads has changed since.`;

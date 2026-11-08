@@ -24,12 +24,15 @@
  *                     citation outside test/, where a test's paths are
  *                     fixtures; a bare
  *                     hyphenated `<name>.md` is one everywhere, and resolves
- *                     to any tracked file of that name.
+ *                     to any tracked file of that name, as is any bare
+ *                     `<name>.md` in a constraint file. Every `<name>.md` a
+ *                     `fitness:` describe names must be a constraint file.
  *
  * `npm run constraints` prints each finding and exits 1 on any.
  */
 
 import { readFileSync } from 'node:fs';
+import { globMatches } from '../dispatch/labels.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
 import { trackedFiles } from './public-repo-scan.mjs';
 
@@ -59,25 +62,7 @@ export const expandBraces = (glob) => {
     expandBraces(glob.slice(0, brace.index) + alt + glob.slice(brace.index + brace[0].length)));
 };
 
-/**
- * A glob's regex, `**` across folders and `*` within one.
- *
- * @param {string} glob - With no braces.
- */
-const globRegex = (glob) => {
-  let re = '';
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i] ?? '';
-    if (c === '*' && glob[i + 1] === '*') {
-      i++;
-      if (glob[i + 1] === '/') { i++; re += '(?:.*/)?'; } else re += '.*';
-    } else if (c === '*') re += '[^/]*';
-    else re += c.replace(/[.+?^$()|[\]\\]/g, '\\$&');
-  }
-  return new RegExp(`^${re}$`);
-};
-
-const matches = (/** @type {string} */ glob, /** @type {string} */ path) => expandBraces(glob).some((g) => globRegex(g).test(path));
+const matches = (/** @type {string} */ glob, /** @type {string} */ path) => expandBraces(glob).some((g) => globMatches(g, path));
 
 /**
  * The file globs a `Relevance:` line names: each word holding a `/`, or a
@@ -113,15 +98,22 @@ export const checkConstraints = ({ files = trackedFiles(), read = (path) => read
     if (/\.(?:png|jpe?g|gif|ico|woff2?|pdf)$/i.test(path)) continue;
     const text = read(path);
     for (const line of text.split('\n')) {
-      if (isTest(path) && line.includes('describe(') && line.includes('fitness:')) {
-        for (const m of line.matchAll(/[\w-]+\.md/g)) cited.add(m[0]);
+      if (isTest(path) && /^\s*describe\(\s*['"`]fitness:/.test(line)) {
+        // A fitness describe names constraint files only, hyphenated or not.
+        for (const m of line.matchAll(/[\w-]+\.md/g)) {
+          cited.add(m[0]);
+          if (!known.has(`docs/constraints/${m[0]}`)) add(path, 'unresolved', m[0]);
+        }
+        continue;
       }
       if (!isTest(path) && !path.startsWith('test/')) {
         for (const m of line.matchAll(/(?<![\w./-])(?:docs\/)?constraints\/([\w.-]+\.md)/g)) {
           if (!known.has(`docs/constraints/${m[1]}`)) add(path, 'unresolved', m[0]);
         }
       }
-      for (const m of line.matchAll(/(?<![\w/.-])([a-z0-9]+(?:-[a-z0-9]+)+\.md)\b/g)) {
+      // In a constraint file a bare name cites another file, hyphenated or not.
+      const bare = isConstraint(path) ? /(?<![\w/.-])(\w+(?:-\w+)*\.md)\b/g : /(?<![\w/.-])([a-z0-9]+(?:-[a-z0-9]+)+\.md)\b/g;
+      for (const m of line.matchAll(bare)) {
         if (!names.has(m[1] ?? '')) add(path, 'unresolved', m[0]);
       }
     }

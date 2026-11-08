@@ -1,5 +1,5 @@
 # The PR review
-Relevance: The review governor runs over a served repo's PR, its check or its merge: dispatch/{review,checklist,cli-answer}.mjs, dispatch/Dockerfile, the config file's `prReview` section
+Relevance: The review governor runs over a served repo's PR, its check or its merge: dispatch/{review,checklist,cli-answer,launcher}.mjs, dispatch/Dockerfile, the config file's `prReview` section
 Decision: Governor reviews a PR from the repo's own `prReview` settings, runs none of its code, gives the model no tools, and merges a pass only where `merge` is on.
 
 Why: A review whose labels, globs and checklist sat in governor's code and
@@ -16,8 +16,8 @@ not merge.
 - The review never runs code from the served repo. A check settings cannot
   express belongs in the repo's own CI, which the review reads as a required
   check.
-- The model is one `claude -p` with no tools, answering under a fixed
-  pass/fail schema. Its system prompt replaces Claude Code's own: governor's
+- The review starts no session. The model is one `claude -p` inside the
+  turn, with no tools, answering under a fixed pass/fail schema. Its system prompt replaces Claude Code's own: governor's
   fixed frame, then the repo's `prompt`, then a suffix naming what the code
   decided.
 - The settings checks run in code before the model is asked anything, and a
