@@ -177,7 +177,7 @@ describe('handle — a hook fire', () => {
     const validity = spellDuration(HOOK_CLOCK_AHEAD_MS + HOOK_CLOCK_BEHIND_MS);
     const stated = new RegExp(`(${duration})\\s+(ahead|behind)\\b`, 'g');
     const valid = new RegExp(`(?:valid for|add up to)\\s+(${duration})`, 'g');
-    for (const [file, places] of [['docs/hooks.md', 2], ['docs/how-it-works.md', 2]] as const) {
+    for (const [file, places] of [['docs/hooks.md', 2]] as const) {
       const text = readFileSync(resolve(REPO_ROOT, file), 'utf8');
       const found = { ahead: 0, behind: 0 };
       for (const [, length, side] of text.matchAll(stated)) {

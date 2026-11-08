@@ -5,59 +5,36 @@
  * pickup sweep or periodic that has stopped. It runs in the served repo, on
  * that repo's own token, never in governor.
  *
- * The workflow carries the checker's source in its one step, so a caller
- * pinned to a commit runs that commit's checker with no checkout. The tests
- * run the copy the workflow carries, and check it is the file's.
+ * The workflow fetches this repo at the commit the caller passes, as the
+ * config check does, and runs the checker there, so the checker reads the
+ * file and the heartbeat issue with governor's own code at that commit.
  */
 
-import { test, describe, before } from 'node:test';
+import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
-import { HEARTBEAT_END, HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat } from '../dispatch/heartbeat.mjs';
+import * as checker from '../checker/heartbeat-check.mjs';
+import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat } from '../dispatch/heartbeat.mjs';
 import { readConfig as governorReadConfig } from '../dispatch/repo-config.mjs';
-import { SWEEP_HOURS as PICKUP_SWEEP_HOURS } from '../dispatch/pickup.mjs';
 import { switched } from './helpers/governor-file.ts';
 
 const WORKFLOW_PATH = new URL('../.github/workflows/heartbeat-check.yml', import.meta.url);
+const CONFIG_CHECK_PATH = new URL('../.github/workflows/config-check.yml', import.meta.url);
 const SOURCE_PATH = new URL('../checker/heartbeat-check.mjs', import.meta.url);
 
 type Step = { name?: string, run?: string, uses?: string, shell?: string, env?: Record<string, string> };
 type Job = { 'runs-on': string, permissions: Record<string, string>, concurrency: { group: string, 'cancel-in-progress': boolean }, steps: Step[] };
-type Workflow = { on: { workflow_call: { inputs: Record<string, { type: string, default?: unknown, required?: boolean }>, secrets?: unknown } }, permissions?: unknown, jobs: Record<string, Job> };
+type Workflow = { on: { workflow_call: { inputs: Record<string, { description?: string, type: string, default?: unknown, required?: boolean }>, secrets?: unknown } }, permissions?: unknown, jobs: Record<string, Job> };
 
 const workflowText = () => readFileSync(WORKFLOW_PATH, 'utf8');
 const workflow = () => yaml.load(workflowText()) as Workflow;
-const step = () => {
-  const jobs = Object.values(workflow().jobs);
+const job = (wf: Workflow = workflow()) => {
+  const jobs = Object.values(wf.jobs);
   assert.equal(jobs.length, 1, 'one job');
-  const steps = (jobs[0] as Job).steps;
-  assert.equal(steps.length, 1, 'one step');
-  return steps[0] as Step;
+  return jobs[0] as Job;
 };
 
-/** The checker as the workflow's step writes it out before running it. */
-const carried = () => {
-  const run = String(step().run);
-  const m = /<<'CHECKER'\n([\s\S]*?)\nCHECKER\n/.exec(run);
-  assert.ok(m !== null, `the step writes the checker from a quoted heredoc:\n${run}`);
-  return `${m[1]}\n`;
-};
-
-type Checker = typeof import('../checker/heartbeat-check.mjs');
-let checker: Checker;
-
-before(async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'heartbeat-check-'));
-  const file = join(dir, 'heartbeat-check.mjs');
-  writeFileSync(file, carried());
-  checker = await import(pathToFileURL(file).href) as Checker;
-});
-
-const AT = '2026-10-29T20:00:00.000Z';
 const NOW = Date.parse('2026-10-29T21:00:00.000Z');
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -74,102 +51,76 @@ const factory = (): Record<string, any> => {
 };
 
 describe('the workflow a served repo calls', () => {
-  test('is called with workflow_call and takes the tolerance and the labels', () => {
+  test('is called with workflow_call and takes the commit it is pinned to, required, beside the tolerance and the labels', () => {
     const { on } = workflow();
     assert.deepEqual(Object.keys(on), ['workflow_call']);
     const inputs = on.workflow_call.inputs;
+    assert.deepEqual(inputs.commit, { description: inputs.commit?.description, type: 'string', required: true });
     assert.equal(inputs['tolerance-hours']?.type, 'number');
     assert.equal(inputs.labels?.type, 'string');
   });
 
-  test('runs on the caller\'s own token, with issues: write and contents: read, and takes no secret', () => {
+  test('runs on the caller\'s own token, with issues: write and contents: read, uses no action, and takes no secret', () => {
     const wf = workflow();
     assert.equal(wf.on.workflow_call.secrets, undefined);
     assert.deepEqual(wf.permissions, {});
-    const job = Object.values(wf.jobs)[0] as Job;
-    assert.deepEqual(job.permissions, { contents: 'read', issues: 'write' });
-    assert.equal(step().env?.GITHUB_TOKEN, '${{ github.token }}');
+    assert.deepEqual(job(wf).permissions, { contents: 'read', issues: 'write' });
+    for (const s of job(wf).steps) assert.equal(s.uses, undefined, `${s.name} uses an action`);
+    assert.ok(job(wf).steps.some((s) => s.env?.GITHUB_TOKEN === '${{ github.token }}'));
     assert.doesNotMatch(workflowText(), /secrets\./);
   });
 
   test('queues runs rather than overlapping them', () => {
-    const job = Object.values(workflow().jobs)[0] as Job;
-    assert.ok(job.concurrency.group.length > 0);
-    assert.equal(job.concurrency['cancel-in-progress'], false);
+    assert.ok(job().concurrency.group.length > 0);
+    assert.equal(job().concurrency['cancel-in-progress'], false);
   });
 
-  test('every action it uses is pinned by commit', () => {
-    for (const s of Object.values(workflow().jobs).flatMap((j) => j.steps)) {
-      if (s.uses !== undefined) assert.match(s.uses, /@[0-9a-f]{40}$/, s.uses);
-    }
+  test('fetches this repo at the commit it is given, with the config check\'s own step, and runs the checker there', () => {
+    const steps = job().steps;
+    const fetch = (s: Step[]) => s.find((x) => (x.run ?? '').includes('git fetch'));
+    const theirs = fetch(job(yaml.load(readFileSync(CONFIG_CHECK_PATH, 'utf8')) as Workflow).steps);
+    const ours = fetch(steps);
+    assert.ok(ours !== undefined && theirs !== undefined);
+    // The same fetch, the same commit check and the same install, but for
+    // the name the error carries.
+    assert.deepEqual({ ...ours, run: ours.run?.replace(/title=heartbeat check::/, 'title=config check::') }, theirs);
+    const all = steps.map((s) => s.run ?? '').join('\n');
+    assert.match(all, /node "?\$RUNNER_TEMP\/governor\/checker\/heartbeat-check\.mjs"?/);
+    assert.doesNotMatch(all, /\$\{\{/, 'no expression inside a script, where GitHub would splice it in');
+    const runStep = steps.find((s) => (s.run ?? '').includes('heartbeat-check.mjs'));
+    assert.equal(runStep?.env?.HEARTBEAT_TOLERANCE_HOURS, '${{ inputs.tolerance-hours }}');
+    assert.equal(runStep?.env?.HEARTBEAT_LABELS, '${{ inputs.labels }}');
   });
 
-  test('carries checker/heartbeat-check.mjs exactly, and no expression GitHub would rewrite inside it', () => {
-    assert.equal(carried(), readFileSync(SOURCE_PATH, 'utf8'), 'paste checker/heartbeat-check.mjs into the step\'s heredoc');
-    assert.doesNotMatch(carried(), /\$\{\{/);
+  test('holds no copy of the checker', () => {
+    assert.doesNotMatch(workflowText(), /<<'?CHECKER/);
+    assert.doesNotMatch(workflowText(), /export const check\b/);
+    assert.ok(workflowText().split('\n').length < 100, 'a short workflow: the checker lives in checker/');
   });
 });
 
-describe('the checker reads exactly what governor writes', () => {
-  const periodics = [
-    { name: 'Code review', at: AT, by: { count: 'merges', number: 20 }, session: SESSION, state: 'open' },
-    { name: 'One merge', at: AT, by: { count: 'merges', number: 1 }, session: SESSION, state: 'open' },
-    { name: 'Ticket "triage" \\ odd', at: AT, by: { count: 'issuesOpened', number: 5 }, session: SESSION, state: 'signed off' },
-    { name: 'Closed', at: AT, by: { count: 'issuesClosed', number: 1 }, session: OTHER, state: 'held' },
-    { name: 'Opened once', at: AT, by: { count: 'issuesOpened', number: 1 }, session: OTHER, state: 'held' },
-    { name: 'Closed many', at: AT, by: { count: 'issuesClosed', number: 3 }, session: OTHER, state: 'signed off' },
-    { name: 'Weekly retro', at: AT, by: { days: 7 }, session: null, state: 'nothing to do' },
-    { name: 'Daily', at: AT, by: { days: 1 }, session: SESSION, state: 'open' },
-    { name: 'Held, no limit', at: AT, session: OTHER, state: 'held' },
-    { name: 'Rétro: été', at: AT, by: { days: 2 }, session: SESSION, state: 'signed off' },
-    { name: 'Not fired yet', at: AT, session: null, state: 'not fired' },
-  ];
+describe('the checker reads with governor\'s own code', () => {
+  const source = () => readFileSync(SOURCE_PATH, 'utf8');
 
-  test('every kind of line governor writes reads back the same', () => {
-    for (const started of [0, 1, 4]) {
-      const body = stampHeartbeat(BODY, { pickup: { at: AT, started }, periodics: periodics as never });
-      assert.deepEqual(checker.readHeartbeat(body), readHeartbeat(body));
-      assert.equal(checker.readHeartbeat(body).periodics.length, periodics.length);
+  test('imports governor\'s config reader, pickup\'s default and the heartbeat line reader', () => {
+    assert.match(source(), /import \{[^}]*\breadConfig\b[^}]*\} from '\.\.\/dispatch\/repo-config\.mjs'/);
+    assert.match(source(), /import \{[^}]*\bsweepHoursOf\b[^}]*\} from '\.\.\/dispatch\/pickup\.mjs'/);
+    assert.match(source(), /import \{[^}]*\breadHeartbeat\b[^}]*\} from '\.\.\/dispatch\/heartbeat\.mjs'/);
+  });
+
+  test('keeps no reader, default or line format of its own', () => {
+    assert.doesNotMatch(source(), /JSON\.parse/, 'governor\'s readConfig parses the file');
+    assert.doesNotMatch(source(), /SWEEP_HOURS\s*=/, 'pickup\'s default is pickup\'s');
+    assert.doesNotMatch(source(), /- pickup: last sweep|last fire\|first read|has no session rules block/, 'the line format is dispatch/heartbeat.mjs\'s');
+    for (const name of ['readHeartbeat', 'readConfig', 'SWEEP_HOURS', 'HEARTBEAT_MARKER', 'HEARTBEAT_END']) {
+      assert.equal(name in checker, false, `the checker exports no ${name} of its own`);
     }
-  });
-
-  test('a block after governor\'s own updates and sign-offs reads back the same', () => {
-    let body = stampHeartbeat(BODY, { periodics: periodics as never });
-    body = stampHeartbeat(body, { periodics: [{ name: 'Code review', state: 'held' }], signedOff: ['session_01OTHER'] });
-    body = stampHeartbeat(body, { pickup: { at: iso(NOW), started: 2 } });
-    assert.deepEqual(checker.readHeartbeat(body), readHeartbeat(body));
-  });
-
-  test('the session rules line reads back the same, and a later stamp keeps it', () => {
-    for (const rules of [{ file: 'CLAUDE.md', block: 'missing' }, { file: 'docs/AGENTS.md', block: 'old' }] as const) {
-      let body = stampHeartbeat(BODY, { pickup: { at: AT, started: 1 }, periodics: periodics as never, rules });
-      assert.deepEqual(checker.readHeartbeat(body), readHeartbeat(body));
-      assert.deepEqual(checker.readHeartbeat(body).rules, rules);
-      body = stampHeartbeat(body, { pickup: { at: iso(NOW), started: 2 } });
-      assert.deepEqual(checker.readHeartbeat(body).rules, rules);
-    }
-  });
-
-  test('a body with only the marker reads as nothing recorded, and one without it is refused', () => {
-    assert.deepEqual(checker.readHeartbeat(BODY), readHeartbeat(BODY));
-    assert.throws(() => checker.readHeartbeat('someone\'s ticket'), /governor:heartbeat/);
-  });
-
-  test('a line pairing first read with a fire\'s state, or last fire with not fired yet, is not governor\'s, as governor reads it', () => {
-    const body = BODY.replace(HEARTBEAT_MARKER, `${HEARTBEAT_MARKER}\n- periodic "A": first read ${AT}, session ${SESSION}, open\n- periodic "B": last fire ${AT}, session none, not fired yet\n${HEARTBEAT_END}`);
-    assert.deepEqual(checker.readHeartbeat(body).periodics, []);
-    assert.deepEqual(checker.readHeartbeat(body), readHeartbeat(body));
-  });
-
-  test('it uses governor\'s markers', () => {
-    assert.equal(checker.HEARTBEAT_MARKER, HEARTBEAT_MARKER);
-    assert.equal(checker.HEARTBEAT_END, HEARTBEAT_END);
   });
 });
 
 describe('reading the config file', () => {
   test('reads the fixture repo\'s full file: the heartbeat issue, pickup\'s interval and each periodic\'s day limit', () => {
-    const read = checker.readConfig(JSON.stringify(factory()));
+    const read = checker.checkConfigOf(JSON.stringify(factory()));
     assert.deepEqual(read, {
       ok: true,
       config: {
@@ -180,44 +131,45 @@ describe('reading the config file', () => {
     });
   });
 
-  test('pickup\'s interval is one hour when the file sets none, pickup\'s own default, and nothing is checked for a feature left off', () => {
-    assert.equal(checker.SWEEP_HOURS, PICKUP_SWEEP_HOURS, 'the checker cannot import dispatch/pickup.mjs, so it keeps a copy of the default');
+  test('pickup\'s interval is pickup\'s own default when the file sets none, and nothing is checked for a feature left off', () => {
     const file = factory();
     delete file.pickup.sweepHours;
     switched(file, { periodics: false });
-    assert.deepEqual(checker.readConfig(JSON.stringify(file)), { ok: true, config: { issue: 412, pickupHours: 1, periodics: [] } });
+    assert.deepEqual(checker.checkConfigOf(JSON.stringify(file)), { ok: true, config: { issue: 412, pickupHours: 1, periodics: [] } });
     switched(file, { pickup: false, periodics: true });
-    assert.equal((checker.readConfig(JSON.stringify(file)) as { config: { pickupHours: unknown } }).config.pickupHours, null);
+    assert.equal((checker.checkConfigOf(JSON.stringify(file)) as { config: { pickupHours: unknown } }).config.pickupHours, null);
     // A feature with no section is off, as one with `"enabled": false` is.
-    delete file.pickup;
-    delete file.periodics;
-    assert.deepEqual(checker.readConfig(JSON.stringify(file)), { ok: true, config: { issue: 412, pickupHours: null, periodics: [] } });
+    const bare = factory();
+    delete bare.periodics;
+    assert.deepEqual((checker.checkConfigOf(JSON.stringify(bare)) as { config: { periodics: unknown } }).config.periodics, []);
   });
 
-  // A file with a key added after the caller's pinned commit still reads:
-  // the checker reads only the keys it needs, without governor's schema.
-  test('a key the checker does not know, which governor\'s schema refuses, still reads', () => {
-    const file = { ...factory(), aKeyFromLater: { anything: true }, pickup: { ...factory().pickup, sweepHours: 4, later: 1 } };
-    assert.equal(governorReadConfig(JSON.stringify(file)).ok, false);
-    const read = checker.readConfig(JSON.stringify(file));
-    assert.ok(read.ok, JSON.stringify(read));
-    assert.equal(read.config.pickupHours, 4);
+  // The checker reads the file with governor's code at the caller's pinned
+  // commit, so it reads what that commit's governor reads, and a key added
+  // after the pin is a fault until the caller moves the pin.
+  test('a file governor refuses is a fault, in governor\'s words', () => {
+    const file = { ...factory(), aKeyFromLater: { anything: true } };
+    const governor = governorReadConfig(JSON.stringify(file));
+    assert.equal(governor.ok, false);
+    const read = checker.checkConfigOf(JSON.stringify(file));
+    assert.equal(read.ok, false);
+    assert.match((read as { fault: string }).fault, /^\.github\/governor\.json is a file governor refuses: /);
+    assert.ok((read as { fault: string }).fault.includes(`refuses: ${(governor as { fault: string }).fault}. `), JSON.stringify(read));
+    assert.match((read as { fault: string }).fault, /move the pin$/);
   });
 
   test('a file it cannot use is a fault, never silence', () => {
     const faults: Array<[string, RegExp]> = [
-      ['{ not json', /parse/i],
-      ['[]', /object/],
-      [JSON.stringify({ ...factory(), heartbeat: { enabled: false, issue: 412 } }), /heartbeat/],
-      [JSON.stringify({ ...factory(), heartbeat: undefined }), /heartbeat/],
+      ['{ not json', /not JSON/],
+      ['[]', /refuses/],
+      [JSON.stringify(switched(factory(), { heartbeat: false })), /does not turn the heartbeat on/],
+      [JSON.stringify({ ...factory(), heartbeat: undefined }), /does not turn the heartbeat on/],
       [JSON.stringify({ ...factory(), heartbeat: { issue: 'x' } }), /heartbeat\.issue/],
       [JSON.stringify({ ...factory(), pickup: { ...factory().pickup, sweepHours: 'two' } }), /sweepHours/],
-      [JSON.stringify({ ...factory(), periodics: { sessions: 'none' } }), /periodics\.sessions/],
-      [JSON.stringify({ ...factory(), periodics: { sessions: [{ name: 'A', days: 3 }] } }), /periodics\.sessions/],
-      [JSON.stringify({ ...factory(), periodics: { sessions: { A: {} } } }), /"A" has no days/],
+      [JSON.stringify({ ...factory(), periodics: { sessions: { A: {} } } }), /periodics\.sessions\.A/],
     ];
     for (const [text, why] of faults) {
-      const read = checker.readConfig(text);
+      const read = checker.checkConfigOf(text);
       assert.equal(read.ok, false, text);
       assert.match((read as { fault: string }).fault, why, text);
     }
@@ -327,7 +279,7 @@ describe('checking the heartbeat', () => {
   test('a checker that does not know the session rules line skips it, as it skips any line it does not know', async () => {
     const body = stampHeartbeat(fresh(), { rules: { file: 'CLAUDE.md', block: 'missing' } });
     const before = body.replace(/^- session rules: .*\n/m, '- a line from a later governor\n');
-    assert.deepEqual(checker.readHeartbeat(before), checker.readHeartbeat(fresh()));
+    assert.deepEqual(readHeartbeat(before), readHeartbeat(fresh()));
   });
 
   test('pickup older than its interval plus the tolerance gets one issue, carrying the caller\'s labels', async () => {
@@ -349,7 +301,7 @@ describe('checking the heartbeat', () => {
   });
 
   test('pickup\'s limit is the interval the file sets', async () => {
-    const file = { ...factory(), pickup: { sweepHours: 12 } };
+    const file = { ...factory(), pickup: { ...factory().pickup, sweepHours: 12 } };
     const gh = github({ config: file, heartbeat: stampHeartbeat(fresh(), { pickup: { at: iso(NOW - 14 * HOUR), started: 1 } }) });
     await run(gh);
     assert.deepEqual(gh.open(), []);
@@ -447,16 +399,6 @@ describe('checking the heartbeat', () => {
     assert.ok(old.open().every((i) => /no line/.test(String(i.body))), JSON.stringify(old.open()));
   });
 
-  test('a periodic is matched by the key it is held under, which governor refuses with a space at either end', async () => {
-    const file = factory();
-    const { 'Ticket review': ticket, ...rest } = file.periodics.sessions;
-    file.periodics.sessions = { ...rest, ' Ticket review ': ticket };
-    assert.equal(governorReadConfig(JSON.stringify(file)).ok, false, 'governor never stores a padded name');
-    const gh = github({ heartbeat: fresh() });
-    await run(gh);
-    assert.deepEqual(gh.open(), []);
-  });
-
   test('closes its issue for a line the file no longer lists', async () => {
     const gh = github({ heartbeat: stampHeartbeat(fresh(), { pickup: { at: iso(NOW - 6 * HOUR), started: 1 } }) });
     await run(gh);
@@ -475,13 +417,13 @@ describe('checking the heartbeat', () => {
     assert.equal(quoting.title, 'How the check works');
   });
 
-  test('a periodic the file lists twice gets one issue', async () => {
-    // A JSON object may repeat a key, and the last one wins, as in governor.
+  test('a periodic the file lists twice is governor\'s fault, not one issue per entry', async () => {
     const text = JSON.stringify(factory()).replace('"sessions":{', `"sessions":{"Weekly retro":${JSON.stringify(factory().periodics.sessions['Weekly retro'])},`);
     assert.equal((text.match(/"Weekly retro"/g) ?? []).length, 2);
-    const gh = github({ config: text, heartbeat: stampHeartbeat(fresh(), { periodics: [{ name: 'Weekly retro', at: iso(NOW - 9 * DAY), session: null, state: 'nothing to do' }] }) });
+    const gh = github({ config: text, heartbeat: fresh() });
     await run(gh);
     assert.equal(gh.open().length, 1);
+    assert.match(String(gh.open()[0]?.body), /"Weekly retro" is repeated/);
   });
 
   test('reads when the config file last changed once a run', async () => {
@@ -585,7 +527,7 @@ describe('a check that cannot read opens an issue too, never silence', () => {
 
   test('no config file on the default branch', async () => { await faulted({ configStatus: 404 }, /\.github\/governor\.json/); });
   test('a config file read that fails', async () => { await faulted({ configStatus: 500 }, /HTTP 500/); });
-  test('a config file that does not parse', async () => { await faulted({ config: '{ "heartbeat": ' }, /parse/i); });
+  test('a config file that does not parse', async () => { await faulted({ config: '{ "heartbeat": ' }, /not JSON/); });
   test('a heartbeat issue read that fails', async () => { await faulted({ heartbeat: fresh(), heartbeatStatus: 404 }, /#412/); });
   test('a heartbeat issue without governor\'s marker', async () => { await faulted({ heartbeat: 'Someone\'s ticket.' }, /governor:heartbeat/); });
 

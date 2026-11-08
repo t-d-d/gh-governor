@@ -1,6 +1,6 @@
 # Serving a repo
 
-How a repo puts governor to work: what each feature does, how to opt in, what `.github/governor.json` holds, and the two checks a served repo runs on itself. The [README](../README.md) is the overview. [How governor works](how-it-works.md) is the detail behind each feature, and [Hooks](hooks.md) covers sessions an outside system starts.
+How a repo puts governor to work: what each feature does, how to opt in, what `.github/governor.json` holds, and the two checks a served repo runs on itself. The [README](../README.md) is the overview. [Hooks](hooks.md) covers sessions an outside system starts.
 
 - [What governor does](#what-governor-does)
 - [How a repo opts in](#how-a-repo-opts-in)
@@ -63,7 +63,7 @@ The smallest useful file:
 
 ### The session rules
 
-Every session that works in a served repo follows three rules: sign what it posts on GitHub, leave a body and a PR's branch to their owner, and comment on what it does not own. Claude Code ends a session's comment with a footer that names no session, so without the first rule governor cannot tell a session's own comment from another session's. Governor searches the login's live sessions working in the repo for the one that posted it, and does not relay the post back to it, whatever the switch says. Likewise it reads the owner's events for a body edit and does not tell the owner of its own edit. Asking a session to follow the rules needs the switch: with `sessionRules` on, the session that posted is told once to sign its post, and a session that edited another's issue is told to comment instead ([An unsigned post's author](how-it-works.md#who-a-pr-or-issue-belongs-to)). With it off, no session is asked anything, and where the search cannot decide the comment goes to every session that hears of the PR or issue, each told it may be its own. A session that puts its own link alone on the line just above the footer is not sent its own posts.
+Every session that works in a served repo follows three rules: sign what it posts on GitHub, leave a body and a PR's branch to their owner, and comment on what it does not own. Claude Code ends a session's comment with a footer that names no session, so without the first rule governor cannot tell a session's own comment from another session's. Governor searches the login's live sessions working in the repo for the one that posted it, and does not relay the post back to it, whatever the switch says. Likewise it reads the owner's events for a body edit and does not tell the owner of its own edit. Asking a session to follow the rules needs the switch: with `sessionRules` on, the session that posted is told once to sign its post, and a session that edited another's issue is told to comment instead. With it off, no session is asked anything, and where the search cannot decide the comment goes to every session that hears of the PR or issue, each told it may be its own. A session that puts its own link alone on the line just above the footer is not sent its own posts.
 
 Turn the rules on with a `sessionRules` section, `{}`. Every session governor starts then reads the three rules in the lines governor adds to its opening prompt, before the line on waiting where `waits` is on. With the section off, governor gives its sessions only the first rule, as one line on signing posts.
 
@@ -79,15 +79,15 @@ Rules for every session in this repo:
 <!-- governor:session-rules-end -->
 ```
 
-Copy it whole, markers included. Its first marker names the version of the rules. Where `sessionRules` is on, [the config check](#the-config-check) warns on a pull request whose `CLAUDE.md`, or the file `sessionRules.file` names, has no block, or a block that is not this one. Governor's hourly fire reads the same file on the default branch. A missing or old block there logs a warning naming the repo and the file, and, where the heartbeat is on, puts a line on the heartbeat issue saying the same, until the block is current or the section is off ([The heartbeat](how-it-works.md#the-heartbeat)). Neither stops governor serving the repo. The [starter kit](#the-starter-kit)'s `CLAUDE.md` carries it.
+Copy it whole, markers included. Its first marker names the version of the rules. Where `sessionRules` is on, [the config check](#the-config-check) warns on a pull request whose `CLAUDE.md`, or the file `sessionRules.file` names, has no block, or a block that is not this one. Governor's hourly fire reads the same file on the default branch. A missing or old block there logs a warning naming the repo and the file, and, where the heartbeat is on, puts a line on the heartbeat issue saying the same, until the block is current or the section is off. Neither stops governor serving the repo. The [starter kit](#the-starter-kit)'s `CLAUDE.md` carries it.
 
-With the section on, governor also offers an issue nobody owns to a session that comments on it. An issue has no owner once the session its link names is archived, or where a session filed it without signing it. A session's signed comment on such an issue gets a message from governor saying nobody owns the issue, no owner reads the comment, and the session may take the issue by editing its body so its link ends it. Rule 3 tells the session what to do with the offer. A person's issue, a PR, and a session building the ticket get no offer. An archived owner is learnt from the comment's own message to it, so that offer also needs `subscribeMessages` on ([An issue nobody owns](how-it-works.md#who-a-pr-or-issue-belongs-to)).
+With the section on, governor also offers an issue nobody owns to a session that comments on it. An issue has no owner once the session its link names is archived, or where a session filed it without signing it. A session's signed comment on such an issue gets a message from governor saying nobody owns the issue, no owner reads the comment, and the session may take the issue by editing its body so its link ends it. Rule 3 tells the session what to do with the offer. A person's issue, a PR, and a session building the ticket get no offer. An archived owner is learnt from the comment's own message to it, so that offer also needs `subscribeMessages` on.
 
-With `subscribeMessages` on as well, a session that edits an issue's body to end it with its own link is answered. Where the issue had no live owner, or a session filed it unsigned, the session has taken it, and governor tells it so. Where a live session owns it, governor writes the owner's link back, keeps the rest of the edit, and tells the editor once to comment instead. A builder that edits its ticket's body, or a session that edits a person's issue, has its link replaced by the old owner's or removed, and is told once ([A body edit that moves the owner link](how-it-works.md#who-a-pr-or-issue-belongs-to)).
+With `subscribeMessages` on as well, a session that edits an issue's body to end it with its own link is answered. Where the issue had no live owner, or a session filed it unsigned, the session has taken it, and governor tells it so. Where a live session owns it, governor writes the owner's link back, keeps the rest of the edit, and tells the editor once to comment instead. A builder that edits its ticket's body, or a session that edits a person's issue, has its link replaced by the old owner's or removed, and is told once.
 
-With `subscribeMessages` on as well, governor also looks for who made a body edit that leaves the owner link in place, reading the owner's own events first. The owner is not told of its own edit. Where another session made it, that session is told once to post its change as a comment instead, and the owner is told someone else edited its issue. Where the owner's events cannot be read, the owner hears the edit as before ([Who made a body edit](how-it-works.md#who-a-pr-or-issue-belongs-to)).
+With `subscribeMessages` on as well, governor also looks for who made a body edit that leaves the owner link in place, reading the owner's own events first. The owner is not told of its own edit. Where another session made it, that session is told once to post its change as a comment instead, and the owner is told someone else edited its issue. Where the owner's events cannot be read, the owner hears the edit as before.
 
-With `prMessages` on as well, a session that edits a PR's body to move its session link to itself is answered the same way. Governor tells the PR's owner. Where the owner is live, governor writes its link back and tells the editor once to comment instead. Where the owner is archived, the editor owns the PR by its link ([A PR body edit that moves the session link](how-it-works.md#who-a-pr-or-issue-belongs-to)). Where the same edit adds a closing reference such as `Closes #40`, governor settles who owns the PR first, so the dispatch comment on #40 names the owner and not the editor.
+With `prMessages` on as well, a session that edits a PR's body to move its session link to itself is answered the same way. Governor tells the PR's owner. Where the owner is live, governor writes its link back and tells the editor once to comment instead. Where the owner is archived, the editor owns the PR by its link. Where the same edit adds a closing reference such as `Closes #40`, governor settles who owns the PR first, so the dispatch comment on #40 names the owner and not the editor.
 
 ### The starter kit
 
@@ -220,7 +220,7 @@ A deploy is seen only if the repo's workflow declares it: the shipping job's nam
 "periodics": { "sessions": { "Code review": { "prompt": "Review what merged since the last review.", "days": 7, "counts": { "merges": 20 }, "gapHours": 4 } } }
 ```
 
-A new periodic starts its first session one day limit, or one count, after the first fire that reads it. A periodic never overlaps itself: while the session its last fire started is still open, a due periodic is held. Governor starts nothing, logs the fire as held with that session's link, and leaves the last fire's time alone, so the count keeps growing and the first check after the session is archived fires it. Archived by the sign-off sweep or by hand, or deleted, the run is finished. How governor keeps each one's record is in [docs/how-it-works.md](how-it-works.md#periodics).
+A new periodic starts its first session one day limit, or one count, after the first fire that reads it. A periodic never overlaps itself: while the session its last fire started is still open, a due periodic is held. Governor starts nothing, logs the fire as held with that session's link, and leaves the last fire's time alone, so the count keeps growing and the first check after the session is archived fires it. Archived by the sign-off sweep or by hand, or deleted, the run is finished.
 
 `hooks.sessions`: the hooks, each keyed by its name, each `{ "prompt", "keyVersion" }`, with `perHour` if wanted. How a caller signs its request, and how the owner mints its key, is in [Hooks](hooks.md).
 
@@ -233,7 +233,7 @@ A new periodic starts its first session one day limit, or one count, after the f
 "hooks": { "sessions": { "operator-prod": { "prompt": { "file": "ops/prod-alarm.md" }, "keyVersion": 1, "perHour": 20 } } }
 ```
 
-A section's `prompt`, or each of its `prompts`, replaces the instruction in one kind of message the feature sends. Each value is text, or `{ "file": "<path>" }` read from the default branch. The kinds, the key each sits under, and the facts each may name as `{fact}`, are in [docs/how-it-works.md](how-it-works.md#prompts).
+A section's `prompt`, or each of its `prompts`, replaces the instruction in one kind of message the feature sends. Each value is text, or `{ "file": "<path>" }` read from the default branch. Which key each kind sits under is `SECTION_PROMPTS` in [dispatch/repo-config.mjs](../dispatch/repo-config.mjs). A kind the file leaves out gets its default from [dispatch/prompts.mjs](../dispatch/prompts.mjs), which also lists the facts each kind may name as `{fact}`.
 
 [test/fixtures/factory/.github/governor.json](../test/fixtures/factory/.github/governor.json) is a full file with every feature on.
 
@@ -494,7 +494,7 @@ A review's `prompt` replaces governor's default prompt, after governor's fixed f
 
 ### The heartbeat checker
 
-Governor cannot report that it has stopped, so the check runs in the served repo, on GitHub Actions. The repo calls the reusable workflow [.github/workflows/heartbeat-check.yml](../.github/workflows/heartbeat-check.yml) on a schedule of its own, pinned to a commit of this repo:
+Governor cannot report that it has stopped, so the check runs in the served repo, on GitHub Actions. The repo calls the reusable workflow [.github/workflows/heartbeat-check.yml](../.github/workflows/heartbeat-check.yml) on a schedule of its own, pinned to a commit of this repo. It passes the same commit as `commit`, because a called workflow cannot learn which commit it runs from:
 
 ```yaml
 name: heartbeat
@@ -509,13 +509,16 @@ jobs:
   check:
     uses: t-d-d/gh-governor/.github/workflows/heartbeat-check.yml@<commit>
     with:
+      commit: <commit>
       tolerance-hours: 3
       labels: heartbeat
 ```
 
+A workflow pinned to an older commit carries its own copy of the checker and takes no `commit`. Such a repo keeps that checker until it moves its pin. When it does, it adds `commit:` with the same commit, and the workflow refuses to start without it.
+
 What it reads:
 
-- `.github/governor.json` from the default branch. It reads only the `heartbeat`, `pickup` and `periodics` sections, each on unless it sets `"enabled": false`, and in them `heartbeat.issue`, `pickup.sweepHours` and each periodic's name and `days`, and ignores every other key. A file using a key added after the pinned commit still reads.
+- `.github/governor.json` from the default branch, with governor's own reader at the pinned commit. It uses the `heartbeat`, `pickup` and `periodics` sections, each on unless it sets `"enabled": false`, and in them `heartbeat.issue`, `pickup.sweepHours` and each periodic's name and `days`. A file that governor at the pinned commit would refuse, such as one using a key added after it, is a fault, so move the pin when the file takes up a new key.
 - The heartbeat issue the file names, and the lines governor keeps under its `<!-- governor:heartbeat -->` marker. The session rules line, which says the repo's `CLAUDE.md` lacks the current block, is read and opens no issue. A checker pinned to a commit older than the line skips it.
 - When `.github/governor.json` last changed on the default branch, only for a pickup sweep or periodic that has no line yet. A change brought in by a merge commit counts from the merge, not from when its branch commit was made. It reads up to 1,000 commits of the branch's history for this, and past that uses the commit's own date.
 
@@ -529,11 +532,11 @@ What its issues say:
 - **Pickup's sweep is overdue.** Pickup's last sweep is older than `pickup.sweepHours`, or an hour when unset, plus the tolerance. The issue gives the last sweep's time.
 - **A periodic is overdue.** Its last fire is older than its `days` plus the tolerance. The issue names the periodic, gives its last fire time and state, and says whether governor holds it for an open session, with that session's link. A periodic governor has read but never fired is measured from when governor first read it, and its issue says it has never fired.
 - **No line.** The file lists pickup or a periodic with no line on the heartbeat issue, and the file last changed longer ago than its limit plus the tolerance. A checker pinned to a commit older than the `not fired yet` state skips such a line, and treats the periodic as having none.
-- **The heartbeat could not be read.** The config file is missing, unreadable, does not parse, or does not turn the heartbeat on in the `{ "issue": <number> }` shape, or the heartbeat issue cannot be read or lacks governor's marker. The issue says which.
+- **The heartbeat could not be read.** The config file is missing or unreadable, governor at the pinned commit refuses it, or it does not turn the heartbeat on, or the heartbeat issue cannot be read or lacks governor's marker. The issue says which, in governor's words where governor refuses the file.
 
 The check keeps one issue open for each of these and updates it on each run. It closes the issue, with a comment, once the line is fresh again, the heartbeat reads again, or the file no longer lists the line. While the heartbeat cannot be read, it leaves the other issues as they are. Runs in a repo queue rather than overlap, so two never open the same issue. A failure to list, open or close its issues fails the run.
 
-It runs on the caller's own token, `contents: read` and `issues: write`, and holds no secret or id. It uses no action. The step carries [checker/heartbeat-check.mjs](../checker/heartbeat-check.mjs) and runs it on the runner's node.
+It runs on the caller's own token, `contents: read` and `issues: write`, and holds no secret or id. It uses no action. Its steps fetch this repo at the commit with git, install the task's dependencies with npm, and run [checker/heartbeat-check.mjs](../checker/heartbeat-check.mjs), as the config check does.
 
 ### The config check
 

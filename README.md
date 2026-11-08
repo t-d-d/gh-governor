@@ -136,7 +136,7 @@ Some of the problems it solves, for engineers building something similar:
 - **Hook keys governor never stores.** Each hook's key is derived from one secret, the repo, the hook and a version, so revoking a key is a one-line pull request. A per-hour cap stops a leaked key flooding the shared queue, and a test checks that a signed request expires before the queue forgets it.
 - **A heartbeat that runs somewhere else.** Governor cannot report that it has stopped, so a served repo can run a checker on GitHub Actions that opens an issue when a sweep or a recurring session is overdue.
 
-Two CloudFormation stacks hold all of it, and GitHub Actions deploys them after the gate passes on `main`, then runs a probe in the new task. The code is Node.js, typed with JSDoc and checked by TypeScript, with a small Python launcher for the terminal. [How governor works](docs/how-it-works.md) covers each part in depth.
+Two CloudFormation stacks hold all of it, and GitHub Actions deploys them after the gate passes on `main`, then runs a probe in the new task. The code is Node.js, typed with JSDoc and checked by TypeScript, with a small Python launcher for the terminal. [The overview](https://t-d-d.github.io/gh-governor/overview.html) walks through it in plain words.
 
 **[Watch a GitHub event travel through the system, animated](https://t-d-d.github.io/gh-governor/fire-lane.html)**, from the webhook to the queue and the task.
 
@@ -201,7 +201,7 @@ Thomas Dickinson · [LinkedIn](https://www.linkedin.com/in/thomasdaviddickinson/
 | [Serving a repo](docs/serving-a-repo.md) | Opt a repo in, and look up every key and section in `governor.json`. |
 | [Running your own governor](docs/self-hosting.md) | Deploy governor to your own AWS account. |
 | [Hooks](docs/hooks.md) | Start a session from outside GitHub with a signed request. |
-| [How governor works](docs/how-it-works.md) | See what each fire does, what each message says, and what each alarm means. |
+| [How governor works](https://t-d-d.github.io/gh-governor/overview.html) | Get the shape of it: the lane, a turn, who owns a ticket and a PR, and how a repo opts in. |
 | [How this repo is built](docs/building-with-agents.md) | Run a repo the way this one runs, with agents writing the code. |
 | [Constraints](docs/constraints/README.md) | Read the architectural rules the code keeps, and the tests that hold them. |
 

@@ -430,7 +430,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-errors
-      AlarmDescription: '[tripwire] A dispatcher turn failed. Read /governor for the dispatch-failed line it logged.'
+      AlarmDescription: '[tripwire] A dispatcher turn failed, and a failed turn is not retried. Read /governor for the dispatch-failed line it logged; its reason and error say why. A login refused is a re-mint: node scripts/mint-claude-login.mjs. A GitHub read refused means the App lost a permission or an installation: accept the permission on the installation or install the App again. For any other reason, mend what the error names. Where the fire''s work still matters, redeliver its webhook from the App''s Advanced, Recent Deliveries page, or run a schedule, dispatch or message fire by hand with node scripts/run-turn.mjs.'
       Namespace: governor
       MetricName: Failures
       Statistic: Sum
@@ -531,7 +531,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-claim-stranded
-      AlarmDescription: '[tripwire] The dispatcher claimed a ticket (workflow: under development) and no dispatch marker names the session it launched for it, so no fire will pick the ticket again. Read /governor for the dispatch-claim-stranded line; it names the ticket. Look in the sessions list for a session named after it: if one is working, leave it; if none is, put workflow: ready for development back and take workflow: under development off.'
+      AlarmDescription: '[tripwire] The dispatcher claimed a ticket and no dispatch marker names the session it launched for it, so no fire will pick the ticket again. Read /governor for the dispatch-claim-stranded line; it names the ticket. Look in the sessions list for a session named after it: if one is working, leave it; if none is, put the repo''s ready label back and take its claim label off.'
       Namespace: governor
       MetricName: ClaimsStranded
       Statistic: Sum
@@ -769,7 +769,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-routine-refused
-      AlarmDescription: '[tripwire] The routines API refused a periodic''s routine before the fire, so its session did not start; the repo''s other launches went on. Read /governor for the dispatch-routine-refused line; it names the repo and the periodic and says what the API answered, and the dispatch-routine-answer lines before it give each call''s shape. The periodic stays due, so the next fire tries again.'
+      AlarmDescription: '[tripwire] The routines API refused a periodic''s routine before the fire, so its session did not start; the repo''s other launches went on. Read /governor for the dispatch-routine-refused line; it names the repo and the periodic and says what the API answered, and the dispatch-routine-answer lines before it give each call''s shape. The periodic stays due, so the next fire tries again. If that fire is refused too, fix what the answer names, in the periodic''s section of the repo''s .github/governor.json or on the claude.ai account.'
       Namespace: governor
       MetricName: RoutinesRefused
       Statistic: Sum
@@ -898,7 +898,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-not-run
-      AlarmDescription: '[tripwire] Dispatcher tasks keep stopping without running their container, MAX_START_ATTEMPTS (dispatch/webhook/starter.mjs) or more in fifteen minutes. Read /governor for the ECS Task State Change events the stops logged; detail.stoppedReason says why (an image pull, a placement, an ENI). /aws/lambda/governor-starter says which attempts it started. The fires wait on the lane.'
+      AlarmDescription: '[tripwire] Dispatcher tasks keep stopping without running their container, MAX_START_ATTEMPTS (dispatch/webhook/starter.mjs) or more in fifteen minutes. Read /governor for the ECS Task State Change events the stops logged; detail.stoppedReason says why (an image pull, a placement, an ENI). /aws/lambda/governor-starter says which attempts it started. Mend what stoppedReason names, such as an image pull refused or no placement. The fires wait on the lane, and the next poke or the backstop starts a task once it is mended.'
       Namespace: AWS/Events
       MetricName: TriggeredRules
       Dimensions:
@@ -920,7 +920,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-not-run-undelivered
-      AlarmDescription: '[tripwire] EventBridge could not deliver a dispatcher task''s stop event to the starter or the log group. Read the governor-not-run rule''s failed invocations. The fire waits on the lane, and the backstop starts its task within a minute; the stop''s record in /governor may be missing.'
+      AlarmDescription: '[tripwire] EventBridge could not deliver a dispatcher task''s stop event to the starter or the log group. Read the governor-not-run rule''s failed invocations. The fire waits on the lane, and the backstop starts its task within a minute; the stop''s record in /governor may be missing. One page needs nothing more. If it repeats, check in the stack that the rule''s targets still exist and that EventBridge may invoke the starter and write to /governor.'
       Namespace: AWS/Events
       MetricName: FailedInvocations
       Dimensions:
@@ -1302,7 +1302,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-start-gave-up
-      AlarmDescription: '[tripwire] Dispatcher tasks failed to start MAX_START_ATTEMPTS (dispatch/webhook/starter.mjs) times in a row, so the starter gave up on them. Read /aws/lambda/governor-starter for the start-gave-up line, and /governor for the stops'' stoppedReason. The fires wait on the lane; the next poke or the backstop tries again.'
+      AlarmDescription: '[tripwire] Dispatcher tasks failed to start MAX_START_ATTEMPTS (dispatch/webhook/starter.mjs) times in a row, so the starter gave up on them. Read /aws/lambda/governor-starter for the start-gave-up line, and /governor for the stops'' stoppedReason. Mend what stoppedReason names, as for governor-not-run. The fires wait on the lane; the next poke or the backstop tries again.'
       Namespace: governor
       MetricName: StartsGivenUp
       Statistic: Sum
@@ -1321,7 +1321,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-lane-stalled
-      AlarmDescription: '[tripwire] A fire has waited on governor-fires.fifo for 45 minutes. Read /aws/lambda/governor-starter for start-failed lines, and /governor for the running task''s fire-taken and dispatch lines.'
+      AlarmDescription: '[tripwire] A fire has waited on governor-fires.fifo for 45 minutes. Read /aws/lambda/governor-starter for start-failed lines, and /governor for the running task''s fire-taken and dispatch lines. If tasks are not starting, mend what start-failed names. If a task runs but takes no fire, stop it with aws ecs stop-task --cluster governor --task <its task ARN>, and the backstop starts a fresh one within a minute.'
       Namespace: AWS/SQS
       MetricName: ApproximateAgeOfOldestMessage
       Dimensions:
@@ -1364,7 +1364,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-webhook-errors
-      AlarmDescription: '[tripwire] The webhook receiver threw. Read /aws/lambda/governor-webhook for the delivery it was handling.'
+      AlarmDescription: '[tripwire] The webhook receiver threw, so that delivery queued nothing. Read /aws/lambda/governor-webhook for the delivery it was handling and the error. Once the cause is mended, redeliver it from the App''s Advanced, Recent Deliveries page, or leave it to the hourly sweep where the delivery was a ready label.'
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:

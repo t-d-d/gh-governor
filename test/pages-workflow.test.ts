@@ -99,3 +99,32 @@ describe('the pages folder', () => {
     }
   });
 });
+
+describe('the overview page', () => {
+  const overview = () => readFileSync(join(PAGES_DIR, 'overview.html'), 'utf8');
+
+  test('exists, and links the fire lane', () => {
+    assert.match(overview(), /href="fire-lane\.html"/);
+  });
+
+  // The page stays high level so a code change rarely touches it: no code
+  // element, no source file, no log line, no marker and no config key.
+  test('names no function, file, log line, marker or config key', () => {
+    const text = overview();
+    assert.doesNotMatch(text, /<code\b/i, 'no code element');
+    assert.doesNotMatch(text, /\.(?:mjs|ts|py|json|ya?ml)\b/, 'no source or config file');
+    assert.doesNotMatch(text, /\bdispatch-[a-z]/, 'no log line');
+    assert.doesNotMatch(text, /governor:[a-z]/, 'no marker');
+    assert.doesNotMatch(text, /\b(?:prMessages|subscribeMessages|sessionRules|prReview|issueReviews|pickup\.|trust\.)/, 'no config key');
+  });
+});
+
+describe('the docs', () => {
+  test('hold no docs/how-it-works.md, and nothing links to it', () => {
+    assert.throws(() => readFileSync(join(REPO_ROOT, 'docs/how-it-works.md')), /ENOENT/);
+    const docs = readdirSync(join(REPO_ROOT, 'docs'), { recursive: true, encoding: 'utf8' }).filter((n) => /\.(?:md|html)$/.test(n)).map((n) => `docs/${n}`);
+    const files = ['README.md', ...docs];
+    const linking = files.filter((file) => readFileSync(join(REPO_ROOT, file), 'utf8').includes('how-it-works'));
+    assert.deepEqual(linking, []);
+  });
+});

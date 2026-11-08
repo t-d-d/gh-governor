@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
 import { CONFIG_PATH, GENERIC_SWITCHES, SECTIONS, namesEnvironment, readConfig, turnsOn } from '../dispatch/repo-config.mjs';
-import { readConfig as checkerReadConfig } from '../checker/heartbeat-check.mjs';
+import { checkConfigOf } from '../checker/heartbeat-check.mjs';
 import { globMatches } from '../dispatch/checklist.mjs';
 
 const STARTER = 'examples/starter/';
@@ -131,7 +131,7 @@ describe('the starter kit\'s config file', () => {
   });
 
   test('reads in the heartbeat checker, which watches pickup and every periodic', () => {
-    const checked = checkerReadConfig(text);
+    const checked = checkConfigOf(text);
     assert.ok(checked.ok, JSON.stringify(checked));
     assert.notEqual(checked.config.pickupHours, null);
     assert.equal(checked.config.periodics.length, 3);
@@ -245,7 +245,7 @@ describe('the starter kit\'s dark-factory config file', () => {
   });
 
   test('reads in the heartbeat checker, which watches pickup and every periodic', () => {
-    const checked = checkerReadConfig(text);
+    const checked = checkConfigOf(text);
     assert.ok(checked.ok, JSON.stringify(checked));
     assert.notEqual(checked.config.pickupHours, null);
     assert.equal(checked.config.periodics.length, 3);
@@ -266,6 +266,17 @@ describe('the starter kit\'s workflow', () => {
     const uses = Object.values(workflow.jobs).map((j) => j.uses);
     assert.equal(uses.length, 1);
     assert.match(String(uses[0]), /^t-d-d\/gh-governor\/\.github\/workflows\/heartbeat-check\.yml@[0-9a-f]{40}$/);
+  });
+
+  // A checker from before the commit input carries its own copy and takes
+  // none. One that takes it fetches governor at that commit, so a commit
+  // other than the pin would run another commit's checker.
+  test('passes the commit after @ as its commit input, where it passes one', () => {
+    for (const job of Object.values(workflow.jobs)) {
+      if (job.with?.commit === undefined) continue;
+      const pin = /@([0-9a-f]{40})$/.exec(String(job.uses))?.[1];
+      assert.equal(job.with.commit, pin, 'the commit input is the commit after @');
+    }
   });
 
   test('passes only inputs the checker takes, on a schedule, with the permissions it needs', () => {
@@ -382,9 +393,7 @@ test('docs/serving-a-repo.md\'s starter kit section describes the triage review 
   assert.doesNotMatch(section, /issue review every/);
 });
 
-test('the README and docs/how-it-works.md name the backlog review, not a periodic ticket review', () => {
+test('the README names the backlog review, not a periodic ticket review', () => {
   assert.match(read('README.md'), /weekly backlog review/);
   assert.doesNotMatch(read('README.md'), /weekly ticket review/);
-  assert.match(read('docs/how-it-works.md'), /periodic "Backlog review"/);
-  assert.doesNotMatch(read('docs/how-it-works.md'), /periodic "Ticket review"/);
 });

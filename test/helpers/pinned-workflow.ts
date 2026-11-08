@@ -1,5 +1,5 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -133,13 +133,17 @@ function isExpression(value: unknown): boolean {
   return typeof value === 'string' && /^\s*\$\{\{(?:(?!\}\})[\s\S])*\}\}\s*$/.test(value);
 }
 
-// What stops the heartbeat checker a workflow carries at a pinned commit from
+// What stops the heartbeat checker a workflow runs at a pinned commit from
 // reading a served repo's config file, given as `config`, at
-// .github/governor.json. The workflow writes its checker out from a quoted
-// CHECKER heredoc and runs that, so this loads the same text and runs its
-// `check` against a fake GitHub that serves the file at that path and at no
-// other. Reading the heartbeat issue the file names shows the checker found
-// and accepted the file, whichever of its versions it is. None means it did.
+// .github/governor.json. A workflow runs its checker one of two ways. An
+// older one writes it out from a quoted CHECKER heredoc and runs that, so
+// this loads the same text. A newer one fetches this repo at the commit and
+// runs checker/heartbeat-check.mjs there, so this takes the commit's tree
+// from git history, with this clone's modules beside it, and loads that
+// file. Either way it runs its `check` against a fake GitHub that serves the
+// file at that path and at no other. Reading the heartbeat issue the file
+// names shows the checker found and accepted the file, whichever of its
+// versions it is. None means it did.
 export async function pinnedCheckerReadProblems({ cwd, sha, path, config }: {
   cwd: string,
   sha: string,
@@ -164,11 +168,23 @@ export async function pinnedCheckerReadProblems({ cwd, sha, path, config }: {
     .map((step: unknown) => (isMapping(step) ? step.run : undefined))
     .filter((run): run is string => typeof run === 'string');
   const text = runs.map((run) => /<<'CHECKER'\n([\s\S]*?)\nCHECKER(?:\n|$)/.exec(run)?.[1]).find((t) => t !== undefined);
-  if (text === undefined) return [`${path} at ${short} carries no heartbeat checker in a quoted CHECKER heredoc`];
+  const fetched = text === undefined && runs.some((run) => /\$RUNNER_TEMP\/governor\/checker\/heartbeat-check\.mjs/.test(run));
+  if (text === undefined && !fetched) return [`${path} at ${short} neither carries a heartbeat checker in a quoted CHECKER heredoc nor runs checker/heartbeat-check.mjs from this repo at the commit`];
   const dir = mkdtempSync(join(tmpdir(), 'pinned-checker-'));
   try {
-    const file = join(dir, `heartbeat-check-${short}.mjs`);
-    writeFileSync(file, `${text}\n`);
+    let file: string;
+    if (text !== undefined) {
+      file = join(dir, `heartbeat-check-${short}.mjs`);
+      writeFileSync(file, `${text}\n`);
+    } else {
+      const tar = spawnSync('git', ['archive', sha], { cwd, maxBuffer: 1 << 28 });
+      if (tar.status !== 0) return [`the tree at ${short} could not be read: ${String(tar.stderr).trim()}`];
+      const untar = spawnSync('tar', ['-x', '-C', dir], { input: tar.stdout });
+      if (untar.status !== 0) return [`the tree at ${short} could not be unpacked: ${String(untar.stderr).trim()}`];
+      if (existsSync(join(cwd, 'node_modules'))) symlinkSync(join(cwd, 'node_modules'), join(dir, 'node_modules'));
+      file = join(dir, 'checker/heartbeat-check.mjs');
+      if (!existsSync(file)) return [`${path} at ${short} runs checker/heartbeat-check.mjs, which the commit does not have`];
+    }
     // The checker is old code run in this process. Its only way out is the
     // api it is handed, so a fetch of its own fails here, not on the network.
     const realFetch = globalThis.fetch;

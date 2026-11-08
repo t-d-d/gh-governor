@@ -29,7 +29,7 @@ import { taskOf } from './trust.mjs';
 /**
  * The interval, in whole hours, for a file that sets none: the clock's own
  * hourly tick, so such a repo is swept at every fire. The heartbeat checker
- * keeps a copy (checker/heartbeat-check.mjs), since it runs in another repo.
+ * (checker/heartbeat-check.mjs) reads it through `sweepHoursOf`.
  */
 export const SWEEP_HOURS = 1;
 
