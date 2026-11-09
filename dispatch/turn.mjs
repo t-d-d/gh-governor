@@ -137,7 +137,7 @@ import { ownerMessageId, reviewPull } from './review.mjs';
 import { reviewIssue, reviewLabelsOf } from './issue-review.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
 import { rolesOf } from './roles.mjs';
-import { DELIVER_LAUNCHES, OUTPUT_TAIL, GITHUB_SOURCE, countAgainst, deliveries as turnDeliveries, fromDispatcher, readSend, refusedAsArchived } from './deliveries.mjs';
+import { DELIVER_LAUNCHES, outputTail, GITHUB_SOURCE, countAgainst, deliveries as turnDeliveries, fromDispatcher, readSend, refusedAsArchived } from './deliveries.mjs';
 import { HOOK_PER_HOUR, LANE, deployedTarget, LANE_COUNTS, laneCount, ownerListed, ownersOf, parseFire, SIGN_POSTS } from './webhook/fire.mjs';
 import { SESSION_RULES, blockIn, rulesFile } from './session-rules.mjs';
 import { deployedComment } from './webhook/deployed-comment.mjs';
@@ -398,7 +398,7 @@ const refreshedLogin = async (deps, credentials, account) => {
   try {
     const begun = deps.refreshLogin();
     const { status, output } = await (deps.launchTimeoutMs === undefined ? begun : withinBudget(begun, deps.launchTimeoutMs, 'the login refresh'));
-    deps.log('dispatch-login-refresh', { status, tail: output.slice(-OUTPUT_TAIL) });
+    deps.log('dispatch-login-refresh', { status, tail: outputTail(output) });
   } catch (error) {
     deps.log('dispatch-login-refresh', { level: 'error', error: messageOf(error) });
   }
@@ -3290,7 +3290,7 @@ export const realDeps = () => {
           env: cliEnv({ ...env, CLAUDE_MODEL: model, CLAUDE_SESSION_NAME: sessionName, CLAUDE_ON_BRANCH: branch ?? '' }, home, account),
           stdio: ['ignore', 'pipe', 'pipe'],
         }));
-        log('dispatch-launcher-output', { sessionName, status: result.status, tail: result.output.slice(-OUTPUT_TAIL) });
+        log('dispatch-launcher-output', { sessionName, status: result.status, tail: outputTail(result.output) });
         return result;
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -3317,7 +3317,7 @@ export const realDeps = () => {
       child.stdin.on('error', () => {});
       child.stdin.end(text);
       const result = await collect(child);
-      log('dispatch-message-output', { session, status: result.status, tail: result.output.slice(-OUTPUT_TAIL) });
+      log('dispatch-message-output', { session, status: result.status, tail: outputTail(result.output) });
       return result;
     },
     // The smallest call that reaches the API, so the CLI refreshes an
@@ -3350,7 +3350,7 @@ export const realDeps = () => {
         child.stdin.on('error', () => {});
         child.stdin.end(prompt);
         const result = await collect(child);
-        log('dispatch-review-output', { status: result.status, tail: result.output.slice(-OUTPUT_TAIL) });
+        log('dispatch-review-output', { status: result.status, tail: outputTail(result.output) });
         return result;
       } finally {
         rmSync(dir, { recursive: true, force: true });

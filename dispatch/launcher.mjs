@@ -14,7 +14,7 @@ import { launchOutcome } from '../scripts/lib/dispatch-prompt.mjs';
 import { readStoredLogin } from '../scripts/lib/claude-login.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { launchRoutine, observed, routineName } from './routines.mjs';
-import { OUTPUT_TAIL } from './deliveries.mjs';
+import { outputTail } from './deliveries.mjs';
 
 /**
  * A session governor started that its state table does not record: the
@@ -108,7 +108,7 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
     return { status: 1, output: messageOf(error) };
   }
   const result = await launchRoutine({ api, repo: begin.repo, periodic: begin.sessionName, prompt: begin.prompt, environment: begin.environment, model: begin.model, connectors, sleep: deps.sleep, uuid: deps.uuid });
-  deps.log('dispatch-routine-output', { repo: begin.repo, periodic: begin.sessionName, status: result.status, tail: result.output.slice(-OUTPUT_TAIL) });
+  deps.log('dispatch-routine-output', { repo: begin.repo, periodic: begin.sessionName, status: result.status, tail: outputTail(result.output) });
   // Nothing started for any other reason than a missing connector is the
   // routines API refusing the routine or its fire: the CLI is not at fault.
   return result.status === 1 && result.missing === undefined ? { ...result, refused: true } : result;
@@ -227,7 +227,7 @@ export const launcher = (deps) => {
       const routine = launched.routine === undefined ? {} : {
         routine: launched.routine,
         routineName: routineName(begin.repo, begin.sessionName),
-        tail: launched.output.slice(-OUTPUT_TAIL),
+        tail: outputTail(launched.output),
       };
       const reason = launched.routine === undefined
         ? 'the launch may have started a session, but it printed no session URL, so the session could not be named or recorded: its PRs may clear a human-only path on a ticket\'s mode label'
