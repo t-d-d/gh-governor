@@ -14,6 +14,7 @@
  *   delivery shape the receiver routes (dispatch/webhook/route.mjs).
  */
 
+import { launchFailedComment } from '../dispatch/launch-failed.mjs';
 import { test, describe } from 'node:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import assert from 'node:assert/strict';
@@ -505,6 +506,8 @@ describe('fitness: the receiver relays no comment governor\'s App posts (ticket-
     ['an issue review', issueComment({ name: 'spec', conclusion: 'edit', text: 'Say what done means.', key: 'k' })],
     ['an issue review\'s loop guard', loopComment('spec', 3)],
     ['a deploy', deployedComment({ target: 'prod', workflow: 'Deliver', url: `https://github.com/${FACTORY}/actions/runs/1/job/2`, commit: 'a'.repeat(40) })],
+    ['a launch that failed', launchFailedComment({ until: at, failed: 'launch' })],
+    ['a claim that failed', launchFailedComment({ until: at, failed: 'claim' })],
     ['a kind not written yet, mentioning @claude', '@claude governor says something new here.'],
   ];
   const issue = (labels: string[]) => ({

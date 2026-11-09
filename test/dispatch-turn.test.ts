@@ -26,8 +26,9 @@ import { ownerSpecMessage, specPrompt } from '../dispatch/unblocked.mjs';
 import { ownerUnknownSince, sessionNamedIn, subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { promptFor, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
-import { SIGN_POSTS, UNATTENDED, dispatchMarker, lastDispatch, parseFire, postWords } from '../dispatch/webhook/fire.mjs';
+import { DISPATCH_MARKER, SIGN_POSTS, UNATTENDED, dispatchMarker, lastDispatch, parseFire, postWords } from '../dispatch/webhook/fire.mjs';
 import { STOPPED_MARKER } from '../dispatch/stopped.mjs';
+import { LAUNCH_FAILED_MARKER } from '../dispatch/launch-failed.mjs';
 import { EDIT_SPEC_OWNER, SPEC_OWNER_DUTY, UNSIGNED } from '../dispatch/webhook/mention.mjs';
 import { BUILDER_DUTY } from '../dispatch/roles.mjs';
 import { SESSION_RULES, SESSION_RULES_BLOCK, SESSION_RULES_FILE, blockIn } from '../dispatch/session-rules.mjs';
@@ -1132,7 +1133,8 @@ describe('run — schedule', () => {
     const { deps, comments, calls } = harness({ launch: async () => ({ status: 1, output: 'claude died' }) });
     const result = turn(await run({ source: 'aws.events' }, deps as never));
     assert.equal(result.dispatched[0]?.outcome, 'failed');
-    assert.deepEqual(comments, []);
+    assert.ok(!comments.some((c) => c.body.startsWith(DISPATCH_MARKER)), 'no dispatch marker');
+    assert.deepEqual(comments.map((c) => c.body.startsWith(LAUNCH_FAILED_MARKER)), [true], 'the ticket is told its launch failed');
     assert.ok(!calls.includes('heartbeat'), 'a dispatcher that can start nothing is as stopped as one that never fires');
   });
 
@@ -1287,7 +1289,7 @@ describe('run — the dispatcher claims what it launches', () => {
     });
     const result = turn(await run({ source: 'aws.events' }, deps as never));
     assert.deepEqual(launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9')]);
-    assert.deepEqual(comments.map((c) => c.issue), [9]);
+    assert.deepEqual(comments.map((c) => [c.issue, c.body.startsWith(LAUNCH_FAILED_MARKER) ? 'failed' : c.body.startsWith(DISPATCH_MARKER) ? 'dispatched' : c.body]), [[7, 'failed'], [9, 'dispatched']]);
     assert.deepEqual(result.dispatched.map((d) => [d.issue, d.outcome]), [[7, 'failed'], [9, 'dispatched']]);
     assert.ok(calls.includes(`label #7 -${CLAIMED}`), 'the half-made claim is undone');
     assert.ok(logged.some((l) => l.event === 'dispatch-claim' && l.issue === 7 && /502/.test(String(l.error))), JSON.stringify(logged));
@@ -10984,6 +10986,8 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
     markers: number[];
     /** The tickets told their wait has ended. */
     notes: number[];
+    /** The tickets told their launch or claim failed. */
+    failures: number[];
     /** The issues and pull requests whose body the turn rewrote, apart from the heartbeat's. */
     bodies: number[];
     periodics: Array<[string, string | null]>;
@@ -10995,7 +10999,7 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
     exit: number;
   };
   /** Nothing written: the records a row that starts nothing expects, apart from what it names. */
-  const NONE: Records = { labels: [], markers: [], notes: [], bodies: [], periodics: [], waits: [], hooks: [], sweeps: [], heartbeat: null, sessions: [], exit: 0 };
+  const NONE: Records = { labels: [], markers: [], notes: [], failures: [], bodies: [], periodics: [], waits: [], hooks: [], sweeps: [], heartbeat: null, sessions: [], exit: 0 };
   const claimed = (n: number) => [`label #${n} +${CLAIMED}`, `label #${n} -${READY}`];
   const released = (n: number) => [`label #${n} +${READY}`, `label #${n} -${CLAIMED}`];
   const pickup = (started: number, at = AT) => ({ pickup: { at, started }, periodics: [] });
@@ -11024,7 +11028,7 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
   const rows: Row[] = [
     // The bare schedule fire: pickup's tickets.
     { kind: 'schedule', title: 'a ticket that starts', fire: 'bare', launch: 'starts', ready: [7], expect: { labels: claimed(7), markers: [7], sweeps: [AT], heartbeat: pickup(1), sessions: [NEW] } },
-    { kind: 'schedule', title: 'a ticket that fails', fire: 'bare', launch: 'fails', ready: [7], expect: { labels: [...claimed(7), ...released(7)], exit: 1 } },
+    { kind: 'schedule', title: 'a ticket that fails', fire: 'bare', launch: 'fails', ready: [7], expect: { labels: [...claimed(7), ...released(7)], failures: [7], exit: 1 } },
     { kind: 'schedule', title: 'a ticket the window cuts', fire: 'bare', launch: 'starts', late: 'launch', ready: [7, 9], expect: { labels: claimed(7), markers: [7], heartbeat: pickup(1, LATE), sessions: [NEW] } },
     { kind: 'schedule', title: 'a ticket the cap cuts', fire: 'bare', launch: 'starts', cap: 1, ready: [7, 9], expect: { labels: claimed(7), markers: [7], heartbeat: pickup(1), sessions: [NEW] } },
     { kind: 'schedule', title: 'a cap of 0', fire: 'bare', launch: 'starts', cap: 0, ready: [7], expect: { heartbeat: pickup(0) } },
@@ -11040,12 +11044,12 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
     { kind: 'schedule', title: 'an ended wait\'s spec session the cap cuts', fire: 'bare', launch: 'starts', cap: 1, waits: [7, 8], expect: { bodies: [7], notes: [7, 8], waits: [[7, null]], sweeps: [AT], heartbeat: pickup(0), sessions: [NEW] } },
     // A fire for one ticket: a ready label.
     { kind: 'schedule', title: 'a label fire that starts', fire: 'label', launch: 'starts', expect: { labels: claimed(7), markers: [7], sessions: [NEW] } },
-    { kind: 'schedule', title: 'a label fire that fails', fire: 'label', launch: 'fails', expect: { labels: [...claimed(7), ...released(7)], exit: 1 } },
+    { kind: 'schedule', title: 'a label fire that fails', fire: 'label', launch: 'fails', expect: { labels: [...claimed(7), ...released(7)], failures: [7], exit: 1 } },
     { kind: 'schedule', title: 'a label fire the window cuts', fire: 'label', launch: 'starts', late: 'read', expect: {} },
     { kind: 'schedule', title: 'a label fire under a cap of 0', fire: 'label', launch: 'starts', cap: 0, expect: {} },
     // A blocker's close: the ready row picks up, the not-ready row starts a spec session, which its ticket's body names.
     { kind: 'unblocked', title: 'a ready ticket that starts', fire: 'unblocked', launch: 'starts', expect: { labels: claimed(7), markers: [7], sessions: [NEW] } },
-    { kind: 'unblocked', title: 'a ready ticket that fails', fire: 'unblocked', launch: 'fails', expect: { labels: [...claimed(7), ...released(7)], exit: 1 } },
+    { kind: 'unblocked', title: 'a ready ticket that fails', fire: 'unblocked', launch: 'fails', expect: { labels: [...claimed(7), ...released(7)], failures: [7], exit: 1 } },
     { kind: 'unblocked', title: 'a ready ticket the window cuts', fire: 'unblocked', launch: 'starts', late: 'read', expect: {} },
     { kind: 'unblocked', title: 'a ready ticket under a cap of 0', fire: 'unblocked', launch: 'starts', cap: 0, expect: {} },
     { kind: 'unblocked', title: 'a spec session that starts', fire: 'unblocked', launch: 'starts', labels: ['enhancement'], expect: { bodies: [7], sessions: [NEW] } },
@@ -11128,12 +11132,13 @@ describe('run: each launching kind\'s outcomes, with every record each writes', 
       for (const n of waits) h.waitItems.set(`${REPO}#${n}`, PAST);
       const result = await run(FIRES[row.fire], h.deps as never);
       const seen = JSON.stringify(h.logged);
-      // Every comment is a dispatch marker or a wait's ended note, each recorded below.
-      assert.deepEqual(h.comments.filter((c) => !c.body.includes('governor:dispatched') && !c.body.includes(ENDED)), [], seen);
+      // Every comment is a dispatch marker, a wait's ended note or a failed launch's comment, each recorded below.
+      assert.deepEqual(h.comments.filter((c) => !c.body.includes('governor:dispatched') && !c.body.includes(ENDED) && !c.body.startsWith(LAUNCH_FAILED_MARKER)), [], seen);
       const records: Records = {
         labels: labelCalls(h.calls),
         markers: h.comments.filter((c) => c.body.includes('governor:dispatched')).map((c) => c.issue),
         notes: h.comments.filter((c) => c.body.includes(ENDED)).map((c) => c.issue),
+        failures: h.comments.filter((c) => c.body.startsWith(LAUNCH_FAILED_MARKER)).map((c) => c.issue),
         bodies: [...h.edits.map((e) => e.pr), ...h.issueEdits.map((e) => e.issue)],
         periodics: h.periodicWrites.map((w) => [w.name, w.record.session]),
         waits: h.waitWrites.map((w) => [w.issue, w.until]),

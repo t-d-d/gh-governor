@@ -20,6 +20,7 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
 import { reportUnreadable } from './waits.mjs';
 import { GITHUB_SOURCE, OUTPUT_TAIL, nameSpecSession } from './deliveries.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
+import { LAUNCH_FAILED_EVENT, sayLaunchFailed } from './launch-failed.mjs';
 
 /**
  * @typedef {import('./launcher.mjs').LaunchResult} LaunchResult
@@ -162,13 +163,16 @@ export const launchPlan = async (plan, ctx, started) => {
    * put first. One that cannot be put is logged, and the release goes on.
    *
    * @param {{ repo: string, issue: number }} ticket
+   * @returns {Promise<string | null>} When the hold ends, or null where the record was not put.
    */
   const hold = async ({ repo, issue }) => {
     const until = new Date(now() + PICKUP_FAILED_HOLD_MS).toISOString();
     try {
       await state.recordFailedLaunch(repo, issue, until);
+      return until;
     } catch (error) {
       log(PICKUP_FAILED_UNRECORDED, { level: 'error', repo, issue, until, error: messageOf(error), reason: 'its ready labels go back with nothing to hold it, so its label\'s fire may launch it again at once' });
+      return null;
     }
   };
 
@@ -193,6 +197,39 @@ export const launchPlan = async (plan, ctx, started) => {
     }
   };
 
+  /** Each launch's or failure's message to its spec owner, sent in launch order once the loop ends. @type {Array<() => Promise<unknown>>} */
+  const tells = [];
+
+  /**
+   * A ticket whose launch or claim failed: its failed-launch record put,
+   * its labels released, and, where the record stands, one comment on the
+   * thread saying so (dispatch/launch-failed.mjs), which the ticket's spec
+   * owner hears once the loop ends, since the relay sends a governor
+   * comment to nobody. With no record there is no hold to describe, so
+   * nothing is said. A comment that fails is logged and has no effect on
+   * the release.
+   *
+   * @param {{ repo: string, issue: number }} ticket
+   * @param {import('./launch-failed.mjs').Failed} failed
+   */
+  const fail = async (ticket, failed) => {
+    const until = await hold(ticket);
+    await release(ticket);
+    if (until === null) return;
+    const { repo, issue } = ticket;
+    /** @type {string | null} */
+    let text = null;
+    try {
+      text = await sayLaunchFailed({ reader: await readerFor(repo), repo, issue, until, failed, log });
+    } catch (error) {
+      log(LAUNCH_FAILED_EVENT, { level: 'error', repo, issue, failed, until, outcome: 'not said', error: messageOf(error) });
+    }
+    if (text === null) return;
+    const said = text;
+    const tell = tellerFor(ctx, repo, GITHUB_SOURCE, ticketRows.get(keyOf(ticket)));
+    tells.push(() => tell(issue, said));
+  };
+
   /**
    * Claim one ticket: the claim label on, then the ready labels it takes
    * off. The plan was read before earlier launches that take minutes, so
@@ -204,7 +241,7 @@ export const launchPlan = async (plan, ctx, started) => {
    * whose author the repo's `trust.task` does not list (`authorPicked`),
    * and one whose ready labels no one in the repo's `trust.start` added
    * last (`judgeReady`). A claim that fails puts the ticket's failed-launch
-   * record, is released, and starts nothing.
+   * record, is released, says so on the ticket, and starts nothing.
    *
    * @param {{ repo: string, issue: number }} ticket
    * @returns {Promise<'claimed' | 'taken' | 'failed'>}
@@ -275,8 +312,7 @@ export const launchPlan = async (plan, ctx, started) => {
     } catch (error) {
       log('dispatch-claim', { repo, issue, outcome: 'not claimed', error: messageOf(error) });
       // The release puts back any ready label the claim took off.
-      await hold(ticket);
-      await release(ticket);
+      await fail(ticket, 'claim');
       return 'failed';
     }
   };
@@ -287,8 +323,6 @@ export const launchPlan = async (plan, ctx, started) => {
   const ran = [];
   /** @type {PlannedLaunch[]} */
   const left = [];
-  /** Each launch's change-of-builder message to its spec owner, sent in launch order once the loop ends. @type {Array<() => Promise<unknown>>} */
-  const tells = [];
   try {
     for (const [i, entry] of launches.entries()) {
       if (now() - started > SCHEDULE_LAUNCH_WINDOW_MS) {
@@ -332,10 +366,7 @@ export const launchPlan = async (plan, ctx, started) => {
       // The record the launch moves: a periodic's, a wait item, a hook's.
       if (entry.started !== undefined) await entry.started(launched, firedAt);
       if (entry.holdsRepo && outcome === 'failed') {
-        if (ticket !== null && entry.claim) {
-          await hold(ticket);
-          await release(ticket);
-        }
+        if (ticket !== null && entry.claim) await fail(ticket, 'launch');
         // A launch that started nothing is the repo's environment or the
         // login: the repo's next ticket or periodic would fail the same way.
         // A routine the routines API refused is not (`routineFault`).
