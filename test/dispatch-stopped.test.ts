@@ -192,6 +192,15 @@ describe('stoppedComment', () => {
     assert.match(text, /fresh session/);
     assert.doesNotMatch(text, /—/);
   });
+
+  test('links the session and its last comment as Markdown links, not bare URLs', () => {
+    const last = 'https://github.com/acme/factory/issues/7#issuecomment-55';
+    const text = stoppedComment({ session: 'session_01GONE', removed: ['claimed'], ready: ['mode: afk'], last, branches: ['claude/issue-7'] });
+    const prose = text.split('\n').slice(1).join('\n');
+    assert.match(prose, /\[[^\]]+\]\(https:\/\/claude\.ai\/code\/session_01GONE\)/);
+    assert.match(prose, /\[[^\]]+\]\(https:\/\/github\.com\/acme\/factory\/issues\/7#issuecomment-55\)/);
+    assert.doesNotMatch(prose.replace(/\]\([^)]*\)/g, ']'), /https:\/\//, 'every URL is a link\'s target');
+  });
 });
 
 describe('stoppedOf', () => {
