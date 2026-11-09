@@ -262,22 +262,33 @@ const RESEND_DELAY_MS = 5_000;
 export const OUTPUT_TAIL = 2000;
 
 /**
- * What a child printed, as plain text, then its last `OUTPUT_TAIL`
- * characters: what a log line or a stored reason keeps. Governor runs
- * `claude` under a pseudo-terminal, so its output carries the terminal UI's
- * control codes. A cursor move to a column stands where the text has a
- * space, so it becomes one; every other escape sequence and C0 control but
- * newline and tab goes, so a search for the words finds them and the codes
- * do not crowd the text out of the tail. Code that searches the output for a
- * marker reads the raw output, not this.
+ * How much of a child's raw output is cleaned for its tail. A launch that
+ * streams for its whole budget prints many megabytes, and cleaning all of it
+ * would hold the event loop for seconds; this keeps room for codes many
+ * times the tail's length.
+ */
+const RAW_WINDOW = OUTPUT_TAIL * 32;
+
+/**
+ * The end of what a child printed, as plain text. Governor runs `claude`
+ * under a pseudo-terminal, so its output carries the terminal UI's control
+ * codes. A cursor move along a line stands where the text has a space, so
+ * it becomes one, and a move to another line becomes a line break; every
+ * other escape sequence and C0 control but newline and tab goes, so a
+ * search for the words finds them and the codes do not crowd the text out
+ * of the tail. Code that searches the output for a marker reads the raw
+ * output, not this.
  *
  * @param {string} output
  * @returns {string}
  */
 /* eslint-disable no-control-regex -- control characters are what this removes */
-export const outputTail = (output) => output
-  // A cursor move to a column: ESC [ n G.
-  .replace(/\x1b\[\d*G/g, ' ')
+const plainText = (output) => output
+  .slice(-RAW_WINDOW)
+  // A cursor move to a column or forward along the line: ESC [ n G, ESC [ n C.
+  .replace(/\x1b\[\d*[CG]/g, ' ')
+  // A cursor move to another line: down, to the next line, or to a position.
+  .replace(/\x1b\[\d*[BE]|\x1b\[\d*(?:;\d*)?[Hf]/g, '\n')
   // OSC, up to BEL or ESC backslash.
   .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, '')
   // CSI: parameters, intermediates, one final byte.
@@ -287,9 +298,18 @@ export const outputTail = (output) => output
   .replace(/\r*\n/g, '\n')
   .replace(/\r+/g, '\n')
   .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
-  .replace(/\n{3,}/g, '\n\n')
-  .slice(-OUTPUT_TAIL);
+  .replace(/[ \t]+\n/g, '\n')
+  .replace(/\n{3,}/g, '\n\n');
 /* eslint-enable no-control-regex */
+
+/**
+ * What a child printed, as plain text (`plainText`), then its last
+ * `OUTPUT_TAIL` characters: what a log line or a stored reason keeps.
+ *
+ * @param {string} output
+ * @returns {string}
+ */
+export const outputTail = (output) => plainText(output).slice(-OUTPUT_TAIL);
 
 /** The name a session gets when its invocation names none. */
 export const DEFAULT_SESSION_NAME = 'dispatch';
@@ -345,7 +365,7 @@ export const readSend = (sent) => {
     answered: answer !== null,
     sessionUrl: typeof answer?.url === 'string' ? answer.url : null,
     // A CLI that printed no answer: its output, the tail of it, is the reason.
-    error: ok ? null : (typeof answer?.error === 'string' ? answer.error : (outputTail(sent.output).trim() || `the CLI exited ${sent.status} and printed nothing`)),
+    error: ok ? null : (typeof answer?.error === 'string' ? answer.error : (plainText(sent.output).trim().slice(-OUTPUT_TAIL) || `the CLI exited ${sent.status} and printed nothing`)),
     status: sent.status,
   };
 };

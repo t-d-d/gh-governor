@@ -57,6 +57,29 @@ describe('outputTail: the CLI output governor logs is plain text', () => {
     assert.ok(!tail.startsWith('s'));
   });
 
+  test('a cursor move forward keeps the words apart, and a move to another line breaks the line', () => {
+    assert.equal(outputTail(`a${ESC}[5Cb${ESC}[Cc${ESC}[3;1Hd${ESC}[2Be${ESC}[Ef`), 'a b c\nd\ne\nf');
+  });
+
+  test('a line of only spaces counts as blank', () => {
+    assert.equal(outputTail(`a\n${ESC}[1G\n${ESC}[1G\n${ESC}[1G\nb`), 'a\n\nb');
+  });
+
+  test('a huge output is cleaned from its end, not whole', () => {
+    const frame = `${ESC}[2K${ESC}[1A${ESC}[2K${ESC}[G${ESC}[38;5;174m*${ESC}[39m Working${ESC}[8Gon\r\n`;
+    const huge = `${frame.repeat(Math.ceil(20_000_000 / frame.length))}done\n`;
+    const started = performance.now();
+    const tail = outputTail(huge);
+    assert.ok(performance.now() - started < 200, 'cleaning should not scan the whole output');
+    assert.ok(tail.endsWith('* Working on\ndone\n'));
+  });
+
+  test('trailing whitespace does not count against the error a send keeps', () => {
+    const error = `${'e'.repeat(OUTPUT_TAIL - 1)}!`;
+    const sent = readSend({ status: 1, output: `${error}${' '.repeat(100)}` });
+    assert.equal(sent.error, error);
+  });
+
   test('a send the CLI did not answer has the cleaned output as its error', () => {
     const sent = readSend({ status: 1, output: FAILED_LAUNCH });
     assert.equal(sent.error, `Error: Cloud session create failed:\n${WARNING.trim()}`);
