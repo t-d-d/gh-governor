@@ -39,6 +39,7 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
 import { archived, branchesOf } from '../scripts/lib/session-branch.mjs';
 import { lastDispatch } from './webhook/fire.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
+import { sessionLink } from './webhook/roles-text.mjs';
 import { turnsOn } from './repo-config.mjs';
 
 /** How governor's comment on a released ticket starts; the session id and ` -->` follow. */
@@ -86,16 +87,18 @@ const listOf = (names) => {
 /**
  * Governor's comment on a ticket whose session stopped without a PR: which
  * session, its last comment here and the branches it pushed where there are
- * any, what came off, and the one step that starts the ticket again.
+ * any, what came off, and the one step that starts the ticket again. The
+ * session and the comment are Markdown links, as governor's other messages
+ * name them, so neither shows as a bare URL.
  *
  * @param {{ session: string, removed: readonly string[], ready: readonly string[], last: string | null, branches: readonly string[] }} args
  * @returns {string}
  */
 export const stoppedComment = ({ session, removed, ready, last, branches }) => [
   `${STOPPED_MARKER}${session} -->`,
-  `The session governor started for this ticket, https://claude.ai/code/${session}, has ended without a pull request that closes it, so nobody is working on it now.`,
+  `The ${sessionLink('session governor started for this ticket', `https://claude.ai/code/${session}`)} has ended without a pull request that closes it, so nobody is working on it now.`,
   '',
-  ...(last === null ? ['It left no comment here.'] : [`Its last comment here: ${last}`]),
+  ...(last === null ? ['It left no comment here.'] : [`Read [its last comment here](${last}).`]),
   ...(branches.length === 0 ? [] : [`It pushed ${branches.length === 1 ? 'the branch' : 'the branches'} ${listOf(branches)}.`]),
   '',
   `Governor took ${listOf(removed)} off, so pickup sees the ticket as not ready. Decide what it needs. To start it again, put ${listOf(ready)} back: that starts a fresh session, which reads this thread and carries on from any branch the earlier session pushed.`,
