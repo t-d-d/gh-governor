@@ -14,7 +14,6 @@
  *   delivery shape the receiver routes (dispatch/webhook/route.mjs).
  */
 
-import { launchFailedComment } from '../dispatch/launch-failed.mjs';
 import { test, describe } from 'node:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import assert from 'node:assert/strict';
@@ -32,6 +31,7 @@ import { waitEndedComment, waitFullComment, waitNotPlannedComment, waitOwnerMess
 import { uncountedReadyComment, untaskedComment } from '../dispatch/uncounted.mjs';
 import { issueComment, loopComment } from '../dispatch/issue-review.mjs';
 import { deployedComment } from '../dispatch/webhook/deployed-comment.mjs';
+import { launchFailedComment } from '../dispatch/launch-failed.mjs';
 import { reviewMarker } from '../dispatch/pr-body.mjs';
 import { standingLine } from '../dispatch/deliveries.mjs';
 import { promptFor } from '../scripts/lib/dispatch-prompt.mjs';

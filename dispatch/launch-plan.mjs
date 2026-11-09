@@ -129,7 +129,8 @@ export const routineFault = (deps, repo, periodic, launched) => {
 /**
  * Start a plan's launches in turn. A picked-up ticket is claimed first and
  * released where its launch started nothing, after its failed-launch record
- * is put (dispatch/pickup.mjs). A launch the routines API
+ * is put (dispatch/pickup.mjs), and its thread is told so once
+ * (dispatch/launch-failed.mjs). A launch the routines API
  * refused moves no record. A failed launch that holds its repo skips the
  * repo's later launches. Past the launch window, counted from `started`,
  * nothing more starts. The plan's `done` hears what ran and what was left.
@@ -182,6 +183,7 @@ export const launchPlan = async (plan, ctx, started) => {
    * it stranded.
    *
    * @param {{ repo: string, issue: number }} ticket
+   * @returns {Promise<boolean>} Whether the ticket was released.
    */
   const release = async (ticket) => {
     const { repo, issue } = ticket;
@@ -192,8 +194,10 @@ export const launchPlan = async (plan, ctx, started) => {
       await github.removeLabel(issue, labels.claim);
       claims.delete(keyOf(ticket));
       log('dispatch-claim', { repo, issue, outcome: 'released' });
+      return true;
     } catch (error) {
       log('dispatch-claim', { repo, issue, outcome: 'not released', error: messageOf(error) });
+      return false;
     }
   };
 
@@ -205,29 +209,29 @@ export const launchPlan = async (plan, ctx, started) => {
    * its labels released, and, where the record stands, one comment on the
    * thread saying so (dispatch/launch-failed.mjs), which the ticket's spec
    * owner hears once the loop ends, since the relay sends a governor
-   * comment to nobody. With no record there is no hold to describe, so
-   * nothing is said. A comment that fails is logged and has no effect on
-   * the release.
+   * comment to nobody. With no record there is no hold to describe, and a
+   * ticket the release left claimed is stranded, not held, so neither is
+   * said. A comment that fails is logged and has no effect on the release.
    *
    * @param {{ repo: string, issue: number }} ticket
    * @param {import('./launch-failed.mjs').Failed} failed
    */
   const fail = async (ticket, failed) => {
     const until = await hold(ticket);
-    await release(ticket);
-    if (until === null) return;
+    const released = await release(ticket);
+    if (until === null || !released) return;
     const { repo, issue } = ticket;
-    /** @type {string | null} */
-    let text = null;
+    let reader;
     try {
-      text = await sayLaunchFailed({ reader: await readerFor(repo), repo, issue, until, failed, log });
+      reader = await readerFor(repo);
     } catch (error) {
-      log(LAUNCH_FAILED_EVENT, { level: 'error', repo, issue, failed, until, outcome: 'not said', error: messageOf(error) });
+      log(LAUNCH_FAILED_EVENT, { level: 'error', repo, issue, failed, until, outcome: 'not said', error: messageOf(error), reason: 'the repo could not be reached, so the ticket is not told its launch failed' });
+      return;
     }
+    const text = await sayLaunchFailed({ reader, repo, issue, until, failed, log });
     if (text === null) return;
-    const said = text;
     const tell = tellerFor(ctx, repo, GITHUB_SOURCE, ticketRows.get(keyOf(ticket)));
-    tells.push(() => tell(issue, said));
+    tells.push(() => tell(issue, text));
   };
 
   /**

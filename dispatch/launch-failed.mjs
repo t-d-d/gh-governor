@@ -11,22 +11,21 @@
  * output: a served repo can be public, and the output can name the account
  * or its environment.
  *
- * A run of failures gets one comment. Where the newest marker in a comment
- * governor's App posted is already a failed-launch one, nothing new is
- * posted. A launch that starts a session posts its dispatch marker, which
- * ends the run.
+ * A run of failures gets one comment. Where the newest dispatch or
+ * failed-launch marker in a comment governor's App posted is a failed-launch
+ * one, nothing new is posted. A launch that starts a session posts its
+ * dispatch marker, which ends the run. Governor's other comments on the
+ * thread end nothing.
  */
 
 import { messageOf } from '../scripts/lib/error-message.mjs';
+import { DISPATCH_MARKER } from './webhook/fire.mjs';
 
 /** How the comment starts; the hold's end time and ` -->` follow. */
 export const LAUNCH_FAILED_MARKER = '<!-- governor:launch-failed ';
 
 /** The log event for each comment this file posts, or does not. */
 export const LAUNCH_FAILED_EVENT = 'dispatch-launch-failed-comment';
-
-/** Any governor marker. */
-const GOVERNOR_MARKER = /<!-- governor:/;
 
 /**
  * @typedef {'launch' | 'claim'} Failed
@@ -53,21 +52,16 @@ export const launchFailedComment = ({ until, failed }) => [
 ].join('\n');
 
 /**
- * Whether the newest governor marker on the thread, in a comment governor's
- * App posted, is a failed-launch one: the run of failures it starts has
- * already been said. A marker in anyone else's comment is text.
+ * Whether the newest dispatch or failed-launch marker on the thread, in a
+ * comment governor's App posted, is a failed-launch one: the run of
+ * failures it starts has already been said. A marker in anyone else's
+ * comment is text.
  *
- * @param {readonly ThreadRow[]} comments
+ * @param {readonly ThreadRow[]} comments The ticket's whole thread, oldest first.
  * @returns {boolean}
  */
-export const alreadySaid = (comments) => {
-  const marked = comments
-    .filter((c) => c.ours && GOVERNOR_MARKER.test(c.body))
-    .map((c, i) => ({ c, i, at: Date.parse(c.created_at) }))
-    .sort((a, b) => (a.at - b.at) || (a.i - b.i));
-  const newest = marked.at(-1);
-  return newest !== undefined && newest.c.body.includes(LAUNCH_FAILED_MARKER);
-};
+export const alreadySaid = (comments) =>
+  comments.filter((c) => c.ours && (c.body.includes(DISPATCH_MARKER) || c.body.includes(LAUNCH_FAILED_MARKER))).at(-1)?.body.includes(LAUNCH_FAILED_MARKER) === true;
 
 /**
  * Post the comment on a ticket whose failed-launch record was put, unless

@@ -340,6 +340,21 @@ describe('a ticket whose launch or claim failed is told so on its thread', () =>
     assert.equal(said(writes, 9).length, 1);
   });
 
+  test('another governor comment since the failure does not end the run: only a dispatch marker does', async () => {
+    const earlier = { id: 1, body: `${LAUNCH_FAILED_MARKER}2026-09-25T11:00:00.000Z -->\nGovernor could not start a session.`, created_at: '2026-09-25T10:00:00Z', ours: true };
+    const review = { id: 2, body: 'Say what done means.\n<!-- governor:issue-review spec failure k -->', created_at: '2026-09-25T10:30:00Z', ours: true };
+    const { ctx, writes, logged } = context({ launched: () => FAILED, comments: () => [earlier, review] });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.deepEqual(said(writes, 9), []);
+    assert.ok(logged.some((l) => l.event === LAUNCH_FAILED_EVENT && l.issue === 9 && l.outcome === 'already said'), JSON.stringify(logged));
+  });
+
+  test('where the release failed, no comment is posted: the ticket is still claimed, so no fire tries it again', async () => {
+    const { ctx, writes } = context({ launched: () => FAILED, failWrite: (w) => w.op === 'remove' && w.label === CLAIM });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.deepEqual(said(writes, 9), []);
+  });
+
   test('where the record could not be put, no comment is posted', async () => {
     const { ctx, writes } = context({ failRecord: true, launched: () => FAILED });
     await launchPlan(plan([ticket(9)]), ctx, NOW);
