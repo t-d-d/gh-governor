@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { CAP_ZERO_REASON, CLAIM_STRANDED, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan } from '../dispatch/launch-plan.mjs';
 import { readConfig } from '../dispatch/repo-config.mjs';
 import { PICKUP_FAILED_HOLD_MS, PICKUP_FAILED_UNRECORDED } from '../dispatch/pickup.mjs';
+import { LAUNCH_FAILED_EVENT, LAUNCH_FAILED_MARKER } from '../dispatch/launch-failed.mjs';
 import { SPEC_OWNER } from '../dispatch/deliveries.mjs';
 import { relinkSession } from '../dispatch/webhook/subscribe.mjs';
 import { factoryFile } from './helpers/factory.ts';
@@ -41,6 +42,7 @@ const context = (over: {
   launched?: (asked: Record<string, unknown>) => Started,
   failWrite?: (write: Write) => boolean,
   failRecord?: boolean,
+  comments?: (issue: number) => Array<{ id: number, body: string, created_at: string, ours: boolean }>,
 } = {}) => {
   const logged: Logged[] = [];
   /** The failed-launch records put, each with what the ticket's labels had been written by then. */
@@ -59,6 +61,7 @@ const context = (over: {
       addLabels: (issue: number, labels: string[]) => write({ repo, op: 'add', issue, labels }),
       removeLabel: (issue: number, label: string) => write({ repo, op: 'remove', issue, label }),
       comment: (issue: number, text: string) => write({ repo, op: 'comment', issue, text }),
+      allComments: async (issue: number) => over.comments?.(issue) ?? [],
       issue: async (issue: number) => ({ number: issue, body: 'The spec.', pull: false }),
       updateIssue: (issue: number, { body }: { body: string }) => write({ repo, op: 'body', issue, text: body }),
     }),
@@ -154,7 +157,7 @@ describe('launchPlan starts every launch a plan holds', () => {
     assert.deepEqual(asked.map((a) => a.issue), [9, 11]);
     assert.ok(writes.some((w) => w.issue === 9 && w.op === 'remove' && w.label === CLAIM), 'the claim comes off');
     assert.ok(writes.some((w) => w.issue === 9 && w.op === 'add' && JSON.stringify(w.labels) === JSON.stringify(CONFIG.labels.claimRemoves)), 'the ready labels go back');
-    assert.ok(!writes.some((w) => w.issue === 9 && w.op === 'comment'), 'no marker');
+    assert.ok(!writes.some((w) => w.issue === 9 && w.op === 'comment' && w.text!.includes('governor:dispatched')), 'no dispatch marker');
     assert.ok(logged.some((l) => l.event === REPO_SKIPPED && l.repo === REPO && l.issue === 9 && l.level === 'error'));
     assert.deepEqual(ran.map((r) => [r.issue, r.outcome]), [[9, 'failed'], [11, 'dispatched']]);
     assert.deepEqual(heard?.left.map((l) => l.issue), [10]);
@@ -273,6 +276,125 @@ describe('launchPlan starts every launch a plan holds', () => {
     await assert.rejects(launchPlan(plan([ticket(19), ticket(20)]), ctx, NOW), /launcher down/);
     assert.deepEqual(sent.map((s) => s.session), [owner]);
     assert.match(sent[0]!.text, /\[#19 .*\]\(https:\/\/github\.com\/acme\/factory\/issues\/19\) has \[a new builder\]\(https:\/\/claude\.ai\/code\/session_19\)/);
+  });
+});
+
+describe('a ticket whose launch or claim failed is told so on its thread', () => {
+  const FAILED = { outcome: 'failed', sessionUrl: null, status: 1, output: 'Error: Cloud session create failed: env_01SECRETENV account 4242' };
+  const UNTIL = new Date(NOW + PICKUP_FAILED_HOLD_MS).toISOString();
+  const said = (writes: Write[], issue: number) => writes.filter((w) => w.op === 'comment' && w.issue === issue && w.text!.startsWith(LAUNCH_FAILED_MARKER));
+
+  test('a failed launch whose record was put gets one comment naming the hold\'s end and the launcher\'s log line', async () => {
+    const { ctx, writes, held } = context({ launched: () => FAILED });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    const posted = said(writes, 9);
+    assert.equal(posted.length, 1, JSON.stringify(writes));
+    const text = posted[0]!.text!;
+    assert.ok(text.startsWith(`${LAUNCH_FAILED_MARKER}${UNTIL} -->`));
+    assert.match(text, /could not start a session/);
+    assert.match(text, /no session is working on it/);
+    assert.ok(text.includes(UNTIL));
+    assert.match(text, /`dispatch-launcher-output`/);
+    assert.ok(!text.includes('`dispatch-claim`'));
+    assert.equal(held.length, 1);
+  });
+
+  test('the comment quotes none of the launcher\'s output', async () => {
+    const { ctx, writes } = context({ launched: () => FAILED });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    const text = said(writes, 9)[0]!.text!;
+    for (const piece of ['Cloud session create failed', 'env_01SECRETENV', '4242']) assert.ok(!text.includes(piece), piece);
+  });
+
+  test('a failed claim whose record was put gets one comment naming the claim\'s log line', async () => {
+    const { ctx, writes } = context({ failWrite: (w) => w.op === 'remove' && w.label === CONFIG.labels.claimRemoves[0] });
+    await launchPlan(plan([ticket(8)]), ctx, NOW);
+    const posted = said(writes, 8);
+    assert.equal(posted.length, 1, JSON.stringify(writes));
+    assert.match(posted[0]!.text!, /`dispatch-claim`/);
+    assert.ok(!posted[0]!.text!.includes('`dispatch-launcher-output`'));
+  });
+
+  test('a second failure, with no launch since, posts no second comment', async () => {
+    const earlier = { id: 1, body: `${LAUNCH_FAILED_MARKER}2026-09-25T11:00:00.000Z -->\nGovernor could not start a session.`, created_at: '2026-09-25T10:00:00Z', ours: true };
+    const person = { id: 2, body: 'Why has this not started?', created_at: '2026-09-25T11:30:00Z', ours: false };
+    const { ctx, writes, logged } = context({ launched: () => FAILED, comments: () => [earlier, person] });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.deepEqual(said(writes, 9), []);
+    assert.ok(writes.some((w) => w.issue === 9 && w.op === 'remove' && w.label === CLAIM), 'still released');
+    assert.ok(logged.some((l) => l.event === LAUNCH_FAILED_EVENT && l.issue === 9 && l.outcome === 'already said'), JSON.stringify(logged));
+  });
+
+  test('a launch that started a session since the last failure ends the run: the next failure is said again', async () => {
+    const earlier = { id: 1, body: `${LAUNCH_FAILED_MARKER}2026-09-24T11:00:00.000Z -->\nGovernor could not start a session.`, created_at: '2026-09-24T10:00:00Z', ours: true };
+    const dispatched = { id: 2, body: '<!-- governor:dispatched 2026-09-24T12:00:00.000Z -->\nDispatched to https://claude.ai/code/session_01LATER at 2026-09-24T12:00:00.000Z.', created_at: '2026-09-24T12:00:00Z', ours: true };
+    const { ctx, writes } = context({ launched: () => FAILED, comments: () => [earlier, dispatched] });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.equal(said(writes, 9).length, 1);
+  });
+
+  test('a failed-launch marker in someone else\'s comment is text: the failure is said', async () => {
+    const copied = { id: 1, body: `${LAUNCH_FAILED_MARKER}2026-09-25T11:00:00.000Z -->`, created_at: '2026-09-25T10:00:00Z', ours: false };
+    const { ctx, writes } = context({ launched: () => FAILED, comments: () => [copied] });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.equal(said(writes, 9).length, 1);
+  });
+
+  test('another governor comment since the failure does not end the run: only a dispatch marker does', async () => {
+    const earlier = { id: 1, body: `${LAUNCH_FAILED_MARKER}2026-09-25T11:00:00.000Z -->\nGovernor could not start a session.`, created_at: '2026-09-25T10:00:00Z', ours: true };
+    const review = { id: 2, body: 'Say what done means.\n<!-- governor:issue-review spec failure k -->', created_at: '2026-09-25T10:30:00Z', ours: true };
+    const { ctx, writes, logged } = context({ launched: () => FAILED, comments: () => [earlier, review] });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.deepEqual(said(writes, 9), []);
+    assert.ok(logged.some((l) => l.event === LAUNCH_FAILED_EVENT && l.issue === 9 && l.outcome === 'already said'), JSON.stringify(logged));
+  });
+
+  test('where the release failed, no comment is posted: the ticket is still claimed, so no fire tries it again', async () => {
+    const { ctx, writes } = context({ launched: () => FAILED, failWrite: (w) => w.op === 'remove' && w.label === CLAIM });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.deepEqual(said(writes, 9), []);
+  });
+
+  test('where the record could not be put, no comment is posted', async () => {
+    const { ctx, writes } = context({ failRecord: true, launched: () => FAILED });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.deepEqual(said(writes, 9), []);
+  });
+
+  test('a comment that fails is logged at error, and the release still runs', async () => {
+    const { ctx, writes, logged } = context({ launched: () => FAILED, failWrite: (w) => w.op === 'comment' });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.ok(writes.some((w) => w.issue === 9 && w.op === 'remove' && w.label === CLAIM), 'released');
+    assert.ok(writes.some((w) => w.issue === 9 && w.op === 'add' && JSON.stringify(w.labels) === JSON.stringify(CONFIG.labels.claimRemoves)), 'ready labels back');
+    const line = logged.find((l) => l.event === LAUNCH_FAILED_EVENT && l.issue === 9);
+    assert.equal(line?.level, 'error', JSON.stringify(logged));
+  });
+
+  test('a thread that cannot be read posts no comment, is logged at error, and the release still runs', async () => {
+    const { ctx, writes, logged } = context({ launched: () => FAILED, comments: () => { throw new Error('502'); } });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.deepEqual(said(writes, 9), []);
+    assert.ok(writes.some((w) => w.issue === 9 && w.op === 'remove' && w.label === CLAIM), 'released');
+    assert.equal(logged.find((l) => l.event === LAUNCH_FAILED_EVENT && l.issue === 9)?.level, 'error');
+  });
+
+  test('the ticket\'s spec owner is told the comment', async () => {
+    const owner = 'https://claude.ai/code/session_01SPECOWNER';
+    const { ctx, writes } = context({ launched: () => FAILED });
+    const reader = ctx.readerFor;
+    const sent: Array<{ session: string, text: string }> = [];
+    Object.assign(ctx, {
+      readerFor: async (repo: string) => {
+        const r = await reader(repo);
+        return { ...r, ticket: async (n: number) => ({ ...(await r.ticket(n)), body: `The spec.\n\n${owner}` }) };
+      },
+      delivery: () => ({ deliver: async ({ session }: { session: string }, text: string) => { sent.push({ session, text }); return { ok: true, refused: false, error: null }; } }),
+    });
+    await launchPlan(plan([ticket(9)]), ctx, NOW);
+    assert.equal(said(writes, 9).length, 1);
+    assert.deepEqual(sent.map((s) => s.session), [owner]);
+    assert.match(sent[0]!.text, /could not start a session/);
+    assert.ok(!sent[0]!.text.includes(LAUNCH_FAILED_MARKER), 'the marker is governor\'s');
   });
 });
 
