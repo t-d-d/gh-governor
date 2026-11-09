@@ -261,6 +261,36 @@ const RESEND_DELAY_MS = 5_000;
 /** How much of a child's output a log line keeps. */
 export const OUTPUT_TAIL = 2000;
 
+/**
+ * What a child printed, as plain text, then its last `OUTPUT_TAIL`
+ * characters: what a log line or a stored reason keeps. Governor runs
+ * `claude` under a pseudo-terminal, so its output carries the terminal UI's
+ * control codes. A cursor move to a column stands where the text has a
+ * space, so it becomes one; every other escape sequence and C0 control but
+ * newline and tab goes, so a search for the words finds them and the codes
+ * do not crowd the text out of the tail. Code that searches the output for a
+ * marker reads the raw output, not this.
+ *
+ * @param {string} output
+ * @returns {string}
+ */
+/* eslint-disable no-control-regex -- control characters are what this removes */
+export const outputTail = (output) => output
+  // A cursor move to a column: ESC [ n G.
+  .replace(/\x1b\[\d*G/g, ' ')
+  // OSC, up to BEL or ESC backslash.
+  .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, '')
+  // CSI: parameters, intermediates, one final byte.
+  .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]?/g, '')
+  // Any other escape: intermediates (a charset select's `(`), then one byte.
+  .replace(/\x1b[\x20-\x2f]*[\x30-\x7e]?/g, '')
+  .replace(/\r*\n/g, '\n')
+  .replace(/\r+/g, '\n')
+  .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
+  .replace(/\n{3,}/g, '\n\n')
+  .slice(-OUTPUT_TAIL);
+/* eslint-enable no-control-regex */
+
 /** The name a session gets when its invocation names none. */
 export const DEFAULT_SESSION_NAME = 'dispatch';
 
@@ -315,7 +345,7 @@ export const readSend = (sent) => {
     answered: answer !== null,
     sessionUrl: typeof answer?.url === 'string' ? answer.url : null,
     // A CLI that printed no answer: its output, the tail of it, is the reason.
-    error: ok ? null : (typeof answer?.error === 'string' ? answer.error : (sent.output.trim().slice(-OUTPUT_TAIL) || `the CLI exited ${sent.status} and printed nothing`)),
+    error: ok ? null : (typeof answer?.error === 'string' ? answer.error : (outputTail(sent.output).trim() || `the CLI exited ${sent.status} and printed nothing`)),
     status: sent.status,
   };
 };

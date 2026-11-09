@@ -18,7 +18,7 @@ import { tellBuilderChange, tellerFor } from './told.mjs';
 import { rolesOf } from './roles.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { reportUnreadable } from './waits.mjs';
-import { GITHUB_SOURCE, OUTPUT_TAIL, nameSpecSession } from './deliveries.mjs';
+import { GITHUB_SOURCE, outputTail, nameSpecSession } from './deliveries.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 
 /**
@@ -121,7 +121,7 @@ export const routineFault = (deps, repo, periodic, launched) => {
     return true;
   }
   if (launched.refused !== true) return false;
-  deps.log(ROUTINE_REFUSED, { level: 'error', repo, periodic, reason: `the routines API refused its routine or its fire, so its session was not started and it stays due; the repo's other launches go on: ${launched.output.slice(-OUTPUT_TAIL)}` });
+  deps.log(ROUTINE_REFUSED, { level: 'error', repo, periodic, reason: `the routines API refused its routine or its fire, so its session was not started and it stays due; the repo's other launches go on: ${outputTail(launched.output)}` });
   return true;
 };
 
