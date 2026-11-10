@@ -320,19 +320,19 @@ const plan = async (invocation: unknown, coverage: unknown, prompts: Record<stri
 const note = async (invocation: unknown, coverage: unknown, prompts: Record<string, string>) => (await plan(invocation, coverage, prompts)).notes[0]!.text;
 const triage = async (invocation: unknown, coverage: unknown, prompts: Record<string, string>) => (await plan(invocation, coverage, prompts)).triage!.prompt;
 const UNBLOCKED = { kind: 'unblocked' as const, repo: FACTORY, issue: 7, blocker: { repo: ASKME, number: 41, title: 'The parser', reason: 'completed' }, pr: { number: 52, title: 'Parse it', url: 'https://github.com/t-d-d/askme-mcp/pull/52' } };
-const CLOSE_FACTS = ['[t-d-d/askme-mcp#41 The parser](https://github.com/t-d-d/askme-mcp/issues/41) closed as completed', '[PR t-d-d/askme-mcp#52 Parse it](https://github.com/t-d-d/askme-mcp/pull/52)', 'It blocked #7.'];
+const CLOSE_FACTS = ['[t-d-d/askme-mcp#41 The parser](https://github.com/t-d-d/askme-mcp/issues/41) closed as completed', '[PR t-d-d/askme-mcp#52 Parse it](https://github.com/t-d-d/askme-mcp/pull/52)', 'It blocked [#7 Title](https://github.com/acme/factory/issues/7).'];
 const RUN_FACTS = [RUN_URL, 'backend'];
 
 /** Every kind: the message built with `prompts`, and the facts it carries whatever the prompt. */
 const KINDS: Record<string, { build: (prompts: Record<string, string>) => Promise<string> | string, facts: string[] }> = {
   pickup: { build: (p) => promptFor(7, 'Title', FACTORY, 'claimed', p), facts: ["Pickup #7 'Title'"] },
   signOff: { build: (p) => standingLine([], { repo: FACTORY, closing: true, prompts: p }), facts: ['No other open PR or issue in acme/factory names you.'] },
-  unblockedReady: { build: (p) => readyPrompt(promptFor(7, 'Title', FACTORY, 'claimed'), UNBLOCKED, p), facts: ["Pickup #7 'Title'", ...CLOSE_FACTS] },
+  unblockedReady: { build: (p) => readyPrompt(promptFor(7, 'Title', FACTORY, 'claimed'), UNBLOCKED, p, 'Title'), facts: ["Pickup #7 'Title'", ...CLOSE_FACTS] },
   unblockedSpec: { build: (p) => specPrompt({ fire: UNBLOCKED, title: 'Title', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: p }), facts: ["Spec #7 'Title'", ...CLOSE_FACTS, UNATTENDED] },
   waitEndedSpec: { build: (p) => waitSpecPrompt({ issue: 7, title: 'Title', until: '2026-11-05', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: p }), facts: ["Spec #7 'Title'", "#7's wait has ended: its `Blocked until:` line named 2026-11-05", UNATTENDED] },
-  unblockedOwnerSpec: { build: (p) => ownerSpecMessage(UNBLOCKED, p, { ready: ['mode: afk'], claim: 'claimed' }), facts: CLOSE_FACTS },
+  unblockedOwnerSpec: { build: (p) => ownerSpecMessage(UNBLOCKED, p, { ready: ['mode: afk'], claim: 'claimed' }, 'Title'), facts: CLOSE_FACTS },
   waitEndedOwnerSpec: { build: (p) => waitOwnerMessage({ issue: 7, until: '2026-11-05', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: p }), facts: ["#7's wait has ended: its `Blocked until:` line named 2026-11-05"] },
-  unblockedClaimed: { build: (p) => unblockedMessage(UNBLOCKED, p), facts: CLOSE_FACTS },
+  unblockedClaimed: { build: (p) => unblockedMessage(UNBLOCKED, p, 'Title'), facts: CLOSE_FACTS },
   unblockedNotPlanned: { build: (p) => notPlannedComment({ ...UNBLOCKED, blocker: { ...UNBLOCKED.blocker, reason: 'not_planned' } }, p), facts: ['t-d-d/askme-mcp#41 (`The parser`) closed as not planned'] },
   redScheduledRun: { build: (p) => redRunPrompt('A scheduled run of Emulator on main ended failure.', p), facts: ['A scheduled run of Emulator on main ended failure.', UNATTENDED] },
   ciBreaker: { build: (p) => note(red('CI'), coverageOf([pull(1)]), p), facts: [...RUN_FACTS, '[#1 PR 1](https://github.com/acme/factory/pull/1)'] },

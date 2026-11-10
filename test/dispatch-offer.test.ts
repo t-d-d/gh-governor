@@ -54,6 +54,8 @@ const member = { login: 't-d-d', type: 'User' };
 const at = { full_name: REPO, default_branch: 'main' };
 
 const OWNED = `The spec.\n\n${SPEC}${FOOTER}`;
+/** Issue 7 as the offer names it, with the title the fake reader holds. */
+const OFFERED = { issue: 7, title: 'A ticket', url: `https://github.com/${REPO}/issues/7` };
 const UNSIGNED = `The spec.${FOOTER}`;
 const PERSONS = 'The spec, as a person wrote it.';
 const SIGNED_COMMENT = `I think this needs the empty case too.\n\n${COMMENTER}${FOOTER}`;
@@ -215,11 +217,14 @@ const MARKER = dispatchMarker({ at: new Date(NOW - 60_000).toISOString(), sessio
  * A `TurnContext` whose reader holds ticket 7 with `body` and `labels`,
  * its thread `comments`; `archived` the sessions that refuse.
  */
-const context = ({ body = UNSIGNED, labels = ['mode: afk'], comments = [{ body: MARKER }] as Array<{ body: string }>, archived = [] as string[], config = CONFIG, row = {} as Record<string, unknown>, fails = false } = {}) => {
+const context = ({ body = UNSIGNED, labels = ['mode: afk'], comments = [{ body: MARKER }] as Array<{ body: string }>, archived = [] as string[], config = CONFIG, row = {} as Record<string, unknown>, fails = false, unreadable = false } = {}) => {
   const sent: Sent[] = [];
   const logged: Array<Record<string, unknown>> = [];
   const reader = {
-    ticket: async (n: number) => ({ number: n, title: 'A ticket', body, state: 'open', labels, pull: false, author: 't-d-d', association: 'OWNER', ...row }),
+    ticket: async (n: number) => {
+      if (unreadable) throw new Error('GitHub answered 502');
+      return { number: n, title: 'A ticket', body, state: 'open', labels, pull: false, author: 't-d-d', association: 'OWNER', ...row };
+    },
     openClosing: async () => [],
     closure: async () => ({ pr: null }),
     allComments: async () => comments.map((c) => ({ ...c, ours: true })),
@@ -258,21 +263,21 @@ const offerFire = (over: Record<string, unknown> = {}) => ({ kind: 'offer', repo
 describe('offerText', () => {
   test('says nobody owns the issue, no owner reads the comments, and how to take it', () => {
     for (const why of ['archived', 'unsigned'] as const) {
-      const text = offerText(7, why);
-      assert.match(text, /Nobody owns #7/);
+      const text = offerText(OFFERED, why);
+      assert.ok(text.startsWith(`Nobody owns [#7 A ticket](${OFFERED.url}): `), text);
       assert.match(text, /no owner reads your comments/i);
       assert.match(text, /edit/);
       assert.match(text, /link/);
       assert.doesNotMatch(text, /—/, 'no em dashes');
     }
-    assert.match(offerText(7, 'archived'), /archived/);
-    assert.match(offerText(7, 'unsigned'), /names no session|without signing/);
+    assert.match(offerText(OFFERED, 'archived'), /archived/);
+    assert.match(offerText(OFFERED, 'unsigned'), /names no session|without signing/);
   });
 
   test('asks for the link on the body\'s last line, where governor reads an owner whatever footer the body keeps', () => {
     for (const why of ['archived', 'unsigned'] as const) {
-      assert.match(offerText(7, why), /alone on the body's last line/);
-      assert.doesNotMatch(offerText(7, why), /just above the Claude Code footer/);
+      assert.match(offerText(OFFERED, why), /alone on the body's last line/);
+      assert.doesNotMatch(offerText(OFFERED, why), /just above the Claude Code footer/);
     }
     // A link on the last line is read with either footer, and since #622 so is one just above the PR-style footer.
     assert.equal(sessionNamedIn(`The spec.\n\n${COMMENTER}${PR_FOOTER}`), COMMENTER);
@@ -286,7 +291,7 @@ describe('planOffer: an issue a session filed unsigned, offered to the session t
     const { ctx, sent, logged } = context();
     const plan = await planOffer(offerFire(), ctx) as any;
     assert.deepEqual(sent.map((s) => s.session), [COMMENTER]);
-    assert.equal(sent[0]!.text, offerText(7, 'unsigned'));
+    assert.equal(sent[0]!.text, offerText(OFFERED, 'unsigned'));
     assert.equal(sent[0]!.opts.kind, 'offer');
     assert.deepEqual(sent[0]!.opts.on, [7]);
     assert.equal(plan.answer.kind, 'offer');
@@ -339,7 +344,7 @@ describe('planTicket: a claimed ticket whose spec owner refuses as archived', ()
     const { ctx, sent } = context({ body: OWNED, labels: [CLAIM], archived: [SPEC] });
     const plan = await planTicket(ticketFire(), ctx) as any;
     assert.deepEqual(sent.map((s) => s.session), [SPEC, BUILDER, COMMENTER]);
-    assert.equal(sent[2]!.text, offerText(7, 'archived'));
+    assert.equal(sent[2]!.text, offerText(OFFERED, 'archived'));
     assert.equal(sent[2]!.opts.kind, 'offer');
     assert.equal(exitCodeFor(plan.answer), 0);
   });
@@ -348,6 +353,18 @@ describe('planTicket: a claimed ticket whose spec owner refuses as archived', ()
     const { ctx, sent } = context({ body: OWNED, archived: [SPEC] });
     await planTicket(ticketFire({ labels: ['mode: afk'] }), ctx);
     assert.deepEqual(sent.map((s) => s.session), [SPEC, COMMENTER]);
+    assert.equal(sent[1]!.text, offerText(OFFERED, 'archived'));
+  });
+
+  // The roles have heard the comment by then, so a failed read must not
+  // fail the turn and have them hear it again.
+  test('a ticket whose title cannot be read is still offered, its link holding the number alone, and the turn does not fail', async () => {
+    const { ctx, sent, logged } = context({ body: OWNED, archived: [SPEC], unreadable: true });
+    const plan = await planTicket(ticketFire({ labels: ['mode: afk'] }), ctx) as any;
+    assert.deepEqual(sent.map((s) => s.session), [SPEC, COMMENTER]);
+    assert.ok(sent[1]!.text.startsWith(`Nobody owns [#7](${OFFERED.url}): `), sent[1]!.text);
+    assert.equal(exitCodeFor(plan.answer), 0);
+    assert.ok(logged.some((l) => l.event === 'dispatch-offer' && l.level === 'warn' && String(l.error).includes('502')), JSON.stringify(logged));
   });
 
   test('a live spec owner, an unsigned comment, a builder\'s comment, a close and sessionRules off get no offer', async () => {

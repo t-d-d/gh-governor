@@ -10,7 +10,9 @@ import assert from 'node:assert/strict';
 import { DISPATCHER_LABEL, hookLabel, standingLine } from '../dispatch/deliveries.mjs';
 import { rolesFrom, rolesText } from '../dispatch/roles.mjs';
 import { builderChangeSends, builderChangeText, specOwnerNote } from '../dispatch/told.mjs';
-import { unblockedNotice } from '../dispatch/unblocked.mjs';
+import { unblockedFacts, unblockedNotice } from '../dispatch/unblocked.mjs';
+import { offerText } from '../dispatch/offer.mjs';
+import { maybeText, nudgeText } from '../dispatch/author.mjs';
 import { PROMPTS } from '../dispatch/prompts.mjs';
 import { jobList } from '../dispatch/workflow.mjs';
 import { SIGN_POSTS } from '../dispatch/webhook/fire.mjs';
@@ -24,6 +26,9 @@ const URL = 'https://github.com/acme/factory/issues/7';
 
 /** A session URL standing alone, not as a Markdown link's target. */
 const BARE_SESSION = /(?<!\]\()https:\/\/claude\.ai\/code\/session_\w+/;
+
+/** The text with each Markdown link taken out, so what is left names nothing as a link. */
+const unlinked = (text: string) => text.replace(/\[(?:[^\]\\]|\\.)*\]\([^)\s]*\)/g, '');
 
 const words = (text: string) => text.trim().split(/\s+/).length;
 
@@ -128,11 +133,43 @@ describe('a change of builder', () => {
 describe('a blocker\'s close notice', () => {
   const fire = { kind: 'unblocked' as const, repo: 'acme/factory', issue: 7, blocker: { repo: 'acme/factory', number: 3, title: 'Blocker' }, pr: { number: 12, title: 'Fix', url: 'https://github.com/acme/factory/pull/12' } };
   test('links each builder and the PR, with no bare session URL', () => {
-    const started = unblockedNotice(fire, { started: BUILDER });
+    const started = unblockedNotice(fire, { started: BUILDER }, 'The ticket');
     assert.match(started, new RegExp(`\\[a builder\\]\\(${BUILDER}\\)`));
     assert.match(started, /\[PR #12 Fix\]\(https:\/\/github\.com\/acme\/factory\/pull\/12\)/);
-    const asked = unblockedNotice(fire, { asked: [BUILDER, OTHER], archived: [], unreached: [SPEC], what: 'what merged' });
+    const asked = unblockedNotice(fire, { asked: [BUILDER, OTHER], archived: [], unreached: [SPEC], what: 'what merged' }, 'The ticket');
     for (const text of [started, asked]) assert.doesNotMatch(text, BARE_SESSION, text);
+  });
+});
+
+describe('an issue a message names is a link', () => {
+  const fire = { kind: 'unblocked' as const, repo: 'acme/factory', issue: 7, blocker: { repo: 'acme/factory', number: 3, title: 'Blocker' }, pr: { number: 12, title: 'Fix', url: 'https://github.com/acme/factory/pull/12' } };
+  const POST = `${URL}#issuecomment-1`;
+  const texts = {
+    'offer, archived': offerText({ issue: 7, title: 'The ticket', url: URL }, 'archived'),
+    'offer, unsigned': offerText({ issue: 7, title: 'The ticket', url: URL }, 'unsigned'),
+    nudge: nudgeText(7, POST, URL),
+    maybe: maybeText(7, POST, URL),
+    'blocker close': unblockedFacts(fire, { title: 'The ticket' }),
+    'notice, started': unblockedNotice(fire, { started: BUILDER }, 'The ticket'),
+    'notice, started unlinked': unblockedNotice(fire, { started: null }, 'The ticket'),
+    'notice, asked': unblockedNotice(fire, { asked: [BUILDER], archived: [], unreached: [], what: 'what merged' }, 'The ticket'),
+  };
+
+  test('no issue or PR number stands outside a link', () => {
+    for (const [kind, text] of Object.entries(texts)) assert.doesNotMatch(unlinked(text), /#\d/, `${kind}: ${text}`);
+  });
+
+  test('the offer and a blocker\'s close name the issue with its title inside the link', () => {
+    const named = `[#7 The ticket](${URL})`;
+    for (const kind of ['offer, archived', 'offer, unsigned', 'blocker close', 'notice, started', 'notice, asked'] as const) {
+      assert.ok(texts[kind].includes(named), `${kind}: ${texts[kind]}`);
+    }
+  });
+
+  test('a nudge links the issue the post is on, beside the post', () => {
+    for (const kind of ['nudge', 'maybe'] as const) {
+      assert.ok(texts[kind].includes(`[post](${POST}) on [#7](${URL})`), `${kind}: ${texts[kind]}`);
+    }
   });
 });
 

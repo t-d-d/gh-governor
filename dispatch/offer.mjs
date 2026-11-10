@@ -28,7 +28,7 @@
 
 import { GITHUB_SOURCE } from './deliveries.mjs';
 import { relayOf, ticketAuthor } from './trust.mjs';
-import { rolesOf } from './roles.mjs';
+import { rolesOf, titleLink } from './roles.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { turnsOn } from './repo-config.mjs';
 import { relayedBody, sameSession, sessionId, unsignedSessionBody } from './webhook/subscribe.mjs';
@@ -41,28 +41,35 @@ import { relayedBody, sameSession, sessionId, unsignedSessionBody } from './webh
  */
 
 /**
- * The offer, as the commenting session reads it.
+ * The offer, as the commenting session reads it. It names the issue once,
+ * as a link that holds its title where the sender read one
+ * ({@link titleLink}), and the number alone where the read failed.
  *
- * @param {number} issue
+ * @param {{ issue: number, title: string | undefined, url: string }} ticket
  * @param {Ownerless} why
  * @returns {string}
  */
-export const offerText = (issue, why) => [
-  why === 'archived'
-    ? `Nobody owns #${issue}: the session its body names as owner is archived.`
-    : `Nobody owns #${issue}: a session filed it without signing it, so its body names no session as owner.`,
-  'No owner reads your comments on it.',
-  `If your comment changes what #${issue} asks, take the issue: edit its body to say what it now asks, and end the body with this session's link, alone on the body's last line. You then own it.`,
-  'If your comment changes nothing it asks, there is nothing more to do.',
-].join(' ');
+export const offerText = ({ issue, title, url }, why) => {
+  const named = titleLink(`#${issue}`, title, url);
+  return [
+    why === 'archived'
+      ? `Nobody owns ${named}: the session its body names as owner is archived.`
+      : `Nobody owns ${named}: a session filed it without signing it, so its body names no session as owner.`,
+    'No owner reads your comments on it.',
+    "If your comment changes what the issue asks, take it: edit its body to say what it now asks, and end the body with this session's link, alone on the body's last line. You then own it.",
+    'If your comment changes nothing it asks, there is nothing more to do.',
+  ].join(' ');
+};
 
 /**
  * Offer `issue` to `session`, unless it is one of `builders`. Returns the
- * delivery, or null where nothing was sent.
+ * delivery, or null where nothing was sent. `title`: the issue's, or
+ * undefined where it could not be read.
  *
  * @param {{
  *   repo: string,
  *   issue: number,
+ *   title: string | undefined,
  *   session: string,
  *   why: Ownerless,
  *   builders: readonly string[],
@@ -71,13 +78,13 @@ export const offerText = (issue, why) => [
  * }} args
  * @returns {Promise<import('./deliveries.mjs').Delivery | null>}
  */
-export const offerIssue = async ({ repo, issue, session, why, builders, deliveries, log }) => {
+export const offerIssue = async ({ repo, issue, title, session, why, builders, deliveries, log }) => {
   const about = { repo, issue, session: sessionId(session), why };
   if (builders.some((b) => sameSession(b, session))) {
     log('dispatch-offer', { ...about, outcome: 'not offered', reason: 'it builds the ticket, and a builder never takes the spec' });
     return null;
   }
-  const sent = await deliveries.deliver({ session }, offerText(issue, why), { source: GITHUB_SOURCE, kind: 'offer', on: [issue] });
+  const sent = await deliveries.deliver({ session }, offerText({ issue, title, url: `https://github.com/${repo}/issues/${issue}` }, why), { source: GITHUB_SOURCE, kind: 'offer', on: [issue] });
   // A send the cap held back logs itself.
   if (sent.capped !== true) log('dispatch-offer', { ...about, outcome: sent.ok ? 'offered' : sent.refused ? 'its session is archived' : 'not sent', ...(sent.ok || sent.refused ? {} : { level: 'error', error: sent.error }) });
   return sent;
@@ -85,16 +92,17 @@ export const offerIssue = async ({ repo, issue, session, why, builders, deliveri
 
 /**
  * After an issue owner's message refused as archived: with `sessionRules`
- * on, the ticket is read for its builders and `session`, which signed the
- * comment, is offered the issue unless it builds the ticket. Returns the
- * delivery, or null where nothing was sent. A read that fails rejects.
+ * on, the ticket is read for its title and its builders, and `session`,
+ * which signed the comment, is offered the issue unless it builds the
+ * ticket. Returns the delivery, or null where nothing was sent. A read that
+ * fails rejects.
  *
  * @param {{
  *   repo: string,
  *   issue: number,
  *   session: string,
  *   config: import('./repo-config.mjs').RepoConfig,
- *   reader: () => Promise<NonNullable<Parameters<typeof rolesOf>[0]['reader']>>,
+ *   reader: () => Promise<import('./builders.mjs').BuilderReader & { ticket: (n: number) => Promise<import('../scripts/lib/github-app.mjs').TicketRow> }>,
  *   deliveries: Pick<import('./deliveries.mjs').Deliveries, 'deliver' | 'ownerOf'>,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  * }} args
@@ -102,8 +110,10 @@ export const offerIssue = async ({ repo, issue, session, why, builders, deliveri
  */
 export const offerAfterRefusal = async ({ repo, issue, session, config, reader, deliveries, log }) => {
   if (!turnsOn(config, 'sessionRules')) return null;
-  const { builders } = await rolesOf({ issue, relay: relayOf(config), claim: config.labels.claim, owner: null, reader: await reader(), ownerOf: (pr) => deliveries.ownerOf(pr) });
-  return offerIssue({ repo, issue, session, why: 'archived', builders, deliveries, log });
+  const read = await reader();
+  const ticket = await read.ticket(issue);
+  const { builders } = await rolesOf({ issue, relay: relayOf(config), claim: config.labels.claim, ticket, owner: null, reader: read, ownerOf: (pr) => deliveries.ownerOf(pr) });
+  return offerIssue({ repo, issue, title: ticket.title, session, why: 'archived', builders, deliveries, log });
 };
 
 /**
@@ -135,7 +145,7 @@ export const planOffer = async (invocation, ctx) => {
   /** @type {import('./deliveries.mjs').Delivery | null} */
   let messaged = null;
   try {
-    messaged = await offerIssue({ repo, issue, session, why: 'unsigned', builders, deliveries: ctx.delivery(), log: ctx.log });
+    messaged = await offerIssue({ repo, issue, title: row.title, session, why: 'unsigned', builders, deliveries: ctx.delivery(), log: ctx.log });
   } finally {
     loginStored = await ctx.storeLogin();
   }

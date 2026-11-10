@@ -69,6 +69,7 @@ import { settleMove } from './take.mjs';
 import { turnsOn } from './repo-config.mjs';
 import { relayedText, tellAuthor, wroteIt } from './author.mjs';
 import { ownerLine, tellEditor } from './editor.mjs';
+import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** @typedef {import('./roles.mjs').TicketRole} TicketRole */
 
@@ -226,8 +227,16 @@ export const planTicket = async (invocation, ctx) => {
     for (const one of first) await send(one, owner);
     // The spec owner refused as archived: nobody owns the ticket, so the
     // session that signed the comment is offered it (dispatch/offer.mjs).
+    // The offer names the ticket by its title, which the fire does not
+    // carry. The roles have heard the comment by now, so a read that fails
+    // leaves the link the number alone, and does not fail the turn and
+    // send them the comment again.
     if (ownerGone && event === 'comments' && poster !== undefined && asks) {
-      offered = await offerIssue({ repo, issue, session: poster, why: 'archived', builders, deliveries: ctx.delivery(), log: ctx.log });
+      const title = await ctx.readerFor(repo).then((reader) => reader.ticket(issue)).then((row) => row.title, (error) => {
+        ctx.log('dispatch-offer', { repo, issue, session: sessionId(poster), level: 'warn', outcome: 'its title could not be read, so the offer links the number alone', error: messageOf(error) });
+        return undefined;
+      });
+      offered = await offerIssue({ repo, issue, title, session: poster, why: 'archived', builders, deliveries: ctx.delivery(), log: ctx.log });
     }
     // The edit moved the owner link: the take confirmed, or the old link
     // written back (dispatch/take.mjs).

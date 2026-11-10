@@ -460,9 +460,10 @@ export const searchAuthor = async ({ list, events, repo, on, post, match = poste
  *
  * @param {number} on
  * @param {string} url the post's page
+ * @param {string} page the page of the issue or PR it is on
  */
-export const nudgeText = (on, url) => [
-  `Your [post](${url}) on #${on} ends in the Claude Code footer and names no session, so governor had to search for who wrote it, and found this session.`,
+export const nudgeText = (on, url, page) => [
+  `Your [post](${url}) on [#${on}](${page}) ends in the Claude Code footer and names no session, so governor had to search for who wrote it, and found this session.`,
   `${brokenRule(1)} Edit the post to add this session's link, its https://claude.ai/code/session_… URL, alone on the line just above the Claude Code footer, and sign every post from now on.`,
 ].join('\n');
 
@@ -472,9 +473,10 @@ export const nudgeText = (on, url) => [
  *
  * @param {number} on
  * @param {string} url the post's page
+ * @param {string} page the page of the issue or PR it is on
  */
-export const maybeText = (on, url) => [
-  `A [post](${url}) on #${on} ends in the Claude Code footer and names no session. Governor searched the sessions working in this repo and could not tell which wrote it: it may be yours.`,
+export const maybeText = (on, url, page) => [
+  `A [post](${url}) on [#${on}](${page}) ends in the Claude Code footer and names no session. Governor searched the sessions working in this repo and could not tell which wrote it: it may be yours.`,
   `${brokenRule(1, 'A post like this breaks')} If you wrote it, edit it to add this session's link alone on the line just above the Claude Code footer, and sign every post from now on. If you did not write it, there is nothing to do.`,
 ].join('\n');
 
@@ -503,8 +505,9 @@ export const tellAuthor = ({ repo, on, post, found, asks = true, tellOnce, deliv
   at: { repo, on, post: post.at },
   found,
   asks,
-  nudge: { kind: 'unsigned', text: nudgeText(on, post.url) },
-  maybe: { kind: 'unsigned-maybe', text: maybeText(on, post.url) },
+  // GitHub sends an issue page's URL on to the PR where `on` is one.
+  nudge: { kind: 'unsigned', text: nudgeText(on, post.url, `https://github.com/${repo}/issues/${on}`) },
+  maybe: { kind: 'unsigned-maybe', text: maybeText(on, post.url, `https://github.com/${repo}/issues/${on}`) },
   tellOnce: /** @type {(session: string, kind: string) => Promise<boolean>} */ (tellOnce),
   deliveries,
   log,
