@@ -2751,7 +2751,7 @@ describe('run — an unblocked fire', () => {
     const notice = h.messages[0]!.text;
     assert.match(notice, /\[acme\/tools#41 The parser\]\(https:\/\/github\.com\/acme\/tools\/issues\/41\) closed as completed, by \[PR acme\/tools#52 Parse it\]/);
     assert.match(notice, /This is a notice: it asks nothing of you/);
-    assert.match(notice, /started \[a builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\) for #7 and asked it to check the spec against what merged/);
+    assert.match(notice, /started \[a builder\]\(https:\/\/claude\.ai\/code\/session_01ABC\) for the ticket and asked it to check the spec against what merged/);
   });
 
   // An unconfirmed launch still posts its dispatch comment, since a session
@@ -2761,7 +2761,7 @@ describe('run — an unblocked fire', () => {
     await run(fire(), h.deps as never);
     assert.equal(h.comments.length, 1, 'the dispatch comment is posted');
     assert.deepEqual(h.messages.map((m) => m.session), [SPEC]);
-    assert.match(h.messages[0]!.text, /started a builder for #7/);
+    assert.match(h.messages[0]!.text, /It blocked \[#7 Issue 7\]\(https:\/\/github\.com\/acme\/factory\/issues\/7\)\.[\s\S]*started a builder for the ticket/);
   });
 
   // With unblocked off there is no notice, so the spec owner hears of the
@@ -2890,7 +2890,8 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual(h.messages.map((m) => m.session), [OWNER]);
     const text = h.messages[0]!.text;
     assert.match(text, /\[acme\/tools#41 The parser\]\(https:\/\/github\.com\/acme\/tools\/issues\/41\) closed as completed, by \[PR acme\/tools#52 Parse it\]/);
-    assert.ok(text.includes(ownerSpecMessage(fire() as never, FACTORY_PROMPTS, FACTORY_CONFIG_LABELS)), text);
+    assert.ok(text.includes(ownerSpecMessage(fire() as never, FACTORY_PROMPTS, FACTORY_CONFIG_LABELS, 'Issue 7')), text);
+    assert.match(text, /It blocked \[#7 Issue 7\]\(https:\/\/github\.com\/acme\/factory\/issues\/7\)\./);
     assert.match(text, /your ticket/);
     assert.match(text, new RegExp(`add \`${CLAIM}\` to it first`));
     assert.deepEqual([h.comments, h.issueEdits], [[], []], 'nothing is posted on the ticket, and its body stands');
@@ -4857,7 +4858,7 @@ describe('run: an issue\'s owner refuses as archived, and the session that comme
     const h = harness({ message: async (m: { session: string; text: string }) => { sent.push(m); return cli()(m); } });
     const result = await run(fire, h.deps as never) as Record<string, any>;
     assert.deepEqual(sent.map((m) => m.session), [OWNER, COMMENTER]);
-    assert.match(sent[1]!.text, /Nobody owns #7/);
+    assert.ok(sent[1]!.text.includes('Nobody owns [#7 Issue 7](https://github.com/acme/factory/issues/7): '), sent[1]!.text);
     assert.equal(result.offered?.ok, true);
     assert.equal(exitCodeFor(result as never), 0);
     assert.ok(h.countsAsked.some((c) => c.session === COMMENTER && c.subject === 'acme/factory#7' && c.kind === 'offer'));
@@ -9492,7 +9493,7 @@ describe('run — every served repo', () => {
     await run(fire, h.deps as never);
     assert.deepEqual(h.launches.map((l) => [l.repo, l.environment]), [[ASKME, 'env_01ASK']]);
     assert.ok(h.calls.includes(`label ${ASKME}#2 +claimed`), h.calls.join('; '));
-    assert.match(h.launches[0]!.prompt, /\[acme\/factory#41 The parser\]\(https:\/\/github\.com\/acme\/factory\/issues\/41\) closed as completed, with no PR\. It blocked #2\./);
+    assert.match(h.launches[0]!.prompt, /\[acme\/factory#41 The parser\]\(https:\/\/github\.com\/acme\/factory\/issues\/41\) closed as completed, with no PR\. It blocked \[#2 Issue 2\]\(https:\/\/github\.com\/t-d-d\/askme-mcp\/issues\/2\)\./);
   });
 
   test('a red scheduled run in another repo starts a session where its file turns it on, with its prompt or the default', async () => {

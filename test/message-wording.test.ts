@@ -129,8 +129,8 @@ describe('corrections and nudges', () => {
     'edit-builder': correctionText(7, 'edit-builder', null),
     'edit-person': correctionText(7, 'edit-person', null),
     'edit-pr': correctionText(12, 'edit-pr', SPEC),
-    nudge: nudgeText(7, `${URL}#issuecomment-1`),
-    maybe: maybeText(7, `${URL}#issuecomment-1`),
+    nudge: nudgeText(7, `${URL}#issuecomment-1`, URL),
+    maybe: maybeText(7, `${URL}#issuecomment-1`, URL),
     editNudge: editNudgeText(7, URL),
     editMaybe: editMaybeText(7, URL),
   };

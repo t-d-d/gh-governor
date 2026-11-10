@@ -197,21 +197,24 @@ const labelsSay = (on, labels) => {
 
 /**
  * What closed and how: the blocker and the PR that closed it, each by the
- * blocker's repo where that is not the ticket's, and its close reason.
- * In a message, each is a link whose words hold its title. `quote`: each
- * title as code, for a comment GitHub renders, so an `@handle` or `#N` in
- * a title neither notifies nor links.
+ * blocker's repo where that is not the ticket's, its close reason, and the
+ * ticket it blocked. In a message, each is a link whose words hold its
+ * title, the ticket's `title` where the turn read it, since the fire
+ * carries none. `quote`: each title as code, for a comment GitHub renders,
+ * so an `@handle` or `#N` in a title neither notifies nor links, and the
+ * ticket as its number, which GitHub links itself.
  *
  * @param {UnblockedFire & { repo?: string }} fire
- * @param {{ quote?: boolean }} [options]
+ * @param {{ quote?: boolean, title?: string }} [options]
  */
-export const unblockedFacts = ({ repo, issue, blocker, pr }, { quote = false } = {}) => {
+export const unblockedFacts = ({ repo, issue, blocker, pr }, { quote = false, title: blockedTitle } = {}) => {
   const ref = repo !== undefined && sameRepo(repo, blocker.repo) ? '#' : `${blocker.repo}#`;
   const title = (/** @type {string} */ t) => (quote ? `\`${t.replace(/`/g, "'")}\`` : t);
   const how = blocker.reason === undefined ? 'closed' : `closed as ${blocker.reason.replace(/_/g, ' ')}`;
   if (!quote) {
     const by = pr === undefined ? 'with no PR' : `by ${titleLink(`PR ${ref}${pr.number}`, pr.title, pr.url)}`;
-    return `${titleLink(`${ref}${blocker.number}`, blocker.title, `https://github.com/${blocker.repo}/issues/${blocker.number}`)} ${how}, ${by}. It blocked #${issue}.`;
+    const blocked = repo === undefined ? `#${issue}` : titleLink(`#${issue}`, blockedTitle, `https://github.com/${repo}/issues/${issue}`);
+    return `${titleLink(`${ref}${blocker.number}`, blocker.title, `https://github.com/${blocker.repo}/issues/${blocker.number}`)} ${how}, ${by}. It blocked ${blocked}.`;
   }
   const by = pr === undefined ? 'with no PR' : `by PR [${ref}${pr.number}](${pr.url}) (${title(pr.title)})`;
   return `${ref}${blocker.number} (${title(blocker.title)}) ${how}, ${by}. It blocked #${issue}.`;
@@ -224,8 +227,9 @@ export const unblockedFacts = ({ repo, issue, blocker, pr }, { quote = false } =
  * @param {string} pickup The pickup prompt (scripts/lib/dispatch-prompt.mjs).
  * @param {UnblockedFire & { repo?: string }} fire
  * @param {Record<string, string | undefined>} prompts The repo's.
+ * @param {string} title The ticket's.
  */
-export const readyPrompt = (pickup, fire, prompts) => `${pickup}\n\n${unblockedFacts(fire)}\n${instruction(prompts, 'unblockedReady')}`;
+export const readyPrompt = (pickup, fire, prompts, title) => `${pickup}\n\n${unblockedFacts(fire, { title })}\n${instruction(prompts, 'unblockedReady')}`;
 
 /**
  * A ticket not ready to pick up: a session to rewrite its spec from what
@@ -234,7 +238,7 @@ export const readyPrompt = (pickup, fire, prompts) => `${pickup}\n\n${unblockedF
  *
  * @param {{ fire: UnblockedFire & { repo?: string }, title: string, labels: { ready: readonly string[], claim: string }, prompts: Record<string, string | undefined> }} args
  */
-export const specPrompt = ({ fire, title, labels, prompts }) => specSession({ issue: fire.issue, title, labels, prompts, kind: 'unblockedSpec', facts: unblockedFacts(fire) });
+export const specPrompt = ({ fire, title, labels, prompts }) => specSession({ issue: fire.issue, title, labels, prompts, kind: 'unblockedSpec', facts: unblockedFacts(fire, { title }) });
 
 /**
  * A spec session's opening prompt, for a ticket not ready to pick up: the
@@ -294,16 +298,18 @@ export const ownerOutcome = (told, unstarted) => (told.ok ? 'its owner was asked
  * @param {UnblockedFire & { repo?: string }} fire
  * @param {Record<string, string | undefined>} prompts
  * @param {{ ready: readonly string[], claim: string }} labels
+ * @param {string} title The ticket's.
  */
-export const ownerSpecMessage = (fire, prompts, labels) => ownerMessage({ issue: fire.issue, facts: unblockedFacts(fire), kind: 'unblockedOwnerSpec', labels, prompts });
+export const ownerSpecMessage = (fire, prompts, labels, title) => ownerMessage({ issue: fire.issue, facts: unblockedFacts(fire, { title }), kind: 'unblockedOwnerSpec', labels, prompts });
 
 /**
  * A claimed ticket's session's message: its blocker closed, by which PR.
  *
  * @param {UnblockedFire & { repo?: string }} fire
  * @param {Record<string, string | undefined>} prompts
+ * @param {string} title The ticket's.
  */
-export const unblockedMessage = (fire, prompts) => `${unblockedFacts(fire)}\n\n${instruction(prompts, 'unblockedClaimed', { issue: fire.issue })}`;
+export const unblockedMessage = (fire, prompts, title) => `${unblockedFacts(fire, { title })}\n\n${instruction(prompts, 'unblockedClaimed', { issue: fire.issue })}`;
 
 /** @param {readonly string[]} items */
 const joined = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
@@ -324,16 +330,18 @@ const joined = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0
  * A ready or claimed ticket's spec owner's notice of its blocker's close:
  * the close's facts, that the notice asks nothing, and which role was
  * asked. The spec owner may still edit its own body. It carries no
- * instruction, so it has no prompt key: every line is a fact.
+ * instruction, so it has no prompt key: every line is a fact. The facts
+ * name the ticket as a link, and the lines after them call it "the
+ * ticket".
  *
  * @param {UnblockedFire & { repo?: string }} fire
  * @param {NoticeAsk} ask
+ * @param {string} title The ticket's.
  */
-export const unblockedNotice = (fire, ask) => {
-  const { issue } = fire;
+export const unblockedNotice = (fire, ask, title) => {
   let who;
   if ('started' in ask) {
-    who = `Governor started ${ask.started === null ? 'a builder' : `[a builder](${ask.started})`} for #${issue} and asked it to check the spec against ${fire.pr === undefined ? 'this close' : 'what merged'} before it builds.`;
+    who = `Governor started ${ask.started === null ? 'a builder' : `[a builder](${ask.started})`} for the ticket and asked it to check the spec against ${fire.pr === undefined ? 'this close' : 'what merged'} before it builds.`;
   } else {
     // One builder as a link with `single` for its words, several numbered.
     const linked = (/** @type {readonly string[]} */ s, /** @type {string} */ single) => (s.length === 1 ? sessionLink(single, String(s[0])) : joined(s.map((b, i) => sessionLink(`builder ${i + 1}`, b))));
@@ -344,7 +352,7 @@ export const unblockedNotice = (fire, ask) => {
     const unreached = ask.unreached.length === 0 ? '' : `Governor could not reach ${ask.unreached.length === 1 ? linked(ask.unreached, 'its builder') : `its builders, ${linked(ask.unreached, '')}`}${so}.`;
     who = [asked, archived, unreached].filter((t) => t !== '').join(' ');
   }
-  return `${unblockedFacts(fire)}\n\nThis is a notice: it asks nothing of you. You are #${issue}'s spec owner, and may still edit its body where what counts as done has moved. ${who}`;
+  return `${unblockedFacts(fire, { title })}\n\nThis is a notice: it asks nothing of you. You are the ticket's spec owner, and may still edit its body where what counts as done has moved. ${who}`;
 };
 
 /**

@@ -75,9 +75,10 @@ const readUnblocked = async (reader, issue, sleep, statusOf) => {
  * @param {Record<string, unknown>} about The turn's log fields.
  * @param {string} session The spec owner.
  * @param {import('./unblocked.mjs').NoticeAsk} ask
+ * @param {string} title The ticket's, which the fire does not carry.
  */
-const sendNotice = async (ctx, invocation, about, session, ask) => {
-  const told = await ctx.delivery().deliver({ session }, unblockedNotice(invocation, ask), { source: GITHUB_SOURCE, kind: 'unblocked', on: [invocation.issue] });
+const sendNotice = async (ctx, invocation, about, session, ask, title) => {
+  const told = await ctx.delivery().deliver({ session }, unblockedNotice(invocation, ask, title), { source: GITHUB_SOURCE, kind: 'unblocked', on: [invocation.issue] });
   ctx.log('dispatch-unblocked', { ...about, session, role: 'spec owner', notice: true, ...(told.ok || told.refused ? {} : { level: told.capped ? 'info' : 'error' }), outcome: outcomeOf(told), ...(told.error === null ? {} : { error: told.error }) });
 };
 
@@ -258,7 +259,7 @@ export const planUnblocked = async (invocation, ctx) => {
     // otherwise a notice.
     const noticed = roles.holders.find((h) => h.role === 'spec owner')?.session ?? null;
     // The builders are asked in the words of what this turn posted, markers out.
-    const text = posted !== undefined ? unmarked(posted) : notPlanned ?? unblockedMessage(invocation, ctx.prompts);
+    const text = posted !== undefined ? unmarked(posted) : notPlanned ?? unblockedMessage(invocation, ctx.prompts, ticket.title);
     /** @type {import('./deliveries.mjs').Delivery[]} */
     const sent = [];
     /** @type {{ asked: string[], archived: string[], unreached: string[] }} */
@@ -289,7 +290,7 @@ export const planUnblocked = async (invocation, ctx) => {
       }
       // The spec owner hears the close as a notice that asks nothing and
       // names the builders that were asked.
-      if (noticed !== null) await sendNotice(ctx, invocation, about, noticed, { ...asks, what: row === 'claimed' && invocation.pr !== undefined ? 'what merged' : 'this close' });
+      if (noticed !== null) await sendNotice(ctx, invocation, about, noticed, { ...asks, what: row === 'claimed' && invocation.pr !== undefined ? 'what merged' : 'this close' }, ticket.title);
     } finally {
       loginStored = await ctx.storeLogin();
     }
@@ -332,7 +333,7 @@ export const planUnblocked = async (invocation, ctx) => {
     let told;
     let loginStored = false;
     try {
-      told = await ctx.delivery().deliver({ session: owner }, ownerSpecMessage(invocation, ctx.prompts, config.labels), { source: GITHUB_SOURCE, kind: 'unblocked-spec', on: [issue], fallback, spec: true });
+      told = await ctx.delivery().deliver({ session: owner }, ownerSpecMessage(invocation, ctx.prompts, config.labels, ticket.title), { source: GITHUB_SOURCE, kind: 'unblocked-spec', on: [issue], fallback, spec: true });
     } finally {
       loginStored = await ctx.storeLogin();
     }
@@ -357,7 +358,7 @@ export const planUnblocked = async (invocation, ctx) => {
       return;
     }
     if (builder.sessionUrl !== null && sameSession(builder.sessionUrl, specOwner)) return;
-    await sendNotice(ctx, invocation, about, specOwner, { started: builder.sessionUrl });
+    await sendNotice(ctx, invocation, about, specOwner, { started: builder.sessionUrl }, ticket.title);
   };
   if (ctx.cap === 0) {
     ctx.log('dispatch-unblocked', { ...about, outcome: 'not started', reason: CAP_ZERO_REASON });
@@ -381,7 +382,7 @@ export const planUnblocked = async (invocation, ctx) => {
     for (const held of heldFailed) ctx.log('dispatch-pickup', { level: 'info', repo: held.repo, issue: held.issue, outcome: 'skipped', reason: failedReason(held.until) });
     // Where the spec owner's notice below names the builder, it is the spec
     // owner's one message of the launch: the dispatch comment tells nobody.
-    for (const d of planned) launches.push({ repo: d.repo, issue, claim: true, holdsRepo: true, told: specOwner !== null, asked: { prompt: readyPrompt(d.prompt, invocation, ctx.prompts), sessionName: d.sessionName, model: DEFAULT_MODEL } });
+    for (const d of planned) launches.push({ repo: d.repo, issue, claim: true, holdsRepo: true, told: specOwner !== null, asked: { prompt: readyPrompt(d.prompt, invocation, ctx.prompts, ticket.title), sessionName: d.sessionName, model: DEFAULT_MODEL } });
     const [outsider] = outsiders;
     const [stranger] = strangers;
     const [refused] = unstarted;
