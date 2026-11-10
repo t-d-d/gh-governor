@@ -500,18 +500,21 @@ export const maybeText = (on, url, page) => [
  * }} args
  * @returns {Promise<import('./deliveries.mjs').Delivery[]>}
  */
-export const tellAuthor = ({ repo, on, post, found, asks = true, tellOnce, deliveries, log }) => tellFound({
-  event: AUTHOR,
-  at: { repo, on, post: post.at },
-  found,
-  asks,
+export const tellAuthor = ({ repo, on, post, found, asks = true, tellOnce, deliveries, log }) => {
   // GitHub sends an issue page's URL on to the PR where `on` is one.
-  nudge: { kind: 'unsigned', text: nudgeText(on, post.url, `https://github.com/${repo}/issues/${on}`) },
-  maybe: { kind: 'unsigned-maybe', text: maybeText(on, post.url, `https://github.com/${repo}/issues/${on}`) },
-  tellOnce: /** @type {(session: string, kind: string) => Promise<boolean>} */ (tellOnce),
-  deliveries,
-  log,
-});
+  const page = `https://github.com/${repo}/issues/${on}`;
+  return tellFound({
+    event: AUTHOR,
+    at: { repo, on, post: post.at },
+    found,
+    asks,
+    nudge: { kind: 'unsigned', text: nudgeText(on, post.url, page) },
+    maybe: { kind: 'unsigned-maybe', text: maybeText(on, post.url, page) },
+    tellOnce: /** @type {(session: string, kind: string) => Promise<boolean>} */ (tellOnce),
+    deliveries,
+    log,
+  });
+};
 
 /**
  * Tell what a search found, as {@link tellAuthor} does, with the kinds and
