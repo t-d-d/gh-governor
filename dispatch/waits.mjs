@@ -1,5 +1,9 @@
 /**
- * A ticket's own wait: a body that opens with `Blocked until: <YYYY-MM-DD>`.
+ * A ticket's own wait: a body that opens with `Blocked until: <YYYY-MM-DD>`,
+ * or with a time of day after the date, in UTC: `Blocked until: <YYYY-MM-DD>
+ * <HH:MM>`. The wait ends at 00:00 UTC on a date, or at the time, and
+ * governor acts on it at the first bare schedule fire after that, which
+ * runs hourly by default. What is said of a date below holds for a time too.
  *
  * The rule that holds the ticket is the shared readiness rule's
  * (`isWaiting`, scripts/lib/ready-work.mjs), and the reader carries what the
@@ -51,7 +55,7 @@ import { rolesOf } from './roles.mjs';
 import { AUTO, RELAY, authorKind, lets, ticketAuthor } from './trust.mjs';
 import { DAY_MS } from './periodics.mjs';
 import { instruction } from './prompts.mjs';
-import { RELATIVE_WAIT, isWaiting, mayStartSpec, ticketStatus, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
+import { RELATIVE_WAIT, isWaiting, mayStartSpec, ticketStatus, waitEnd, waitOf, waitsOnClose } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** The log event for a `Blocked until:` line governor cannot read. */
@@ -70,7 +74,7 @@ export const waitUnreadableComment = (value) => {
   const said = value === '' ? 'holds no date' : `says \`${value.replace(/`/g, "'")}\``;
   return [
     `Governor cannot read the date on this ticket's \`Blocked until:\` line, which ${said}, so it is holding the ticket.`,
-    'Write the date as `Blocked until: YYYY-MM-DD` on the body\'s first line, or delete the line to free the ticket.',
+    'Write the date as `Blocked until: YYYY-MM-DD` on the body\'s first line, or as `Blocked until: YYYY-MM-DD HH:MM` for a time of day in UTC, or delete the line to free the ticket.',
     '',
     WAIT_UNREADABLE_MARKER,
   ].join('\n');
@@ -145,10 +149,10 @@ export const WAIT_ENDED_MARKER = '<!-- governor:wait-ended ';
 
 /**
  * The marker on governor's one comment about a wait that ended on `until`.
- * It names the date, so a ticket that waits again on a later date is told
- * again.
+ * It names the date, or the time, so a ticket that waits again on a later
+ * one is told again.
  *
- * @param {string} until `YYYY-MM-DD`.
+ * @param {string} until A date or a time, as `waitOf` gives it.
  */
 export const waitEndedMarker = (until) => `${WAIT_ENDED_MARKER}${until} -->`;
 
@@ -168,7 +172,7 @@ export const waitEndedComment = (until) => [
  * The line that ends every launch's prompt in a repo with `waits` on, after
  * the line on signing posts (dispatch/turn.mjs).
  */
-export const WAIT_PROMPT = 'To make a ticket wait until a date, start its body with the line `Blocked until: YYYY-MM-DD`. Governor does not start it before 00:00 UTC on that date.';
+export const WAIT_PROMPT = 'To make a ticket wait until a date, start its body with the line `Blocked until: YYYY-MM-DD`. Governor does not start it before 00:00 UTC on that date. To make it wait until a time of day, write `Blocked until: YYYY-MM-DD HH:MM`, in UTC.';
 
 /**
  * A spec session's opening prompt for a ticket whose wait ended: the
@@ -225,8 +229,6 @@ export const waitOwnerMessage = ({ issue, until, labels, prompts }) => ownerMess
  * @typedef {(event: string, context?: Record<string, unknown>) => void} Log
  */
 
-/** When a wait on `until` ends: 00:00 UTC on that date. @param {string} until */
-const endOf = (until) => Date.parse(`${until}T00:00:00Z`);
 
 /**
  * A ticket's read, or null where it is no ticket here any more: gone (404,
@@ -675,7 +677,7 @@ export const endedWaits = async ({ reader, state, repo, labels, spec, now, log, 
       failed.push({ issue, error: `wait #${issue}: ${message}` });
     }
   };
-  await Promise.all(items.filter((item) => now >= endOf(item.until)).map(one));
+  await Promise.all(items.filter((item) => now >= waitEnd(item.until)).map(one));
   // DispatchCap takes the first spec sessions, so they go in issue order,
   // whichever read answered first.
   specs.sort((a, b) => a.issue - b.issue);

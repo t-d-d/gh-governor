@@ -93,7 +93,7 @@ A repo turns each feature on with a section in its `.github/governor.json`.
 | Issue reviews | A model with no tools reads each issue as it opens, when its body is edited, or when a label brings it into a review, against the repo's own prompt, and comments whether it passes, waits for an edit, or waits for a person, naming every gap at once. Governor applies the labels the repo names for that conclusion, so a repo can gate pickup on a review by listing its `success` label among the ready labels. A repo can add checks and labels per issue label (`byLabel`), so a bug that passes is readied with no person while an enhancement that passes waits for one. |
 | Periodics | Recurring sessions, such as a code review every 10 merges, or a weekly backlog review that lists the tickets left stuck. |
 | Hooks | A system outside GitHub, such as a cloud alarm, starts a session with a signed request. |
-| Waits | A ticket that opens with `Blocked until: 2026-11-20` is not started before that date. |
+| Waits | A ticket that opens with `Blocked until: 2026-11-20`, or `Blocked until: 2026-11-20 14:00` for a time of day in UTC, is not started before then. |
 | Sign-off | A session whose last reply ends `Signing off.` is archived, and a message about a close or a deploy, with nothing else open, asks the session to sign off. |
 
 ### How dark the factory runs

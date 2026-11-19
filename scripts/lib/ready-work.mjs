@@ -42,9 +42,10 @@ import { PICKUP_BY, SUMMONERS, waitLine } from '../../dispatch/webhook/fire.mjs'
 
 /**
  * What a ticket's `Blocked until:` line says: the date it waits for, as
- * `YYYY-MM-DD`; a number of days after an issue closes (`after`), with that
- * issue's repo where it is not the ticket's; or the value governor could
- * not read as either.
+ * `YYYY-MM-DD`, or the time, as `YYYY-MM-DDTHH:MMZ` with any seconds the
+ * line gives (`waitEnd` reads either); a number of days after an issue
+ * closes (`after`), with that issue's repo where it is not the ticket's; or
+ * the value governor could not read as any of them.
  *
  * @typedef {{ days: number, issue: number, repo?: string }} After
  * @typedef {{ until: string } | { after: After } | { unreadable: string }} Wait
@@ -143,18 +144,50 @@ const hasOpenBlocker = (rows) => (rows ?? []).some((b) => b.state === 'open');
 export const isBlocked = (issue, rows) =>
   issue.openBlockers === undefined ? hasOpenBlocker(rows) : issue.openBlockers > 0;
 
+/** A line's time of day: `HH:MM` or `HH:MM:SS`, with a `Z` after it or none. */
+const TIME_OF_DAY = /^(\d{2}:\d{2}(?::\d{2})?)Z?$/;
+
+/** A word that starts as a time of day does: digits, then a colon, or `am` or `pm`. */
+const TIME_LIKE = /^\d{1,2}(?::|[ap]m\b)/i;
+
+/** A wait's `until`: a date, or a date and a time with its `Z`. */
+const UNTIL = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?Z)?$/;
+
+/**
+ * When a wait on `until` ends, in epoch ms: 00:00 UTC on a date, or the time
+ * itself. NaN for anything else: a date the calendar does not hold, an hour
+ * past 23, or a value `waitOf` does not write.
+ *
+ * @param {string} until `YYYY-MM-DD`, `YYYY-MM-DDTHH:MMZ` or `YYYY-MM-DDTHH:MM:SSZ`.
+ */
+export const waitEnd = (until) => {
+  const parts = UNTIL.exec(until);
+  if (parts === null) return NaN;
+  const [year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0] = parts.slice(1).map((part) => Number(part ?? 0));
+  const at = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  // A part past its range rolls into the next, so the date reads back changed.
+  const same = at.getUTCFullYear() === year && at.getUTCMonth() === month - 1 && at.getUTCDate() === day
+    && at.getUTCHours() === hour && at.getUTCMinutes() === minute && at.getUTCSeconds() === second;
+  return same ? at.getTime() : NaN;
+};
+
 /**
  * What a ticket's body says about waiting, as `{ wait }`, or `{}` where it
  * has no `Blocked until:` line. Only the body's first non-empty line counts,
  * so a body that quotes the line further down holds nothing. The value is a
- * date, `YYYY-MM-DD`, that exists on the calendar; text after it, past a
- * space, is a reason and is ignored. So is a relative value,
+ * date, `YYYY-MM-DD`, that exists on the calendar, and may go on to a time
+ * of day in UTC, past a space or a `T`: `HH:MM` or `HH:MM:SS` on the
+ * 24-hour clock, with a `Z` after it or none. Text after the date or the
+ * time, past a space, is a reason and is ignored. So is a relative value,
  * `<N> days after #<issue> closes` with `N` from 1 to {@link MAX_RELATIVE_DAYS}
  * ({@link RELATIVE_WAIT}),
  * which holds the ticket until governor rewrites it into its date
  * (dispatch/waits.mjs). Any other value is unreadable, which
  * holds the ticket too (`isWaiting`): a line a person wrote must never be
- * silently ignored.
+ * silently ignored. A word after the date that starts as a time does, with
+ * digits and then a colon, `am` or `pm`, and is no time governor reads, such
+ * as `9:00`, `2pm` or `14:00+11:00`, is unreadable too: read as a reason, it
+ * would end the wait at 00:00, sooner than the line says.
  *
  * @param {string | null | undefined} body
  * @returns {{ wait?: Wait }}
@@ -163,13 +196,14 @@ export const waitOf = (body) => {
   // The line is found as the receiver finds it (dispatch/webhook/fire.mjs).
   const value = waitLine(body);
   if (value === null) return {};
-  const date = value.split(/\s/, 1)[0] ?? '';
-  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
-  if (parts !== null) {
-    const [year, month, day] = [Number(parts[1]), Number(parts[2]), Number(parts[3])];
-    const at = new Date(Date.UTC(year, month - 1, day));
-    if (at.getUTCFullYear() === year && at.getUTCMonth() === month - 1 && at.getUTCDate() === day) return { wait: { until: date } };
-  }
+  const [first = '', second = ''] = value.split(/\s+/, 2);
+  const joined = /^(\d{4}-\d{2}-\d{2})T(.*)$/.exec(first);
+  // A time is the date's own word past a `T`, or the next word where that starts as a time does.
+  const date = joined?.[1] ?? first;
+  const time = joined === null ? (TIME_LIKE.test(second) ? second : undefined) : joined[2] ?? '';
+  const clock = time === undefined ? '' : TIME_OF_DAY.exec(time)?.[1];
+  const until = clock === undefined ? '' : clock === '' ? date : `${date}T${clock}Z`;
+  if (!Number.isNaN(waitEnd(until))) return { wait: { until } };
   const relative = RELATIVE_WAIT.exec(value);
   const days = Number(relative?.[1]);
   const issue = Number(relative?.[3]);
@@ -202,8 +236,9 @@ export const waitsOnClose = (wait, repo, closed) =>
   && (wait.after.repo ?? repo).toLowerCase() === closed.repo.toLowerCase();
 
 /**
- * Whether a ticket's own `Blocked until:` line holds it at `now`: a date
- * still to come, whose wait ends at 00:00 UTC on that date, a relative line
+ * Whether a ticket's own `Blocked until:` line holds it at `now`: a date or
+ * a time still to come, whose wait ends at 00:00 UTC on the date or at the
+ * time (`waitEnd`), a relative line
  * governor has not rewritten into its date yet, or a line governor could
  * not read. A row with no line is not held.
  *
@@ -219,7 +254,7 @@ export const waitsOnClose = (wait, repo, closed) =>
 export const isWaiting = ({ wait }, now) => {
   if (wait === undefined) return false;
   if (!('until' in wait)) return true;
-  return now < Date.parse(`${wait.until}T00:00:00Z`);
+  return now < waitEnd(wait.until);
 };
 
 /**

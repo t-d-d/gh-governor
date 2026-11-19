@@ -18,7 +18,7 @@ import { waitOf } from '../scripts/lib/ready-work.mjs';
 import { dynamoState } from '../dispatch/turn.mjs';
 import { githubReader } from '../scripts/lib/github-app.mjs';
 import { PROMPTS } from '../dispatch/prompts.mjs';
-import { WAIT_ENDED_MARKER, WAIT_PROMPT, endedWaits, holdWait, waitEndedComment, waitEndedMarker, waitSpecPrompt } from '../dispatch/waits.mjs';
+import { WAIT_ENDED_MARKER, WAIT_PROMPT, endedWaits, holdWait, waitEndedComment, waitEndedMarker, waitSpecPrompt, waitUnreadableComment } from '../dispatch/waits.mjs';
 import { UNREADIED_MARKER } from '../scripts/lib/ready-work.mjs';
 
 const REPO = 'acme/factory';
@@ -125,6 +125,14 @@ describe('what governor says when a wait ends', () => {
     assert.match(body, /not ready/);
   });
 
+  test('a wait that ended at a time names the time, in the comment and its marker', () => {
+    const body = waitEndedComment('2026-11-05T14:00Z');
+    assert.equal(waitEndedMarker('2026-11-05T14:00Z'), '<!-- governor:wait-ended 2026-11-05T14:00Z -->');
+    assert.ok(body.includes(waitEndedMarker('2026-11-05T14:00Z')));
+    assert.match(body, /names 2026-11-05T14:00Z, which has passed/);
+    assert.ok(!body.includes(waitEndedMarker('2026-11-05')), 'a wait moved from the date to a time on it is told again');
+  });
+
   test('the spec prompt names the ticket and the date, and asks what unblockedSpec asks', () => {
     const prompt = waitSpecPrompt({ issue: 7, title: 'Read the logs', until: '2026-11-05', labels: { ready: ['ready', 'mode: afk'], claim: 'claimed' }, prompts: {} });
     assert.match(prompt, /^Spec #7 'Read the logs'\n/);
@@ -139,6 +147,15 @@ describe('what governor says when a wait ends', () => {
 
   test('the prompt line says how to make a ticket wait', () => {
     assert.match(WAIT_PROMPT, /`Blocked until: YYYY-MM-DD`/);
+    assert.match(WAIT_PROMPT, /`Blocked until: YYYY-MM-DD HH:MM`, in UTC/);
+  });
+
+  test('the unreadable comment names the date form and the time form', () => {
+    const body = waitUnreadableComment('2026-11-05 24:00');
+    assert.match(body, /says `2026-11-05 24:00`/);
+    assert.match(body, /`Blocked until: YYYY-MM-DD`/);
+    assert.match(body, /`Blocked until: YYYY-MM-DD HH:MM`/);
+    assert.match(body, /UTC/);
   });
 });
 
@@ -196,6 +213,20 @@ describe('realDeps: a ticket\'s wait item', () => {
     assert.deepEqual(sent[1]?.input.ExpressionAttributeValues, { ':read': { S: '2026-11-05' } });
     refuse = true;
     assert.equal(await state.recordWait(REPO, 7, '2026-11-05', '2026-11-09'), false);
+  });
+
+  test('an item holds a time as its line gives it, and expires a month after that time', async () => {
+    const sent: Sent[] = [];
+    const client = { send: async (command: { constructor: { name: string }; input: Record<string, any> }) => { sent.push({ name: command.constructor.name, input: command.input }); return command.constructor.name === 'GetItemCommand' ? { Item: { ...command.input.Key, until: { S: '2026-11-05T14:00Z' } } } : {}; } };
+    const state = dynamoState(client as never, 'T');
+    assert.equal(await state.recordWait(REPO, 7, '2026-11-05', '2026-11-05T14:00Z'), true);
+    assert.deepEqual(sent[0]?.input.Item.until, { S: '2026-11-05T14:00Z' });
+    assert.equal(sent[0]?.input.Item.ttl.N, String(Date.parse('2026-12-05T14:00:00Z') / 1000));
+    assert.deepEqual(await state.wait(REPO, 7), { until: '2026-11-05T14:00Z' });
+    for (const until of ['2026-11-05T24:00Z', '2026-11-05T14:00', '2026-11-05 14:00']) {
+      const bad = dynamoState({ send: async () => ({ Item: { pk: { S: 'wait#acme/factory' }, sk: { S: '7' }, until: { S: until } } }) } as never, 'T');
+      await assert.rejects(bad.wait(REPO, 7), /malformed/, until);
+    }
   });
 
   test('a delete goes only over the date the turn read', async () => {
@@ -324,6 +355,73 @@ describe('a waiting ticket that is gone or moved', () => {
     const { reader } = readerWith(async () => { throw gone(410); });
     assert.equal(await holdWait({ reader: reader as never, state, repo: REPO, issue: 7, labels: LABELS, now: NOW, log: () => {} }), 'dropped');
     assert.deepEqual(dropped, [[REPO, 7, '2026-11-05']]);
+  });
+});
+
+describe('a wait that ends at a time of day', () => {
+  const LABELS = { ready: ['mode: afk'], claim: 'claimed', claimRemoves: [], exclude: [] };
+  const UNTIL = '2026-11-05T14:00Z';
+  /** A state holding issue 7's item at `held`, and the writes asked of it. */
+  const stateWith = (held: string | null) => {
+    const puts: Array<[number, string | null, string]> = [];
+    const dropped: Array<[number, string]> = [];
+    return {
+      puts,
+      dropped,
+      state: {
+        waits: async () => (held === null ? [] : [{ issue: 7, until: held }]),
+        wait: async () => (held === null ? null : { until: held }),
+        recordWait: async (_repo: string, issue: number, read: string | null, until: string) => { puts.push([issue, read, until]); return true; },
+        dropWait: async (_repo: string, issue: number, read: string) => { dropped.push([issue, read]); return true; },
+      },
+    };
+  };
+  /** A reader of ticket 7, not ready, whose line names `until`, and the comments it was asked to post. */
+  const readerWith = (until: string) => {
+    const comments: Array<[number, string]> = [];
+    return {
+      comments,
+      reader: {
+        ticket: async () => ({ number: 7, title: 'Read the logs', state: 'open', labels: [], association: 'OWNER', wait: { until } }),
+        blockers: async () => [],
+        allComments: async () => [],
+        comment: async (n: number, body: string) => { comments.push([n, body]); },
+      },
+    };
+  };
+
+  test('the wait fire holds the time in the ticket\'s item, on the day itself', async () => {
+    const { state, puts } = stateWith(null);
+    const { reader } = readerWith(UNTIL);
+    const outcome = await holdWait({ reader: reader as never, state, repo: REPO, issue: 7, labels: LABELS, now: Date.parse('2026-11-05T09:00:00Z'), log: () => {} });
+    assert.equal(outcome, 'held');
+    assert.deepEqual(puts, [[7, null, UNTIL]]);
+  });
+
+  test('the schedule fire leaves the item alone before the time, on the day itself', async () => {
+    const { state, puts, dropped } = stateWith(UNTIL);
+    const { reader, comments } = readerWith(UNTIL);
+    const ended = await endedWaits({ reader, state, repo: REPO, labels: LABELS, spec: false, now: Date.parse('2026-11-05T13:17:00Z'), log: () => {} });
+    assert.deepEqual(ended, { specs: [], unread: [] });
+    assert.deepEqual([comments, puts, dropped], [[], [], []]);
+  });
+
+  test('the first schedule fire after the time says the wait ended, under a marker of the time', async () => {
+    const { state, dropped } = stateWith(UNTIL);
+    const { reader, comments } = readerWith(UNTIL);
+    const ended = await endedWaits({ reader, state, repo: REPO, labels: LABELS, spec: false, now: Date.parse('2026-11-05T14:17:00Z'), log: () => {} });
+    assert.deepEqual(ended, { specs: [], unread: [] });
+    assert.equal(comments.length, 1);
+    assert.ok(comments[0]![1].includes(waitEndedMarker(UNTIL)));
+    assert.deepEqual(dropped, [[7, UNTIL]]);
+  });
+
+  test('a date whose line gained a later time that day is not released at the date', async () => {
+    const { state, puts } = stateWith('2026-11-05');
+    const { reader, comments } = readerWith(UNTIL);
+    await endedWaits({ reader, state, repo: REPO, labels: LABELS, spec: false, now: Date.parse('2026-11-05T00:17:00Z'), log: () => {} });
+    assert.deepEqual(comments, []);
+    assert.deepEqual(puts, [[7, '2026-11-05', UNTIL]], 'the item moves to the time');
   });
 });
 
