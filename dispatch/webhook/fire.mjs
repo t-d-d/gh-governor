@@ -209,6 +209,18 @@ export const authorKind = ({ author, association, bot }) => (bot === true || /\[
  */
 export const lets = (list, row) => row.own === true || list.includes(authorKind(row));
 
+/**
+ * Text from outside governor, quoted line by line with `>`, so nothing in it
+ * can end the quote and read as governor's own lines. A line already quoted
+ * gets one more `>`. A lone carriage return ends a line in Markdown too,
+ * and a reader may break a line at a Unicode line or paragraph separator or
+ * a next-line mark: split on every line ending, or a line after one would
+ * sit outside the quote.
+ *
+ * @param {string} text
+ */
+export const quoted = (text) => text.split(/\r\n|[\r\n\u0085\u2028\u2029]/).map((line) => (line === '' ? '>' : `> ${line}`)).join('\n');
+
 /** Dependabot's login: its bumps are reviewed by the Dependabot list, though it summons nothing, and no session owns them. */
 export const DEPENDABOT = 'dependabot[bot]';
 

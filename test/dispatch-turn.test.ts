@@ -6274,8 +6274,8 @@ describe('run — the dispatcher labels what it sends', () => {
     assert.equal(messages[0]!.text, fromDispatcher('the reviewer asked for a test', GITHUB_SOURCE));
     assert.equal(messages[0]!.text.split(DISPATCHER_LABEL).length, 2, 'once');
     assert.match(DISPATCHER_LABEL, /^\[governor\]/);
-    assert.match(DISPATCHER_LABEL, /relay/i, 'says it relays GitHub activity');
-    assert.match(DISPATCHER_LABEL, /not typed by the operator/);
+    assert.match(DISPATCHER_LABEL, /automated message from governor/i, 'says governor sends it');
+    assert.doesNotMatch(DISPATCHER_LABEL, /relayed github activity/i, 'governor\'s own lines are not relayed');
     assert.doesNotMatch(DISPATCHER_LABEL, /not instructions/, 'a remark it relays may be one the session should act on');
   });
 
