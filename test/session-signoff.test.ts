@@ -575,6 +575,24 @@ describe('fitness: the sweep reads a session the list leaves out by the id gover
     assert.deepEqual(archived, ['session_01LISTED']);
   });
 
+  test('the known sessions\' reads count against the sweep\'s window, and a known session is looked up from its own record alone', async () => {
+    let now = NOW;
+    const slow = await sweepOver([row('cse_01LISTED')], { cse_01LISTED: cloudSignedOff }, {
+      now: () => now,
+      known: async () => { now += SIGNOFF_WINDOW_MS + 1; return []; },
+    });
+    assert.deepEqual(slow.archived, [], 'out of time once the known reads have run');
+    assert.equal(slow.sweep.deferred, 1);
+    const run = record('cse_01ROUTINE');
+    const asked: Array<[string, unknown]> = [];
+    const { archived } = await sweepOver([row('cse_01LISTED')], { cse_01ROUTINE: cloudSignedOff, cse_01LISTED: cloudSignedOff }, {
+      known: async () => [{ id: 'cse_01ROUTINE', row: run, repo: SERVED }],
+      lookup: async (id: string, _token: string, own?: boolean) => { asked.push([id, own ?? false]); return id === 'cse_01ROUTINE' ? { row: run, from: 'record' } : { row: row(id), from: 'list' }; },
+    });
+    assert.deepEqual(archived.sort(), ['session_01LISTED', 'session_01ROUTINE']);
+    assert.deepEqual(asked.sort(), [['cse_01LISTED', false], ['cse_01ROUTINE', true]]);
+  });
+
   test('a read of the known sessions that fails still sweeps the list, and logs why', async () => {
     const { archived, logged } = await sweepOver([row('cse_01LISTED')], { cse_01LISTED: cloudSignedOff }, {
       known: async () => { throw new Error('GetItem: ProvisionedThroughputExceeded'); },

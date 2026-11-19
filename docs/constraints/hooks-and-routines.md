@@ -21,7 +21,9 @@ connector the account has would hold more than its file named.
   account's connector list. Governor keeps the routine disabled, on a valid
   cron that fires rarely, and fires it itself.
 - A periodic's open session does not hold its next fire: a routine run's
-  session is never in the sessions list, so nothing may archive it. Only a
+  session is never in the sessions list, so the sign-off sweep reaches only
+  the one its periodic's record names, and a run's session may stay open
+  for good where its last reply does not sign off. Only a
   session in the middle of a turn holds the fire, until that turn ends. A
   hook's open session still takes its next fire as a message.
 - A named connector the account has not connected starts nothing, as an

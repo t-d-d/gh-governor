@@ -107,7 +107,7 @@ import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-s
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
 import { deployNote, deployTargets } from './merge-notice.mjs';
-import { ARCHIVE_TIMEOUT_MS, SIGNOFF_LATEST_START_MS, SIGNOFF_WINDOW_MS, accessToken, awaitReplies, heldMessage, idle, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
+import { ARCHIVE_TIMEOUT_MS, SIGNOFF_LATEST_START_MS, SIGNOFF_WINDOW_MS, accessToken, awaitReplies, heldMessage, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { STOPPED_EVENT, releaseStopped, stoppedOf } from './stopped.mjs';
 import { WAIT_PROMPT, holdWait, waitLinks } from './waits.mjs';
@@ -1261,13 +1261,14 @@ const routineRuns = (deps, served) => async (token) => {
  * then carries the list row's idle state (`worker_status` in newer
  * records, `session_status` in older ones). Afresh, since a read taken for an earlier
  * record may predate a prompt that set this session to work. It says which
- * it read: a refusal names the source.
+ * it read: a refusal names the source. A session the list leaves out
+ * (`own`, from `routineRuns`) is read from its own record alone.
  *
  * @param {Deps} deps
  * @returns {import('../scripts/lib/session-signoff.mjs').Lookup}
  */
-const sweepLookup = (deps) => async (id, token) => {
-  const listed = await sessionRow((after) => deps.sessions.list(token, after), id);
+const sweepLookup = (deps) => async (id, token, own = false) => {
+  const listed = own ? undefined : await sessionRow((after) => deps.sessions.list(token, after), id);
   return listed === undefined ? { row: sessionRecord(await deps.sessions.get(id, token)), from: 'record' } : { row: listed, from: 'list' };
 };
 
@@ -1295,6 +1296,14 @@ const loginToken = (deps, what) => {
 };
 
 /**
+ * Whether a session's record reads in the middle of a turn: `worker_status`
+ * where it carries one, else the older `session_status`.
+ *
+ * @param {Record<string, unknown>} record
+ */
+const running = (record) => ('worker_status' in record ? record.worker_status === 'running' : record.session_status === 'SESSION_STATUS_RUNNING');
+
+/**
  * A hook's or a periodic's last run, read through its session's own record
  * under the login's token. An expired token is refreshed once for the
  * reader this builds, as for the environment list: a quiet repo may launch
@@ -1308,9 +1317,14 @@ const loginToken = (deps, what) => {
  * the session's state itself rather than wait for the sweep.
  *
  * `busy`, for a periodic (dispatch/periodics.mjs): the session is open, as
- * above, and in the middle of a turn, read as the sweep reads a row
- * (`idle`, scripts/lib/session-signoff.mjs). An open, idle session holds
- * nothing: a routine run's session may never be archived.
+ * above, and in the middle of a turn: its `worker_status` reads `running`,
+ * or, in an older record without one, its `session_status` reads
+ * `SESSION_STATUS_RUNNING`. Any other state, or none, is not busy: the sweep
+ * archives idle sessions alone, so a state that held the fire and was never
+ * idle would hold it for good. An open, idle session holds
+ * nothing: a run's session may stay open for good where its last reply does
+ * not sign off, and the sweep reaches a routine run's only while its
+ * periodic's record names it (`routineRuns`).
  *
  * @param {Deps} deps
  * @returns {{ open: (session: string) => Promise<boolean>, busy: import('./periodics.mjs').Busy }}
@@ -1325,7 +1339,7 @@ const lastRun = (deps) => {
     busy: async (session) => {
       const record = await read(session);
       const state = stoppedOf(record, '');
-      return state !== null && !state.archived && !idle(/** @type {Record<string, unknown>} */ (record));
+      return state !== null && !state.archived && running(/** @type {Record<string, unknown>} */ (record));
     },
   };
 };

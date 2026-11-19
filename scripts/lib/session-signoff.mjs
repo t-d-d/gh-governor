@@ -325,7 +325,7 @@ export const SIGNOFF_REPLY_POLL_MS = 15 * 1000;
  *
  * @param {Record<string, unknown>} row
  */
-export const idle = (row) => ('worker_status' in row ? row.worker_status === 'idle' : row.session_status === 'SESSION_STATUS_IDLE');
+const idle = (row) => ('worker_status' in row ? row.worker_status === 'idle' : row.session_status === 'SESSION_STATUS_IDLE');
 
 /**
  * How many pages of a candidate's events the sweep reads, newest first,
@@ -357,8 +357,10 @@ const CSE_ID = /^cse_([A-Za-z0-9]+)$/;
  *   own record, read under `token`, and the repo governor recorded it under.
  *   A read that fails throws.
  *
- * @typedef {(id: string, token: string) => Promise<{ row: unknown, from: 'list' | 'record' }>} Lookup
+ * @typedef {(id: string, token: string, own?: boolean) => Promise<{ row: unknown, from: 'list' | 'record' }>} Lookup
  *   The sessions API's row for one session (`cse_…`) under `token`, parsed,
+ *   from the session's own record alone where `own` is true, as for a
+ *   session the list leaves out ({@link Known}),
  *   carrying its `worker_status`, and whether it came from the sessions list
  *   or the session's own record; the row is null for a session the API does
  *   not have. Any other refusal throws.
@@ -495,6 +497,8 @@ export const sweepSignoffs = async ({ archive, login, started, now, log, woken =
   }
   // The sessions governor recorded that the list leaves out, each with the
   // repo it was recorded under: a routine run's session is never listed.
+  // The window runs from here: the known sessions' reads count against it.
+  const windowStart = now();
   const inList = new Set(listed.map((row) => /** @type {any} */ (row)?.id));
   /** @type {Array<{ id: string, row: unknown, repo: string }>} */
   let extra = [];
@@ -521,7 +525,6 @@ export const sweepSignoffs = async ({ archive, login, started, now, log, woken =
     })
     .sort(newestFirst)
     .map((row) => ({ id: /** @type {any} */ (row).id, named: namedBy(row).filter((repo) => served.has(repo)) }));
-  const windowStart = now();
   for (const [i, { id, named }] of candidates.entries()) {
     if (now() - windowStart > SIGNOFF_WINDOW_MS) {
       sweep.deferred += candidates.length - i;
@@ -581,7 +584,7 @@ export const sweepSignoffs = async ({ archive, login, started, now, log, woken =
       log('dispatch-signoff', { session, decision: 'held', archived: false, prs, ...told });
       continue;
     }
-    const outcome = await archiveOne(session, id, { archive, lookup, token, log });
+    const outcome = await archiveOne(session, id, { archive, lookup, token, log, own: recordedUnder.has(id) });
     if (outcome === 'archived') sweep.archived.push(session);
     if (typeof outcome === 'object') sweep.kept.push({ session, error: outcome.error });
   }
@@ -676,18 +679,19 @@ export const awaitReplies = async ({ fires, woken, login, started, now, sleep, l
 /**
  * One archive: 'archived', 'gone', or the error that keeps the session for
  * the next sweep. The sessions API's row for the session (`Lookup`) goes
- * first: only an idle session is archived.
+ * first, from the session's own record alone where `own`: only an idle
+ * session is archived.
  *
  * @param {string} session `session_…`
  * @param {string} id `cse_…`
- * @param {{ archive: Archive, lookup: Lookup, token: string, log: (event: string, context?: Record<string, unknown>) => void }} args
+ * @param {{ archive: Archive, lookup: Lookup, token: string, log: (event: string, context?: Record<string, unknown>) => void, own: boolean }} args
  * @returns {Promise<'archived' | 'gone' | { error: string }>}
  */
-const archiveOne = async (session, id, { archive, lookup, token, log }) => {
+const archiveOne = async (session, id, { archive, lookup, token, log, own }) => {
   /** @type {string} */
   let error;
   try {
-    const { row, from } = await lookup(id, token);
+    const { row, from } = await lookup(id, token, own);
     if (row === null) {
       log('dispatch-signoff', { session, decision: 'signed off', archived: false, reason: 'no such session' });
       return 'gone';

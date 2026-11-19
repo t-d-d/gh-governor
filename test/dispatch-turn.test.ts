@@ -4374,6 +4374,19 @@ describe('run — periodics', () => {
     }
   });
 
+  // Only a turn known to be running holds the fire: any other state, or none,
+  // would hold the periodic for good, since the sweep archives idle
+  // sessions alone.
+  test('a last run\'s session in any state but a running turn does not hold the periodic', async () => {
+    for (const state of [{ status: 'active', worker_status: 'requires_action' }, { status: 'active', worker_status: 'failed' }, { status: 'active' }, { session_status: 'SESSION_STATUS_UNKNOWN' }]) {
+      const h = harness({ sessions: oldSession(async () => ({ id: 'cse_01OLD', ...state })) });
+      h.periodics.set(key(RETRO.name), fired(7));
+      h.periodics.set(key(REVIEW.name), fired(1));
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(h.launches.map((l) => l.sessionName), [RETRO.name, ...TICKETS], JSON.stringify(state));
+    }
+  });
+
   test('a periodic held for its last run\'s turn fires on the first check after that turn ends, the session still open', async () => {
     let worker = 'running';
     const h = harness({ sessions: oldSession(async () => ({ id: 'cse_01OLD', status: 'active', worker_status: worker })) });
