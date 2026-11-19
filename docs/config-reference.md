@@ -210,7 +210,7 @@ A session on a hook's prompt when a signed request fires one of the hooks `sessi
 
 ## `waits`
 
-When a ticket's `Blocked until:` date passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker's close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.
+When a ticket's `Blocked until:` date or time passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker's close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.
 
 | Key | Type | Default | What it holds |
 |---|---|---|---|

@@ -1,9 +1,9 @@
 /**
  * A ticket's own wait: a body that opens with `Blocked until: <YYYY-MM-DD>`,
  * or with a time of day after the date, in UTC: `Blocked until: <YYYY-MM-DD>
- * <HH:MM>`. The wait ends at 00:00 UTC on a date, or at the time. The bare
- * schedule fire runs hourly by default, so governor acts on an ended wait
- * within the hour. What is said of a date below holds for a time too.
+ * <HH:MM>`. The wait ends at 00:00 UTC on a date, or at the time, and
+ * governor acts on it at the first bare schedule fire after that, which
+ * runs hourly by default. What is said of a date below holds for a time too.
  *
  * The rule that holds the ticket is the shared readiness rule's
  * (`isWaiting`, scripts/lib/ready-work.mjs), and the reader carries what the

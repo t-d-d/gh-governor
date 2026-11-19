@@ -147,6 +147,9 @@ export const isBlocked = (issue, rows) =>
 /** A line's time of day: `HH:MM` or `HH:MM:SS`, with a `Z` after it or none. */
 const TIME_OF_DAY = /^(\d{2}:\d{2}(?::\d{2})?)Z?$/;
 
+/** A word that starts as a time of day does: digits, then a colon, or `am` or `pm`. */
+const TIME_LIKE = /^\d{1,2}(?::|[ap]m\b)/i;
+
 /** A wait's `until`: a date, or a date and a time with its `Z`. */
 const UNTIL = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?Z)?$/;
 
@@ -182,9 +185,9 @@ export const waitEnd = (until) => {
  * (dispatch/waits.mjs). Any other value is unreadable, which
  * holds the ticket too (`isWaiting`): a line a person wrote must never be
  * silently ignored. A word after the date that starts as a time does, with
- * digits and a colon, and is no time governor reads, such as `9:00` or
- * `14:00+11:00`, is unreadable too: read as a reason, it would end the wait
- * at 00:00, sooner than the line says.
+ * digits and then a colon, `am` or `pm`, and is no time governor reads, such
+ * as `9:00`, `2pm` or `14:00+11:00`, is unreadable too: read as a reason, it
+ * would end the wait at 00:00, sooner than the line says.
  *
  * @param {string | null | undefined} body
  * @returns {{ wait?: Wait }}
@@ -197,7 +200,7 @@ export const waitOf = (body) => {
   const joined = /^(\d{4}-\d{2}-\d{2})T(.*)$/.exec(first);
   // A time is the date's own word past a `T`, or the next word where that starts as a time does.
   const date = joined?.[1] ?? first;
-  const time = joined === null ? (/^\d{1,2}:/.test(second) ? second : undefined) : joined[2] ?? '';
+  const time = joined === null ? (TIME_LIKE.test(second) ? second : undefined) : joined[2] ?? '';
   const clock = time === undefined ? '' : TIME_OF_DAY.exec(time)?.[1];
   const until = clock === undefined ? '' : clock === '' ? date : `${date}T${clock}Z`;
   if (!Number.isNaN(waitEnd(until))) return { wait: { until } };
