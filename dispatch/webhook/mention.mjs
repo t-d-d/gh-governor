@@ -179,12 +179,13 @@ const relayed = (body, limit = EXCERPT_CHARS) => {
 };
 
 /**
- * Who wrote a post, as the line above its quote names them: the login and
- * the standing the repo's `trust` lists read ({@link authorKind}).
+ * Who wrote a post, as the line above its quote names them: the login, or
+ * someone where GitHub names none, and the standing the repo's `trust` lists
+ * read ({@link authorKind}).
  *
  * @param {any} row a comment, a review or an issue
  */
-const byLine = (row) => `${row?.user?.login} (${authorKind({ author: row?.user?.login, association: row?.author_association, bot: row?.user?.type === 'Bot' })})`;
+const byLine = (row) => `${row?.user?.login ?? 'someone'} (${authorKind({ author: row?.user?.login, association: row?.author_association, bot: row?.user?.type === 'Bot' })})`;
 
 /**
  * @param {unknown} body
@@ -608,7 +609,7 @@ const reviewCommentPrompt = ({ pull_request: pr, comment }, role = 'mention', li
   role === 'mention' ? `A PR review comment mentioned ${MENTION}.` : heading(role, 'review comment'),
   '',
   `${refLine(pr)}, head branch "${pr?.head?.ref}"`,
-  `[Review comment](${comment?.html_url}) by ${byLine(comment)} on ${comment?.path} line ${comment?.line ?? comment?.original_line ?? '?'}:`,
+  `[Review comment](${comment?.html_url}) by ${byLine(comment)} on ${oneLine(comment?.path)} line ${comment?.line ?? comment?.original_line ?? '?'}:`,
   relayed(comment?.body, limit),
   '',
   role === 'mention'
