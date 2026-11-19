@@ -216,8 +216,9 @@ const cut = (text, limit) => {
 
 /**
  * The first `limit` UTF-16 units of `text`, one fewer where the cut would
- * fall between the two halves of a surrogate pair, so an emoji at the cut
- * is dropped whole rather than left as a lone surrogate.
+ * fall between the two halves of a surrogate pair, so a code point at the
+ * cut is dropped whole rather than left as a lone surrogate. An emoji built
+ * of several code points can still be split between them.
  *
  * @param {string} text
  * @param {number} limit
