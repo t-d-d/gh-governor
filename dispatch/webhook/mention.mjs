@@ -200,16 +200,33 @@ const excerpt = (body, limit = EXCERPT_CHARS) => {
   // more than the quote, so the quote gives way before the reply does.
   const room = limit - reply.length - 2;
   if (room < MIN_QUOTE_CHARS) return `> [… a quote of ${quote.length} characters at the URL above]\n\n${cut(reply, limit)}`;
-  return `${quote.slice(0, room)}\n> [… ${quote.length - room} more characters of the quote at the URL above]\n\n${reply}`;
+  const kept = upTo(quote, room);
+  return `${kept}\n> [… ${quote.length - kept.length} more characters of the quote at the URL above]\n\n${reply}`;
 };
 
 /**
  * @param {string} text
  * @param {number} limit
  */
-const cut = (text, limit) => (text.length <= limit
-  ? text
-  : `${text.slice(0, limit)}\n[… ${text.length - limit} more characters at the URL above]`);
+const cut = (text, limit) => {
+  if (text.length <= limit) return text;
+  const kept = upTo(text, limit);
+  return `${kept}\n[… ${text.length - kept.length} more characters at the URL above]`;
+};
+
+/**
+ * The first `limit` UTF-16 units of `text`, one fewer where the cut would
+ * fall between the two halves of a surrogate pair, so a code point at the
+ * cut is dropped whole rather than left as a lone surrogate. An emoji built
+ * of several code points can still be split between them.
+ *
+ * @param {string} text
+ * @param {number} limit
+ */
+const upTo = (text, limit) => {
+  const high = text.charCodeAt(limit - 1);
+  return text.slice(0, high >= 0xD800 && high <= 0xDBFF ? limit - 1 : limit);
+};
 
 /**
  * A remark's leading quote, its `>` lines and the blank lines among them,
