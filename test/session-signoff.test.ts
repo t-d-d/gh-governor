@@ -305,7 +305,7 @@ describe('fitness: a sign-off is read from the session (session-signoff.md)', ()
       },
     });
     const counts = logged.filter((l) => l.event === 'dispatch-signoff' && 'candidates' in l).map(({ turnedAway: _t, ...rest }) => rest);
-    assert.deepEqual(counts, [{ event: 'dispatch-signoff', listed: 5, candidates: 4, archived: 1, held: 0, unsigned: 1, kept: 1, deferred: 1 }]);
+    assert.deepEqual(counts, [{ event: 'dispatch-signoff', listed: 5, known: 0, candidates: 4, archived: 1, held: 0, unsigned: 1, kept: 1, deferred: 1 }]);
     assert.equal(logged.filter((l) => typeof l.deferred === 'number').length, 1);
   });
 
@@ -537,5 +537,67 @@ describe('awaitReplies: waiting on a quiet lane for the replies a turn asked for
     const { logged, slept } = await wait(() => { throw new Error('GET /v1/code/sessions/cse_01CLOUD/events: 500'); });
     assert.equal(slept.length, 0);
     assert.ok(logged.some((l) => l.event === 'dispatch-signoff-wait' && /500/.test(String(l.error))), JSON.stringify(logged));
+  });
+});
+
+// A routine run's session is not in the login's sessions list, so the sweep
+// also reads the sessions governor recorded for a served repo by their ids.
+describe('fitness: the sweep reads a session the list leaves out by the id governor recorded (session-signoff.md)', () => {
+  /** A routine run's own record: it names no repo under `config`. */
+  const record = (id: string, { worker = 'idle', status = 'active' } = {}) => ({ id, status, worker_status: worker });
+  const lookup = (known: Array<Record<string, unknown>>) => async (id: string) => {
+    const own = known.find((r) => r.id === id);
+    return own === undefined ? { row: row(id), from: 'list' as const } : { row: own, from: 'record' as const };
+  };
+
+  test('archives a routine run\'s session the list does not return, named by the repo its record was kept under', async () => {
+    const run = record('cse_01ROUTINE');
+    const { archived, read, sweep, logged } = await sweepOver([row('cse_01LISTED')], { cse_01ROUTINE: cloudSignedOff, cse_01LISTED: cloudSignedOffThenNot }, {
+      known: async () => [{ id: 'cse_01ROUTINE', row: run, repo: SERVED }],
+      lookup: lookup([run]),
+    });
+    assert.deepEqual(archived, ['session_01ROUTINE']);
+    assert.deepEqual(read.sort(), ['cse_01LISTED', 'cse_01ROUTINE']);
+    assert.deepEqual(sweep.archived, ['session_01ROUTINE']);
+    assert.ok(logged.some((l) => l.event === 'dispatch-signoff' && l.known === 1), JSON.stringify(logged));
+  });
+
+  test('a known session the list also returns is read once; one archived, running or kept under a repo not served is no candidate', async () => {
+    const known = [
+      { id: 'cse_01LISTED', row: row('cse_01LISTED'), repo: SERVED },
+      { id: 'cse_01DONE', row: record('cse_01DONE', { status: 'archived' }), repo: SERVED },
+      { id: 'cse_01RUNNING', row: record('cse_01RUNNING', { worker: 'running' }), repo: SERVED },
+      { id: 'cse_01ELSEWHERE', row: record('cse_01ELSEWHERE'), repo: 't-d-d/askme-mcp' },
+    ];
+    const pages = Object.fromEntries(known.map((k) => [k.id, cloudSignedOff]));
+    const { archived, read } = await sweepOver([row('cse_01LISTED')], pages, { known: async () => known, lookup: lookup(known.map((k) => k.row)) });
+    assert.deepEqual(read, ['cse_01LISTED'], 'read once, and only the live, idle, served one');
+    assert.deepEqual(archived, ['session_01LISTED']);
+  });
+
+  test('the known sessions\' reads count against the sweep\'s window, and a known session is looked up from its own record alone', async () => {
+    let now = NOW;
+    const slow = await sweepOver([row('cse_01LISTED')], { cse_01LISTED: cloudSignedOff }, {
+      now: () => now,
+      known: async () => { now += SIGNOFF_WINDOW_MS + 1; return []; },
+    });
+    assert.deepEqual(slow.archived, [], 'out of time once the known reads have run');
+    assert.equal(slow.sweep.deferred, 1);
+    const run = record('cse_01ROUTINE');
+    const asked: Array<[string, unknown]> = [];
+    const { archived } = await sweepOver([row('cse_01LISTED')], { cse_01ROUTINE: cloudSignedOff, cse_01LISTED: cloudSignedOff }, {
+      known: async () => [{ id: 'cse_01ROUTINE', row: run, repo: SERVED }],
+      lookup: async (id: string, _token: string, own?: boolean) => { asked.push([id, own ?? false]); return id === 'cse_01ROUTINE' ? { row: run, from: 'record' } : { row: row(id), from: 'list' }; },
+    });
+    assert.deepEqual(archived.sort(), ['session_01LISTED', 'session_01ROUTINE']);
+    assert.deepEqual(asked.sort(), [['cse_01LISTED', false], ['cse_01ROUTINE', true]]);
+  });
+
+  test('a read of the known sessions that fails still sweeps the list, and logs why', async () => {
+    const { archived, logged } = await sweepOver([row('cse_01LISTED')], { cse_01LISTED: cloudSignedOff }, {
+      known: async () => { throw new Error('GetItem: ProvisionedThroughputExceeded'); },
+    });
+    assert.deepEqual(archived, ['session_01LISTED']);
+    assert.ok(logged.some((l) => l.event === 'dispatch-signoff' && l.level === 'error' && /ProvisionedThroughputExceeded/.test(String(l.error))), JSON.stringify(logged));
   });
 });

@@ -4337,17 +4337,96 @@ describe('run — periodics', () => {
     return { ...base, get: async (id: string, token: string) => (id === 'cse_01OLD' ? old(token) : base.get(id, token)) };
   };
 
-  test('a due periodic whose last run\'s session is still open is held: nothing starts, the fire is logged held naming that session, and the record stays', async () => {
+  test('a due periodic whose last run\'s session is in the middle of a turn is held: nothing starts, the fire is logged held naming that session, and the record stays', async () => {
     const tokens: string[] = [];
-    const h = harness({ sessions: oldSession(async (token) => { tokens.push(token); return { id: 'cse_01OLD', session_status: 'SESSION_STATUS_IDLE' }; }) });
+    const h = harness({ sessions: oldSession(async (token) => { tokens.push(token); return { id: 'cse_01OLD', status: 'active', worker_status: 'running' }; }) });
     h.periodics.set(key(RETRO.name), fired(7));
     h.periodics.set(key(REVIEW.name), fired(1));
     const result = await run({ source: 'aws.events' }, h.deps as never);
     assert.deepEqual(h.launches.map((l) => l.sessionName), TICKETS);
     assert.deepEqual(h.periodics.get(key(RETRO.name)), fired(7), 'a held fire does not move the last fire\'s time');
     assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic' && l.outcome === 'held' && l.periodic === RETRO.name && l.session === 'https://claude.ai/code/session_01OLD'), JSON.stringify(h.logged));
-    assert.deepEqual(tokens, ['sk-ant-oat01-a'], 'read under the login\'s token');
+    // The hold reads it, and so does the sign-off sweep, the routine
+    // periodic's record naming the same session.
+    assert.ok(tokens.length > 0 && tokens.every((t) => t === 'sk-ant-oat01-a'), `read under the login's token: ${JSON.stringify(tokens)}`);
     assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  // An open session no longer holds a periodic: only a turn in progress
+  // does. A finished run's session may stay open for good, where its reply
+  // did not sign off, or its repo leaves sign-off off.
+  test('a due periodic whose last run\'s session is open and idle starts a new session and leaves the old one as it is, signed off or not, with sign-off on or off, through the launcher or as a routine', async () => {
+    const off = JSON.stringify(switched(JSON.parse(FACTORY_FILE), { signOff: false }));
+    for (const signOff of [true, false]) {
+      for (const [idle, page] of [[{ session_status: 'SESSION_STATUS_IDLE' }, cloudSignedOff], [{ status: 'active', worker_status: 'idle' }, cloudSignedOffThenNot]] as const) {
+        const label = JSON.stringify({ signOff, idle });
+        const h = harness({ sessions: oldSession(async () => ({ id: 'cse_01OLD', ...idle })), ...(signOff ? {} : { configFile: async (repo: string) => (repo === REPO ? off : null) }) });
+        h.pages.set('cse_01OLD', page);
+        h.periodics.set(key(RETRO.name), fired(7));
+        h.periodics.set(key(REVIEW.name), fired(8));
+        await run({ source: 'aws.events' }, h.deps as never);
+        assert.deepEqual(h.launches.map((l) => l.sessionName), [RETRO.name, ...TICKETS], `${label}: the launcher's periodic starts`);
+        assert.deepEqual(h.routineCalls.filter((c) => c.call === 'run').length, 1, `${label}: the routine's periodic is fired`);
+        assert.equal(h.periodics.get(key(RETRO.name))?.session, 'https://claude.ai/code/session_01ABC', `${label}: the record names the new session`);
+        assert.ok(!h.messages.some((m) => m.session.includes('session_01OLD')), `${label}: the fire is not sent to the old session`);
+        assert.ok(!h.logged.some((l) => l.event === 'dispatch-periodic' && l.outcome === 'held'), label);
+      }
+    }
+  });
+
+  // Only a turn known to be running holds the fire: any other state, or none,
+  // would hold the periodic for good, since the sweep archives idle
+  // sessions alone.
+  test('a last run\'s session in any state but a running turn does not hold the periodic', async () => {
+    for (const state of [{ status: 'active', worker_status: 'requires_action' }, { status: 'active', worker_status: 'failed' }, { status: 'active' }, { session_status: 'SESSION_STATUS_UNKNOWN' }]) {
+      const h = harness({ sessions: oldSession(async () => ({ id: 'cse_01OLD', ...state })) });
+      h.periodics.set(key(RETRO.name), fired(7));
+      h.periodics.set(key(REVIEW.name), fired(1));
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(h.launches.map((l) => l.sessionName), [RETRO.name, ...TICKETS], JSON.stringify(state));
+    }
+  });
+
+  test('a periodic held for its last run\'s turn fires on the first check after that turn ends, the session still open', async () => {
+    let worker = 'running';
+    const h = harness({ sessions: oldSession(async () => ({ id: 'cse_01OLD', status: 'active', worker_status: worker })) });
+    h.periodics.set(key(RETRO.name), fired(7));
+    h.periodics.set(key(REVIEW.name), fired(1));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), TICKETS);
+    worker = 'idle';
+    h.launches.length = 0;
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName).slice(0, 1), [RETRO.name]);
+  });
+
+  // The sessions list leaves out a session a routine started, so the sweep
+  // reads the one a routine periodic's record names by its id.
+  test('the sign-off sweep archives a routine periodic\'s session that the sessions list leaves out, where its last reply signs off', async () => {
+    const h = harness();
+    h.periodics.set(key(RETRO.name), fired(1));
+    h.periodics.set(key(REVIEW.name), fired(1, 'https://claude.ai/code/session_01ROUTINE'));
+    h.pages.set('cse_01ROUTINE', cloudSignedOff);
+    const result = await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.rows, [], 'the list returns no session');
+    assert.deepEqual(h.archives.map((a) => a.session), ['session_01ROUTINE']);
+    assert.deepEqual((result as { signoffs: { archived: string[] } }).signoffs.archived, ['session_01ROUTINE']);
+  });
+
+  test('the sweep leaves a routine periodic\'s session whose last reply does not sign off, and one in a repo with sign-off off is not read', async () => {
+    const h = harness();
+    h.periodics.set(key(REVIEW.name), fired(1, 'https://claude.ai/code/session_01ROUTINE'));
+    h.pages.set('cse_01ROUTINE', cloudSignedOffThenNot);
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.archives, []);
+    assert.ok(h.eventsRead.some((r) => r.id === 'cse_01ROUTINE'));
+    const off = JSON.stringify(switched(JSON.parse(FACTORY_FILE), { signOff: false }));
+    const h2 = harness({ configFile: async (repo: string) => (repo === REPO ? off : null) });
+    h2.periodics.set(key(REVIEW.name), fired(1, 'https://claude.ai/code/session_01ROUTINE'));
+    h2.pages.set('cse_01ROUTINE', cloudSignedOff);
+    await run({ source: 'aws.events' }, h2.deps as never);
+    assert.deepEqual(h2.archives, []);
+    assert.deepEqual(h2.eventsRead, []);
   });
 
   test('a run whose session was archived with no sign-off line, by hand, counts as finished', async () => {
@@ -4509,6 +4588,19 @@ describe('run — periodics an event brings due', () => {
     await run(MERGE, h.deps as never);
     assert.deepEqual(h.launches.map((l) => l.sessionName), [CODE.name]);
     assert.ok(h.launches[0]!.prompt.includes(`Pull requests merged into the default branch since ${ago(DAY)}: 20`));
+  });
+
+  test('a merge that brings a periodic due while its last run\'s session is in the middle of a turn waits for that turn; once the session is idle, open or not, the next merge fires it', async () => {
+    let worker = 'running';
+    const base = harness().deps.sessions;
+    const sessions = { ...base, get: async (id: string, token: string) => (id === 'cse_01OLD' ? { id, status: 'active', worker_status: worker } : base.get(id, token)) };
+    const h = counting({ merges: merged(20) }, { sessions });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await run(MERGE, h.deps as never);
+    assert.equal(h.launches.length, 0);
+    worker = 'idle';
+    await run(MERGE, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [CODE.name]);
   });
 
   test('a login refreshed to read the last run\'s session whose write-back failed is written back before the turn ends', async () => {
@@ -9879,14 +9971,24 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
     assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: AT, by: { days: 7 }, session: null, state: 'open' });
   });
 
-  test('a held fire says so, naming the open session, and leaves the fire time at the open run\'s start', async () => {
+  test('a held fire says so, naming the session in the middle of its turn, and leaves the fire time at that run\'s start', async () => {
+    const base = harness().deps.sessions;
+    const sessions = { ...base, get: async (id: string, token: string) => (id === 'cse_01OLD' ? { id, status: 'active', worker_status: 'running' } : base.get(id, token)) };
+    const body = `${BEFORE}${HEARTBEAT_MARKER}\n- periodic "${RETRO.name}": last fire ${ago(7 * DAY)}, by its day limit of 7 days, session ${OLD}, open\n${HEARTBEAT_END}${AFTER}`;
+    const h = beating({ body, sessions });
+    h.periodics.set(key(RETRO.name), fired(7 * DAY));
+    await run({ source: 'aws.events' }, h.deps as never);
+    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: ago(7 * DAY), by: { days: 7 }, session: OLD, state: 'held' });
+  });
+
+  test('a periodic whose last run\'s session is open but idle is not held: its line names the new session, open', async () => {
     const base = harness().deps.sessions;
     const sessions = { ...base, get: async (id: string, token: string) => (id === 'cse_01OLD' ? { id, session_status: 'SESSION_STATUS_IDLE' } : base.get(id, token)) };
     const body = `${BEFORE}${HEARTBEAT_MARKER}\n- periodic "${RETRO.name}": last fire ${ago(7 * DAY)}, by its day limit of 7 days, session ${OLD}, open\n${HEARTBEAT_END}${AFTER}`;
     const h = beating({ body, sessions });
     h.periodics.set(key(RETRO.name), fired(7 * DAY));
     await run({ source: 'aws.events' }, h.deps as never);
-    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: ago(7 * DAY), by: { days: 7 }, session: OLD, state: 'held' });
+    assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: AT, by: { days: 7 }, session: NEW, state: 'open' });
   });
 
   test('a day limit on empty windows records nothing to do, at the fire\'s time, with no session', async () => {

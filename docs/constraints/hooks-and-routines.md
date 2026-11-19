@@ -20,6 +20,12 @@ connector the account has would hold more than its file named.
   with those connectors attached and no others, each named as in the
   account's connector list. Governor keeps the routine disabled, on a valid
   cron that fires rarely, and fires it itself.
+- A periodic's open session does not hold its next fire: a routine run's
+  session is never in the sessions list, so the sign-off sweep reaches only
+  the one its periodic's record names, and a run's session may stay open
+  for good where its last reply does not sign off. Only a
+  session in the middle of a turn holds the fire, until that turn ends. A
+  hook's open session still takes its next fire as a message.
 - A named connector the account has not connected starts nothing, as an
   alarmed `dispatch-connector-missing` error. A routine the routines API
   refuses stops only its own periodic, as an alarmed
@@ -44,4 +50,4 @@ connector the account has would hold more than its file named.
   routine fires outside governor's records, a refused cron starts no
   periodic, and a session would hold connectors its file never named.
 
-History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. A hook fire arrives at the receiver on its own path, signed with its hook key, since #55, under PRD #53. A periodic may name the claude.ai connectors its session needs, and then starts as a run of its own routine, since #89. A routine the routines API refuses stops only its periodic since #91. A periodic's routine is kept disabled on a valid cron that fires once a year since #373.
+History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. A hook fire arrives at the receiver on its own path, signed with its hook key, since #55, under PRD #53. A periodic may name the claude.ai connectors its session needs, and then starts as a run of its own routine, since #89. A routine the routines API refuses stops only its periodic since #91. A periodic's routine is kept disabled on a valid cron that fires once a year since #373. A periodic is held only while its last session is in the middle of a turn, not while it is open, since #752.

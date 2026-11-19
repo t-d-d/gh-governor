@@ -92,10 +92,10 @@ const KEYED = /^<!-- governor:heartbeat-check (\S+(?: \S+)?) -->/;
 /** @param {PeriodicLine} line */
 const holdText = (line) => {
   switch (line.state) {
-    case 'held': return `Governor is holding it for an open session: ${line.session}. It fires again once that session signs off or is archived.`;
-    case 'open': return `Its last run's session, ${line.session}, has not signed off, so governor will hold its next fire for that session.`;
-    case 'signed off': return 'Governor is not holding it for an open session: its last run\'s session signed off.';
-    default: return 'Governor is not holding it for an open session: its last fire found nothing to do.';
+    case 'held': return `Governor is holding it while its last run's session, ${line.session}, is in the middle of a turn. It fires on the first check once that turn ends.`;
+    case 'open': return `Its last run's session, ${line.session}, has not signed off. Governor holds the next fire only while that session is in the middle of a turn, so an idle session does not stop it.`;
+    case 'signed off': return 'Governor is not holding it: its last run\'s session signed off.';
+    default: return 'Governor is not holding it: its last fire found nothing to do.';
   }
 };
 

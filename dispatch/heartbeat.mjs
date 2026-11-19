@@ -92,7 +92,9 @@ export const HEARTBEAT_END = '<!-- governor:heartbeat-end -->';
  * @typedef {{ days: number } | { count: Count, number: number }} Limit
  *   What fired a periodic: its day limit, or the count that reached its number.
  * @typedef {'open' | 'signed off' | 'held' | 'nothing to do' | 'not fired'} RunState
- *   `held`: the fire came due while the session the line names was still open.
+ *   `held`: the fire came due while the session the line names was in the
+ *   middle of a turn. Its text still reads "held while that session is open",
+ *   which stays true, since a checker pinned to an older commit parses it.
  *   `not fired`: governor wrote the periodic's baseline and has not fired it
  *   since; the line's time is the baseline's, not a fire's.
  * @typedef {{ at: string, started: number }} PickupLine

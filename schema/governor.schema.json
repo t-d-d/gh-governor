@@ -967,7 +967,7 @@
       "additionalProperties": false
     },
     "periodics": {
-      "description": "A session per periodic in `sessions`, each time its day limit passes or one of its counts is reached. Needs at least one periodic when on.",
+      "description": "A session per periodic in `sessions`, each time its day limit passes or one of its counts is reached. A due periodic starts a new session even while its last one is still open, unless that session is in the middle of a turn: then it waits for the turn to end. Needs at least one periodic when on.",
       "type": "object",
       "properties": {
         "enabled": {

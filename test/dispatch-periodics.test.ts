@@ -192,7 +192,7 @@ describe('periodicPrompt', () => {
 
 type Record_ = { at: string; session: string | null; baseline: boolean; nothing?: true; lastRun?: string };
 
-/** Every last run's session reads finished: archived, or gone. */
+/** No last run's session is in the middle of a turn. */
 const finished = async () => false;
 
 /** The state table's periodic records, with the table's conditional write. */
@@ -224,7 +224,7 @@ describe('duePeriodics', () => {
 
   test('one past its day limit since its last fire is due; one inside it is not', async () => {
     const state = store({ 'Weekly retro': { at: ago(7), session: 's', baseline: false }, Daily: { at: ago(0.5), session: 's', baseline: false } });
-    const { due, unread } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO, { name: 'Daily', prompt: 'x', days: 1 }], state, now: NOW, log });
+    const { due, unread } = await duePeriodics({ repo: REPO, busy: finished, periodics: [RETRO, { name: 'Daily', prompt: 'x', days: 1 }], state, now: NOW, log });
     assert.deepEqual(due.map((d) => d.periodic.name), ['Weekly retro']);
     assert.equal(due[0]?.due, NOW);
     assert.deepEqual(unread, []);
@@ -237,7 +237,7 @@ describe('duePeriodics', () => {
   test('the sweep nearest the day limit fires it: within half the hourly interval, never earlier', async () => {
     const minutes = (n: number) => n * 60 * 1000;
     const recordedAgo = (short: number) => store({ 'Weekly retro': { at: new Date(NOW - 7 * DAY_MS + minutes(short)).toISOString(), session: 's', baseline: false } });
-    const dueAt = async (short: number) => (await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: recordedAgo(short), now: NOW, log })).due.length;
+    const dueAt = async (short: number) => (await duePeriodics({ repo: REPO, busy: finished, periodics: [RETRO], state: recordedAgo(short), now: NOW, log })).due.length;
     assert.equal(await dueAt(5), 1, 'the launch landed minutes after its sweep read it');
     assert.equal(await dueAt(30), 1);
     assert.equal(await dueAt(31), 0, 'the sweep after is nearer');
@@ -247,31 +247,31 @@ describe('duePeriodics', () => {
 
   test('with no record, the baseline is now, and nothing is due', async () => {
     const state = store();
-    const { due } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state, now: NOW, log });
+    const { due } = await duePeriodics({ repo: REPO, busy: finished, periodics: [RETRO], state, now: NOW, log });
     assert.deepEqual(due, []);
     assert.deepEqual(state.writes, [{ name: 'Weekly retro', record: { at: new Date(NOW).toISOString(), session: null, baseline: true } }]);
   });
 
   test('a baseline written comes back as a first-read heartbeat line, with no session; one another turn wrote first does not', async () => {
-    const { beats } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: store(), now: NOW, log });
+    const { beats } = await duePeriodics({ repo: REPO, busy: finished, periodics: [RETRO], state: store(), now: NOW, log });
     assert.deepEqual(beats, [{ name: 'Weekly retro', at: new Date(NOW).toISOString(), session: null, state: 'not fired' }]);
     const raced = { ...store(), recordPeriodic: async () => false };
-    assert.deepEqual((await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: raced, now: NOW, log })).beats, []);
+    assert.deepEqual((await duePeriodics({ repo: REPO, busy: finished, periodics: [RETRO], state: raced, now: NOW, log })).beats, []);
   });
 
   test('on the sweep, a baseline not yet due comes back as its first-read line again, at the baseline\'s time; an event\'s turn does not resend it', async () => {
     const baseline = { at: ago(2), session: null, baseline: true };
-    const { due, beats } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: store({ 'Weekly retro': baseline }), now: NOW, log });
+    const { due, beats } = await duePeriodics({ repo: REPO, busy: finished, periodics: [RETRO], state: store({ 'Weekly retro': baseline }), now: NOW, log });
     assert.deepEqual(due, []);
     assert.deepEqual(beats, [{ name: 'Weekly retro', at: baseline.at, session: null, state: 'not fired' }]);
     const counted = { ...RETRO, counts: { merges: 3 } };
-    const event = await duePeriodics({ repo: REPO, open: finished, periodics: [counted], state: store({ 'Weekly retro': baseline }), now: NOW, log, window: async () => [], event: 'merges' });
+    const event = await duePeriodics({ repo: REPO, busy: finished, periodics: [counted], state: store({ 'Weekly retro': baseline }), now: NOW, log, window: async () => [], event: 'merges' });
     assert.deepEqual(event.beats, []);
   });
 
   test('a read that fails refuses that periodic, and is never a missing record', async () => {
     const state = store({ 'Weekly retro': new Error('AccessDeniedException'), Daily: { at: ago(2), session: 's', baseline: false } });
-    const { due, unread } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO, { name: 'Daily', prompt: 'x', days: 1 }], state, now: NOW, log });
+    const { due, unread } = await duePeriodics({ repo: REPO, busy: finished, periodics: [RETRO, { name: 'Daily', prompt: 'x', days: 1 }], state, now: NOW, log });
     assert.deepEqual(due.map((d) => d.periodic.name), ['Daily']);
     assert.deepEqual(state.writes, []);
     assert.equal(unread.length, 1);
@@ -281,7 +281,7 @@ describe('duePeriodics', () => {
   test('a baseline write that fails is logged, and nothing starts', async () => {
     const state = { ...store(), recordPeriodic: async () => { throw new Error('ProvisionedThroughputExceeded'); } };
     logged.length = 0;
-    const { due, unread } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state, now: NOW, log });
+    const { due, unread } = await duePeriodics({ repo: REPO, busy: finished, periodics: [RETRO], state, now: NOW, log });
     assert.deepEqual(due, []);
     assert.equal(unread.length, 1);
     assert.ok(logged.some((l) => l.level === 'error' && /ProvisionedThroughputExceeded/.test(String(l.error))));
@@ -304,10 +304,10 @@ describe('duePeriodics — counts and the minimum gap', () => {
   test('an event fires a periodic once its count since the last fire reaches its number', async () => {
     const state = store({ 'Code review': { at: ago(1), session: 's', baseline: false } });
     const short = windows({ merges: [item(1), item(2)] });
-    assert.deepEqual((await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state, now: NOW, log, window: short.window, event: 'merges' })).due, []);
+    assert.deepEqual((await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state, now: NOW, log, window: short.window, event: 'merges' })).due, []);
     assert.deepEqual(short.reads, [{ kind: 'merges', since: ago(1) }], 'read afresh, since the last fire');
     const reached = windows({ merges: [item(1), item(2), item(3)] });
-    const { due } = await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state, now: NOW, log, window: reached.window, event: 'merges' });
+    const { due } = await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state, now: NOW, log, window: reached.window, event: 'merges' });
     assert.deepEqual(due.map((d) => [d.periodic.name, d.windows]), [['Code review', { merges: [item(1), item(2), item(3)] }]]);
     assert.deepEqual(state.writes, []);
   });
@@ -315,7 +315,7 @@ describe('duePeriodics — counts and the minimum gap', () => {
   test('an event reads only the periodics that count its kind, and no day limit', async () => {
     const state = store({ 'Weekly retro': { at: ago(9), session: 's', baseline: false }, 'Code review': { at: ago(9), session: 's', baseline: false } });
     const read = windows({});
-    const { due } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO, REVIEW], state, now: NOW, log, window: read.window, event: 'issuesOpened' });
+    const { due } = await duePeriodics({ repo: REPO, busy: finished, periodics: [RETRO, REVIEW], state, now: NOW, log, window: read.window, event: 'issuesOpened' });
     assert.deepEqual(due, []);
     assert.deepEqual(read.reads, []);
     assert.deepEqual(state.writes, []);
@@ -325,65 +325,65 @@ describe('duePeriodics — counts and the minimum gap', () => {
     const both = { ...REVIEW, counts: { merges: 3, issuesClosed: 10 } };
     const state = store({ 'Code review': { at: ago(1), session: 's', baseline: false } });
     const read = windows({ merges: [item(1), item(2), item(3)], issuesClosed: [item(4)] });
-    const { due } = await duePeriodics({ repo: REPO, open: finished, periodics: [both], state, now: NOW, log, window: read.window, event: 'merges' });
+    const { due } = await duePeriodics({ repo: REPO, busy: finished, periodics: [both], state, now: NOW, log, window: read.window, event: 'merges' });
     assert.deepEqual(due[0]?.windows, { merges: [item(1), item(2), item(3)], issuesClosed: [item(4)] });
   });
 
   test('a periodic never fires inside its minimum gap, and a count reached there fires on the first event or sweep after it', async () => {
     const reached = windows({ merges: [item(1), item(2), item(3)] });
     const inside = store({ 'Code review': { at: hoursAgo(3), session: 's', baseline: false } });
-    assert.deepEqual((await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state: inside, now: NOW, log, window: reached.window, event: 'merges' })).due, []);
-    assert.deepEqual((await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state: inside, now: NOW, log, window: reached.window })).due, []);
+    assert.deepEqual((await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state: inside, now: NOW, log, window: reached.window, event: 'merges' })).due, []);
+    assert.deepEqual((await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state: inside, now: NOW, log, window: reached.window })).due, []);
     assert.deepEqual(reached.reads, [], 'nothing read inside the gap');
     const after = store({ 'Code review': { at: hoursAgo(4), session: 's', baseline: false } });
-    assert.equal((await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state: after, now: NOW, log, window: reached.window })).due.length, 1, 'the sweep after the gap');
-    assert.equal((await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state: after, now: NOW, log, window: reached.window, event: 'merges' })).due.length, 1, 'the event after the gap');
+    assert.equal((await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state: after, now: NOW, log, window: reached.window })).due.length, 1, 'the sweep after the gap');
+    assert.equal((await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state: after, now: NOW, log, window: reached.window, event: 'merges' })).due.length, 1, 'the event after the gap');
   });
 
   test('a nothing-to-do record keeps the last run\'s time, and the gap runs from it', async () => {
     const reached = windows({ merges: [item(1), item(2), item(3)] });
     const long = { ...REVIEW, days: 1, gapHours: 48 };
     const after = store({ 'Code review': { at: hoursAgo(1), session: null, baseline: false, nothing: true, lastRun: hoursAgo(25) } });
-    assert.deepEqual((await duePeriodics({ repo: REPO, open: finished, periodics: [long], state: after, now: NOW, log, window: reached.window, event: 'merges' })).due, [], 'inside the gap since the last run');
+    assert.deepEqual((await duePeriodics({ repo: REPO, busy: finished, periodics: [long], state: after, now: NOW, log, window: reached.window, event: 'merges' })).due, [], 'inside the gap since the last run');
     const empty = windows({});
     const twice = store({ 'Code review': { at: ago(1), session: null, baseline: false, nothing: true, lastRun: ago(2) } });
-    await duePeriodics({ repo: REPO, open: finished, periodics: [{ ...REVIEW, days: 1 }], state: twice, now: NOW, log, window: empty.window });
+    await duePeriodics({ repo: REPO, busy: finished, periodics: [{ ...REVIEW, days: 1 }], state: twice, now: NOW, log, window: empty.window });
     assert.equal(twice.writes[0]?.record.lastRun, ago(2), 'carried over a second nothing to do');
   });
 
   test('a due periodic with counts is stamped as of the windows\' read, so nothing that lands before its launch is lost', async () => {
     const state = store({ 'Code review': { at: ago(1), session: 's', baseline: false } });
-    const { due } = await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state, now: NOW, log, window: windows({ merges: [item(1), item(2), item(3)] }).window });
+    const { due } = await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state, now: NOW, log, window: windows({ merges: [item(1), item(2), item(3)] }).window });
     assert.equal(due[0]?.asOf, new Date(NOW).toISOString());
     const plain = store({ 'Weekly retro': { at: ago(7), session: 's', baseline: false } });
-    assert.equal((await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state: plain, now: NOW, log })).due[0]?.asOf, undefined, 'a day limit alone records its launch');
+    assert.equal((await duePeriodics({ repo: REPO, busy: finished, periodics: [RETRO], state: plain, now: NOW, log })).due[0]?.asOf, undefined, 'a day limit alone records its launch');
   });
 
   test('the gap holds a day limit too', async () => {
     const daily = { ...RETRO, days: 1, gapHours: 30 };
     const state = store({ 'Weekly retro': { at: hoursAgo(26), session: 's', baseline: false } });
-    assert.deepEqual((await duePeriodics({ repo: REPO, open: finished, periodics: [daily], state, now: NOW, log })).due, []);
+    assert.deepEqual((await duePeriodics({ repo: REPO, busy: finished, periodics: [daily], state, now: NOW, log })).due, []);
   });
 
   test('the gap is between runs: a baseline or a day limit with nothing to do opens none', async () => {
     const reached = windows({ merges: [item(1), item(2), item(3)] });
     for (const record of [{ at: hoursAgo(1), session: null, baseline: true }, { at: hoursAgo(1), session: null, baseline: false, nothing: true as const }] as Record_[]) {
       const state = store({ 'Code review': record });
-      assert.equal((await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state, now: NOW, log, window: reached.window, event: 'merges' })).due.length, 1, JSON.stringify(record));
+      assert.equal((await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state, now: NOW, log, window: reached.window, event: 'merges' })).due.length, 1, JSON.stringify(record));
     }
   });
 
   test('the sweep fires a count reached before the day limit', async () => {
     const state = store({ 'Code review': { at: ago(1), session: 's', baseline: false } });
     const read = windows({ merges: [item(1), item(2), item(3)] });
-    const { due } = await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state, now: NOW, log, window: read.window });
+    const { due } = await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state, now: NOW, log, window: read.window });
     assert.deepEqual(due.map((d) => d.windows), [{ merges: [item(1), item(2), item(3)] }]);
   });
 
   test('at its day limit, a periodic with counts fires on whatever was counted, short of its number', async () => {
     const state = store({ 'Code review': { at: ago(7), session: 's', baseline: false } });
     const read = windows({ merges: [item(1)] });
-    const { due } = await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state, now: NOW, log, window: read.window });
+    const { due } = await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state, now: NOW, log, window: read.window });
     assert.deepEqual(due.map((d) => d.windows), [{ merges: [item(1)] }]);
     assert.deepEqual(state.writes, []);
   });
@@ -392,7 +392,7 @@ describe('duePeriodics — counts and the minimum gap', () => {
     const state = store({ 'Code review': { at: ago(7), session: 's', baseline: false } });
     const read = windows({});
     logged.length = 0;
-    const { due } = await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state, now: NOW, log, window: read.window });
+    const { due } = await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state, now: NOW, log, window: read.window });
     assert.deepEqual(due, []);
     assert.deepEqual(state.writes, [{ name: 'Code review', record: { at: new Date(NOW).toISOString(), session: null, baseline: false, nothing: true, lastRun: ago(7) } }]);
     assert.ok(logged.some((l) => l.event === 'dispatch-periodic' && l.outcome === 'nothing to do'), JSON.stringify(logged));
@@ -401,7 +401,7 @@ describe('duePeriodics — counts and the minimum gap', () => {
   test('a periodic with only a day limit always starts, and reads no window', async () => {
     const state = store({ 'Weekly retro': { at: ago(7), session: 's', baseline: false } });
     const read = windows({});
-    const { due } = await duePeriodics({ repo: REPO, open: finished, periodics: [RETRO], state, now: NOW, log, window: read.window });
+    const { due } = await duePeriodics({ repo: REPO, busy: finished, periodics: [RETRO], state, now: NOW, log, window: read.window });
     assert.equal(due.length, 1);
     assert.equal(due[0]?.windows, undefined);
     assert.deepEqual(read.reads, []);
@@ -410,21 +410,21 @@ describe('duePeriodics — counts and the minimum gap', () => {
   test('with no record, an event writes the baseline and starts nothing', async () => {
     const state = store();
     const read = windows({ merges: [item(1), item(2), item(3)] });
-    const { due } = await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state, now: NOW, log, window: read.window, event: 'merges' });
+    const { due } = await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state, now: NOW, log, window: read.window, event: 'merges' });
     assert.deepEqual(due, []);
     assert.deepEqual(state.writes, [{ name: 'Code review', record: { at: new Date(NOW).toISOString(), session: null, baseline: true } }]);
   });
 
   test('an event\'s baseline comes back as a first-read heartbeat line too', async () => {
     const read = windows({});
-    const { beats } = await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state: store(), now: NOW, log, window: read.window, event: 'merges' });
+    const { beats } = await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state: store(), now: NOW, log, window: read.window, event: 'merges' });
     assert.deepEqual(beats, [{ name: 'Code review', at: new Date(NOW).toISOString(), session: null, state: 'not fired' }]);
   });
 
   test('a window that cannot be read refuses that periodic for the turn, and is never an empty window', async () => {
     const state = store({ 'Code review': { at: ago(7), session: 's', baseline: false } });
     logged.length = 0;
-    const { due, unread } = await duePeriodics({ repo: REPO, open: finished, periodics: [REVIEW], state, now: NOW, log, window: async () => { throw new Error('502 Bad Gateway'); } });
+    const { due, unread } = await duePeriodics({ repo: REPO, busy: finished, periodics: [REVIEW], state, now: NOW, log, window: async () => { throw new Error('502 Bad Gateway'); } });
     assert.deepEqual(due, []);
     assert.deepEqual(state.writes, [], 'no nothing-to-do over a window it could not read');
     assert.match(unread[0]?.error ?? '', /Code review.*502/);
@@ -432,7 +432,7 @@ describe('duePeriodics — counts and the minimum gap', () => {
   });
 });
 
-describe('duePeriodics: the hold while the last run is open', () => {
+describe('duePeriodics: the hold while the last run is in the middle of a turn', () => {
   const ago = (days: number) => new Date(NOW - days * DAY_MS).toISOString();
   const hoursAgo = (hours: number) => new Date(NOW - hours * HOUR_MS).toISOString();
   const logged: Array<Record<string, unknown>> = [];
@@ -441,17 +441,17 @@ describe('duePeriodics: the hold while the last run is open', () => {
   const REVIEW = { name: 'Code review', prompt: 'Review the merges.', days: 7, counts: { merges: 3 } };
   const item = (number: number) => ({ number, title: `Item ${number}`, at: hoursAgo(1) });
   const merges = (n: number) => async () => Array.from({ length: n }, (_, i) => item(i + 1));
-  /** Whether each session reads open, recording each read. */
-  const sessions = (openOnes: string[]) => {
+  /** Whether each session reads in the middle of a turn, recording each read. */
+  const sessions = (busyOnes: string[]) => {
     const reads: string[] = [];
-    return { reads, open: async (session: string) => { reads.push(session); return openOnes.includes(session); } };
+    return { reads, busy: async (session: string) => { reads.push(session); return busyOnes.includes(session); } };
   };
 
-  test('a periodic due by its day limit, its last run\'s session still open, starts nothing and logs the fire held, naming that session', async () => {
+  test('a periodic due by its day limit, its last run\'s session in the middle of a turn, starts nothing and logs the fire held, naming that session', async () => {
     const state = store({ 'Weekly retro': { at: ago(7), session: OLD, baseline: false } });
     const read = sessions([OLD]);
     logged.length = 0;
-    const { due, unread } = await duePeriodics({ repo: REPO, periodics: [RETRO], state, now: NOW, log, open: read.open });
+    const { due, unread } = await duePeriodics({ repo: REPO, periodics: [RETRO], state, now: NOW, log, busy: read.busy });
     assert.deepEqual(due, []);
     assert.deepEqual(unread, []);
     assert.deepEqual(read.reads, [OLD]);
@@ -459,39 +459,39 @@ describe('duePeriodics: the hold while the last run is open', () => {
     assert.ok(logged.some((l) => l.event === 'dispatch-periodic' && l.outcome === 'held' && l.periodic === 'Weekly retro' && l.session === OLD), JSON.stringify(logged));
   });
 
-  test('a periodic due by its count is held too, and its count keeps growing until the first check after the run ends fires it', async () => {
+  test('a periodic due by its count is held too, and its count keeps growing until the first check after that turn ends fires it', async () => {
     const state = store({ 'Code review': { at: ago(1), session: OLD, baseline: false } });
     const held = sessions([OLD]);
-    assert.deepEqual((await duePeriodics({ repo: REPO, periodics: [REVIEW], state, now: NOW, log, open: held.open, window: merges(3), event: 'merges' })).due, []);
-    assert.deepEqual((await duePeriodics({ repo: REPO, periodics: [REVIEW], state, now: NOW, log, open: held.open, window: merges(5), event: 'merges' })).due, []);
+    assert.deepEqual((await duePeriodics({ repo: REPO, periodics: [REVIEW], state, now: NOW, log, busy: held.busy, window: merges(3), event: 'merges' })).due, []);
+    assert.deepEqual((await duePeriodics({ repo: REPO, periodics: [REVIEW], state, now: NOW, log, busy: held.busy, window: merges(5), event: 'merges' })).due, []);
     assert.deepEqual(state.writes, []);
     const ended = sessions([]);
-    const { due } = await duePeriodics({ repo: REPO, periodics: [REVIEW], state, now: NOW, log, open: ended.open, window: merges(6), event: 'merges' });
+    const { due } = await duePeriodics({ repo: REPO, periodics: [REVIEW], state, now: NOW, log, busy: ended.busy, window: merges(6), event: 'merges' });
     assert.deepEqual(due.map((d) => [d.periodic.name, d.windows?.merges?.length, d.read.at]), [['Code review', 6, ago(1)]], 'counted since the fire before the hold');
   });
 
-  test('a day limit on empty windows, its last run\'s session still open, is held too, and writes no nothing-to-do over that session', async () => {
+  test('a day limit on empty windows, its last run\'s session in the middle of a turn, is held too, and writes no nothing-to-do over that session', async () => {
     const state = store({ 'Code review': { at: ago(7), session: OLD, baseline: false } });
     const read = sessions([OLD]);
     logged.length = 0;
-    const { due, unread } = await duePeriodics({ repo: REPO, periodics: [REVIEW], state, now: NOW, log, open: read.open, window: merges(0) });
+    const { due, unread } = await duePeriodics({ repo: REPO, periodics: [REVIEW], state, now: NOW, log, busy: read.busy, window: merges(0) });
     assert.deepEqual(due, []);
     assert.deepEqual(unread, []);
-    assert.deepEqual(state.writes, [], 'a nothing-to-do record names no session, so the next count would start a second run over the open one');
+    assert.deepEqual(state.writes, [], 'a nothing-to-do record names no session, so the next count would start a second run over the busy one');
     assert.ok(logged.some((l) => l.event === 'dispatch-periodic' && l.outcome === 'held' && l.session === OLD), JSON.stringify(logged));
   });
 
   test('a periodic not yet due reads no session', async () => {
     const state = store({ 'Weekly retro': { at: ago(2), session: OLD, baseline: false }, 'Code review': { at: ago(1), session: OLD, baseline: false } });
     const read = sessions([OLD]);
-    await duePeriodics({ repo: REPO, periodics: [RETRO, REVIEW], state, now: NOW, log, open: read.open, window: merges(1) });
+    await duePeriodics({ repo: REPO, periodics: [RETRO, REVIEW], state, now: NOW, log, busy: read.busy, window: merges(1) });
     assert.deepEqual(read.reads, []);
   });
 
   test('a run whose record has no session, from an unconfirmed launch, counts as finished', async () => {
     const state = store({ 'Weekly retro': { at: ago(7), session: null, baseline: false } });
     const read = sessions([]);
-    const { due } = await duePeriodics({ repo: REPO, periodics: [RETRO], state, now: NOW, log, open: read.open });
+    const { due } = await duePeriodics({ repo: REPO, periodics: [RETRO], state, now: NOW, log, busy: read.busy });
     assert.equal(due.length, 1);
     assert.deepEqual(read.reads, [], 'no session to read');
   });
@@ -499,7 +499,7 @@ describe('duePeriodics: the hold while the last run is open', () => {
   test('a failed read of the session refuses that periodic for the turn, and is never taken for a finished run', async () => {
     const state = store({ 'Weekly retro': { at: ago(7), session: OLD, baseline: false }, Daily: { at: ago(2), session: null, baseline: false } });
     logged.length = 0;
-    const { due, unread } = await duePeriodics({ repo: REPO, periodics: [RETRO, { name: 'Daily', prompt: 'x', days: 1 }], state, now: NOW, log, open: async () => { throw new Error('GET /v1/code/sessions/cse_01OLD: 503'); } });
+    const { due, unread } = await duePeriodics({ repo: REPO, periodics: [RETRO, { name: 'Daily', prompt: 'x', days: 1 }], state, now: NOW, log, busy: async () => { throw new Error('GET /v1/code/sessions/cse_01OLD: 503'); } });
     assert.deepEqual(due.map((d) => d.periodic.name), ['Daily']);
     assert.deepEqual(state.writes, []);
     assert.match(unread[0]?.error ?? '', /Weekly retro.*503/);
@@ -562,9 +562,9 @@ describe('windowOf', () => {
     const reader = githubReader({ token: 't', repo: REPO, fetch });
     const TRIAGE = { name: 'Ticket review', prompt: 'Review the new tickets.', days: 7, counts: { issuesOpened: 2, merges: 1 } };
     const state = store({ 'Ticket review': { at: SINCE, session: null, baseline: false } });
-    const opened = await duePeriodics({ repo: REPO, open: finished, periodics: [TRIAGE], state, now: NOW, log: () => {}, window: windowOf(reader, 'main', ['OWNER', 'MEMBER', 'COLLABORATOR']), event: 'issuesOpened' });
+    const opened = await duePeriodics({ repo: REPO, busy: finished, periodics: [TRIAGE], state, now: NOW, log: () => {}, window: windowOf(reader, 'main', ['OWNER', 'MEMBER', 'COLLABORATOR']), event: 'issuesOpened' });
     assert.deepEqual(opened.due, [], 'one issue counted, of two needed');
-    const merged = await duePeriodics({ repo: REPO, open: finished, periodics: [TRIAGE], state, now: NOW, log: () => {}, window: windowOf(reader, 'main', ['OWNER', 'MEMBER', 'COLLABORATOR']), event: 'merges' });
+    const merged = await duePeriodics({ repo: REPO, busy: finished, periodics: [TRIAGE], state, now: NOW, log: () => {}, window: windowOf(reader, 'main', ['OWNER', 'MEMBER', 'COLLABORATOR']), event: 'merges' });
     assert.equal(merged.due.length, 1, 'a stranger\'s merge still counts');
     const prompt = periodicPrompt(TRIAGE.prompt, merged.due[0]!.read, merged.due[0]!.windows);
     assert.match(prompt, /#30 A member's/);

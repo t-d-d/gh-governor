@@ -351,8 +351,16 @@ const CSE_ID = /^cse_([A-Za-z0-9]+)$/;
  *   Every row of the login's sessions list under `token`
  *   (`sessionRows`, scripts/lib/session-branch.mjs). A refusal throws.
  *
- * @typedef {(id: string, token: string) => Promise<{ row: unknown, from: 'list' | 'record' }>} Lookup
+ * @typedef {(token: string) => Promise<Array<{ id: string, row: unknown, repo: string }>>} Known
+ *   Sessions governor recorded for a served repo that the sessions list may
+ *   leave out, as a routine run's session is: each one's id (`cse_…`), its
+ *   own record, read under `token`, and the repo governor recorded it under.
+ *   A read that fails throws.
+ *
+ * @typedef {(id: string, token: string, own?: boolean) => Promise<{ row: unknown, from: 'list' | 'record' }>} Lookup
  *   The sessions API's row for one session (`cse_…`) under `token`, parsed,
+ *   from the session's own record alone where `own` is true, as for a
+ *   session the list leaves out ({@link Known}),
  *   carrying its `worker_status`, and whether it came from the sessions list
  *   or the session's own record; the row is null for a session the API does
  *   not have. Any other refusal throws.
@@ -409,7 +417,12 @@ export const accessToken = (login, now) => {
  * Archive the sessions that signed off.
  *
  * The candidates are the login's idle, unarchived sessions in a served repo
- * (`repos`), the repo read from the row's `config` (`reposOf`),
+ * (`repos`), the repo read from the row's `config` (`reposOf`). The list
+ * leaves out a session a routine started, so `known` adds the sessions
+ * governor recorded for a served repo, each read by its id and named by the
+ * repo it was recorded under as well as its own `config`; one the list
+ * returns is read from the list alone. A `known` that fails is logged at
+ * error, and the list's sessions are swept all the same. Candidates are
  * read most recently updated first until SIGNOFF_WINDOW_MS runs out. Each
  * candidate's last reply is read from its events (`readReply`, back up to
  * SIGNOFF_PAGES pages), and one that signs off is archived: the row is read afresh first (`lookup`), after
@@ -446,12 +459,13 @@ export const accessToken = (login, now) => {
  *   holds: Holds,
  *   onHeld?: OnHeld | undefined,
  *   list: ListSessions,
+ *   known?: Known,
  *   lookup: Lookup,
  *   events: Events,
  * }} args
  * @returns {Promise<Sweep>}
  */
-export const sweepSignoffs = async ({ archive, login, started, now, log, woken = new Map(), repos, holds, onHeld, list, lookup, events }) => {
+export const sweepSignoffs = async ({ archive, login, started, now, log, woken = new Map(), repos, holds, onHeld, list, known = async () => [], lookup, events }) => {
   /** @type {Sweep} */
   const sweep = { archived: [], held: [], kept: [], unsigned: 0, deferred: 0, skipped: null };
   /** @param {string} reason */
@@ -478,22 +492,39 @@ export const sweepSignoffs = async ({ archive, login, started, now, log, woken =
   };
   try {
     listed = await list(token);
-    candidates = listed
-      .filter((row) => {
-        const id = /** @type {any} */ (row)?.id;
-        if (typeof id !== 'string' || !CSE_ID.test(id)) return away('id');
-        if (archived(row)) return away('archived');
-        if (!idle(/** @type {Record<string, unknown>} */ (row))) return away('busy');
-        const named = reposOf(row);
-        if (named.length === 0) return away('unnamed');
-        return named.some((repo) => served.has(repo)) || away('unserved');
-      })
-      .sort(newestFirst)
-      .map((row) => ({ id: /** @type {any} */ (row).id, named: reposOf(row).filter((repo) => served.has(repo)) }));
   } catch (error) {
     return skip(`could not list the sessions: ${messageOf(error)}`);
   }
+  // The sessions governor recorded that the list leaves out, each with the
+  // repo it was recorded under: a routine run's session is never listed.
+  // The window runs from here: the known sessions' reads count against it.
   const windowStart = now();
+  const inList = new Set(listed.map((row) => /** @type {any} */ (row)?.id));
+  /** @type {Array<{ id: string, row: unknown, repo: string }>} */
+  let extra = [];
+  try {
+    extra = (await known(token)).filter((k) => !inList.has(k.id));
+  } catch (error) {
+    log('dispatch-signoff', { level: 'error', known: 'unread', error: messageOf(error), reason: 'the sessions governor recorded could not be read: only the listed ones are swept' });
+  }
+  const recordedUnder = new Map(extra.map((k) => [k.id, k.repo.toLowerCase()]));
+  /** @param {unknown} row */
+  const namedBy = (row) => {
+    const under = recordedUnder.get(/** @type {any} */ (row)?.id);
+    return [...new Set([...reposOf(row), ...(under === undefined ? [] : [under])])];
+  };
+  candidates = [...listed, ...extra.map((k) => ({ .../** @type {object} */ (k.row), id: k.id }))]
+    .filter((row) => {
+      const id = /** @type {any} */ (row)?.id;
+      if (typeof id !== 'string' || !CSE_ID.test(id)) return away('id');
+      if (archived(row)) return away('archived');
+      if (!idle(/** @type {Record<string, unknown>} */ (row))) return away('busy');
+      const named = namedBy(row);
+      if (named.length === 0) return away('unnamed');
+      return named.some((repo) => served.has(repo)) || away('unserved');
+    })
+    .sort(newestFirst)
+    .map((row) => ({ id: /** @type {any} */ (row).id, named: namedBy(row).filter((repo) => served.has(repo)) }));
   for (const [i, { id, named }] of candidates.entries()) {
     if (now() - windowStart > SIGNOFF_WINDOW_MS) {
       sweep.deferred += candidates.length - i;
@@ -553,12 +584,13 @@ export const sweepSignoffs = async ({ archive, login, started, now, log, woken =
       log('dispatch-signoff', { session, decision: 'held', archived: false, prs, ...told });
       continue;
     }
-    const outcome = await archiveOne(session, id, { archive, lookup, token, log });
+    const outcome = await archiveOne(session, id, { archive, lookup, token, log, own: recordedUnder.has(id) });
     if (outcome === 'archived') sweep.archived.push(session);
     if (typeof outcome === 'object') sweep.kept.push({ session, error: outcome.error });
   }
   log('dispatch-signoff', {
     listed: listed.length,
+    known: extra.length,
     candidates: candidates.length,
     archived: sweep.archived.length,
     held: sweep.held.length,
@@ -647,18 +679,19 @@ export const awaitReplies = async ({ fires, woken, login, started, now, sleep, l
 /**
  * One archive: 'archived', 'gone', or the error that keeps the session for
  * the next sweep. The sessions API's row for the session (`Lookup`) goes
- * first: only an idle session is archived.
+ * first, from the session's own record alone where `own`: only an idle
+ * session is archived.
  *
  * @param {string} session `session_…`
  * @param {string} id `cse_…`
- * @param {{ archive: Archive, lookup: Lookup, token: string, log: (event: string, context?: Record<string, unknown>) => void }} args
+ * @param {{ archive: Archive, lookup: Lookup, token: string, log: (event: string, context?: Record<string, unknown>) => void, own: boolean }} args
  * @returns {Promise<'archived' | 'gone' | { error: string }>}
  */
-const archiveOne = async (session, id, { archive, lookup, token, log }) => {
+const archiveOne = async (session, id, { archive, lookup, token, log, own }) => {
   /** @type {string} */
   let error;
   try {
-    const { row, from } = await lookup(id, token);
+    const { row, from } = await lookup(id, token, own);
     if (row === null) {
       log('dispatch-signoff', { session, decision: 'signed off', archived: false, reason: 'no such session' });
       return 'gone';
