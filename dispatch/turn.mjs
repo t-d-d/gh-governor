@@ -107,7 +107,7 @@ import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-s
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
 import { deployNote, deployTargets } from './merge-notice.mjs';
-import { ARCHIVE_TIMEOUT_MS, SIGNOFF_LATEST_START_MS, SIGNOFF_WINDOW_MS, accessToken, awaitReplies, heldMessage, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
+import { ARCHIVE_TIMEOUT_MS, SIGNOFF_LATEST_START_MS, SIGNOFF_WINDOW_MS, accessToken, awaitReplies, heldMessage, idle, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
 import { branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { STOPPED_EVENT, releaseStopped, stoppedOf } from './stopped.mjs';
 import { WAIT_PROMPT, holdWait, waitLinks } from './waits.mjs';
@@ -844,6 +844,7 @@ const turnOf = async (event, deps, built) => {
     repos: signing,
     ...heldBy({ ...deps, secret }, served, tokenFor, sendLimited, started + SIGNOFF_LATEST_START_MS + SIGNOFF_WINDOW_MS),
     list: (token) => sessionRows((after) => deps.sessions.list(token, after), { log: deps.log }),
+    known: routineRuns(deps, served.filter((s) => signing.includes(s.repo) && turnsOn(s.config, 'periodics'))),
     lookup: sweepLookup(deps),
     events,
   });
@@ -1150,14 +1151,14 @@ const eventPeriodics = async ({ repo, config, counted, base, started, carried, s
   // carrying turn's result and the sign-off sweep still stand.
   try {
     const reader = deps.reader(await deps.githubToken(repo), await deps.appId(), repo);
-    ({ due, unread, beats: lines } = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(reader, base, autoOf(config)), open: runOpen(deps), event: counted }));
+    ({ due, unread, beats: lines } = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(reader, base, autoOf(config)), busy: lastRun(deps).busy, event: counted }));
     ({ credentials: stored, account } = readStoredLogin(await deps.secret.get()));
   } catch (error) {
     deps.log('dispatch-periodic-unread', { level: 'error', repo, counted, error: messageOf(error), reason: 'the periodics could not be checked: they wait for the next event or sweep' });
     return { dispatched, unread: [{ repo, error: `periodics: ${messageOf(error)}` }], beats: [] };
   }
   // A login on disk the secret does not hold goes back to it, whatever
-  // starts: a refresh to read a last run's session (`runOpen`) may have
+  // starts: a refresh to read a last run's session (`lastRun`) may have
   // rotated it and failed to write it back.
   try {
     return await startPeriodics({ repo, config, counted, started, carried, start, deps, due, unread, dispatched, lines });
@@ -1219,6 +1220,41 @@ const startPeriodics = async ({ repo, config, counted, started, carried, start, 
 };
 
 /**
+ * The sessions the sign-off sweep reads by id (scripts/lib/session-signoff.mjs):
+ * the one each routine periodic's record names, in each repo given. A
+ * periodic that names connectors starts as a routine run
+ * (dispatch/routines.mjs), and the login's sessions list leaves out a
+ * session a routine started, so its run would never be a candidate. Each is
+ * read through its own record, under the sweep's token, and carries the
+ * repo its periodic is kept under. A periodic started through the launcher
+ * is in the list, and is not read here. A record or session that cannot be
+ * read is logged and left out: it is not archived this turn.
+ *
+ * @param {Deps} deps
+ * @param {import('./repos.mjs').Served[]} served
+ * @returns {import('../scripts/lib/session-signoff.mjs').Known}
+ */
+const routineRuns = (deps, served) => async (token) => {
+  /** @type {Array<{ id: string, row: unknown, repo: string }>} */
+  const runs = [];
+  for (const { repo, config } of served) {
+    for (const periodic of config.periodics ?? []) {
+      if (periodic.connectors === undefined) continue;
+      try {
+        const session = (await deps.state.periodic(repo, periodic.name))?.session ?? null;
+        const id = session === null ? undefined : /^session_([A-Za-z0-9]+)$/.exec(sessionId(session))?.[1];
+        if (id === undefined) continue;
+        const row = sessionRecord(await deps.sessions.get(`cse_${id}`, token));
+        if (row !== null && row !== undefined) runs.push({ id: `cse_${id}`, row, repo });
+      } catch (error) {
+        deps.log('dispatch-signoff', { level: 'warn', repo, periodic: periodic.name, error: messageOf(error), reason: 'its last run\'s session could not be read: it is not swept this turn' });
+      }
+    }
+  }
+  return runs;
+};
+
+/**
  * The sweep's read of a session: its row in the sessions list, read afresh
  * for each session and paged only until a page names it, else its own
  * record, unwrapped from `response_shape` (`sessionRecord`), which
@@ -1259,24 +1295,38 @@ const loginToken = (deps, what) => {
 };
 
 /**
- * Whether a periodic's last run is still open (dispatch/periodics.mjs): its
- * session's own record, read under the login's token, is neither archived,
- * by the sign-off sweep or by hand, nor gone (null, as a 404 answers).
- * The sweep's candidates are idle, unarchived sessions only, so the hold
- * reads the session's state itself rather than wait for the sweep. An
- * expired token is refreshed once a turn, as for the environment list: a
- * quiet repo may launch nothing that would refresh it. A record that
- * carries no status, or a refresh that fails, throws: the periodic is
- * refused, never taken for a finished run.
+ * A hook's or a periodic's last run, read through its session's own record
+ * under the login's token. An expired token is refreshed once for the
+ * reader this builds, as for the environment list: a quiet repo may launch
+ * nothing that would refresh it. A record that carries no status, or a
+ * refresh that fails, throws: the hook or periodic is refused, never taken
+ * for a finished run.
+ *
+ * `open`, for a hook (dispatch/hooks.mjs): the session is neither archived,
+ * by the sign-off sweep or by hand, nor gone (null, as a 404 answers). The
+ * sweep's candidates are idle, unarchived sessions only, so the hold reads
+ * the session's state itself rather than wait for the sweep.
+ *
+ * `busy`, for a periodic (dispatch/periodics.mjs): the session is open, as
+ * above, and in the middle of a turn, read as the sweep reads a row
+ * (`idle`, scripts/lib/session-signoff.mjs). An open, idle session holds
+ * nothing: a routine run's session may never be archived.
  *
  * @param {Deps} deps
- * @returns {import('./periodics.mjs').Open}
+ * @returns {{ open: (session: string) => Promise<boolean>, busy: import('./periodics.mjs').Busy }}
  */
-const runOpen = (deps) => {
+const lastRun = (deps) => {
   const read = sessionRead(deps, 'read the last run\'s session', 'the last run\'s session');
-  return async (session) => {
-    const state = stoppedOf(await read(session), '');
-    return state !== null && !state.archived;
+  return {
+    open: async (session) => {
+      const state = stoppedOf(await read(session), '');
+      return state !== null && !state.archived;
+    },
+    busy: async (session) => {
+      const record = await read(session);
+      const state = stoppedOf(record, '');
+      return state !== null && !state.archived && !idle(/** @type {Record<string, unknown>} */ (record));
+    },
   };
 };
 
@@ -1332,7 +1382,8 @@ const sessionStopped = (deps) => {
  *   storeLogin: () => Promise<boolean>,
  *   state: DispatchState,
  *   start: import('./launcher.mjs').Launcher['start'],
- *   open: import('./periodics.mjs').Open,
+ *   open: (session: string) => Promise<boolean>,
+ *   busy: import('./periodics.mjs').Busy,
  *   stopped: (repo: string) => (session: string) => Promise<import('./stopped.mjs').Stopped>,
  *   claims: Set<string>,
  *   beats: RepoBeat[],
@@ -1349,8 +1400,9 @@ const sessionStopped = (deps) => {
  *   `delivery`: whom a message reaches, and the send, in the fire's repo
  *   or the served repo named. `storeLogin`: the
  *   login the CLI refreshed, put back. `start`: the launcher's. `open`:
- *   whether a periodic's or a hook's last session is still open, under a
- *   token refreshed once a turn. `claims`: the tickets the turn claimed that
+ *   whether a hook's last session is still open; `busy`: whether a
+ *   periodic's is in the middle of a turn; both under one token refreshed
+ *   once a turn ({@link lastRun}). `claims`: the tickets the turn claimed that
  *   no marker covers yet ({@link Deps}). `beats`: where the bare fire adds
  *   its heartbeat lines, for `run` to write. `findAuthor`: the search of
  *   the login's live sessions for a session's unsigned post in the fire's
@@ -2179,7 +2231,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     storeLogin: () => storeIfRefreshed(deps, original, account),
     state: deps.state,
     start,
-    open: runOpen(deps),
+    ...lastRun(deps),
     stopped: sessionStopped(deps),
     claims: deps.claims ?? new Set(),
     beats,

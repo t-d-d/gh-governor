@@ -309,7 +309,7 @@ describe('checking the heartbeat', () => {
     assert.equal(gh.open().length, 1);
   });
 
-  test('a periodic held for an open session gets an issue naming it, its last fire, its state and the session governor holds it for', async () => {
+  test('a periodic held for a session in the middle of a turn gets an issue naming it, its last fire, its state and the session governor holds it for', async () => {
     const at = iso(NOW - 8 * DAY);
     const gh = github({ heartbeat: stampHeartbeat(fresh(), { periodics: [{ name: 'Weekly retro', at, session: OTHER, state: 'held' }] }) });
     await run(gh);
@@ -322,6 +322,8 @@ describe('checking the heartbeat', () => {
     assert.match(text, /held/);
     assert.match(text, /session_01OTHER/);
     assert.match(text, /Governor is holding it/);
+    assert.match(text, /in the middle of a turn/);
+    assert.match(text, /once that turn ends/);
   });
 
   test('an overdue periodic governor is not holding says so', async () => {
@@ -333,12 +335,14 @@ describe('checking the heartbeat', () => {
     assert.match(String(issue?.body), /not holding it/);
   });
 
-  test('an open run\'s line says governor will hold the next fire for it', async () => {
+  test('an open run\'s line says governor holds the next fire only while that session is in the middle of a turn', async () => {
     const gh = github({ heartbeat: stampHeartbeat(fresh(), { periodics: [{ name: 'Code review', at: iso(NOW - 8 * DAY), session: SESSION, state: 'open' }] }) });
     await run(gh);
     const [issue] = gh.open();
     assert.match(String(issue?.body), /session_01RUN/);
     assert.match(String(issue?.body), /has not signed off/);
+    assert.match(String(issue?.body), /only while that session is in the middle of a turn/);
+    assert.doesNotMatch(String(issue?.body), /will hold its next fire for that session/);
   });
 
   test('a periodic governor has read but never fired is measured from its first read, and its issue says it has never fired', async () => {

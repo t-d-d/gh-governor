@@ -24,17 +24,19 @@
  * reached there fires on the first event or sweep after it.
  *
  * A periodic never overlaps itself. One that comes due while the session its
- * last fire started is still open is held ({@link Open}): the turn starts
- * nothing and logs the fire held, naming that session, and writes nothing,
- * so its count keeps growing from the fire before and the first check after
- * the run ends fires it. A day limit on empty windows is held the same
- * way: its nothing-to-do record names no session, so it would let the next
- * count start a second run over the open one. A run is finished once its
- * session is archived, whether by the sign-off sweep or by hand, or no
- * longer exists; a record
- * with no session, from an unconfirmed launch, is a finished run. A session
- * that cannot be read refuses the periodic for the turn, and is never a
- * finished run.
+ * last fire started is in the middle of a turn is held ({@link Busy}): the
+ * turn starts nothing and logs the fire held, naming that session, and
+ * writes nothing, so its count keeps growing from the fire before and the
+ * first check after that turn ends fires it. A day limit on empty windows is
+ * held the same way: its nothing-to-do record names no session, so it would
+ * let the next count start a second run over the busy one. An open session
+ * between turns does not hold it: the fire starts a new session and leaves
+ * the old one as it is, whether or not it signed off or was archived. A
+ * periodic's days and counts are its only clock, and its fire is never sent
+ * to the old session as a message, as a hook's is. A record with no
+ * session, from an unconfirmed launch, holds nothing. A session that cannot
+ * be read refuses the periodic for the turn, and is never taken for an idle
+ * one.
  *
  * At its day limit, a periodic with counts whose window is empty starts no
  * session: governor records "nothing to do" as its fire, so its next day
@@ -99,9 +101,9 @@ export const LISTED_MAX = 100;
  * @typedef {(kind: Count, since: string) => Promise<Counted[]>} Window
  *   What of `kind` happened after `since`, oldest first, read afresh; a read
  *   that fails throws.
- * @typedef {(session: string) => Promise<boolean>} Open
- *   Whether the session a record names (its URL) is still open: not archived,
- *   and still there. A read that fails throws.
+ * @typedef {(session: string) => Promise<boolean>} Busy
+ *   Whether the session a record names (its URL) is in the middle of a turn:
+ *   still there, not archived, and not idle. A read that fails throws.
  * @typedef {Partial<Record<Count, Counted[]>>} Windows
  * @typedef {{ periodic: import('./repo-config.mjs').Periodic, read: PeriodicRecord, due: number, by: import('./heartbeat.mjs').Limit, windows?: Windows, asOf?: string }} Due
  *   `by`: the limit that brought it due, its day limit or the first count
@@ -232,10 +234,10 @@ const inGap = (periodic, read, now) => {
  * limit and its counts. On an event's turn, only the periodics that count
  * `event` are read, and only against that count, so the event's turn starts
  * nothing the sweep would not; the rest of its counts are read for the
- * prompt once it is due. A due periodic whose last run is still `open` is
- * held, and is not due. A held fire, a nothing-to-do and a baseline this
+ * prompt once it is due. A due periodic whose last run is `busy`, in the
+ * middle of a turn, is held, and is not due. A held fire, a nothing-to-do and a baseline this
  * turn wrote come back as the heartbeat lines they change
- * (dispatch/heartbeat.mjs): a held one keeps the open run's start and names
+ * (dispatch/heartbeat.mjs): a held one keeps the busy run's start and names
  * its session, and a baseline's says it has not fired yet, which the block
  * takes only where it has no line for the periodic. The sweep sends a
  * baseline's line again on every read until the first fire.
@@ -247,12 +249,12 @@ const inGap = (periodic, read, now) => {
  *   now: number,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  *   window?: Window,
- *   open?: Open,
+ *   busy?: Busy,
  *   event?: Count,
  * }} args
  * @returns {Promise<{ due: Due[], unread: Array<{ repo: string, error: string }>, beats: import('./heartbeat.mjs').PeriodicChange[] }>}
  */
-export const duePeriodics = async ({ repo, periodics, state, now, log, window = noWindow, open = noOpen, event }) => {
+export const duePeriodics = async ({ repo, periodics, state, now, log, window = noWindow, busy = noBusy, event }) => {
   /** @type {Due[]} */
   const due = [];
   /** @type {import('./heartbeat.mjs').PeriodicChange[]} */
@@ -275,12 +277,12 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
   const held = async (name, read) => {
     if (read.session === null) return false;
     try {
-      if (!(await open(read.session))) return false;
+      if (!(await busy(read.session))) return false;
     } catch (error) {
       refuse(name, error, 'its last run\'s session could not be read, so it is refused this turn');
       return true;
     }
-    log('dispatch-periodic', { repo, periodic: name, outcome: 'held', session: read.session, at: read.at, reason: 'its last run\'s session is still open' });
+    log('dispatch-periodic', { repo, periodic: name, outcome: 'held', session: read.session, at: read.at, reason: 'its last run\'s session is in the middle of a turn' });
     beats.push({ name, at: read.at, session: read.session, state: 'held' });
     return true;
   };
@@ -341,7 +343,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       continue;
     }
     // Held before a nothing-to-do too: its record names no session, so the
-    // next count would start a second run over the open one.
+    // next count would start a second run over the busy one.
     if (await held(name, read)) continue;
     if (!reached && Object.values(windows).every((items) => items.length === 0)) {
       // The day limit came due on empty windows: nothing to review, and the
@@ -364,8 +366,8 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
   return { due, unread, beats };
 };
 
-/** @type {Open} */
-const noOpen = async (session) => {
+/** @type {Busy} */
+const noBusy = async (session) => {
   throw new Error(`no reader for ${session} was given`);
 };
 

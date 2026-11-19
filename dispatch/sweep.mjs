@@ -339,10 +339,10 @@ export const planSweep = async (invocation, ctx) => {
   if (ctx.bare) {
     /** @type {Array<import('./periodics.mjs').Due & { repo: string }>} */
     const due = [];
-    // One open check for every served repo, so an expired login is refreshed once a turn.
+    // One check of a last run's turn for every served repo, so an expired login is refreshed once a turn.
     for (const { repo, config } of ctx.served) {
       if (!turnsOn(config, 'periodics')) continue;
-      const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(await ctx.readerFor(repo), undefined, autoOf(config)), open: ctx.open });
+      const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(await ctx.readerFor(repo), undefined, autoOf(config)), busy: ctx.busy });
       due.push(...read.due.map((d) => ({ ...d, repo })));
       // A cap of 0 starts no periodic. The repo's due periodics get the
       // line an event logs under the cap, and their records stay, so each
