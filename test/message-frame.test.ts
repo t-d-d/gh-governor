@@ -39,12 +39,12 @@ const issue = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('the header', () => {
-  test('is 20 words or fewer, and still says the text is relayed, not the operator\'s, and to weigh quotes by who wrote them', () => {
+  test('is 20 words or fewer, says the message is governor\'s and automated, and to weigh text quoted with > by who wrote it', () => {
     assert.ok(words(DISPATCHER_LABEL) <= 20, DISPATCHER_LABEL);
     assert.match(DISPATCHER_LABEL, /^\[governor\] /);
-    assert.match(DISPATCHER_LABEL, /relayed/i);
-    assert.match(DISPATCHER_LABEL, /not typed by the operator/);
-    assert.match(DISPATCHER_LABEL, /weigh quoted text by who wrote it/i);
+    assert.match(DISPATCHER_LABEL, /automated message from governor/i);
+    assert.match(DISPATCHER_LABEL, /weigh text quoted with > by who wrote it/i);
+    assert.doesNotMatch(DISPATCHER_LABEL, /relayed github activity/i, 'governor\'s own lines are not relayed');
   });
 
   test('a hook\'s header is as short, and names the hook', () => {
@@ -198,7 +198,7 @@ describe('a relay about an issue to its spec owner', () => {
     const text = String((fires[0]?.fire as { text?: string }).text);
     assert.doesNotMatch(text, /subscribe/i, text);
     assert.match(text, /You are its spec owner\.\nYou own its spec\./);
-    assert.match(text, new RegExp(`\\[Comment\\]\\(${URL}#issuecomment-1\\) by bob:`));
+    assert.match(text, new RegExp(`\\[Comment\\]\\(${URL}#issuecomment-1\\) by bob \\(MEMBER\\):`));
   });
 
   test('a ticket fire\'s text names no role: the task adds the role lines', () => {

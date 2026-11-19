@@ -80,7 +80,7 @@
  */
 
 import { SPEC_OWNER_DUTY, askedOf, rolesText, titleLink } from './roles-text.mjs';
-import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, build, deployedTarget, isBranch, isCommit, isTime, fireWeight, lets, postWords, wordsOf, POST_WORDS, POST_WORDS_CHARS } from './fire.mjs';
+import { DISPATCH_MARKER, FIRE_BUDGET, LOGIN, RELAY, SIGN_POSTS, SUMMONERS, UNATTENDED, authorKind, quoted, build, deployedTarget, isBranch, isCommit, isTime, fireWeight, lets, postWords, wordsOf, POST_WORDS, POST_WORDS_CHARS } from './fire.mjs';
 import { closingNumbers } from './closing.mjs';
 import { REVIEW_MARKER, postedByApp } from './review-comment.mjs';
 import { ownSessionPost, postedBy, relayedBody, sameSession, sessionId, sessionNamedIn, subscribersFor, unsignedPost, unsignedSessionBody, withoutQuotes } from './subscribe.mjs';
@@ -164,6 +164,27 @@ const VERDICTS = new Set(['approved', 'changes_requested']);
 
 /** @param {unknown} text */
 export const oneLine = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
+
+/**
+ * A body relayed from GitHub as a message carries it: the excerpt, with the
+ * notes it adds where it cuts, quoted line by line ({@link quoted}). An
+ * empty body quotes nothing.
+ *
+ * @param {unknown} body
+ * @param {number} [limit]
+ */
+const relayed = (body, limit = EXCERPT_CHARS) => {
+  const text = excerpt(body, limit);
+  return text === '' ? '' : quoted(text);
+};
+
+/**
+ * Who wrote a post, as the line above its quote names them: the login and
+ * the standing the repo's `trust` lists read ({@link authorKind}).
+ *
+ * @param {any} row a comment, a review or an issue
+ */
+const byLine = (row) => `${row?.user?.login} (${authorKind({ author: row?.user?.login, association: row?.author_association, bot: row?.user?.type === 'Bot' })})`;
 
 /**
  * @param {unknown} body
@@ -560,8 +581,8 @@ const issueCommentPrompt = ({ issue, comment }, role = 'mention', limit = EXCERP
   role === 'mention' ? `An issue comment mentioned ${MENTION}.` : role === 'subscriber' ? 'A comment on an issue you subscribe to.' : 'A comment on an issue.',
   '',
   refLine(issue),
-  `[Comment](${comment?.html_url}) by ${comment?.user?.login}:`,
-  excerpt(comment?.body, limit),
+  `[Comment](${comment?.html_url}) by ${byLine(comment)}:`,
+  relayed(comment?.body, limit),
   ...issueClose(
     role,
     `Do what the comment asks. If it needs code changes, create a branch, implement them, and open a PR linking issue #${issue?.number}. If it is a question, answer it as a comment on issue #${issue?.number}.`,
@@ -574,8 +595,8 @@ const prCommentPrompt = ({ issue, comment }, role = 'mention', limit = EXCERPT_C
   role === 'mention' ? `A comment on a pull request mentioned ${MENTION}.` : heading(role, 'comment'),
   '',
   refLine(issue),
-  `[Comment](${comment?.html_url}) by ${comment?.user?.login}:`,
-  excerpt(comment?.body, limit),
+  `[Comment](${comment?.html_url}) by ${byLine(comment)}:`,
+  relayed(comment?.body, limit),
   '',
   role === 'mention'
     ? `You are updating an existing PR. Check out its head branch and work on it directly. If the comment asks for code changes, implement them, commit, and push to that branch; do not open a new branch or PR. If it is a question, answer it as a comment on PR #${issue?.number}.`
@@ -587,8 +608,8 @@ const reviewCommentPrompt = ({ pull_request: pr, comment }, role = 'mention', li
   role === 'mention' ? `A PR review comment mentioned ${MENTION}.` : heading(role, 'review comment'),
   '',
   `${refLine(pr)}, head branch "${pr?.head?.ref}"`,
-  `[Review comment](${comment?.html_url}) by ${comment?.user?.login} on ${comment?.path} line ${comment?.line ?? comment?.original_line ?? '?'}:`,
-  excerpt(comment?.body, limit),
+  `[Review comment](${comment?.html_url}) by ${byLine(comment)} on ${comment?.path} line ${comment?.line ?? comment?.original_line ?? '?'}:`,
+  relayed(comment?.body, limit),
   '',
   role === 'mention'
     ? `You are updating an existing PR. Check out branch "${pr?.head?.ref}" and work on it directly: address the feedback, commit, and push to that branch; do not open a new branch or PR. Reply on the review thread when done.`
@@ -600,8 +621,8 @@ const reviewPrompt = ({ pull_request: pr, review }, role = 'mention', limit = EX
   role === 'mention' ? `A PR review mentioned ${MENTION}.` : heading(role, 'review'),
   '',
   `${refLine(pr)}, head branch "${pr?.head?.ref}"`,
-  `[Review](${review?.html_url}) by ${review?.user?.login}, state ${review?.state}:`,
-  excerpt(review?.body, limit),
+  `[Review](${review?.html_url}) by ${byLine(review)}, state ${review?.state}:`,
+  relayed(review?.body, limit),
   '',
   role === 'mention'
     ? `You are updating an existing PR. Check out branch "${pr?.head?.ref}" and work on it directly: address the review, commit, and push to that branch; do not open a new branch or PR. Reply on the review when done.`
@@ -614,8 +635,8 @@ const issuePrompt = ({ issue }) => [
   '',
   refLine(issue),
   `Labels: ${(issue?.labels ?? []).map((/** @type {{ name?: string }} */ l) => l?.name).filter(Boolean).join(', ') || 'none'}`,
-  'Body:',
-  excerpt(issue?.body),
+  `Body, by ${byLine(issue)}:`,
+  relayed(issue?.body),
   '',
   `Analyse the issue. If you can address it, create a branch, implement the fix or feature, and open a PR linking issue #${issue?.number}. Otherwise comment on the issue with your analysis.`,
 ].join('\n');
