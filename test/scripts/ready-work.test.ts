@@ -28,7 +28,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { UNREADIED_MARKER, authorHasSay, authorPicked, isWaiting, labelRow, mayPickUp, mayStartSpec, selectReadyWork, ticketStatus, uncountedReady, waitOf } from '../../scripts/lib/ready-work.mjs';
+import { UNREADIED_MARKER, authorHasSay, authorPicked, isWaiting, labelRow, mayPickUp, mayStartSpec, selectReadyWork, ticketStatus, uncountedReady, waitEnd, waitOf } from '../../scripts/lib/ready-work.mjs';
 import * as unblocked from '../../dispatch/unblocked.mjs';
 import { ASSOCIATIONS, PICKUP_BY, dispatchMarker } from '../../dispatch/webhook/fire.mjs';
 
@@ -286,6 +286,27 @@ describe('waitOf: the `Blocked until:` line', () => {
     assert.deepEqual(waitOf('Blocked until: 2026-11-05 for a few days of stop-event lines'), { wait: { until: '2026-11-05' } });
   });
 
+  test('a time after the date, past a space or a `T`, is read in UTC', () => {
+    for (const value of ['2026-11-05 14:00', '2026-11-05T14:00', '2026-11-05T14:00Z', '2026-11-05 14:00Z', '2026-11-05  14:00']) {
+      assert.deepEqual(waitOf(`Blocked until: ${value}`), { wait: { until: '2026-11-05T14:00Z' } }, value);
+    }
+    assert.deepEqual(waitOf('Blocked until: 2026-11-05T00:00Z'), { wait: { until: '2026-11-05T00:00Z' } });
+    assert.deepEqual(waitOf('Blocked until: 2026-11-05 23:59:30'), { wait: { until: '2026-11-05T23:59:30Z' } });
+    assert.deepEqual(waitOf('blocked UNTIL:2026-11-05T14:00Z\r\n\r\nBody.'), { wait: { until: '2026-11-05T14:00Z' } });
+  });
+
+  test('text after the time does not change the time read', () => {
+    assert.deepEqual(waitOf('Blocked until: 2026-11-05 14:00 UTC, once the deploy has settled'), { wait: { until: '2026-11-05T14:00Z' } });
+    assert.deepEqual(waitOf('Blocked until: 2026-11-05T14:00Z for 2 hours of logs'), { wait: { until: '2026-11-05T14:00Z' } });
+    assert.deepEqual(waitOf('Blocked until: 2026-11-05 3 days of logs'), { wait: { until: '2026-11-05' } }, 'a reason that starts with a number is no time');
+  });
+
+  test('a time governor cannot read is unreadable, and never read as the date alone', () => {
+    for (const value of ['2026-11-05 24:00', '2026-11-05T14:60', '2026-11-05 14:00:60', '2026-11-05 9:00', '2026-11-05 14:00+11:00', '2026-11-05T14:00+11:00', '2026-11-05T14', '2026-11-05T', '2026-11-05t14:00', '2026-11-05 14:00:00.000Z', '2026-02-30 14:00', '2026-11-05 14:']) {
+      assert.deepEqual(waitOf(`Blocked until: ${value}`), { wait: { unreadable: value } }, value);
+    }
+  });
+
   test('a line that is not the first non-empty line is no wait', () => {
     assert.deepEqual(waitOf('Parent PRD: #185\nBlocked until: 2026-11-05'), {});
     assert.deepEqual(waitOf('Not Blocked until: 2026-11-05'), {});
@@ -306,6 +327,15 @@ describe('isWaiting', () => {
     assert.equal(isWaiting(row, at('2026-11-04T23:59:59.999Z')), true);
     assert.equal(isWaiting(row, at('2026-11-05T00:00:00Z')), false);
     assert.equal(isWaiting(row, at('2026-12-01T00:00:00Z')), false);
+  });
+
+  test('a time still to come holds the ticket, until that time, UTC', () => {
+    const row = { wait: { until: '2026-11-05T14:00Z' } };
+    assert.equal(isWaiting(row, at('2026-11-05T00:00:00Z')), true, 'the date alone has come');
+    assert.equal(isWaiting(row, at('2026-11-05T13:59:59.999Z')), true);
+    assert.equal(isWaiting(row, at('2026-11-05T14:00:00Z')), false);
+    assert.equal(isWaiting({ wait: { until: '2026-11-05T14:00:30Z' } }, at('2026-11-05T14:00:29Z')), true);
+    assert.equal(isWaiting({ wait: { until: '2026-11-05T14:00:30Z' } }, at('2026-11-05T14:00:30Z')), false);
   });
 
   test('an unreadable line holds the ticket, and no line holds nothing', () => {
@@ -512,5 +542,19 @@ describe('heldUnreadied and UNREADIED_MARKER live here alone', () => {
   test('unblocked.mjs no longer re-exports them', () => {
     assert.equal('heldUnreadied' in unblocked, false);
     assert.equal('UNREADIED_MARKER' in unblocked, false);
+  });
+});
+
+describe('waitEnd: when a wait\'s date or time comes', () => {
+  test('a date ends at 00:00 UTC on it, and a time at that time', () => {
+    assert.equal(waitEnd('2026-11-05'), Date.parse('2026-11-05T00:00:00Z'));
+    assert.equal(waitEnd('2026-11-05T14:00Z'), Date.parse('2026-11-05T14:00:00Z'));
+    assert.equal(waitEnd('2026-11-05T14:00:30Z'), Date.parse('2026-11-05T14:00:30Z'));
+  });
+
+  test('anything waitOf does not write is no time', () => {
+    for (const until of ['soon', '', '2026-13-01', '2026-02-30', '2026-11-05T24:00Z', '2026-11-05T14:00', '2026-11-05 14:00', '2026-11-05T14:00+11:00', '2026-11-05T14:00:00.000Z']) {
+      assert.ok(Number.isNaN(waitEnd(until)), until);
+    }
   });
 });

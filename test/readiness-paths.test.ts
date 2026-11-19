@@ -53,12 +53,12 @@ const CONFIRMED = 'Created cloud session: https://claude.ai/code/session_01ABC\n
 // ── The states ───────────────────────────────────────────────────────────
 
 type LabelState = 'excluded' | 'claimed' | 'ready' | 'not-ready';
-type Line = 'none' | 'ahead' | 'past' | 'relative' | 'unreadable';
+type Line = 'none' | 'ahead' | 'later today' | 'past' | 'earlier today' | 'relative' | 'unreadable';
 /** `summary`: whether the read carries its dependency summary, or leaves the blocker to its `blocked_by` rows. */
 type State = { open: boolean; labels: LabelState; blocker: boolean; summary: boolean; line: Line; unreadied: boolean };
 
 const LABEL_STATES: LabelState[] = ['excluded', 'claimed', 'ready', 'not-ready'];
-const LINES: Line[] = ['none', 'ahead', 'past', 'relative', 'unreadable'];
+const LINES: Line[] = ['none', 'ahead', 'later today', 'past', 'earlier today', 'relative', 'unreadable'];
 
 const labelsOf: Record<LabelState, string[]> = {
   excluded: [...READY, LABELS.exclude[0]!],
@@ -66,11 +66,13 @@ const labelsOf: Record<LabelState, string[]> = {
   ready: [...READY],
   'not-ready': ['mode: afk'],
 };
-/** Each line, as the body's first line. A relative line waits on #43, not the closing blocker. */
+/** Each line, as the body's first line. A time of day is on NOW's date, an hour after it or an hour before. A relative line waits on #43, not the closing blocker. */
 const bodyOf: Record<Line, string> = {
   none: 'The work.',
   ahead: 'Blocked until: 2026-10-01\n\nThe work.',
+  'later today': 'Blocked until: 2026-09-25 13:00\n\nThe work.',
   past: `Blocked until: ${ITEM}\n\nThe work.`,
+  'earlier today': 'Blocked until: 2026-09-25T11:00Z\n\nThe work.',
   relative: 'Blocked until: 3 days after #43 closes\n\nThe work.',
   unreadable: 'Blocked until: soon\n\nThe work.',
 };
@@ -248,8 +250,10 @@ const waitEnd = async (s: State) => {
 
 // ── What main answers ───────────────────────────────────────────────────
 
-/** A line that holds a ticket at NOW, as `isWaiting` reads it. A date that has passed holds nothing. */
-const lineHolds = (s: State) => s.line === 'ahead' || s.line === 'relative' || s.line === 'unreadable';
+/** A line that holds a ticket at NOW, as `isWaiting` reads it. A date or a time that has passed holds nothing. */
+const lineHolds = (s: State) => s.line === 'ahead' || s.line === 'later today' || s.line === 'relative' || s.line === 'unreadable';
+/** A line whose date or time has passed at NOW. */
+const linePassed = (s: State) => s.line === 'past' || s.line === 'earlier today';
 
 /**
  * Pickup's selection and the claim's second read answer the same for every
@@ -329,15 +333,15 @@ const unblockedDoes = (s: State): Does => {
  */
 const waitEndDoes = (s: State): WaitEnd => {
   if (!s.open) return 'dropped';
-  if (s.line === 'ahead') return 'moved later';
-  if (s.line !== 'past') return 'dropped';
+  if (s.line === 'ahead' || s.line === 'later today') return 'moved later';
+  if (!linePassed(s)) return 'dropped';
   if (s.blocker || s.labels !== 'not-ready') return 'dropped';
   return s.unreadied ? 'commented' : 'spec';
 };
 
 describe('the four readiness paths, as main has them', () => {
   test('the states cover open and closed, every label state, a blocker or none, by summary or by rows, every line, and an unreadied comment or none', () => {
-    assert.equal(STATES.length, 2 * 4 * 2 * 2 * 5 * 2);
+    assert.equal(STATES.length, 2 * 4 * 2 * 2 * 7 * 2);
     // Wait end's moved date on a claimed ticket is among them.
     assert.ok(STATES.some((s) => s.open && s.labels === 'claimed' && s.line === 'ahead'));
   });

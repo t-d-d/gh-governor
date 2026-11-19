@@ -111,6 +111,7 @@ import { ARCHIVE_TIMEOUT_MS, SIGNOFF_LATEST_START_MS, SIGNOFF_WINDOW_MS, accessT
 import { branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts/lib/session-branch.mjs';
 import { STOPPED_EVENT, releaseStopped, stoppedOf } from './stopped.mjs';
 import { WAIT_PROMPT, holdWait, waitLinks } from './waits.mjs';
+import { waitEnd } from '../scripts/lib/ready-work.mjs';
 import { tellerFor } from './told.mjs';
 import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { RoutinesApiError } from './routines.mjs';
@@ -2803,10 +2804,10 @@ export const dynamoState = (client, table) => {
   const failedPk = (/** @type {string} */ repo) => ({ S: `pickup-failed#${repo}` });
   const waitPk = (/** @type {string} */ repo) => ({ S: `wait#${repo.toLowerCase()}` });
   const waitKey = (/** @type {string} */ repo, /** @type {number} */ issue) => ({ pk: waitPk(repo), sk: { S: String(issue) } });
-  /** An item's date, or a throw: a malformed item is a failed read, never a missing one. @param {Record<string, any>} item */
+  /** An item's date or time, or a throw: a malformed item is a failed read, never a missing one. @param {Record<string, any>} item */
   const untilOf = (item) => {
     const until = item.until?.S;
-    if (typeof until !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(until) || Number.isNaN(Date.parse(`${until}T00:00:00Z`))) throw new Error(`the wait item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
+    if (typeof until !== 'string' || Number.isNaN(waitEnd(until))) throw new Error(`the wait item ${item.pk?.S} ${item.sk?.S} is malformed: ${JSON.stringify(item)}`);
     return until;
   };
   /** @param {unknown} error */
@@ -3050,7 +3051,7 @@ export const dynamoState = (client, table) => {
       try {
         await client.send(new PutItemCommand({
           TableName: table,
-          Item: { ...waitKey(repo, issue), until: { S: until }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.parse(`${until}T00:00:00Z`) / 1000) + WAIT_TTL_S) } },
+          Item: { ...waitKey(repo, issue), until: { S: until }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(waitEnd(until) / 1000) + WAIT_TTL_S) } },
           ...(read === null
             ? { ConditionExpression: 'attribute_not_exists(pk)' }
             : { ConditionExpression: '#until = :read', ExpressionAttributeNames: { '#until': 'until' }, ExpressionAttributeValues: { ':read': { S: read } } }),
