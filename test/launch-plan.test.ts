@@ -446,6 +446,21 @@ describe('a ticket whose dispatched session is still live is not claimed', () =>
     assert.match(text, /archived or signs off/);
   });
 
+  test('it says what to do when that session will never end on its own', async () => {
+    const { ctx, writes } = context({ comments: () => [dispatched(LIVE)], stopped: live });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.match(heldSaid(writes, 12)[0]!.text!, /no longer working on it, archive it/);
+  });
+
+  test('a comment that fails is logged as not said, and the ticket stays held', async () => {
+    const { ctx, asked, logged } = context({ comments: () => [dispatched(LIVE)], stopped: live, failWrite: (w) => w.op === 'comment' });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.deepEqual(asked, []);
+    const lines = logged.filter((l) => l.event === HELD_EVENT && l.issue === 12);
+    assert.ok(!lines.some((l) => l.said === true), JSON.stringify(lines));
+    assert.ok(lines.some((l) => l.level === 'error' && l.outcome === 'not said'), JSON.stringify(lines));
+  });
+
   test('a later fire that finds it held again posts no second comment', async () => {
     const earlier = { id: 2, body: `${HELD_MARKER}session_01LIVEBUILDER -->\nPickup did not start this ticket.`, created_at: '2026-09-25T12:00:00Z', ours: true };
     const { ctx, writes, asked, logged } = context({ comments: () => [dispatched(LIVE), earlier], stopped: live });

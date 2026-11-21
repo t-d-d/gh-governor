@@ -32,6 +32,7 @@ import { uncountedReadyComment, untaskedComment } from '../dispatch/uncounted.mj
 import { issueComment, loopComment } from '../dispatch/issue-review.mjs';
 import { deployedComment } from '../dispatch/webhook/deployed-comment.mjs';
 import { launchFailedComment } from '../dispatch/launch-failed.mjs';
+import { heldComment } from '../dispatch/held.mjs';
 import { reviewMarker } from '../dispatch/pr-body.mjs';
 import { standingLine } from '../dispatch/deliveries.mjs';
 import { promptFor } from '../scripts/lib/dispatch-prompt.mjs';
@@ -508,6 +509,7 @@ describe('fitness: the receiver relays no comment governor\'s App posts (ticket-
     ['a deploy', deployedComment({ target: 'prod', workflow: 'Deliver', url: `https://github.com/${FACTORY}/actions/runs/1/job/2`, commit: 'a'.repeat(40) })],
     ['a launch that failed', launchFailedComment({ until: at, failed: 'launch' })],
     ['a claim that failed', launchFailedComment({ until: at, failed: 'claim' })],
+    ['a ticket a live builder holds', heldComment({ session: 'session_01BUILDER', url: BUILDER })],
     ['a kind not written yet, mentioning @claude', '@claude governor says something new here.'],
   ];
   const issue = (labels: string[]) => ({

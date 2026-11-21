@@ -64,7 +64,7 @@ export const heldComment = ({ session, url }) => [
   `${HELD_MARKER}${session} -->`,
   `Pickup did not start this ticket. It reads as ready and unclaimed, but the ${sessionLink('session governor started for it', url)} has not ended, and a second session would build the same change beside it.`,
   '',
-  'Pickup starts the ticket again once that session is archived or signs off. Nothing needs doing until then.',
+  'Pickup starts the ticket again once that session is archived or signs off. If that session is no longer working on it, archive it, and the next fire starts the ticket.',
 ].join('\n');
 
 /**
@@ -84,15 +84,18 @@ export const heldComment = ({ session, url }) => [
  */
 export const sayHeld = async ({ reader, repo, issue, holder, comments, log }) => {
   const marker = `${HELD_MARKER}${holder.session} -->`;
-  const said = comments.some((c) => c.ours && c.body.includes(marker));
-  log(HELD_EVENT, { level: 'info', repo, issue, session: holder.session, outcome: 'held', said: !said, reason: 'its newest dispatch comment names a session that is not archived, so it is not claimed and nothing starts' });
-  if (said) return null;
+  const reason = 'its newest dispatch comment names a session that is not archived, so it is not claimed and nothing starts';
+  if (comments.some((c) => c.ours && c.body.includes(marker))) {
+    log(HELD_EVENT, { level: 'info', repo, issue, session: holder.session, outcome: 'held', said: false, reason });
+    return null;
+  }
   const text = heldComment(holder);
   try {
     await reader.comment(issue, text);
-    return text;
   } catch (error) {
     log(HELD_EVENT, { level: 'error', repo, issue, session: holder.session, outcome: 'not said', error: messageOf(error), reason: 'the ticket stays held; the next fire that finds it held tries the comment again' });
     return null;
   }
+  log(HELD_EVENT, { level: 'info', repo, issue, session: holder.session, outcome: 'held', said: true, reason });
+  return text;
 };
