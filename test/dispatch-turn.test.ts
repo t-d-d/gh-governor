@@ -11553,6 +11553,21 @@ describe('run: a body edit that leaves the owner link in place, told to the issu
     assert.equal(exitCodeFor(result as never), 0);
   });
 
+  test('the owner made it with a call the search does not read, and nobody else did: the owner is told it may still be its own, never that it was not', async () => {
+    const h = searching(WRITER);
+    // The repo's path is held in a shell variable, so the call names no path the search matches.
+    const command = 'R=repos/acme/factory\ngh api -X PATCH $R/issues/7 -F body=@body.md';
+    h.pages.set('cse_01OWNER', { data: [{ event_id: 'e-1', event_type: 'assistant', created_at: EDITED, payload: { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } } }], next_cursor: null });
+    h.pages.delete('cse_01WRITER');
+    const result = await run(fire, h.deps as never) as Record<string, any>;
+    assert.deepEqual(h.messages.map((m) => m.session), [OWNER]);
+    assert.match(h.messages[0]!.text, /did not find the edit among this session's calls, or any other session's\. It may still be your own, or a person's\./);
+    assert.doesNotMatch(h.messages[0]!.text, /not this session|someone else|most likely a person/i);
+    assert.ok(!h.messages[0]!.text.includes(EDIT_SPEC_OWNER));
+    assert.equal(h.correctionsTold.size, 0);
+    assert.equal(exitCodeFor(result as never), 0);
+  });
+
   test('the owner\'s events cannot be read: the owner gets today\'s notice', async () => {
     const h = searching(WRITER);
     const events = h.deps.sessions.events;

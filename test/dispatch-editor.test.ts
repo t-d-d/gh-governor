@@ -246,7 +246,7 @@ describe('ownerLine and editedText', () => {
     const person = ownerLine({ by: 'other', found: { searched: true, author: null, maybe: [], candidates: 1, unread: 0 } });
     const unlisted = ownerLine({ by: 'other', found: { searched: false, reason: 'x' } });
     assert.match(author, /another session made the edit, not this one/i);
-    assert.doesNotMatch(author, /may still be your own/);
+    assert.doesNotMatch(author, /may (?:still )?be your own/);
     // A miss in the owner's own events shows nothing: only another session
     // found to have made the edit lets governor say it was not the owner's.
     for (const line of [maybe, person, unlisted]) {
