@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
-import { CONFIG_PATH, GENERIC_SWITCHES, SECTIONS, namesEnvironment, readConfig, turnsOn } from '../dispatch/repo-config.mjs';
+import { BUILT_IN_RUN, CONFIG_PATH, GENERIC_SWITCHES, RUN_SECTIONS, SECTIONS, namesEnvironment, readConfig, runOf, turnsOn } from '../dispatch/repo-config.mjs';
 import { checkConfigOf } from '../checker/heartbeat-check.mjs';
 import { globMatches } from '../dispatch/checklist.mjs';
 
@@ -136,6 +136,27 @@ describe('the starter kit\'s config file', () => {
     assert.notEqual(checked.config.pickupHours, null);
     assert.equal(checked.config.periodics.length, 3);
   });
+});
+
+// A repo that copies the kit reads what its sessions run on in its own file.
+// The model is governor's built-in one, so a change to that fails here until
+// the starter follows.
+describe('the starter kit\'s config files write the default model and effort out', () => {
+  for (const path of [CONFIG_FILE, DARK_FILE]) {
+    test(`${path} sets governor's built-in model and a medium effort at the top level`, () => {
+      const file = JSON.parse(read(path)) as { model?: string, effort?: string };
+      assert.equal(file.model, BUILT_IN_RUN.model, 'the starter names the built-in model');
+      assert.equal(file.effort, 'medium');
+      const got = readConfig(read(path));
+      assert.ok(got.ok, JSON.stringify(got));
+      // No section, periodic, hook or issue review sets its own: each start takes the file's.
+      const want = { model: BUILT_IN_RUN.model, effort: 'medium' };
+      for (const name of RUN_SECTIONS) assert.deepEqual(runOf(got.config, name), want, name);
+      for (const periodic of got.config.periodics) assert.deepEqual(runOf(got.config, 'periodics', periodic), want, periodic.name);
+      for (const hook of got.config.hooks) assert.deepEqual(runOf(got.config, 'hooks', hook), want, hook.name);
+      for (const review of got.config.issueReviews?.reviews ?? []) assert.deepEqual(runOf(got.config, 'issueReviews', review), want, review.name);
+    });
+  }
 });
 
 describe('the starter kit\'s dark-factory config file', () => {
