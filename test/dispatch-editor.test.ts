@@ -7,9 +7,12 @@
  *
  * - found: the owner made it, and is not told of its own edit;
  * - not found: the other candidates are searched as an unsigned post's
- *   author is. One match is told once to post its change as a comment,
- *   undecided candidates are told it may be theirs, and the owner is told
- *   someone else edited its issue;
+ *   author is. One match is told once to post its change as a comment, and
+ *   the owner is told another session edited its issue. Undecided
+ *   candidates are told it may be theirs. Where no other session is found,
+ *   the owner is told the edit was not found among its calls and may still
+ *   be its own: the search can show a session made an edit, never that it
+ *   did not;
  * - the owner's events cannot be read: the owner gets today's notice.
  *
  * The builder hears every edit, as before.
@@ -235,19 +238,26 @@ describe('searchEditor', () => {
 
 describe('ownerLine and editedText', () => {
   const TEXT = `The body of issue #7 was edited.\n\n${EDIT_SPEC_OWNER}`;
-  test('the owner hears today\'s line where nothing was found, and otherwise that someone else edited it', () => {
+  test('the owner hears today\'s line where nothing was searched, that another session made the edit where one was found, and otherwise that it may still be its own', () => {
     assert.equal(ownerLine(null), EDIT_SPEC_OWNER);
     assert.equal(ownerLine({ by: 'unknown', reason: 'x' }), EDIT_SPEC_OWNER);
     const author = ownerLine({ by: 'other', found: { searched: true, author: WRITER, maybe: [], candidates: 1, unread: 0 } });
     const maybe = ownerLine({ by: 'other', found: { searched: true, author: null, maybe: [WRITER], candidates: 1, unread: 0 } });
     const person = ownerLine({ by: 'other', found: { searched: true, author: null, maybe: [], candidates: 1, unread: 0 } });
     const unlisted = ownerLine({ by: 'other', found: { searched: false, reason: 'x' } });
-    assert.match(author, /another session/i);
-    assert.match(maybe, /someone else/i);
-    assert.match(person, /most likely a person/i);
-    assert.match(unlisted, /someone else/i);
+    assert.match(author, /another session made the edit, not this one/i);
+    assert.doesNotMatch(author, /may still be your own/);
+    // A miss in the owner's own events shows nothing: only another session
+    // found to have made the edit lets governor say it was not the owner's.
+    for (const line of [maybe, person, unlisted]) {
+      assert.match(line, /did not find the edit among this session's calls/i);
+      assert.match(line, /may still be your own/);
+      assert.doesNotMatch(line, /not this session|not this one|someone else|most likely a person/i);
+    }
+    assert.match(maybe, /could not tell whether another session made it/i);
+    assert.match(person, /or a person's/i);
+    assert.equal(new Set([maybe, person, unlisted]).size, 3);
     for (const line of [author, maybe, person, unlisted]) {
-      assert.doesNotMatch(line, /may be your own/);
       assert.match(line, /read the body again before you next edit it/i);
       assert.doesNotMatch(line, /—/);
     }
@@ -409,20 +419,21 @@ describe('planTicket: a body edit that leaves the owner link in place', () => {
     assert.deepEqual(second.sent.map((s) => s.session), [OWNER, BUILDER]);
   });
 
-  test('undecided: the candidates are told it may be theirs, and the owner that someone else edited it', async () => {
+  test('undecided: the candidates are told it may be theirs, and the owner that it may still be its own', async () => {
     const { ctx, sent } = context({ edited: { by: 'other', found: { searched: true, author: null, maybe: [WRITER, OTHER], candidates: 2, unread: 0 } } });
     await planTicket(fire(), ctx);
     assert.deepEqual(sent.map((s) => s.session), [OWNER, BUILDER, WRITER, OTHER]);
-    assert.match(ownerOf(sent)!.text, /someone else/i);
-    assert.doesNotMatch(ownerOf(sent)!.text, /may be your own/);
+    assert.match(ownerOf(sent)!.text, /may still be your own/);
+    assert.doesNotMatch(ownerOf(sent)!.text, /not this session|someone else/i);
     assert.equal(sent[3]!.text, editMaybeText(7, ISSUE_URL));
   });
 
-  test('all ruled out: the owner is told someone else edited it, most likely a person, and nobody is nudged', async () => {
+  test('all ruled out: the owner is told the edit may still be its own, or a person\'s, and nobody is nudged', async () => {
     const { ctx, sent } = context({ edited: { by: 'other', found: { searched: true, author: null, maybe: [], candidates: 2, unread: 0 } } });
     await planTicket(fire(), ctx);
     assert.deepEqual(sent.map((s) => s.session), [OWNER, BUILDER]);
-    assert.match(ownerOf(sent)!.text, /most likely a person/i);
+    assert.match(ownerOf(sent)!.text, /may still be your own, or a person's/);
+    assert.doesNotMatch(ownerOf(sent)!.text, /not this session|most likely a person/i);
   });
 
   test('the owner\'s events cannot be read: the owner gets today\'s notice', async () => {
@@ -480,7 +491,8 @@ describe('planTicket: a body edit that leaves the owner link in place', () => {
     const { ctx, sent } = context({ config: RULES_OFF, edited: { by: 'other', found: { searched: true, author: null, maybe: [WRITER, OTHER], candidates: 2, unread: 0 } } });
     await planTicket(fire(), ctx);
     assert.deepEqual(sent.map((s) => s.session), [OWNER, BUILDER]);
-    assert.match(ownerOf(sent)!.text, /someone else/i);
+    assert.match(ownerOf(sent)!.text, /could not tell whether another session made it\. It may still be your own/);
+    assert.doesNotMatch(ownerOf(sent)!.text, /not this session|someone else/i);
   });
 
   test('with sessionRules off, an owner whose events cannot be read gets today\'s notice', async () => {

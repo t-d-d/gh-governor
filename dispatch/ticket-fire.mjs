@@ -24,8 +24,9 @@
  * to comment on it rather than build. Where the edit left the
  * owner link in place, governor first searches for who made it, whatever
  * `sessionRules` says (dispatch/editor.mjs): the spec owner is not told of
- * its own edit, is told someone else made one, and keeps the old line only
- * where its events could not be read. Only under `sessionRules` is a
+ * an edit its events show, is told where another session made one or
+ * where the edit was not found and may still be its own, and keeps the old
+ * line only where its events could not be read. Only under `sessionRules` is a
  * session the searches find asked to sign its post or to comment instead
  * of editing. The builder hears every edit.
  *
