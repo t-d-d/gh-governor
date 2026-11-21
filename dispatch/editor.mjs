@@ -21,9 +21,10 @@
  *    post's author is, the owner left out. One match is told once
  *    (`edit-unsigned`) to post its change as a comment, and the owner that
  *    another session edited its issue. Undecided: each candidate not ruled
- *    out is told once (`edit-unsigned-maybe`) the edit may be its own, and
- *    the owner that someone else edited it. All ruled out: the owner is told
- *    someone else edited it, most likely a person.
+ *    out is told once (`edit-unsigned-maybe`) the edit may be its own. All
+ *    ruled out: nobody is nudged. In both, and where the other candidates
+ *    could not be listed, the owner is told the edit was not found among
+ *    its calls and may still be its own ({@link ownerLine}).
  * 4. **The owner's events cannot be read**: the owner gets the notice as it
  *    was, with `EDIT_SPEC_OWNER`.
  *
@@ -119,6 +120,9 @@ export const searchEditor = async ({ owner, list, events, repo, on, edit }) => {
 
 const AGAIN = 'Read the body again before you next edit it, so you do not write over that change from an old copy.';
 
+/** What the owner is told where its own events show no edit and no other session is found to have made it. */
+const MISSED = "Governor did not find the edit among this session's calls";
+
 /**
  * What the spec owner is told of the edit's author, in place of
  * `EDIT_SPEC_OWNER`: that line itself where nothing was searched or the
@@ -126,22 +130,28 @@ const AGAIN = 'Read the body again before you next edit it, so you do not write 
  * off) the editor is not told to comment instead, so the line does not
  * say it is.
  *
+ * The search can show that a session made an edit, never that it did not:
+ * a call the matcher does not read, such as one whose path a shell
+ * variable holds, leaves the owner's events clear. So only another session
+ * found to have made the edit lets the line say it was not the owner's.
+ * Every other line says the edit may still be the owner's own.
+ *
  * @param {EditFound | null} edited
  * @param {boolean} [asks]
  */
 export const ownerLine = (edited, asks = true) => {
   if (edited === null || edited.by !== 'other') return EDIT_SPEC_OWNER;
   const { found } = edited;
-  if (!found.searched) return `Someone else made the edit, not this session. ${AGAIN}`;
+  if (!found.searched) return `${MISSED}. It may still be your own. ${AGAIN}`;
   if (found.author !== null) return `Another session made the edit, not this one. ${asks ? 'A session should comment on an issue it does not own, and governor tells it so. ' : ''}${AGAIN}`;
-  if (found.maybe.length > 0) return `Someone else made the edit, not this session. Governor could not tell which session made it. ${AGAIN}`;
-  return `Someone else made the edit, not this session, most likely a person. ${AGAIN}`;
+  if (found.maybe.length > 0) return `${MISSED}, and could not tell whether another session made it. It may still be your own. ${AGAIN}`;
+  return `${MISSED}, or any other session's. It may still be your own, or a person's. ${AGAIN}`;
 };
 
 /**
  * The owner's message of a body edit with its `EDIT_SPEC_OWNER` line
- * replaced by {@link ownerLine}, where the search found someone else. The
- * text as it came otherwise.
+ * replaced by {@link ownerLine}, where the owner's events were read and
+ * show no edit. The text as it came otherwise.
  *
  * @param {string} text
  * @param {EditFound | null} edited
