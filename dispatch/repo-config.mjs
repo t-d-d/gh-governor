@@ -124,8 +124,9 @@ const RUN_STARTS = Object.freeze({
 export const RUN_SECTIONS = Object.freeze(Object.keys(RUN_STARTS));
 
 /**
- * A model as the CLI's `--model` takes it, an alias or a full name: one
- * word that starts with a letter or digit, so it is never read as an option.
+ * A model's name as the CLI's `--model` takes it: one word that starts with
+ * a letter or digit, so it is never read as an option. Governor passes it on
+ * as written, to the CLI and, for a routine run, to the routines API.
  */
 const modelName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._[\]-]{0,99}$/, 'a model is one word of letters, digits, dots, hyphens, underscores and square brackets, starting with a letter or digit, of at most 100 characters');
 
@@ -669,7 +670,7 @@ const fileSchema = z.strictObject({
   environment: z.string().trim().min(1, 'a cloud environment name, or its ID (env_…)').meta({ description: 'The claude.ai cloud environment the repo\'s sessions start in: its name as `/remote-env` lists it, or its ID. A public repo should use the name.' }),
   trust: trustSchema.optional().meta({ description: '`{ "start": [ … ], "auto": [ … ], "task": [ … ], "relay": [ … ], "review": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `start` is who may set work going, by readying a ticket or writing a summons, default `OWNER`, `MEMBER` and `COLLABORATOR`, which a repo may narrow and never widen. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`. `review` is whose pull requests the PR review reads, default the three.' }),
   workflows: workflowsSchema.optional().meta({ description: 'What the repo\'s workflows are to governor: `ci`.' }),
-  model: modelName.optional().meta({ description: `The model every session governor starts in the repo runs on, and each review's model run: an alias such as \`opus\`, or a model's full name, as the CLI's \`--model\` takes it. A section, a periodic, a hook or an issue review that sets its own \`model\` uses that instead. Default \`${DEFAULT_MODEL}\`.` }),
+  model: modelName.optional().meta({ description: `The model every session governor starts in the repo runs on, and each review's model run: a model's name as the CLI's \`--model\` takes it, such as \`claude-sonnet-5-5\`. Governor passes the name on as written, and does not check it against the models the login can use. A section, a periodic, a hook or an issue review that sets its own \`model\` uses that instead. Default \`${DEFAULT_MODEL}\`.` }),
   effort: z.enum(EFFORTS).optional().meta({ description: `The effort every session governor starts in the repo runs at, and each review's model run: ${EFFORTS.map((e) => `\`${e}\``).join(', ')}, as the CLI's \`--effort\` takes it. A section, a periodic, a hook or an issue review that sets its own \`effort\` uses that instead. It does not reach a periodic that names \`connectors\`, since a routine run takes no effort. Default none: each run takes its model's own default.` }),
   ...Object.fromEntries(Object.entries(sectionSchemas).map(([name, schema]) => [name, schema.optional().meta({ description: /** @type {string} */ (SWITCH_DESCRIPTIONS[name]) })])),
   issueReviews: issueReviewsSchema.optional()

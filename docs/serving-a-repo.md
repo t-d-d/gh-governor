@@ -47,19 +47,7 @@ The smallest useful file:
 
 `environment`, `trust`, `workflows`, `model` and `effort` are shared settings. Every other top-level key is one feature's section, and holds every setting and prompt that feature reads. A section turns its feature on unless it sets `"enabled": false`, a feature with no settings is `{}`, and a feature with no section is off. [The config reference](config-reference.md) gives every key, its default and what governor does with it. [test/fixtures/factory/.github/governor.json](../test/fixtures/factory/.github/governor.json) is a full file with every feature on.
 
-`model` and `effort` at the top level set what every session governor starts runs on, and each review's model run. A section that starts a session or runs the model may set its own, and so may each periodic, hook and issue review. The nearest one wins, one key at a time:
-
-```json
-{
-  "environment": "my-env",
-  "model": "claude-opus-5-5",
-  "effort": "high",
-  "pickup": { "ready": ["mode: afk"], "claim": "claimed", "effort": "xhigh" },
-  "prReview": { "prompt": { "file": ".github/pr-review.md" }, "model": "claude-sonnet-5-5", "effort": "low" }
-}
-```
-
-Here a ready ticket's session runs on `claude-opus-5-5` at `xhigh`, and the PR review on `claude-sonnet-5-5` at `low`. `model` is an alias or a full name, as the CLI's `--model` takes it, and `effort` is `low`, `medium`, `high`, `xhigh` or `max`. A file that sets neither gets governor's built-in model and each model's own default effort. A periodic that names `connectors` runs as a routine, which takes a model and no effort.
+`model` and `effort` at the top level set what every session governor starts runs on, and each review's model run. A section that starts a session or runs the model may set its own, and so may each periodic, hook and issue review. The nearest one wins, one key at a time: with `"model": "claude-opus-5-5", "effort": "high"` at the top and `"effort": "xhigh"` in `pickup`, a ready ticket's session runs on `claude-opus-5-5` at `xhigh`. `model` is a model's name as the CLI's `--model` takes it, which governor passes on as written and does not check, and `effort` is `low`, `medium`, `high`, `xhigh` or `max`. A file that sets neither gets governor's built-in model and each model's own default effort. A periodic that names `connectors` runs as a routine, which takes a model and no effort.
 
 Governor no longer reads `.github/dispatch.json`, the older layout. A repo with only that file is not served, and governor logs a warning naming the file to add.
 

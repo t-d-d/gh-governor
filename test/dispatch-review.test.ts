@@ -388,7 +388,7 @@ describe('run — a review fire, end to end', () => {
   });
 });
 
-describe('run — the model and effort the review\'s run uses', () => {
+describe('run: the model and effort the review\'s run uses', () => {
   const file = JSON.parse(factoryFile(CONFIG_PATH)) as { prReview: Record<string, unknown> } & Record<string, unknown>;
 
   test('with neither set, the run is handed governor\'s built-in model and no effort', async () => {

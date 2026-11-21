@@ -36,7 +36,7 @@ What the repo's workflows are to governor: `ci`.
 
 ## `model`
 
-The model every session governor starts in the repo runs on, and each review's model run: an alias such as `opus`, or a model's full name, as the CLI's `--model` takes it. A section, a periodic, a hook or an issue review that sets its own `model` uses that instead. Default `claude-opus-5-5`.
+The model every session governor starts in the repo runs on, and each review's model run: a model's name as the CLI's `--model` takes it, such as `claude-sonnet-5-5`. Governor passes the name on as written, and does not check it against the models the login can use. A section, a periodic, a hook or an issue review that sets its own `model` uses that instead. Default `claude-opus-5-5`.
 
 ## `effort`
 
