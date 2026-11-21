@@ -10,10 +10,16 @@ what a message holds.
 
 ## Rules
 
-- `environment`, `trust` and `workflows` are the settings several features
-  share. Every other top-level key is one feature's section (`SECTIONS`),
-  holding every setting and prompt that feature reads. The code reads the
-  file into one shape (`toConfig`), so no feature reads the file's layout.
+- `environment`, `trust`, `workflows`, `model` and `effort` are the settings
+  several features share. Every other top-level key is one feature's section
+  (`SECTIONS`), holding every setting and prompt that feature reads. The code
+  reads the file into one shape (`toConfig`), so no feature reads the file's
+  layout.
+- The file's `model` and `effort` are what every session governor starts
+  runs on, and each review's model run. A section that starts one, and each
+  periodic, hook and issue review, may set its own, which wins one key at a
+  time. Every start reads them through one function (`runOf`). A section
+  that starts nothing takes neither key.
 - Every feature is a switch, off unless the file turns it on, and a turn
   refuses a fire kind its repo's file does not turn on. A section turns its
   feature on unless it sets `"enabled": false`. The schema accepts no switch
@@ -41,6 +47,7 @@ what a message holds.
   passes the committed schema (repo-config.md)`.
 - Prompts: `instruction` in dispatch/prompts.mjs, called by each text's
   builder; `resolveFiles` in dispatch/repo-config.mjs reads prompt files.
+- Model and effort: `RUN_SECTIONS` and `runOf` in dispatch/repo-config.mjs.
 - The switch list: `GENERIC_SWITCHES` and `SECTION_SWITCHES`, read by
   `turnsOn`, in dispatch/repo-config.mjs.
 
@@ -57,5 +64,7 @@ what a message holds.
   a prompt.
 - Do not turn a feature on by default: a repo that never asked would spend
   the login on it.
+- Do not name a model or an effort at a start site: a start that skips
+  `runOf` runs on something the repo's file does not say.
 
-History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. A ticket's own `Blocked until:` line holds it whatever the file says since #186. The config file is `.github/governor.json` since #525, one section per feature: a section turns its feature on unless it sets `"enabled": false`, and each setting and prompt sits in the section of the feature it serves.
+History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. A ticket's own `Blocked until:` line holds it whatever the file says since #186. The config file is `.github/governor.json` since #525, one section per feature: a section turns its feature on unless it sets `"enabled": false`, and each setting and prompt sits in the section of the feature it serves. The file takes `model` and `effort` as shared settings, which each place that starts a session or runs the model may set again, since #762.

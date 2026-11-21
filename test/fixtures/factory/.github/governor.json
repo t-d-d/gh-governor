@@ -52,6 +52,7 @@
   "branchRunMessages": {},
   "conflicts": {},
   "prReview": {
+    "effort": "high",
     "prompt": {
       "file": ".claude/skills/pr-review/SKILL.md"
     },
@@ -450,6 +451,8 @@
   "issueReviews": {
     "reviews": {
       "triage": {
+        "model": "claude-sonnet-5-5",
+        "effort": "low",
         "when": {
           "exclude": [
             "workflow: under development"

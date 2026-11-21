@@ -6,9 +6,10 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { repoServed, servedRepos } from '../dispatch/repos.mjs';
-import { CONFIG_PATH, GENERIC_SWITCHES, LABEL_READERS, OLD_CONFIG_PATH, PROMPT_KEYS, SECTIONS, SECTION_PROMPTS, environmentFrom, readConfig, resolveFiles, switchOf, turnsOn } from '../dispatch/repo-config.mjs';
+import { BUILT_IN_RUN, CONFIG_PATH, EFFORTS, GENERIC_SWITCHES, LABEL_READERS, OLD_CONFIG_PATH, PROMPT_KEYS, RUN_SECTIONS, SECTIONS, SECTION_PROMPTS, environmentFrom, readConfig, resolveFiles, runOf, switchOf, turnsOn } from '../dispatch/repo-config.mjs';
+import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { PROMPTS } from '../dispatch/prompts.mjs';
 import { factoryFile } from './helpers/factory.ts';
 
@@ -465,6 +466,123 @@ describe('one section per feature, in .github/governor.json', () => {
       // Off, it reads no labels, so it needs no pickup section.
       ok({ ...MINIMAL, [name]: { ...(section as object), enabled: false } });
     }
+  });
+});
+
+describe('model and effort: a default for the file, and each place\'s own', () => {
+  const read = (file: Record<string, unknown>) => {
+    const got = readConfig(askme(file));
+    assert.ok(got.ok, JSON.stringify(got));
+    return got.config;
+  };
+  const faultOf = (file: Record<string, unknown>) => {
+    const got = readConfig(askme(file));
+    assert.ok(!got.ok, 'the file should be refused');
+    return got.fault;
+  };
+  /** A section that is on with nothing but what `more` sets, its required settings filled in. */
+  const section = (name: string, more: Record<string, unknown>) => ({ [name]: { ...(name === 'pickup' ? JSON.parse(ASKME_FILE).pickup : name === 'prReview' ? { prompt: 'Check it.' } : {}), ...more } });
+
+  test('a file that sets neither starts everything on the built-in model, with no effort', () => {
+    const config = read({});
+    assert.equal(config.runs, undefined);
+    for (const name of [...RUN_SECTIONS, 'periodics', 'hooks', 'issueReviews']) assert.deepEqual(runOf(config, name), { model: DEFAULT_MODEL }, name);
+  });
+
+  test('the file\'s model and effort are every place\'s, where the place sets none', () => {
+    const config = read({ model: 'claude-sonnet-5-5', effort: 'high' });
+    for (const name of [...RUN_SECTIONS, 'periodics', 'hooks', 'issueReviews']) assert.deepEqual(runOf(config, name), { model: 'claude-sonnet-5-5', effort: 'high' }, name);
+    assert.deepEqual(runOf(read({ effort: 'low' }), 'pickup'), { model: DEFAULT_MODEL, effort: 'low' }, 'an effort alone leaves the built-in model');
+    assert.deepEqual(runOf(read({ model: 'opus' }), 'pickup'), { model: 'opus' }, 'a model alone passes no effort');
+  });
+
+  test('each section that starts a session or runs the model takes its own, which win over the file\'s, one key at a time', () => {
+    assert.deepEqual([...RUN_SECTIONS].sort(), ['ciMessages', 'conflicts', 'deployMessages', 'pickup', 'prMessages', 'prReview', 'redScheduledRun', 'summons', 'unblocked', 'waits']);
+    for (const name of RUN_SECTIONS) {
+      const both = read({ model: 'claude-sonnet-5-5', effort: 'medium', ...section(name, { model: 'claude-haiku-5-5', effort: 'max' }) });
+      assert.deepEqual(runOf(both, name), { model: 'claude-haiku-5-5', effort: 'max' }, name);
+      const other = RUN_SECTIONS.find((n) => n !== name) as string;
+      assert.deepEqual(runOf(both, other), { model: 'claude-sonnet-5-5', effort: 'medium' }, `${name} leaves ${other} at the file's`);
+      assert.deepEqual(runOf(read({ model: 'claude-sonnet-5-5', effort: 'medium', ...section(name, { effort: 'xhigh' }) }), name), { model: 'claude-sonnet-5-5', effort: 'xhigh' }, `${name}: an effort alone takes the file's model`);
+      assert.deepEqual(runOf(read({ model: 'claude-sonnet-5-5', effort: 'medium', ...section(name, { model: 'fable' }) }), name), { model: 'fable', effort: 'medium' }, `${name}: a model alone takes the file's effort`);
+      assert.deepEqual(runOf(read(section(name, { effort: 'low' })), name), { model: DEFAULT_MODEL, effort: 'low' }, `${name}: with no file default`);
+    }
+  });
+
+  test('a section set off still reads: its keys are settings, not the switch', () => {
+    const config = read({ summons: { enabled: false, model: 'opus' } });
+    assert.equal(turnsOn(config, 'summons'), false);
+    assert.deepEqual(runOf(config, 'summons'), { model: 'opus' });
+  });
+
+  test('each periodic, hook and issue review takes its own, over the file\'s', () => {
+    const config = read({
+      model: 'claude-sonnet-5-5',
+      effort: 'medium',
+      periodics: { sessions: { Retro: { prompt: 'Retro.', days: 14, model: 'claude-haiku-5-5', effort: 'low' }, Tidy: { prompt: 'Tidy.', days: 7 } } },
+      hooks: { sessions: { 'operator-prod': { prompt: 'Look.', keyVersion: 2, effort: 'max' } } },
+      issueReviews: { reviews: { triage: { model: 'fable' }, shape: {} } },
+    });
+    const [retro, tidy] = config.periodics;
+    assert.deepEqual(runOf(config, 'periodics', retro), { model: 'claude-haiku-5-5', effort: 'low' });
+    assert.deepEqual(runOf(config, 'periodics', tidy), { model: 'claude-sonnet-5-5', effort: 'medium' });
+    assert.deepEqual(runOf(config, 'hooks', config.hooks[0]), { model: 'claude-sonnet-5-5', effort: 'max' });
+    const [triage, shape] = config.issueReviews?.reviews ?? [];
+    assert.deepEqual([triage?.name, shape?.name], ['triage', 'shape']);
+    assert.deepEqual(runOf(config, 'issueReviews', triage), { model: 'fable', effort: 'medium' });
+    assert.deepEqual(runOf(config, 'issueReviews', shape), { model: 'claude-sonnet-5-5', effort: 'medium' });
+  });
+
+  test('effort is one of the CLI\'s five levels, and anything else is a fault naming the key', () => {
+    assert.deepEqual([...EFFORTS], ['low', 'medium', 'high', 'xhigh', 'max']);
+    for (const effort of EFFORTS) read({ effort });
+    for (const effort of ['High', 'ultra', '', 3, null]) assert.match(faultOf({ effort }), /^effort: /, JSON.stringify(effort));
+    assert.match(faultOf({ summons: { effort: 'huge' } }), /^summons\.effort: /);
+    assert.match(faultOf({ hooks: { sessions: { 'operator-prod': { prompt: 'Look.', keyVersion: 2, effort: 'huge' } } } }), /^hooks\.sessions\.operator-prod\.effort: /);
+  });
+
+  test('a model is one word the CLI takes as --model\'s value, never an option or two words', () => {
+    for (const model of ['opus', 'claude-opus-5-5', 'claude-fable-5-2', 'opus[1m]', 'us.anthropic.claude-sonnet-5-5-v1']) assert.equal(runOf(read({ model }), 'pickup').model, model);
+    for (const model of ['', ' ', '--dangerously-skip-permissions', '-m', 'opus --effort max', 'opus\nmax', 'a'.repeat(101), 7]) assert.match(faultOf({ model }), /^model: /, JSON.stringify(model));
+    assert.match(faultOf({ prReview: { prompt: 'Check it.', model: '--tools' } }), /^prReview\.model: /);
+    assert.match(faultOf({ issueReviews: { reviews: { triage: { model: 'two words' } } } }), /^issueReviews\.reviews\.triage\.model: /);
+  });
+
+  test('a section that starts no session and runs no model refuses the keys', () => {
+    for (const name of ['subscribeMessages', 'branchRunMessages', 'signOff', 'sessionRules', 'heartbeat', 'periodics', 'hooks', 'issueReviews']) {
+      assert.ok(!RUN_SECTIONS.includes(name), name);
+      for (const key of ['model', 'effort']) assert.match(faultOf({ [name]: { enabled: false, [key]: key === 'model' ? 'opus' : 'high' } }), /Unrecognized key/, `${name}.${key}`);
+    }
+  });
+
+  test('a periodic that names connectors takes a model and no effort: a routine run has none to set', () => {
+    const routine = { prompt: 'Read the feed.', days: 1, connectors: ['feed_prod'] };
+    const config = read({ effort: 'high', periodics: { sessions: { Feed: { ...routine, model: 'claude-haiku-5-5' } } } });
+    assert.deepEqual(runOf(config, 'periodics', config.periodics[0]), { model: 'claude-haiku-5-5', effort: 'high' }, 'the launcher drops the file\'s effort for a routine run');
+    assert.match(faultOf({ periodics: { sessions: { Feed: { ...routine, effort: 'high' } } } }), /^periodics\.sessions\.Feed\.effort: .*connectors.*routine/);
+  });
+});
+
+describe('fitness: every session start and model run takes its model and effort from the config file, through runOf (repo-config.md)', () => {
+  const sources = readdirSync('dispatch').filter((name) => name.endsWith('.mjs')).map((name) => [name, readFileSync(`dispatch/${name}`, 'utf8')] as const);
+
+  test('no module under dispatch/ but repo-config.mjs reads the built-in model', () => {
+    assert.ok(sources.length > 20, 'the dispatcher\'s modules were read');
+    const readers = sources.filter(([, text]) => /\bDEFAULT_MODEL\b/.test(text)).map(([name]) => name);
+    assert.deepEqual(readers, ['repo-config.mjs'], 'a start that names the built-in model itself runs on something the repo\'s file does not say');
+  });
+
+  test('no module under dispatch/ writes a model or an effort as a literal', () => {
+    for (const [name, text] of sources) {
+      if (name === 'repo-config.mjs') continue;
+      const literal = /\b(?:model|effort): ['"`]/.exec(text);
+      assert.equal(literal, null, `${name} names ${literal?.[0]}…: take it from runOf`);
+    }
+  });
+
+  test('where no file says, a start runs on the built-in model with no effort', () => {
+    assert.deepEqual(BUILT_IN_RUN, { model: DEFAULT_MODEL });
+    assert.deepEqual(runOf({}, 'pickup'), BUILT_IN_RUN);
   });
 });
 

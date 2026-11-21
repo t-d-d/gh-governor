@@ -157,7 +157,7 @@ const harness = (over: {
   const comments: Array<{ issue: number, body: string }> = [];
   const commentEdits: Array<{ id: number, body: string }> = [];
   const merges: Array<{ pr: number, sha: string }> = [];
-  const judged: Array<{ system: string, prompt: string, schema: unknown }> = [];
+  const judged: Array<{ system: string, prompt: string, schema: unknown, model?: string, effort?: string }> = [];
   const transcripts: Array<{ sessionId: string, pr: number }> = [];
   const messages: unknown[] = [];
   const launches: unknown[] = [];
@@ -254,7 +254,7 @@ const harness = (over: {
     launch: async (l: unknown) => { launches.push(l); return { status: over.launched ?? 0, output: 'https://claude.ai/code/session_01FRESH' }; },
     probe: async () => ({ ok: true, detail: '' }),
     message: async (m: unknown) => { messages.push(m); if (over.sendThrows) throw new Error('the launcher for session_01OWNER ran past 360000 ms'); return { status: 0, output: over.sent ?? '{"ok":true,"session_id":"session_01OWNER","url":"https://claude.ai/code/session_01OWNER"}' }; },
-    review: async (r: { system: string, prompt: string, schema: unknown }) => {
+    review: async (r: { system: string, prompt: string, schema: unknown, model?: string, effort?: string }) => {
       judged.push(r);
       judgedCount += 1;
       if (typeof answers === 'function') return { status: 0, output: answers(r.prompt) };
@@ -385,6 +385,28 @@ describe('run — a review fire, end to end', () => {
         assert.doesNotMatch(body, /claude\.ai\/code\/session_/);
       }
     }
+  });
+});
+
+describe('run: the model and effort the review\'s run uses', () => {
+  const file = JSON.parse(factoryFile(CONFIG_PATH)) as { prReview: Record<string, unknown> } & Record<string, unknown>;
+
+  test('with neither set, the run is handed governor\'s built-in model and no effort', async () => {
+    const { model: _model, effort: _effort, ...prReview } = file.prReview;
+    const h = harness({ config: JSON.stringify({ ...file, prReview }) });
+    await review({ kind: 'review', pr: 767 }, h);
+    assert.deepEqual(h.judged.map((r) => [r.model, 'effort' in r]), [['claude-opus-5-5', false]]);
+  });
+
+  test('the run is handed prReview\'s own model and effort, then the file\'s', async () => {
+    const { model: _model, effort: _effort, ...prReview } = file.prReview;
+    const whole = harness({ config: JSON.stringify({ ...file, model: 'file-model', effort: 'medium', prReview }) });
+    await review({ kind: 'review', pr: 767 }, whole);
+    assert.deepEqual(whole.judged.map((r) => [r.model, r.effort]), [['file-model', 'medium']]);
+    const own = harness({ config: JSON.stringify({ ...file, model: 'file-model', effort: 'medium', prReview: { ...prReview, model: 'review-model', effort: 'low' } }) });
+    await review({ kind: 'review', pr: 767 }, own);
+    assert.deepEqual(own.judged.map((r) => [r.model, r.effort]), [['review-model', 'low']]);
+    assert.ok(own.judged[0]!.system.startsWith(`${PR_FRAME}\n\n${SKILL}`), 'still the frame and the skill, and nothing else changed');
   });
 });
 

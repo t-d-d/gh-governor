@@ -14,12 +14,12 @@
  * and waits.mjs imports unblocked.mjs.
  */
 
-import { DEFAULT_MODEL, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
+import { sessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { outsiderReason, planSchedule, strangerReason } from '../scripts/lib/dispatch-router.mjs';
 import { mayStartSpec, ticketStatus, unreadableOf } from '../scripts/lib/ready-work.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { GITHUB_SOURCE } from './deliveries.mjs';
-import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
+import { CONFIG_PATH, runOf, turnsOn } from './repo-config.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { ROW_SWITCH, UNREADIED_HELD, mayBeUnreadied, notPlannedComment, ownerOutcome, ownerSpecMessage, readyPrompt, readyToTakeOff, rowOf, specPrompt, unblockedMessage, unblockedNotice, unreadiedSince } from './unblocked.mjs';
@@ -333,7 +333,7 @@ export const planUnblocked = async (invocation, ctx) => {
     let told;
     let loginStored = false;
     try {
-      told = await ctx.delivery().deliver({ session: owner }, ownerSpecMessage(invocation, ctx.prompts, config.labels, ticket.title), { source: GITHUB_SOURCE, kind: 'unblocked-spec', on: [issue], fallback, spec: true });
+      told = await ctx.delivery().deliver({ session: owner }, ownerSpecMessage(invocation, ctx.prompts, config.labels, ticket.title), { source: GITHUB_SOURCE, kind: 'unblocked-spec', on: [issue], fallback, run: runOf(config, 'unblocked'), spec: true });
     } finally {
       loginStored = await ctx.storeLogin();
     }
@@ -382,7 +382,7 @@ export const planUnblocked = async (invocation, ctx) => {
     for (const held of heldFailed) ctx.log('dispatch-pickup', { level: 'info', repo: held.repo, issue: held.issue, outcome: 'skipped', reason: failedReason(held.until) });
     // Where the spec owner's notice below names the builder, it is the spec
     // owner's one message of the launch: the dispatch comment tells nobody.
-    for (const d of planned) launches.push({ repo: d.repo, issue, claim: true, holdsRepo: true, told: specOwner !== null, asked: { prompt: readyPrompt(d.prompt, invocation, ctx.prompts, ticket.title), sessionName: d.sessionName, model: DEFAULT_MODEL } });
+    for (const d of planned) launches.push({ repo: d.repo, issue, claim: true, holdsRepo: true, told: specOwner !== null, asked: { prompt: readyPrompt(d.prompt, invocation, ctx.prompts, ticket.title), sessionName: d.sessionName, ...runOf(config, 'pickup') } });
     const [outsider] = outsiders;
     const [stranger] = strangers;
     const [refused] = unstarted;
@@ -410,7 +410,7 @@ export const planUnblocked = async (invocation, ctx) => {
     if (held !== null) {
       ctx.log('dispatch-unblocked', { ...about, outcome: `not started: ${held}` });
     } else {
-      launches.push({ repo, issue, claim: false, holdsRepo: true, asked: { ...spec(), model: DEFAULT_MODEL } });
+      launches.push({ repo, issue, claim: false, holdsRepo: true, asked: { ...spec(), ...runOf(config, 'unblocked') } });
       ctx.log('dispatch-unblocked', { ...about, outcome: 'starting a spec session' });
     }
   }

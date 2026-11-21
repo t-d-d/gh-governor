@@ -2,11 +2,13 @@
  * A served repo's dispatcher config file: what the dispatcher does in a
  * repo, written and reviewed in that repo.
  *
- * The file is `.github/governor.json` on the repo's default branch. Three
+ * The file is `.github/governor.json` on the repo's default branch. Five
  * keys are settings several features share: `environment`, the repo's cloud
  * environment by ID or by name; `trust`, whose GitHub text governor acts on
- * (dispatch/trust.mjs); and `workflows`, which names the repo's CI
- * workflow. Every other top-level key is one feature's section, holding
+ * (dispatch/trust.mjs); `workflows`, which names the repo's CI
+ * workflow; and `model` and `effort`, what every session governor starts
+ * and every review's model run uses unless its own section or entry sets
+ * its own ({@link runOf}). Every other top-level key is one feature's section, holding
  * every setting and prompt that feature reads: pickup's labels and sweep
  * interval (`pickup`, dispatch/pickup.mjs), the deploy messages' triage
  * targets and tags (`deployMessages`), the PR review's prompt and lists
@@ -36,6 +38,7 @@ import { z } from 'zod';
 import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, SUMMONERS, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, unknownFills } from './prompts.mjs';
 import { BOT, START, TRUST_VALUES, autoOf, reviewOf } from './trust.mjs';
+import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 
 /** Where the file lives, on the repo's default branch. */
 export const CONFIG_PATH = '.github/governor.json';
@@ -81,8 +84,8 @@ export const SWITCHES = Object.freeze([...GENERIC_SWITCHES, ...SECTION_SWITCHES]
 /**
  * The feature sections of the file, one per feature: every switch but
  * `deployedLabels`, which is a key of `deployMessages`. Every other
- * top-level key is a shared setting: `environment`, `trust` and
- * `workflows`.
+ * top-level key is a shared setting: `environment`, `trust`, `workflows`,
+ * `model` and `effort`.
  */
 export const SECTIONS = Object.freeze(SWITCHES.filter((name) => name !== 'deployedLabels'));
 
@@ -92,6 +95,52 @@ export const SECTIONS = Object.freeze(SWITCHES.filter((name) => name !== 'deploy
  * `"enabled": false`.
  */
 export const LABEL_READERS = Object.freeze(['unblocked', 'waits', 'prReview', 'issueReviews']);
+
+/** The effort levels the CLI's `--effort` takes, lowest first. */
+export const EFFORTS = Object.freeze(/** @type {const} */ (['low', 'medium', 'high', 'xhigh', 'max']));
+
+/**
+ * What each section that starts a session or runs the model starts, as its
+ * `model` and `effort` keys' descriptions say it. A section not here starts
+ * nothing of its own and takes neither key. The periodics, the hooks and
+ * the issue reviews take theirs on each entry instead.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const RUN_STARTS = Object.freeze({
+  pickup: 'the session a ready ticket starts',
+  summons: 'the session a summons starts',
+  prMessages: 'the session that takes a PR over where the session a message was for is archived',
+  redScheduledRun: 'the session a red scheduled run starts',
+  unblocked: 'the spec session a blocker\'s close starts',
+  ciMessages: 'a session a red CI run starts, its triage session or the fix session that stands in for an archived one',
+  deployMessages: 'the triage session a red deploy starts',
+  conflicts: 'the session that takes a conflicted PR over where its own session is archived',
+  prReview: 'the review\'s model run',
+  waits: 'the spec session an ended wait starts',
+});
+
+/** The sections that take their own `model` and `effort` ({@link runOf}). */
+export const RUN_SECTIONS = Object.freeze(Object.keys(RUN_STARTS));
+
+/**
+ * A model's name as the CLI's `--model` takes it: one word that starts with
+ * a letter or digit, so it is never read as an option. Governor passes it on
+ * as written, to the CLI and, for a routine run, to the routines API.
+ */
+const modelName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._[\]-]{0,99}$/, 'a model is one word of letters, digits, dots, hyphens, underscores and square brackets, starting with a letter or digit, of at most 100 characters');
+
+/**
+ * A place's own `model` and `effort` keys, each winning over the file's.
+ *
+ * @param {string} starts What the place starts.
+ * @param {string} [noEffort] What its `effort` cannot do, where there is something.
+ * @param {string} [modelNote] What else wins over its `model`, where something does.
+ */
+const runFields = (starts, noEffort = '', modelNote = '') => ({
+  model: modelName.optional().meta({ description: `The model for ${starts}, in place of the file's \`model\`.${modelNote}` }),
+  effort: z.enum(EFFORTS).optional().meta({ description: `The effort for ${starts}, in place of the file's \`effort\`.${noEffort}` }),
+});
 
 /**
  * Where each message kind's prompt sits in the file (`PROMPTS`,
@@ -271,6 +320,7 @@ const ticketRule = z.strictObject({
  */
 const prReviewSchema = z.strictObject({
   enabled,
+  ...runFields(/** @type {string} */ (RUN_STARTS.prReview)),
   prompt: z.union([z.string().trim().min(1), promptFile]).optional().meta({ description: 'Required when on. The review model\'s system prompt, after governor\'s fixed frame and before a suffix naming what the code decided: the text, or { "file": "<path>" }.' }),
   humanOnly: z.array(z.strictObject({
     glob: glob.meta({ description: 'The paths a PR may not change without a person, as a glob.' }),
@@ -314,6 +364,7 @@ const workflowsSchema = z.strictObject({
  */
 const deployMessagesSchema = z.strictObject({
   enabled,
+  ...runFields(/** @type {string} */ (RUN_STARTS.deployMessages)),
   triage: z.array(target).default([]).meta({ description: 'The deploy targets whose failure starts one fresh session, rather than messages to the sessions of the merges it shipped. Default none.' }),
   tags: z.record(target, z.string().trim().min(1).regex(/^[\w./-]+$/, 'a tag name')).default({}).meta({ description: 'The tag each deploy target\'s deploy moves, keyed by target, which deploy messages name. Default none.' }),
   deployedLabels: z.boolean().optional().meta({ description: /** @type {string} */ (SWITCH_DESCRIPTIONS.deployedLabels) }),
@@ -347,6 +398,7 @@ const heartbeatSchema = z.strictObject({
  */
 const waitsSchema = z.strictObject({
   enabled,
+  ...runFields(/** @type {string} */ (RUN_STARTS.waits)),
   issue: z.number().int().positive().optional().meta({ description: 'The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing.' }),
   ...promptFields('waits'),
 });
@@ -361,6 +413,7 @@ const waitsSchema = z.strictObject({
  */
 const pickupSchema = z.strictObject({
   enabled,
+  ...runFields(/** @type {string} */ (RUN_STARTS.pickup)),
   ready: z.array(label).min(1).optional().meta({ description: 'Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. Every label a ready ticket carries.' }),
   claim: label.optional().meta({ description: 'Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up.' }),
   claimRemoves: z.array(label).default([]).meta({ description: 'The ready labels the claim takes off, and a failed launch puts back. Default none.' }),
@@ -440,7 +493,13 @@ const periodicSchema = z.strictObject({
     .refine((names) => new Set(names).size === names.length, 'connectors names each connector once')
     .optional()
     .meta({ description: 'The claude.ai connectors the periodic\'s session needs, each named once by its name in the account\'s connector list. A periodic naming any starts as a run of a routine governor keeps for it, with those connectors attached and no others.' }),
-});
+  ...runFields('the periodic\'s session', ' A periodic that names `connectors` cannot set it: a routine run takes a model and no effort.'),
+})
+  // A routine takes a model and has no effort to set, so the key would do
+  // nothing there: a fault, not a setting that is quietly dropped.
+  .superRefine((periodic, ctx) => {
+    if (periodic.effort !== undefined && periodic.connectors !== undefined) ctx.addIssue({ code: 'custom', path: ['effort'], message: 'a periodic that names connectors starts as a routine run, which takes a model and no effort: leave effort out, or leave connectors out' });
+  });
 
 /**
  * A hook an outside system fires (dispatch/hooks.mjs), held under its name
@@ -460,6 +519,7 @@ const hookSchema = z.strictObject({
   // An hour's count item holds each signature it counted: a larger cap
   // could outgrow the item.
   perHour: z.number().int().positive().max(HOOK_PER_HOUR_MAX).optional().meta({ description: `The most fires governor queues for the hook in one clock hour, a positive whole number up to ${HOOK_PER_HOUR_MAX}. A fire past it gets 429. Default ${HOOK_PER_HOUR}.` }),
+  ...runFields('the hook\'s session'),
 });
 
 /**
@@ -509,6 +569,7 @@ const issueReviewSchema = z.strictObject({
   }).default({ success: [], failure: [], neutral: [] }).meta({ description: 'The labels each conclusion adds: `success`, `failure` and `neutral`, each a list, each none when unset. Each run adds its conclusion\'s labels and removes the ones the other two name, and touches no other label. Each label starts with the review\'s name, a colon and a space, such as `triage: build` for a review named `triage`, in any case, so a review never adds or removes a label a person uses. A label appears under one conclusion of one review. A review whose `by`, within `trust.review`, reaches beyond `trust.auto` names no ready label. No conclusion names a label a `byLabel` entry matches on, a label the review\'s own `when.labels` or `when.exclude` names, or `pickup.claim`.' }),
   prompt: z.union([z.string().trim().min(1), promptFile]).optional().meta({ description: 'The review\'s own prompt, after governor\'s fixed frame: the text, or { "file": "<path>" }. Default governor\'s own checklist.' }),
   byLabel: z.array(byLabelSchema).min(1).optional().meta({ description: 'Checks and labels per label, each entry matched by label. A ticket gets the review\'s prompt and then each matching entry\'s, in list order; one matching none gets the review\'s alone. For each conclusion, the labels come from the first matching entry that names it, and otherwise from `conclusions`.' }),
+  ...runFields('the review\'s model run'),
 });
 
 /**
@@ -529,7 +590,12 @@ const issueReviewsSchema = z.strictObject({
 }));
 
 /** A section whose feature has no settings but its prompts. */
-const plainSection = (/** @type {string} */ name) => z.strictObject({ enabled, ...promptFields(name) });
+const plainSection = (/** @type {string} */ name) => z.strictObject({
+  enabled,
+  // A dispatch by hand may name its own model (scripts/run-turn.mjs), which the summons section's does not replace.
+  ...(RUN_STARTS[name] === undefined ? {} : runFields(RUN_STARTS[name], '', name === 'summons' ? ' A dispatch by hand that names its own model keeps it.' : '')),
+  ...promptFields(name),
+});
 
 /**
  * The `periodics` section: `enabled`, and `sessions`, each periodic keyed by
@@ -604,6 +670,8 @@ const fileSchema = z.strictObject({
   environment: z.string().trim().min(1, 'a cloud environment name, or its ID (env_…)').meta({ description: 'The claude.ai cloud environment the repo\'s sessions start in: its name as `/remote-env` lists it, or its ID. A public repo should use the name.' }),
   trust: trustSchema.optional().meta({ description: '`{ "start": [ … ], "auto": [ … ], "task": [ … ], "relay": [ … ], "review": [ … ] }`: whose GitHub text governor acts on, by `author_association`. `start` is who may set work going, by readying a ticket or writing a summons, default `OWNER`, `MEMBER` and `COLLABORATOR`, which a repo may narrow and never widen. `auto` is whose issues and PRs governor sets going by itself, default `OWNER`, `MEMBER` and `COLLABORATOR`. `task` is whose issue or PR may become work when a person readies it or summons a session on it, default the same three. `relay` is whose text may reach a running session, default those three and `BOT`. `review` is whose pull requests the PR review reads, default the three.' }),
   workflows: workflowsSchema.optional().meta({ description: 'What the repo\'s workflows are to governor: `ci`.' }),
+  model: modelName.optional().meta({ description: `The model every session governor starts in the repo runs on, and each review's model run: a model's name as the CLI's \`--model\` takes it, such as \`claude-sonnet-5-5\`. Governor passes the name on as written, and does not check it against the models the login can use. A section, a periodic, a hook or an issue review that sets its own \`model\` uses that instead. Default \`${DEFAULT_MODEL}\`.` }),
+  effort: z.enum(EFFORTS).optional().meta({ description: `The effort every session governor starts in the repo runs at, and each review's model run: ${EFFORTS.map((e) => `\`${e}\``).join(', ')}, as the CLI's \`--effort\` takes it. A section, a periodic, a hook or an issue review that sets its own \`effort\` uses that instead. It does not reach a periodic that names \`connectors\`, since a routine run takes no effort. Default none: each run takes its model's own default.` }),
   ...Object.fromEntries(Object.entries(sectionSchemas).map(([name, schema]) => [name, schema.optional().meta({ description: /** @type {string} */ (SWITCH_DESCRIPTIONS[name]) })])),
   issueReviews: issueReviewsSchema.optional()
     .meta({ description: 'The issue reviews: `reviews`, each keyed by its name, with its selector `when`, the labels each of its `conclusions` adds, and optionally its own `prompt` and checks and labels per label (`byLabel`), and `enabled`. Each comments on a ticket it selects whether it passes, waits for an edit, or waits for a person, and applies that conclusion\'s labels. Governor runs them where the file has this section, unless `enabled` is `false`. Pickup meets a review only through its labels: list a review\'s `success` label in `pickup.ready` where a ticket should wait for the review to pass it, its `neutral` labels in `pickup.exclude`, and the claim label in its `when.exclude`.' }),
@@ -639,11 +707,20 @@ const fileSchema = z.strictObject({
   });
 
 /**
+ * The `model` and `effort` an object sets, each only where it sets one.
+ *
+ * @param {{ model?: string, effort?: string }} held
+ * @returns {RunSetting}
+ */
+const runSetting = ({ model, effort }) => ({ ...(model === undefined ? {} : { model }), ...(effort === undefined ? {} : { effort }) });
+
+/**
  * The file as written, read into the shape governor's code takes: each
  * switch in `features`, pickup's labels in `labels`, every prompt in
  * `prompts` keyed by its message kind, the deploy targets and tags in
- * `workflows`, the PR review's prompt as `review.checklist`, and the
- * periodics and hooks as lists, each entry with its name.
+ * `workflows`, the PR review's prompt as `review.checklist`, the
+ * periodics and hooks as lists, each entry with its name, and the file's
+ * `model` and `effort` with each section's own in `runs`.
  *
  * @param {Record<string, any>} file The file as {@link fileSchema} reads it.
  * @returns {FileConfig}
@@ -680,7 +757,7 @@ const toConfig = (file) => {
     hooks: Object.entries(hooks?.sessions ?? {}).map(([name, h]) => ({ name, ...h })),
   };
   if (prReview?.prompt !== undefined) {
-    const { enabled: _on, prompt: checklist, ...lists } = prReview;
+    const { enabled: _on, prompt: checklist, model: _model, effort: _effort, ...lists } = prReview;
     config.review = { ...lists, checklist };
   }
   if (heartbeat?.issue !== undefined) config.heartbeat = { issue: heartbeat.issue };
@@ -690,6 +767,16 @@ const toConfig = (file) => {
   if (sessionRules?.file !== undefined) config.sessionRules = { file: sessionRules.file };
   if (file.trust !== undefined) config.trust = file.trust;
   if (issueReviews !== undefined) config.issueReviews = issueReviews;
+  // The file's own model and effort, and each section's, whether or not
+  // the section is on: a setting, not the switch.
+  /** @type {Record<string, RunSetting>} */
+  const sections = {};
+  for (const name of RUN_SECTIONS) {
+    const own = runSetting(file[name] ?? {});
+    if (Object.keys(own).length > 0) sections[name] = own;
+  }
+  const whole = runSetting(file);
+  if (Object.keys(whole).length > 0 || Object.keys(sections).length > 0) config.runs = { ...whole, sections };
   // `$schema` is for the editor: governor drops it unread.
   return config;
 };
@@ -825,17 +912,20 @@ export const configSchema = fileSchema.transform(toConfig)
  * @typedef {{ issue: number }} Heartbeat
  * @typedef {{ sweepHours?: number }} Pickup
  * @typedef {{ start?: string[], auto?: string[], task?: string[], relay?: string[], review?: string[] }} Trust
- * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] }} Periodic A recurring session, its prompt read.
- * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number }} Hook A hook an outside system fires, its prompt read.
+ * @typedef {{ model?: string, effort?: string }} RunSetting The model and effort one place sets, each only where it sets one.
+ * @typedef {{ model: string, effort?: string }} Run The model a session or a review's run uses, and its effort where one is set.
+ * @typedef {RunSetting & { sections: Record<string, RunSetting> }} Runs The file's own `model` and `effort`, and each section's.
+ * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] } & RunSetting} Periodic A recurring session, its prompt read.
+ * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number } & RunSetting} Hook A hook an outside system fires, its prompt read.
  * @typedef {{ success: string[], failure: string[], neutral: string[] }} Conclusions The labels each conclusion of an issue review adds.
  * @typedef {{ labels: string[], prompt?: string, conclusions?: Partial<Conclusions> }} ByLabel One `byLabel` entry of an issue review, its prompt read.
- * @typedef {{ name: string, when: { labels?: string[], exclude?: string[], by?: string[] }, conclusions: Conclusions, prompt?: string, byLabel?: ByLabel[] }} IssueReview
+ * @typedef {{ name: string, when: { labels?: string[], exclude?: string[], by?: string[] }, conclusions: Conclusions, prompt?: string, byLabel?: ByLabel[] } & RunSetting} IssueReview
  *   One issue review, its name, its selector, its conclusions' labels, and
  *   its prompts read.
  * @typedef {{ enabled?: boolean, reviews: IssueReview[] }} IssueReviews
  *   The `issueReviews` section: `enabled` as the file sets it, and each
  *   review, in the order of the file's keys.
- * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, signOff?: { heldMessage: true }, sessionRules?: { file: string }, periodics: Periodic[], hooks: Hook[], issueReviews?: IssueReviews }} RepoConfig
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, signOff?: { heldMessage: true }, sessionRules?: { file: string }, runs?: Runs, periodics: Periodic[], hooks: Hook[], issueReviews?: IssueReviews }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
  *   ready labels the claim takes off, and a failed launch puts back.
@@ -854,6 +944,8 @@ export const configSchema = fileSchema.transform(toConfig)
  *   session the first time it holds it from its sign-off.
  *   `sessionRules`: where the file sets `file`, the file that carries the
  *   session rules' block in place of `CLAUDE.md`.
+ *   `runs`: the file's `model` and `effort` and each section's own,
+ *   where the file sets any ({@link runOf}).
  *   `periodics`: the recurring sessions the schedule fire starts.
  *   `hooks`: the hooks an outside system fires.
  *   `issueReviews`: the issue reviews section, where the file has one.
@@ -1151,3 +1243,29 @@ export const environmentFrom = (environment, listed) => {
 export const turnsOn = (config, name) => (name === 'issueReviews'
   ? config.issueReviews !== undefined && config.issueReviews.enabled !== false
   : config.features[name] === true);
+
+/**
+ * What a start runs on where no file says: governor's built-in model, and
+ * no effort, so the run takes that model's own default.
+ *
+ * @type {Readonly<Run>}
+ */
+export const BUILT_IN_RUN = Object.freeze({ model: DEFAULT_MODEL });
+
+/**
+ * The model and effort for what `section` starts: the entry's own, where
+ * the section holds entries and one is given (a periodic, a hook, an issue
+ * review), then the section's, then the file's. With no model set anywhere
+ * it is governor's built-in one, and with no effort set anywhere there is
+ * none, so the run takes its model's own default.
+ *
+ * @param {{ runs?: Runs | undefined }} config
+ * @param {string} section
+ * @param {RunSetting} [entry]
+ * @returns {Run}
+ */
+export const runOf = (config, section, entry = {}) => {
+  const own = config.runs?.sections[section] ?? {};
+  const effort = entry.effort ?? own.effort ?? config.runs?.effort;
+  return { model: entry.model ?? own.model ?? config.runs?.model ?? BUILT_IN_RUN.model, ...(effort === undefined ? {} : { effort }) };
+};

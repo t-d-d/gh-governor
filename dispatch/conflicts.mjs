@@ -122,10 +122,10 @@ const readMergeable = async (reader, candidates, sleep) => {
  * record comes first, so a turn that dies sending leaves no second message
  * for the next read of the same merge.
  *
- * @param {{ pr: PullRequestRow, text: string, fallback: import('./webhook/fire.mjs').Fallback, record: (pr: number) => Promise<boolean>, deliver: import('./deliveries.mjs').Deliveries['deliver'] }} args
+ * @param {{ pr: PullRequestRow, text: string, fallback: import('./webhook/fire.mjs').Fallback, run: import('./repo-config.mjs').Run | undefined, record: (pr: number) => Promise<boolean>, deliver: import('./deliveries.mjs').Deliveries['deliver'] }} args
  * @returns {Promise<Checked>}
  */
-const tell = async ({ pr, text, fallback, record, deliver }) => {
+const tell = async ({ pr, text, fallback, run, record, deliver }) => {
   const checked = { pr: pr.number, reason: null, error: null };
   try {
     if (!await record(pr.number)) return { ...checked, outcome: 'already-told', reason: `#${pr.number} was told of this merge already` };
@@ -135,7 +135,7 @@ const tell = async ({ pr, text, fallback, record, deliver }) => {
   /** @type {import('./deliveries.mjs').Delivery} */
   let sent;
   try {
-    sent = await deliver({ pr: pr.number }, text, { source: GITHUB_SOURCE, kind: 'conflict', fallback, takeover: true, on: [pr.number] });
+    sent = await deliver({ pr: pr.number }, text, { source: GITHUB_SOURCE, kind: 'conflict', fallback, run, takeover: true, on: [pr.number] });
   } catch (error) {
     // A send past its budget, or a GitHub read in the fallback, throws: this
     // PR's check fails, and the PRs after it are still told.
@@ -165,15 +165,18 @@ const tell = async ({ pr, text, fallback, record, deliver }) => {
  *   inTime: () => boolean,
  *   prompts?: Readonly<Record<string, string | undefined>>,
  *   auto?: readonly string[],
+ *   run?: import('./repo-config.mjs').Run,
  * }} args
  *   `record`: the PR told of this merge, false where a record stood.
  *   `prompts`: the repo's config file's.
+ *   `run`: the model and effort a takeover's session runs on, the config
+ *   file's for `conflicts`; governor's built-in model where none is given.
  *   `auto`: the repo's `trust.auto` (`autoOf`, dispatch/trust.mjs): only a
  *   PR whose author it lets in is told, or gets the fallback session.
  *   `inTime`: whether another send fits before the deadline.
  * @returns {Promise<{ head: string, checks: Checked[] }>}
  */
-export const checkConflicts = async ({ invocation: merged, reader, sleep, record, deliver, inTime, prompts = {}, auto = AUTO }) => {
+export const checkConflicts = async ({ invocation: merged, reader, sleep, record, deliver, inTime, prompts = {}, auto = AUTO, run }) => {
   const { base } = merged;
   const head = await reader.branchHead(base);
   const candidates = (await reader.openPulls()).filter((p) => !p.draft && p.base === base);
@@ -195,7 +198,7 @@ export const checkConflicts = async ({ invocation: merged, reader, sleep, record
       continue;
     }
     const { text, fallback } = conflictMessage({ pr, base, head, merged }, prompts);
-    checks.push(await tell({ pr, text, fallback, record, deliver }));
+    checks.push(await tell({ pr, text, fallback, run, record, deliver }));
   }
   return { head, checks };
 };

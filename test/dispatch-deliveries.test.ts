@@ -18,6 +18,7 @@ import { markOwnerUnknown, sessionNamedIn, subscribeLine, subscribersFor } from 
 import { RELAY, dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { SIGN_OFF } from '../scripts/lib/session-signoff.mjs';
+import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { CONFIG_PATH, readConfig } from '../dispatch/repo-config.mjs';
 import { instruction } from '../dispatch/prompts.mjs';
 import { factoryFile } from './helpers/factory.ts';
@@ -36,7 +37,7 @@ const PR_BODY = '## Outcome\n\nThe grant.\n\n🤖 Generated with [Claude Code](h
 const FRESH = 'https://claude.ai/code/session_01ABC';
 
 type Message = { session: string; text: string };
-type Launch = { prompt: string; sessionName: string; model: string; branch?: string };
+type Launch = { prompt: string; sessionName: string; model: string; effort?: string; branch?: string };
 type Answer = { status: number | null; output: string };
 type Started = { outcome: 'dispatched' | 'unconfirmed' | 'failed'; sessionUrl: string | null };
 type Counted = { session: string; subject: string | null; kind: string };
@@ -270,6 +271,21 @@ describe('deliver — with a fallback', () => {
   const onPr = { ...fallback, issue: 724 };
   const at = new Date(NOW - 5 * 60_000).toISOString();
   const markedBy = (sessionUrl: string | null) => ({ comments: async () => [{ id: 5, body: dispatchMarker({ at, sessionUrl }), created_at: at }] });
+
+  // The fresh session stands in for the one a feature's message was for, so
+  // it runs on what the repo's file sets for that feature, which the caller
+  // hands over as `run`. With none handed over it is the built-in model.
+  test('the fallback\'s session runs on the model and effort its caller names, and on the built-in model with no effort where it names none', async () => {
+    const named = fakes({ send: archived });
+    await named.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback, takeover: true, run: { model: 'claude-sonnet-5-5', effort: 'low' } });
+    assert.deepEqual(named.launches.map((l) => [l.model, l.effort]), [['claude-sonnet-5-5', 'low']]);
+    const modelOnly = fakes({ send: archived });
+    await modelOnly.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback, spec: true, run: { model: 'claude-haiku-5-5' } });
+    assert.deepEqual(modelOnly.launches.map((l) => [l.model, 'effort' in l]), [['claude-haiku-5-5', false]]);
+    const bare = fakes({ send: archived });
+    await bare.deliver({ session: 'session_01OLD' }, fallback.prompt, { fallback, takeover: true });
+    assert.deepEqual(bare.launches.map((l) => [l.model, 'effort' in l]), [[DEFAULT_MODEL, false]]);
+  });
 
   test('a refusal launches the fallback, labelled, and reports both', async () => {
     const f = fakes({ send: archived });

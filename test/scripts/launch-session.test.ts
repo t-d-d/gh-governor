@@ -269,7 +269,7 @@ const argvFrom = (env: Record<string, string>, help = CLOUD_HELP) => {
   return argv;
 };
 
-const NO_ENV = { CLAUDE_MODEL: '', CLAUDE_SESSION_NAME: '', CLAUDE_ON_BRANCH: '' };
+const NO_ENV = { CLAUDE_MODEL: '', DISPATCH_EFFORT: '', CLAUDE_SESSION_NAME: '', CLAUDE_ON_BRANCH: '' };
 /** The launcher's "unconfirmed" status, asserted below to be one the
  *  interpreter cannot produce on its own. */
 const UNCONFIRMED = 3;
@@ -388,6 +388,26 @@ describe('launch-session.py argv', () => {
       // nobody dispatches.
       assert.equal(argv.indexOf('--ref'), argv.length - 4, `--ref must precede the cloud flag: ${argv.join(' ')}`);
     }
+  });
+
+  // The effort is the CLI's own --effort, which the cloud create request
+  // carries to the session. Passed only where the launch names one: without
+  // it the session takes its model's default, as before the key existed.
+  test('passes --effort only where DISPATCH_EFFORT names one, beside the model and ahead of the cloud flag', () => {
+    const argv = argvFrom({ ...NO_ENV, CLAUDE_MODEL: 'claude-opus-5', DISPATCH_EFFORT: 'xhigh' });
+    assert.deepEqual(argv, ['--model', 'claude-opus-5', '--effort', 'xhigh', '--permission-mode', 'auto', '--ref', 'main', '--cloud', 'do the thing']);
+    for (const env of [NO_ENV, { ...NO_ENV, DISPATCH_EFFORT: '' }, { ...NO_ENV, CLAUDE_MODEL: 'claude-opus-5', DISPATCH_EFFORT: '' }]) {
+      assert.ok(!argvFrom(env).includes('--effort'), `no effort was asked for: ${argvFrom(env).join(' ')}`);
+    }
+  });
+
+  // Claude Code exports CLAUDE_EFFORT to every shell and hook it runs, the
+  // effort of the session doing the running. It is not the launcher's
+  // variable, so a launcher run from inside a session dispatches at no
+  // effort of that session's.
+  test('reads no effort from CLAUDE_EFFORT, which Claude Code sets in its own shells', () => {
+    const argv = argvFrom({ ...NO_ENV, CLAUDE_EFFORT: 'max' });
+    assert.ok(!argv.includes('--effort'), argv.join(' '));
   });
 
   test('dispatches with --remote on a CLI that still offers it', () => {

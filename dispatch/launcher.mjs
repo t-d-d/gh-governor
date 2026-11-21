@@ -35,7 +35,11 @@ export const SESSION_LATE = 'dispatch-session-late';
  */
 
 /**
- * @typedef {{ prompt: string, sessionName: string, model: string, repo: string, environment: string, connectors?: string[], branch?: string }} Launch
+ * @typedef {{ prompt: string, sessionName: string, model: string, effort?: string, repo: string, environment: string, connectors?: string[], branch?: string }} Launch
+ *   `model`, `effort`: what the session runs on and at, from the repo's
+ *   config file (`runOf`, dispatch/repo-config.mjs); with no `effort` the
+ *   session takes its model's own default. A routine run takes the model
+ *   and has no effort to set, so the launcher hands it none.
  *   `repo`, `environment`: the repo the session is for and its cloud
  *   environment, from the repo's config file. `branch`: the branch the
  *   session starts on and pushes to, a PR's head for a takeover, in place
@@ -199,7 +203,10 @@ export const launcher = (deps) => {
    *   the one its output names, whatever its outcome.
    */
   const launchAndRecord = async (begin, paged) => {
-    const launched = begin.connectors !== undefined && begin.connectors.length > 0 ? await deps.routine(begin, begin.connectors) : await deps.cli(begin);
+    // A routine run has no effort to set: the routines API takes a model
+    // alone, so a routine launch is handed none.
+    const { effort: _effort, ...forRoutine } = begin;
+    const launched = begin.connectors !== undefined && begin.connectors.length > 0 ? await deps.routine(forRoutine, begin.connectors) : await deps.cli(begin);
     const sessionUrl = sessionUrlFrom(launched.output);
     if (sessionUrl !== null) {
       /** @type {PendingRecord} */

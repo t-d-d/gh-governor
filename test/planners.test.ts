@@ -31,6 +31,30 @@ const CONFIG = (() => {
   // The factory's prompts, its periodics' and its hook's, are text, none a file.
   return read.config as RepoConfig;
 })();
+/**
+ * `file` with a model and an effort for the whole file, and one or both set
+ * again at some places, so a test can tell whose a launch took: `file-model`
+ * at `medium` unless the place says otherwise.
+ */
+const tuned = (file: typeof FILE) => {
+  const [retro] = Object.keys(file.periodics.sessions) as [string];
+  const [hook] = Object.keys(file.hooks.sessions) as [string];
+  const read = readConfig(JSON.stringify({
+    ...file,
+    model: 'file-model',
+    effort: 'medium',
+    pickup: { ...file.pickup, effort: 'high' },
+    summons: { ...file.summons, model: 'summons-model' },
+    redScheduledRun: { ...file.redScheduledRun, model: 'red-model', effort: 'low' },
+    unblocked: { ...file.unblocked, effort: 'xhigh' },
+    waits: { ...file.waits, model: 'waits-model' },
+    periodics: { ...file.periodics, sessions: { ...file.periodics.sessions, [retro]: { ...file.periodics.sessions[retro], model: 'retro-model' } } },
+    hooks: { ...file.hooks, sessions: { ...file.hooks.sessions, [hook]: { ...file.hooks.sessions[hook], effort: 'max' } } },
+  }));
+  assert.ok(read.ok, JSON.stringify(read));
+  return read.config as RepoConfig;
+};
+const TUNED = tuned(FILE);
 const HOOK = CONFIG.hooks[0]!;
 
 type Logged = { event: string } & Record<string, unknown>;
@@ -201,6 +225,12 @@ describe('planHook: a hook fire\'s plan', () => {
     await assert.rejects(planHook(fire({ keyVersion: HOOK.keyVersion + 1 }), context().ctx), /key version/);
   });
 
+  test('a hook\'s launch takes the hook\'s own model and effort, then the file\'s', async () => {
+    const { ctx } = context({ configOf: () => TUNED });
+    const plan = await planHook(fire(), ctx) as any;
+    assert.deepEqual(plan.launches[0].asked, { prompt: hookPrompt(HOOK.prompt, fire()), sessionName: HOOK.name, model: 'file-model', effort: 'max' });
+  });
+
   test('a fire that names no repo is refused', async () => {
     await assert.rejects(planHook(fire({ repo: undefined }), context().ctx), /names no repo/);
   });
@@ -239,6 +269,16 @@ describe('planDispatch: a dispatch fire\'s plan', () => {
     const plan = await planDispatch(scheduled, ctx) as any;
     assert.equal(plan.launches.length, 1);
     assert.ok(logged.some((l) => l.event === 'dispatch-scheduled-unread'));
+  });
+
+  test('a dispatch takes the summons section\'s model and effort, the fire\'s own model over it, and a red scheduled run its own section\'s', async () => {
+    const { ctx } = context({ configOf: () => TUNED, readerFor: async () => ({ workflowRuns: async () => [run(500, 'failure'), run(499, 'success')] }) });
+    const summons = await planDispatch({ kind: 'dispatch', prompt: 'do the thing', repo: REPO } as never, ctx) as any;
+    assert.deepEqual({ model: summons.launches[0].asked.model, effort: summons.launches[0].asked.effort }, { model: 'summons-model', effort: 'medium' });
+    const byHand = await planDispatch({ kind: 'dispatch', prompt: 'do the thing', model: 'some-model', repo: REPO } as never, ctx) as any;
+    assert.deepEqual({ model: byHand.launches[0].asked.model, effort: byHand.launches[0].asked.effort }, { model: 'some-model', effort: 'medium' });
+    const red = await planDispatch(scheduled, ctx) as any;
+    assert.deepEqual({ model: red.launches[0].asked.model, effort: red.launches[0].asked.effort }, { model: 'red-model', effort: 'low' });
   });
 
   test('a fire that names no repo is refused', async () => {
@@ -374,6 +414,13 @@ describe('planUnblocked: an unblocked fire\'s plan', () => {
     assert.deepEqual(plan, { answer: { kind: 'unblocked', refusal: `${REPO}'s .github/governor.json turns neither pickup nor unblocked on`, dispatched: [] } });
   });
 
+  test('a ready ticket\'s launch takes pickup\'s model and effort, and a spec session\'s takes unblocked\'s', async () => {
+    const ready = await planUnblocked(fire(), ticketContext({ over: { configOf: () => TUNED } }).ctx) as any;
+    assert.deepEqual({ model: ready.launches[0].asked.model, effort: ready.launches[0].asked.effort }, { model: 'file-model', effort: 'high' });
+    const spec = await planUnblocked(fire(), ticketContext({ labels: ['type: bug'], over: { configOf: () => TUNED } }).ctx) as any;
+    assert.deepEqual({ model: spec.launches[0].asked.model, effort: spec.launches[0].asked.effort }, { model: 'file-model', effort: 'xhigh' });
+  });
+
   test('a fire that names no repo is refused', async () => {
     await assert.rejects(planUnblocked(fire({ repo: undefined }), ticketContext().ctx), /names no repo/);
   });
@@ -460,6 +507,17 @@ describe('planSweep: the bare schedule fire\'s plan', () => {
       started: undefined,
     });
     assert.deepEqual(plan.unread, []);
+  });
+
+  test('each launch takes its own place\'s model and effort: the periodic\'s entry, pickup\'s section, and waits\' for an ended wait\'s spec session', async () => {
+    const config = tuned({ ...FILE, waits: (({ issue: _ticket, ...waits }) => waits)(FILE.waits), periodics: { sessions: { [RETRO.name]: FILE.periodics.sessions[RETRO.name] } }, heartbeat: { issue: 412 } });
+    const { ctx } = sweepContext({ waits: [{ issue: 9, until: '2026-09-20' }], over: { configOf: () => config, served: [{ repo: REPO, config }] } });
+    const plan = await planSweep(fire, ctx) as any;
+    const [periodic, ticket, spec] = plan.launches;
+    const runOf = (l: any) => ({ model: l.asked.model, effort: l.asked.effort });
+    assert.deepEqual(runOf(periodic), { model: 'retro-model', effort: 'medium' });
+    assert.deepEqual(runOf(ticket), { model: 'file-model', effort: 'high' });
+    assert.deepEqual(runOf(spec), { model: 'waits-model', effort: 'medium' });
   });
 
   // A launch that started nothing puts the ticket's failed-launch record

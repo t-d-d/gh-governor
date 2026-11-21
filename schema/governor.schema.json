@@ -123,6 +123,22 @@
       },
       "additionalProperties": false
     },
+    "model": {
+      "description": "The model every session governor starts in the repo runs on, and each review's model run: a model's name as the CLI's `--model` takes it, such as `claude-sonnet-5-5`. Governor passes the name on as written, and does not check it against the models the login can use. A section, a periodic, a hook or an issue review that sets its own `model` uses that instead. Default `claude-opus-5-5`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+    },
+    "effort": {
+      "description": "The effort every session governor starts in the repo runs at, and each review's model run: `low`, `medium`, `high`, `xhigh`, `max`, as the CLI's `--effort` takes it. A section, a periodic, a hook or an issue review that sets its own `effort` uses that instead. It does not reach a periodic that names `connectors`, since a routine run takes no effort. Default none: each run takes its model's own default.",
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
     "pickup": {
       "description": "A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `sweepHours` sets. Its labels serve the features that read them, so a file turning on `unblocked`, `waits`, `prReview` or `issueReviews` has this section, with `\"enabled\": false` if pickup is to stay off.",
       "type": "object",
@@ -130,6 +146,22 @@
         "enabled": {
           "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
           "type": "boolean"
+        },
+        "model": {
+          "description": "The model for the session a ready ticket starts, in place of the file's `model`.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "The effort for the session a ready ticket starts, in place of the file's `effort`.",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "ready": {
           "description": "Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. Every label a ready ticket carries.",
@@ -212,6 +244,22 @@
         "enabled": {
           "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
           "type": "boolean"
+        },
+        "model": {
+          "description": "The model for the session a summons starts, in place of the file's `model`. A dispatch by hand that names its own model keeps it.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "The effort for the session a summons starts, in place of the file's `effort`.",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         }
       },
       "additionalProperties": false
@@ -223,6 +271,22 @@
         "enabled": {
           "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
           "type": "boolean"
+        },
+        "model": {
+          "description": "The model for the session that takes a PR over where the session a message was for is archived, in place of the file's `model`.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "The effort for the session that takes a PR over where the session a message was for is archived, in place of the file's `effort`.",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         }
       },
       "additionalProperties": false
@@ -269,6 +333,22 @@
           "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
           "type": "boolean"
         },
+        "model": {
+          "description": "The model for the session a red scheduled run starts, in place of the file's `model`.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "The effort for the session a red scheduled run starts, in place of the file's `effort`.",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
         "prompt": {
           "anyOf": [
             {
@@ -302,6 +382,22 @@
         "enabled": {
           "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
           "type": "boolean"
+        },
+        "model": {
+          "description": "The model for the spec session a blocker's close starts, in place of the file's `model`.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "The effort for the spec session a blocker's close starts, in place of the file's `effort`.",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "prompts": {
           "description": "Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `ready`, `spec`, `ownerSpec`, `claimed`, `notPlanned`.",
@@ -436,6 +532,22 @@
           "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
           "type": "boolean"
         },
+        "model": {
+          "description": "The model for a session a red CI run starts, its triage session or the fix session that stands in for an archived one, in place of the file's `model`.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "The effort for a session a red CI run starts, its triage session or the fix session that stands in for an archived one, in place of the file's `effort`.",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
         "prompts": {
           "description": "Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `breaker`, `triage`, `bumpTriage`.",
           "type": "object",
@@ -522,6 +634,22 @@
         "enabled": {
           "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
           "type": "boolean"
+        },
+        "model": {
+          "description": "The model for the triage session a red deploy starts, in place of the file's `model`.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "The effort for the triage session a red deploy starts, in place of the file's `effort`.",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "triage": {
           "default": [],
@@ -698,6 +826,22 @@
           "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
           "type": "boolean"
         },
+        "model": {
+          "description": "The model for the session that takes a conflicted PR over where its own session is archived, in place of the file's `model`.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "The effort for the session that takes a conflicted PR over where its own session is archived, in place of the file's `effort`.",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
         "prompt": {
           "anyOf": [
             {
@@ -731,6 +875,22 @@
         "enabled": {
           "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
           "type": "boolean"
+        },
+        "model": {
+          "description": "The model for the review's model run, in place of the file's `model`.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "The effort for the review's model run, in place of the file's `effort`.",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "prompt": {
           "description": "Required when on. The review model's system prompt, after governor's fixed frame and before a suffix naming what the code decided: the text, or { \"file\": \"<path>\" }.",
@@ -1054,6 +1214,22 @@
                   "type": "string",
                   "pattern": "^[A-Za-z0-9_-]+$"
                 }
+              },
+              "model": {
+                "description": "The model for the periodic's session, in place of the file's `model`.",
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+              },
+              "effort": {
+                "description": "The effort for the periodic's session, in place of the file's `effort`. A periodic that names `connectors` cannot set it: a routine run takes a model and no effort.",
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ]
               }
             },
             "required": [
@@ -1118,6 +1294,22 @@
                 "type": "integer",
                 "exclusiveMinimum": 0,
                 "maximum": 100
+              },
+              "model": {
+                "description": "The model for the hook's session, in place of the file's `model`.",
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+              },
+              "effort": {
+                "description": "The effort for the hook's session, in place of the file's `effort`.",
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ]
               }
             },
             "required": [
@@ -1137,6 +1329,22 @@
         "enabled": {
           "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
           "type": "boolean"
+        },
+        "model": {
+          "description": "The model for the spec session an ended wait starts, in place of the file's `model`.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "The effort for the spec session an ended wait starts, in place of the file's `effort`.",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "issue": {
           "description": "The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing.",
@@ -1470,6 +1678,22 @@
                   ],
                   "additionalProperties": false
                 }
+              },
+              "model": {
+                "description": "The model for the review's model run, in place of the file's `model`.",
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
+              },
+              "effort": {
+                "description": "The effort for the review's model run, in place of the file's `effort`.",
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ]
               }
             },
             "additionalProperties": false

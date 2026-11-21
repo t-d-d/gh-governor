@@ -34,6 +34,14 @@ What the repo's workflows are to governor: `ci`.
 |---|---|---|---|
 | `workflows.ci` | string |  | The CI workflow's file, under `.github/workflows/`. A red run of it tells the sessions of the merges it may blame, and the PR review waits for its run at a PR's head. Without it, no run is CI. |
 
+## `model`
+
+The model every session governor starts in the repo runs on, and each review's model run: a model's name as the CLI's `--model` takes it, such as `claude-sonnet-5-5`. Governor passes the name on as written, and does not check it against the models the login can use. A section, a periodic, a hook or an issue review that sets its own `model` uses that instead. Default `claude-opus-5-5`.
+
+## `effort`
+
+The effort every session governor starts in the repo runs at, and each review's model run: `low`, `medium`, `high`, `xhigh`, `max`, as the CLI's `--effort` takes it. A section, a periodic, a hook or an issue review that sets its own `effort` uses that instead. It does not reach a periodic that names `connectors`, since a routine run takes no effort. Default none: each run takes its model's own default.
+
 ## `pickup`
 
 A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `sweepHours` sets. Its labels serve the features that read them, so a file turning on `unblocked`, `waits`, `prReview` or `issueReviews` has this section, with `"enabled": false` if pickup is to stay off.
@@ -41,6 +49,8 @@ A session per ready ticket, picked up on its label, on the close of its last ope
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `pickup.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
+| `pickup.model` | string |  | The model for the session a ready ticket starts, in place of the file's `model`. |
+| `pickup.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the session a ready ticket starts, in place of the file's `effort`. |
 | `pickup.ready` | list of string |  | Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. Every label a ready ticket carries. |
 | `pickup.claim` | string |  | Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up. |
 | `pickup.claimRemoves` | list of string | `[]` | The ready labels the claim takes off, and a failed launch puts back. Default none. |
@@ -55,6 +65,8 @@ A session per `@claude` remark, and a dispatch started by hand.
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `summons.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
+| `summons.model` | string |  | The model for the session a summons starts, in place of the file's `model`. A dispatch by hand that names its own model keeps it. |
+| `summons.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the session a summons starts, in place of the file's `effort`. |
 
 ## `prMessages`
 
@@ -63,6 +75,8 @@ Messages into the session a PR names, or the newest live session holding its bra
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `prMessages.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
+| `prMessages.model` | string |  | The model for the session that takes a PR over where the session a message was for is archived, in place of the file's `model`. |
+| `prMessages.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the session that takes a PR over where the session a message was for is archived, in place of the file's `effort`. |
 
 ## `subscribeMessages`
 
@@ -80,6 +94,8 @@ A fresh session on a scheduled run on the default branch that went red.
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `redScheduledRun.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
+| `redScheduledRun.model` | string |  | The model for the session a red scheduled run starts, in place of the file's `model`. |
+| `redScheduledRun.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the session a red scheduled run starts, in place of the file's `effort`. |
 | `redScheduledRun.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red scheduled run's session prompt, below the run. It may name no fact. The text, or { "file": "&lt;path>" }. |
 
 ## `unblocked`
@@ -89,6 +105,8 @@ What a blocker's close does to a ticket that is not ready to pick up: a comment 
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `unblocked.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
+| `unblocked.model` | string |  | The model for the spec session a blocker's close starts, in place of the file's `model`. |
+| `unblocked.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the spec session a blocker's close starts, in place of the file's `effort`. |
 | `unblocked.prompts` | object (`ready`, `spec`, `ownerSpec`, `claimed`, `notPlanned`) |  | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `ready`, `spec`, `ownerSpec`, `claimed`, `notPlanned`. |
 | `unblocked.prompts.ready` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a ready ticket's ask, below its pickup prompt and the facts of its blocker's close. It may name no fact. The text, or { "file": "&lt;path>" }. |
 | `unblocked.prompts.spec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its blocker's close. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "&lt;path>" }. |
@@ -103,6 +121,8 @@ A red CI run tells the sessions of the merges it may blame. Needs `workflows.ci`
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `ciMessages.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
+| `ciMessages.model` | string |  | The model for a session a red CI run starts, its triage session or the fix session that stands in for an archived one, in place of the file's `model`. |
+| `ciMessages.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for a session a red CI run starts, its triage session or the fix session that stands in for an archived one, in place of the file's `effort`. |
 | `ciMessages.prompts` | object (`breaker`, `triage`, `bumpTriage`) |  | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `breaker`, `triage`, `bumpTriage`. |
 | `ciMessages.prompts.breaker` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red CI run's ask to its one suspect's session. It may name the fact {pr}, which governor writes in. The text, or { "file": "&lt;path>" }. |
 | `ciMessages.prompts.triage` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a red CI run's fresh session over several suspects. It may name no fact. The text, or { "file": "&lt;path>" }. |
@@ -115,6 +135,8 @@ A shipping job, or a red deploy, tells the sessions of the merges it shipped. Go
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `deployMessages.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
+| `deployMessages.model` | string |  | The model for the triage session a red deploy starts, in place of the file's `model`. |
+| `deployMessages.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the triage session a red deploy starts, in place of the file's `effort`. |
 | `deployMessages.triage` | list of string | `[]` | The deploy targets whose failure starts one fresh session, rather than messages to the sessions of the merges it shipped. Default none. |
 | `deployMessages.tags` | object of string, keyed by name | `{}` | The tag each deploy target's deploy moves, keyed by target, which deploy messages name. Default none. |
 | `deployMessages.deployedLabels` | boolean |  | Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, for people to read; the shipping job messages each such ticket's spec owner and builders itself. Default false. |
@@ -140,6 +162,8 @@ A merge into the default branch tells each PR it left conflicted.
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `conflicts.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
+| `conflicts.model` | string |  | The model for the session that takes a conflicted PR over where its own session is archived, in place of the file's `model`. |
+| `conflicts.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the session that takes a conflicted PR over where its own session is archived, in place of the file's `effort`. |
 | `conflicts.prompt` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a conflicted PR's ask, to its session or the fallback's. It may name the fact {base}, which governor writes in. The text, or { "file": "&lt;path>" }. |
 
 ## `prReview`
@@ -149,6 +173,8 @@ The PR review: its prompt, and the lists it checks a PR against. Needs `prompt` 
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `prReview.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
+| `prReview.model` | string |  | The model for the review's model run, in place of the file's `model`. |
+| `prReview.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the review's model run, in place of the file's `effort`. |
 | `prReview.prompt` | text, or `{ "file": "<path>" }` |  | Required when on. The review model's system prompt, after governor's fixed frame and before a suffix naming what the code decided: the text, or { "file": "&lt;path>" }. |
 | `prReview.humanOnly` | list of object (`glob`, `reason`, `unless`) | `[]` | Paths a PR may not change without a person: a PR changing a matching path waits for one, unless every ticket it closes carries one of the entry's `unless` labels and the PR is not from a session governor started. Default none. |
 | `prReview.humanOnly[].glob` | string, required |  | The paths a PR may not change without a person, as a glob. |
@@ -186,7 +212,7 @@ A session per periodic in `sessions`, each time its day limit passes or one of i
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `periodics.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
-| `periodics.sessions` | object of object (`prompt`, `days`, `counts`, `gapHours`, `connectors`), keyed by name |  | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed, each keyed by its name: one line, with no space at either end. Its session is named after it, and governor keys its record by it. At least one when on. |
+| `periodics.sessions` | object of object (`prompt`, `days`, `counts`, `gapHours`, `connectors`, `model`, `effort`), keyed by name |  | The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed, each keyed by its name: one line, with no space at either end. Its session is named after it, and governor keys its record by it. At least one when on. |
 | `periodics.sessions.<name>.prompt` | text, or `{ "file": "<path>" }`, required |  | What the periodic's session runs: the text, or { "file": "&lt;path>" }. Governor adds a line under it giving the last fire's time, and lists what each count counted since then. |
 | `periodics.sessions.<name>.days` | whole number, at least 1, required |  | Required. The day limit, in whole days, at least one: the periodic is due on the sweep nearest that many days after its last fire. |
 | `periodics.sessions.<name>.counts` | object (`merges`, `issuesOpened`, `issuesClosed`) |  | Counts that bring the periodic due before its day limit, once any reaches its number since the last fire: `merges`, `issuesOpened` and `issuesClosed`. At its day limit, a periodic whose counts counted nothing starts no session. |
@@ -195,6 +221,8 @@ A session per periodic in `sessions`, each time its day limit passes or one of i
 | `periodics.sessions.<name>.counts.issuesClosed` | whole number, at least 1 |  | Issues closed since the last fire that bring the periodic due, a whole number of at least one. |
 | `periodics.sessions.<name>.gapHours` | whole number, at least 1 |  | The fewest whole hours between two of the periodic's runs, at least one. A count reached inside the gap fires on the first event or sweep after it. |
 | `periodics.sessions.<name>.connectors` | list of string |  | The claude.ai connectors the periodic's session needs, each named once by its name in the account's connector list. A periodic naming any starts as a run of a routine governor keeps for it, with those connectors attached and no others. |
+| `periodics.sessions.<name>.model` | string |  | The model for the periodic's session, in place of the file's `model`. |
+| `periodics.sessions.<name>.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the periodic's session, in place of the file's `effort`. A periodic that names `connectors` cannot set it: a routine run takes a model and no effort. |
 
 ## `hooks`
 
@@ -203,10 +231,12 @@ A session on a hook's prompt when a signed request fires one of the hooks `sessi
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `hooks.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
-| `hooks.sessions` | object of object (`prompt`, `keyVersion`, `perHour`), keyed by name |  | The sessions an outside system starts with a signed request, each keyed by its name: lower-case letters, digits and hyphens. The name ends the hook's URL, and its session is named after it. Each may cap its fires with `perHour`. At least one when on. |
+| `hooks.sessions` | object of object (`prompt`, `keyVersion`, `perHour`, `model`, `effort`), keyed by name |  | The sessions an outside system starts with a signed request, each keyed by its name: lower-case letters, digits and hyphens. The name ends the hook's URL, and its session is named after it. Each may cap its fires with `perHour`. At least one when on. |
 | `hooks.sessions.<name>.prompt` | text, or `{ "file": "<path>" }`, required |  | What the hook's session runs: the text, or { "file": "&lt;path>" }. Governor adds lines under it saying which hook fired and when, and quoting the caller's text as the caller's data. |
 | `hooks.sessions.<name>.keyVersion` | whole number, 1 to 999999999, required |  | Required. The version of the hook's key a request must be signed with, a positive whole number of at most nine digits. Raising it revokes the key before it. It is not a secret. |
 | `hooks.sessions.<name>.perHour` | whole number, 1 to 100 |  | The most fires governor queues for the hook in one clock hour, a positive whole number up to 100. A fire past it gets 429. Default 20. |
+| `hooks.sessions.<name>.model` | string |  | The model for the hook's session, in place of the file's `model`. |
+| `hooks.sessions.<name>.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the hook's session, in place of the file's `effort`. |
 
 ## `waits`
 
@@ -215,6 +245,8 @@ When a ticket's `Blocked until:` date or time passes and it is not ready, one co
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `waits.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
+| `waits.model` | string |  | The model for the spec session an ended wait starts, in place of the file's `model`. |
+| `waits.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the spec session an ended wait starts, in place of the file's `effort`. |
 | `waits.issue` | whole number, at least 1 |  | The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing. |
 | `waits.prompts` | object (`spec`, `ownerSpec`) |  | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `spec`, `ownerSpec`. |
 | `waits.prompts.spec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "&lt;path>" }. |
@@ -246,7 +278,7 @@ The issue reviews: `reviews`, each keyed by its name, with its selector `when`, 
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `issueReviews.enabled` | boolean |  | Whether governor runs the reviews. Default on: only `false` turns them off. |
-| `issueReviews.reviews` | object of object (`when`, `conclusions`, `prompt`, `byLabel`), keyed by name |  | The issue reviews, each keyed by its name: lower-case letters, digits and hyphens. The name goes into every comment and marker the review writes, so renaming a review starts its rounds afresh. Reviews run in the order of their keys. At least one when on. |
+| `issueReviews.reviews` | object of object (`when`, `conclusions`, `prompt`, `byLabel`, `model`, `effort`), keyed by name |  | The issue reviews, each keyed by its name: lower-case letters, digits and hyphens. The name goes into every comment and marker the review writes, so renaming a review starts its rounds afresh. Reviews run in the order of their keys. At least one when on. |
 | `issueReviews.reviews.<name>.when` | object (`labels`, `exclude`, `by`) | `{}` | The review's selector: the labels and authors a ticket must meet. Default every issue its default `by` lets in. |
 | `issueReviews.reviews.<name>.when.labels` | list of string |  | Labels the ticket must carry, every one of them, in any case. Default none. |
 | `issueReviews.reviews.<name>.when.exclude` | list of string |  | Labels the ticket must not carry, any of them, in any case. Default none. |
@@ -263,3 +295,5 @@ The issue reviews: `reviews`, each keyed by its name, with its selector `when`, 
 | `issueReviews.reviews.<name>.byLabel[].conclusions.success` | list of string |  | The labels a `success` adds on a matching ticket, in place of the review's. |
 | `issueReviews.reviews.<name>.byLabel[].conclusions.failure` | list of string |  | The labels a `failure` adds on a matching ticket, in place of the review's. |
 | `issueReviews.reviews.<name>.byLabel[].conclusions.neutral` | list of string |  | The labels a `neutral` adds on a matching ticket, in place of the review's. |
+| `issueReviews.reviews.<name>.model` | string |  | The model for the review's model run, in place of the file's `model`. |
+| `issueReviews.reviews.<name>.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the review's model run, in place of the file's `effort`. |
