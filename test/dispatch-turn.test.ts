@@ -29,6 +29,7 @@ import { promptFor, sessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { DISPATCH_MARKER, SIGN_POSTS, UNATTENDED, dispatchMarker, lastDispatch, parseFire, postWords } from '../dispatch/webhook/fire.mjs';
 import { STOPPED_MARKER } from '../dispatch/stopped.mjs';
 import { LAUNCH_FAILED_MARKER } from '../dispatch/launch-failed.mjs';
+import { HELD_MARKER } from '../dispatch/held.mjs';
 import { EDIT_SPEC_OWNER, SPEC_OWNER_DUTY, UNSIGNED } from '../dispatch/webhook/mention.mjs';
 import { BUILDER_DUTY } from '../dispatch/roles.mjs';
 import { SESSION_RULES, SESSION_RULES_BLOCK, SESSION_RULES_FILE, blockIn } from '../dispatch/session-rules.mjs';
@@ -1939,6 +1940,7 @@ describe('run — the login after the launch', () => {
         readyIssues: async () => [issue(7)],
         blockers: async () => [],
         comments: async () => [],
+        allComments: async () => [],
         comment: async () => { throw new Error('POST /comments failed: 502 Bad Gateway'); },
         addLabels: async () => {},
         removeLabel: async () => {},
@@ -2836,9 +2838,33 @@ describe('run — an unblocked fire', () => {
   });
 
   // A ticket readied after spec work is picked up by its own fire: a
-  // dispatch comment's age holds nothing.
-  test('ready, with a dispatch comment from a minute ago: picked up', async () => {
-    const h = ticketTurn({ comments: [{ body: dispatchMarker({ at: new Date(NOW - 60_000).toISOString(), sessionUrl: 'https://claude.ai/code/session_01SPEC' }) }] });
+  // dispatch comment's age holds nothing, once the session it names has ended.
+  test('ready, with a dispatch comment from a minute ago whose session has ended: picked up', async () => {
+    const sessions = harness().deps.sessions;
+    const h = ticketTurn({
+      comments: [{ body: dispatchMarker({ at: new Date(NOW - 60_000).toISOString(), sessionUrl: 'https://claude.ai/code/session_01SPEC' }) }],
+      over: { sessions: { ...sessions, get: async (id: string) => ({ id, session_status: 'SESSION_STATUS_ARCHIVED' }) } },
+    });
+    await run(fire(), h.deps as never);
+    assert.equal(h.launches.length, 1);
+  });
+
+  // The claim label anyone can take off is not all that says a builder
+  // holds a ticket: a live session its dispatch comment names holds it too.
+  test('ready and unclaimed, with a dispatch comment naming a session still live: not claimed, nothing starts, and the ticket is told once', async () => {
+    const h = ticketTurn({ comments: [{ body: dispatchMarker({ at: new Date(NOW - 12_000).toISOString(), sessionUrl: 'https://claude.ai/code/session_01BUILDING' }) }] });
+    await run(fire(), h.deps as never);
+    assert.deepEqual(h.launches, []);
+    assert.deepEqual(labelCalls(h.calls), [], 'governor claims nothing');
+    assert.deepEqual(h.comments.map((c) => [c.issue, c.body.startsWith(`${HELD_MARKER}session_01BUILDING -->`)]), [[7, true]]);
+  });
+
+  test('ready and unclaimed, with a dispatch comment naming a session the sessions API no longer has: picked up', async () => {
+    const sessions = harness().deps.sessions;
+    const h = ticketTurn({
+      comments: [{ body: dispatchMarker({ at: new Date(NOW - 12_000).toISOString(), sessionUrl: 'https://claude.ai/code/session_01GONE' }) }],
+      over: { sessions: { ...sessions, get: async () => null } },
+    });
     await run(fire(), h.deps as never);
     assert.equal(h.launches.length, 1);
   });
@@ -3258,7 +3284,8 @@ describe('run: a ticket held by its `Blocked until:` line', () => {
   test('a thread that cannot be read gets no comment, and the sweep goes on', async () => {
     const base = waitTurn({ rows: [unreadable, issue(9)] });
     const h = harness({
-      reader: () => ({ ...base.deps.reader(''), allComments: async () => { throw new Error('GET /comments failed: 502'); } }),
+      // Only the held ticket's thread fails: the claim of #9 reads its own.
+      reader: () => ({ ...base.deps.reader(''), allComments: async (n: number) => { if (n === 7) throw new Error('GET /comments failed: 502'); return []; } }),
     });
     await run({ source: 'aws.events' }, h.deps as never);
     assert.deepEqual(h.launches.map((l) => l.sessionName), [sessionName(9, 'Issue 9')]);

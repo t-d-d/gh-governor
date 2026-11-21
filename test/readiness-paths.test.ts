@@ -44,7 +44,7 @@ const BLOCKER = { repo: REPO, number: 41, title: 'The parser', reason: 'complete
 const ITEM = '2026-09-20';
 /** The App that posts governor's comments. */
 const APP_ID = 5;
-/** A session an earlier pickup started, named by its dispatch marker, older than the dispatch window. */
+/** A session an earlier pickup started, named by its dispatch marker, and archived since. */
 const SESSION = 'https://claude.ai/code/session_01OWNER';
 const MARKED = { body: dispatchMarker({ at: '2026-09-01T00:00:00.000Z', sessionUrl: SESSION }), created_at: '2026-09-01T00:00:00Z', ours: true };
 const LOGIN = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-a', refreshToken: 'sk-ant-ort01-r', expiresAt: NOW + 3_600_000, refreshTokenExpiresAt: NOW + 30 * 86_400_000, scopes: ['user:profile', 'user:inference', 'user:sessions:claude_code'] } });
@@ -149,12 +149,15 @@ const depsOf = (reader: unknown, launches: string[], messages: string[], errors:
   githubToken: async () => 'ghs_t',
   appId: async () => APP_ID,
   reader: () => reader,
-  workspace: { prepare: () => ({ home: '/tmp/home', cwd: '/tmp/repo' }), writeLogin: () => {}, readLogin: () => null, useAccount: () => {} },
+  workspace: { prepare: () => ({ home: '/tmp/home', cwd: '/tmp/repo' }), writeLogin: () => {}, readLogin: () => LOGIN, useAccount: () => {} },
   launch: async ({ prompt }: { prompt: string }) => { launches.push(prompt); return { status: 0, output: CONFIRMED }; },
   probe: async () => ({ ok: true }),
   message: async ({ session }: { session: string }) => { messages.push(session); return { status: 0, output: JSON.stringify({ ok: true, session_id: 'session_01OWNER', url: SESSION }) }; },
   archive: async () => ({ status: 200, body: '{}' }),
-  sessions: { list: async () => ({ data: [] }), get: async (id: string) => ({ id, session_status: 'SESSION_STATUS_IDLE' }), events: async () => ({ data: [] }) },
+  // The earlier session the dispatch marker names has been archived, so it
+  // holds nothing: a live one keeps the claim from starting a second builder
+  // (dispatch/held.mjs), which these paths do not compare.
+  sessions: { list: async () => ({ data: [] }), get: async (id: string) => ({ id, session_status: 'SESSION_STATUS_ARCHIVED' }), events: async () => ({ data: [] }) },
   fires: { waiting: async () => 1 },
   enqueue: async () => { throw new Error('this test queues no fire'); },
   routines: () => ({}),
