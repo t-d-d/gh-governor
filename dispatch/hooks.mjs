@@ -38,9 +38,9 @@
  *   false where another record stands.
  */
 
-import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { hookSource } from './deliveries.mjs';
+import { runOf } from './repo-config.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { HOOK_KEY_STALE, quoted } from './webhook/fire.mjs';
 
@@ -172,7 +172,7 @@ export const planHook = async (invocation, ctx) => {
       issue: null,
       claim: false,
       holdsRepo: false,
-      asked: { prompt: hookPrompt(found.hook.prompt, invocation), sessionName: name, model: DEFAULT_MODEL },
+      asked: { prompt: hookPrompt(found.hook.prompt, invocation), sessionName: name, ...runOf(ctx.configOf(repo), 'hooks', found.hook) },
       // The record names a session only where the launch printed one.
       started: async ({ sessionUrl }, firedAt) => {
         if (sessionUrl === null) return;

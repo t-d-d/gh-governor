@@ -15,7 +15,7 @@
  * pickup's heartbeat line.
  */
 
-import { DEFAULT_MODEL, sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
+import { sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { planSchedule, strangerReason } from '../scripts/lib/dispatch-router.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { WAIT_RELATIVE, endedWaits, repairRelative, reportUnreadable, waitLinks, waitOwnerMessage, waitSpecPrompt } from './waits.mjs';
@@ -23,7 +23,7 @@ import { GITHUB_SOURCE } from './deliveries.mjs';
 import { ownerOutcome } from './unblocked.mjs';
 import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
-import { CONFIG_PATH, turnsOn } from './repo-config.mjs';
+import { CONFIG_PATH, runOf, turnsOn } from './repo-config.mjs';
 import { byOf, failedLaunchesOf, failedReason, sweepDue, sweepHoursOf } from './pickup.mjs';
 import { autoOf, relayOf, startOf } from './trust.mjs';
 import { tellerFor } from './told.mjs';
@@ -58,7 +58,7 @@ const LAUNCHED = new Set(['dispatched', 'unconfirmed', 'failed']);
  */
 const waitLaunch = (ctx, { repo, config, wait, withFallback, unread }) => {
   const { issue, title, until, read, owner } = wait;
-  const asked = { prompt: waitSpecPrompt({ issue, title, until, labels: config.labels, prompts: config.prompts }), sessionName: ticketSessionName(issue, title), model: DEFAULT_MODEL };
+  const asked = { prompt: waitSpecPrompt({ issue, title, until, labels: config.labels, prompts: config.prompts }), sessionName: ticketSessionName(issue, title), ...runOf(config, 'waits') };
   /** Delete the item over the date the turn read. @param {Record<string, unknown>} context */
   const drop = async (context) => {
     const dropped = await ctx.state.dropWait(repo, issue, read);
@@ -95,7 +95,7 @@ const waitLaunch = (ctx, { repo, config, wait, withFallback, unread }) => {
       let told = null;
       try {
         const fallback = withFallback ? { prompt: asked.prompt, sessionName: asked.sessionName, issue } : undefined;
-        told = await ctx.delivery(repo).deliver({ session: owner }, waitOwnerMessage({ issue, until, labels: config.labels, prompts: config.prompts }), { source: GITHUB_SOURCE, kind: 'wait-ended', on: [issue], fallback, spec: true });
+        told = await ctx.delivery(repo).deliver({ session: owner }, waitOwnerMessage({ issue, until, labels: config.labels, prompts: config.prompts }), { source: GITHUB_SOURCE, kind: 'wait-ended', on: [issue], fallback, run: runOf(config, 'waits'), spec: true });
         const outcome = ownerOutcome(told, 'the spec session is past DispatchCap: left for the next fire');
         if (told.ok || (told.fallback !== null && WENT.has(told.fallback.outcome))) {
           await drop({ owner, outcome });
@@ -322,7 +322,7 @@ export const planSweep = async (invocation, ctx) => {
       issue: issue ?? null,
       claim: true,
       holdsRepo: true,
-      asked: { prompt, sessionName, model: DEFAULT_MODEL },
+      asked: { prompt, sessionName, ...runOf(ctx.configOf(repo), 'pickup') },
       // A failed launch leaves the repo's tickets for the next fire, so its
       // sweep is not recorded.
       started: async ({ outcome }) => {
@@ -358,7 +358,7 @@ export const planSweep = async (invocation, ctx) => {
         claim: false,
         holdsRepo: true,
         periodic: periodic.name,
-        asked: { prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, model: DEFAULT_MODEL, ...connectorsOf(periodic) },
+        asked: { prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, ...runOf(ctx.configOf(repo), 'periodics', periodic), ...connectorsOf(periodic) },
         // A periodic's record moves to this fire only for a launch that
         // started or may have, and only over the record the turn read. A
         // failed launch writes nothing, so the periodic stays due.

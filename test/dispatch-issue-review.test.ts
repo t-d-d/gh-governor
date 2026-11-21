@@ -225,7 +225,8 @@ describe('the issueReviews config', () => {
       ['too long', { ['a'.repeat(65)]: {} }],
       ['by BOT', { triage: { when: { by: ['BOT'] } } }],
       ['by a stranger', { triage: { when: { by: ['STRANGER'] } } }],
-      ['a key no slice has built', { triage: { model: 'x' } }],
+      ['a key no slice has built', { triage: { tools: ['Read'] } }],
+      ['an effort the CLI does not take', { triage: { effort: 'huge' } }],
       ['an empty prompt', { triage: { prompt: ' ' } }],
       ['a conclusion GitHub does not use', { triage: { conclusions: { passed: ['ok'] } } }],
       ['a conclusion that is not a list', { triage: { conclusions: { success: 'ok' } } }],
@@ -1255,6 +1256,19 @@ describe('run: an issueReview fire through the turn', () => {
     assert.deepEqual(result.reviews?.map((r) => r.outcome), ['commented']);
     assert.equal(comments.length, 1);
     assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('each review\'s run is handed the review\'s own model and effort, then the file\'s, and the built-in model with no effort where the file sets none', async () => {
+    const file = JSON.parse(factoryFile(CONFIG_PATH)) as { model?: string, effort?: string, issueReviews: { reviews: Record<string, { model?: string, effort?: string }> } };
+    const [name] = Object.keys(file.issueReviews.reviews) as [string];
+    for (const review of Object.values(file.issueReviews.reviews)) { delete review.model; delete review.effort; }
+    const bare = await turn(JSON.stringify(file));
+    assert.deepEqual((bare.runs as Array<{ model?: string, effort?: string }>).map((r) => [r.model, 'effort' in r]), [['claude-opus-5-5', false]]);
+    const whole = await turn(JSON.stringify({ ...file, model: 'file-model', effort: 'medium' }));
+    assert.deepEqual((whole.runs as Array<{ model?: string, effort?: string }>).map((r) => [r.model, r.effort]), [['file-model', 'medium']]);
+    file.issueReviews.reviews[name] = { ...file.issueReviews.reviews[name], effort: 'low' };
+    const own = await turn(JSON.stringify({ ...file, model: 'file-model', effort: 'medium' }));
+    assert.deepEqual((own.runs as Array<{ model?: string, effort?: string }>).map((r) => [r.model, r.effort]), [['file-model', 'low']]);
   });
 
   test('with the section\'s enabled false, no review runs', async () => {

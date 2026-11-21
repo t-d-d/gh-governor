@@ -104,7 +104,6 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import { ConditionalCheckFailedException, DeleteItemCommand, DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { GetQueueAttributesCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
-import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { parseLogin, describeLogin, refreshExpiring, readStoredLogin, storedLogin } from '../scripts/lib/claude-login.mjs';
 import { deployNote, deployTargets } from './merge-notice.mjs';
 import { ARCHIVE_TIMEOUT_MS, SIGNOFF_LATEST_START_MS, SIGNOFF_WINDOW_MS, accessToken, awaitReplies, heldMessage, sweepSignoffs } from '../scripts/lib/session-signoff.mjs';
@@ -127,7 +126,7 @@ import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationToken, turnResends } from '../scripts/lib/github-app.mjs';
 import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
-import { CONFIG_PATH, SWITCHES, switchesOf, turnsOn } from './repo-config.mjs';
+import { BUILT_IN_RUN, CONFIG_PATH, SWITCHES, runOf, switchOf, switchesOf, turnsOn } from './repo-config.mjs';
 import { planWorkflow, withTickets } from './workflow.mjs';
 import { coverageOf } from './coverage.mjs';
 import { planBranchRun } from './branch-run.mjs';
@@ -217,7 +216,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   probe: () => Promise<{ ok: boolean, detail: string }>,
  *   message: (message: { session: string, text: string }, limits?: SendLimits) => Promise<LaunchResult>,
  *   messageTimeoutMs?: number,
- *   review: (run: { system: string, prompt: string, schema: object }) => Promise<LaunchResult>,
+ *   review: (run: { system: string, prompt: string, schema: object, model?: string, effort?: string }) => Promise<LaunchResult>,
  *   transcript: (run: { sessionId: string } & ({ pr: number } | { key: string })) => Promise<{ key: string } | { skipped: string }>,
  *   sleep: (ms: number) => Promise<void>,
  *   archive: import('../scripts/lib/session-signoff.mjs').Archive,
@@ -1203,7 +1202,7 @@ const startPeriodics = async ({ repo, config, counted, started, carried, start, 
       break;
     }
     const firedAt = new Date(deps.now()).toISOString();
-    const launched = await start({ prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, model: DEFAULT_MODEL, repo, environment: config.environment, ...connectorsOf(periodic) });
+    const launched = await start({ prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, ...runOf(config, 'periodics', periodic), repo, environment: config.environment, ...connectorsOf(periodic) });
     if (routineFault(deps, repo, periodic.name, launched)) continue;
     const { status, outcome, sessionUrl } = launched;
     deps.log('dispatch-launch', { repo, issue: null, sessionName: periodic.name, periodic: periodic.name, counted, outcome, status, sessionUrl });
@@ -1766,6 +1765,9 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           source: GITHUB_SOURCE,
           kind: 'relay',
           fallback,
+          // The session that takes the PR over runs on what the file sets for
+          // the feature whose message this is.
+          ...(repo === undefined ? {} : { run: runOf(configOf(repo), switchOf(invocation) ?? '') }),
           takeover: true,
           on: on === undefined ? [] : [on],
           closing,
@@ -1943,7 +1945,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       }
       if (before !== null) {
         if (plan.triage !== null) {
-          const launched = await start({ prompt: fromDispatcher(plan.triage.prompt, GITHUB_SOURCE), sessionName: plan.triage.sessionName, model: DEFAULT_MODEL });
+          const launched = await start({ prompt: fromDispatcher(plan.triage.prompt, GITHUB_SOURCE), sessionName: plan.triage.sessionName, ...runOf(config, switchOf(invocation, workflows) ?? '') });
           triage = { outcome: launched.outcome, sessionUrl: launched.sessionUrl };
           deps.log('dispatch-workflow', { ...about, triage, reason: 'no one session to tell: one fresh session owns the fix' });
         }
@@ -1964,7 +1966,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
             deps.log('dispatch-workflow', { ...about, untold: owed.slice(i).map((n) => ({ session: n.session, prs: n.prs })), reason: `out of time: past ${WORKFLOW_SEND_WINDOW_MS} ms, another delivery might outrun the deadline` });
             break;
           }
-          const { ok, answered, refused, error, fallback, capped } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, kind: invocation.kind === 'job' ? 'deploy' : 'ci', fallback: note.fallback, on: [...note.prs, ...(note.about ?? []), ...(note.tickets ?? [])], closing: note.closing, dropFrom: note.subscribed, owns: note.owns ?? note.prs.filter((n) => !note.subscribed.includes(n)) });
+          const { ok, answered, refused, error, fallback, capped } = await delivery().deliver({ session: note.session }, note.text, { source: GITHUB_SOURCE, kind: invocation.kind === 'job' ? 'deploy' : 'ci', fallback: note.fallback, run: runOf(config, switchOf(invocation, workflows) ?? ''), on: [...note.prs, ...(note.about ?? []), ...(note.tickets ?? [])], closing: note.closing, dropFrom: note.subscribed, owns: note.owns ?? note.prs.filter((n) => !note.subscribed.includes(n)) });
           // A note held at the ceiling is no fault (dispatch/cli.mjs), and stays owed to a later run.
           deliveries.push({ prs: note.prs, session: note.session, ok, answered, refused, error, fallback, ...(capped ? { capped } : {}) });
           // As dispatch/cli.mjs counts a fault: a refusal with no fallback is a gone session, told enough.
@@ -2054,6 +2056,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         inTime: () => deps.now() - started <= WORKFLOW_SEND_WINDOW_MS,
         prompts,
         auto: autoOf(configOf(fireRepo())),
+        run: runOf(configOf(fireRepo()), 'conflicts'),
       }));
       for (const check of checks) deps.log('dispatch-conflicts', { merged: invocation.pr, sha: invocation.sha, head, ...check });
     } finally {
@@ -2103,7 +2106,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
       const spent = new Map();
       const judge = cliJudge({
         skill: review.checklist,
-        run: (request, pr) => budgeted(() => deps.review(request), `review #${pr}`),
+        // The run's model and effort are the file's for the review (`runOf`, dispatch/repo-config.mjs).
+        run: (request, pr) => budgeted(() => deps.review({ ...request, ...runOf(config, 'prReview') }), `review #${pr}`),
         transcript: deps.transcript,
         log: deps.log,
         spent: (pr, usage) => { spent.set(pr, usage); },
@@ -3347,14 +3351,15 @@ export const realDeps = () => {
         account = stored;
       },
     },
-    launch: async ({ prompt, sessionName, model, repo: launched, environment, branch }) => {
+    launch: async ({ prompt, sessionName, model, effort, repo: launched, environment, branch }) => {
       const dir = mkdtempSync(join(tmpdir(), 'governor-'));
       try {
         const promptFile = join(dir, 'prompt.txt');
         writeFileSync(promptFile, `${prompt}\n`);
         const result = await collect(spawn('python3', [launcherPath(), promptFile], {
           cwd: workspaceFor(launched, environment),
-          env: cliEnv({ ...env, CLAUDE_MODEL: model, CLAUDE_SESSION_NAME: sessionName, CLAUDE_ON_BRANCH: branch ?? '' }, home, account),
+          // Always set, empty for none, so the launch never takes an effort the task's own environment carries.
+          env: cliEnv({ ...env, CLAUDE_MODEL: model, DISPATCH_EFFORT: effort ?? '', CLAUDE_SESSION_NAME: sessionName, CLAUDE_ON_BRANCH: branch ?? '' }, home, account),
           stdio: ['ignore', 'pipe', 'pipe'],
         }));
         log('dispatch-launcher-output', { sessionName, status: result.status, tail: outputTail(result.output) });
@@ -3405,13 +3410,16 @@ export const realDeps = () => {
     // a review starts: it runs none of the served repo's code.
     // Every review's frame and checklist go in place of Claude Code's own
     // system prompt, which is written for a coding agent with tools.
-    review: async ({ system, prompt, schema }) => {
+    // The model and effort are the repo's config file's for the review
+    // (`runOf`, dispatch/repo-config.mjs): with no effort the flag is left
+    // off, and the run takes its model's own default.
+    review: async ({ system, prompt, schema, model = BUILT_IN_RUN.model, effort }) => {
       const dir = mkdtempSync(join(tmpdir(), 'governor-review-'));
       try {
         const systemFile = join(dir, 'system.md');
         writeFileSync(systemFile, system);
         const child = spawn('claude', [
-          '-p', '--output-format', 'json', '--model', DEFAULT_MODEL,
+          '-p', '--output-format', 'json', '--model', model, ...(effort === undefined ? [] : ['--effort', effort]),
           '--system-prompt-file', systemFile, '--json-schema', JSON.stringify(schema), '--tools', '',
         ], { cwd, env: cliEnv(env, home, account), stdio: ['pipe', 'pipe', 'pipe'] });
         child.stdin.on('error', () => {});

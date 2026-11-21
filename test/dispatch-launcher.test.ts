@@ -12,7 +12,7 @@ import { SESSION_LATE, SESSION_UNRECORDED, launcher, routineLaunch, sessionUrlFr
 const URL_A = 'https://claude.ai/code/session_01LAUNCHER';
 
 type Line = { event: string, fields: Record<string, unknown> };
-type Asked = { prompt: string, sessionName: string, model: string, repo: string, environment: string, connectors?: string[] };
+type Asked = { prompt: string, sessionName: string, model: string, effort?: string, repo: string, environment: string, connectors?: string[] };
 type Result = { status: number | null, output: string, routine?: string, refused?: true };
 type Budgeted = <T>(begin: () => Promise<T>, name: string, until?: number, onOver?: () => void) => Promise<T>;
 
@@ -51,6 +51,21 @@ describe('launcher: start', () => {
     assert.deepEqual(h.recorded, [URL_A]);
     assert.equal(h.pending.size, 0);
     assert.deepEqual(h.lines, []);
+  });
+
+  test('a CLI launch carries its effort where it names one, and none where it does not', async () => {
+    const h = harness();
+    await h.start({ ...ASK, effort: 'xhigh' });
+    await h.start(ASK);
+    assert.deepEqual(h.launched.map((l) => [l.model, l.effort]), [['m', 'xhigh'], ['m', undefined]]);
+    assert.ok(!('effort' in h.launched[1]!), 'no effort key where none was asked for');
+  });
+
+  test('a routine launch carries its model and no effort: a routine run has none to set', async () => {
+    const h = harness();
+    await h.start({ ...ASK, effort: 'xhigh', connectors: ['Slack'] });
+    assert.equal(h.launched.length, 0);
+    assert.deepEqual(h.routined.map((r) => [r.asked.model, 'effort' in r.asked]), [['m', false]]);
   });
 
   test('a launch naming connectors goes to the routine, not the CLI', async () => {

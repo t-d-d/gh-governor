@@ -77,6 +77,22 @@ choice is newer than the flag: a CLI that predates it refuses the argv at
 parsing, so every dispatch fails loudly before anything starts, as an old
 `--cloud` CLI does on `--ref`, and the fix is the same, update the CLI.
 
+## Why the effort is passed only where one is set
+
+A served repo's config file may set the effort its sessions run at
+(dispatch/repo-config.mjs). The caller hands it over in DISPATCH_EFFORT and
+it goes on as `--effort <level>`, which the CLI puts in the cloud session's
+create request beside the model. With none set the flag is left off, so the
+session takes its model's own default. `claude --help` advertises the flag,
+and a CLI too old to have it refuses the argv at parsing, so every dispatch
+that names an effort fails loudly before anything starts, and the fix is to
+update the CLI.
+
+The variable is not CLAUDE_EFFORT, though the model's is CLAUDE_MODEL: Claude
+Code sets CLAUDE_EFFORT itself, in every shell and hook command it runs, to
+the effort of the session doing the running. A launcher started from inside
+a session would read that session's effort as the one to dispatch at.
+
 ## Why feature-flag evaluation is off for the child
 
 The preflight above asks the Claude backend for the App's installation
@@ -218,6 +234,9 @@ if len(sys.argv) != 2:
 
 prompt = open(sys.argv[1]).read()
 model = os.environ.get("CLAUDE_MODEL", "")
+# The effort the session runs at, where the repo's config file sets one; see
+# the module docstring § Why the effort is passed only where one is set.
+effort = os.environ.get("DISPATCH_EFFORT", "")
 session_name = os.environ.get("CLAUDE_SESSION_NAME", "")
 # The branch a session takes over, when it is given one; see the module
 # docstring § Why a takeover starts on the PR's branch.
@@ -282,6 +301,8 @@ if pid == 0:
     cmd = ["claude"]
     if model:
         cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
     # Naming the session outright is the only way an issue number survives into
     # the sessions pane: the namer summarises the prompt rather than copying it,
     # and an identifier reads as boilerplate to a summariser. Optional, so the

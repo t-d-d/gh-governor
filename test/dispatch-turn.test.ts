@@ -79,6 +79,18 @@ const RULES_OFF_FILE = (() => {
 })();
 /** A launch's prompt as the launcher gets it: with the factory's `sessionRules` on, the three rules, then, with its `waits` on, the line on waiting, end every one. */
 const signed = (prompt: string) => `${prompt}\n\n${SESSION_RULES}\n\n${WAIT_PROMPT}`;
+/**
+ * The factory's file with a model and an effort for the whole file,
+ * `file-model` at `medium`, and `over` laid on its sections, so a test can
+ * tell whose a launch or a review's run took.
+ */
+const tunedFile = (over: Record<string, Record<string, unknown>> = {}) => {
+  const file = JSON.parse(FACTORY_FILE);
+  for (const [section, keys] of Object.entries(over)) file[section] = { ...file[section], ...keys };
+  return JSON.stringify({ ...file, model: 'file-model', effort: 'medium' });
+};
+/** What a launch ran on: its model, and its effort where it named one. */
+const ranOn = (launch: Launch | undefined) => ({ model: launch?.model, effort: launch?.effort });
 const FACTORY_CONFIG_LABELS = FACTORY_CONFIG.labels;
 /** The factory's wait ticket (`waits.issue`), which each waiting ticket is linked as blocked by, and its read. */
 const WAIT_TICKET = JSON.parse(FACTORY_FILE).waits.issue as number;
@@ -141,7 +153,7 @@ const issue = (number: number) => ({
   association: 'MEMBER',
 });
 
-type Launch = { prompt: string; sessionName: string; model: string; repo?: string; environment?: string; branch?: string };
+type Launch = { prompt: string; sessionName: string; model: string; effort?: string; repo?: string; environment?: string; branch?: string };
 
 /** Every dependency, recording what it saw; each can be overridden. */
 const harness = (over: Record<string, unknown> = {}) => {
@@ -2959,6 +2971,12 @@ describe('run — an unblocked fire', () => {
     assert.deepEqual([second.comments, second.issueEdits], [[], []]);
   });
 
+  test('not ready and its owner archived: the spec session that stands in runs on unblocked\'s model and effort', async () => {
+    const h = ticketTurn({ labels: ['enhancement'], body: OWNED, over: { message: ARCHIVED, configFile: factoryFiles(tunedFile({ unblocked: { effort: 'xhigh' }, pickup: { model: 'pickup-model' } })) } });
+    await run(fire(), h.deps as never);
+    assert.deepEqual(h.launches.map(ranOn), [{ model: 'file-model', effort: 'xhigh' }]);
+  });
+
   test('not ready, its owner archived and the spec session failing: the turn fails', async () => {
     const h = ticketTurn({ labels: ['enhancement'], body: OWNED, over: { message: ARCHIVED, launch: async (launch: Launch) => { h.launches.push(launch); return { status: 1, output: 'environment not found' }; } } });
     const result = await run(fire(), h.deps as never) as Record<string, unknown>;
@@ -3527,6 +3545,12 @@ describe('run: a ticket\'s wait ends, under the `waits` switch', () => {
       assert.deepEqual(specOf(h), []);
       assert.deepEqual([...h.waitItems], [[`${REPO}#7`, PAST]]);
       assert.ok(JSON.stringify(result.unread).includes('wait #7'), JSON.stringify(result));
+    });
+
+    test('an owner archived: the spec session that stands in runs on waits\' model and effort', async () => {
+      const h = waitsTurn({ ticket: owned, file: tunedFile({ waits: { model: 'waits-model' }, unblocked: { model: 'spec-model' } }), over: { message: archived } });
+      await run({ source: 'aws.events' }, h.deps as never);
+      assert.deepEqual(specOf(h).map(ranOn), [{ model: 'waits-model', effort: 'medium' }]);
     });
 
     test('an owner archived whose spec session starts nothing skips the repo\'s later launches, as a spec session does', async () => {
@@ -4585,6 +4609,15 @@ describe('run — periodics an event brings due', () => {
     }
   });
 
+  test('a periodic an event brings due runs on its own model and effort, then the file\'s', async () => {
+    const file = JSON.parse(tunedFile());
+    file.periodics.sessions[CODE.name] = { ...file.periodics.sessions[CODE.name], model: 'code-model' };
+    const h = counting({ merges: merged(20) }, { configFile: factoryFiles(JSON.stringify(file)) });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    await run(MERGE, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => [l.sessionName, ranOn(l)]), [[CODE.name, { model: 'code-model', effort: 'medium' }]]);
+  });
+
   test('a merge rides the conflicts turn, and starts a periodic whose merges since its last fire reached its number, its prompt listing them', async () => {
     const h = counting({ merges: merged(20) });
     h.periodics.set(key(CODE.name), fired(DAY));
@@ -5296,6 +5329,64 @@ describe('fitness: pr-review.md, the review runner replaces Claude Code\'s syste
   });
 });
 
+/**
+ * The model and effort a repo's config file sets reach the CLI as its own
+ * `--model` and `--effort`: a review's run directly, a session's launch
+ * through the launcher script. With no effort the flag is left off, so the
+ * run takes its model's own default, as before the keys existed. A fake
+ * `claude` on PATH answers with its arguments.
+ */
+describe('realDeps: the model and effort a launch or a review names reach the CLI', () => {
+  const ARGV = [
+    'const argv = process.argv.slice(2);',
+    "if (argv.includes('--help')) { process.stdout.write('  --cloud [description]  Create a cloud session\\n'); process.exit(0); }",
+    "let stdin = '';",
+    "process.stdin.setEncoding('utf8');",
+    "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+    "const answer = () => { process.stdout.write(`${JSON.stringify({ argv })}\\nResume with: claude --cloud session_01FAKE\\n`); };",
+    "if (argv.includes('-p')) process.stdin.on('end', answer); else answer();",
+  ];
+  const argvOf = (output: string): string[] => JSON.parse(output.split('\n').find((line) => line.includes('"argv"')) ?? '{}').argv;
+
+  test('a review\'s run passes its model, and --effort only where it names one', async () => {
+    await withFakeClaude(ARGV, async () => {
+      const request = { system: 'You review.\n', prompt: 'PR #7', schema: { type: 'object' } };
+      const named = argvOf((await realDeps().review({ ...request, model: 'claude-haiku-5-5', effort: 'low' })).output);
+      assert.equal(named[named.indexOf('--model') + 1], 'claude-haiku-5-5');
+      assert.equal(named[named.indexOf('--effort') + 1], 'low');
+      const bare = argvOf((await realDeps().review({ ...request, model: 'claude-haiku-5-5' })).output);
+      assert.equal(bare[bare.indexOf('--model') + 1], 'claude-haiku-5-5');
+      assert.ok(!bare.includes('--effort'), bare.join(' '));
+      assert.equal(bare[bare.indexOf('--tools') + 1], '', 'still no tools');
+    });
+  });
+
+  test('a launch passes its model, and --effort only where it names one, whatever CLAUDE_EFFORT the task inherited', async () => {
+    const saved = { grace: process.env.DISPATCH_CONFIRM_GRACE, own: process.env.DISPATCH_EFFORT, inherited: process.env.CLAUDE_EFFORT };
+    process.env.DISPATCH_CONFIRM_GRACE = '0.1';
+    // What a task started from a Claude Code shell would inherit: not the launch's.
+    process.env.CLAUDE_EFFORT = 'max';
+    process.env.DISPATCH_EFFORT = 'max';
+    try {
+      await withFakeClaude(ARGV, async () => {
+        const launch = { prompt: 'Do the thing.', sessionName: '#7 t', repo: 'acme/factory', environment: 'env_01FACTORY' };
+        const named = await realDeps().launch({ ...launch, model: 'claude-sonnet-5-5', effort: 'xhigh' });
+        assert.equal(named.status, 0, named.output);
+        const argv = argvOf(named.output);
+        assert.equal(argv[argv.indexOf('--model') + 1], 'claude-sonnet-5-5');
+        assert.equal(argv[argv.indexOf('--effort') + 1], 'xhigh');
+        const bare = await realDeps().launch({ ...launch, model: 'claude-sonnet-5-5' });
+        assert.equal(bare.status, 0, bare.output);
+        assert.ok(!argvOf(bare.output).includes('--effort'), argvOf(bare.output).join(' '));
+      });
+    } finally {
+      for (const [name, value] of [['DISPATCH_CONFIRM_GRACE', saved.grace], ['DISPATCH_EFFORT', saved.own], ['CLAUDE_EFFORT', saved.inherited]] as const) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    }
+  });
+});
+
 // A login refresh prepares the workspace before the turn knows to
 // name its repo; the turn's own prepare still makes the fire's repo its origin.
 describe('realDeps().workspace.prepare', () => {
@@ -5348,6 +5439,17 @@ describe('run — a message with a fallback', () => {
     assert.deepEqual(edits, [{ pr: 724, body: PR_BODY.replace('session_01OLD', 'session_01ABC') }]);
     assert.deepEqual((result as { fallback: unknown }).fallback, { outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01ABC' });
     assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('the session that takes a PR over runs on prMessages\' model and effort, then the file\'s', async () => {
+    const archived = async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) });
+    const message = { kind: 'message', session: 'https://claude.ai/code/session_01OLD', text: 'hi', fallback: { ...fallback, issue: 724 } };
+    const own = harness({ message: archived, configFile: factoryFiles(tunedFile({ prMessages: { model: 'takeover-model', effort: 'high' } })) });
+    await run(message, own.deps as never);
+    assert.deepEqual(own.launches.map(ranOn), [{ model: 'takeover-model', effort: 'high' }]);
+    const files = harness({ message: archived, configFile: factoryFiles(tunedFile()) });
+    await run(message, files.deps as never);
+    assert.deepEqual(files.launches.map(ranOn), [{ model: 'file-model', effort: 'medium' }]);
   });
 
   test('a takeover whose PR body GitHub refuses to relink logs at error and exits 1, though its session started', async () => {
@@ -5550,6 +5652,17 @@ describe('run — a workflow run on main', () => {
     assert.deepEqual(r.deliveries[0]?.fallback, { outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01ABC' });
   });
 
+  test('a red CI run\'s fix session runs on ciMessages\' model and effort', async () => {
+    const { reader } = workflowReader();
+    const { deps, launches } = harness({
+      reader: () => ({ ...reader(), updatePull: async () => {} }),
+      message: async ({ session }: { session: string }) => ({ status: 1, output: JSON.stringify({ ok: false, session_id: session, error: `cloud session ${session} is archived and cannot accept new messages` }) }),
+      configFile: factoryFiles(tunedFile({ ciMessages: { model: 'ci-model' }, deployMessages: { model: 'deploy-model' } })),
+    });
+    await run(fire('CI', 'failure'), deps as never);
+    assert.deepEqual(launches.map(ranOn), [{ model: 'ci-model', effort: 'medium' }]);
+  });
+
   /** A Deliver run 500 green at SHA after a green 498: the job fires' ground. */
   const delivered = (over: Record<string, unknown> = {}) => workflowReader({
     runJobs: async (id: number) => [stage(DEV), stage(PROD)].map((j) => ({ ...j, html_url: `${j.html_url}@${id}` })),
@@ -5617,6 +5730,26 @@ describe('run — a workflow run on main', () => {
     assert.equal(launches[0]!.prompt.split('\n')[0], DISPATCHER_LABEL);
     assert.match(launches[0]!.sessionName, /^Prod deploy red /);
     assert.deepEqual(r.triage, { outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01ABC' });
+  });
+
+  test('a triage session runs on its own section\'s model and effort: deployMessages\' for a red deploy, ciMessages\' for a red CI run', async () => {
+    const configFile = factoryFiles(tunedFile({ ciMessages: { effort: 'xhigh' }, deployMessages: { model: 'deploy-model', effort: 'low' } }));
+    const deploy = delivered({
+      runJobs: async (id: number) => [stage(DEV), stage(PROD, id === 500 ? 'failure' : 'success')],
+      workflowRuns: async () => [runRow(500, 'failure', { head_sha: SHA }), runRow(498, 'success', { head_sha: 'shaB' })],
+    });
+    const red = harness({ reader: deploy.reader, configFile });
+    await run(fire('Deliver', 'failure'), red.deps as never);
+    assert.match(red.launches[0]!.sessionName, /^Prod deploy red /);
+    assert.deepEqual(red.launches.map(ranOn), [{ model: 'deploy-model', effort: 'low' }]);
+    const ci = workflowReader({
+      compareCommits: async () => [{ sha: 'm1', message: 'Merge pull request #767 from x' }, { sha: SHA, message: 'Merge pull request #799 from y' }],
+      pullsForCommit: async (sha: string) => (sha === 'm1' ? [pr(767, { merge_commit_sha: 'm1' })] : sha === SHA ? [pr(799)] : []),
+    });
+    const broke = harness({ reader: ci.reader, configFile });
+    const r = result(await run(fire('CI', 'failure'), broke.deps as never));
+    assert.ok(r.triage, 'the CI run got a triage session');
+    assert.deepEqual(broke.launches.map(ranOn), [{ model: 'file-model', effort: 'xhigh' }]);
   });
 
   test('a triage session that started nothing fails the turn', async () => {
@@ -6679,6 +6812,13 @@ describe('run — a merge to main leaves PRs conflicted', () => {
     assert.deepEqual(r.checks.map((c) => c.outcome), ['skipped']);
     assert.match(String(r.checks[0]!.reason), /ceiling/);
     assert.equal(exitCodeFor(r as never), 0);
+  });
+
+  test('the session that takes a conflicted PR over runs on conflicts\' model and effort', async () => {
+    const r0 = conflictReader({ pulls: [open(804)], reads: { 804: [false] } });
+    const { deps, launches } = harness({ reader: r0.reader, sleep, message: archived, configFile: factoryFiles(tunedFile({ conflicts: { model: 'conflicts-model' }, prMessages: { model: 'takeover-model' } })) });
+    await run(fire, deps as never);
+    assert.deepEqual(launches.map(ranOn), [{ model: 'conflicts-model', effort: 'medium' }]);
   });
 
   test('a takeover whose PR body GitHub refuses to relink fails the PR\'s check: the turn exits 1', async () => {

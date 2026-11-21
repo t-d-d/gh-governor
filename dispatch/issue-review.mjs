@@ -62,7 +62,7 @@
 
 import { bodyDigest } from './pr-body.mjs';
 import { cliResult } from './cli-answer.mjs';
-import { ISSUE_REVIEW_BY, turnsOn } from './repo-config.mjs';
+import { ISSUE_REVIEW_BY, runOf, turnsOn } from './repo-config.mjs';
 import { authorKind, lets, reviewOf, ticketAuthor } from './trust.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
@@ -159,7 +159,7 @@ Rules on the conclusion:
  *   oldest first, each marked with whether governor's App posted it.
  *   `ensureLabel`: creates a label the repo lacks. `removeLabel`: a label
  *   the issue lacks counts as removed.
- * @typedef {{ issueReviews?: { reviews: IssueReview[] } | undefined, heartbeat?: { issue: number } | undefined, waits?: { issue: number } | undefined } & import('./trust.mjs').TrustConfig} ReviewConfig
+ * @typedef {{ issueReviews?: { reviews: IssueReview[] } | undefined, heartbeat?: { issue: number } | undefined, waits?: { issue: number } | undefined, runs?: import('./repo-config.mjs').Runs | undefined } & import('./trust.mjs').TrustConfig} ReviewConfig
  * @typedef {{ name: string, outcome: 'commented' | 'skipped' | 'failed' | 'limited', conclusion?: string, reason?: string, error?: string, loop?: { count: number, error?: string } }} Reviewed
  *   `loop`: where the run met the loop guard, the failures in a row, and
  *   why the guard's comment did not post where it did not.
@@ -554,7 +554,7 @@ export const applyLabels = async ({ reader, ticket, name, conclusions, every = [
  *   issue: number,
  *   reader: IssueReader,
  *   config: ReviewConfig,
- *   run: (request: { system: string, prompt: string, schema: object }, label: string) => Promise<{ output: string }>,
+ *   run: (request: { system: string, prompt: string, schema: object } & import('./repo-config.mjs').Run, label: string) => Promise<{ output: string }>,
  *   transcript: (t: { sessionId: string, key: string }) => Promise<object>,
  *   log: (event: string, context: Record<string, unknown>) => void,
  *   tell?: (issue: number, comment: string, row?: Ticket) => Promise<void>,
@@ -622,7 +622,7 @@ export const reviewIssue = async ({ repo, issue, reader, config, run, transcript
     try {
       context ??= contextOf({ repo, ticket, reader, log });
       const prompt = `${await context}\n\n# Round\n\nThis is round ${round} of this review.\n`;
-      const ran = await run({ system: `${ISSUE_FRAME}\n\n${promptFor(review, ticket)}`, prompt, schema: ISSUE_ANSWER_SCHEMA }, `${name} review of #${issue}`);
+      const ran = await run({ system: `${ISSUE_FRAME}\n\n${promptFor(review, ticket)}`, prompt, schema: ISSUE_ANSWER_SCHEMA, ...runOf(config, 'issueReviews', review) }, `${name} review of #${issue}`);
       let answer;
       try {
         answer = parseConclusion(ran.output);

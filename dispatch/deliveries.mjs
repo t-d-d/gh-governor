@@ -36,8 +36,8 @@
  * limit or a failed resend for the turn's later sends.
  */
 
-import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { instruction } from './prompts.mjs';
+import { BUILT_IN_RUN } from './repo-config.mjs';
 import { commitSession } from './branch-run.mjs';
 import { markOwnerUnknown, ownerUnknownSince, relayedBody, relinkSession, sameSession, sessionId, sessionNamedIn, unsubscribe } from './webhook/subscribe.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
@@ -396,7 +396,8 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   The GitHub reads and writes a delivery makes.
  *
  * @typedef {{ status: number | null, output: string }} LaunchResult
- * @typedef {{ prompt: string, sessionName: string, model: string, branch?: string }} Launch
+ * @typedef {{ prompt: string, sessionName: string, model: string, effort?: string, branch?: string }} Launch
+ *   `model`, `effort`: what the session runs on and at; with no `effort` it takes its model's own default.
  *   `branch`: the branch the session starts on and pushes to, in place of the default branch.
  * @typedef {'dispatched' | 'unconfirmed' | 'failed'} LaunchOutcome
  *
@@ -451,6 +452,7 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   source: MessageSource,
  *   kind: string,
  *   fallback?: import('./webhook/fire.mjs').Fallback | undefined,
+ *   run?: import('./repo-config.mjs').Run | undefined,
  *   takeover?: boolean,
  *   spec?: boolean,
  *   on?: number[],
@@ -465,7 +467,10 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   with; a fallback's prompt opens with the same line. `kind`: what sort
  *   of message it is (a relayed remark, a deploy note, a notice), which the
  *   ceiling's count names it by. `fallback`: what a
- *   refusal starts. A `takeover`'s fallback owns the PR, so it starts on
+ *   refusal starts. `run`: the model and effort the fallback's session
+ *   runs on, the repo's config file's for the feature whose message this
+ *   is (`runOf`, dispatch/repo-config.mjs); governor's built-in model, and
+ *   no effort, where the caller names none. A `takeover`'s fallback owns the PR, so it starts on
  *   the PR's head branch, unless that is a fork's or the repo's default
  *   branch, and the body's link is rewritten to it, the one
  *   record of the PR's session; a red CI's fix session did not write the
@@ -942,10 +947,10 @@ export const deliveries = (deps) => {
    * @param {string} session
    * @param {string} text
    * @param {import('./webhook/fire.mjs').Fallback | undefined} withFallback
-   * @param {{ source: MessageSource, kind: string, subjects: number[], takeover: boolean, spec: boolean, on: number[], closing: boolean, standing: boolean, dropFrom: number[], owns: number[], strict: boolean, commit: string | undefined }} how
+   * @param {{ source: MessageSource, kind: string, subjects: number[], run: import('./repo-config.mjs').Run, takeover: boolean, spec: boolean, on: number[], closing: boolean, standing: boolean, dropFrom: number[], owns: number[], strict: boolean, commit: string | undefined }} how
    * @returns {Promise<Omit<Delivery, 'skipped'> & { answered: boolean }>}
    */
-  const toSession = async (session, text, withFallback, { source, kind, subjects, takeover, spec, on, closing, standing, dropFrom, owns, strict, commit }) => {
+  const toSession = async (session, text, withFallback, { source, kind, subjects, run, takeover, spec, on, closing, standing, dropFrom, owns, strict, commit }) => {
     /** @type {About} */
     const about = { exclude: on, closing, standing, source, kind, subjects };
     const until = deps.now() + DELIVER_LAUNCHES * (deps.launchTimeoutMs ?? Infinity);
@@ -1060,7 +1065,7 @@ export const deliveries = (deps) => {
         reason = unconfirmed;
       }
       if (fallback === null) {
-        const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, model: DEFAULT_MODEL, ...(branch === '' ? {} : { branch }) }, until);
+        const started = await deps.launch({ prompt: fromDispatcher(prompt, source), sessionName, ...run, ...(branch === '' ? {} : { branch }) }, until);
         fallback = { outcome: started.outcome, sessionUrl: started.sessionUrl };
         if (issue !== undefined && started.outcome !== 'failed') {
           if (spec) {
@@ -1085,7 +1090,7 @@ export const deliveries = (deps) => {
   };
 
   /** @type {Deliveries['deliver']} */
-  const deliver = async (to, text, { source, kind, fallback, takeover = false, spec = false, on = [], closing = false, standing = closing, dropFrom = [], commit, owns = [], strict = false }) => {
+  const deliver = async (to, text, { source, kind, fallback, run = BUILT_IN_RUN, takeover = false, spec = false, on = [], closing = false, standing = closing, dropFrom = [], commit, owns = [], strict = false }) => {
     // Before anything is read or sent: a message with no source is refused.
     relayLabel(source);
     /** @type {Delivery} */
@@ -1129,7 +1134,7 @@ export const deliveries = (deps) => {
     }
     // What the message is about, each subject the ceiling counts it against.
     const subjects = [...on, ...owning];
-    const told = await toSession(session, text, fallback, { source, kind, subjects, takeover, spec, on, closing, standing, dropFrom, owns: owning, strict, commit });
+    const told = await toSession(session, text, fallback, { source, kind, subjects, run, takeover, spec, on, closing, standing, dropFrom, owns: owning, strict, commit });
     if (told.ok && toName !== null) await nameOwner(toName, session);
     return { ...told, skipped: null };
   };

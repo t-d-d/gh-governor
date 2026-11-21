@@ -26,11 +26,10 @@
  * session the red before started is on the failure.
  */
 
-import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { strangerReason } from '../scripts/lib/dispatch-router.mjs';
 import { DEFAULT_SESSION_NAME, GITHUB_SOURCE } from './deliveries.mjs';
-import { turnsOn } from './repo-config.mjs';
+import { runOf, turnsOn } from './repo-config.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { STALE_RUNS_PAUSES_MS, baselineIn, freshRuns } from './runs.mjs';
 import { relayOf, startNarrowed, startOf, taskOf } from './trust.mjs';
@@ -294,8 +293,10 @@ const toOwner = async ({ repo, on, writer, prompt }, ctx) => {
 /**
  * A dispatch fire's plan: one session in the fire's repo, unclaimed and
  * holding nothing, unless the fire is a red scheduled run after a red
- * ({@link redBefore}), which plans none. The fire carries its name and
- * model, or the defaults.
+ * ({@link redBefore}), which plans none. The fire carries its name, or
+ * the default. Its model and effort are the repo's config file's for its
+ * section, `summons` or `redScheduledRun` (`runOf`,
+ * dispatch/repo-config.mjs); a fire that names its own model keeps it.
  *
  * @param {import('./webhook/fire.mjs').DispatchFire & { repo?: string }} invocation
  * @param {import('./turn.mjs').TurnContext} ctx
@@ -350,6 +351,7 @@ export const planDispatch = async (invocation, ctx) => {
     return { launches: [], unread: [] };
   }
   if (scheduled !== undefined && await redBefore(scheduled, () => ctx.readerFor(repo), ctx)) return { launches: [], unread: [] };
+  const run = runOf(ctx.configOf(repo), scheduled === undefined ? 'summons' : 'redScheduledRun');
   return {
     launches: [{
       repo,
@@ -362,7 +364,8 @@ export const planDispatch = async (invocation, ctx) => {
         // A red scheduled run's fire carries its facts; the instruction is the repo's.
         prompt: scheduled === undefined ? invocation.prompt : redRunPrompt(invocation.prompt, ctx.prompts),
         sessionName: invocation.sessionName ?? DEFAULT_SESSION_NAME,
-        model: invocation.model ?? DEFAULT_MODEL,
+        ...run,
+        ...(invocation.model === undefined ? {} : { model: invocation.model }),
       },
     }],
     unread: [],
