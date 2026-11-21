@@ -1,6 +1,8 @@
 {
-  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/fda1887811d641f79cea18d4b1fa0f09ef65a238/schema/governor.schema.json",
+  "$schema": "https://raw.githubusercontent.com/t-d-d/gh-governor/d4b3b6ede191345c3aebb13029229fdaf918bd77/schema/governor.schema.json",
   "environment": "my-env",
+  "model": "claude-opus-5-5",
+  "effort": "medium",
   "pickup": { "ready": ["mode: afk"], "claim": "claimed", "claimRemoves": [], "sweepHours": 1 },
   "summons": {},
   "prMessages": {},
