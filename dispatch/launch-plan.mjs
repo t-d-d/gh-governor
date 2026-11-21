@@ -21,6 +21,7 @@ import { reportUnreadable } from './waits.mjs';
 import { GITHUB_SOURCE, outputTail, nameSpecSession } from './deliveries.mjs';
 import { dispatchMarker } from './webhook/fire.mjs';
 import { LAUNCH_FAILED_EVENT, sayLaunchFailed } from './launch-failed.mjs';
+import { liveBuilder, sayHeld } from './held.mjs';
 
 /**
  * @typedef {import('./launcher.mjs').LaunchResult} LaunchResult
@@ -138,7 +139,7 @@ export const routineFault = (deps, repo, periodic, launched) => {
  * and `claims` is cleared.
  *
  * @param {Pick<LaunchablePlan, 'launches' | 'done'>} plan
- * @param {Pick<TurnContext, 'readerFor' | 'configOf' | 'start' | 'claims' | 'now' | 'log' | 'delivery'> & { state: Pick<TurnContext['state'], 'recordFailedLaunch'> }} ctx
+ * @param {Pick<TurnContext, 'readerFor' | 'configOf' | 'start' | 'stopped' | 'claims' | 'now' | 'log' | 'delivery'> & { state: Pick<TurnContext['state'], 'recordFailedLaunch'> }} ctx
  * @param {number} started When the turn started, before its planner ran.
  * @returns {Promise<Array<Dispatched & { planned: PlannedLaunch }>>} The launches that ran, a failed claim's included.
  */
@@ -244,7 +245,9 @@ export const launchPlan = async (plan, ctx, started) => {
    * over someone else's work, or on work that waits on another. So is one
    * whose author the repo's `trust.task` does not list (`authorPicked`),
    * and one whose ready labels no one in the repo's `trust.start` added
-   * last (`judgeReady`). A claim that fails puts the ticket's failed-launch
+   * last (`judgeReady`), and one whose newest dispatch comment names a
+   * session that is still live (`liveBuilder`), which is said once on the
+   * ticket. A claim that fails puts the ticket's failed-launch
    * record, is released, says so on the ticket, and starts nothing.
    *
    * @param {{ repo: string, issue: number }} ticket
@@ -296,6 +299,28 @@ export const launchPlan = async (plan, ctx, started) => {
           await reportUnstarted({ reader: github, unstarted: judged.unstarted, what: 'readied', event: 'dispatch-claim', log });
         } else {
           reportUnlooked({ unlooked: judged.unread, event: 'dispatch-claim', log });
+        }
+        return 'taken';
+      }
+      // The claim label is the only thing that says a builder holds the
+      // ticket, and anyone who can write its labels can take it off. Where
+      // the session its newest dispatch comment names is still live, a
+      // second builder would start beside it (dispatch/held.mjs). A read
+      // that fails starts nothing and never reads as ended.
+      let comments;
+      let holder;
+      try {
+        comments = await github.allComments(issue);
+        holder = await liveBuilder(comments, ctx.stopped(repo));
+      } catch (error) {
+        log('dispatch-claim', { level: 'error', repo, issue, outcome: 'not claimed', error: `its dispatch comment or the session it names could not be read: ${messageOf(error)}`, reason: 'nothing starts for it this turn; a later fire reads again' });
+        return 'failed';
+      }
+      if (holder !== null) {
+        const text = await sayHeld({ reader: github, repo, issue, holder, comments, log });
+        if (text !== null) {
+          const tell = tellerFor(ctx, repo, GITHUB_SOURCE, read);
+          tells.push(() => tell(issue, text));
         }
         return 'taken';
       }

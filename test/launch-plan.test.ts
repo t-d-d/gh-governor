@@ -17,6 +17,8 @@ import { PICKUP_FAILED_HOLD_MS, PICKUP_FAILED_UNRECORDED } from '../dispatch/pic
 import { LAUNCH_FAILED_EVENT, LAUNCH_FAILED_MARKER } from '../dispatch/launch-failed.mjs';
 import { SPEC_OWNER } from '../dispatch/deliveries.mjs';
 import { relinkSession } from '../dispatch/webhook/subscribe.mjs';
+import { HELD_EVENT, HELD_MARKER } from '../dispatch/held.mjs';
+import { dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { factoryFile } from './helpers/factory.ts';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -43,12 +45,15 @@ const context = (over: {
   failWrite?: (write: Write) => boolean,
   failRecord?: boolean,
   comments?: (issue: number) => Array<{ id: number, body: string, created_at: string, ours: boolean }>,
+  stopped?: (session: string) => Promise<{ archived: boolean, branches: string[] } | null>,
 } = {}) => {
   const logged: Logged[] = [];
   /** The failed-launch records put, each with what the ticket's labels had been written by then. */
   const held: Array<{ repo: string, issue: number, until: string, writesBefore: number }> = [];
   const writes: Write[] = [];
   const asked: Array<Record<string, unknown>> = [];
+  /** Each session whose record the claim read, with its repo. */
+  const looked: Array<{ repo: string, session: string }> = [];
   const write = async (w: Write) => {
     writes.push(w);
     if (over.failWrite?.(w) === true) throw new Error(`${w.op} refused`);
@@ -70,6 +75,10 @@ const context = (over: {
       asked.push(a);
       return over.launched?.(a) ?? { outcome: 'dispatched', sessionUrl: URL_OF(Number(a.issue ?? 0)), status: 0, output: '' };
     },
+    stopped: (repo: string) => async (session: string) => {
+      looked.push({ repo, session });
+      return over.stopped === undefined ? { archived: true, branches: [] } : over.stopped(session);
+    },
     claims: new Set<string>(),
     now: () => NOW,
     log: (event: string, context: Record<string, unknown> = {}) => { logged.push({ event, ...context }); },
@@ -80,7 +89,7 @@ const context = (over: {
       },
     },
   };
-  return { ctx: ctx as unknown as Parameters<typeof launchPlan>[1], logged, writes, asked, held };
+  return { ctx: ctx as unknown as Parameters<typeof launchPlan>[1], logged, writes, asked, held, looked };
 };
 
 /** A planned launch of a picked-up ticket. */
@@ -371,7 +380,10 @@ describe('a ticket whose launch or claim failed is told so on its thread', () =>
   });
 
   test('a thread that cannot be read posts no comment, is logged at error, and the release still runs', async () => {
-    const { ctx, writes, logged } = context({ launched: () => FAILED, comments: () => { throw new Error('502'); } });
+    // The claim reads the thread first, for a live builder; the failure
+    // comment's own read is the second.
+    let reads = 0;
+    const { ctx, writes, logged } = context({ launched: () => FAILED, comments: () => { reads += 1; if (reads > 1) throw new Error('502'); return []; } });
     await launchPlan(plan([ticket(9)]), ctx, NOW);
     assert.deepEqual(said(writes, 9), []);
     assert.ok(writes.some((w) => w.issue === 9 && w.op === 'remove' && w.label === CLAIM), 'released');
@@ -395,6 +407,144 @@ describe('a ticket whose launch or claim failed is told so on its thread', () =>
     assert.deepEqual(sent.map((s) => s.session), [owner]);
     assert.match(sent[0]!.text, /could not start a session/);
     assert.ok(!sent[0]!.text.includes(LAUNCH_FAILED_MARKER), 'the marker is governor\'s');
+  });
+});
+
+// A claim label anyone can take off is the only thing that says a builder
+// holds a ticket. The claim's second read also reads whether the session the
+// ticket's newest dispatch comment names is still live, so a ready label put
+// back under a running builder starts no second one.
+describe('a ticket whose dispatched session is still live is not claimed', () => {
+  const LIVE = 'https://claude.ai/code/session_01LIVEBUILDER';
+  const dispatched = (sessionUrl: string | null, ours = true, at = '2026-09-25T11:59:48.000Z') =>
+    ({ id: 1, body: dispatchMarker({ at, sessionUrl }), created_at: at, ours });
+  const heldSaid = (writes: Write[], issue: number) => writes.filter((w) => w.op === 'comment' && w.issue === issue && w.text!.startsWith(HELD_MARKER));
+  const live = async () => ({ archived: false, branches: [] });
+
+  test('a ready, unclaimed ticket whose newest dispatch names a live session is not claimed and starts nothing', async () => {
+    const { ctx, writes, asked, logged, looked } = context({ comments: () => [dispatched(LIVE)], stopped: live });
+    const ran = await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.deepEqual(asked, []);
+    assert.deepEqual(ran, []);
+    assert.ok(!writes.some((w) => w.op === 'add' || w.op === 'remove' || w.op === 'ensure'), JSON.stringify(writes));
+    assert.deepEqual(looked, [{ repo: REPO, session: 'session_01LIVEBUILDER' }]);
+    const line = logged.find((l) => l.event === HELD_EVENT && l.issue === 12);
+    assert.equal(line?.outcome, 'held', JSON.stringify(logged));
+    assert.equal(line?.session, 'session_01LIVEBUILDER');
+    assert.equal(ctx.claims.size, 0);
+    assert.ok(!logged.some((l) => l.event === CLAIM_STRANDED));
+  });
+
+  test('it gets one comment naming the session and what starts the ticket again', async () => {
+    const { ctx, writes } = context({ comments: () => [dispatched(LIVE)], stopped: live });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    const posted = heldSaid(writes, 12);
+    assert.equal(posted.length, 1, JSON.stringify(writes));
+    const text = posted[0]!.text!;
+    assert.ok(text.startsWith(`${HELD_MARKER}session_01LIVEBUILDER -->`));
+    assert.ok(text.includes(`](${LIVE})`), 'the session is a link');
+    assert.match(text, /archived or signs off/);
+  });
+
+  test('a later fire that finds it held again posts no second comment', async () => {
+    const earlier = { id: 2, body: `${HELD_MARKER}session_01LIVEBUILDER -->\nPickup did not start this ticket.`, created_at: '2026-09-25T12:00:00Z', ours: true };
+    const { ctx, writes, asked, logged } = context({ comments: () => [dispatched(LIVE), earlier], stopped: live });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.deepEqual(asked, []);
+    assert.deepEqual(heldSaid(writes, 12), []);
+    assert.ok(logged.some((l) => l.event === HELD_EVENT && l.issue === 12 && l.outcome === 'held'));
+  });
+
+  test('a held marker in someone else\'s comment is text: the comment is still posted', async () => {
+    const copied = { id: 2, body: `${HELD_MARKER}session_01LIVEBUILDER -->`, created_at: '2026-09-25T12:00:00Z', ours: false };
+    const { ctx, writes } = context({ comments: () => [dispatched(LIVE), copied], stopped: live });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.equal(heldSaid(writes, 12).length, 1);
+  });
+
+  test('the ticket\'s spec owner is told the comment', async () => {
+    const owner = 'https://claude.ai/code/session_01SPECOWNER';
+    const { ctx } = context({ comments: () => [dispatched(LIVE)], stopped: live });
+    const reader = ctx.readerFor;
+    const sent: Array<{ session: string, text: string }> = [];
+    Object.assign(ctx, {
+      readerFor: async (repo: string) => {
+        const r = await reader(repo);
+        return { ...r, ticket: async (n: number) => ({ ...(await r.ticket(n)), body: `The spec.\n\n${owner}` }) };
+      },
+      delivery: () => ({ deliver: async ({ session }: { session: string }, text: string) => { sent.push({ session, text }); return { ok: true, refused: false, error: null }; } }),
+    });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.deepEqual(sent.map((s) => s.session), [owner]);
+    assert.ok(sent[0]!.text.includes(LIVE));
+    assert.ok(!sent[0]!.text.includes(HELD_MARKER), 'the marker is governor\'s');
+  });
+
+  test('once that session is archived, the ticket is claimed and launched', async () => {
+    const { ctx, asked, writes } = context({ comments: () => [dispatched(LIVE)], stopped: async () => ({ archived: true, branches: [] }) });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.deepEqual(asked.map((a) => a.issue), [12]);
+    assert.ok(writes.some((w) => w.op === 'add' && w.labels?.[0] === CLAIM));
+    assert.deepEqual(heldSaid(writes, 12), []);
+  });
+
+  test('once the sessions API no longer has that session, the ticket is claimed and launched', async () => {
+    const { ctx, asked } = context({ comments: () => [dispatched(LIVE)], stopped: async () => null });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.deepEqual(asked.map((a) => a.issue), [12]);
+  });
+
+  test('a session read that fails starts nothing, is logged at error, and never reads as ended', async () => {
+    const { ctx, asked, writes, logged } = context({ comments: (n) => (n === 12 ? [dispatched(LIVE)] : []), stopped: async () => { throw new Error('sessions API 503'); } });
+    const ran = await launchPlan(plan([ticket(12), ticket(13, OTHER)]), ctx, NOW);
+    assert.deepEqual(asked.map((a) => a.issue), [13], 'the other repo\'s ticket still starts');
+    assert.ok(!writes.some((w) => w.issue === 12), JSON.stringify(writes));
+    const line = logged.find((l) => l.event === 'dispatch-claim' && l.issue === 12);
+    assert.equal(line?.level, 'error', JSON.stringify(logged));
+    assert.equal(line?.outcome, 'not claimed');
+    assert.match(String(line?.error), /sessions API 503/);
+    // Reported as failed, so the sweep is not recorded and the next fire reads again.
+    assert.deepEqual(ran.map((r) => [r.issue, r.outcome]), [[12, 'failed'], [13, 'dispatched']]);
+  });
+
+  test('a later fire reads the session again', async () => {
+    let calls = 0;
+    const { ctx, asked } = context({ comments: () => [dispatched(LIVE)], stopped: async () => { calls += 1; if (calls === 1) throw new Error('503'); return { archived: true, branches: [] }; } });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.equal(asked.length, 0);
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.deepEqual(asked.map((a) => a.issue), [12]);
+  });
+
+  test('a dispatch comment that names no session holds nothing, and reads no session', async () => {
+    const { ctx, asked, looked } = context({ comments: () => [dispatched(null)], stopped: live });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.deepEqual(asked.map((a) => a.issue), [12]);
+    assert.deepEqual(looked, []);
+  });
+
+  test('a dispatch comment governor\'s App did not post holds nothing, and reads no session', async () => {
+    const { ctx, asked, looked } = context({ comments: () => [dispatched(LIVE, false)], stopped: live });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.deepEqual(asked.map((a) => a.issue), [12]);
+    assert.deepEqual(looked, []);
+  });
+
+  test('only the newest dispatch counts: an older live session under a newer archived one holds nothing', async () => {
+    const older = dispatched(LIVE, true, '2026-09-24T10:00:00.000Z');
+    const newer = { ...dispatched('https://claude.ai/code/session_01NEWER', true, '2026-09-25T10:00:00.000Z'), id: 2 };
+    const { ctx, asked, looked } = context({ comments: () => [older, newer], stopped: async (s) => ({ archived: s !== 'session_01LIVEBUILDER', branches: [] }) });
+    await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.deepEqual(looked.map((l) => l.session), ['session_01NEWER']);
+    assert.deepEqual(asked.map((a) => a.issue), [12]);
+  });
+
+  test('a thread that cannot be read starts nothing and is logged', async () => {
+    const { ctx, asked, logged } = context({ comments: () => { throw new Error('502'); } });
+    const ran = await launchPlan(plan([ticket(12)]), ctx, NOW);
+    assert.deepEqual(asked, []);
+    assert.deepEqual(ran.map((r) => [r.issue, r.outcome]), [[12, 'failed']]);
+    assert.ok(logged.some((l) => l.event === 'dispatch-claim' && l.issue === 12 && l.outcome === 'not claimed'), JSON.stringify(logged));
   });
 });
 
