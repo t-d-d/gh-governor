@@ -14,7 +14,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
-import { BUILT_IN_RUN, CONFIG_PATH, GENERIC_SWITCHES, SECTIONS, namesEnvironment, readConfig, runOf, turnsOn } from '../dispatch/repo-config.mjs';
+import { BUILT_IN_RUN, CONFIG_PATH, GENERIC_SWITCHES, RUN_SECTIONS, SECTIONS, namesEnvironment, readConfig, runOf, turnsOn } from '../dispatch/repo-config.mjs';
 import { checkConfigOf } from '../checker/heartbeat-check.mjs';
 import { globMatches } from '../dispatch/checklist.mjs';
 
@@ -149,7 +149,12 @@ describe('the starter kit\'s config files write the default model and effort out
       assert.equal(file.effort, 'medium');
       const got = readConfig(read(path));
       assert.ok(got.ok, JSON.stringify(got));
-      assert.deepEqual(runOf(got.config, 'pickup'), { model: BUILT_IN_RUN.model, effort: 'medium' }, 'no section sets its own');
+      // No section, periodic, hook or issue review sets its own: each start takes the file's.
+      const want = { model: BUILT_IN_RUN.model, effort: 'medium' };
+      for (const name of RUN_SECTIONS) assert.deepEqual(runOf(got.config, name), want, name);
+      for (const periodic of got.config.periodics) assert.deepEqual(runOf(got.config, 'periodics', periodic), want, periodic.name);
+      for (const hook of got.config.hooks) assert.deepEqual(runOf(got.config, 'hooks', hook), want, hook.name);
+      for (const review of got.config.issueReviews?.reviews ?? []) assert.deepEqual(runOf(got.config, 'issueReviews', review), want, review.name);
     });
   }
 });
