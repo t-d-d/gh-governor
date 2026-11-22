@@ -809,6 +809,27 @@ describe('run: the owner named before the body is read', () => {
     assert.ok(h.logged.some((l) => l.event === 'dispatch-review-owner' && l.level === 'warn' && /503/.test(String(l.error))), JSON.stringify(h.logged));
   });
 
+  test('a PR already reviewed at its head and body is skipped, and its body is not written', async () => {
+    const h = unnamed({ verdicts: { 767: itemAt(HEAD, { bodySha: sha256(UNNAMED) }) } });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['skipped']);
+    assert.match(String(result.reviews[0]!.reason), /already reviewed/);
+    assert.deepEqual(h.bodyWrites, []);
+    assert.equal(h.judged.length, 0);
+  });
+
+  test('a PR the turn ran out of time for gets its check, and its body is not written', async () => {
+    let t = NOW;
+    const h = unnamed({
+      open: [{ number: 767, draft: false }, { number: 780, draft: false }],
+      pulls: { 767: pullRow({ body: UNNAMED }), 780: pullRow({ number: 780, body: UNNAMED }) },
+      now: () => { t += 4 * 60 * 1000; return t; },
+    });
+    const result = await review({ kind: 'review' }, h);
+    assert.deepEqual(result.reviews.map((r) => [r.pr, r.outcome]), [[767, 'commented'], [780, 'out-of-time']]);
+    assert.deepEqual(h.bodyWrites.map((w) => w.pr), [767]);
+  });
+
   test('a body that names a session already is not written', async () => {
     const h = harness({ answers: [COSTS], rows: onBranch });
     await review({ kind: 'review', pr: 767, headSha: HEAD }, h);

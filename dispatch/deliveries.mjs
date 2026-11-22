@@ -537,8 +537,9 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   owner, by `ownerOf`, is a session found on its head branch that the
  *   body does not name, that session's link written into the body before
  *   anything is sent, as a delivery to it would write it once it took a
- *   message: the body as written, or null where nothing was written. A
- *   write GitHub refuses is logged and is null; a lookup that fails throws.
+ *   message: the body as written, or null where nothing was written. The
+ *   owner's lookup that fails throws; past it, a read of the body to write
+ *   or a write GitHub refuses is logged and is null.
  *
  * @typedef {Awaited<ReturnType<DeliveryReader['pull']>>} PullRow
  */
