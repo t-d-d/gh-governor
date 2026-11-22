@@ -526,13 +526,19 @@ export const refusedAsArchived = (sent) => refusedBy(readSend(sent));
  *   deliver: (to: Recipient, text: string, options: DeliverOptions) => Promise<Delivery>,
  *   onBranch: (branch: string) => Promise<string | null>,
  *   ownerOf: (pr: number, read?: PullRow) => Promise<{ session: string | null, branch: string, linked: boolean }>,
+ *   nameFromBranch: (pr: number) => Promise<string | null>,
  * }} Deliveries
  *   `onBranch`: the most recently updated live session holding a branch,
  *   local or cloud. `ownerOf`: PR `pr`'s owner as its body and branch say
  *   now, sending nothing: the session the body links (`linked`), whose
  *   liveness only a send learns, else the session on its head branch, or
  *   null. `read`: the PR as the caller just read it, so it is not read
- *   again. A read that fails throws.
+ *   again. A read that fails throws. `nameFromBranch`: where PR `pr`'s
+ *   owner, by `ownerOf`, is a session found on its head branch that the
+ *   body does not name, that session's link written into the body before
+ *   anything is sent, as a delivery to it would write it once it took a
+ *   message: the body as written, or null where nothing was written. A
+ *   write GitHub refuses is logged and is null; a lookup that fails throws.
  *
  * @typedef {Awaited<ReturnType<DeliveryReader['pull']>>} PullRow
  */
@@ -713,11 +719,13 @@ export const deliveries = (deps) => {
    *
    * @param {number} pr
    * @param {string} session
+   * @returns {Promise<string | null>} The body as written, or null where nothing was.
    */
   const nameOwner = async (pr, session) => {
     /** The session the body named before, which the branch's session replaces. @type {string | null} */
     let before = null;
     let body = '';
+    let after = '';
     let open = false;
     try {
       const github = await deps.reader();
@@ -725,17 +733,24 @@ export const deliveries = (deps) => {
       body = row.body;
       open = row.open;
       before = sessionNamedIn(relayedBody(row, deps.relay));
-      const after = relinkSession(body, session);
-      if (after === body) return;
+      after = relinkSession(body, session);
+      if (after === body) return null;
       await github.updatePull(pr, { body: after });
       deps.log('dispatch-relink', { level: 'info', pr, sessionUrl: session, outcome: 'the session found on the head branch is named in the body as its owner' });
     } catch (error) {
       deps.log('dispatch-relink', { level: 'warn', pr, sessionUrl: session, error: messageOf(error), reason: 'the body does not name the session on its head branch, so the next event looks it up again' });
-      return;
+      return null;
     }
     // An open PR whose body named another session changed hands: its
     // tickets have a new builder. A merged or closed one builds nothing more.
     if (open && before !== null && !sameSession(before, session)) await announce(pr, body, session);
+    return after;
+  };
+
+  /** @type {Deliveries['nameFromBranch']} */
+  const nameFromBranch = async (pr) => {
+    const owner = await ownerOf(pr);
+    return owner.linked || owner.session === null ? null : nameOwner(pr, owner.session);
   };
 
   /**
@@ -1139,5 +1154,5 @@ export const deliveries = (deps) => {
     return { ...told, skipped: null };
   };
 
-  return { deliver, onBranch, ownerOf };
+  return { deliver, onBranch, ownerOf, nameFromBranch };
 };

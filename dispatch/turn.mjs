@@ -2124,6 +2124,21 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
         await deps.enqueue({ fire: { ...message, repo: fireRepo() }, reason: `the PR review commented on ${fireRepo()}#${n}: its message to the PR's owner` }, ownerMessageId(fireRepo(), n, comment, started));
         return "queued for the PR's owner";
       };
+      // The owner's message writes the link of a session found on the head
+      // branch into a body that names none (dispatch/deliveries.mjs). The
+      // review writes it first and reads the body that results, so that
+      // write's edit fire finds the verdict at the same head and body. With
+      // prMessages off nobody is told, so nothing is written. A lookup that
+      // fails leaves the body as it stands: the message's turn looks again.
+      /** @param {number} n */
+      const name = async (n) => {
+        try {
+          return await delivery().nameFromBranch(n);
+        } catch (error) {
+          deps.log('dispatch-review-owner', { level: 'warn', pr: n, error: messageOf(error), reason: 'the body is reviewed as it stands, and the owner\'s message looks the session up again' });
+          return null;
+        }
+      };
       for (const [i, target] of targets.entries()) {
         // Past the window no review starts: each PR left gets a `failure`
         // check, through the review's usual skips, so a ruleset requiring
@@ -2135,7 +2150,7 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
           break;
         }
         const outOfTime = spentMs > REVIEW_WINDOW_MS;
-        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, verdicts: { read: (n) => deps.state.verdict(fireRepo(), n), record: (n, read, verdict) => deps.state.recordVerdict(fireRepo(), n, read, verdict) }, trusted, outOfTime, tell, ...(workflows.ci === undefined || !review.waitForCi ? {} : { ci: workflows.ci }) });
+        const reviewed = await reviewPull({ ...target, reader: github, judge, sleep: deps.sleep, review, labels, base, started: deps.state.startedSession, verdicts: { read: (n) => deps.state.verdict(fireRepo(), n), record: (n, read, verdict) => deps.state.recordVerdict(fireRepo(), n, read, verdict) }, trusted, outOfTime, tell, ...(turnsOn(config, 'prMessages') ? { name } : {}), ...(workflows.ci === undefined || !review.waitForCi ? {} : { ci: workflows.ci }) });
         const usage = spent.get(reviewed.pr);
         // An owner's message the lane refused warns while a later review
         // turn will try it again, and is an error on its last try, which
