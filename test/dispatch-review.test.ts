@@ -21,7 +21,7 @@ import { bodyDigest, reviewMarker } from '../dispatch/pr-body.mjs';
 import { readdirSync, readFileSync } from 'node:fs';
 import { asksOwner, commentKey, commentText, mergeConflictText } from '../dispatch/webhook/review-comment.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
-import { subscribeLine } from '../dispatch/webhook/subscribe.mjs';
+import { sessionNamedIn, subscribeLine } from '../dispatch/webhook/subscribe.mjs';
 import { FIRE_BUDGET, fireWeight } from '../dispatch/webhook/fire.mjs';
 import { ownerMessage } from '../dispatch/review.mjs';
 import { APP_ID, BODY, DEPENDABOT_COMMIT, FILES, HEAD, IAM, MERGE_BASE, PASS, REPO, SKILL, cliOutput, dependabotRow, pullRow } from './helpers/dispatch-review-fixtures.ts';
@@ -148,6 +148,10 @@ const harness = (over: {
    * undefined queues it.
    */
   enqueue?: string | null | Array<string | undefined>,
+  /** The sessions list's rows, none by default: no session holds any branch. A string is the error the list fails with. */
+  rows?: unknown[] | string,
+  /** The PR body write: GitHub's refusal, for one that throws. */
+  updatePull?: () => Promise<void>,
 } = {}) => {
   const checkRuns: Array<{ name: string, sha: string, state: string, title: string, summary: string }> = [];
   /** How many enqueues the turn has made, to answer a list of refusals in order. */
@@ -173,6 +177,10 @@ const harness = (over: {
   const threadReads: number[] = [];
   const verdictWrites: Array<{ repo: string, pr: number, read: Verdict | null, verdict: Omit<Verdict, 'at'> }> = [];
   const ciReads: Array<[string, string]> = [];
+  /** Each PR body governor wrote, in order. */
+  const bodyWrites: Array<{ pr: number, body: string }> = [];
+  /** Each PR's body as the last write left it, over its row's. */
+  const bodies = new Map<number, string>();
   const pulls = over.pulls ?? { 767: pullRow() };
   const answers = over.answers ?? [PASS];
   let judgedCount = 0;
@@ -204,10 +212,12 @@ const harness = (over: {
         reads.push(n);
         const rows = pulls[n];
         if (rows === undefined) throw Object.assign(new Error(`GET /pulls/${n} failed: 404`), { status: 404 });
-        if (!Array.isArray(rows)) return rows;
+        const written = bodies.get(n);
+        if (!Array.isArray(rows)) return written === undefined ? rows : { ...rows, body: written };
         // Each read the next row, the last one for good: GitHub computing mergeable.
         const seen = reads.filter((r) => r === n).length;
-        return rows[Math.min(seen - 1, rows.length - 1)]!;
+        const row = rows[Math.min(seen - 1, rows.length - 1)]!;
+        return written === undefined ? row : { ...row, body: written };
       },
       pullFiles: async () => over.files ?? FILES,
       pullCommits: async () => over.commits ?? [DEPENDABOT_COMMIT],
@@ -232,8 +242,16 @@ const harness = (over: {
       // The send path's reads: the standing line, a fallback's marker and relink.
       openNaming: async () => [],
       comments: async () => [],
-      pull: async (n: number) => ({ number: n, body: BODY, head: 'claude/x', defaultBranch: 'main', open: true, author: 'tdickinson', association: 'OWNER', bot: false }),
-      updatePull: async () => {},
+      pull: async (n: number) => {
+        const rows = pulls[n];
+        const row = Array.isArray(rows) ? rows.at(-1) : rows;
+        return { number: n, body: bodies.get(n) ?? row?.body ?? BODY, head: 'claude/x', defaultBranch: 'main', open: true, author: 'tdickinson', association: 'OWNER', bot: false };
+      },
+      updatePull: async (n: number, { body }: { body: string }) => {
+        if (over.updatePull) await over.updatePull();
+        bodyWrites.push({ pr: n, body });
+        bodies.set(n, body);
+      },
       merge: async (pr: number, { sha }: { sha: string }) => {
         merges.push({ pr, sha });
         writes.push('merge');
@@ -241,6 +259,13 @@ const harness = (over: {
       },
     }; },
     heartbeat: async () => {},
+    sessions: {
+      list: async () => {
+        if (typeof over.rows === 'string') throw new Error(over.rows);
+        return { data: over.rows ?? [] };
+      },
+      get: async () => null,
+    },
     enqueue: over.enqueue === null ? undefined : async (message: never, dedupId: string) => {
       const refusal = Array.isArray(over.enqueue) ? over.enqueue[enqueues] : over.enqueue;
       enqueues += 1;
@@ -284,7 +309,7 @@ const harness = (over: {
       },
     },
   };
-  return { deps, sessionsRead, threadReads, verdictWrites, ciReads, checkRuns, writes, comments, commentEdits, merges, judged, transcripts, messages, launches, queued, logged, reads, requiredReads, baseReads, fileReads, readerApps };
+  return { deps, bodyWrites, bodies, sessionsRead, threadReads, verdictWrites, ciReads, checkRuns, writes, comments, commentEdits, merges, judged, transcripts, messages, launches, queued, logged, reads, requiredReads, baseReads, fileReads, readerApps };
 };
 
 type Review = { pr: number, outcome: string, reason?: string | null, error?: string | null, test?: number };
@@ -692,6 +717,131 @@ describe('run — what reaches the owner session', () => {
     assert.equal(refused.messages.length, 1);
     assert.deepEqual(refused.launches, []);
     assert.equal((told as { archived?: boolean }).archived, true, 'a gone owner, which the task reads as no failure of its own');
+  });
+});
+
+/**
+ * A PR opened naming no session, whose head branch a live session holds:
+ * the review turn writes that session's link into the body before it reads
+ * the body, so the body it reviews is the one governor leaves. The body
+ * edit's own review fire then finds the verdict at the same head and body,
+ * and the owner's message finds the link, so neither writes or asks again.
+ */
+describe('run: the owner named before the body is read', () => {
+  const UNNAMED = BODY.replace(/\n\nhttps:\/\/claude\.ai\/code\/session_01OWNER$/, '');
+  const BRANCH_SESSION = 'https://claude.ai/code/session_01BRANCH';
+  const onBranch = [{ id: 'cse_01BRANCH', session_status: 'SESSION_STATUS_IDLE', environment_kind: 'remote', updated_at: new Date(NOW - 60_000).toISOString(), external_metadata: { current_branches: { '': 'claude/x' } } }];
+  const unnamed = (over: Parameters<typeof harness>[0] = {}) => harness({ pulls: { 767: pullRow({ body: UNNAMED }) }, answers: [COSTS], rows: onBranch, ...over });
+
+  test('one model run, one comment and one message, and the body ends naming the session on the head branch', async () => {
+    const h = unnamed();
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['commented']);
+    assert.equal(h.bodyWrites.length, 1);
+    const written = h.bodyWrites[0]!.body;
+    assert.equal(sessionNamedIn(written), BRANCH_SESSION);
+    assert.ok(written.trimEnd().endsWith(BRANCH_SESSION), written);
+    assert.equal(h.judged.length, 1);
+    assert.ok(h.judged[0]!.prompt.includes(BRANCH_SESSION), 'the model reads the body governor left');
+    assert.equal(h.comments.length, 1);
+    assert.ok(h.comments[0]!.body.includes(` ${HEAD} ${sha256(written)} `), 'the marker names the body as governor left it');
+    assert.equal(h.queued.length, 1);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-relink' && l.level === 'info' && l.pr === 767), JSON.stringify(h.logged));
+  });
+
+  test('the review fire the link write queues runs no model and posts nothing', async () => {
+    const h = unnamed();
+    await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    const again = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(again.reviews.map((r) => r.outcome), ['skipped']);
+    assert.match(String(again.reviews[0]!.reason), /already reviewed/);
+    assert.equal(h.judged.length, 1);
+    assert.equal(h.comments.length, 1);
+    assert.equal(h.commentEdits.length, 0);
+    assert.equal(h.queued.length, 1);
+    assert.equal(h.bodyWrites.length, 1, 'the body is written once');
+  });
+
+  test('the owner\'s message finds the link, goes to that session, and writes the body no more', async () => {
+    const h = unnamed();
+    await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    const told = unnamed({ pulls: { 767: pullRow({ body: h.bodyWrites[0]!.body }) } });
+    await run(h.queued[0]!.message.fire, told.deps as never);
+    assert.equal(told.messages.length, 1);
+    assert.match((told.messages[0] as { session: string }).session, /session_01BRANCH/);
+    assert.deepEqual(told.bodyWrites, []);
+  });
+
+  test('a body edit by anyone else after it is reviewed again', async () => {
+    const h = unnamed();
+    await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    h.bodies.set(767, h.bodyWrites[0]!.body.replace('Adds the review fire.', 'Adds the review fire, and says what it costs.'));
+    const again = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(again.reviews.map((r) => r.outcome), ['commented']);
+    assert.equal(h.judged.length, 2);
+    assert.equal(h.bodyWrites.length, 1, 'the body names its owner already');
+  });
+
+  test('a PR whose head branch no live session holds is reviewed as now, and its body is not written', async () => {
+    const h = unnamed({ rows: [] });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['commented']);
+    assert.deepEqual(h.bodyWrites, []);
+    assert.equal(h.judged.length, 1);
+    assert.ok(h.comments[0]!.body.includes(` ${HEAD} ${sha256(UNNAMED)} `));
+  });
+
+  test('a link write GitHub refuses leaves the review to run on the body as it stands, and is logged', async () => {
+    const h = unnamed({ updatePull: async () => { throw Object.assign(new Error('PATCH /pulls/767 failed: 422'), { status: 422 }); } });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['commented']);
+    assert.equal(h.judged.length, 1);
+    assert.ok(h.comments[0]!.body.includes(` ${HEAD} ${sha256(UNNAMED)} `));
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-relink' && l.level === 'warn' && /422/.test(String(l.error))), JSON.stringify(h.logged));
+  });
+
+  test('a sessions list that cannot be read leaves the review to run on the body as it stands, and is logged', async () => {
+    const h = unnamed({ rows: 'sessions list failed: 503' });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['commented']);
+    assert.deepEqual(h.bodyWrites, []);
+    assert.equal(h.judged.length, 1);
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-review-owner' && l.level === 'warn' && /503/.test(String(l.error))), JSON.stringify(h.logged));
+  });
+
+  test('a PR already reviewed at its head and body is skipped, and its body is not written', async () => {
+    const h = unnamed({ verdicts: { 767: itemAt(HEAD, { bodySha: sha256(UNNAMED) }) } });
+    const result = await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(result.reviews.map((r) => r.outcome), ['skipped']);
+    assert.match(String(result.reviews[0]!.reason), /already reviewed/);
+    assert.deepEqual(h.bodyWrites, []);
+    assert.equal(h.judged.length, 0);
+  });
+
+  test('a PR the turn ran out of time for gets its check, and its body is not written', async () => {
+    let t = NOW;
+    const h = unnamed({
+      open: [{ number: 767, draft: false }, { number: 780, draft: false }],
+      pulls: { 767: pullRow({ body: UNNAMED }), 780: pullRow({ number: 780, body: UNNAMED }) },
+      now: () => { t += 4 * 60 * 1000; return t; },
+    });
+    const result = await review({ kind: 'review' }, h);
+    assert.deepEqual(result.reviews.map((r) => [r.pr, r.outcome]), [[767, 'commented'], [780, 'out-of-time']]);
+    assert.deepEqual(h.bodyWrites.map((w) => w.pr), [767]);
+  });
+
+  test('a body that names a session already is not written', async () => {
+    const h = harness({ answers: [COSTS], rows: onBranch });
+    await review({ kind: 'review', pr: 767, headSha: HEAD }, h);
+    assert.deepEqual(h.bodyWrites, []);
+    assert.equal(h.judged.length, 1);
+  });
+
+  test('with prMessages off, no owner is told, so the body is not written either', async () => {
+    const h = tagalong({ pulls: { 767: pullRow({ body: UNNAMED }) }, answers: [COSTS], rows: onBranch }, {}, { prReview: true, prMessages: false });
+    await reviewTagalong(h);
+    assert.deepEqual(h.bodyWrites, []);
+    assert.equal(h.judged.length, 1);
   });
 });
 

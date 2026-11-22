@@ -443,6 +443,7 @@ const bumpAnswer = async (reader, pull, list, red, redCi) => {
  *   outOfTime?: boolean,
  *   byCommit?: boolean,
  *   tell?: Tell,
+ *   name?: (n: number) => Promise<string | null>,
  * }} args `review.checklist`: the checklist the model reads, part of the digest a pass is reused by. `started`: whether governor started a session, from its state table. `verdicts`: the PR's last verdict, in the same table. `trusted`: the repo's `trust.review`, whose authors' PRs it reads. `ci`: the repo's `workflows.ci`, whose run at the head test 8 reads, left out where `review.waitForCi` is false.
  *   `outOfTime`: the turn ran out of time for this PR. It goes through the
  *   usual skips, then posts a `failure` check in place of reading the facts
@@ -451,10 +452,16 @@ const bumpAnswer = async (reader, pull, list, red, redCi) => {
  *   out got its `neutral` check at that head from the push's own fire,
  *   so it is skipped without another. `tell`: the turn's hand-off of the
  *   owner's message of each new comment ({@link ownerMessage}); without
- *   it, nobody is told.
+ *   it, nobody is told. `name`: the owner's link written into a body that
+ *   names no session, where a live session holds the head branch, before
+ *   the body is read: the body as written, or null where nothing was. It
+ *   is not asked where the verdict stands at this head and body, nor for a
+ *   PR the turn ran out of time for. The review then reads the body its
+ *   owner's message leaves, so the edit's own fire finds the verdict at the
+ *   same head and body, and skips.
  * @returns {Promise<Reviewed>}
  */
-export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, verdicts, trusted, ci, outOfTime = false, byCommit = false, tell }) => {
+export const reviewPull = async ({ number, headSha, reader, judge, sleep, review, labels, base, started, verdicts, trusted, ci, outOfTime = false, byCommit = false, tell, name }) => {
   /** @type {import('./checklist.mjs').Rules} */
   const rules = { humanOnly: review.humanOnly, tickets: review.tickets, quote: review.quote, decides: review.decides, labels };
   /** @type {Reviewed} */
@@ -514,7 +521,7 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
     }
   };
   try {
-    const pull = await reader.pullRequest(number);
+    let pull = await reader.pullRequest(number);
     reviewed.headSha = pull.headSha;
     if (pull.state !== 'open') return skip(`#${number} is ${pull.state}`);
     if (pull.draft) return skip(`#${number} is a draft`);
@@ -528,10 +535,20 @@ export const reviewPull = async ({ number, headSha, reader, judge, sleep, review
       return skip(`#${number} is by a ${kind} author, whom the repo's trust.review does not let in: a person merges it`);
     }
     if (headSha !== undefined && headSha !== pull.headSha) return skip(`#${number} has moved past ${headSha.slice(0, 12)} to ${pull.headSha.slice(0, 12)}: that push's fire reviews it`);
-    const bodySha = bodyDigest(pull.body);
     // The verdict comes from the state table, never from the comment: a
     // person with write access can edit governor's comment.
     let verdict = await verdicts.read(number);
+    // The owner's link goes in before the body is read: the owner's message
+    // would write it once delivered, and a body read before that write would
+    // be reviewed again at the same head when the write's edit fires. A PR
+    // whose verdict stands at this head and body, or one the turn ran out of
+    // time for, reads no body and tells nobody, so nothing is written: the
+    // write would change the body and run the model again on the next fire.
+    // Dependabot's branch holds no session.
+    const settled = verdict !== null && verdict.headSha === pull.headSha && verdict.bodySha === bodyDigest(pull.body) && !verdict.again;
+    const named = bump || outOfTime || settled || name === undefined ? null : await name(number);
+    if (named !== null) pull = { ...pull, body: named };
+    const bodySha = bodyDigest(pull.body);
     // A red required check's or CI run's fail is read again: a re-run can turn it green on the same head.
     const sameHead = verdict !== null && verdict.headSha === pull.headSha && verdict.bodySha === bodySha;
     // The owner's message an earlier review at this head and body could
