@@ -29,7 +29,7 @@
  * repository) and, on macOS, `security`. Node built-ins only, so it runs from
  * a bare checkout, CloudShell included.
  *
- *   node scripts/mint-claude-login.mjs --profile admin       # Secrets Manager, governor/claude-login
+ *   node scripts/mint-claude-login.mjs --profile <p>         # Secrets Manager, governor/claude-login
  *   node scripts/mint-claude-login.mjs --to github --repo <owner/name>   # that repo's CLAUDE_LOGIN_JSON secret
  *   [--secret <id or name>] [--profile <aws profile>]
  *
@@ -123,8 +123,8 @@ export const parseArgs = (argv) => {
 
 /**
  * An aws CLI argument list under the named profile, when one was given.
- * `--profile admin` is what the operator types elsewhere; AWS_PROFILE in the
- * environment works as well and needs nothing here.
+ * The profile is the operator's own, under whatever name they gave it;
+ * AWS_PROFILE in the environment works as well and needs nothing here.
  *
  * @param {string[]} argv
  * @param {string | undefined} profile
@@ -177,8 +177,8 @@ export const mintClaudeLogin = async ({ repo, secret, to, profile }, deps) => {
   if (to === 'secretsmanager') {
     // The put is the last step, after an interactive sign-in. An identity
     // that cannot reach the secret is found out here, before the browser
-    // opens: the operator's everyday CLI user is not the one that may write
-    // it, the admin profile is. DescribeSecret is the cheapest read that
+    // opens: the operator's everyday CLI user is often not one that may
+    // write it. DescribeSecret is the cheapest read that
     // names the secret; an identity that can describe but not write is still
     // caught by the put, after the sign-in.
     //
@@ -186,7 +186,7 @@ export const mintClaudeLogin = async ({ repo, secret, to, profile }, deps) => {
     // profile behind the flag when one was.
     const remedy =
       profile === undefined
-        ? `re-run with --profile admin, or as an identity that may write ${secret}`
+        ? `re-run as an identity that may write ${secret}, chosen with --profile <p> or AWS_PROFILE`
         : `re-run once --profile ${profile} is an identity that may write ${secret}`;
     const who = deps.whoAmI();
     if (who.status !== 0) {
