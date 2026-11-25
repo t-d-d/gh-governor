@@ -308,10 +308,15 @@ describe('mintClaudeLogin — to Secrets Manager', () => {
     const order = calls.map((c) => c.name);
     assert.ok(order.indexOf('describeSecret') < order.indexOf('login'), order.join(' > '));
     assert.deepEqual(first(calls, 'describeSecret').args, ['governor/claude-login']);
-    assert.ok(lines.some((l) => /user\/operator-cli/.test(l) && /admin/.test(l)), JSON.stringify(lines));
+    assert.ok(lines.some((l) => /user\/operator-cli/.test(l) && /chosen with --profile <p> or AWS_PROFILE/.test(l)), JSON.stringify(lines));
   });
 
-  test('an identity that cannot reach the secret is refused before the sign-in, and told to assume the admin role', async () => {
+  /**
+   * The profile that may write the secret is the operator's own, under a
+   * name governor cannot know, so the remedy gives the two ways to choose
+   * one and names none.
+   */
+  test('an identity that cannot reach the secret is refused before the sign-in, and told how to choose one that can', async () => {
     const { deps, calls } = harness({
       describeSecret: () => ({ status: 254, stderr: 'An error occurred (AccessDeniedException) when calling the DescribeSecret operation' }),
     });
@@ -319,8 +324,9 @@ describe('mintClaudeLogin — to Secrets Manager', () => {
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.match(result.err, /user\/operator-cli/);
-      assert.match(result.err, /admin/);
       assert.match(result.err, /AccessDeniedException/);
+      assert.match(result.err, /re-run as an identity that may write governor\/claude-login, chosen with --profile <p> or AWS_PROFILE/);
+      assert.doesNotMatch(result.err, /admin/);
     }
     assert.equal(named(calls, 'login').length, 0, 'a sign-in was started for an identity that cannot store it');
   });
@@ -350,7 +356,7 @@ describe('mintClaudeLogin — to Secrets Manager', () => {
     if (!result.ok) {
       assert.match(result.err, /SSO Token/);
       assert.match(result.err, /--profile admin/);
-      assert.doesNotMatch(result.err, /re-run with --profile/);
+      assert.doesNotMatch(result.err, /chosen with --profile <p>/);
     }
 
     const reach = harness({
@@ -361,13 +367,13 @@ describe('mintClaudeLogin — to Secrets Manager', () => {
     assert.equal(refused.ok, false);
     if (!refused.ok) {
       assert.match(refused.err, /--profile ops/);
-      assert.doesNotMatch(refused.err, /re-run with --profile/);
+      assert.doesNotMatch(refused.err, /chosen with --profile <p>/);
     }
 
     const ok = harness({ log: (line: string) => lines.push(line) });
     await mintClaudeLogin(parseArgs(['--profile', 'admin']), ok.deps as never);
     assert.ok(lines.some((l) => /Storing as/.test(l) && /--profile admin/.test(l)), JSON.stringify(lines));
-    assert.ok(!lines.some((l) => /re-run with --profile/.test(l)), JSON.stringify(lines));
+    assert.ok(!lines.some((l) => /chosen with --profile <p>/.test(l)), JSON.stringify(lines));
   });
 
   test('a GitHub mint asks nothing of AWS', async () => {

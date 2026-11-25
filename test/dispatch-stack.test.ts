@@ -350,6 +350,16 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     }
   });
 
+  // The profile that may write a secret is the operator's own name, and
+  // governor sets up none, so a page gives the placeholder the docs use.
+  test('no alarm description names an AWS profile, only the placeholder', () => {
+    const alarms = Object.entries(template.Resources).filter(([, r]) => r?.Type === 'AWS::CloudWatch::Alarm');
+    for (const [name, alarm] of alarms) {
+      const description = alarm?.Properties?.AlarmDescription ?? '';
+      assert.doesNotMatch(description, /--profile (?!<p>)/, name);
+    }
+  });
+
   test('a turn that failed is a tripwire, read off the line the task logs, never off a level', () => {
     const filter = template.Resources.DispatchFailuresFilter;
     assert.equal(filter?.Type, 'AWS::Logs::MetricFilter');
@@ -416,7 +426,8 @@ describe('infra/governor.cfn.yml — the alarms', () => {
     assert.equal(alarm?.Properties?.Namespace, published?.MetricNamespace);
     assert.equal(alarm?.Properties?.MetricName, published?.MetricName);
     assert.match(alarm?.Properties?.AlarmDescription ?? '', /^\[tripwire\]/);
-    assert.match(alarm?.Properties?.AlarmDescription ?? '', /mint-claude-login\.mjs/, 'the page names the re-mint');
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /mint-claude-login\.mjs --profile <p>/, 'the page names the re-mint');
+    assert.match(alarm?.Properties?.AlarmDescription ?? '', /<p> is an AWS profile that may write governor\/claude-login/, 'and says what <p> stands for');
     // The window the page names is the one the turn warns in.
     const days = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven'][LOGIN_EXPIRY_WARNING_MS / 86_400_000];
     assert.match(alarm?.Properties?.AlarmDescription ?? '', new RegExp(`within ${days} days`));

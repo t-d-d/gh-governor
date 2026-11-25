@@ -499,7 +499,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: governor-login-expiring
-      AlarmDescription: '[tripwire] The dispatcher''s stored claude.ai login reaches its refresh expiry within three days, and refreshes do not extend it. Read /governor for the dispatch-login-expiring line; it names the expiry. Re-mint before then: node scripts/mint-claude-login.mjs --profile admin.'
+      AlarmDescription: '[tripwire] The dispatcher''s stored claude.ai login reaches its refresh expiry within three days, and refreshes do not extend it. Read /governor for the dispatch-login-expiring line; it names the expiry. Re-mint before then: node scripts/mint-claude-login.mjs --profile <p>, where <p> is an AWS profile that may write governor/claude-login.'
       Namespace: governor
       MetricName: LoginExpiring
       Statistic: Sum
