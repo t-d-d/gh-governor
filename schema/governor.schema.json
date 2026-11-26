@@ -1331,7 +1331,7 @@
           "type": "boolean"
         },
         "label": {
-          "description": "A label the filer adds with a ticket's `Blocked until:` line. The hourly fire takes it off each open ticket whose date has passed, before its sweep, and leaves it on a ticket whose date is still to come, whose line governor cannot read, or that has no line. Governor never adds it. Put it on a ticket only where the date is its one wait. Without it, governor removes no label.",
+          "description": "A label the filer adds with a ticket's `Blocked until:` line. The hourly fire takes it off each open ticket whose date has passed, before its sweep, and leaves it on a ticket whose date is still to come, whose line governor cannot read, or that has no line. Governor never adds it. It cannot be a ready label or the claim label. Put it on a ticket only where the date is its one wait. Without it, governor removes no label.",
           "type": "string",
           "minLength": 1,
           "maxLength": 50,

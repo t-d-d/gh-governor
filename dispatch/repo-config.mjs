@@ -396,7 +396,7 @@ const heartbeatSchema = z.strictObject({
  */
 const waitsSchema = z.strictObject({
   enabled,
-  label: label.optional().meta({ description: 'A label the filer adds with a ticket\'s `Blocked until:` line. The hourly fire takes it off each open ticket whose date has passed, before its sweep, and leaves it on a ticket whose date is still to come, whose line governor cannot read, or that has no line. Governor never adds it. Put it on a ticket only where the date is its one wait. Without it, governor removes no label.' }),
+  label: label.optional().meta({ description: 'A label the filer adds with a ticket\'s `Blocked until:` line. The hourly fire takes it off each open ticket whose date has passed, before its sweep, and leaves it on a ticket whose date is still to come, whose line governor cannot read, or that has no line. Governor never adds it. It cannot be a ready label or the claim label. Put it on a ticket only where the date is its one wait. Without it, governor removes no label.' }),
 });
 
 /**
@@ -695,6 +695,13 @@ const fileSchema = z.strictObject({
     // A ready ticket carries every ready label, so excluding one would
     // keep every ticket out.
     if (pickup !== undefined && (pickup.exclude ?? []).some(isReady)) ctx.addIssue({ code: 'custom', path: ['pickup'], message: 'exclude cannot name a ready label' });
+    // The hourly fire takes the wait label off at the date: a ready label
+    // there would unready the ticket, and the claim label would free a
+    // ticket a session is building.
+    const waitLabel = raw.waits?.label;
+    if (typeof waitLabel === 'string' && (isReady(waitLabel) || waitLabel.toLowerCase() === String(pickup?.claim ?? '').toLowerCase())) {
+      ctx.addIssue({ code: 'custom', path: ['waits', 'label'], message: 'the wait label cannot be a ready label or the claim label' });
+    }
     if (on('prReview') && raw.prReview.prompt === undefined) ctx.addIssue({ code: 'custom', path: ['prReview', 'prompt'], message: 'prReview is on, so its section needs a prompt' });
     if (on('heartbeat') && raw.heartbeat.issue === undefined) ctx.addIssue({ code: 'custom', path: ['heartbeat', 'issue'], message: 'heartbeat is on, so its section needs the issue it records on' });
     if (on('periodics') && Object.keys(raw.periodics.sessions ?? {}).length === 0) ctx.addIssue({ code: 'custom', path: ['periodics', 'sessions'], message: 'periodics is on, so its section lists at least one periodic' });

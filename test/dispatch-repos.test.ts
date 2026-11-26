@@ -236,6 +236,16 @@ describe('readConfig', () => {
     // GitHub's issues query splits its labels on commas.
     assert.match((readConfig(JSON.stringify({ environment: 'env_1', pickup: { ready: ['ready, afk'], claim: 'y' } })) as { fault: string }).fault, /comma/);
   });
+
+  test('refuses a wait label that is a ready label or the claim label, in any case', () => {
+    // The hourly fire takes the wait label off at the date, so a ready
+    // label there would unready the ticket, and the claim label would
+    // free a ticket a session is building.
+    const fault = (waits: Record<string, unknown>) => (readConfig(JSON.stringify({ environment: 'env_1', pickup: { ready: ['x', 'afk'], claim: 'y' }, waits })) as { fault?: string }).fault;
+    assert.match(fault({ label: 'AFK' }) ?? '', /wait label cannot be a ready label or the claim label/);
+    assert.match(fault({ label: 'y' }) ?? '', /wait label cannot be a ready label or the claim label/);
+    assert.equal(fault({ label: 'waiting' }), undefined);
+  });
 });
 
 /**

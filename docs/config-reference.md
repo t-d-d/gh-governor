@@ -245,7 +245,7 @@ Every session governor starts is told how to make a ticket wait with a `Blocked 
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `waits.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
-| `waits.label` | string |  | A label the filer adds with a ticket's `Blocked until:` line. The hourly fire takes it off each open ticket whose date has passed, before its sweep, and leaves it on a ticket whose date is still to come, whose line governor cannot read, or that has no line. Governor never adds it. Put it on a ticket only where the date is its one wait. Without it, governor removes no label. |
+| `waits.label` | string |  | A label the filer adds with a ticket's `Blocked until:` line. The hourly fire takes it off each open ticket whose date has passed, before its sweep, and leaves it on a ticket whose date is still to come, whose line governor cannot read, or that has no line. Governor never adds it. It cannot be a ready label or the claim label. Put it on a ticket only where the date is its one wait. Without it, governor removes no label. |
 
 ## `signOff`
 

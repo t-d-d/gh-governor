@@ -92,7 +92,7 @@ const tunedFile = (over: Record<string, Record<string, unknown>> = {}) => {
 /** What a launch ran on: its model, and its effort where it named one. */
 const ranOn = (launch: Launch | undefined) => ({ model: launch?.model, effort: launch?.effort });
 const FACTORY_CONFIG_LABELS = FACTORY_CONFIG.labels;
-/** The factory's wait ticket (`waits.issue`), which each waiting ticket is linked as blocked by, and its read. */
+/** The factory's wait label (`waits.label`), which the bare fire takes off a ticket once its date has passed. */
 const WAIT_LABEL = JSON.parse(FACTORY_FILE).waits.label as string;
 /** The dispatcher's own App, which posts the turn's comments. */
 const APP_ID = 5075844;
@@ -3308,14 +3308,6 @@ describe('run: a ticket held by its `Blocked until:` line', () => {
   });
 });
 
-/**
- * With a repo's `waits` switch on, governor acts when a ticket's wait ends.
- * The receiver queues a `wait` fire for an issue opened or edited with the
- * line, whose turn keeps the ticket's item in the state table to match its
- * line. The bare schedule fire reads each such repo's items, and for a
- * ticket whose date has passed and that is not ready, comments once and,
- * with `unblocked` on, starts its spec session.
- */
 /**
  * The wait label (dispatch/waits.mjs): with the file's `waits.label`, the
  * bare schedule fire takes the label off each open ticket whose `Blocked
