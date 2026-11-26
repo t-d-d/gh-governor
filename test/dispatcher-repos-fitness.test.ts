@@ -27,7 +27,7 @@ import { HOOK_EVENTS, handle, routeEvent } from '../dispatch/webhook/route.mjs';
 import { PROMPTS, instruction } from '../dispatch/prompts.mjs';
 import { planWorkflow, redRunPrompt } from '../dispatch/workflow.mjs';
 import { notPlannedComment, ownerSpecMessage, readyPrompt, specPrompt, unblockedMessage } from '../dispatch/unblocked.mjs';
-import { waitEndedComment, waitFullComment, waitNotPlannedComment, waitOwnerMessage, waitRelativeComment, waitSpecPrompt, waitUnlinedComment, waitUnreadableComment } from '../dispatch/waits.mjs';
+import { waitUnreadableComment } from '../dispatch/waits.mjs';
 import { uncountedReadyComment, untaskedComment } from '../dispatch/uncounted.mjs';
 import { issueComment, loopComment } from '../dispatch/issue-review.mjs';
 import { deployedComment } from '../dispatch/webhook/deployed-comment.mjs';
@@ -330,9 +330,7 @@ const KINDS: Record<string, { build: (prompts: Record<string, string>) => Promis
   signOff: { build: (p) => standingLine([], { repo: FACTORY, closing: true, prompts: p }), facts: ['No other open PR or issue in acme/factory names you.'] },
   unblockedReady: { build: (p) => readyPrompt(promptFor(7, 'Title', FACTORY, 'claimed'), UNBLOCKED, p, 'Title'), facts: ["Pickup #7 'Title'", ...CLOSE_FACTS] },
   unblockedSpec: { build: (p) => specPrompt({ fire: UNBLOCKED, title: 'Title', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: p }), facts: ["Spec #7 'Title'", ...CLOSE_FACTS, UNATTENDED] },
-  waitEndedSpec: { build: (p) => waitSpecPrompt({ issue: 7, title: 'Title', until: '2026-11-05', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: p }), facts: ["Spec #7 'Title'", "#7's wait has ended: its `Blocked until:` line named 2026-11-05", UNATTENDED] },
   unblockedOwnerSpec: { build: (p) => ownerSpecMessage(UNBLOCKED, p, { ready: ['mode: afk'], claim: 'claimed' }, 'Title'), facts: CLOSE_FACTS },
-  waitEndedOwnerSpec: { build: (p) => waitOwnerMessage({ issue: 7, until: '2026-11-05', labels: { ready: ['mode: afk'], claim: 'claimed' }, prompts: p }), facts: ["#7's wait has ended: its `Blocked until:` line named 2026-11-05"] },
   unblockedClaimed: { build: (p) => unblockedMessage(UNBLOCKED, p, 'Title'), facts: CLOSE_FACTS },
   unblockedNotPlanned: { build: (p) => notPlannedComment({ ...UNBLOCKED, blocker: { ...UNBLOCKED.blocker, reason: 'not_planned' } }, p), facts: ['t-d-d/askme-mcp#41 (`The parser`) closed as not planned'] },
   redScheduledRun: { build: (p) => redRunPrompt('A scheduled run of Emulator on main ended failure.', p), facts: ['A scheduled run of Emulator on main ended failure.', UNATTENDED] },
@@ -390,9 +388,7 @@ const FACTORY_TEXTS: Record<string, [Record<string, string | number>, string]> =
   signOff: [{}, 'Sign this session off unless you know otherwise (work not on GitHub or in another repo, a check you still owe, or the operator is working with you in this session, which is theirs to end): make `Signing off.` the last line of your reply, and the dispatcher archives the session. Above it, write any `Lesson:` lines CLAUDE.md § Lessons calls for; usually there are none.'],
   unblockedReady: [{}, "Before you build, check the spec against what merged. Where the merge changed what the ticket builds on, say so in a comment on the ticket and in your PR description. Never edit the ticket's body, whether or not a session link ends it: its spec owner updates the spec."],
   unblockedSpec: [{ issue: 7, ready: '`workflow: ready for development` and `mode: afk`', claim: 'workflow: under development' }, "Rewrite #7's spec from what merged (CLAUDE.md § After your PR merges). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it `workflow: ready for development` and `mode: afk` and stop, or add `workflow: under development` to it first and take it through to a PR, `Closes #7`."],
-  waitEndedSpec: [{ issue: 7, ready: '`workflow: ready for development` and `mode: afk`', claim: 'workflow: under development' }, "Rewrite #7's spec from what its wait was for (CLAUDE.md § After a wait ends). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it `workflow: ready for development` and `mode: afk` and stop, or add `workflow: under development` to it first and take it through to a PR, `Closes #7`."],
   unblockedOwnerSpec: [{ issue: 7, ready: '`workflow: ready for development` and `mode: afk`', claim: 'workflow: under development' }, "This is your ticket, #7: its body ends with this session's link. Rewrite its spec in its body from what merged. If it needs a decision only a person can make, write that into its body as a question and stop.\nOtherwise label it `workflow: ready for development` and `mode: afk` and stop, or build it: add `workflow: under development` to it first, then take it through to a reviewable PR, `Closes #7`."],
-  waitEndedOwnerSpec: [{ issue: 7, ready: '`workflow: ready for development` and `mode: afk`', claim: 'workflow: under development' }, "This is your ticket, #7: its body ends with this session's link. Rewrite its spec in its body from what is now known. If it needs a decision only a person can make, write that into its body as a question and stop.\nOtherwise label it `workflow: ready for development` and `mode: afk` and stop, or build it: add `workflow: under development` to it first, then take it through to a reviewable PR, `Closes #7`."],
   unblockedClaimed: [{ issue: 7 }, 'Check your work on #7 against what merged, and change it where the merge calls for that.'],
   unblockedNotPlanned: [{}, 'Its work will not land as planned. Decide whether this ticket still stands, and what it needs instead.'],
   redScheduledRun: [{}, `${FACTORY_LOGS} Read the docs/constraints/ files that name the workflow file before re-running it: some tiers limit how soon one run may follow another. First search the open issues and PRs for it: if one already covers this failure, comment this run on it and stop. If the fix is in the repo, push it on a new branch from origin/main with a new PR. If it is not (a lapsed credential, a third-party outage), raise an issue saying what failed and what it needs.`],
@@ -430,7 +426,7 @@ describe('fitness: a repo\'s prompts reach its messages word for word (repo-conf
 describe('fitness: governor\'s own routes answer to trust.auto, and no route keeps its own rule (trust.md)', () => {
   const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
-  for (const path of ['dispatch/conflicts.mjs', 'dispatch/waits.mjs', 'dispatch/unblocked-fire.mjs', 'dispatch/periodics.mjs', 'dispatch/sweep.mjs']) {
+  for (const path of ['dispatch/conflicts.mjs', 'dispatch/unblocked-fire.mjs', 'dispatch/periodics.mjs', 'dispatch/sweep.mjs']) {
     test(`${path} reads its list from dispatch/trust.mjs, not the fixed set`, () => {
       const text = source(path);
       assert.match(text, /from '\.\/trust\.mjs'/);
@@ -496,12 +492,7 @@ describe('fitness: the receiver relays no comment governor\'s App posts (ticket-
     ['a dispatch comment', dispatchMarker({ at, sessionUrl: BUILDER })],
     ['a dispatch comment displacing a builder', dispatchMarker({ at, sessionUrl: BUILDER, displaced: GONE })],
     ['a not-planned close', notPlannedComment(fire, {})],
-    ['a relative line on a close that was not completed', waitNotPlannedComment({ facts: 'The blocker closed.', issue: 7, ref: '#3', prompts: {} })],
-    ['a relative line it cannot settle', waitRelativeComment('#3')],
     ['an unreadable line', waitUnreadableComment('soon')],
-    ['an ended wait', waitEndedComment('2026-11-01')],
-    ['a wait link with no line', waitUnlinedComment(9)],
-    ['the wait ticket full', waitFullComment(9)],
     ['a trust refusal', untaskedComment({ author: 'someone', association: 'NONE', what: 'readied' })],
     ['an uncounted ready label', uncountedReadyComment({ author: 'someone', addedBy: [{ label: 'mode: afk', actor: 'labeller[bot]', bot: true }] })],
     ['an issue review', issueComment({ name: 'spec', conclusion: 'edit', text: 'Say what done means.', key: 'k' })],

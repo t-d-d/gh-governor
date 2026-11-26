@@ -45,9 +45,7 @@
  * repo's config file that an outside system fired, the key version it was
  * signed with, when the receiver took it, and the caller's text: no prompt,
  * since the task reads the hook's from the file (route.mjs, dispatch/hooks.mjs).
- * A `wait` names an issue opened or edited with a `Blocked until:` line,
- * judged from the payload ({@link waitLine}); its turn keeps the ticket's
- * wait item to match its line (dispatch/waits.mjs). An `issueReview` names
+ * An `issueReview` names
  * an issue opened, reopened, with its body edited, or with a label added or
  * removed that a review names, whose turn runs the repo's issue reviews on
  * it (dispatch/issue-review.mjs).
@@ -260,9 +258,8 @@ const WAIT_LINE = /^blocked until:\s*(.*)$/i;
 
 /**
  * What follows `Blocked until:` on a body's first non-empty line, trimmed,
- * or null where that line is not a wait line. The receiver judges a
- * delivery by it, and the reader parses its value (`waitOf`,
- * scripts/lib/ready-work.mjs), so both read the same line.
+ * or null where that line is not a wait line. The reader parses its value
+ * (`waitOf`, scripts/lib/ready-work.mjs).
  *
  * @param {string | null | undefined} body
  * @returns {string | null}
@@ -454,11 +451,9 @@ export const lastDispatch = (comments) => {
  * @typedef {{ repo: string, number: number, title: string, reason?: string, closedAt?: string }} Blocker
  *   An issue that closed: its repo, number and title, GitHub's
  *   `state_reason` for the close where it gave one, and when it closed
- *   (`closed_at`), which a relative wait counts from (dispatch/waits.mjs).
+ *   (`closed_at`).
  *   A fire queued before the close time was carried names none.
  * @typedef {{ number: number, title: string, url: string }} ClosingPull The PR whose merge closed a blocker, in the blocker's repo.
- * @typedef {{ kind: 'wait', issue: number }} WaitFire
- *   An issue opened or edited whose new or old body holds a `Blocked until:` line.
  * @typedef {{ kind: 'issueReview', issue: number }} IssueReviewFire
  *   An issue opened or reopened, with its body edited by anyone but a
  *   bot, or with a label a review names added or removed by anyone: its
@@ -509,7 +504,7 @@ export const lastDispatch = (comments) => {
  *   same edit made the body close an issue its old body did not, so the
  *   turn runs the `closingPr` fire's check once the owner is settled, in
  *   place of a `closingPr` fire of its own.
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | WaitFire | IssueReviewFire | TicketFire | ClosingPrFire | OfferFire | PrEditFire | AuthorFire) & { repo?: string, counted?: Count }} Fire
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | IssueReviewFire | TicketFire | ClosingPrFire | OfferFire | PrEditFire | AuthorFire) & { repo?: string, counted?: Count }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
@@ -609,9 +604,6 @@ export const build = Object.freeze({
 
   /** @param {Omit<HookFire, 'kind'>} args @returns {HookFire} */
   hook: ({ hook, keyVersion, text, at }) => ({ kind: 'hook', hook, keyVersion, text, at }),
-
-  /** @param {{ issue: number }} args @returns {WaitFire} */
-  wait: ({ issue }) => ({ kind: 'wait', issue }),
 
   /** @param {{ issue: number }} args @returns {IssueReviewFire} */
   issueReview: ({ issue }) => ({ kind: 'issueReview', issue }),
@@ -981,10 +973,6 @@ const parseKind = (event) => {
   if (kind === 'closingPr') {
     if (!isPositiveInt(e?.pr)) throw new Error(`a closingPr invocation's pr must be a positive integer, got: ${JSON.stringify(e?.pr)}`);
     return { kind, pr: Number(e?.pr) };
-  }
-  if (kind === 'wait') {
-    if (!isPositiveInt(e?.issue)) throw new Error(`a wait invocation's issue must be a positive integer, got: ${JSON.stringify(e?.issue)}`);
-    return { kind, issue: Number(e?.issue) };
   }
   // `ticketReview` is the kind's name before the feature took GitHub's
   // word: a fire queued before the deploy is read as the new kind, not

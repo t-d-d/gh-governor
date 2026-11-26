@@ -1,9 +1,9 @@
 /**
  * `trust.auto` (dispatch/trust.mjs): whose issues and PRs governor may set
  * going by itself, with no person choosing that ticket. Its routes are the
- * spec session or owner message after a blocker's close or an ended wait,
- * a periodic's issue counts and listings, and the conflicts check. What
- * each route does with it is test/dispatch-turn.test.ts and
+ * spec session or owner message after a blocker's close, a periodic's
+ * issue counts and listings, and the conflicts check. What each route does
+ * with it is test/dispatch-turn.test.ts and
  * test/dispatch-periodics.test.ts; this pins the list as the file sets it.
  */
 
@@ -100,7 +100,7 @@ describe('what a trust list the file widens exposes', () => {
     assert.match(String(rest[0]), /^trust\.task: /);
     assert.match(String(said), /^trust\.auto: /);
     assert.match(String(said), /CONTRIBUTOR and NONE/);
-    for (const route of [/wait ends/, /blocker closes/, /periodic/, /conflicts/]) assert.match(String(said), route);
+    for (const route of [/blocker closes/, /periodic/, /conflicts/]) assert.match(String(said), route);
     assert.doesNotMatch(String(said), /cannot work/);
   });
 });

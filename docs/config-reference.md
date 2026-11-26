@@ -21,7 +21,7 @@ The claude.ai cloud environment the repo's sessions start in: its name as `/remo
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `trust.start` | list of any of `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`, `BOT` |  | Who may set work going, by `author_association`: whose ready label counts, and whose summons starts a session. Default `OWNER`, `MEMBER` and `COLLABORATOR`. A repo may narrow it, never widen it: any other value, and `BOT`, is refused. |
-| `trust.auto` | list of any of `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`, `BOT` |  | Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket's wait ends or its blocker closes, a periodic's issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `task`, `relay` and `review` where the file sets them. `BOT` is refused. |
+| `trust.auto` | list of any of `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`, `BOT` |  | Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket's blocker closes, a periodic's issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `task`, `relay` and `review` where the file sets them. `BOT` is refused. |
 | `trust.task` | list of any of `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`, `BOT` |  | Whose issue or PR may become work when a person sets it going, by `author_association`: pickup starts a ready ticket, and a summons starts a session, only where its author is listed. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `relay` and `review` where the file sets them. `BOT` is refused. |
 | `trust.relay` | list of any of `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`, `BOT` |  | Whose text may reach a session that is already running, by `author_association`, with `BOT` for any account GitHub marks as a bot: their comments and reviews, and a session link or `governor:subscribe` line in the body of an issue or PR they open. An event such as a label, a close or a push is judged by the author of the issue or PR it is on. Default `OWNER`, `MEMBER`, `COLLABORATOR` and `BOT`, less any of the first three a `trust.review` the file sets leaves out. Governor's own App is never judged. |
 | `trust.review` | list of any of `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`, `BOT` |  | Whose pull requests governor's PR review reads, by `author_association`, with `BOT` for any account GitHub marks as a bot. A pull request by an author it leaves out gets a `neutral` `governor` check, and a person merges it. Dependabot's pull requests are read by `prReview.dependabot` whatever it says. Default `OWNER`, `MEMBER` and `COLLABORATOR`. |
@@ -44,15 +44,15 @@ The effort every session governor starts in the repo runs at, and each review's 
 
 ## `pickup`
 
-A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `sweepHours` sets. Its labels serve the features that read them, so a file turning on `unblocked`, `waits`, `prReview` or `issueReviews` has this section, with `"enabled": false` if pickup is to stay off.
+A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `sweepHours` sets. Its labels serve the features that read them, so a file turning on `unblocked`, `prReview` or `issueReviews` has this section, with `"enabled": false` if pickup is to stay off.
 
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `pickup.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
 | `pickup.model` | string |  | The model for the session a ready ticket starts, in place of the file's `model`. |
 | `pickup.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the session a ready ticket starts, in place of the file's `effort`. |
-| `pickup.ready` | list of string |  | Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. Every label a ready ticket carries. |
-| `pickup.claim` | string |  | Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up. |
+| `pickup.ready` | list of string |  | Required when pickup, `unblocked`, `prReview` or `issueReviews` is on. Every label a ready ticket carries. |
+| `pickup.claim` | string |  | Required when pickup, `unblocked`, `prReview` or `issueReviews` is on. The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up. |
 | `pickup.claimRemoves` | list of string | `[]` | The ready labels the claim takes off, and a failed launch puts back. Default none. |
 | `pickup.exclude` | list of string | `["type: prd"]` | Labels that keep a ticket out: a ticket carrying any of them is never picked up, and a blocker's close starts no session for it. It cannot name a ready label. Default `["type: prd"]`. A hold label, one that marks a ticket as needing a person or staying not ready (`mode: human`, say), belongs here, or a blocker's close starts a session to rewrite that ticket's spec. |
 | `pickup.sweepHours` | whole number, at least 1 |  | How many whole hours the hourly fire leaves between two sweeps of the repo's ready tickets, at least one. Default one, which sweeps at every fire. |
@@ -240,17 +240,12 @@ A session on a hook's prompt when a signed request fires one of the hooks `sessi
 
 ## `waits`
 
-When a ticket's `Blocked until:` date or time passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker's close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.
+Every session governor starts is told how to make a ticket wait with a `Blocked until:` line. With `label` set, the hourly fire also takes that label off each open ticket whose date has passed, before its sweep. The hold itself needs no switch: every pickup path holds a ticket whose date is still to come, whatever this section says.
 
 | Key | Type | Default | What it holds |
 |---|---|---|---|
 | `waits.enabled` | boolean |  | Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings. |
-| `waits.model` | string |  | The model for the spec session an ended wait starts, in place of the file's `model`. |
-| `waits.effort` | one of `low`, `medium`, `high`, `xhigh`, `max` |  | The effort for the spec session an ended wait starts, in place of the file's `effort`. |
-| `waits.issue` | whole number, at least 1 |  | The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing. |
-| `waits.prompts` | object (`spec`, `ownerSpec`) |  | Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `spec`, `ownerSpec`. |
-| `waits.prompts.spec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "&lt;path>" }. |
-| `waits.prompts.ownerSpec` | text, or `{ "file": "<path>" }` |  | Replaces the default wording of the ask to a not-ready ticket's owner, the session its body names, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { "file": "&lt;path>" }. |
+| `waits.label` | string |  | A label the filer adds with a ticket's `Blocked until:` line. The hourly fire takes it off each open ticket whose date has passed, before its sweep, and leaves it on a ticket whose date is still to come, whose line governor cannot read, or that has no line. Governor never adds it. It cannot be a ready label or the claim label. Put it on a ticket only where the date is its one wait. Without it, governor removes no label. |
 
 ## `signOff`
 

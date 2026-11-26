@@ -143,7 +143,8 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  *   table's session record. `suffix`: what follows every prompt,
  *   `SIGN_POSTS`, or the three rules in a repo whose file turns
  *   `sessionRules` on (dispatch/session-rules.mjs), and then, in a repo
- *   whose file turns `waits` on, `WAIT_PROMPT`. `budgeted`: the turn's launch budget, which its message
+ *   whose file turns `waits` on, the line on making a ticket wait
+ *   (`waitPrompt`). `budgeted`: the turn's launch budget, which its message
  *   sends and the PR review's model run spend too. `fireRepo`: the fire's
  *   repo, where a launch naming none starts; the bare schedule fire names
  *   none. `environment`: a served repo's cloud environment, from its config
@@ -177,7 +178,8 @@ export const routineLaunch = (deps) => async (begin, connectors) => {
  * them. It is `SIGN_POSTS`, or, in a repo whose file turns `sessionRules`
  * on, the three rules, the first of them the same signing rule.
  * In a repo whose file turns `waits` on, the line on making a ticket wait
- * follows it (`WAIT_PROMPT`, dispatch/waits.mjs).
+ * follows it (`waitPrompt`, dispatch/waits.mjs), naming the repo's wait
+ * label where its file sets one.
  * A launch runs under the turn's budget (`budgeted`), cut to `until`.
  * One its budget refuses pages once, at the refusal, since the launcher
  * runs on: the budget calls the page back. A session it prints later is

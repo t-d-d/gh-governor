@@ -438,10 +438,7 @@
     }
   },
   "waits": {
-    "issue": 413,
-    "prompts": {
-      "spec": "Rewrite #{issue}'s spec from what its wait was for (CLAUDE.md § After a wait ends). A decision only a person can make goes into its body as a question, and it stays unlabelled.\nOtherwise mark it {ready} and stop, or add `{claim}` to it first and take it through to a PR, `Closes #{issue}`."
-    }
+    "label": "waiting"
   },
   "signOff": {
     "heldMessage": true,

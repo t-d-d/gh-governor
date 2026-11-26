@@ -630,8 +630,7 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
 
     /**
      * The native `blocked by` relationships, each naming its repo where
-     * GitHub says it. A relative wait reads whether its issue is linked
-     * (dispatch/waits.mjs).
+     * GitHub says it.
      *
      * @param {number} number
      * @returns {Promise<Array<BlockerRow & { repo?: string }>>}
@@ -646,64 +645,13 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     },
 
     /**
-     * Link an issue as blocked by another, named by its id (`blocked_by`):
-     * a relative wait's blocker (`issueClose`), or the repo's wait ticket.
-     * A refusal throws with its status, as every call does; GitHub's cap of
-     * 50 issues one issue may block is a 422.
-     *
-     * @param {number} number
-     * @param {number} id
-     */
-    addBlocker: async (number, id) => {
-      await call('POST', `/repos/${repo}/issues/${number}/dependencies/blocked_by`, { issue_id: id });
-    },
-
-    /**
-     * Remove an issue's `blocked by` link to another, named by its id. A link
-     * already gone answers 404, which is the state removing it asked for.
-     *
-     * @param {number} number
-     * @param {number} blockerId
-     */
-    removeBlocker: async (number, blockerId) => {
-      try {
-        await call('DELETE', `/repos/${repo}/issues/${number}/dependencies/blocked_by/${blockerId}`);
-      } catch (error) {
-        if (/** @type {{ status?: number }} */ (error)?.status !== 404) throw error;
-      }
-    },
-    /**
-     * An issue's id, title, state, GitHub's `state_reason` and when it
-     * closed, each null where it gives none, and whether it is a pull
-     * request: what a relative wait reads of the issue it names
-     * (dispatch/waits.mjs).
-     *
-     * @param {number} number
-     * @returns {Promise<{ id: number, number: number, title: string, state: string, reason: string | null, closedAt: string | null, pull: boolean }>}
-     */
-    issueClose: async (number) => {
-      const row = await call('GET', `/repos/${repo}/issues/${number}`);
-      return {
-        id: row.id,
-        number: row.number,
-        title: row.title ?? '',
-        state: row.state,
-        reason: typeof row.state_reason === 'string' ? row.state_reason : null,
-        closedAt: typeof row.closed_at === 'string' ? row.closed_at : null,
-        pull: Boolean(row.pull_request),
-      };
-    },
-
-    /**
      * The native `blocking` relationships, the reverse of `blockers`, each
      * naming its repo: a dependency can cross repositories, so a number
      * alone would read another repo's #12 as this one's. A row naming no
-     * repository is this one's. Each carries what its body's `Blocked
-     * until:` line says (`waitOf`), so a close can tell a ticket that waits
-     * on it (dispatch/unblocked.mjs).
+     * repository is this one's.
      *
      * @param {number} number
-     * @returns {Promise<Array<BlockerRow & { repo: string, wait?: import('./ready-work.mjs').Wait }>>}
+     * @returns {Promise<Array<BlockerRow & { repo: string }>>}
      */
     blocking: async (number) => {
       /** @type {any[]} */
@@ -713,7 +661,6 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
         state: row.state,
         title: row.title,
         repo: repoOf(row.repository_url) ?? repo,
-        ...waitOf(row.body),
       }));
     },
 

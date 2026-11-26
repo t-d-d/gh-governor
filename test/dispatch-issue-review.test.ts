@@ -71,7 +71,6 @@ const harness = (over: {
   answers?: Array<string | Conclusion>,
   comment?: (body: string) => Promise<void>,
   heartbeat?: number,
-  waits?: number,
   /** Issues GitHub answers 410 for: deleted. */
   gone?: number[],
   /** The labels the repo has; default every label but the conclusions' own. */
@@ -135,7 +134,6 @@ const harness = (over: {
     issueReviews: { reviews: over.reviews ?? [{ name: 'triage', when: {} }] },
     ...(over.trusted === undefined ? {} : { trust: { review: over.trusted } }),
     ...(over.heartbeat === undefined ? {} : { heartbeat: { issue: over.heartbeat } }),
-    ...(over.waits === undefined ? {} : { waits: { issue: over.waits } }),
   };
   const run = async (request: { system: string, prompt: string, schema: unknown }) => {
     runs.push(request);
@@ -713,10 +711,9 @@ describe('reviewIssue: which reviews run', () => {
     assert.match(h.runs[0]!.prompt, /This is round 3 of this review\./);
   });
 
-  test('the heartbeat issue, the wait ticket, a closed issue and a pull request are never reviewed', async () => {
+  test('the heartbeat issue, a closed issue and a pull request are never reviewed', async () => {
     for (const h of [
       harness({ heartbeat: 501 }),
-      harness({ waits: 501 }),
       harness({ ticket: { state: 'closed' } }),
       harness({ ticket: { pull: true } }),
     ]) {

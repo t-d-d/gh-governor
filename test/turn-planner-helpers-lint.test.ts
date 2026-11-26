@@ -16,8 +16,6 @@ const eslint = new ESLint({ cwd: root });
 
 const HELPERS: Array<[string, string]> = [
   ['planSchedule', '../scripts/lib/dispatch-router.mjs'],
-  ['endedWaits', './waits.mjs'],
-  ['waitSpecPrompt', './waits.mjs'],
   ['ticketRow', './unblocked.mjs'],
   ['rowOf', './unblocked.mjs'],
   ['readyPrompt', './unblocked.mjs'],
@@ -52,13 +50,13 @@ describe('lint keeps the planners\' helpers out of turn.mjs', () => {
   });
 
   test('a namespace import or export * of a planner module, which could reach a helper, is refused', async () => {
-    assert.ok((await reported('dispatch/turn.mjs', `import * as w from './waits.mjs';\nexport const x = w;\n`)).includes('no-restricted-imports'));
+    assert.ok((await reported('dispatch/turn.mjs', `import * as w from './hooks.mjs';\nexport const x = w;\n`)).includes('no-restricted-imports'));
     assert.ok((await reported('dispatch/turn.mjs', `export * from './unblocked.mjs';\n`)).includes('no-restricted-imports'));
   });
 
   test('a query or fragment on the path does not hide the module', async () => {
     for (const suffix of ['?x', '#x']) {
-      assert.ok((await reported('dispatch/turn.mjs', importOf('endedWaits', `./waits.mjs${suffix}`))).includes('no-restricted-imports'), `./waits.mjs${suffix} passed lint`);
+      assert.ok((await reported('dispatch/turn.mjs', importOf('hookPrompt', `./hooks.mjs${suffix}`))).includes('no-restricted-imports'), `./hooks.mjs${suffix} passed lint`);
     }
   });
 

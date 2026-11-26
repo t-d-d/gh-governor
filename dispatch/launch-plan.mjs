@@ -271,7 +271,7 @@ export const launchPlan = async (plan, ctx, started) => {
       const status = rows === undefined ? first : ticketStatus(read, { labels, now: at, blockers: rows });
       const blocked = ready && status.open && status.holds.includes('blocker');
       if (!mayPickUp(status)) {
-        const line = wait === undefined ? '' : `, Blocked until: ${'until' in wait ? wait.until : 'after' in wait ? `${wait.after.days} days after ${wait.after.repo ?? ''}#${wait.after.issue} closes` : `${wait.unreadable} (unreadable)`}`;
+        const line = wait === undefined ? '' : `, Blocked until: ${'until' in wait ? wait.until : `${wait.unreadable} (unreadable)`}`;
         const open = blocked ? `, ${read.openBlockers ?? (rows ?? []).filter((b) => b.state === 'open').length} open blocker(s)` : '';
         log('dispatch-claim', { repo, issue, outcome: 'skipped', reason: `no longer ready to claim: ${state}, labelled ${JSON.stringify(on)}${open}${line}` });
         // Said only on a ticket still ready by its labels: one claimed or
@@ -371,28 +371,13 @@ export const launchPlan = async (plan, ctx, started) => {
         ran.push({ repo: entry.repo, issue: entry.issue, outcome: 'failed', sessionUrl: null, planned: entry });
         continue;
       }
-      // A message in place of the launch: an ended wait's owner, asked to
-      // rewrite its own spec, with this launch as the message's fallback,
-      // which names itself in the ticket's body. It runs here so the window and a repo
-      // skip hold it as they hold a launch.
-      if (entry.ask !== undefined) {
-        const fell = await entry.ask();
-        if (fell === null) continue;
-        log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.asked.sessionName, outcome: fell.outcome, sessionUrl: fell.sessionUrl, fallback: true });
-        if (entry.holdsRepo && fell.outcome === 'failed') {
-          skipped.add(entry.repo);
-          log(REPO_SKIPPED, { level: 'error', repo: entry.repo, issue: entry.issue, reason: 'its launch started nothing: the rest of its tickets and periodics wait for the next fire' });
-        }
-        ran.push({ repo: entry.repo, issue: entry.issue, outcome: fell.outcome, sessionUrl: fell.sessionUrl, planned: entry });
-        continue;
-      }
       const firedAt = new Date(now()).toISOString();
       const launched = await start({ ...entry.asked, repo: entry.repo });
       if (routineFault(ctx, entry.repo, entry.asked.sessionName, launched)) continue;
       const { outcome, sessionUrl, status } = launched;
       const periodic = entry.periodic === undefined ? {} : { periodic: entry.periodic };
       log('dispatch-launch', { repo: entry.repo, issue: entry.issue, sessionName: entry.asked.sessionName, ...periodic, outcome, status, sessionUrl });
-      // The record the launch moves: a periodic's, a wait item, a hook's.
+      // The record the launch moves: a periodic's or a hook's.
       if (entry.started !== undefined) await entry.started(launched, firedAt);
       if (entry.holdsRepo && outcome === 'failed') {
         if (ticket !== null && entry.claim) await fail(ticket, 'launch');

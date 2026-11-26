@@ -547,7 +547,7 @@ describe('the check says what a trust list exposes, and which unset list it narr
     const said = got.exposures?.find((e) => e.startsWith('trust.auto: '));
     assert.match(String(said), /^trust\.auto: lets in CONTRIBUTOR authors/);
     assert.ok(got.exposures?.some((e) => e.startsWith('trust.task: lets in CONTRIBUTOR authors')), JSON.stringify(got.exposures));
-    for (const route of [/wait ends/, /blocker closes/, /periodic/, /conflicts/]) assert.match(String(said), route);
+    for (const route of [/blocker closes/, /periodic/, /conflicts/]) assert.match(String(said), route);
     assert.doesNotMatch(String(said), /cannot work/);
   });
 

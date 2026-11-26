@@ -105,7 +105,7 @@ describe('the starter kit\'s config file', () => {
     const backlog = got.config.periodics.find((p) => p.name === 'Backlog review');
     const prompt = String(backlog?.prompt);
     assert.match(prompt, /only where the file turns issue reviews on, open ones no issue review ran on/, 'with the reviews off, every open ticket would read as stuck');
-    assert.match(prompt, /Leave out the heartbeat issue, the wait ticket/, 'no issue review reads governor\'s own records');
+    assert.match(prompt, /Leave out the heartbeat issue and the issues the heartbeat check opens/, 'no issue review reads governor\'s own records');
     assert.match(prompt, /`failure` or `neutral`/);
     assert.match(prompt, /claimed[^.]*no open pull request/);
   });

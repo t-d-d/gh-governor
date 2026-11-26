@@ -14,8 +14,8 @@
  * body, and of its `byLabel` labels where the review has entries. A label
  * change on a ticket a review has read as it stands makes no model call.
  * Governor's
- * own records are never reviewed: a closed issue, a pull request, the
- * heartbeat issue and the wait ticket. A review runs only where the
+ * own records are never reviewed: a closed issue, a pull request and the
+ * heartbeat issue. A review runs only where the
  * ticket's author is in the repo's `trust.review` and in the review's own
  * `by`.
  *
@@ -159,7 +159,7 @@ Rules on the conclusion:
  *   oldest first, each marked with whether governor's App posted it.
  *   `ensureLabel`: creates a label the repo lacks. `removeLabel`: a label
  *   the issue lacks counts as removed.
- * @typedef {{ issueReviews?: { reviews: IssueReview[] } | undefined, heartbeat?: { issue: number } | undefined, waits?: { issue: number } | undefined, runs?: import('./repo-config.mjs').Runs | undefined } & import('./trust.mjs').TrustConfig} ReviewConfig
+ * @typedef {{ issueReviews?: { reviews: IssueReview[] } | undefined, heartbeat?: { issue: number } | undefined, runs?: import('./repo-config.mjs').Runs | undefined } & import('./trust.mjs').TrustConfig} ReviewConfig
  * @typedef {{ name: string, outcome: 'commented' | 'skipped' | 'failed' | 'limited', conclusion?: string, reason?: string, error?: string, loop?: { count: number, error?: string } }} Reviewed
  *   `loop`: where the run met the loop guard, the failures in a row, and
  *   why the guard's comment did not post where it did not.
@@ -571,7 +571,6 @@ export const reviewIssue = async ({ repo, issue, reader, config, run, transcript
     return { reviews: [], skipped };
   };
   if (issue === config.heartbeat?.issue) return passed(`#${issue} is the heartbeat issue, governor's own record`);
-  if (issue === config.waits?.issue) return passed(`#${issue} is the wait ticket, governor's own record`);
   /** @type {Ticket} */
   let ticket;
   try {

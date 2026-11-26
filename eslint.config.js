@@ -23,7 +23,6 @@ const refuseChecks = (allowed) => [
 // and `run` use them. no-restricted-imports does not see `import()`.
 const PLANNER_HELPERS = [
   { module: "dispatch-router", importNames: ["planSchedule"] },
-  { module: "waits", importNames: ["endedWaits", "waitSpecPrompt"] },
   { module: "unblocked", importNames: ["ticketRow", "rowOf", "readyPrompt", "specPrompt"] },
   { module: "hooks", importNames: ["hookPrompt"] },
   { module: "ready-work", importNames: ["ticketStatus", "mayPickUp", "mayStartSpec"] },
@@ -85,8 +84,8 @@ export default [
     rules: { "governor/no-readiness-checks": refuseChecks("labelRow") },
   },
   {
-    // Wait end asks whether a person moved the line's date later, whatever
-    // the labels say, so a claimed ticket's item is rewritten, not dropped.
+    // The wait label's pass asks whether a line's date has passed, whatever
+    // the labels say: the label comes off at the date, ready or not.
     files: ["dispatch/waits.mjs"],
     rules: { "governor/no-readiness-checks": refuseChecks("isWaiting") },
   },

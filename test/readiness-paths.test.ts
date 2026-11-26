@@ -1,15 +1,16 @@
 /**
- * What the four paths that decide whether a ticket may start answer for the
+ * What the three paths that decide whether a ticket may start answer for the
  * same ticket states, as main has them.
  *
  * - The selection: `selectReadyWork` (scripts/lib/ready-work.mjs) through
  *   `planSchedule` (scripts/lib/dispatch-router.mjs), with its unreadable
- *   and relative reports.
+ *   report.
  * - The claim's second read: `claim` in dispatch/launch-plan.mjs, through `run`.
  * - The unblocked row: `ticketRow` (dispatch/unblocked.mjs), and what an
  *   `unblocked` fire does with it, through `run`.
- * - Wait end: `endedWaits` (dispatch/waits.mjs), on an item whose date has
- *   passed.
+ *
+ * A relative line, a number of days after an issue closes, is no date
+ * governor reads, so it holds as an unreadable line does.
  *
  * Each path's answer is written out below as a rule over the state. Where
  * two paths answer differently, a comment names the difference. This test
@@ -24,7 +25,7 @@ import { run } from '../dispatch/turn.mjs';
 import { planSchedule } from '../scripts/lib/dispatch-router.mjs';
 import { UNREADIED_MARKER, waitOf } from '../scripts/lib/ready-work.mjs';
 import { ticketRow } from '../dispatch/unblocked.mjs';
-import { endedWaits, WAIT_UNREADABLE_MARKER } from '../dispatch/waits.mjs';
+import { WAIT_UNREADABLE_MARKER } from '../dispatch/waits.mjs';
 import { dispatchMarker } from '../dispatch/webhook/fire.mjs';
 import { storedLogin } from '../scripts/lib/claude-login.mjs';
 import { factoryFile } from './helpers/factory.ts';
@@ -40,7 +41,7 @@ const NOW = Date.parse('2026-09-25T12:00:00Z');
 const ISSUE = 7;
 /** The blocker whose close sends the `unblocked` fire, closed as completed. */
 const BLOCKER = { repo: REPO, number: 41, title: 'The parser', reason: 'completed' };
-/** Wait end's item: a date that has passed. */
+/** A date that has passed. */
 const ITEM = '2026-09-20';
 /** The App that posts governor's comments. */
 const APP_ID = 5;
@@ -121,8 +122,6 @@ const readerOf = (s: State, ticketAt: (n: number) => ReturnType<typeof ticketOf>
     removeLabel: async () => {},
     ensureLabel: async () => {},
     labelRemovals: async () => [],
-    addBlocker: async () => {},
-    removeBlocker: async () => {},
     issue: async (n: number) => ({ number: n, body: '', pull: false }),
     updateIssue: async () => {},
     defaultBranch: async () => 'main',
@@ -169,7 +168,6 @@ const depsOf = (reader: unknown, launches: string[], messages: string[], errors:
     sweep: async () => null, recordSweep: async () => true, hookSession: async () => null, recordHookSession: async () => true,
     failedLaunches: async () => [], recordFailedLaunch: async () => {},
     recordSession: async () => {}, startedSession: async () => false, verdict: async () => null, recordVerdict: async () => true,
-    waits: async () => [], wait: async () => null, recordWait: async () => true, dropWait: async () => true,
   },
 });
 
@@ -189,9 +187,8 @@ const selection = async (s: State) => {
   const sink = { comments: [] as string[] };
   const reader = readerOf(s, () => ticketOf(s), sink);
   const unreadable: unknown[] = [];
-  const relative: unknown[] = [];
-  const plan = await planSchedule({ sources: [{ repo: REPO, reader: reader as never, labels: LABELS }], cap: 1, now: NOW, only: [ISSUE], unreadable: unreadable as never, relative: relative as never });
-  return { picks: plan.length === 1, unreadable: unreadable.length > 0, relative: relative.length > 0 };
+  const plan = await planSchedule({ sources: [{ repo: REPO, reader: reader as never, labels: LABELS }], cap: 1, now: NOW, only: [ISSUE], unreadable: unreadable as never });
+  return { picks: plan.length === 1, unreadable: unreadable.length > 0 };
 };
 
 /** The claim's second read: a schedule fire naming the ticket, whose plan read it ready and free, and whose claim reads it as `s`. */
@@ -227,36 +224,12 @@ const unblocked = async (s: State) => {
   return { row, does, unreadable: unreadableSaid(sink.comments) };
 };
 
-type WaitEnd = 'spec' | 'commented' | 'moved later' | 'dropped';
-
-/** Wait end: what the bare fire does with an item whose date has passed, under `waits` and `unblocked`. */
-const waitEnd = async (s: State) => {
-  const sink = { comments: [] as string[] };
-  const reader = readerOf(s, () => ticketOf(s), sink);
-  const writes: string[] = [];
-  const state = {
-    waits: async () => [{ issue: ISSUE, until: ITEM }],
-    wait: async () => ({ until: ITEM }),
-    recordWait: async (_r: string, _i: number, _read: string, until: string) => { writes.push(`moved ${until}`); return true; },
-    dropWait: async () => { writes.push('dropped'); return true; },
-  };
-  const errors: string[] = [];
-  const ended = await endedWaits({ reader: reader as never, state: state as never, repo: REPO, labels: LABELS, spec: true, now: NOW, log: errorsTo(errors) });
-  assert.deepEqual(ended.unread, [], nameOf(s));
-  assert.deepEqual(errors, [], nameOf(s));
-  const commented = sink.comments.some((c) => !c.includes(WAIT_UNREADABLE_MARKER));
-  const does: WaitEnd = ended.specs.length > 0 ? 'spec'
-    : writes.some((w) => w.startsWith('moved')) ? 'moved later'
-      : commented ? 'commented' : 'dropped';
-  return { does, unreadable: unreadableSaid(sink.comments) };
-};
-
 // ── What main answers ───────────────────────────────────────────────────
 
 /** A line that holds a ticket at NOW, as `isWaiting` reads it. A date or a time that has passed holds nothing. */
 const lineHolds = (s: State) => s.line === 'ahead' || s.line === 'later today' || s.line === 'relative' || s.line === 'unreadable';
-/** A line whose date or time has passed at NOW. */
-const linePassed = (s: State) => s.line === 'past' || s.line === 'earlier today';
+/** A line governor cannot read as a date: a relative one included. */
+const lineUnreadable = (s: State) => s.line === 'unreadable' || s.line === 'relative';
 
 /**
  * Pickup's selection and the claim's second read answer the same for every
@@ -270,25 +243,12 @@ const mayPickUp = (s: State) => s.open && s.labels === 'ready' && !s.blocker && 
  * The selection and the claim say an unreadable line only on a ticket ready
  * by its labels, open blocker or not.
  *
- * Difference: the unblocked row and wait end say it on a ticket ready or not
- * ready (`waitHolds`). A not-ready ticket's unreadable line is told only
- * when a blocker closes or its wait ends.
+ * Difference: the unblocked row says it on a ticket ready or not ready
+ * (`waitHolds`). A not-ready ticket's unreadable line is told only when a
+ * blocker closes.
  */
-const pickupSaysUnreadable = (s: State) => s.open && s.labels === 'ready' && s.line === 'unreadable';
-const specSaysUnreadable = (s: State) => s.open && (s.labels === 'ready' || s.labels === 'not-ready') && s.line === 'unreadable';
-
-/**
- * The selection reports every ready ticket held by a relative line, blocked
- * or not, as its unreadable report does. The sweep's repair
- * (`repairRelative`) judges the blocker: by the dependency summary the
- * report passes it, or, with none, by the `blocked_by` rows it reads.
- *
- * Difference: only the selection reports a relative line it may need to
- * settle. The unblocked fire settles one only when the line waits on the
- * issue that closed, which these states' line does not, and wait end drops
- * the item of a ticket whose line became relative.
- */
-const selectionSaysRelative = (s: State) => s.open && s.labels === 'ready' && s.line === 'relative';
+const pickupSaysUnreadable = (s: State) => s.open && s.labels === 'ready' && lineUnreadable(s);
+const specSaysUnreadable = (s: State) => s.open && (s.labels === 'ready' || s.labels === 'not-ready') && lineUnreadable(s);
 
 /**
  * `ticketRow`: closed, then an open blocker, then a line that holds where
@@ -322,36 +282,14 @@ const unblockedDoes = (s: State): Does => {
   return 'nothing';
 };
 
-/**
- * Wait end, on an item whose date has passed. A closed ticket's item, or
- * one whose line is gone, unreadable or now relative, goes. A date a person
- * moved later rewrites the item, whatever the labels or blockers say: it
- * asks only whether the date is still to come. A date that has passed on a
- * ticket not ready and with no open blocker gets the wait-ended comment and
- * a spec session; any other ticket's item goes.
- *
- * Difference: with an unanswered unreadied comment, the unblocked fire says
- * nothing on a not-ready ticket, while wait end still posts its wait-ended
- * comment. Neither starts a spec session.
- */
-const waitEndDoes = (s: State): WaitEnd => {
-  if (!s.open) return 'dropped';
-  if (s.line === 'ahead' || s.line === 'later today') return 'moved later';
-  if (!linePassed(s)) return 'dropped';
-  if (s.blocker || s.labels !== 'not-ready') return 'dropped';
-  return s.unreadied ? 'commented' : 'spec';
-};
-
-describe('the four readiness paths, as main has them', () => {
+describe('the three readiness paths, as main has them', () => {
   test('the states cover open and closed, every label state, a blocker or none, by summary or by rows, every line, and an unreadied comment or none', () => {
     assert.equal(STATES.length, 2 * 4 * 2 * 2 * 7 * 2);
-    // Wait end's moved date on a claimed ticket is among them.
-    assert.ok(STATES.some((s) => s.open && s.labels === 'claimed' && s.line === 'ahead'));
   });
 
-  test('pickup\'s selection, with its unreadable and relative reports', async () => {
+  test('pickup\'s selection, with its unreadable report', async () => {
     for (const s of STATES) {
-      assert.deepEqual(await selection(s), { picks: mayPickUp(s), unreadable: pickupSaysUnreadable(s), relative: selectionSaysRelative(s) }, nameOf(s));
+      assert.deepEqual(await selection(s), { picks: mayPickUp(s), unreadable: pickupSaysUnreadable(s) }, nameOf(s));
     }
   });
 
@@ -364,12 +302,6 @@ describe('the four readiness paths, as main has them', () => {
   test('the unblocked row, and the unblocked fire through run', async () => {
     for (const s of STATES) {
       assert.deepEqual(await unblocked(s), { row: rowOf(s), does: unblockedDoes(s), unreadable: specSaysUnreadable(s) }, nameOf(s));
-    }
-  });
-
-  test('wait end', async () => {
-    for (const s of STATES) {
-      assert.deepEqual(await waitEnd(s), { does: waitEndDoes(s), unreadable: specSaysUnreadable(s) }, nameOf(s));
     }
   });
 

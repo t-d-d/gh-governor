@@ -33,7 +33,7 @@ const bodyOf = (path: string, start: string): string => {
 
 const CHECKS = /\b(labelRow|isBlocked|isWaiting|waitHolds)\s*\(/;
 
-/** The checks, and `heldUnreadied`, which the unblocked row and wait end read through `mayStartSpec`. */
+/** The checks, and `heldUnreadied`, which the unblocked row reads through `mayStartSpec`. */
 const ALL_CHECKS = /\b(labelRow|isBlocked|isWaiting|waitHolds|heldUnreadied)\s*\(/;
 
 describe('the selection and the claim decide through ticketStatus', () => {
@@ -51,23 +51,28 @@ describe('the selection and the claim decide through ticketStatus', () => {
   }
 });
 
-describe('the unblocked row and wait end decide through ticketStatus and mayStartSpec', () => {
+describe('the unblocked row decides through ticketStatus and mayStartSpec', () => {
   const paths = [
     { name: 'ticketRow', path: 'dispatch/unblocked.mjs', start: 'export const ticketRow =', asks: /\bticketStatus\(/ },
     { name: 'planUnblocked', path: 'dispatch/unblocked-fire.mjs', start: 'export const planUnblocked = async', asks: /\bmayStartSpec\(/ },
     { name: 'readUnblocked', path: 'dispatch/unblocked-fire.mjs', start: 'const readUnblocked = async', asks: /\bstatusOf\(/ },
-    { name: 'endedWaits', path: 'dispatch/waits.mjs', start: 'export const endedWaits = async', asks: /\bmayStartSpec\(/ },
   ];
   for (const { name, path, start, asks } of paths) {
-    test(`${name} calls no readiness check directly, but wait end's date reads`, () => {
+    test(`${name} calls no readiness check directly`, () => {
       const body = bodyOf(path, start);
       assert.match(body, asks);
-      // Wait end asks whether a person moved the line's date later, whatever
-      // the labels say: a read of the line alone, `isWaiting({ wait }, now)`.
-      const left = body.replace(/\bisWaiting\(\{ wait(: [\w.]+)? \}, now\)/g, '');
-      assert.doesNotMatch(left, ALL_CHECKS);
+      assert.doesNotMatch(body, ALL_CHECKS);
     });
   }
+});
+
+describe('the wait label\'s pass reads a line\'s date alone', () => {
+  test('clearWaitLabels asks only isWaiting of the line, whatever the labels say', () => {
+    const body = bodyOf('dispatch/waits.mjs', 'export const clearWaitLabels = async');
+    assert.match(body, /\bisWaiting\(\{ wait \}, now\)/);
+    const left = body.replace(/\bisWaiting\(\{ wait(: [\w.]+)? \}, now\)/g, '');
+    assert.doesNotMatch(left, ALL_CHECKS);
+  });
 });
 
 describe('outside ready-work.mjs, the readiness checks are called only where #291 leaves them', () => {
@@ -80,7 +85,7 @@ describe('outside ready-work.mjs, the readiness checks are called only where #29
   const all = [...files('dispatch'), ...files('scripts')].filter((p) => p !== 'scripts/lib/ready-work.mjs');
   // checklist.mjs asks only whether a ticket is claimed or excluded, which
   // its labels answer. waits.mjs reads a line's date alone, whatever the
-  // labels say.
+  // labels say, to take the wait label off.
   const allowed: Record<string, RegExp> = {
     'dispatch/checklist.mjs': /\blabelRow\(/g,
     'dispatch/waits.mjs': /\bisWaiting\(\{ wait(: [\w.]+)? \}, now\)/g,

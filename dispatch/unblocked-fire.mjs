@@ -8,10 +8,6 @@
  * does, and sends its spec owner a notice naming the builder it started.
  * The not-ready row messages the owner its body names, with a spec session
  * as the fallback, or starts a spec session where it names none.
- *
- * It lives apart from unblocked.mjs because it settles a relative
- * `Blocked until:` line and reports an unreadable one (dispatch/waits.mjs),
- * and waits.mjs imports unblocked.mjs.
  */
 
 import { sessionName } from '../scripts/lib/dispatch-prompt.mjs';
@@ -23,7 +19,7 @@ import { CONFIG_PATH, runOf, turnsOn } from './repo-config.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { ROW_SWITCH, UNREADIED_HELD, mayBeUnreadied, notPlannedComment, ownerOutcome, ownerSpecMessage, readyPrompt, readyToTakeOff, rowOf, specPrompt, unblockedMessage, unblockedNotice, unreadiedSince } from './unblocked.mjs';
-import { relativeAtClose, reportUnreadable } from './waits.mjs';
+import { reportUnreadable } from './waits.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
 import { byOf, failedLaunchesOf, failedReason } from './pickup.mjs';
 import { authorKind, autoOf, lets, relayOf, startOf, ticketAuthor } from './trust.mjs';
@@ -84,7 +80,7 @@ const sendNotice = async (ctx, invocation, about, session, ask, title) => {
 
 /**
  * An unblocked fire's plan. A row that ends the turn without a launch (a
- * refusal, nothing to do, a ticket its relative line holds, a comment, a
+ * refusal, nothing to do, a comment, a
  * message to the claimed ticket's session) answers the turn as a whole. The
  * ready row plans one launch that claims the ticket, through the
  * selection's own checks, the window included; the not-ready row plans a
@@ -103,23 +99,6 @@ export const planUnblocked = async (invocation, ctx) => {
   // The ticket's status under the repo's rules, read at the clock's time.
   /** @param {Parameters<typeof ticketStatus>[0]} read @param {Parameters<typeof ticketStatus>[1]['blockers']} [blockers] */
   const statusOf = (read, blockers) => ticketStatus(read, { labels: config.labels, now: ctx.now(), blockers });
-  // A relative `Blocked until:` line on this close is settled first,
-  // whatever the switches say: rewritten into its date, or, on a close
-  // that was not completed, left with one comment that replaces the
-  // not-planned row's (dispatch/waits.mjs). Only a ticket ready or not
-  // ready by its labels is then held; a claimed or excluded one takes its
-  // own row, so a claimed ticket's session still hears the close. One
-  // status read says both whether the line holds the ticket and whether
-  // another open issue still blocks it. A read taken once, with no retry,
-  // may still count the blocker that just closed (`readUnblocked`), so it
-  // (`retried: false`) never says the ticket is still blocked.
-  /** @param {{ state: string, labels: readonly string[], openBlockers?: number, wait?: import('../scripts/lib/ready-work.mjs').Wait }} read @param {Parameters<typeof ticketStatus>[1]['blockers']} [blockers] @param {boolean} [retried] */
-  const settleRelative = (read, blockers, retried = true) => {
-    const status = statusOf(read, blockers);
-    const holds = status.open && status.holds.includes('line');
-    const blocked = retried && status.open && status.holds.includes('blocker');
-    return relativeAtClose({ reader, repo, ticket: read, fire: invocation, prompts: ctx.prompts, now: ctx.now(), log: ctx.log, holds, blocked });
-  };
   // The spec owner's message of a comment this turn posted on a ticket
   // nobody builds, `row` as the turn read it: governor's comment is a
   // record for people, which the relay sends to nobody. A send that fails
@@ -140,37 +119,17 @@ export const planUnblocked = async (invocation, ctx) => {
     }
   };
   if (!turnsOn(config, 'pickup') && !turnsOn(config, 'unblocked')) {
-    const first = await reader.ticket(issue);
-    const settled = await settleRelative(first, undefined, false);
     const why = `${repo}'s ${CONFIG_PATH} turns neither pickup nor unblocked on`;
-    ctx.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, issue, reason: why, ...(settled === null ? {} : { relative: settled.outcome }) });
-    // The line is settled whatever the switches say, and so its comment
-    // tells the spec owner.
-    if (settled?.said !== undefined) await tellOwnerOf(first, settled.said);
+    ctx.log('dispatch-refused', { level: 'info', repo, kind: invocation.kind, issue, reason: why });
     return { answer: { kind: invocation.kind, refusal: why, dispatched: [] } };
   }
   const read = await readUnblocked(reader, issue, ctx.sleep, statusOf);
-  const { blockers, reads } = read;
-  let { ticket } = read;
-  const settled = await settleRelative(ticket, blockers);
-  // A line changed since the ticket's read is no longer this close's: the
-  // ticket is read again and takes its row as it now stands.
-  const changed = settled?.outcome === 'line changed';
-  if (changed) ticket = await reader.ticket(issue);
-  else if (settled?.wait !== undefined) ticket = { ...ticket, wait: settled.wait };
-  // The line's comment on a close that was not completed stands in for
-  // the not-planned row's, which a claimed ticket's session still hears.
-  const lineSaid = settled !== null && settled.wait === undefined && !changed;
+  const { ticket, blockers, reads } = read;
   const status = statusOf(ticket, blockers);
   /** @param {string} comment */
   const tellOwner = (comment) => tellOwnerOf(ticket, comment);
-  if (lineSaid && status.open && status.holds.includes('line')) {
-    ctx.log('dispatch-unblocked', { repo, issue, blocker: `${blocker.repo}#${blocker.number}`, row: 'blocked', reads, outcome: `held by its relative line: ${settled.outcome}` });
-    if (settled.said !== undefined) await tellOwner(settled.said);
-    return { answer: { kind: invocation.kind, row: 'blocked', dispatched: [] } };
-  }
   const row = rowOf(status, invocation);
-  const about = { repo, issue, blocker: `${blocker.repo}#${blocker.number}`, row, reads, ...(ticket.wait === undefined ? {} : { wait: ticket.wait }), ...(lineSaid ? { relative: settled.outcome } : {}) };
+  const about = { repo, issue, blocker: `${blocker.repo}#${blocker.number}`, row, reads, ...(ticket.wait === undefined ? {} : { wait: ticket.wait }) };
   // An unreadable `Blocked until:` line holds a ticket ready or not ready
   // by its labels, which reads as blocked, and is said once on it whatever
   // the repo's switches say. A claimed or excluded ticket is not held.
@@ -188,25 +147,19 @@ export const planUnblocked = async (invocation, ctx) => {
     ? unreadiedSince(ticket.labels, await reader.labelRemovals(issue), config.labels, closedAt)
     : undefined;
   const governs = takeOff.length > 0 || earlier !== undefined ? 'pickup' : ROW_SWITCH[row];
-  // Where no row acts, the line's comment, posted whatever the switches
-  // say, still tells the spec owner.
   if (governs === undefined) {
     ctx.log('dispatch-unblocked', { ...about, outcome: 'nothing to do' });
-    if (lineSaid && settled.said !== undefined) await tellOwner(settled.said);
     return { answer: { kind: invocation.kind, row, dispatched: [] } };
   }
   if (!turnsOn(config, governs)) {
     const why = `${repo}'s ${CONFIG_PATH} does not turn ${governs} on`;
     ctx.log('dispatch-refused', { level: 'info', ...about, kind: invocation.kind, reason: why });
-    if (lineSaid && settled.said !== undefined) await tellOwner(settled.said);
     return { answer: { kind: invocation.kind, row, refusal: why, dispatched: [] } };
   }
   if (row === 'not-planned' || row === 'claimed') {
-    // The line's comment, where this turn posted it, is the row's comment.
     /** What this turn posted on the ticket, if anything. @type {string | undefined} */
-    let posted = lineSaid ? settled.said : undefined;
-    /** @type {boolean} */
-    let commented = posted !== undefined;
+    let posted;
+    let commented = false;
     /** @type {{ removed: string[], failed: string[] } | undefined} */
     let unreadied = earlier;
     if (takeOff.length > 0) {
@@ -229,7 +182,7 @@ export const planUnblocked = async (invocation, ctx) => {
       }
     }
     const notPlanned = row === 'not-planned' ? notPlannedComment(invocation, ctx.prompts, { blocked: status.open && status.holds.includes('blocker'), ...(unreadied === undefined ? {} : { unreadied }) }) : null;
-    if (notPlanned !== null && !lineSaid) {
+    if (notPlanned !== null) {
       await reader.comment(issue, notPlanned);
       posted = notPlanned;
       commented = true;
@@ -239,7 +192,7 @@ export const planUnblocked = async (invocation, ctx) => {
     // owner hears the comment; a claimed ticket's builders are asked below,
     // and its spec owner gets a notice.
     if (!ticket.labels.includes(config.labels.claim)) {
-      ctx.log('dispatch-unblocked', { ...about, outcome: lineSaid ? `the line's comment stands for the row's: ${settled?.outcome}` : 'commented', ...(unreadied === undefined ? {} : { unreadied }) });
+      ctx.log('dispatch-unblocked', { ...about, outcome: 'commented', ...(unreadied === undefined ? {} : { unreadied }) });
       if (posted !== undefined) await tellOwner(posted);
       return { answer: { kind: invocation.kind, row, commented, dispatched: [] } };
     }
