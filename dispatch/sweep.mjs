@@ -3,130 +3,39 @@
  * for a label that picks up at once (dispatch/turn.mjs runs the close that
  * queues unblocked fires, which starts nothing).
  *
- * The bare fire reads each repo's ended waits first (dispatch/waits.mjs),
- * since a ticket linked to the wait ticket loses the link there. It then
- * sweeps each served repo turning pickup on whose interval has passed since
- * its last sweep (dispatch/pickup.mjs), and reads each repo's due periodics
- * (dispatch/periodics.mjs). The periodics launch first, oldest due first,
- * then the ready tickets, then the ended waits' spec sessions. An ended
- * wait whose ticket names its owner asks that session in the spec
- * session's place, with the spec session as the fallback. Once every
- * launch has run, the plan's `done` records each repo's sweep and writes
+ * The bare fire first takes each repo's wait label off the tickets whose
+ * `Blocked until:` date has passed (dispatch/waits.mjs), so its sweep sees
+ * them freed. It then sweeps each served repo turning pickup on whose
+ * interval has passed since its last sweep (dispatch/pickup.mjs), and reads
+ * each repo's due periodics (dispatch/periodics.mjs). The periodics launch
+ * first, oldest due first, then the ready tickets. Once every launch has
+ * run, the plan's `done` records each repo's sweep and writes
  * pickup's heartbeat line.
  */
 
-import { sessionName as ticketSessionName } from '../scripts/lib/dispatch-prompt.mjs';
 import { planSchedule, strangerReason } from '../scripts/lib/dispatch-router.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
-import { WAIT_RELATIVE, endedWaits, repairRelative, reportUnreadable, waitLinks, waitOwnerMessage, waitSpecPrompt } from './waits.mjs';
+import { clearWaitLabels, reportUnreadable } from './waits.mjs';
 import { GITHUB_SOURCE } from './deliveries.mjs';
-import { ownerOutcome } from './unblocked.mjs';
 import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { CONFIG_PATH, runOf, turnsOn } from './repo-config.mjs';
 import { byOf, failedLaunchesOf, failedReason, sweepDue, sweepHoursOf } from './pickup.mjs';
-import { autoOf, relayOf, startOf } from './trust.mjs';
+import { autoOf, startOf } from './trust.mjs';
 import { tellerFor } from './told.mjs';
 import { STOPPED_EVENT, releaseStopped } from './stopped.mjs';
 import { reportUncounted, reportUnlooked, reportUnstarted, reportUntasked } from './uncounted.mjs';
-
-/** A fallback outcome that started the spec session. */
-const WENT = new Set(['dispatched', 'unconfirmed']);
-
-/** A fallback outcome that was a launch. */
-const LAUNCHED = new Set(['dispatched', 'unconfirmed', 'failed']);
-
-/**
- * An ended wait's spec work, as a planned launch: its spec session, or,
- * where its ticket's body names its owner, a message asking that session to
- * rewrite its own spec, with the spec session as the fallback where
- * `withFallback`. The message runs in the launch loop, so the launch window
- * and a repo skip hold it as they hold a launch (dispatch/launch-plan.mjs).
- *
- * The item goes once the spec session started or the owner took the
- * message. Nothing is posted on the ticket: an owner
- * that took it is already named in the body, and a spec session started as
- * its fallback is written there in its place (`nameSpecSession`,
- * dispatch/deliveries.mjs). A send that
- * failed, not refused, keeps the item and fails the turn through `unread`;
- * a refusal with no fallback, or a fallback that started nothing, keeps
- * the item for the next fire.
- *
- * @param {import('./turn.mjs').TurnContext} ctx
- * @param {{ repo: string, config: import('./repo-config.mjs').RepoConfig, wait: import('./waits.mjs').WaitSpec, withFallback: boolean, unread: Array<{ repo: string, error: string }> }} args
- * @returns {import('./turn.mjs').PlannedLaunch}
- */
-const waitLaunch = (ctx, { repo, config, wait, withFallback, unread }) => {
-  const { issue, title, until, read, owner } = wait;
-  const asked = { prompt: waitSpecPrompt({ issue, title, until, labels: config.labels, prompts: config.prompts }), sessionName: ticketSessionName(issue, title), ...runOf(config, 'waits') };
-  /** Delete the item over the date the turn read. @param {Record<string, unknown>} context */
-  const drop = async (context) => {
-    const dropped = await ctx.state.dropWait(repo, issue, read);
-    ctx.log('dispatch-wait', { repo, issue, read, ...context, item: dropped ? 'dropped' : 'not dropped: it changed since it was read' });
-  };
-  if (owner === null) {
-    return {
-      repo,
-      issue,
-      claim: false,
-      holdsRepo: true,
-      asked,
-      // An ended wait's item goes once its spec session started or may
-      // have: a failed launch leaves it, so the next fire tries again.
-      started: async ({ outcome }) => {
-        if (outcome === 'failed') return;
-        try {
-          await drop({ outcome: 'spec session started' });
-        } catch (error) {
-          ctx.log('dispatch-wait-unhandled', { level: 'error', repo, issue, read, error: messageOf(error), reason: 'its spec session started and its item stays: the next fire messages the session the ticket\'s body names and deletes it' });
-          unread.push({ repo, error: `wait #${issue}: ${messageOf(error)}` });
-        }
-      },
-    };
-  }
-  return {
-    repo,
-    issue,
-    claim: false,
-    holdsRepo: true,
-    asked,
-    ask: async () => {
-      /** @type {import('./deliveries.mjs').Delivery | null} */
-      let told = null;
-      try {
-        const fallback = withFallback ? { prompt: asked.prompt, sessionName: asked.sessionName, issue } : undefined;
-        told = await ctx.delivery(repo).deliver({ session: owner }, waitOwnerMessage({ issue, until, labels: config.labels, prompts: config.prompts }), { source: GITHUB_SOURCE, kind: 'wait-ended', on: [issue], fallback, run: runOf(config, 'waits'), spec: true });
-        const outcome = ownerOutcome(told, 'the spec session is past DispatchCap: left for the next fire');
-        if (told.ok || (told.fallback !== null && WENT.has(told.fallback.outcome))) {
-          await drop({ owner, outcome });
-        } else {
-          ctx.log('dispatch-wait', { repo, issue, read, owner, outcome, item: 'kept for the next fire' });
-          // A message held at the ceiling is no fault: the next fire asks again.
-          if (!told.refused && told.capped !== true) unread.push({ repo, error: `wait #${issue}: ${outcome}${told.error === null ? '' : `: ${told.error}`}` });
-        }
-      } catch (error) {
-        ctx.log('dispatch-wait-unhandled', { level: 'error', repo, issue, read, owner, error: messageOf(error), reason: 'its owner could not be asked or its item deleted, so the next fire tries again' });
-        unread.push({ repo, error: `wait #${issue}: ${messageOf(error)}` });
-      }
-      const fell = told?.fallback ?? null;
-      return fell !== null && LAUNCHED.has(fell.outcome) ? { outcome: /** @type {import('./deliveries.mjs').LaunchOutcome} */ (fell.outcome), sessionUrl: fell.sessionUrl } : null;
-    },
-  };
-};
 
 /**
  * A schedule fire's plan. The bare fire's due periodics go ahead of the
  * tickets, oldest due first: they do not count against the cap, but a cap
  * of 0 starts nothing. Each periodic's `started` moves its record and adds
- * its heartbeat line, for a launch that started or may have. The ended
- * waits' spec sessions go after the tickets, unclaimed, at most DispatchCap
- * of them, and each one's `started` deletes its item once its session
- * started or may have.
+ * its heartbeat line, for a launch that started or may have.
  *
  * `done` records each repo's sweep and adds pickup's heartbeat line, which
  * the turn writes. The plan's `result` carries `heartbeat`, false until the
  * turn has written a pickup line. Its `unread` is complete once `done` has
- * run: the backlogs, the sweeps, the periodics and the waits, in that order.
+ * run: the backlogs, the sweeps, the periodics and the wait labels, in that order.
  *
  * @param {import('./webhook/fire.mjs').Fire & { kind: 'schedule' }} invocation
  * @param {import('./turn.mjs').TurnContext} ctx
@@ -139,7 +48,7 @@ export const planSweep = async (invocation, ctx) => {
   const unread = [];
   /** The periodics whose record the bare fire could not read, baseline, or write after a launch. @type {Array<{ repo: string, error: string }>} */
   const periodicsUnread = [];
-  /** The ended waits the bare fire could not read or act on, and the items it could not delete after a spec session started. @type {Array<{ repo: string, error: string }>} */
+  /** The wait labels the bare fire could not list or take off. @type {Array<{ repo: string, error: string }>} */
   const waitsUnread = [];
   /** The served repos whose last sweep the bare fire could not read, or whose sweep it could not record. @type {Array<{ repo: string, error: string }>} */
   const sweepsUnread = [];
@@ -151,26 +60,17 @@ export const planSweep = async (invocation, ctx) => {
   const leftOver = new Set();
   /** The served repos turning pickup on that the bare fire left out of this sweep: not due, or their last sweep unread. */
   let held = 0;
-  /** The bare fire's ended waits, by repo, read before its sweep. @type {Array<{ repo: string, config: import('./repo-config.mjs').RepoConfig, ended: Awaited<ReturnType<typeof endedWaits>> }>} */
-  const endedByRepo = [];
-  // Each repo turning waits on: the waits whose date has passed
-  // (dispatch/waits.mjs), read before the sweep, since a ticket linked to
-  // the repo's wait ticket loses the link here, and pickup holds a ticket
-  // while its dependency summary counts an open blocker. The comments go
-  // now; the spec sessions join the plan after the tickets, below.
-  // The repos are read side by side, and kept in the served order, since
-  // DispatchCap takes the first spec sessions.
+  // Each repo turning waits on whose file sets `waits.label`: the label
+  // comes off each open ticket whose date has passed (dispatch/waits.mjs),
+  // before the sweep, so a sweep in this fire sees the freed ticket. The
+  // repos are read side by side; each catches its own failures.
   if (ctx.bare) {
-    const byRepo = await Promise.all(ctx.served.filter(({ config }) => turnsOn(config, 'waits')).map(async ({ repo, config }) => {
-      const reader = await ctx.readerFor(repo);
-      // A warning, a fix only the spec owner can make, tells the spec owner.
-      const tell = tellerFor(ctx, repo, GITHUB_SOURCE);
-      const links = waitLinks({ reader, repo, board: config.waits?.issue, log: ctx.log, tell });
-      const ended = await endedWaits({ reader, state: ctx.state, repo, labels: config.labels, spec: turnsOn(config, 'unblocked'), auto: autoOf(config), relay: relayOf(config), now: ctx.now(), log: ctx.log, tell, ...(links === undefined ? {} : { links, blocking: reader.blocking }) });
-      return { repo, config, ended };
+    const byRepo = await Promise.all(ctx.served.map(async ({ repo, config }) => {
+      const label = config.waits?.label;
+      if (!turnsOn(config, 'waits') || label === undefined) return [];
+      return (await clearWaitLabels({ reader: await ctx.readerFor(repo), repo, label, now: ctx.now(), log: ctx.log })).unread;
     }));
-    endedByRepo.push(...byRepo);
-    waitsUnread.push(...byRepo.flatMap(({ ended }) => ended.unread));
+    waitsUnread.push(...byRepo.flat());
   }
   // Every served repo's ready tickets in one queue; a repo
   // whose file turns pickup off is still swept, and its backlog unread.
@@ -236,8 +136,6 @@ export const planSweep = async (invocation, ctx) => {
   const seen = [];
   /** @type {import('../scripts/lib/dispatch-router.mjs').Unreadable[]} */
   const unreadable = [];
-  /** @type {import('../scripts/lib/dispatch-router.mjs').Relative[]} */
-  const relative = [];
   /** @type {import('../scripts/lib/dispatch-router.mjs').Outsider[]} */
   const outsiders = [];
   /** @type {import('../scripts/lib/dispatch-router.mjs').Stranger[]} */
@@ -261,7 +159,7 @@ export const planSweep = async (invocation, ctx) => {
     unlooked,
     heldFailed,
     ...(only === undefined ? {} : { only, seen }),
-    ...(ctx.bare ? { unread, cut, relative } : {}),
+    ...(ctx.bare ? { unread, cut } : {}),
   });
   // A `Blocked until:` line governor cannot read holds its ticket, and is
   // said once on the ticket whatever the repo's switches say. Each report
@@ -269,18 +167,6 @@ export const planSweep = async (invocation, ctx) => {
   // window for the launches.
   // Its comment tells the ticket's spec owner, under pickup.
   await Promise.all(unreadable.map(async ({ repo, issue, value }) => reportUnreadable({ reader: await ctx.readerFor(repo), repo, issue, value, log: ctx.log, tell: tellerFor(ctx, repo, GITHUB_SOURCE) })));
-  // A relative line on a ready ticket, in a repo pickup sweeps: the sweep
-  // leaves it to an open blocker's close, or settles it, whatever the
-  // repo's other switches say, or says once that it cannot. A failure is
-  // logged and left for the next sweep: the ticket stays held.
-  await Promise.all(relative.map(async (report) => {
-    const { repo, issue, after } = report;
-    try {
-      await repairRelative({ ...report, reader: await ctx.readerFor(repo), link: false, prompts: ctx.configOf(repo).prompts, now: ctx.now(), log: ctx.log, tell: tellerFor(ctx, repo, GITHUB_SOURCE) });
-    } catch (error) {
-      ctx.log(WAIT_RELATIVE, { level: 'error', repo, issue, after, error: messageOf(error), reason: 'the ticket stays held, and the next sweep tries again' });
-    }
-  }));
   // A ticket whose author the repo's `trust.task` does not list is not
   // started, and is said at info: it is the repo's own choice. Where a
   // person readied it, it gets governor's one refusal comment, whatever the
@@ -330,8 +216,6 @@ export const planSweep = async (invocation, ctx) => {
       },
     });
   }
-  /** The tickets whose launch is an ended wait's spec session, `repo#issue`: none of pickup's. */
-  const waitSpecs = new Set();
   // The bare fire's due periodics go ahead of the tickets, oldest due
   // first. They do not count against the cap, but a cap of 0 starts
   // nothing; they share the launch window, and one left unlaunched has
@@ -373,32 +257,6 @@ export const planSweep = async (invocation, ctx) => {
         },
       })));
     }
-    // The waits read before the sweep, above. A ticket not ready got its
-    // comment there, and, with unblocked on, gets a spec session here,
-    // after the tickets, unclaimed, as a
-    // blocker's close starts one. At most DispatchCap of them start a fire,
-    // apart from pickup's; one past it keeps its item for the next fire.
-    // A ticket whose body names its owner asks that session to rewrite
-    // its own spec, with the spec session as the fallback should it refuse
-    // as archived. That fallback counts against DispatchCap as the launch
-    // it replaces does: past the cap the owner is still asked, and a
-    // refusal leaves the item for the next fire.
-    let room = ctx.cap;
-    for (const { repo, config, ended } of endedByRepo) {
-      /** @type {number[]} */
-      const left = [];
-      for (const wait of ended.specs) {
-        const withFallback = room > 0;
-        if (!withFallback && wait.owner === null) {
-          left.push(wait.issue);
-          continue;
-        }
-        if (withFallback) room -= 1;
-        waitSpecs.add(`${repo}#${wait.issue}`);
-        launches.push(waitLaunch(ctx, { repo, config, wait, withFallback, unread: waitsUnread }));
-      }
-      if (left.length > 0) ctx.log('dispatch-wait', { repo, outcome: 'spec sessions past DispatchCap left for the next fire', left });
-    }
   }
 
   /** The turn's own fields: the turn sets `heartbeat` once it writes pickup's line. */
@@ -413,8 +271,8 @@ export const planSweep = async (invocation, ctx) => {
       for (const p of left) if (p.claim) leftOver.add(p.repo);
       /** How many ticket sessions a repo's own launches started. @param {import('./turn.mjs').Dispatched[]} own */
       const startedOf = (own) => own.filter((d) => d.issue !== null && d.outcome !== 'failed').length;
-      /** A repo's own launches by pickup: its periodics and tickets, an ended wait's spec sessions left out. @param {string} repo */
-      const pickupOwn = (repo) => dispatched.filter((d) => d.repo === repo && !waitSpecs.has(`${d.repo}#${d.issue}`));
+      /** A repo's own launches by pickup: its periodics and tickets. @param {string} repo */
+      const pickupOwn = (repo) => dispatched.filter((d) => d.repo === repo);
 
       // A repo's sweep is recorded once its backlog was read and not every
       // claim or launch failed, as pickup's heartbeat line is: a sweep that

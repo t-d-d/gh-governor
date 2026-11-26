@@ -300,8 +300,6 @@ describe('one section per feature, in .github/governor.json', () => {
       unblockedOwnerSpec: 'unblocked.prompts.ownerSpec',
       unblockedClaimed: 'unblocked.prompts.claimed',
       unblockedNotPlanned: 'unblocked.prompts.notPlanned',
-      waitEndedSpec: 'waits.prompts.spec',
-      waitEndedOwnerSpec: 'waits.prompts.ownerSpec',
       ciBreaker: 'ciMessages.prompts.breaker',
       ciTriage: 'ciMessages.prompts.triage',
       ciBumpTriage: 'ciMessages.prompts.bumpTriage',
@@ -447,11 +445,10 @@ describe('one section per feature, in .github/governor.json', () => {
     assert.match(fault({ ...MINIMAL, heartbeat: { issue: 1, marker: '<!-- a -->' } }), /heartbeat: Unrecognized key: "marker"/);
   });
 
-  test('a file turning on unblocked, waits, prReview or issueReviews with no pickup section is refused; a pickup section set off with its labels serves', () => {
-    assert.deepEqual([...LABEL_READERS].sort(), ['issueReviews', 'prReview', 'unblocked', 'waits']);
+  test('a file turning on unblocked, prReview or issueReviews with no pickup section is refused; a pickup section set off with its labels serves', () => {
+    assert.deepEqual([...LABEL_READERS].sort(), ['issueReviews', 'prReview', 'unblocked']);
     const sections: Record<string, unknown> = {
       unblocked: {},
-      waits: {},
       prReview: { prompt: 'Check it.' },
       issueReviews: { reviews: { triage: { conclusions: { success: ['triage: passed'] } } } },
     };
@@ -497,7 +494,7 @@ describe('model and effort: a default for the file, and each place\'s own', () =
   });
 
   test('each section that starts a session or runs the model takes its own, which win over the file\'s, one key at a time', () => {
-    assert.deepEqual([...RUN_SECTIONS].sort(), ['ciMessages', 'conflicts', 'deployMessages', 'pickup', 'prMessages', 'prReview', 'redScheduledRun', 'summons', 'unblocked', 'waits']);
+    assert.deepEqual([...RUN_SECTIONS].sort(), ['ciMessages', 'conflicts', 'deployMessages', 'pickup', 'prMessages', 'prReview', 'redScheduledRun', 'summons', 'unblocked']);
     for (const name of RUN_SECTIONS) {
       const both = read({ model: 'claude-sonnet-5-5', effort: 'medium', ...section(name, { model: 'claude-haiku-5-5', effort: 'max' }) });
       assert.deepEqual(runOf(both, name), { model: 'claude-haiku-5-5', effort: 'max' }, name);

@@ -63,14 +63,14 @@ import { UNATTENDED, build, ownerListed } from './webhook/fire.mjs';
 import { oneLine } from './webhook/mention.mjs';
 import { instruction } from './prompts.mjs';
 import { sessionLink, titleLink } from './roles.mjs';
-import { UNREADIED_MARKER, ticketStatus, waitsOnClose } from '../scripts/lib/ready-work.mjs';
+import { UNREADIED_MARKER, ticketStatus } from '../scripts/lib/ready-work.mjs';
 
 /**
  * @typedef {import('./webhook/fire.mjs').UnblockedFire} UnblockedFire
  * @typedef {import('./webhook/fire.mjs').Blocker} Blocker
  * @typedef {import('./webhook/fire.mjs').ClosingPull} ClosingPull
- * @typedef {{ repo: string, number: number, state: string, wait?: import('../scripts/lib/ready-work.mjs').Wait }} BlockedRow
- *   A ticket the closed issue blocked, in its repo, and what its `Blocked until:` line says.
+ * @typedef {{ repo: string, number: number, state: string }} BlockedRow
+ *   A ticket the closed issue blocked, in its repo.
  * @typedef {{ fire: UnblockedFire & { repo: string }, dedupId: string }} Queued
  * @typedef {{ repo: string, issue: number, reason: string }} Skipped
  * @typedef {import('../scripts/lib/ready-work.mjs').Labels} Labels
@@ -110,10 +110,8 @@ const dedupIdOf = (closed, ticket) =>
  * owner is on the list, with no cap, since each starts at most one
  * session and queues nothing. Any repo can link its issue as blocked by one
  * of ours, so the list can hold strangers' tickets: those are skipped, as
- * is a ticket of the closing repo where its switches are off (`ownOff`),
- * unless its line waits a number of days after this close: governor
- * rewrites that line into its date whatever the switches say
- * (dispatch/waits.mjs). The closing turn cannot read another repo's
+ * is a ticket of the closing repo where its switches are off (`ownOff`).
+ * The closing turn cannot read another repo's
  * switches, so another repo's ticket is queued anyway, and its turn ends
  * there.
  *
@@ -125,11 +123,11 @@ export const closingFires = ({ closed, pr, rows, owners, ownOff = false }) => {
   const queue = [];
   /** @type {Skipped[]} */
   const skipped = [];
-  for (const { repo, number: issue, state, wait } of rows) {
+  for (const { repo, number: issue, state } of rows) {
     const owner = repo.split('/')[0] ?? '';
     const reason = state !== 'open' ? `#${issue} is ${state}`
       : !ownerListed(owners, owner) ? `${owner} is not on the owner list`
-        : ownOff && sameRepo(repo, closed.repo) && !waitsOnClose(wait, repo, closed) ? `${repo}'s file turns neither pickup nor unblocked on`
+        : ownOff && sameRepo(repo, closed.repo) ? `${repo}'s file turns neither pickup nor unblocked on`
           : null;
     if (reason !== null) {
       skipped.push({ repo, issue, reason });
@@ -243,10 +241,9 @@ export const specPrompt = ({ fire, title, labels, prompts }) => specSession({ is
 /**
  * A spec session's opening prompt, for a ticket not ready to pick up: the
  * line naming it, the facts of what freed it, the repo's instruction of
- * `kind`, and the unattended line. A blocker's close and an ended wait
- * (dispatch/waits.mjs) both start one.
+ * `kind`, and the unattended line. A blocker's close starts one.
  *
- * @param {{ issue: number, title: string, facts: string, kind: 'unblockedSpec' | 'waitEndedSpec', labels: { ready: readonly string[], claim: string }, prompts: Record<string, string | undefined> }} args
+ * @param {{ issue: number, title: string, facts: string, kind: 'unblockedSpec', labels: { ready: readonly string[], claim: string }, prompts: Record<string, string | undefined> }} args
  */
 export const specSession = ({ issue, title, facts, kind, labels, prompts }) => {
   const lead = oneLine(title);
@@ -272,17 +269,15 @@ const specFills = (issue, labels) => ({ issue, ready: labels.ready.map((l) => `\
  * in place of a spec session: the facts of what freed the ticket and the
  * repo's instruction of `kind`, asking it to rewrite the spec in its own
  * body. Its link stays the body's, so it keeps the ticket. A blocker's
- * close ({@link ownerSpecMessage}) and an ended wait (dispatch/waits.mjs)
- * both send one.
+ * close sends one ({@link ownerSpecMessage}).
  *
- * @param {{ issue: number, facts: string, kind: 'unblockedOwnerSpec' | 'waitEndedOwnerSpec', labels: { ready: readonly string[], claim: string }, prompts: Record<string, string | undefined> }} args
+ * @param {{ issue: number, facts: string, kind: 'unblockedOwnerSpec', labels: { ready: readonly string[], claim: string }, prompts: Record<string, string | undefined> }} args
  */
 export const ownerMessage = ({ issue, facts, kind, labels, prompts }) => `${facts}\n\n${instruction(prompts, kind, specFills(issue, labels))}`;
 
 /**
- * What came of a not-ready ticket's owner's message, for the log: a
- * blocker's close (dispatch/unblocked-fire.mjs) and an ended wait
- * (dispatch/sweep.mjs) both log one.
+ * What came of a not-ready ticket's owner's message, for the log
+ * (dispatch/unblocked-fire.mjs).
  *
  * @param {{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }} told
  * @param {string} unstarted Why no spec session started in place of an archived owner, where none was tried.
@@ -426,8 +421,7 @@ const readySentence = (issue, { removed, failed }) => {
 
 /**
  * The sentence a close that was not completed says where another open issue
- * still blocks the ticket, in the not-planned row's comment and in a
- * relative line's (`waitNotPlannedComment`, dispatch/waits.mjs).
+ * still blocks the ticket, in the not-planned row's comment.
  *
  * @param {number} issue
  */
@@ -454,5 +448,5 @@ export const notPlannedComment = (fire, prompts, { blocked = false, unreadied } 
   return `${unblockedFacts(fire, { quote: true })}\n\n${instruction(prompts, 'unblockedNotPlanned')}${still}${ready}${marker}`;
 };
 
-/** Why a ticket governor's not-planned close still holds (`mayStartSpec`, scripts/lib/ready-work.mjs) starts no spec session, as both a close and an ended wait log it. */
+/** Why a ticket governor's not-planned close still holds (`mayStartSpec`, scripts/lib/ready-work.mjs) starts no spec session, as a close logs it. */
 export const UNREADIED_HELD = 'its ready labels came off on a not-planned close, and nobody has answered governor\'s comment since';

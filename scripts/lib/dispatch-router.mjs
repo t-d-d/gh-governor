@@ -42,10 +42,6 @@ import { START } from '../../dispatch/trust.mjs';
  * @typedef {{ repo: string, issue: number, value: string }} Unreadable
  *   A ticket held by a `Blocked until:` line whose value is no date.
  *
- * @typedef {{ repo: string, issue: number, after: import('./ready-work.mjs').After, openBlockers?: number }} Relative
- *   A ready ticket held by a relative `Blocked until:` line, with its open
- *   blockers by its dependency summary where its read carries one.
- *
  * @typedef {{ label: string, actor: string | null, bot: boolean }} AddedBy
  *   Who added a ready label last: the login, null where no event names it,
  *   and whether it was a bot.
@@ -130,13 +126,6 @@ export const strangerReason = ({ association }) =>
  * line's value, so the turn can say so on the ticket. A ticket whose date is
  * still to come is held by the selection itself (`mayPickUp`).
  *
- * With `relative`, each open, ready-labelled ticket held by a relative
- * line (`3 days after #143 closes`) is recorded there, with its dependency
- * summary, so the turn can settle it (`repairRelative`, dispatch/waits.mjs).
- * Like `unreadable`, the report reads no blocker: the repair judges it, by
- * the summary and, where that counts none, by the `blocked_by` rows it
- * reads, so the plan does not read them too.
- *
  * With `strangers`, each ready ticket whose author's association the
  * source's `by` does not list is recorded there, so the turn can log it.
  * Such a ticket takes no place under the cap, and nothing more is read of it.
@@ -157,10 +146,10 @@ export const strangerReason = ({ association }) =>
  * however its ready labels came back, takes no place under the cap, and is
  * recorded in `heldFailed`, so the turn can log it.
  *
- * @param {{ sources: readonly Source[], cap: number, now: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], relative?: Relative[], outsiders?: Outsider[], strangers?: Stranger[], unstarted?: import('../../dispatch/start.mjs').Unstarted[], unlooked?: import('../../dispatch/start.mjs').Unlooked[], heldFailed?: HeldFailed[] }} args
+ * @param {{ sources: readonly Source[], cap: number, now: number, only?: readonly number[], seen?: Seen[], unread?: Array<{ repo: string, error: string }>, cut?: Set<string>, unreadable?: Unreadable[], outsiders?: Outsider[], strangers?: Stranger[], unstarted?: import('../../dispatch/start.mjs').Unstarted[], unlooked?: import('../../dispatch/start.mjs').Unlooked[], heldFailed?: HeldFailed[] }} args
  * @returns {Promise<Dispatch[]>}
  */
-export const planSchedule = async ({ sources, cap, now, only, seen = [], unread, cut, unreadable, relative, outsiders, strangers, unstarted, unlooked, heldFailed }) => {
+export const planSchedule = async ({ sources, cap, now, only, seen = [], unread, cut, unreadable, outsiders, strangers, unstarted, unlooked, heldFailed }) => {
   /** @type {Set<string>} */
   const failed = new Set();
   /**
@@ -212,19 +201,14 @@ export const planSchedule = async ({ sources, cap, now, only, seen = [], unread,
     const rows = await guarded(source.repo, () => rowsOf(source));
     if (rows === null) continue;
     // A ticket held by an unreadable `Blocked until:` line, one the
-    // selection would otherwise consider, is reported for its comment, and
-    // one held by a relative line for its repair. Neither report asks
-    // about blockers.
+    // selection would otherwise consider, is reported for its comment. The
+    // report asks nothing about blockers.
     for (const row of rows) {
       const status = ticketStatus(row, { labels, now });
       if (!status.open || status.labels !== 'ready') continue;
       const value = unreadableOf(row);
       if (value !== undefined && status.holds.includes('unreadable')) {
         unreadable?.push({ repo: source.repo, issue: row.number, value });
-      }
-      const { wait } = row;
-      if (wait !== undefined && 'after' in wait) {
-        relative?.push({ repo: source.repo, issue: row.number, after: wait.after, ...(row.openBlockers === undefined ? {} : { openBlockers: row.openBlockers }) });
       }
     }
     const ready = selectReadyWork(rows, { cap: Number.MAX_SAFE_INTEGER, labels, now });

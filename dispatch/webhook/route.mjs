@@ -51,9 +51,6 @@
  * also counted for the repo's periodics: the fire the event queues carries
  * it as `counted`, and an issue opened that queues none queues a
  * `periodics` fire of its own ({@link counting}).
- * An issue opened, reopened or edited, whose new or old body opens with a `Blocked
- * until:` line queues a `wait` fire naming it, whose turn keeps the
- * ticket's wait item to match its line (dispatch/waits.mjs).
  * An issue opened, reopened, or edited with its body changed by anyone but
  * a bot, queues an `issueReview` fire naming it, whose turn runs the
  * repo's issue reviews on it (dispatch/issue-review.mjs). So does a label
@@ -105,7 +102,7 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, RELAY, REPO_NAME, RED, SUMMONERS, TRUST_VALUES, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob, waitLine } from './fire.mjs';
+import { HOOK_KEY_STALE, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, FIRE_BUDGET, RELAY, REPO_NAME, RED, SUMMONERS, TRUST_VALUES, ownerListed, WORKFLOW_PATH, build, isCommit, fireWeight, shippingJob } from './fire.mjs';
 import { HOOK_CLOCK_AHEAD_MS, HOOK_CLOCK_BEHIND_MS, HOOK_CLOCK_REASON, HOOK_HEADER, HOOK_TEXT_LIMIT, hookPath, readSignature, verifyHook } from './hook.mjs';
 import { errorText } from './error-text.mjs';
 import { MENTION, MENTION_EVENTS, authorFires, bodyEditFires, closingPrFires, defaultBranch, issueEventFires, mentionFires, offerFires, oneLine, prEditFires, pullRequestFires, ticketFires } from './mention.mjs';
@@ -596,33 +593,11 @@ const counting = (decision, counted, carrier) => {
 };
 
 /**
- * An issue opened or reopened whose body holds a `Blocked until:` line, or
- * edited where its new or old body does (`changes.body.from`): a `wait` fire naming it,
- * so its turn puts, rewrites or deletes the ticket's wait item
- * (dispatch/waits.mjs). A close deletes the item, so a reopen puts it back.
- * An edit that leaves the body alone queues none.
- * Judged from the payload alone; the fire needs `waits`, so {@link handle}
- * drops it where the repo's item says that switch is off.
- *
- * @param {any} payload
- * @returns {Decision}
- */
-const waitFire = (payload) => {
-  const number = payload?.issue?.number;
-  if (!Number.isInteger(number) || number <= 0) return nothing('');
-  const bodies = payload?.action === 'opened' || payload?.action === 'reopened'
-    ? [payload?.issue?.body]
-    : payload?.action === 'edited' && payload?.changes?.body !== undefined ? [payload?.issue?.body, payload.changes.body.from] : [];
-  if (!bodies.some((body) => waitLine(typeof body === 'string' ? body : null) !== null)) return nothing('');
-  return one({ fire: build.wait({ issue: number }), reason: `issue #${number} ${payload.action} with a Blocked until: line: keep its wait item to match`, key: 'wait' });
-};
-
-/**
  * An issue opened, reopened, or edited with its body changed: a
  * `issueReview` fire naming it, so its turn runs each of the repo's issue
  * reviews the issue calls for (dispatch/issue-review.mjs). A title-only
  * edit changes nothing a review reads. A body edit a bot made is governor's
- * own (a spec session's link written, a relative wait line rewritten), and must
+ * own (a spec session's link written), and must
  * not spend a review's round; a session edits as the owner's account, so
  * its edits still run one. Judged from the payload alone; the fire needs
  * `issueReviews`, so {@link handle} drops it where the repo's item says
@@ -814,12 +789,12 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
     // The selection's fire, where there is one, beside each subscriber's,
     // and a label's issue review fire.
     if (selection !== null) return both(both(both(selection, issueEventFires(payload, trust)), ticketFires({ event, payload, ...trust })), labelReviewFire(payload));
-    if (action === 'reopened') return both(both(both(issueEventFires(payload, trust), ticketFires({ event, payload, ...trust })), waitFire(payload)), issueReviewFire(payload));
+    if (action === 'reopened') return both(both(issueEventFires(payload, trust), ticketFires({ event, payload, ...trust })), issueReviewFire(payload));
     if (action === 'labeled' || action === 'unlabeled') return both(issueEventFires(payload, trust), labelReviewFire(payload));
     const mentioned = mentionFires({ event, payload, ...trust }) ?? nothing(`issues ${action}: nothing to select from`);
     // An issue opened is counted on its summons, or on a fire of its own.
     const counted = action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened', 'dispatch') : mentioned;
-    const reviewed = both(both(counted, waitFire(payload)), issueReviewFire(payload));
+    const reviewed = both(counted, issueReviewFire(payload));
     // A body edit: the spec owner's message, or on a claimed ticket the
     // ticket fire in its place, settled by the claim label.
     return action === 'edited' ? both(both(reviewed, bodyEditFires(payload, trust)), ticketFires({ event, payload, ...trust })) : reviewed;

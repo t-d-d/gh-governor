@@ -37,7 +37,7 @@
           }
         },
         "auto": {
-          "description": "Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket's wait ends or its blocker closes, a periodic's issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `task`, `relay` and `review` where the file sets them. `BOT` is refused.",
+          "description": "Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket's blocker closes, a periodic's issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `task`, `relay` and `review` where the file sets them. `BOT` is refused.",
           "type": "array",
           "items": {
             "type": "string",
@@ -140,7 +140,7 @@
       ]
     },
     "pickup": {
-      "description": "A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `sweepHours` sets. Its labels serve the features that read them, so a file turning on `unblocked`, `waits`, `prReview` or `issueReviews` has this section, with `\"enabled\": false` if pickup is to stay off.",
+      "description": "A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `sweepHours` sets. Its labels serve the features that read them, so a file turning on `unblocked`, `prReview` or `issueReviews` has this section, with `\"enabled\": false` if pickup is to stay off.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -164,7 +164,7 @@
           ]
         },
         "ready": {
-          "description": "Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. Every label a ready ticket carries.",
+          "description": "Required when pickup, `unblocked`, `prReview` or `issueReviews` is on. Every label a ready ticket carries.",
           "minItems": 1,
           "type": "array",
           "items": {
@@ -175,7 +175,7 @@
           }
         },
         "claim": {
-          "description": "Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up.",
+          "description": "Required when pickup, `unblocked`, `prReview` or `issueReviews` is on. The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up.",
           "type": "string",
           "minLength": 1,
           "maxLength": 50,
@@ -1323,87 +1323,19 @@
       "additionalProperties": false
     },
     "waits": {
-      "description": "When a ticket's `Blocked until:` date or time passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker's close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.",
+      "description": "Every session governor starts is told how to make a ticket wait with a `Blocked until:` line. With `label` set, the hourly fire also takes that label off each open ticket whose date has passed, before its sweep. The hold itself needs no switch: every pickup path holds a ticket whose date is still to come, whatever this section says.",
       "type": "object",
       "properties": {
         "enabled": {
           "description": "Whether the feature is on. Default on: only `false` turns it off, and then the section needs none of its required settings.",
           "type": "boolean"
         },
-        "model": {
-          "description": "The model for the spec session an ended wait starts, in place of the file's `model`.",
+        "label": {
+          "description": "A label the filer adds with a ticket's `Blocked until:` line. The hourly fire takes it off each open ticket whose date has passed, before its sweep, and leaves it on a ticket whose date is still to come, whose line governor cannot read, or that has no line. Governor never adds it. Put it on a ticket only where the date is its one wait. Without it, governor removes no label.",
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,99}$"
-        },
-        "effort": {
-          "description": "The effort for the spec session an ended wait starts, in place of the file's `effort`.",
-          "type": "string",
-          "enum": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max"
-          ]
-        },
-        "issue": {
-          "description": "The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing.",
-          "type": "integer",
-          "exclusiveMinimum": 0,
-          "maximum": 9007199254740991
-        },
-        "prompts": {
-          "description": "Replacement wording for the instruction in each kind of message the feature sends, keyed by kind: `spec`, `ownerSpec`.",
-          "type": "object",
-          "properties": {
-            "spec": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "minLength": 1
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "file": {
-                      "type": "string",
-                      "minLength": 1,
-                      "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
-                    }
-                  },
-                  "required": [
-                    "file"
-                  ],
-                  "additionalProperties": false
-                }
-              ],
-              "description": "Replaces the default wording of a not-ready ticket's spec session's ask, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { \"file\": \"<path>\" }."
-            },
-            "ownerSpec": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "minLength": 1
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "file": {
-                      "type": "string",
-                      "minLength": 1,
-                      "description": "The file holding the text: a path in the repo, from its root, read from the default branch beside the config file. A skill file's frontmatter is dropped."
-                    }
-                  },
-                  "required": [
-                    "file"
-                  ],
-                  "additionalProperties": false
-                }
-              ],
-              "description": "Replaces the default wording of the ask to a not-ready ticket's owner, the session its body names, below the facts of its ended wait. It may name the facts {issue}, {ready} and {claim}, which governor writes in. The text, or { \"file\": \"<path>\" }."
-            }
-          },
-          "additionalProperties": false
+          "minLength": 1,
+          "maxLength": 50,
+          "pattern": "^[^,]*$"
         }
       },
       "additionalProperties": false

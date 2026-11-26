@@ -5,8 +5,7 @@
  *
  * `auto` is whose issue or PR governor may set going by itself, with no
  * person choosing that ticket: the spec session or owner message after a
- * blocker's close or an ended wait (dispatch/unblocked-fire.mjs,
- * dispatch/waits.mjs), a periodic's issue counts and listings
+ * blocker's close (dispatch/unblocked-fire.mjs), a periodic's issue counts and listings
  * (dispatch/periodics.mjs), and the conflicts check's message and its
  * fallback session (dispatch/conflicts.mjs). It defaults to the authors with
  * a say, and may never hold `BOT` (dispatch/repo-config.mjs).
@@ -189,7 +188,7 @@ export const narrowedLists = (config) => {
 
 /** What each list opens, as the config check says it. */
 const OPENS = Object.freeze({
-  auto: 'governor sets work going by itself, with no person choosing the ticket, on their issues and PRs: a spec session or a message to the ticket\'s owner session when its wait ends or its blocker closes, a place in a periodic\'s counts and in the list its prompt carries, and the conflicts check\'s message and fallback session',
+  auto: 'governor sets work going by itself, with no person choosing the ticket, on their issues and PRs: a spec session or a message to the ticket\'s owner session when its blocker closes, a place in a periodic\'s counts and in the list its prompt carries, and the conflicts check\'s message and fallback session',
   task: 'their issues and PRs can become work: a ready label a person adds to their ticket starts pickup on it, and an @claude summons on their issue or PR starts a session there, with the issue or PR as its task',
   review: 'governor\'s PR review reads their pull requests: the model reads the title, the body and the changed lines, and a pass merges the pull request where review.merge is on, so their code can reach the default branch with no person reading it',
   relay: 'their text reaches a running session: their comments and reviews on a PR or issue a session owns or subscribes to are relayed into it, and a session link or a governor:subscribe line in the body of an issue or PR they open routes everyone\'s comments and events there into that session',

@@ -3,13 +3,13 @@
  * sends them to nobody (#565, under PRD #535). The turn that posts one tells
  * the roles that should hear it (dispatch/told.mjs): a wait warning, a fix
  * only the spec owner can make, tells the spec owner once, when it is
- * posted. The wait ticket's full comment tells nobody.
+ * posted.
  */
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { TOLD, specOwnerNote, specOwnerTeller, tellerFor, unmarked } from '../dispatch/told.mjs';
-import { WAIT_FULL_MARKER, WAIT_UNLINED_MARKER, WAIT_UNREADABLE_MARKER, repairRelative, reportUnreadable, waitLinks, waitRelativeMarker } from '../dispatch/waits.mjs';
+import { WAIT_UNREADABLE_MARKER, reportUnreadable } from '../dispatch/waits.mjs';
 
 const REPO = 'acme/factory';
 const SPEC = 'https://claude.ai/code/session_01SPECOWNER';
@@ -37,7 +37,7 @@ describe('the spec owner\'s message of governor\'s comment', () => {
     assert.match(note, /^Governor commented on #7:\n\nGovernor cannot read the date\.\n\n/);
     assert.doesNotMatch(note, /<!--/);
     assert.match(note, /You are its spec owner\./);
-    assert.equal(unmarked(`a\n\n${waitRelativeMarker('#3')}`), 'a');
+    assert.equal(unmarked(`a\n\n${WAIT_UNREADABLE_MARKER}`), 'a');
   });
 
   test('goes to the session the ticket\'s body names, read under trust.relay, once', async () => {
@@ -106,22 +106,14 @@ describe('the spec owner\'s message of governor\'s comment', () => {
   });
 });
 
-/** A reader whose ticket 7 has `thread`, and whose wait ticket is #9. */
-const reader = ({ thread = [] as Array<{ body: string }>, linked = false, cap = false } = {}) => {
+/** A reader whose ticket 7 has `thread`. */
+const reader = ({ thread = [] as Array<{ body: string }> } = {}) => {
   const comments: Array<{ issue: number, body: string }> = [];
   return {
     comments,
     reader: {
       allComments: async () => [...thread, ...comments],
       comment: async (issue: number, body: string) => { comments.push({ issue, body }); },
-      ticket: async (n: number) => ({ number: n, id: 900 + n, title: `Issue ${n}`, body: '', state: 'open', labels: [], pull: false }),
-      blockers: async () => (linked ? [{ id: 909, number: 9, state: 'open' }] : []),
-      blocking: async () => Array.from({ length: cap ? 50 : 0 }, (_, i) => ({ number: 100 + i, state: 'open' })),
-      addBlocker: async () => { if (cap) throw Object.assign(new Error('POST failed: 422 at most 50'), { status: 422 }); },
-      removeBlocker: async () => {},
-      issue: async (n: number) => ({ number: n, body: '', pull: false }),
-      issueClose: async (n: number) => ({ id: 900 + n, number: n, title: `Issue ${n}`, state: 'open', reason: null as string | null, closedAt: null as string | null }),
-      updateIssue: async () => {},
     },
   };
 };
@@ -135,37 +127,6 @@ describe('a wait warning tells the spec owner once, when it is posted', () => {
     // Said already: nothing more is posted or told.
     assert.equal(await reportUnreadable({ reader: f.reader, repo: REPO, issue: 7, value: 'soon', log: logs().log, tell }), 'already told');
     assert.equal(told.length, 1);
-  });
-
-  test('a relative line governor cannot settle, and one on a close that was not completed', async () => {
-    const { told, tell } = recorder();
-    const f = reader();
-    assert.equal(await repairRelative({ reader: f.reader as never, repo: REPO, issue: 7, after: { days: 3, issue: 143 }, link: false, prompts: {}, log: logs().log, tell }), 'commented');
-    assert.ok(f.comments[0]!.body.includes(waitRelativeMarker('#143')));
-    assert.deepEqual(told, [{ issue: 7, comment: f.comments[0]!.body }]);
-    const closed = recorder();
-    const g = reader();
-    g.reader.issueClose = async (n: number) => ({ id: 900 + n, number: n, title: `Issue ${n}`, state: 'closed', reason: 'not_planned', closedAt: '2026-11-02T09:00:00Z' });
-    assert.equal(await repairRelative({ reader: g.reader as never, repo: REPO, issue: 7, after: { days: 3, issue: 143 }, link: false, prompts: {}, log: logs().log, tell: closed.tell }), 'commented');
-    assert.deepEqual(closed.told.map((t) => t.comment), [g.comments[0]!.body]);
-  });
-
-  test('a ticket linked to the wait ticket with no line', async () => {
-    const { told, tell } = recorder();
-    const f = reader({ linked: true });
-    const links = waitLinks({ reader: f.reader as never, repo: REPO, board: 9, log: logs().log, tell });
-    assert.equal(await links!.unlined(7), 'commented');
-    assert.ok(f.comments[0]!.body.includes(WAIT_UNLINED_MARKER));
-    assert.deepEqual(told, [{ issue: 7, comment: f.comments[0]!.body }]);
-  });
-
-  test('the wait ticket\'s full comment is for people, and tells nobody', async () => {
-    const { told, tell } = recorder();
-    const f = reader({ cap: true });
-    const links = waitLinks({ reader: f.reader as never, repo: REPO, board: 9, log: logs().log, tell });
-    assert.equal(await links!.show(7), 'wait ticket full');
-    assert.ok(f.comments[0]!.body.includes(WAIT_FULL_MARKER));
-    assert.deepEqual(told, []);
   });
 
 });

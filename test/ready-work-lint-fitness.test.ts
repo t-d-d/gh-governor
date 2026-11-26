@@ -4,7 +4,7 @@
  * The repo's eslint config refuses a new caller of the checks in dispatch/
  * or scripts/, through one rule that reads a static import, an export-from
  * and an `import()` alike. Two callers stay: dispatch/checklist.mjs reads `labelRow`,
- * and dispatch/waits.mjs reads `isWaiting` for a moved date.
+ * and dispatch/waits.mjs reads `isWaiting` for a date that has passed.
  */
 
 import { test, describe } from 'node:test';

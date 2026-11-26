@@ -317,6 +317,12 @@ describe('waitOf: the `Blocked until:` line', () => {
       assert.deepEqual(waitOf(`Blocked until: ${value}`), { wait: { unreadable: value } }, value);
     }
   });
+
+  test('a relative line, a number of days after an issue closes, is unreadable: governor reads only a date', () => {
+    for (const value of ['3 days after #143 closes', '1 day after acme/factory#12 closes']) {
+      assert.deepEqual(waitOf(`Blocked until: ${value}`), { wait: { unreadable: value } }, value);
+    }
+  });
 });
 
 describe('isWaiting', () => {
@@ -394,9 +400,9 @@ describe('ticketStatus: what keeps a ticket from starting', () => {
     }
   });
 
-  test('a date still to come and a relative line hold as a line; a date passed holds nothing', () => {
+  test('a date still to come holds as a line; a date passed holds nothing', () => {
     assert.deepEqual(ticketStatus({ state: 'open', labels: READY_ON, wait: { until: '2026-11-05' } }, rules), { open: true, labels: 'ready', holds: ['line'] });
-    assert.deepEqual(ticketStatus({ state: 'open', labels: NOT_READY_ON, wait: { after: { days: 3, issue: 7 } } }, rules), { open: true, labels: 'not-ready', holds: ['line'] });
+    assert.deepEqual(ticketStatus({ state: 'open', labels: NOT_READY_ON, wait: { until: '2026-11-05' } }, rules), { open: true, labels: 'not-ready', holds: ['line'] });
     assert.deepEqual(ticketStatus({ state: 'open', labels: READY_ON, wait: { until: '2026-11-04' } }, rules), { open: true, labels: 'ready', holds: [] });
   });
 
@@ -407,7 +413,7 @@ describe('ticketStatus: what keeps a ticket from starting', () => {
 
   test('a line or unreadable hold only where the labels read ready or not ready, as waitHolds says', () => {
     for (const on of [CLAIMED_ON, EXCLUDED_ON]) {
-      for (const wait of [{ until: '2026-11-05' }, { after: { days: 3, issue: 7 } }, { unreadable: 'next week' }]) {
+      for (const wait of [{ until: '2026-11-05' }, { unreadable: 'next week' }]) {
         assert.deepEqual(ticketStatus({ state: 'open', labels: on, wait }, rules), { open: true, labels: labelRow(on, FACTORY_LABELS), holds: [] });
       }
     }

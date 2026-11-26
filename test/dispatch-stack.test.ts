@@ -184,7 +184,7 @@ describe('fitness: the dispatcher keeps its state in one table, and the receiver
   });
 
   test('the task reaches the state table\'s items, and only puts the hook table\'s', () => {
-    const items = new Set(['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query']);
+    const items = new Set(['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:Query']);
     const grants = dynamoGrants(taskStatements);
     const onState = grants.filter((s) => resourcesOf(s).includes('${DispatchStateTable.Arn}'));
     const onHooks = grants.filter((s) => resourcesOf(s).includes('${DispatchHookTable.Arn}'));
@@ -246,7 +246,7 @@ describe('infra/governor.cfn.yml — the grants', () => {
   test('the task reads its three secrets, writes the login alone, and nothing else', () => {
     assert.deepEqual(
       [...new Set(taskStatements.flatMap(actionsOf))].sort(),
-      ['dynamodb:DeleteItem', 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Query', 'dynamodb:UpdateItem', 'secretsmanager:GetSecretValue', 'secretsmanager:PutSecretValue', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:ReceiveMessage', 'sqs:SendMessage'],
+      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Query', 'dynamodb:UpdateItem', 'secretsmanager:GetSecretValue', 'secretsmanager:PutSecretValue', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:ReceiveMessage', 'sqs:SendMessage'],
     );
     const puts = taskStatements.filter((s) => actionsOf(s).includes('secretsmanager:PutSecretValue'));
     assert.equal(puts.length, 1);

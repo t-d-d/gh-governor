@@ -56,7 +56,7 @@ export const OLD_CONFIG_PATH = '.github/dispatch.json';
  * a ticket that is not ready to pick up (`unblocked`, dispatch/unblocked.mjs), CI and
  * deploy messages, branch-run messages, the conflicts check,
  * deployed-label job fires, the PR review, the heartbeat, periodics,
- * hooks, what governor does when a ticket's wait ends (`waits`,
+ * hooks, the line on making a ticket wait and its optional label (`waits`,
  * dispatch/waits.mjs), and the sign-off sweep's archive and the standing
  * line's ask to sign off (`signOff`, scripts/lib/session-signoff.mjs),
  * and the three rules every session follows (`sessionRules`,
@@ -94,7 +94,7 @@ export const SECTIONS = Object.freeze(SWITCHES.filter((name) => name !== 'deploy
  * turning one on has a `pickup` section with its labels, which may set
  * `"enabled": false`.
  */
-export const LABEL_READERS = Object.freeze(['unblocked', 'waits', 'prReview', 'issueReviews']);
+export const LABEL_READERS = Object.freeze(['unblocked', 'prReview', 'issueReviews']);
 
 /** The effort levels the CLI's `--effort` takes, lowest first. */
 export const EFFORTS = Object.freeze(/** @type {const} */ (['low', 'medium', 'high', 'xhigh', 'max']));
@@ -117,7 +117,6 @@ const RUN_STARTS = Object.freeze({
   deployMessages: 'the triage session a red deploy starts',
   conflicts: 'the session that takes a conflicted PR over where its own session is archived',
   prReview: 'the review\'s model run',
-  waits: 'the spec session an ended wait starts',
 });
 
 /** The sections that take their own `model` and `effort` ({@link runOf}). */
@@ -158,7 +157,6 @@ export const SECTION_PROMPTS = Object.freeze({
   subscribeMessages: { prompt: 'subscribed' },
   conflicts: { prompt: 'conflicts' },
   unblocked: { prompts: { ready: 'unblockedReady', spec: 'unblockedSpec', ownerSpec: 'unblockedOwnerSpec', claimed: 'unblockedClaimed', notPlanned: 'unblockedNotPlanned' } },
-  waits: { prompts: { spec: 'waitEndedSpec', ownerSpec: 'waitEndedOwnerSpec' } },
   ciMessages: { prompts: { breaker: 'ciBreaker', triage: 'ciTriage', bumpTriage: 'ciBumpTriage' } },
   deployMessages: { prompts: { triage: 'prodTriage', green: 'deployGreen', greenMany: 'deployGreenMany', red: 'deployRed', redMany: 'deployRedMany' } },
 });
@@ -181,7 +179,7 @@ export const PROMPT_KEYS = Object.freeze(Object.fromEntries(Object.entries(SECTI
  * @type {Readonly<Record<string, string>>}
  */
 const SWITCH_DESCRIPTIONS = Object.freeze({
-  pickup: 'A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `sweepHours` sets. Its labels serve the features that read them, so a file turning on `unblocked`, `waits`, `prReview` or `issueReviews` has this section, with `"enabled": false` if pickup is to stay off.',
+  pickup: 'A session per ready ticket, picked up on its label, on the close of its last open blocker, and on the sweep at the interval `sweepHours` sets. Its labels serve the features that read them, so a file turning on `unblocked`, `prReview` or `issueReviews` has this section, with `"enabled": false` if pickup is to stay off.',
   summons: 'A session per `@claude` remark, and a dispatch started by hand.',
   prMessages: 'Messages into the session a PR names, or the newest live session holding its branch.',
   subscribeMessages: 'Messages to sessions subscribed by a `governor:subscribe` line, and to an issue\'s filer. On a claimed ticket, a comment, a close and a reopen also reach the sessions building it, and each message names the ticket\'s spec owner and builders. Governor\'s own comments on an issue reach no session through it: the turn that posts one tells the roles itself. A session hears a `deployed:` label only through a subscribe line for `deploys`.',
@@ -196,7 +194,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   heartbeat: 'Governor records each fire on the issue `issue` names: a line for pickup and one per periodic, under the `<!-- governor:heartbeat -->` marker its body must carry. Needs `issue` when on.',
   periodics: 'A session per periodic in `sessions`, each time its day limit passes or one of its counts is reached. A due periodic starts a new session even while its last one is still open, unless that session is in the middle of a turn: then it waits for the turn to end. Needs at least one periodic when on.',
   hooks: 'A session on a hook\'s prompt when a signed request fires one of the hooks `sessions` holds. A fire while the hook\'s last session is open goes into that session as a message. Needs at least one hook when on.',
-  waits: 'When a ticket\'s `Blocked until:` date or time passes and it is not ready, one comment saying the wait ended, and, if `unblocked` is on, its spec work, which goes to its owner first as a blocker\'s close does. Every session governor starts is told how to make a ticket wait. The hold itself needs no switch.',
+  waits: 'Every session governor starts is told how to make a ticket wait with a `Blocked until:` line. With `label` set, the hourly fire also takes that label off each open ticket whose date has passed, before its sweep. The hold itself needs no switch: every pickup path holds a ticket whose date is still to come, whatever this section says.',
   signOff: 'Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off.',
   sessionRules: 'The three rules every session in the repo follows: sign what you post, only an owner edits a body or pushes to a PR\'s branch, and comment on what you do not own. Every session governor starts reads them in the lines governor adds to its opening prompt, in place of the signing line. Sessions a person starts read them in the block the repo copies into its `CLAUDE.md`, or the file `file` names, and the config check warns where that block is missing or old. With `signOff` on as well, an issue a session owns holds its ask to sign off only where it carries a ready label or the claim label, since signing off gives it up. Governor also offers an issue nobody owns to a session that signs a comment on it, confirms a take by a session that ends its body with its own link, and, with `subscribeMessages` on, writes a live owner\'s link back after another session moves it. With `prMessages` on, it does the same for a PR\'s session link. Whatever this switch says, governor searches the login\'s live sessions in the repo for the author of a session\'s post that names no session, and for whoever edited an issue\'s body, so neither is sent its own change back. Under this switch, the author is told once to sign its post, and a session that edited another session\'s issue is told once to comment instead.',
 });
@@ -391,16 +389,14 @@ const heartbeatSchema = z.strictObject({
 });
 
 /**
- * The wait ticket (dispatch/waits.mjs): with `waits` on, governor links each
- * waiting ticket as blocked by it, so GitHub's sidebar shows the ticket is
- * held, and removes the link when the wait ends. The link is only for
- * display: the ticket's line holds it.
+ * The wait label (dispatch/waits.mjs): with `waits` on, the filer adds it
+ * with a ticket's `Blocked until:` line, so GitHub lists every waiting
+ * ticket by it, and the hourly fire takes it off once the date has passed.
+ * Governor never adds it. The line holds the ticket either way.
  */
 const waitsSchema = z.strictObject({
   enabled,
-  ...runFields(/** @type {string} */ (RUN_STARTS.waits)),
-  issue: z.number().int().positive().optional().meta({ description: 'The number of the wait ticket: governor links each waiting ticket as blocked by it, and removes the link when the wait ends. An issue can block at most 50. Without it, governor links nothing.' }),
-  ...promptFields('waits'),
+  label: label.optional().meta({ description: 'A label the filer adds with a ticket\'s `Blocked until:` line. The hourly fire takes it off each open ticket whose date has passed, before its sweep, and leaves it on a ticket whose date is still to come, whose line governor cannot read, or that has no line. Governor never adds it. Put it on a ticket only where the date is its one wait. Without it, governor removes no label.' }),
 });
 
 /**
@@ -414,8 +410,8 @@ const waitsSchema = z.strictObject({
 const pickupSchema = z.strictObject({
   enabled,
   ...runFields(/** @type {string} */ (RUN_STARTS.pickup)),
-  ready: z.array(label).min(1).optional().meta({ description: 'Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. Every label a ready ticket carries.' }),
-  claim: label.optional().meta({ description: 'Required when pickup, `unblocked`, `waits`, `prReview` or `issueReviews` is on. The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up.' }),
+  ready: z.array(label).min(1).optional().meta({ description: 'Required when pickup, `unblocked`, `prReview` or `issueReviews` is on. Every label a ready ticket carries.' }),
+  claim: label.optional().meta({ description: 'Required when pickup, `unblocked`, `prReview` or `issueReviews` is on. The label governor claims a ticket with before its session starts. It is created in a repo that lacks it. A ticket carrying it is never picked up.' }),
   claimRemoves: z.array(label).default([]).meta({ description: 'The ready labels the claim takes off, and a failed launch puts back. Default none.' }),
   exclude: z.array(label).default(['type: prd']).meta({ description: 'Labels that keep a ticket out: a ticket carrying any of them is never picked up, and a blocker\'s close starts no session for it. It cannot name a ready label. Default `["type: prd"]`. A hold label, one that marks a ticket as needing a person or staying not ready (`mode: human`, say), belongs here, or a blocker\'s close starts a session to rewrite that ticket\'s spec.' }),
   sweepHours: z.number().int().min(1).optional().meta({ description: 'How many whole hours the hourly fire leaves between two sweeps of the repo\'s ready tickets, at least one. Default one, which sweeps at every fire.' }),
@@ -441,7 +437,7 @@ const trustSchema = z.strictObject({
   auto: z.array(z.enum(TRUST_VALUES))
     .refine((list) => !list.includes(BOT), 'BOT is refused here: governor sets nothing going by itself on a bot\'s issue or PR, which no person has read')
     .optional()
-    .meta({ description: 'Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket\'s wait ends or its blocker closes, a periodic\'s issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `task`, `relay` and `review` where the file sets them. `BOT` is refused.' }),
+    .meta({ description: 'Whose issues and PRs governor sets going by itself, with no person choosing the ticket, by `author_association`: a spec session or owner message when a ticket\'s blocker closes, a periodic\'s issue counts and listings, and the conflicts check. Default `OWNER`, `MEMBER` and `COLLABORATOR`, narrowed to fit `task`, `relay` and `review` where the file sets them. `BOT` is refused.' }),
   task: z.array(z.enum(TRUST_VALUES))
     .refine((list) => !list.includes(BOT), 'BOT is refused here: a bot\'s issue or PR is a rule firing, which no person has read, so no work may be about it')
     .optional()
@@ -761,7 +757,7 @@ const toConfig = (file) => {
     config.review = { ...lists, checklist };
   }
   if (heartbeat?.issue !== undefined) config.heartbeat = { issue: heartbeat.issue };
-  if (waits?.issue !== undefined) config.waits = { issue: waits.issue };
+  if (waits?.label !== undefined) config.waits = { label: waits.label };
   if (pickup?.sweepHours !== undefined) config.pickup = { sweepHours: pickup.sweepHours };
   if (signOff?.heldMessage === true) config.signOff = { heldMessage: true };
   if (sessionRules?.file !== undefined) config.sessionRules = { file: sessionRules.file };
@@ -925,7 +921,7 @@ export const configSchema = fileSchema.transform(toConfig)
  * @typedef {{ enabled?: boolean, reviews: IssueReview[] }} IssueReviews
  *   The `issueReviews` section: `enabled` as the file sets it, and each
  *   review, in the order of the file's keys.
- * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { issue: number }, pickup?: Pickup, trust?: Trust, signOff?: { heldMessage: true }, sessionRules?: { file: string }, runs?: Runs, periodics: Periodic[], hooks: Hook[], issueReviews?: IssueReviews }} RepoConfig
+ * @typedef {{ environment: string, labels: { ready: string[], claim: string, claimRemoves: string[], exclude: string[] }, features: Record<string, boolean | undefined>, prompts: Record<string, string | undefined>, workflows: Workflows, review?: Review, heartbeat?: Heartbeat, waits?: { label: string }, pickup?: Pickup, trust?: Trust, signOff?: { heldMessage: true }, sessionRules?: { file: string }, runs?: Runs, periodics: Periodic[], hooks: Hook[], issueReviews?: IssueReviews }} RepoConfig
  *   `labels.ready`: every label a ready ticket carries. `labels.claim`: the
  *   label the dispatcher claims a ticket with. `labels.claimRemoves`: the
  *   ready labels the claim takes off, and a failed launch puts back.
@@ -936,8 +932,8 @@ export const configSchema = fileSchema.transform(toConfig)
  *   `review`: the PR review's settings, where the file's `prReview`
  *   section has a prompt, which is `checklist` here.
  *   `heartbeat`: the issue governor's heartbeat goes into.
- *   `waits`: the wait ticket waiting tickets are linked to, where the file
- *   names one.
+ *   `waits`: the label the hourly fire takes off a ticket whose date has
+ *   passed, where the file names one.
  *   `pickup`: pickup's sweep interval, where the file sets it.
  *   `trust`: whose GitHub text governor acts on, where the file sets it.
  *   `signOff`: where the file sets `heldMessage`, the sweep tells a

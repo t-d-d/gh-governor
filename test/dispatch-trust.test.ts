@@ -100,7 +100,7 @@ describe('what a trust list the file widens exposes', () => {
     assert.match(String(rest[0]), /^trust\.task: /);
     assert.match(String(said), /^trust\.auto: /);
     assert.match(String(said), /CONTRIBUTOR and NONE/);
-    for (const route of [/wait ends/, /blocker closes/, /periodic/, /conflicts/]) assert.match(String(said), route);
+    for (const route of [/blocker closes/, /periodic/, /conflicts/]) assert.match(String(said), route);
     assert.doesNotMatch(String(said), /cannot work/);
   });
 });

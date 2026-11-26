@@ -43,27 +43,11 @@ import { PICKUP_BY, SUMMONERS, waitLine } from '../../dispatch/webhook/fire.mjs'
 /**
  * What a ticket's `Blocked until:` line says: the date it waits for, as
  * `YYYY-MM-DD`, or the time, as `YYYY-MM-DDTHH:MMZ` with any seconds the
- * line gives (`waitEnd` reads either); a number of days after an issue
- * closes (`after`), with that issue's repo where it is not the ticket's; or
- * the value governor could not read as any of them.
+ * line gives (`waitEnd` reads either); or the value governor could not
+ * read as either.
  *
- * @typedef {{ days: number, issue: number, repo?: string }} After
- * @typedef {{ until: string } | { after: After } | { unreadable: string }} Wait
+ * @typedef {{ until: string } | { unreadable: string }} Wait
  */
-
-/**
- * A relative line's value: `<N> days after #<issue> closes`, or
- * `<owner>/<repo>#<issue>` for another repo's issue, in any case, with any
- * text after `closes` past a space.
- */
-export const RELATIVE_WAIT = /^(\d+)\s+days?\s+after\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)\s+closes(?=\s|$)/i;
-
-/**
- * The longest relative wait governor reads, a hundred years, so the date a
- * close gives is always a `YYYY-MM-DD` the calendar holds. A longer count is
- * unreadable.
- */
-export const MAX_RELATIVE_DAYS = 36500;
 
 /**
  * @typedef {object} BlockerRow
@@ -88,9 +72,9 @@ export const MAX_RELATIVE_DAYS = 36500;
  * `not-ready`. Only `ready` may be picked up.
  *
  * The selection (`selectReadyWork`), the claim's second read
- * (dispatch/launch-plan.mjs), the unblocked row (`ticketRow`, dispatch/unblocked.mjs)
- * and wait end (dispatch/waits.mjs) read it through `ticketStatus`, so a rule
- * added here holds in all four. Copies of it drifted once: the selection learned the excluded
+ * (dispatch/launch-plan.mjs) and the unblocked row (`ticketRow`,
+ * dispatch/unblocked.mjs) read it through `ticketStatus`, so a rule added
+ * here holds in all three. Copies of it drifted once: the selection learned the excluded
  * labels and the claim did not, so a ticket labelled to keep out between
  * the plan and its launch was claimed anyway.
  *
@@ -178,12 +162,9 @@ export const waitEnd = (until) => {
  * date, `YYYY-MM-DD`, that exists on the calendar, and may go on to a time
  * of day in UTC, past a space or a `T`: `HH:MM` or `HH:MM:SS` on the
  * 24-hour clock, with a `Z` after it or none. Text after the date or the
- * time, past a space, is a reason and is ignored. So is a relative value,
- * `<N> days after #<issue> closes` with `N` from 1 to {@link MAX_RELATIVE_DAYS}
- * ({@link RELATIVE_WAIT}),
- * which holds the ticket until governor rewrites it into its date
- * (dispatch/waits.mjs). Any other value is unreadable, which
- * holds the ticket too (`isWaiting`): a line a person wrote must never be
+ * time, past a space, is a reason and is ignored. Any other value is
+ * unreadable, a number of days after an issue closes included, which holds
+ * the ticket too (`isWaiting`): a line a person wrote must never be
  * silently ignored. A word after the date that starts as a time does, with
  * digits and then a colon, `am` or `pm`, and is no time governor reads, such
  * as `9:00`, `2pm` or `14:00+11:00`, is unreadable too: read as a reason, it
@@ -204,12 +185,6 @@ export const waitOf = (body) => {
   const clock = time === undefined ? '' : TIME_OF_DAY.exec(time)?.[1];
   const until = clock === undefined ? '' : clock === '' ? date : `${date}T${clock}Z`;
   if (!Number.isNaN(waitEnd(until))) return { wait: { until } };
-  const relative = RELATIVE_WAIT.exec(value);
-  const days = Number(relative?.[1]);
-  const issue = Number(relative?.[3]);
-  if (relative !== null && Number.isSafeInteger(days) && days >= 1 && days <= MAX_RELATIVE_DAYS && Number.isSafeInteger(issue) && issue >= 1) {
-    return { wait: { after: { days, issue, ...(relative[2] === undefined ? {} : { repo: relative[2] }) } } };
-  }
   return { wait: { unreadable: value } };
 };
 
@@ -223,29 +198,14 @@ export const waitOf = (body) => {
 export const unreadableOf = ({ wait }) => (wait !== undefined && 'unreadable' in wait ? wait.unreadable : undefined);
 
 /**
- * Whether a ticket of `repo` has a relative line waiting on `closed`: the
- * issue its line names, in the line's repo, or the ticket's where it names
- * none. Repo names compare in any case, as GitHub's do.
- *
- * @param {Wait | undefined} wait
- * @param {string} repo The ticket's.
- * @param {{ repo: string, number: number }} closed
- */
-export const waitsOnClose = (wait, repo, closed) =>
-  wait !== undefined && 'after' in wait && wait.after.issue === closed.number
-  && (wait.after.repo ?? repo).toLowerCase() === closed.repo.toLowerCase();
-
-/**
  * Whether a ticket's own `Blocked until:` line holds it at `now`: a date or
  * a time still to come, whose wait ends at 00:00 UTC on the date or at the
- * time (`waitEnd`), a relative line
- * governor has not rewritten into its date yet, or a line governor could
- * not read. A row with no line is not held.
+ * time (`waitEnd`), or a line governor could not read. A row with no line is not held.
  *
  * Like `labelRow` and `isBlocked`, every readiness path asks this through
  * `ticketStatus`, which reads it only where `waitHolds` says the labels let
- * the line hold. Wait end (dispatch/waits.mjs) also calls it on a line
- * alone, to ask whether a person moved the date later. It holds in every served
+ * the line hold. The wait label's pass (dispatch/waits.mjs) also calls it
+ * on a line alone, to ask whether its date has passed. It holds in every served
  * repo, whatever its config file says.
  *
  * @param {{ wait?: Wait }} issue
@@ -478,8 +438,7 @@ export const addedBy = (adds, labels) => labels.map((label) => {
 /**
  * The marker on a not-planned comment that says governor took a ready label
  * off, on a first run or a retry (dispatch/unblocked.mjs). It records the
- * hold: a later close of another blocker, or an ended wait, reads the
- * thread for it ({@link heldUnreadied}).
+ * hold: a later close of another blocker reads the thread for it ({@link heldUnreadied}).
  */
 export const UNREADIED_MARKER = '<!-- governor:unreadied -->';
 
@@ -505,8 +464,7 @@ export const heldUnreadied = (thread) => {
  * unanswered unreadied comment ({@link heldUnreadied}). A dispatch comment
  * holds nothing: the ticket's body names its spec session, and a message to
  * one that is archived is refused. The unblocked row
- * (`planUnblocked`, dispatch/unblocked-fire.mjs) and wait end (`endedWaits`, dispatch/waits.mjs) ask
- * this.
+ * (`planUnblocked`, dispatch/unblocked-fire.mjs) asks this.
  *
  * @param {ReadonlyArray<{ body: string, ours?: boolean }>} thread The ticket's whole thread, oldest first.
  */
