@@ -153,7 +153,8 @@ const RULES_BLOCK_OF = /** @type {Record<string, RulesLine['block']>} */ (Object
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 const PICKUP = /^- pickup: last sweep (\S+), started (\d+) sessions?$/;
-const PERIODIC = new RegExp([
+/** A periodic's line, its measures' words read from the table when it runs (dispatch/webhook/measures.mjs). */
+const periodicLine = () => new RegExp([
   '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (last fire|first read) (\\S+)',
   `(?:, by (?:its day limit of (\\d+) days?|its hour limit of (\\d+) hours?|(\\d+) (${MEASURES.flatMap((m) => m.line).map(escaped).join('|')})))?`,
   `, session (\\S+), (${Object.values(STATES).join('|')})$`,
@@ -189,7 +190,7 @@ const lineOf = (text) => {
   if (pickup !== null) return { pickup: { at: String(pickup[1]), started: Number(pickup[2]) } };
   const rules = RULES.exec(text);
   if (rules !== null) return { rules: { file: JSON.parse(String(rules[1])), block: /** @type {RulesLine['block']} */ (RULES_BLOCK_OF[String(rules[2])]) } };
-  const m = PERIODIC.exec(text);
+  const m = periodicLine().exec(text);
   if (m === null) return null;
   const [, name, read, at, days, hours, number, counted, session, state] = m;
   // Governor writes `first read` only with `not fired yet`, and `last fire`

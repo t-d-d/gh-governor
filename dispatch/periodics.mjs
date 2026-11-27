@@ -155,26 +155,29 @@ export const windowOf = (reader, base, auto = AUTO) => {
  * it would have served.
  *
  * @param {Window} window
- * @param {(kind: Count) => string | undefined} oldest The oldest last fire among the periodics read that count `kind`.
+ * @param {(kind: Count) => Promise<string | undefined>} oldest The oldest last fire among the periodics that will read `kind`.
  * @returns {Window}
  */
 export const sharedWindow = (window, oldest) => {
-  /** @type {Map<Count, { since: string, rows: Promise<Counted[]> }>} */
+  /** @type {Map<Count, Promise<{ since: string, rows: Counted[] }>>} */
   const lists = new Map();
   return async (kind, since) => {
     let list = lists.get(kind);
     if (list === undefined) {
-      const from = oldest(kind);
-      const start = from !== undefined && Date.parse(from) < Date.parse(since) ? from : since;
-      list = { since: start, rows: window(kind, start) };
+      list = (async () => {
+        const from = await oldest(kind);
+        const start = from !== undefined && Date.parse(from) < Date.parse(since) ? from : since;
+        return { since: start, rows: await window(kind, start) };
+      })();
       lists.set(kind, list);
     }
-    if (since === list.since) return list.rows;
+    const { since: start, rows } = await list;
+    if (since === start) return rows;
     const after = Date.parse(since);
     // A time before the list's start is never asked for: the oldest covers
-    // every periodic read. Were it, the list could not hold its rows.
-    if (after < Date.parse(list.since)) return window(kind, since);
-    return (await list.rows).filter((row) => Date.parse(row.at) > after);
+    // every periodic that reads it. Were it, the list could not hold its rows.
+    if (after < Date.parse(start)) return window(kind, since);
+    return rows.filter((row) => Date.parse(row.at) > after);
   };
 };
 
@@ -328,12 +331,26 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     }
   }
   /** @param {Count} kind */
-  const oldest = (kind) => considered.reduce((/** @type {string | undefined} */ from, periodic, i) => {
-    const record = records[i];
-    const read = record !== undefined && 'read' in record ? record.read : null;
-    if (read === null || inGap(periodic, read, now) || !countsOf(periodic).some(([k]) => k === kind)) return from;
-    return from === undefined || Date.parse(read.at) < Date.parse(from) ? read.at : from;
-  }, undefined);
+  // On an event's turn, a measure other than the event's is read only by
+  // the periodics the event brings due, so only they set where its list starts.
+  const oldest = async (/** @type {Count} */ kind) => {
+    /** @type {string | undefined} */
+    let from;
+    for (const [i, periodic] of considered.entries()) {
+      const record = records[i];
+      const read = record !== undefined && 'read' in record ? record.read : null;
+      const counts = countsOf(periodic);
+      if (read === null || inGap(periodic, read, now) || !counts.some(([k]) => k === kind)) continue;
+      if (event !== undefined && kind !== event) {
+        const n = counts.find(([k]) => k === event)?.[1] ?? Infinity;
+        const reached = await shared(event, read.at).then((rows) => rows.length >= n, () => false);
+        if (!reached) continue;
+      }
+      if (from === undefined || Date.parse(read.at) < Date.parse(from)) from = read.at;
+    }
+    return from;
+  };
+  /** @type {Window} */
   const shared = sharedWindow(window, oldest);
   for (const [i, periodic] of considered.entries()) {
     const { name } = periodic;

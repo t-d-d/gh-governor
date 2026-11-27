@@ -17,6 +17,7 @@ import { MEASURES, measureNames } from '../dispatch/webhook/measures.mjs';
 import { routeEvent } from '../dispatch/webhook/route.mjs';
 import { parseFire } from '../dispatch/webhook/fire.mjs';
 import { duePeriodics, periodicPrompt, windowOf } from '../dispatch/periodics.mjs';
+import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat } from '../dispatch/heartbeat.mjs';
 
 const REPO = 'acme/factory';
 const OWNERS = ['acme'];
@@ -144,6 +145,13 @@ describe('a measure added to the table alone', () => {
     const prompt = periodicPrompt(periodic.prompt, read, due[0]!.windows);
     assert.match(prompt, new RegExp(`Issues reopened since ${hoursAgo(5)}: 1\\n- #9 Back again`));
   }));
+
+  test('the heartbeat writes its line in its own words, and reads it back', () => withFake(() => {
+    const line = { name: 'Reopen review', at: hoursAgo(1), by: { count: 'issuesReopened', number: 3 }, session: 'https://claude.ai/code/session_01RUN', state: 'open' };
+    const body = stampHeartbeat(`${HEARTBEAT_MARKER}\n`, { periodics: [line as never] });
+    assert.match(body, /, by 3 issues reopened, /);
+    assert.deepEqual(readHeartbeat(body).periodics, [line]);
+  }));
 });
 
 describe('one list read shared by every limit', () => {
@@ -174,6 +182,18 @@ describe('one list read shared by every limit', () => {
     const { due } = await duePeriodics({ repo: REPO, periodics: [a, b, fresh] as never, state, now: NOW, log, window: window as never, busy: finished });
     assert.deepEqual(reads, [{ kind: 'merges', since: hoursAgo(4) }]);
     assert.deepEqual(due.map((d) => d.periodic.name), ['A', 'B']);
+  });
+
+  test('on an event\'s turn, another measure\'s list starts from the oldest last fire among the periodics the event brings due', async () => {
+    const reads: Array<{ kind: string; since: string }> = [];
+    const lists: Record<string, ReturnType<typeof item>[]> = { merges: [item(1, 1)], issuesOpened: [item(2, 1)] };
+    const window = async (kind: string, since: string) => { reads.push({ kind, since }); return lists[kind] ?? []; };
+    const slow = { name: 'Slow', prompt: 'p', counts: { merges: 500, issuesOpened: 5 } };
+    const quick = { name: 'Quick', prompt: 'p', counts: { merges: 1, issuesOpened: 1 } };
+    const state = store({ Slow: { at: hoursAgo(1400), session: 's', baseline: false }, Quick: { at: hoursAgo(2), session: 's', baseline: false } });
+    const { due } = await duePeriodics({ repo: REPO, periodics: [slow, quick] as never, state, now: NOW, log, window: window as never, busy: finished, event: 'merges' as never });
+    assert.deepEqual(due.map((d) => d.periodic.name), ['Quick']);
+    assert.deepEqual(reads, [{ kind: 'merges', since: hoursAgo(1400) }, { kind: 'issuesOpened', since: hoursAgo(2) }]);
   });
 
   test('a shared read that fails refuses every periodic that counts on it', async () => {

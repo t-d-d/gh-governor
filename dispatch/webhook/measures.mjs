@@ -53,7 +53,9 @@ const issueNumbered = (payload) => typeof payload?.issue?.number === 'number';
 
 /**
  * The table. A test may add an entry and take it out again, so every
- * reader reads it when it runs, never a copy taken at load.
+ * reader reads it when it runs, never a copy taken at load. The one
+ * exception is the config schema (dispatch/repo-config.mjs), built once
+ * at load: an entry a test adds is not a key its `when` takes.
  *
  * @type {Measure[]}
  */
