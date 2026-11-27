@@ -207,7 +207,7 @@ Governor records each fire on the issue `issue` names: a line for pickup and one
 
 ## `periodics`
 
-A session per periodic in `sessions`, each time its day limit passes or one of its counts is reached. A due periodic starts a new session even while its last one is still open, unless that session is in the middle of a turn: then it waits for the turn to end. Needs at least one periodic when on.
+A session per periodic in `sessions`, each time its day limit passes or one of its counts is reached. A merge into the default branch, an issue opened and an issue closed each queue a check of their own, so a merge runs two turns, its conflict check and its periodics check, and a count is checked whether or not the conflict check ran. A day limit comes due on the hourly sweep. A due periodic starts a new session even while its last one is still open, unless that session is in the middle of a turn: then it waits for the turn to end. Needs at least one periodic when on.
 
 | Key | Type | Default | What it holds |
 |---|---|---|---|

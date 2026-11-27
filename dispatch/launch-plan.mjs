@@ -1,6 +1,6 @@
 /**
  * The launches a planner planned, started in turn: `planSweep`
- * (dispatch/sweep.mjs), `planHook` (dispatch/hooks.mjs), `planUnblocked`
+ * (dispatch/sweep.mjs), `planHook` (dispatch/hooks.mjs), `planPeriodics` (dispatch/periodics-fire.mjs), `planUnblocked`
  * (dispatch/unblocked-fire.mjs) and `planDispatch` (dispatch/dispatch-fire.mjs)
  * each hand `turnFor` (dispatch/turn.mjs) a `Plan`, and `launchPlan` starts
  * it: the claims, the launch window, each launch through the launcher's

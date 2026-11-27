@@ -40,8 +40,9 @@
  * `conflicts` a PR merged into the default branch and its merge commit
  * (dispatch/conflicts.mjs). Each of those names the default branch its
  * payload did: no fire takes it for `main`. A `periodics` fire names an
- * event a periodic counts that queued no other fire; any fire may carry one
- * as `counted` (dispatch/periodics.mjs). A `hook` names a hook in the
+ * event a periodic counts as `counted`, and for a merge the default branch
+ * as `base`: every such event queues one beside whatever else it queues,
+ * and no other fire carries `counted` (dispatch/periodics.mjs). A `hook` names a hook in the
  * repo's config file that an outside system fired, the key version it was
  * signed with, when the receiver took it, and the caller's text: no prompt,
  * since the task reads the hook's from the file (route.mjs, dispatch/hooks.mjs).
@@ -74,9 +75,9 @@ const EVENTS = /** @type {ReadonlySet<string>} */ (new Set(SUBSCRIPTION_EVENTS))
 
 /**
  * The events a periodic can count (dispatch/periodics.mjs): a merge into
- * the default branch, an issue opened, an issue closed. A fire for one of
- * them carries it as `counted`, and the turn runs the repo's periodic check
- * on it, whatever else the fire is for.
+ * the default branch, an issue opened, an issue closed. Each queues a
+ * `periodics` fire naming it as `counted`, whose turn plans the repo's due
+ * periodics.
  */
 export const COUNTS = /** @type {const} */ (['merges', 'issuesOpened', 'issuesClosed']);
 
@@ -444,7 +445,9 @@ export const lastDispatch = (comments) => {
  *   one its name carries, else the head.
  * @typedef {{ kind: 'review', pr?: number, headSha?: string }} ReviewFire
  * @typedef {{ kind: 'conflicts', pr: number, sha: string, base: string }} ConflictsFire A PR merged into the default branch, `base`, and its merge commit.
- * @typedef {{ kind: 'periodics' }} PeriodicsFire An event a periodic counts, which queued no other fire: the turn checks the repo's periodics alone.
+ * @typedef {{ kind: 'periodics', counted: Count, base?: string }} PeriodicsFire An event a periodic counts:
+ *   the turn plans the repo's periodics that count it (dispatch/periodics-fire.mjs).
+ *   `base`: for a merge, the default branch it merged into.
  * @typedef {{ kind: 'hook', hook: string, keyVersion: number, text: string, at: string }} HookFire
  *   A hook an outside system fired: its name, the key version its request
  *   was signed with, the caller's text, and when the receiver took it.
@@ -504,14 +507,10 @@ export const lastDispatch = (comments) => {
  *   same edit made the body close an issue its old body did not, so the
  *   turn runs the `closingPr` fire's check once the owner is settled, in
  *   place of a `closingPr` fire of its own.
- * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | IssueReviewFire | TicketFire | ClosingPrFire | OfferFire | PrEditFire | AuthorFire) & { repo?: string, counted?: Count }} Fire
+ * @typedef {(ScheduleFire | ProbeFire | DispatchFire | MessageFire | WorkflowFire | BranchRunFire | JobFire | ReviewFire | ConflictsFire | PeriodicsFire | HookFire | UnblockedFire | IssueReviewFire | TicketFire | ClosingPrFire | OfferFire | PrEditFire | AuthorFire) & { repo?: string }} Fire
  *   `repo`: the `owner/name` the fire is for. Every fire names
  *   one but a probe and the bare schedule fire; {@link parseFire} refuses
  *   any other without one: nothing falls back to a default repo.
- *   `counted`: the event a periodic counts that the fire is for ({@link COUNTS}),
- *   so the turn checks the repo's periodics after its own work, under the
- *   repo's periodics switch whatever switch its own work needs. A
- *   `periodics` fire always carries one.
  *
  * @typedef {{ workflowId: number, runId: number, branch: string }} ScheduledRun A scheduled run on the default branch, `branch`, gone red, and its workflow.
  * @typedef {{ prompt: string, sessionName?: string, issue?: number }} Fallback
@@ -599,8 +598,8 @@ export const build = Object.freeze({
   /** @param {{ pr: number, sha: string, base: string }} args @returns {ConflictsFire} */
   conflicts: ({ pr, sha, base }) => ({ kind: 'conflicts', pr, sha, base }),
 
-  /** @param {{ counted: Count }} args @returns {PeriodicsFire & { counted: Count }} */
-  periodics: ({ counted }) => ({ kind: 'periodics', counted }),
+  /** @param {{ counted: Count, base?: string | undefined }} args @returns {PeriodicsFire} */
+  periodics: ({ counted, base }) => ({ kind: 'periodics', counted, ...present({ base }) }),
 
   /** @param {Omit<HookFire, 'kind'>} args @returns {HookFire} */
   hook: ({ hook, keyVersion, text, at }) => ({ kind: 'hook', hook, keyVersion, text, at }),
@@ -876,12 +875,10 @@ export const parseFire = (event) => {
     throw new Error(`a ${fire.kind} fire names its repo, and this one names none: ${JSON.stringify(event)?.slice(0, 300)}`);
   }
   if (typeof repo !== 'string' || !REPO_NAME.test(repo)) throw new Error(`a fire's repo is an owner/name, got: ${JSON.stringify(repo)}`);
-  if (counted === undefined) {
-    if (fire.kind === 'periodics') throw new Error(`a periodics fire names the event it counted, and this one names none: ${JSON.stringify(event)?.slice(0, 300)}`);
-    return { ...fire, repo };
-  }
-  if (!COUNTS.includes(/** @type {Count} */ (counted))) throw new Error(`a fire's counted is one of ${COUNTS.join(', ')}, got: ${JSON.stringify(counted)}`);
-  return { ...fire, repo, counted: /** @type {Count} */ (counted) };
+  // A fire of another kind may carry `counted` from a receiver that marked
+  // the count on it: its own work runs, and the turn logs the mark ignored
+  // (dispatch/turn.mjs).
+  return { ...fire, repo };
 };
 
 /**
@@ -944,7 +941,13 @@ const parseKind = (event) => {
       ...(e?.headSha === undefined ? {} : { headSha: /** @type {string} */ (e.headSha) }),
     };
   }
-  if (kind === 'periodics') return { kind };
+  if (kind === 'periodics') {
+    const counted = /** @type {Count} */ (e?.counted);
+    const base = e?.base;
+    if (!COUNTS.includes(counted)) throw new Error(`a periodics fire's counted is one of ${COUNTS.join(', ')}, got: ${JSON.stringify(counted)}`);
+    if (base !== undefined && (typeof base !== 'string' || base === '')) throw new Error(`a periodics fire's base is a branch name, got: ${JSON.stringify(base)}`);
+    return { kind, counted, ...(base === undefined ? {} : { base }) };
+  }
   if (kind === 'hook') return parseHook(e);
   if (kind === 'unblocked') return parseUnblocked(e);
   if (kind === 'ticket') return parseTicket(e);

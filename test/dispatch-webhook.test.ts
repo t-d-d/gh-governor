@@ -32,11 +32,12 @@ const APP_ID = 5075844;
  * The one fire a delivery queues, or none: most deliveries queue at most one,
  * and those that fan out to subscribers are read with `routeEvent` itself.
  * The issue review's fire, which an issue opened, reopened or with its body
- * edited queues beside the rest, is set aside: its own describe pins it.
+ * edited queues beside the rest, and the periodics fire an issue opened or
+ * closed queues, are set aside: their own describes pin them.
  */
 const route = (args: Parameters<typeof routeEvent>[0]) => {
   const routed = routeEvent(args);
-  const fires = routed.fires.filter((f) => f.fire.kind !== 'issueReview');
+  const fires = routed.fires.filter((f) => f.fire.kind !== 'issueReview' && f.fire.kind !== 'periodics');
   const reason = routed.reason;
   assert.ok(fires.length <= 1, `expected at most one fire, got ${fires.length}: ${reason}`);
   return { fire: fires[0]?.fire, reason: fires[0]?.reason ?? reason };
@@ -168,7 +169,7 @@ describe('routeEvent — the selection', () => {
   // session that finished starting two more.
   test('an issue closed is a schedule fire naming it as freed, and nothing wider', () => {
     const decision = route({ event: 'issues', payload: issuesEvent('closed'), owners: OWNERS });
-    assert.deepEqual(decision.fire, { kind: 'schedule', freed: 717, counted: 'issuesClosed', repo: REPO });
+    assert.deepEqual(decision.fire, { kind: 'schedule', freed: 717, repo: REPO });
     assert.match(decision.reason, /#717 closed/);
     const numberless = route({ event: 'issues', payload: issuesEvent('closed', { issue: { title: 'No number' } }), owners: OWNERS });
     assert.equal(numberless.fire, undefined, 'a close naming no issue must not fall back to the whole selection');
@@ -197,16 +198,16 @@ describe('routeEvent — the selection', () => {
 /**
  * The events a periodic counts (dispatch/periodics.mjs): a merge into the
  * default branch, an issue opened, an issue closed. The receiver reads no
- * config file, so it marks the event on a fire for any listed repo, and
- * the turn checks the repo's periodics. Where the event already queues a
- * turn, the mark rides it; only an event that queues none gets a fire of
- * its own.
+ * config file, so it queues a `periodics` fire of its own for any listed
+ * repo, beside whatever else the delivery queues, and the turn plans the
+ * repo's due periodics through the launch plan. No other fire carries
+ * `counted`.
  */
 describe('routeEvent — what a periodic counts', () => {
   const SHA = '3333333333333333333333333333333333333333';
   const counted = (event: string, payload: unknown) => routeEvent({ event, payload, owners: OWNERS }).fires
     .filter((f) => (f.fire as { counted?: string }).counted !== undefined)
-    .map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted, f.key]);
+    .map((f) => [f.fire, f.key]);
   const mergedPr = (over: Record<string, unknown> = {}) => ({
     action: 'closed',
     pull_request: { ...pullRequest, body: 'No session named.', merged: true, merge_commit_sha: SHA, base: { ref: 'main' }, ...over },
@@ -214,9 +215,11 @@ describe('routeEvent — what a periodic counts', () => {
     repository: { full_name: REPO, default_branch: 'main' },
   });
 
-  test('a merge into the default branch rides its conflicts fire, and one with no merge commit named gets a fire of its own', () => {
-    assert.deepEqual(counted('pull_request', mergedPr()), [['conflicts', 'merges', 'conflicts']]);
-    assert.deepEqual(counted('pull_request', mergedPr({ merge_commit_sha: null })), [['periodics', 'merges', 'periodics']]);
+  test('a merge into the default branch queues a conflicts fire with no count, and a periodics fire naming merges and the branch', () => {
+    const { fires } = routeEvent({ event: 'pull_request', payload: mergedPr(), owners: OWNERS });
+    assert.deepEqual(fires.filter((f) => f.fire.kind === 'conflicts').map((f) => f.fire), [{ kind: 'conflicts', pr: 724, sha: SHA, base: 'main', repo: REPO }]);
+    assert.deepEqual(counted('pull_request', mergedPr()), [[{ kind: 'periodics', counted: 'merges', base: 'main', repo: REPO }, 'periodics']]);
+    assert.deepEqual(counted('pull_request', mergedPr({ merge_commit_sha: null })), [[{ kind: 'periodics', counted: 'merges', base: 'main', repo: REPO }, 'periodics']]);
   });
 
   test('a merge into another branch, or a close unmerged, counts nothing', () => {
@@ -224,19 +227,21 @@ describe('routeEvent — what a periodic counts', () => {
     assert.deepEqual(counted('pull_request', mergedPr({ merged: false })), []);
   });
 
-  test('an issue closed rides the fire that frees what it blocked', () => {
-    assert.deepEqual(counted('issues', issuesEvent('closed')), [['schedule', 'issuesClosed', undefined]]);
+  test('an issue closed queues a periodics fire beside the fire that frees what it blocked, which carries no count', () => {
+    const { fires } = routeEvent({ event: 'issues', payload: issuesEvent('closed'), owners: OWNERS });
+    assert.deepEqual(fires.filter((f) => f.fire.kind === 'schedule').map((f) => f.fire), [{ kind: 'schedule', freed: 717, repo: REPO }]);
+    assert.deepEqual(counted('issues', issuesEvent('closed')), [[{ kind: 'periodics', counted: 'issuesClosed', repo: REPO }, 'periodics']]);
   });
 
-  test('an issue opened, which queues no summons, gets a fire of its own beside its issue review\'s', () => {
+  test('an issue opened queues a periodics fire beside its issue review\'s', () => {
     const { fires } = routeEvent({ event: 'issues', payload: issuesEvent('opened'), owners: OWNERS });
     assert.deepEqual(fires.map((f) => [f.fire, f.key]), [[{ kind: 'periodics', counted: 'issuesOpened', repo: REPO }, 'periodics'], [{ kind: 'issueReview', issue: 717, repo: REPO }, 'issueReview']]);
   });
 
-  test('an issue opened summoning a session rides the summons', () => {
+  test('an issue opened summoning a session queues the summons with no count, and a periodics fire of its own', () => {
     const payload = issuesEvent('opened', { issue: { ...issuesEvent('opened').issue, body: '@claude what does the retry budget do?' } });
     const { fires } = routeEvent({ event: 'issues', payload, owners: OWNERS });
-    assert.deepEqual(fires.map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted]), [['dispatch', 'issuesOpened'], ['issueReview', undefined]]);
+    assert.deepEqual(fires.map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted]), [['dispatch', undefined], ['periodics', 'issuesOpened'], ['issueReview', undefined]]);
   });
 
   test('a PR opened, an issue reopened or labelled counts nothing', () => {
@@ -1027,7 +1032,7 @@ describe('routeEvent — subscribers', () => {
     });
     const { all } = messages('pull_request', mergedInto('main'));
     const checks = all.filter((f) => f.fire.kind === 'conflicts');
-    assert.deepEqual(checks.map((f) => [f.fire, f.key]), [[{ kind: 'conflicts', pr: 724, sha: '3333333333333333333333333333333333333333', base: 'main', counted: 'merges', repo: REPO }, 'conflicts']]);
+    assert.deepEqual(checks.map((f) => [f.fire, f.key]), [[{ kind: 'conflicts', pr: 724, sha: '3333333333333333333333333333333333333333', base: 'main', repo: REPO }, 'conflicts']]);
     for (const payload of [
       mergedInto('claude/stacked'),
       mergedInto('main', { merge_commit_sha: null }),
@@ -1201,7 +1206,7 @@ describe('routeEvent — subscribers', () => {
     assert.equal(ready.all[0]!.key, undefined, 'the schedule fire keys on the delivery alone, as before');
     assert.deepEqual(ready.sent.map((m) => m.event), ['labels']);
     const closed = messages('issues', { action: 'closed', issue: { ...issue(), state_reason: 'completed' }, sender: member, repository: { full_name: REPO } });
-    assert.deepEqual(closed.all[0]!.fire, { kind: 'schedule', freed: 717, counted: 'issuesClosed', repo: REPO });
+    assert.deepEqual(closed.all[0]!.fire, { kind: 'schedule', freed: 717, repo: REPO });
     assert.deepEqual(closed.sent.map((m) => [m.session, m.event, m.closing]), [[FILER, 'close', true]]);
     assert.match(closed.sent[0]!.text, /closed/);
   });
@@ -1576,15 +1581,14 @@ describe('handle', () => {
     assert.ok(logged.some((l) => l.event === 'webhook-queued' && l.delivery === 'd-1'), JSON.stringify(logged));
   });
 
-  test('a signed close queues one freed fire on the lane, keyed by the delivery', async () => {
+  test('a signed close queues one freed fire on the lane, keyed by the delivery, and its periodics fire', async () => {
     // An item naming the claim label, which the closed issue does not
     // carry: with none, the close of a labelled issue also queues a ticket
     // fire for the task to judge (test/dispatch-ticket-route.test.ts).
     const { deps, queued } = harness({ repoItem: async () => ({ switches: null, ready: null, claim: 'workflow: under development' }) });
     const response = await handle(delivery('issues', issuesEvent('closed')), deps);
     assert.equal(response.statusCode, 202);
-    assert.equal(queued.length, 1);
-    assert.deepEqual(queued[0]!.message.fire, { kind: 'schedule', freed: 717, counted: 'issuesClosed', repo: REPO });
+    assert.deepEqual(queued.map((q) => q.message.fire), [{ kind: 'schedule', freed: 717, repo: REPO }, { kind: 'periodics', counted: 'issuesClosed', repo: REPO }]);
     assert.equal(queued[0]!.dedupId, 'd-1');
   });
 
@@ -1930,7 +1934,7 @@ describe('routeEvent — every served repo', () => {
 
   test('a close frees what the issue blocked, in its own repo', () => {
     const decision = firesOf('issues', issuesEvent('closed'));
-    assert.deepEqual(decision.fires.map((f) => f.fire), [{ kind: 'schedule', freed: 717, counted: 'issuesClosed', repo: ASKME }]);
+    assert.deepEqual(decision.fires.map((f) => f.fire), [{ kind: 'schedule', freed: 717, repo: ASKME }, { kind: 'periodics', counted: 'issuesClosed', repo: ASKME }]);
   });
 
   const run = (over: Record<string, unknown>) => ({
@@ -2207,16 +2211,20 @@ describe('fitness: the receiver drops a fire only where the repo\'s hook-table i
     assert.deepEqual(kinds(queued), ['conflicts']);
   });
 
-  test('a fire carrying counted is queued where periodics is on, whatever its own switch', async () => {
+  test('a periodics fire is queued where periodics is on and dropped where it is off, and the fire beside it goes by its own switch', async () => {
     const summons = opened('@claude please look at the retry budget');
     const kept = await handled('issues', summons, item(['periodics']));
-    assert.deepEqual(kinds(kept.queued), ['dispatch']);
-    assert.equal((kept.queued[0]!.message.fire as { counted?: string }).counted, 'issuesOpened');
+    assert.deepEqual(kinds(kept.queued), ['periodics'], 'the summons goes by its own switch, off here');
+    const both = await handled('issues', summons, item(['periodics', 'summons']));
+    assert.deepEqual(kinds(both.queued), ['dispatch', 'periodics']);
+    assert.equal((both.queued[0]!.message.fire as { counted?: string }).counted, undefined, 'the summons carries no count');
     const dropped = await handled('issues', summons, item([]));
     assert.deepEqual(dropped.queued, []);
     const own = await handled('issues', opened('Nothing to summon.'), item(['periodics']));
     assert.deepEqual(kinds(own.queued), ['periodics']);
     assert.deepEqual((await handled('issues', opened('Nothing to summon.'), item([]))).queued, []);
+    const merge = await handled('pull_request', merged, item(['periodics']));
+    assert.deepEqual(kinds(merge.queued), ['conflicts', 'periodics']);
   });
 
   test('a red run is dropped only when ciMessages and deployMessages are both off: the receiver cannot tell CI from a deploy', async () => {

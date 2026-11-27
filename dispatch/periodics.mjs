@@ -16,9 +16,12 @@
  * turns from both starting it.
  *
  * A merge into the default branch, an issue opened or an issue closed is
- * counted when it happens: the fire for it carries the kind (`COUNTS`,
- * dispatch/webhook/fire.mjs), and the turn reads that kind's count since
- * each periodic's last fire afresh from GitHub ({@link windowOf}). Governor
+ * counted when it happens: it queues a `periodics` fire naming the kind
+ * (`COUNTS`, dispatch/webhook/fire.mjs), whose planner
+ * (dispatch/periodics-fire.mjs) reads that kind's count since each
+ * periodic's last fire afresh from GitHub ({@link windowOf}). The sweep and
+ * that planner each hand `launchPlan` (dispatch/launch-plan.mjs) their due
+ * periodics, each turned into a launch by {@link periodicLaunch}. Governor
  * keeps no running total, so a lost webhook only delays a fire to the next
  * event or sweep. A periodic never fires inside its minimum gap; a count
  * reached there fires on the first event or sweep after it.
@@ -54,6 +57,7 @@
 
 import { COUNTS } from './webhook/fire.mjs';
 import { AUTO } from './trust.mjs';
+import { runOf } from './repo-config.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** An hour, in milliseconds. */
@@ -425,3 +429,43 @@ export const recordFire = async ({ state, log }, repo, { name, read }, at, sessi
     return { repo, error: `periodic ${name}: its record could not be written: ${messageOf(error)}` };
   }
 };
+
+/**
+ * A due periodic as the launch plan starts it (`launchPlan`,
+ * dispatch/launch-plan.mjs): the one way the sweep (dispatch/sweep.mjs)
+ * and the periodics fire (dispatch/periodics-fire.mjs) turn a due periodic
+ * into a launch. Its prompt carries governor's lines, it runs on its own
+ * model and effort, then the file's, and it names its connectors, so one
+ * that names any starts as a routine run. A failed launch holds the repo:
+ * its later periodics wait for the next fire. Its record moves to the fire
+ * only for a launch that started or may have, and only over the record the
+ * turn read; a write that failed goes into `unread`, which fails the turn.
+ * A launch that moved the record adds the periodic's heartbeat line to
+ * `beats`.
+ *
+ * @param {{
+ *   config: import('./repo-config.mjs').RepoConfig,
+ *   state: Pick<PeriodicState, 'recordPeriodic'>,
+ *   log: (event: string, context?: Record<string, unknown>) => void,
+ *   beats: import('./turn.mjs').RepoBeat[],
+ *   unread: Array<{ repo: string, error: string }>,
+ * }} deps
+ * @param {string} repo
+ * @param {Due} due
+ * @returns {import('./turn.mjs').PlannedLaunch}
+ */
+export const periodicLaunch = ({ config, state, log, beats, unread }, repo, { periodic, read, by, windows, asOf }) => ({
+  repo,
+  issue: null,
+  claim: false,
+  holdsRepo: true,
+  periodic: periodic.name,
+  asked: { prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, ...runOf(config, 'periodics', periodic), ...connectorsOf(periodic) },
+  started: async ({ outcome, sessionUrl }, firedAt) => {
+    if (outcome === 'failed') return;
+    const at = asOf ?? firedAt;
+    const unrecorded = await recordFire({ state, log }, repo, { name: periodic.name, read }, at, sessionUrl);
+    if (unrecorded !== null) unread.push(unrecorded);
+    beats.push({ repo, beat: { periodics: [{ name: periodic.name, at, by, session: sessionUrl, state: 'open' }] } });
+  },
+});

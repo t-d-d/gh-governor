@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { STALE_RUNS_PAUSES_MS } from '../dispatch/runs.mjs';
 import { RUNS_PER_PAGE } from '../scripts/lib/github-app.mjs';
-import { DELIVER_BUDGET_MS, EVENT_PERIODIC_WINDOW_MS, LAUNCH_TIMEOUT_MS, MESSAGE_CEILING, MESSAGE_TIMEOUT_MS, SENDS_LATEST_MS, messageCeiling, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed } from '../dispatch/turn.mjs';
+import { DELIVER_BUDGET_MS, LAUNCH_TIMEOUT_MS, MESSAGE_CEILING, MESSAGE_TIMEOUT_MS, SENDS_LATEST_MS, messageCeiling, cliEnv, dynamoState, sqsFires, SCHEDULE_LAUNCH_WINDOW_MS, WORKFLOW_SEND_TRIES, WORKFLOW_SEND_WINDOW_MS, dispatchCap, realDeps, run as runNamed } from '../dispatch/turn.mjs';
 import { DEFAULT_SESSION_NAME, DISPATCHER_LABEL, GITHUB_SOURCE, fromDispatcher, hookLabel, standingLine } from '../dispatch/deliveries.mjs';
 import { redRunPrompt } from '../dispatch/workflow.mjs';
 import { ownerSpecMessage, specPrompt } from '../dispatch/unblocked.mjs';
@@ -3866,11 +3866,11 @@ describe('run — periodics', () => {
 
 /**
  * Periodics an event brings due (dispatch/periodics.mjs): a merge into the
- * default branch, an issue opened or closed. The fire for it carries the
- * kind as `counted`; after the turn's own work, the turn reads each
- * periodic's count of that kind since its last fire afresh, and starts
- * the ones whose count reached their number, under the repo's periodics
- * switch whatever switch the carrying turn needed.
+ * default branch, an issue opened or closed. The event queues a `periodics`
+ * fire of its own naming the kind as `counted`; its planner
+ * (dispatch/periodics-fire.mjs) reads each periodic's count of that kind
+ * since its last fire afresh, and `launchPlan` starts the ones whose count
+ * reached their number, under the repo's periodics switch.
  */
 describe('run — periodics an event brings due', () => {
   const FACTORY_PERIODICS = FACTORY_CONFIG.periodics as Array<{ name: string; prompt: string; days: number; counts?: Record<string, number>; gapHours?: number }>;
@@ -3883,7 +3883,7 @@ describe('run — periodics an event brings due', () => {
   const fired = (ms: number) => ({ at: ago(ms), session: 'https://claude.ai/code/session_01OLD', baseline: false });
   const key = (name: string) => `${REPO}#${name}`;
   const SHA = 'c'.repeat(40);
-  const MERGE = { kind: 'conflicts', pr: 793, sha: SHA, base: 'main', counted: 'merges' };
+  const MERGE = { kind: 'periodics', counted: 'merges', base: 'main' };
   const merged = (n: number) => Array.from({ length: n }, (_, i) => ({ number: 800 + i, title: `Merge ${i}`, at: ago(HOUR - i) }));
   /** The factory's file with its switches changed. */
   const fileWith = (features: Record<string, boolean>, over: Record<string, unknown> = {}) => {
@@ -3930,11 +3930,11 @@ describe('run — periodics an event brings due', () => {
     assert.deepEqual(h.launches.map((l) => [l.sessionName, ranOn(l)]), [[CODE.name, { model: 'code-model', effort: 'medium' }]]);
   });
 
-  test('a merge rides the conflicts turn, and starts a periodic whose merges since its last fire reached its number, its prompt listing them', async () => {
+  test('a merge\'s periodics fire starts a periodic whose merges since its last fire reached its number, its prompt listing them', async () => {
     const h = counting({ merges: merged(20) });
     h.periodics.set(key(CODE.name), fired(DAY));
     const result = await run(MERGE, h.deps as never) as Record<string, any>;
-    assert.equal(result.kind, 'conflicts');
+    assert.equal(result.kind, 'periodics');
     assert.deepEqual(h.launches.map((l) => l.sessionName), [CODE.name]);
     const prompt = h.launches[0]!.prompt;
     assert.ok(prompt.startsWith(`${CODE.prompt}\n\nThis periodic last fired at ${ago(DAY)}.`), prompt);
@@ -3942,8 +3942,19 @@ describe('run — periodics an event brings due', () => {
     assert.ok(prompt.includes(`Issues closed since ${ago(DAY)}: none`), 'every count it keeps');
     assert.ok(h.reads.includes(`merges main ${ago(DAY)}`), 'merges into the branch the fire names, read afresh since the last fire');
     assert.deepEqual(h.periodics.get(key(CODE.name)), { at: new Date(NOW).toISOString(), session: 'https://claude.ai/code/session_01ABC', baseline: false });
-    assert.deepEqual(result.periodics?.dispatched, [{ repo: REPO, issue: null, outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01ABC' }]);
+    assert.deepEqual(result.dispatched, [{ repo: REPO, issue: null, outcome: 'dispatched', sessionUrl: 'https://claude.ai/code/session_01ABC' }]);
     assert.equal(exitCodeFor(result as never), 0);
+  });
+
+  test('a conflicts fire checks no periodic: the merge\'s own periodics fire does', async () => {
+    const h = counting({ merges: merged(20) });
+    h.periodics.set(key(CODE.name), fired(DAY));
+    const result = await run({ kind: 'conflicts', pr: 793, sha: SHA, base: 'main' }, h.deps as never) as Record<string, any>;
+    assert.equal(result.kind, 'conflicts');
+    assert.deepEqual(h.reads, [], 'no window read');
+    assert.deepEqual(h.periodics.get(key(CODE.name)), fired(DAY));
+    assert.deepEqual(h.launches, []);
+    assert.equal(result.periodics, undefined);
   });
 
   test('a merge that brings a periodic due while its last run\'s session is open starts nothing, and the next merge after the run ends fires it over the whole count', async () => {
@@ -4017,21 +4028,19 @@ describe('run — periodics an event brings due', () => {
     assert.deepEqual(h.launches, []);
   });
 
-  test('the check runs under the periodics switch, whatever the carrying turn needs: a repo with conflicts and pickup off', async () => {
+  test('a periodics fire runs under the periodics switch alone: a repo with conflicts and pickup off', async () => {
     const configFile = async (repo: string) => (repo === REPO ? fileWith({ conflicts: false, pickup: false }) : null);
     const h = counting({ merges: merged(20), issuesClosed: [{ number: 5, title: 'Done', at: ago(HOUR) }] }, { configFile });
     h.periodics.set(key(CODE.name), fired(DAY));
     const merge = await run(MERGE, h.deps as never) as Record<string, any>;
-    assert.match(String(merge.refusal), /does not turn conflicts on/);
+    assert.equal(merge.refusal, undefined);
     assert.deepEqual(h.launches.map((l) => l.sessionName), [CODE.name]);
-    assert.equal(merge.periodics?.dispatched.length, 1);
+    assert.equal(merge.dispatched.length, 1);
 
     const h2 = counting({ issuesClosed: Array.from({ length: 10 }, (_, i) => ({ number: i + 1, title: `Closed ${i}`, at: ago(HOUR) })) }, { configFile });
     h2.periodics.set(key(CODE.name), fired(DAY));
-    // A close needs no switch of its own: it queues what it blocked, here nothing.
-    const close = await run({ kind: 'schedule', freed: 717, counted: 'issuesClosed' }, h2.deps as never) as Record<string, any>;
+    const close = await run({ kind: 'periodics', counted: 'issuesClosed' }, h2.deps as never) as Record<string, any>;
     assert.equal(close.refusal, undefined);
-    assert.deepEqual(close.queued, []);
     assert.deepEqual(h2.launches.map((l) => l.sessionName), [CODE.name]);
     assert.deepEqual(h2.reads.slice(0, 1), [`issuesClosed ${ago(DAY)}`]);
   });
@@ -4106,20 +4115,19 @@ describe('run — periodics an event brings due', () => {
     assert.deepEqual(h.launches.map((l) => l.sessionName), [CODE.name]);
   });
 
-  test('a periodic launched on an event\'s turn starts inside EVENT_PERIODIC_WINDOW_MS of the turn\'s start, or stays due', async () => {
+  test('a periodic an event brings due starts inside the launch plan\'s window, or stays due and is logged not started', async () => {
     let clock = NOW;
     const h = counting({ merges: merged(20) }, {
       now: () => clock,
-      // The carrying turn's own work takes the window.
-      reader: () => ({ ...harness().deps.reader(''), branchHead: async () => SHA, openPulls: async () => { clock += EVENT_PERIODIC_WINDOW_MS + 1; return []; }, mergedSince: async () => merged(20) }),
+      // The read of the window takes the launch window.
+      reader: () => ({ ...harness().deps.reader(''), branchHead: async () => SHA, openPulls: async () => [], mergedSince: async () => { clock += SCHEDULE_LAUNCH_WINDOW_MS + 1; return merged(20); } }),
     });
     h.periodics.set(key(CODE.name), fired(DAY));
     const result = await run(MERGE, h.deps as never) as Record<string, any>;
     assert.deepEqual(h.launches, []);
     assert.deepEqual(h.periodics.get(key(CODE.name)), fired(DAY), 'still due for the next event or sweep');
-    assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic' && /out of time/.test(String(l.reason))), JSON.stringify(h.logged));
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic' && l.outcome === 'not started' && JSON.stringify(l.periodics) === JSON.stringify([CODE.name])), JSON.stringify(h.logged));
     assert.equal(exitCodeFor(result as never), 0);
-    assert.equal(EVENT_PERIODIC_WINDOW_MS + LAUNCH_TIMEOUT_MS < DEADLINE_MS, true, 'one launch from the window\'s end ends inside the deadline');
   });
 
   test('each launch runs under the launch budget', async () => {
@@ -4184,22 +4192,37 @@ describe('run — periodics an event brings due', () => {
     h.periodics.set(key(CODE.name), fired(DAY));
     const result = await run({ kind: 'periodics', counted: 'issuesOpened' }, h.deps as never) as Record<string, any>;
     assert.ok(asked > 0);
-    assert.match(String(result.periodics?.unread[0]?.error), /App key/);
+    assert.match(String(result.unread?.[0]?.error), /App key/);
     assert.ok('signoffs' in result, 'the sign-off sweep still ran');
     assert.equal(exitCodeFor(result as never), 1);
   });
 
-  test('when the carrying turn\'s own launch in the repo started nothing, its periodics wait for the next fire', async () => {
+  test('a fire of another kind queued with counted, by the receiver before the periodics fire, runs its own work and logs the mark ignored', async () => {
     const triage = { name: 'Ticket triage', prompt: 'Triage the new issues.', days: 7, counts: { issuesOpened: 1 } };
     const configFile = async (repo: string) => (repo === REPO ? fileWith({}, { periodics: byName([triage]) }) : null);
-    const h = counting({ issuesOpened: [{ number: 30, title: 'New one', at: ago(HOUR) }] }, {
-      configFile,
-      launch: async (launch: Launch) => { h.launches.push(launch); return { status: 1, output: 'claude died' }; },
-    });
+    const h = counting({ issuesOpened: [{ number: 30, title: 'New one', at: ago(HOUR) }] }, { configFile });
     h.periodics.set(key(triage.name), fired(DAY));
     await run({ kind: 'dispatch', prompt: '@claude look', counted: 'issuesOpened' }, h.deps as never);
-    assert.deepEqual(h.launches.map((l) => l.sessionName), [DEFAULT_SESSION_NAME]);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [DEFAULT_SESSION_NAME], 'the summons, and no periodic');
     assert.deepEqual(h.periodics.get(key(triage.name)), fired(DAY));
+    const ignored = h.logged.filter((l) => l.event === 'dispatch-periodic' && l.outcome === 'mark ignored');
+    assert.deepEqual(ignored.map((l) => [l.level, l.repo, l.kind, l.counted]), [['info', REPO, 'dispatch', 'issuesOpened']], JSON.stringify(h.logged));
+  });
+
+  test('a failed launch skips the repo\'s later periodics, which are logged not started and stay due', async () => {
+    const one = { name: 'Merge review', prompt: 'Review the merges.', days: 7, counts: { merges: 5 } };
+    const two = { name: 'Late review', prompt: 'Review the late merges.', days: 7, counts: { merges: 5 } };
+    const configFile = async (repo: string) => (repo === REPO ? fileWith({}, { periodics: byName([one, two]) }) : null);
+    const h = counting({ merges: merged(20) }, { configFile, launch: async (launch: Launch) => { h.launches.push(launch); return { status: 1, output: 'claude died' }; } });
+    h.periodics.set(key(one.name), fired(2 * DAY));
+    h.periodics.set(key(two.name), fired(DAY));
+    const result = await run(MERGE, h.deps as never);
+    assert.deepEqual(h.launches.map((l) => l.sessionName), [one.name]);
+    assert.deepEqual(h.periodics.get(key(one.name)), fired(2 * DAY));
+    assert.deepEqual(h.periodics.get(key(two.name)), fired(DAY));
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-repo-skipped' && l.periodic === one.name), JSON.stringify(h.logged));
+    assert.ok(h.logged.some((l) => l.event === 'dispatch-periodic' && l.outcome === 'not started' && JSON.stringify(l.periodics) === JSON.stringify([two.name])), JSON.stringify(h.logged));
+    assert.equal(exitCodeFor(result as never), 1);
   });
 
   test('a cap of 0 logs an event\'s due periodics as the bare fire does, oldest due first, with the cap as the reason', async () => {
@@ -9392,7 +9415,7 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
   const BODY = `${BEFORE}${HEARTBEAT_MARKER}${AFTER}`;
   const FILE = JSON.stringify({ ...JSON.parse(FACTORY_FILE), heartbeat: { issue: BEAT.issue } });
   const SHA = 'c'.repeat(40);
-  const MERGE = { kind: 'conflicts', pr: 793, sha: SHA, base: 'main', counted: 'merges' };
+  const MERGE = { kind: 'periodics', counted: 'merges', base: 'main' };
   const merged = (n: number) => Array.from({ length: n }, (_, i) => ({ number: 800 + i, title: `Merge ${i}`, at: ago(HOUR - i) }));
 
   /** The factory with its heartbeat on, its heartbeat issue's body kept across turns; every write. */
