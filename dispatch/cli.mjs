@@ -63,23 +63,19 @@ export const DEADLINE_MS = 18 * 60 * 1000;
  *   to start is a success, as the heartbeat rule says;
  * - a turn its repo's config file refused: not served, or a switch turned
  *   off, is as designed;
- * and in any of them, when the fire counted an event for the periodics,
- * every periodic's record and window was read and every periodic it
- * brought due that started launched.
+ * - a periodics fire: every periodic's record and window was read, and no
+ *   launch of a periodic it brought due failed.
  * In any kind, every governor heartbeat block the turn changed was read and
  * written (`heartbeatUnwritten`), and no repo's part of the turn failed
  * (`unread`), refusal or not.
  *
- * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string }, untold?: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], periodics?: { dispatched: Array<{ outcome: string }>, unread: unknown[] } | null, messaged?: { ok: boolean, refused?: boolean, capped?: boolean, skipped?: string | null, fallback?: { outcome: string } | null } | null, offered?: { ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }, took?: { ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }, nudged?: Array<{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }>, capped?: boolean }} result
+ * @param {{ kind: string, ok?: boolean, answered?: boolean | null, dropped?: boolean | null, skipped?: string | null, relinked?: boolean | null, detail?: string, dispatched?: Array<{ outcome: string }>, sessionUrl?: string | null, error?: string | null, fallback?: { outcome: string, sessionUrl: string | null } | null, deliveries?: Array<{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }>, triage?: { outcome: string } | null, labels?: { failed: unknown[] } | null, cursor?: { moved: boolean } | { held: number } | { error: string } | null, reviews?: Array<{ outcome: string, loop?: { error?: string }, untold?: string }>, checks?: Array<{ outcome: string }>, loginStored?: boolean, refusal?: string, unread?: unknown[], heartbeatUnwritten?: unknown[], messaged?: { ok: boolean, refused?: boolean, capped?: boolean, skipped?: string | null, fallback?: { outcome: string } | null } | null, offered?: { ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }, took?: { ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }, nudged?: Array<{ ok: boolean, refused: boolean, capped?: boolean, fallback: { outcome: string } | null }>, capped?: boolean }} result
  * @returns {0 | 1}
  */
 export const exitCodeFor = (result) => {
   if (result.kind === 'probe') return result.ok ? 0 : 1;
   // A heartbeat line the turn could not write goes stale, whatever the turn's own work.
   if ((result.heartbeatUnwritten?.length ?? 0) > 0) return 1;
-  // The periodics an event brought due are checked under their own switch,
-  // so a fault there fails a turn whose own work was refused or went well.
-  if (result.periodics != null && (result.periodics.unread.length > 0 || result.periodics.dispatched.some((d) => d.outcome === 'failed'))) return 1;
   // A repo whose part of the turn failed, its config file or its hook table
   // write, fails the turn of any kind, refused or not.
   if ((result.unread?.length ?? 0) > 0) return 1;
@@ -147,6 +143,9 @@ export const exitCodeFor = (result) => {
       || (result.fallback != null && result.fallback.outcome !== 'failed') ? 0 : 1;
   }
   const dispatched = result.dispatched ?? [];
+  // A periodics fire's launches are one repo's, and a failed one holds the
+  // rest: it fails the turn even after another started.
+  if (result.kind === 'periodics') return dispatched.some((d) => d.outcome === 'failed') ? 1 : 0;
   return dispatched.length > 0 && dispatched.every((d) => d.outcome === 'failed') ? 1 : 0;
 };
 

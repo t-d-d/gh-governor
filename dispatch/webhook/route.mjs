@@ -47,10 +47,10 @@
  * event when that merge leaves another PR conflicted, so the task reads every
  * open PR's mergeable state and tells the conflicted ones' sessions
  * (dispatch/conflicts.mjs).
- * A merge into the default branch, an issue opened and an issue closed are
- * also counted for the repo's periodics: the fire the event queues carries
- * it as `counted`, and an issue opened that queues none queues a
- * `periodics` fire of its own ({@link counting}).
+ * A merge into the default branch, an issue opened and an issue closed
+ * each also queue a `periodics` fire naming the event as `counted`, beside
+ * whatever else the delivery queues, so the repo's periodics are checked
+ * on a turn of their own ({@link counting}).
  * An issue opened, reopened, or edited with its body changed by anyone but
  * a bot, queues an `issueReview` fire naming it, whose turn runs the
  * repo's issue reviews on it (dispatch/issue-review.mjs). So does a label
@@ -574,23 +574,19 @@ const finalStatusReview = (payload, main) => {
 };
 
 /**
- * An event a periodic counts (dispatch/periodics.mjs): `counted` marked on
- * the delivery's fire of the `carrier` kind, so the check rides the turn
- * the event already queues, or a `periodics` fire of its own where it
- * queues none. The receiver reads no config file, so it marks the event in
- * every listed repo; the turn checks the repo's periodics under their own
- * switch, whatever switch the carrying turn needs.
+ * An event a periodic counts (dispatch/periodics.mjs): a `periodics` fire
+ * naming it, beside the delivery's other fires, whose turn plans the
+ * repo's due periodics (dispatch/periodics-fire.mjs). For a merge it names
+ * the default branch, `base`. No other fire carries the count. The
+ * receiver reads no config file, so it queues the fire in every listed
+ * repo, and drops it only where the repo's item says periodics is off.
  *
  * @param {Decision} decision
  * @param {import('./fire.mjs').Count} counted
- * @param {Fire['kind']} carrier
+ * @param {string} [base]
  * @returns {Decision}
  */
-const counting = (decision, counted, carrier) => {
-  const at = decision.fires.findIndex((queued) => queued.fire.kind === carrier);
-  if (at === -1) return both(decision, one({ fire: build.periodics({ counted }), reason: `count it for the repo's periodics (${counted})`, key: 'periodics' }));
-  return { ...decision, fires: decision.fires.map((queued, i) => (i === at ? { ...queued, fire: { ...queued.fire, counted } } : queued)) };
-};
+const counting = (decision, counted, base) => both(decision, one({ fire: build.periodics({ counted, base }), reason: `count it for the repo's periodics (${counted})`, key: 'periodics' }));
 
 /**
  * An issue opened, reopened, or edited with its body changed: a
@@ -643,7 +639,7 @@ const labelReviewFire = (payload) => {
 /**
  * A PR merged into the default branch `main`: a `conflicts` fire naming
  * it, its merge commit and the branch, so every open PR the merge left
- * conflicted is told, carrying the merge for the periodics' count. Keyed
+ * conflicted is told, and a `periodics` fire for the merge. Keyed
  * apart from the subscribers' fires on the same delivery.
  *
  * @param {any} payload
@@ -656,9 +652,9 @@ const mergedFire = (payload, main) => {
   if (pr?.base?.ref !== main) return nothing(`#${pr?.number} merged into ${pr?.base?.ref}, not ${main}: ${main} did not move`);
   const sha = pr?.merge_commit_sha;
   if (!Number.isInteger(pr?.number) || pr.number <= 0 || !isCommit(sha)) {
-    return counting(nothing(`#${pr?.number} merged with no merge commit named: no conflict check`), 'merges', 'conflicts');
+    return counting(nothing(`#${pr?.number} merged with no merge commit named: no conflict check`), 'merges', main);
   }
-  return counting(one({ fire: build.conflicts({ pr: pr.number, sha, base: main }), reason: `#${pr.number} merged into ${main}: check the open PRs for conflicts`, key: 'conflicts' }), 'merges', 'conflicts');
+  return counting(one({ fire: build.conflicts({ pr: pr.number, sha, base: main }), reason: `#${pr.number} merged into ${main}: check the open PRs for conflicts`, key: 'conflicts' }), 'merges', main);
 };
 
 /**
@@ -781,9 +777,9 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
       // says so.
       selection = one({ fire: build.schedule({ issue: number, label }), reason: `issue #${number} labelled ${label}: select it if it is one of the repo's ready labels` });
     } else if (action === 'closed') {
-      // The close is counted on the fire that queues what it blocked.
+      // The close frees what it blocked, and is counted on a fire of its own.
       selection = typeof number === 'number'
-        ? counting(one({ fire: build.schedule({ freed: number }), reason: `issue #${number} closed: queue what it blocked` }), 'issuesClosed', 'schedule')
+        ? counting(one({ fire: build.schedule({ freed: number }), reason: `issue #${number} closed: queue what it blocked` }), 'issuesClosed')
         : nothing('issue closed with no number: nothing to free');
     }
     // The selection's fire, where there is one, beside each subscriber's,
@@ -792,8 +788,8 @@ const routeFor = ({ event, payload, appId, relay, bodies }) => {
     if (action === 'reopened') return both(both(issueEventFires(payload, trust), ticketFires({ event, payload, ...trust })), issueReviewFire(payload));
     if (action === 'labeled' || action === 'unlabeled') return both(issueEventFires(payload, trust), labelReviewFire(payload));
     const mentioned = mentionFires({ event, payload, ...trust }) ?? nothing(`issues ${action}: nothing to select from`);
-    // An issue opened is counted on its summons, or on a fire of its own.
-    const counted = action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened', 'dispatch') : mentioned;
+    // An issue opened is counted on a fire of its own, beside any summons.
+    const counted = action === 'opened' && typeof number === 'number' ? counting(mentioned, 'issuesOpened') : mentioned;
     const reviewed = both(counted, issueReviewFire(payload));
     // A body edit: the spec owner's message, or on a claimed ticket the
     // ticket fire in its place, settled by the claim label.

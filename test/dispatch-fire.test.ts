@@ -560,20 +560,34 @@ describe('a subscribed message invocation', () => {
 });
 
 describe('a fire that counts for the periodics', () => {
-  test('any fire naming its repo may carry the event it counts', () => {
+  test('a periodics fire names the event it counts, and for a merge the default branch', () => {
     for (const fire of [
-      { kind: 'schedule', freed: 717, counted: 'issuesClosed' },
-      { kind: 'conflicts', pr: 724, sha: 'c'.repeat(40), base: 'main', counted: 'merges' },
-      { kind: 'dispatch', prompt: 'Look.', counted: 'issuesOpened' },
       { kind: 'periodics', counted: 'issuesOpened' },
+      { kind: 'periodics', counted: 'issuesClosed' },
+      { kind: 'periodics', counted: 'merges', base: 'main' },
     ]) {
       assert.deepEqual(parseNamed({ ...fire, repo: 'acme/factory' }), { ...fire, repo: 'acme/factory' });
     }
   });
 
-  test('an event no periodic counts is refused, and so is a periodics fire counting none', () => {
-    assert.throws(() => parseNamed({ kind: 'schedule', freed: 717, counted: 'pushes', repo: 'acme/factory' }), /counted/);
+  test('an event no periodic counts is refused, and so is a periodics fire counting none, or naming a branch that is not one', () => {
+    assert.throws(() => parseNamed({ kind: 'periodics', counted: 'pushes', repo: 'acme/factory' }), /counted/);
     assert.throws(() => parseNamed({ kind: 'periodics', repo: 'acme/factory' }), /counted/);
+    assert.throws(() => parseNamed({ kind: 'periodics', counted: 'merges', base: '', repo: 'acme/factory' }), /base/);
+    assert.throws(() => parseNamed({ kind: 'periodics', counted: 'merges', base: 7, repo: 'acme/factory' }), /base/);
+  });
+
+  // A receiver from before the periodics fire marked the count on the fire
+  // the event queued. That fire still runs its own work: the parser drops
+  // the mark, and the turn logs that it ignored it.
+  test('a fire of another kind queued with counted is read without it', () => {
+    for (const fire of [
+      { kind: 'schedule', freed: 717 },
+      { kind: 'conflicts', pr: 724, sha: 'c'.repeat(40), base: 'main' },
+      { kind: 'dispatch', prompt: 'Look.' },
+    ]) {
+      assert.deepEqual(parseNamed({ ...fire, counted: 'merges', repo: 'acme/factory' }), { ...fire, repo: 'acme/factory' });
+    }
   });
 
   test('a fire naming no repo counts nothing', () => {
@@ -582,7 +596,8 @@ describe('a fire that counts for the periodics', () => {
   });
 
   test('the builder spells it', () => {
-    assert.deepEqual(build.periodics({ counted: 'merges' }), { kind: 'periodics', counted: 'merges' });
+    assert.deepEqual(build.periodics({ counted: 'issuesOpened' }), { kind: 'periodics', counted: 'issuesOpened' });
+    assert.deepEqual(build.periodics({ counted: 'merges', base: 'main' }), { kind: 'periodics', counted: 'merges', base: 'main' });
   });
 });
 

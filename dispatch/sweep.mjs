@@ -17,7 +17,7 @@ import { planSchedule, strangerReason } from '../scripts/lib/dispatch-router.mjs
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { clearWaitLabels, reportUnreadable } from './waits.mjs';
 import { GITHUB_SOURCE } from './deliveries.mjs';
-import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
+import { duePeriodics, logNotStarted, periodicLaunch, windowOf } from './periodics.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { CONFIG_PATH, runOf, turnsOn } from './repo-config.mjs';
 import { byOf, failedLaunchesOf, failedReason, sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -236,26 +236,11 @@ export const planSweep = async (invocation, ctx) => {
       if (read.beats.length > 0) ctx.beats.push({ repo, beat: { periodics: read.beats } });
     }
     if (ctx.cap > 0) {
-      launches.unshift(...due.sort((a, b) => a.due - b.due).map(({ repo, periodic, read, by, windows, asOf }) => ({
-        repo,
-        issue: null,
-        claim: false,
-        holdsRepo: true,
-        periodic: periodic.name,
-        asked: { prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, ...runOf(ctx.configOf(repo), 'periodics', periodic), ...connectorsOf(periodic) },
-        // A periodic's record moves to this fire only for a launch that
-        // started or may have, and only over the record the turn read. A
-        // failed launch writes nothing, so the periodic stays due.
-        /** @type {NonNullable<import('./turn.mjs').PlannedLaunch['started']>} */
-        started: async ({ outcome, sessionUrl }, firedAt) => {
-          if (outcome === 'failed') return;
-          const at = asOf ?? firedAt;
-          const unrecorded = await recordFire(ctx, repo, { name: periodic.name, read }, at, sessionUrl);
-          // The turn fails, so the alarm says a periodic may start twice.
-          if (unrecorded !== null) periodicsUnread.push(unrecorded);
-          ctx.beats.push({ repo, beat: { periodics: [{ name: periodic.name, at, by, session: sessionUrl, state: 'open' }] } });
-        },
-      })));
+      // A periodic's record moves to this fire only for a launch that
+      // started or may have, and only over the record the turn read
+      // (`periodicLaunch`). A failed launch writes nothing, so the periodic
+      // stays due.
+      launches.unshift(...due.sort((a, b) => a.due - b.due).map((d) => periodicLaunch({ config: ctx.configOf(d.repo), state: ctx.state, log: ctx.log, beats: ctx.beats, unread: periodicsUnread }, d.repo, d)));
     }
   }
 

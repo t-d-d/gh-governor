@@ -1,5 +1,5 @@
 # Hooks and routines
-Relevance: A hook a served repo's caller fires, or a periodic that runs as a routine with connectors: dispatch/{hooks,routines,periodics}.mjs, dispatch/webhook/hook.mjs, scripts/hook-key.mjs
+Relevance: A hook a served repo's caller fires, a periodic, how a counted event reaches it, or one run as a routine: dispatch/{hooks,routines,periodics,periodics-fire,sweep}.mjs, dispatch/webhook/{hook,route}.mjs, scripts/hook-key.mjs
 Decision: A hook is signed with a key derived from one stack secret and carries data, never a prompt; a periodic's routine stays disabled, so governor alone fires it.
 
 Why: A hook's caller is outside the repo, so its text is data, and a key in
@@ -26,6 +26,16 @@ connector the account has would hold more than its file named.
   for good where its last reply does not sign off. Only a
   session in the middle of a turn holds the fire, until that turn ends. A
   hook's open session still takes its next fire as a message.
+- A merge into the default branch, an issue opened and an issue closed
+  each queue a `periodics` fire of their own, naming the event as
+  `counted`, beside whatever else the delivery queues (`counting`,
+  dispatch/webhook/route.mjs). No other fire carries `counted`, and a turn
+  ignores one that does, logged at info.
+- A periodic starts only through `launchPlan` (dispatch/launch-plan.mjs),
+  from the sweep's plan or the periodics fire's (`planPeriodics`,
+  dispatch/periodics-fire.mjs), each launch built by `periodicLaunch`
+  (dispatch/periodics.mjs). The turn holds no launch loop of its own for
+  periodics.
 - A named connector the account has not connected starts nothing, as an
   alarmed `dispatch-connector-missing` error. A routine the routines API
   refuses stops only its own periodic, as an alarmed
@@ -39,15 +49,23 @@ connector the account has would hold more than its file named.
   in dispatch/hooks.mjs checks it against the file; `HookKeyStaleAlarm` in
   infra/governor.cfn.yml pages on a stale key.
 
+- `fitness: a counted event queues a periodics fire of its own, started
+  through launchPlan (hooks-and-routines.md)` in
+  test/periodics-fire-fitness.test.ts.
+
 ## Do not
 
 - Do not take a prompt from a hook fire: the caller is outside the repo, and
   its text would become a session's task.
 - Do not put a hook's key in the config file or store one: the file may be
   public, and a stored key is one more secret to lose.
+- Do not mark a count on another kind's fire, nor start a periodic outside
+  `launchPlan`: a second launch loop keeps its own window, cap rule and
+  failure handling, which drift from the plan's, and a check riding another
+  fire is lost when that fire fails or its switch is off.
 - Do not leave a periodic's routine enabled, nor give it a cron the routines
   API refuses, nor attach every connector the account has: an enabled
   routine fires outside governor's records, a refused cron starts no
   periodic, and a session would hold connectors its file never named.
 
-History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. A hook fire arrives at the receiver on its own path, signed with its hook key, since #55, under PRD #53. A periodic may name the claude.ai connectors its session needs, and then starts as a run of its own routine, since #89. A routine the routines API refuses stops only its periodic since #91. A periodic's routine is kept disabled on a valid cron that fires once a year since #373. A periodic is held only while its last session is in the middle of a turn, not while it is open, since #752.
+History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. A hook fire arrives at the receiver on its own path, signed with its hook key, since #55, under PRD #53. A periodic may name the claude.ai connectors its session needs, and then starts as a run of its own routine, since #89. A routine the routines API refuses stops only its periodic since #91. A periodic's routine is kept disabled on a valid cron that fires once a year since #373. A periodic is held only while its last session is in the middle of a turn, not while it is open, since #752. A counted event queues a `periodics` fire of its own, and a periodic starts only through `launchPlan`, since #774, under PRD #772.

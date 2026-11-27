@@ -111,7 +111,6 @@ import { branchFinder, sessionRecord, sessionRow, sessionRows } from '../scripts
 import { STOPPED_EVENT, releaseStopped, stoppedOf } from './stopped.mjs';
 import { waitPrompt } from './waits.mjs';
 import { tellerFor } from './told.mjs';
-import { connectorsOf, duePeriodics, logNotStarted, periodicPrompt, recordFire, windowOf } from './periodics.mjs';
 import { RoutinesApiError } from './routines.mjs';
 import { hookFor, planHook } from './hooks.mjs';
 import { planDispatch } from './dispatch-fire.mjs';
@@ -122,6 +121,7 @@ import { planPrEdit, takeAfterNotice } from './take.mjs';
 import { planAuthor, relayedText, searchAuthor, tellAuthor, wroteIt } from './author.mjs';
 import { editedText, searchCloser, searchEditor, tellEditor } from './editor.mjs';
 import { planSweep } from './sweep.mjs';
+import { planPeriodics } from './periodics-fire.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationGrant, turnResends } from '../scripts/lib/github-app.mjs';
 import { taskMemory } from './task-memory.mjs';
@@ -145,7 +145,7 @@ import { messageOf } from '../scripts/lib/error-message.mjs';
 import { HEARTBEAT_MARKER, readHeartbeat, stampHeartbeat, writeHeartbeatIssue } from './heartbeat.mjs';
 import { launcher, routineLaunch } from './launcher.mjs';
 import { RELAY, autoOf, relayOf, reviewOf } from './trust.mjs';
-import { CAP_ZERO_REASON, REPO_SKIPPED, SCHEDULE_LAUNCH_WINDOW_MS, launchPlan, routineFault } from './launch-plan.mjs';
+import { launchPlan } from './launch-plan.mjs';
 
 export { CLAIM_STRANDED, CONNECTOR_MISSING, REPO_SKIPPED, ROUTINE_REFUSED, SCHEDULE_LAUNCH_WINDOW_MS, ticketOf } from './launch-plan.mjs';
 
@@ -593,6 +593,13 @@ const servedConfig = (served, repo) => {
 const turnOf = async (event, deps, built) => {
   const invocation = parseFire(event);
   if (invocation.kind === 'probe') return { kind: 'probe', ...(await deps.probe()) };
+  // A receiver from before the periodics fire marked a count on the fire
+  // its event queued. The fire's own work runs; the count is the next event's
+  // or the sweep's, which read it afresh.
+  const stale = /** @type {{ counted?: unknown } | null} */ (event)?.counted;
+  if (invocation.kind !== 'periodics' && stale !== undefined) {
+    deps.log('dispatch-periodic', { level: 'info', repo: invocation.repo ?? null, kind: invocation.kind, counted: stale, outcome: 'mark ignored', reason: 'a fire queued before periodics had a fire of their own: its own work runs, and the next event or sweep counts what it carried' });
+  }
   const started = deps.now();
   /** One installation token a repo a turn, which the task keeps across turns where it can (`taskGithub`). @type {Map<string, Promise<string>>} */
   const tokens = new Map();
@@ -806,26 +813,10 @@ const turnOf = async (event, deps, built) => {
     await writeBeats(deps, tokenFor, served, turnBeats);
     throw error;
   }
-  // An event a periodic counts: the repo's periodics are checked after the
-  // turn's own work, under their own switch, whatever switch that work
-  // needed (dispatch/periodics.mjs), as the sweep below runs on every turn.
-  const config = served[0]?.config;
-  const checked = invocation.counted === undefined || repo === undefined || config === undefined || !turnsOn(config, 'periodics') ? null : await eventPeriodics({
-    repo,
-    config,
-    counted: invocation.counted,
-    base: invocation.kind === 'conflicts' ? invocation.base : undefined,
-    started,
-    carried: 'dispatched' in turned && Array.isArray(turned.dispatched) ? turned.dispatched.filter((d) => d.repo.toLowerCase() === repo.toLowerCase()) : [],
-    start: launches.start,
-    deps: { ...deps, secret, githubToken: tokenFor, launch: launches.start },
-  });
-  const eventBeats = checked?.beats ?? [];
   const rulesBeats = await rulesChecked;
-  const periodics = checked === null ? null : { dispatched: checked.dispatched, unread: checked.unread };
   // The fires' lines go before the replies and the sweep, which may run
   // into the deadline; the sign-offs' marks after the sweep.
-  const beaten = await writeBeats(deps, tokenFor, served, [...turnBeats, ...eventBeats, ...rulesBeats]);
+  const beaten = await writeBeats(deps, tokenFor, served, [...turnBeats, ...rulesBeats]);
   // Read when called: a turn whose sweep skips never touches `sessions`.
   /** @type {import('../scripts/lib/session-signoff.mjs').Events} */
   const events = (id, token, cursor) => deps.sessions.events(id, token, cursor);
@@ -860,7 +851,6 @@ const turnOf = async (event, deps, built) => {
     ...turned,
     ...('heartbeat' in turned && beaten.written.some((r) => turnBeats.some((b) => b.repo === r && b.beat.pickup !== undefined)) ? { heartbeat: true } : {}),
     ...(left.length === 0 ? {} : { unread: left }),
-    ...(periodics === null ? {} : { periodics }),
     ...(heartbeatUnwritten.length === 0 ? {} : { heartbeatUnwritten }),
     signoffs,
   };
@@ -1110,115 +1100,6 @@ const writeBeats = async (deps, tokenFor, served, beats) => {
 };
 
 /**
- * The periodics an event brought due (dispatch/periodics.mjs), started
- * after the carrying turn's own work, on the login it left restored. Each
- * launch runs under the launch budget and starts only inside
- * {@link EVENT_PERIODIC_WINDOW_MS} of the turn's start, whatever the
- * carrying turn spent; one left unstarted keeps its record, so it is due on
- * the next event or sweep. A cap of 0 starts nothing here either. A login a
- * launch refreshed goes back to the secret.
- *
- * @param {{
- *   repo: string,
- *   config: import('./repo-config.mjs').RepoConfig,
- *   counted: import('./webhook/fire.mjs').Count,
- *   base: string | undefined,
- *   started: number,
- *   carried: Dispatched[],
- *   start: import('./launcher.mjs').Launcher['start'],
- *   deps: Deps,
- * }} args `base`: the default branch, where the fire names it.
- *   `carried`: the carrying turn's own launches in the repo. `start`: the
- *   turn's launcher, which runs each launch under the launch budget.
- * @returns {Promise<{ dispatched: Dispatched[], unread: Array<{ repo: string, error: string }>, beats: RepoBeat[] }>}
- *   `beats`: the heartbeat lines its fires, held fires and nothing-to-dos change.
- */
-const eventPeriodics = async ({ repo, config, counted, base, started, carried, start, deps }) => {
-  /** @type {Dispatched[]} */
-  const dispatched = [];
-  /** @type {import('./periodics.mjs').Due[]} */
-  let due;
-  /** @type {Array<{ repo: string, error: string }>} */
-  let unread;
-  /** @type {import('./heartbeat.mjs').PeriodicChange[]} */
-  let lines;
-  /** @type {import('../scripts/lib/claude-login.mjs').LoginAccount | null} */
-  let account;
-  /** The login the secret holds once the periodics are read. @type {string} */
-  let stored;
-  // A read before any launch that fails is the check's fault alone: the
-  // carrying turn's result and the sign-off sweep still stand.
-  try {
-    const reader = deps.reader(await deps.githubToken(repo), await deps.appId(), repo);
-    ({ due, unread, beats: lines } = await duePeriodics({ repo, periodics: config.periodics, state: deps.state, now: deps.now(), log: deps.log, window: windowOf(reader, base, autoOf(config)), busy: lastRun(deps).busy, event: counted }));
-    ({ credentials: stored, account } = readStoredLogin(await deps.secret.get()));
-  } catch (error) {
-    deps.log('dispatch-periodic-unread', { level: 'error', repo, counted, error: messageOf(error), reason: 'the periodics could not be checked: they wait for the next event or sweep' });
-    return { dispatched, unread: [{ repo, error: `periodics: ${messageOf(error)}` }], beats: [] };
-  }
-  // A login on disk the secret does not hold goes back to it, whatever
-  // starts: a refresh to read a last run's session (`lastRun`) may have
-  // rotated it and failed to write it back.
-  try {
-    return await startPeriodics({ repo, config, counted, started, carried, start, deps, due, unread, dispatched, lines });
-  } finally {
-    await storeIfRefreshed(deps, stored, account);
-  }
-};
-
-/**
- * The due periodics {@link eventPeriodics} read, started in turn.
- *
- * @param {{
- *   repo: string,
- *   config: import('./repo-config.mjs').RepoConfig,
- *   counted: import('./webhook/fire.mjs').Count,
- *   started: number,
- *   carried: Dispatched[],
- *   start: import('./launcher.mjs').Launcher['start'],
- *   deps: Deps,
- *   due: import('./periodics.mjs').Due[],
- *   unread: Array<{ repo: string, error: string }>,
- *   dispatched: Dispatched[],
- *   lines: import('./heartbeat.mjs').PeriodicChange[],
- * }} args `lines`: the heartbeat lines the read changed, which each fire adds to.
- * @returns {Promise<{ dispatched: Dispatched[], unread: Array<{ repo: string, error: string }>, beats: RepoBeat[] }>}
- */
-const startPeriodics = async ({ repo, config, counted, started, carried, start, deps, due, unread, dispatched, lines }) => {
-  const beats = () => (lines.length === 0 ? [] : [{ repo, beat: { periodics: lines } }]);
-  if (due.length === 0) return { dispatched, unread, beats: beats() };
-  const why = deps.cap === 0 ? CAP_ZERO_REASON
-    : carried.length > 0 && carried.every((d) => d.outcome === 'failed') ? 'the turn\'s own launch in this repo started nothing, and a periodic\'s would fail the same way: each stays due for the next event or sweep'
-      : null;
-  if (why !== null) {
-    logNotStarted(deps.log, repo, due, why);
-    return { dispatched, unread, beats: beats() };
-  }
-  const ordered = due.sort((a, b) => a.due - b.due);
-  for (const [i, { periodic, read, by, windows, asOf }] of ordered.entries()) {
-    if (deps.now() - started > EVENT_PERIODIC_WINDOW_MS) {
-      logNotStarted(deps.log, repo, ordered.slice(i), `out of time: past ${EVENT_PERIODIC_WINDOW_MS} ms into the turn, a launch might outrun the deadline; each stays due for the next event or sweep`);
-      break;
-    }
-    const firedAt = new Date(deps.now()).toISOString();
-    const launched = await start({ prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, ...runOf(config, 'periodics', periodic), repo, environment: config.environment, ...connectorsOf(periodic) });
-    if (routineFault(deps, repo, periodic.name, launched)) continue;
-    const { status, outcome, sessionUrl } = launched;
-    deps.log('dispatch-launch', { repo, issue: null, sessionName: periodic.name, periodic: periodic.name, counted, outcome, status, sessionUrl });
-    dispatched.push({ repo, issue: null, outcome, sessionUrl });
-    if (outcome === 'failed') {
-      // As on the sweep: the next launch would fail the same way.
-      deps.log(REPO_SKIPPED, { level: 'error', repo, issue: null, periodic: periodic.name, status, reason: 'its launch started nothing: the rest of its periodics wait for the next fire' });
-      break;
-    }
-    const unrecorded = await recordFire(deps, repo, { name: periodic.name, read }, asOf ?? firedAt, sessionUrl);
-    if (unrecorded !== null) unread.push(unrecorded);
-    lines.push({ name: periodic.name, at: asOf ?? firedAt, by, session: sessionUrl, state: 'open' });
-  }
-  return { dispatched, unread, beats: beats() };
-};
-
-/**
  * The sessions the sign-off sweep reads by id (scripts/lib/session-signoff.mjs):
  * the one each routine periodic's record names, in each repo given. A
  * periodic that names connectors starts as a routine run
@@ -1457,7 +1338,7 @@ const sessionStopped = (deps) => {
  *   result?: Record<string, unknown>,
  * } | { answer: { kind: import('./webhook/fire.mjs').Fire['kind'], dispatched: Dispatched[], loginStored?: boolean, messaged?: import('./deliveries.mjs').Delivery | null, row?: import('./unblocked.mjs').Row, refusal?: string, commented?: boolean, announced?: number[] } }} Plan
  *   What a planner for a fire kind that starts sessions hands the turn
- *   (`planSweep` in dispatch/sweep.mjs, `planHook` in dispatch/hooks.mjs, `planUnblocked` in
+ *   (`planSweep` in dispatch/sweep.mjs, `planHook` in dispatch/hooks.mjs, `planPeriodics` in dispatch/periodics-fire.mjs, `planUnblocked` in
  *   dispatch/unblocked-fire.mjs, `planDispatch` in dispatch/dispatch-fire.mjs, `planTicket` in dispatch/ticket-fire.mjs). `unread`: what failed the turn, which
  *   `started` and `done` may add to. `done`: called after every launch, with
  *   the launches that ran, a failed claim's included, and what the launch
@@ -1505,10 +1386,6 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
   if (expiring !== null) deps.log('dispatch-login-expiring', { refreshExpiresAt: expiring.toISOString(), remedy: REMINT });
   deps.workspace.useAccount(account);
   if (refusal !== null) return { kind: invocation.kind, refusal };
-  // An event a periodic counts that queued no other fire: its check is the
-  // whole turn, and runs after this (`run`).
-  if (invocation.kind === 'periodics') return { kind: invocation.kind };
-
   /**
    * A served repo's config: the fire's repo's, or, in the bare schedule
    * fire, each launch's.
@@ -2257,6 +2134,8 @@ const turnFor = async (invocation, deps, finder, { served, bare, refusal, repo, 
     planned = await planSweep(invocation, ctx);
   } else if (invocation.kind === 'hook') {
     planned = await planHook(invocation, ctx);
+  } else if (invocation.kind === 'periodics') {
+    planned = await planPeriodics(invocation, ctx);
   } else if (invocation.kind === 'unblocked') {
     planned = await planUnblocked(invocation, ctx);
   } else if (invocation.kind === 'ticket') {
@@ -2316,16 +2195,6 @@ export const MESSAGE_TIMEOUT_MS = 2 * 60 * 1000;
  * task's deadline (dispatch/cli.mjs).
  */
 export const SENDS_LATEST_MS = 15 * 60 * 1000;
-
-/**
- * How long into an event's turn a periodic the event brought due may still
- * start: the schedule's own window, counted from the turn's start, whatever
- * the carrying turn's own work spent. One launch at the budget above from
- * there, its record and the sign-off sweep still end inside the task's
- * deadline (dispatch/cli.mjs). Past it, the periodic stays due for the next
- * event or sweep.
- */
-export const EVENT_PERIODIC_WINDOW_MS = SCHEDULE_LAUNCH_WINDOW_MS;
 
 /**
  * One delivery's budget: its send and a fallback launch together. A

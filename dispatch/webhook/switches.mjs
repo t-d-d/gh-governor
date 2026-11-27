@@ -97,8 +97,6 @@ export const switchesOf = (fire, workflows = {}) => {
  *   file queues one, and its turn reads the new file and writes the item:
  *   dropped, a switch just turned on would keep losing its fires until the
  *   schedule fire's sweep read the file.
- * - A fire carrying `counted` is kept unless `periodics` is off: a turn
- *   checks the repo's periodics whatever its own kind's switch says.
  * - A `workflow` fire needs `ciMessages` or `deployMessages` by the file's
  *   `workflows.ci`, which the item does not hold, so it is dropped only
  *   where the switch it would need as CI and the one it would need
@@ -113,7 +111,6 @@ export const switchesOf = (fire, workflows = {}) => {
 export const droppedBy = (fire, switches) => {
   if (switches === null || fire.kind === 'conflicts') return null;
   const off = (/** @type {string} */ name) => switches.get(name) === false;
-  if (fire.counted !== undefined && !off('periodics')) return null;
   if (fire.kind === 'prEdit') {
     const names = switchesOf(fire).filter(off);
     return names.length > 0 ? names : null;

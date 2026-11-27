@@ -140,18 +140,10 @@ describe('fitness: every launch goes through the launcher (pr-review.md)', () =>
     assert.deepEqual(declared.sort(), ['dynamoState', 'realDeps']);
   });
 
-  test('run hands turnFor and the event periodics the launcher\'s start as their launch', () => {
-    const calls = nodes(TURN_FILE).filter((n): n is ts.CallExpression => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && (n.expression.text === 'turnFor' || n.expression.text === 'eventPeriodics'));
-    assert.deepEqual(calls.map((c) => c.expression.getText()).sort(), ['eventPeriodics', 'turnFor']);
-    for (const call of calls) {
-      const scope = call.arguments[0];
-      const deps = call.expression.getText() === 'turnFor'
-        ? call.arguments[1]
-        : scope !== undefined && ts.isObjectLiteralExpression(scope)
-          ? scope.properties.find((p): p is ts.PropertyAssignment => ts.isPropertyAssignment(p) && p.name.getText() === 'deps')?.initializer
-          : undefined;
-      assert.equal(launchOf(deps), 'launches.start', call.expression.getText());
-    }
+  test('run hands turnFor the launcher\'s start as its launch, and every periodic starts through turnFor\'s launch plan', () => {
+    const calls = nodes(TURN_FILE).filter((n): n is ts.CallExpression => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'turnFor');
+    assert.deepEqual(calls.map((c) => c.expression.getText()), ['turnFor']);
+    for (const call of calls) assert.equal(launchOf(call.arguments[1]), 'launches.start', call.expression.getText());
   });
 
   test('a CLI launch in turnFor past the launcher fails it, by a property, an index or destructuring', () => {

@@ -72,6 +72,17 @@ describe('exitCodeFor', () => {
     assert.equal(exitCodeFor({ kind: 'schedule', queued: ['acme/factory#7'], passedOver: [] } as never), 0);
   });
 
+  // A periodics fire is one repo's due periodics: a launch that started
+  // nothing holds the rest, so it fails the turn even after one started.
+  test('a periodics fire with any launch that started nothing is a fault', () => {
+    const ok = { outcome: 'dispatched' };
+    const failed = { outcome: 'failed' };
+    assert.equal(exitCodeFor({ kind: 'periodics', dispatched: [] }), 0);
+    assert.equal(exitCodeFor({ kind: 'periodics', dispatched: [ok] }), 0);
+    assert.equal(exitCodeFor({ kind: 'periodics', dispatched: [ok, failed] }), 1);
+    assert.equal(exitCodeFor({ kind: 'periodics', dispatched: [failed] }), 1);
+  });
+
   // A ticket fire's messages to a claimed ticket's spec owner and builders:
   // the send the planner hands back is the turn, as an unblocked fire's is.
   test('a ticket message that failed is a fault; one a gone session refused, or a fire nobody heard, is not', () => {
