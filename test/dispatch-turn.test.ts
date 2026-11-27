@@ -60,7 +60,16 @@ const FACTORY_CONFIG = (() => {
 /** The factory's prompts, keyed by kind: each is text in the factory's file, never a prompt file. */
 const FACTORY_PROMPTS = FACTORY_CONFIG.prompts as Record<string, string | undefined>;
 /** A list of named entries as a section holds them: `sessions`, each keyed by its name. */
-const byName = (list: Array<{ name: string } & Record<string, unknown>>) => ({ sessions: Object.fromEntries(list.map(({ name, ...rest }) => [name, rest])) });
+/**
+ * Entries as the file holds them, keyed by name. A periodic's time limit and
+ * counts, given in the shape the code reads, go into its `when`.
+ */
+const byName = (list: Array<{ name: string } & Record<string, unknown>>) => ({
+  sessions: Object.fromEntries(list.map(({ name, days, hours, counts, ...rest }) => {
+    const when = { ...(days === undefined ? {} : { days }), ...(hours === undefined ? {} : { hours }), ...(counts as object | undefined) };
+    return [name, { ...rest, ...(Object.keys(when).length === 0 ? {} : { when }) }];
+  })),
+});
 /** The factory's file without the `waits` switch: a repo that never turned it on. */
 const WAITS_OFF_FILE = (() => {
   const file = JSON.parse(FACTORY_FILE);

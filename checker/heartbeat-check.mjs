@@ -9,7 +9,7 @@
  * It reads the caller's config file from the default branch, and the
  * heartbeat issue the file names, where governor keeps one line for pickup
  * and one per periodic (dispatch/heartbeat.mjs). Each line whose last fire
- * is older than its limit (pickup's sweep interval, a periodic's day limit)
+ * is older than its limit (pickup's sweep interval, a periodic's time limit)
  * plus the caller's tolerance gets one open issue, which closes once the
  * line is fresh again. The session rules line, which says the repo's
  * `CLAUDE.md` lacks governor's current block, is read and raises nothing:
@@ -41,14 +41,15 @@ const DAY_MS = 24 * HOUR_MS;
  */
 
 /**
- * @typedef {{ issue: number, pickupHours: number | null, periodics: Array<{ name: string, days: number }> }} CheckConfig
+ * @typedef {{ issue: number, pickupHours: number | null, periodics: Array<{ name: string } & ({ days: number } | { hours: number })> }} CheckConfig
  *   `pickupHours`: pickup's sweep interval, null where pickup is off.
  */
 
 /**
  * What the check needs of a config file, read by governor's `readConfig`:
  * the heartbeat issue, pickup's interval where pickup is on, and each
- * periodic's day limit where the periodics are on. A file governor refuses,
+ * periodic's time limit, in days or in hours as its `when` gives it, where
+ * the periodics are on. A file governor refuses,
  * or one that leaves the heartbeat off, is a fault.
  *
  * @param {string} text
@@ -64,7 +65,7 @@ export const checkConfigOf = (text) => {
     config: {
       issue: config.heartbeat.issue,
       pickupHours: turnsOn(config, 'pickup') ? sweepHoursOf(config) : null,
-      periodics: turnsOn(config, 'periodics') ? config.periodics.map(({ name, days }) => ({ name, days })) : [],
+      periodics: turnsOn(config, 'periodics') ? config.periodics.map(({ name, days, hours }) => (hours !== undefined ? { name, hours } : { name, days: Number(days) })) : [],
     },
   };
 };
@@ -143,17 +144,19 @@ export const judge = async ({ config, beat, now, toleranceHours, configChanged }
       (late) => ({ key: PICKUP_KEY, title, body: `${markerOf(PICKUP_KEY)}\nGovernor's heartbeat issue ${issue} says pickup last swept the ready tickets at ${beat.pickup?.at}, ${late} ago. That is older than ${limitText}.\n\n${tail}\n` }),
       (changed, late) => ({ key: PICKUP_KEY, title, body: `${markerOf(PICKUP_KEY)}\nGovernor's heartbeat issue ${issue} has no line for pickup, and ${CONFIG_PATH} last changed at ${changed}, ${late} ago. That is older than ${limitText}.\n\n${tail}\n` }));
   }
-  for (const { name, days } of config.periodics) {
+  for (const periodic of config.periodics) {
+    const { name } = periodic;
     const key = periodicKey(name);
     const line = beat.periodics.find((p) => p.name === name);
-    const limit = days * DAY_MS;
-    const limitText = `its day limit of ${plural(days, 'day', 'days')} plus the tolerance of ${tolText}`;
+    const limit = 'hours' in periodic ? periodic.hours * HOUR_MS : periodic.days * DAY_MS;
+    const named = 'hours' in periodic ? `its hour limit of ${plural(periodic.hours, 'hour', 'hours')}` : `its day limit of ${plural(periodic.days, 'day', 'days')}`;
+    const limitText = `${named} plus the tolerance of ${tolText}`;
     const title = `Heartbeat: periodic ${JSON.stringify(name)} is overdue`;
     await judgeLine(key, line?.at, limit,
       (late) => {
         const l = /** @type {PeriodicLine} */ (line);
         // A line from the baseline: governor has read the periodic and never
-        // fired it, so its day limit runs from that first read.
+        // fired it, so its time limit runs from that first read.
         if (l.state === 'not fired') return { key, title, body: `${markerOf(key)}\nGovernor's heartbeat issue ${issue} says governor first read the periodic ${JSON.stringify(name)} at ${l.at}, ${late} ago, and has never fired it. That is older than ${limitText}.\n\n${tail}\n` };
         return { key, title, body: `${markerOf(key)}\nGovernor's heartbeat issue ${issue} says the periodic ${JSON.stringify(name)} last fired at ${l.at}, ${late} ago. That is older than ${limitText}.\n\nIts state: ${STATES[l.state]}${l.session === null ? '' : `, session ${l.session}`}.\n\n${holdText(l)}\n\n${tail}\n` };
       },

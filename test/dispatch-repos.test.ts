@@ -336,7 +336,7 @@ describe('one section per feature, in .github/governor.json', () => {
   });
 
   test('a prompt file is read under its new key, and a fault names that key', async () => {
-    const file = { ...MINIMAL, unblocked: { prompts: { spec: { file: 'spec.md' } } }, periodics: { sessions: { Weekly: { prompt: { file: 'weekly.md' }, days: 7 } } }, hooks: { sessions: { alarm: { prompt: { file: 'alarm.md' }, keyVersion: 1 } } }, pickup: PICKUP };
+    const file = { ...MINIMAL, unblocked: { prompts: { spec: { file: 'spec.md' } } }, periodics: { sessions: { Weekly: { prompt: { file: 'weekly.md' }, when: { days: 7 } } } }, hooks: { sessions: { alarm: { prompt: { file: 'alarm.md' }, keyVersion: 1 } } }, pickup: PICKUP };
     const read = readConfig(JSON.stringify(file));
     assert.ok(read.ok, JSON.stringify(read));
     const resolved = await resolveFiles(read.config, async () => null);
@@ -373,7 +373,7 @@ describe('one section per feature, in .github/governor.json', () => {
   test('periodics.sessions and hooks.sessions are keyed by name, and read as lists, each entry with its name', () => {
     const config = ok({
       ...MINIMAL,
-      periodics: { sessions: { 'Code review': { prompt: 'Review.', days: 7 }, Retro: { prompt: 'Retro.', days: 14 } } },
+      periodics: { sessions: { 'Code review': { prompt: 'Review.', when: { days: 7 } }, Retro: { prompt: 'Retro.', when: { days: 14 } } } },
       hooks: { sessions: { 'operator-prod': { prompt: 'Look.', keyVersion: 2 } } },
     });
     assert.deepEqual(config.periodics.map((p) => [p.name, p.days]), [['Code review', 7], ['Retro', 14]], 'in the order of the keys');
@@ -383,20 +383,20 @@ describe('one section per feature, in .github/governor.json', () => {
   });
 
   test('an entry in periodics.sessions or hooks.sessions that sets name is refused: the key is the name', () => {
-    assert.match(fault({ ...MINIMAL, periodics: { sessions: { Weekly: { name: 'Weekly', prompt: 'p', days: 7 } } } }), /periodics\.sessions\.Weekly: Unrecognized key: "name"/);
+    assert.match(fault({ ...MINIMAL, periodics: { sessions: { Weekly: { name: 'Weekly', prompt: 'p', when: { days: 7 } } } } }), /periodics\.sessions\.Weekly: Unrecognized key: "name"/);
     assert.match(fault({ ...MINIMAL, hooks: { sessions: { alarm: { name: 'alarm', prompt: 'p', keyVersion: 1 } } } }), /hooks\.sessions\.alarm: Unrecognized key: "name"/);
   });
 
   test('each kind of name keeps its rules: a periodic\'s is one line, a hook\'s is safe in a URL path', () => {
-    assert.match(fault({ ...MINIMAL, periodics: { sessions: { 'two\nlines': { prompt: 'p', days: 7 } } } }), /periodics\.sessions/);
-    assert.match(fault({ ...MINIMAL, periodics: { sessions: { [' Padded ']: { prompt: 'p', days: 7 } } } }), /periodics\.sessions/);
+    assert.match(fault({ ...MINIMAL, periodics: { sessions: { 'two\nlines': { prompt: 'p', when: { days: 7 } } } } }), /periodics\.sessions/);
+    assert.match(fault({ ...MINIMAL, periodics: { sessions: { [' Padded ']: { prompt: 'p', when: { days: 7 } } } } }), /periodics\.sessions/);
     assert.match(fault({ ...MINIMAL, hooks: { sessions: { 'Not Safe': { prompt: 'p', keyVersion: 1 } } } }), /hooks\.sessions.*lower-case/);
   });
 
   test('a section with no enabled turns its feature on; one with "enabled": false turns it off; a missing section leaves it off', () => {
     for (const name of SECTIONS) {
       if (name === 'issueReviews') continue;
-      const extra: Record<string, Record<string, unknown>> = { pickup: PICKUP, prReview: { prompt: 'p' }, heartbeat: { issue: 1 }, periodics: { sessions: { W: { prompt: 'p', days: 1 } } }, hooks: { sessions: { h: { prompt: 'p', keyVersion: 1 } } } };
+      const extra: Record<string, Record<string, unknown>> = { pickup: PICKUP, prReview: { prompt: 'p' }, heartbeat: { issue: 1 }, periodics: { sessions: { W: { prompt: 'p', when: { days: 1 } } } }, hooks: { sessions: { h: { prompt: 'p', keyVersion: 1 } } } };
       const settings = extra[name] ?? {};
       const needsPickup = LABEL_READERS.includes(name) && name !== 'pickup' ? { pickup: { enabled: false, ...PICKUP } } : {};
       const on = ok({ ...MINIMAL, ...needsPickup, [name]: settings });
@@ -526,7 +526,7 @@ describe('model and effort: a default for the file, and each place\'s own', () =
     const config = read({
       model: 'claude-sonnet-5-5',
       effort: 'medium',
-      periodics: { sessions: { Retro: { prompt: 'Retro.', days: 14, model: 'claude-haiku-5-5', effort: 'low' }, Tidy: { prompt: 'Tidy.', days: 7 } } },
+      periodics: { sessions: { Retro: { prompt: 'Retro.', when: { days: 14 }, model: 'claude-haiku-5-5', effort: 'low' }, Tidy: { prompt: 'Tidy.', when: { days: 7 } } } },
       hooks: { sessions: { 'operator-prod': { prompt: 'Look.', keyVersion: 2, effort: 'max' } } },
       issueReviews: { reviews: { triage: { model: 'fable' }, shape: {} } },
     });
@@ -563,7 +563,7 @@ describe('model and effort: a default for the file, and each place\'s own', () =
   });
 
   test('a periodic that names connectors takes a model and no effort: a routine run has none to set', () => {
-    const routine = { prompt: 'Read the feed.', days: 1, connectors: ['feed_prod'] };
+    const routine = { prompt: 'Read the feed.', when: { days: 1 }, connectors: ['feed_prod'] };
     const config = read({ effort: 'high', periodics: { sessions: { Feed: { ...routine, model: 'claude-haiku-5-5' } } } });
     assert.deepEqual(runOf(config, 'periodics', config.periodics[0]), { model: 'claude-haiku-5-5', effort: 'high' }, 'the launcher drops the file\'s effort for a routine run');
     assert.match(faultOf({ periodics: { sessions: { Feed: { ...routine, effort: 'high' } } } }), /^periodics\.sessions\.Feed\.effort: .*connectors.*routine/);

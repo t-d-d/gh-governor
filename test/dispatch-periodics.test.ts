@@ -15,8 +15,14 @@ import { githubReader } from '../scripts/lib/github-app.mjs';
 
 const BASE = { environment: 'env_01ASK' };
 const RETRO = { name: 'Weekly retro', prompt: 'Run a retro over the week.', days: 7 };
-/** Periodics as the file holds them: each keyed by its name, which the entry no longer sets. */
-const keyed = (list: Array<Record<string, unknown>>) => Object.fromEntries(list.map(({ name, ...entry }) => [name, entry]));
+/**
+ * Periodics as the file holds them: each keyed by its name, which the entry
+ * no longer sets, with its time limit and counts in `when`.
+ */
+const keyed = (list: Array<Record<string, unknown>>) => Object.fromEntries(list.map(({ name, days, hours, counts, ...entry }) => {
+  const when = { ...(days === undefined ? {} : { days }), ...(hours === undefined ? {} : { hours }), ...(counts as object | undefined) };
+  return [name, { ...entry, ...(Object.keys(when).length === 0 ? {} : { when }) }];
+}));
 /** A file turning periodics on: `periodics` a list of periodics, each with its name, or the section itself. */
 const file = ({ periodics = [RETRO], ...over }: Record<string, unknown>) => JSON.stringify({ ...BASE, periodics: Array.isArray(periodics) ? { sessions: keyed(periodics) } : periodics, ...over });
 const NOW = Date.parse('2026-10-27T12:00:00Z');
@@ -55,7 +61,7 @@ describe('the config file\'s periodics', () => {
     const read = readConfig(file({ periodics: [RETRO, daily] }));
     assert.ok(read.ok, JSON.stringify(read));
     assert.deepEqual(read.config.periodics, [RETRO, daily]);
-    const named = readConfig(file({ periodics: { sessions: { 'Weekly retro': RETRO } } }));
+    const named = readConfig(file({ periodics: { sessions: { 'Weekly retro': { name: RETRO.name, prompt: RETRO.prompt, when: { days: 7 } } } } }));
     assert.ok(!named.ok);
     assert.match(named.fault, /periodics\.sessions\.Weekly retro: Unrecognized key: "name"/);
   });
@@ -66,13 +72,60 @@ describe('the config file\'s periodics', () => {
     assert.equal(read.config.periodics[0]?.name, 'Code review');
   });
 
-  test('a day limit is whole days, at least one, and required', () => {
-    for (const days of [0, -1, 1.5, '7', undefined]) {
-      const read = readConfig(file({ periodics: [{ ...RETRO, days }] }));
-      assert.ok(!read.ok, String(days));
-      assert.match(read.fault, /days/, String(days));
+  test('a time limit is days or hours in when, each a whole number of at least one', () => {
+    for (const key of ['days', 'hours']) {
+      for (const n of [0, -1, 1.5, '7', null]) {
+        const read = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { [key]: n } } } } }));
+        assert.ok(!read.ok, `${key}: ${String(n)}`);
+        assert.match(read.fault, new RegExp(`when\\.${key}`), `${key}: ${String(n)}`);
+      }
+      const read = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { [key]: 1 } } } } }));
+      assert.ok(read.ok, JSON.stringify(read));
+      assert.deepEqual(read.config.periodics, [{ name: 'R', prompt: 'p', [key]: 1 }]);
     }
-    assert.ok(readConfig(file({ periodics: [{ ...RETRO, days: 1 }] })).ok);
+  });
+
+  test('when names exactly one of days and hours: both, or neither, is refused, naming the key', () => {
+    const both = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { days: 1, hours: 6 } } } } }));
+    assert.ok(!both.ok);
+    assert.match(both.fault, /periodics\.sessions\.R\.when\.hours: .*days and hours/);
+    for (const when of [{ merges: 3 }, {}]) {
+      const neither = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when } } } }));
+      assert.ok(!neither.ok, JSON.stringify(when));
+      assert.match(neither.fault, /periodics\.sessions\.R\.when: .*days or hours/, JSON.stringify(when));
+    }
+    const missing = readConfig(file({ periodics: { sessions: { R: { prompt: 'p' } } } }));
+    assert.ok(!missing.ok);
+    assert.match(missing.fault, /periodics\.sessions\.R\.when/);
+  });
+
+  test('the number form and the count form of every limit read the same', () => {
+    for (const key of ['days', 'hours', 'merges', 'issuesOpened', 'issuesClosed']) {
+      const time = key === 'days' || key === 'hours' ? {} : { days: 7 };
+      const bare = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { ...time, [key]: 5 } } } } }));
+      const counted = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { ...time, [key]: { count: 5 } } } } } }));
+      assert.ok(bare.ok && counted.ok, `${key}: ${JSON.stringify([bare, counted])}`);
+      assert.deepEqual(counted.config.periodics, bare.config.periodics, key);
+      for (const bad of [{ count: 0 }, { count: 1.5 }, { count: '5' }, {}, { count: 5, paths: ['x/**'] }]) {
+        const read = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { ...time, [key]: bad } } } } }));
+        assert.ok(!read.ok, `${key}: ${JSON.stringify(bad)}`);
+        assert.match(read.fault, new RegExp(`when\\.${key}`), `${key}: ${JSON.stringify(bad)}`);
+      }
+    }
+  });
+
+  test('days or counts beside prompt are retired keys, and refused by name', () => {
+    for (const [key, value] of [['days', 7], ['counts', { merges: 3 }]] as const) {
+      const read = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { days: 7 }, [key]: value } } } }));
+      assert.ok(!read.ok, key);
+      assert.match(read.fault, new RegExp(`periodics\\.sessions\\.R: Unrecognized key: "${key}"`), key);
+    }
+  });
+
+  test('a file whose periodic sets days and merges in when reads them as a day limit and a count', () => {
+    const read = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { days: 7, merges: 10 } } } } }));
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.config.periodics, [{ name: 'R', prompt: 'p', days: 7, counts: { merges: 10 } }]);
   });
 
   test('a periodic may name the claude.ai connectors its session needs: one or more distinct names', () => {
@@ -114,7 +167,7 @@ describe('the config file\'s periodics', () => {
     await assert.rejects(resolveFiles(read.config, async () => { throw new Error('502'); }), /502/);
   });
 
-  test('a periodic may add a count for merges, issues opened and issues closed, each a whole number of at least one, and a minimum gap in hours', () => {
+  test('a periodic may add a limit for merges, issues opened and issues closed, each a whole number of at least one, and a minimum gap in hours', () => {
     const counted = { ...RETRO, counts: { merges: 20, issuesOpened: 5, issuesClosed: 1 }, gapHours: 4 };
     const read = readConfig(file({ periodics: [counted] }));
     assert.ok(read.ok, JSON.stringify(read));
@@ -124,19 +177,11 @@ describe('the config file\'s periodics', () => {
       { ...RETRO, counts: { merges: 1.5 } },
       { ...RETRO, counts: { merges: '20' } },
       { ...RETRO, counts: { pushes: 3 } },
-      { ...RETRO, counts: {} },
       { ...RETRO, gapHours: 0 },
       { ...RETRO, gapHours: 2.5 },
     ]) {
       assert.ok(!readConfig(file({ periodics: [periodic] })).ok, JSON.stringify(periodic));
     }
-  });
-
-  test('a periodic with counts still needs its day limit', () => {
-    const { days: _days, ...dayless } = RETRO;
-    const read = readConfig(file({ periodics: [{ ...dayless, counts: { merges: 20 } }] }));
-    assert.ok(!read.ok);
-    assert.match(read.fault, /days/);
   });
 
   test('the factory turns periodics on', () => {
@@ -243,6 +288,20 @@ describe('duePeriodics', () => {
     assert.equal(await dueAt(31), 0, 'the sweep after is nearer');
     assert.equal(await dueAt(60), 0, 'the sweep an hour before the limit does not fire it');
     assert.equal(SWEEP_GRACE_MS, minutes(30));
+  });
+
+  test('an hours limit is due on the sweep nearest that many hours after its last fire, by the same grace, and names itself as what brought it due', async () => {
+    const minutes = (n: number) => n * 60 * 1000;
+    const SIX = { name: 'Six hourly', prompt: 'Look around.', hours: 6 };
+    const recordedAgo = (short: number) => store({ 'Six hourly': { at: new Date(NOW - 6 * HOUR_MS + minutes(short)).toISOString(), session: 's', baseline: false } });
+    const dueAt = async (short: number) => (await duePeriodics({ repo: REPO, busy: finished, periodics: [SIX], state: recordedAgo(short), now: NOW, log })).due;
+    const due = await dueAt(5);
+    assert.equal(due.length, 1, 'the launch landed minutes after its sweep read it');
+    assert.deepEqual(due[0]?.by, { hours: 6 });
+    assert.equal(due[0]?.due, NOW + minutes(5), 'due at its limit, which the sweep reads a little early');
+    assert.equal((await dueAt(30)).length, 1);
+    assert.equal((await dueAt(31)).length, 0, 'the sweep after is nearer');
+    assert.equal((await dueAt(60)).length, 0, 'the sweep an hour before the limit does not fire it');
   });
 
   test('with no record, the baseline is now, and nothing is due', async () => {

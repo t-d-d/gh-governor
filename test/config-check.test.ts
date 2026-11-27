@@ -78,7 +78,7 @@ describe('the check fails on a file governor refuses', () => {
   });
 
   test('a prompt file that is missing, empty, or names a fact its kind lacks gives resolveFiles\'s fault', async () => {
-    const config = { ...base(), signOff: { prompt: { file: 'prompts/sign-off.md' } }, ciMessages: { prompts: { breaker: { file: 'prompts/ci.md' } } }, periodics: { sessions: { Weekly: { prompt: { file: 'prompts/weekly.md' }, days: 7 } } } };
+    const config = { ...base(), signOff: { prompt: { file: 'prompts/sign-off.md' } }, ciMessages: { prompts: { breaker: { file: 'prompts/ci.md' } } }, periodics: { sessions: { Weekly: { prompt: { file: 'prompts/weekly.md' }, when: { days: 7 } } } } };
     const got = await check(reads({
       '.github/governor.json': file(config),
       'prompts/sign-off.md': 'Sign off on {pr}.',

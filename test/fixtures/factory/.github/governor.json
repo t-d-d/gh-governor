@@ -409,20 +409,26 @@
     "sessions": {
       "Weekly retro": {
         "prompt": "Run a retro over the week's merged pull requests and closed issues. Raise an issue for each lesson worth acting on.",
-        "days": 7
+        "when": {
+          "days": 7
+        }
       },
       "Ticket review": {
         "prompt": "Review the open tickets labelled ready for development. Fix any whose spec the code has overtaken, and send a short summary of what changed to the owner's feed.",
-        "days": 3,
+        "when": {
+          "days": 3
+        },
         "connectors": [
           "feed_prod"
         ]
       },
       "Code review": {
         "prompt": "Review the pull requests merged since the last review, and the issues closed. Raise an issue for each defect or drift worth fixing.",
-        "days": 7,
-        "counts": {
-          "merges": 20,
+        "when": {
+          "days": 7,
+          "merges": {
+            "count": 20
+          },
           "issuesClosed": 10
         },
         "gapHours": 4

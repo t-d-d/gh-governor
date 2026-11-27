@@ -192,7 +192,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   deployedLabels: 'Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, for people to read; the shipping job messages each such ticket\'s spec owner and builders itself. Default false.',
   prReview: 'The PR review: its prompt, and the lists it checks a PR against. Needs `prompt` when on.',
   heartbeat: 'Governor records each fire on the issue `issue` names: a line for pickup and one per periodic, under the `<!-- governor:heartbeat -->` marker its body must carry. Needs `issue` when on.',
-  periodics: 'A session per periodic in `sessions`, each time its day limit passes or one of its counts is reached. A merge into the default branch, an issue opened and an issue closed each queue a check of their own, so a merge runs two turns, its conflict check and its periodics check, and a count is checked whether or not the conflict check ran. A day limit comes due on the hourly sweep. A due periodic starts a new session even while its last one is still open, unless that session is in the middle of a turn: then it waits for the turn to end. Needs at least one periodic when on.',
+  periodics: 'A session per periodic in `sessions`, each time one of the limits in its `when` is reached: its day or hour limit passes, or one of its counts reaches its number. A merge into the default branch, an issue opened and an issue closed each queue a check of their own, so a merge runs two turns, its conflict check and its periodics check, and a count is checked whether or not the conflict check ran. A day or hour limit comes due on the hourly sweep. A due periodic starts a new session even while its last one is still open, unless that session is in the middle of a turn: then it waits for the turn to end. Needs at least one periodic when on.',
   hooks: 'A session on a hook\'s prompt when a signed request fires one of the hooks `sessions` holds. A fire while the hook\'s last session is open goes into that session as a message. Needs at least one hook when on.',
   waits: 'Every session governor starts is told how to make a ticket wait with a `Blocked until:` line. With `label` set, the hourly fire also takes that label off each open ticket whose date has passed, before its sweep. The hold itself needs no switch: every pickup path holds a ticket whose date is still to come, whatever this section says.',
   signOff: 'Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off.',
@@ -453,10 +453,11 @@ const trustSchema = z.strictObject({
 /**
  * A recurring session, held under its name in `periodics.sessions`: the
  * name, unique in the file, which the session is named after and its record
- * keyed by; `prompt`, what it runs; `days`, how
- * many whole days after its last fire it comes due. `counts`, each of
- * merges into the default branch, issues opened and issues closed it names,
- * brings it due sooner, once that many have happened since its last fire.
+ * keyed by; `prompt`, what it runs; `when`, its limits, any one of which
+ * brings it due. Its time limit, `days` or `hours`, is how long after its
+ * last fire it comes due. Each of merges into the default branch, issues
+ * opened and issues closed it names brings it due sooner, once that many
+ * have happened since its last fire. A limit is a number, or `{ count }`.
  * `gapHours`: the fewest whole hours between two of its runs.
  * `connectors`: the claude.ai connectors its session needs, each by its
  * name in the account's connector list (`feed_prod`). A periodic that
@@ -466,24 +467,49 @@ const trustSchema = z.strictObject({
 /** A claude.ai connector's name as a routine's `mcp_connections` takes it. */
 export const CONNECTOR_NAME = /^[A-Za-z0-9_-]+$/;
 
-/** What each of a periodic's counts counts. @type {Readonly<Record<string, string>>} */
-const COUNT_DESCRIPTIONS = Object.freeze({
-  merges: 'Pull requests merged into the default branch',
-  issuesOpened: 'Issues opened',
-  issuesClosed: 'Issues closed',
+/** What each of a periodic's limits counts. @type {Readonly<Record<string, string>>} */
+const LIMIT_DESCRIPTIONS = Object.freeze({
+  days: 'The day limit: whole days since the last fire. The periodic is due on the sweep nearest that many days after its last fire.',
+  hours: 'The hour limit: whole hours since the last fire. The periodic is due on the sweep nearest that many hours after its last fire.',
+  merges: 'Pull requests merged into the default branch since the last fire.',
+  issuesOpened: 'Issues opened since the last fire.',
+  issuesClosed: 'Issues closed since the last fire.',
 });
+
+/** The time limits a periodic's `when` may hold, exactly one of them. */
+const TIME_LIMITS = /** @type {const} */ (['days', 'hours']);
+
+/** The limits a periodic's `when` may hold: its time limit, then the counts. */
+const LIMITS = [...TIME_LIMITS, ...COUNTS];
+
+/**
+ * One limit in a periodic's `when`: a whole number of at least one, or
+ * `{ count }` with that number. Later measures add their filters beside
+ * `count`.
+ *
+ * @param {string} key
+ */
+const limitSchema = (key) => z.union([
+  z.number().int().min(1),
+  z.strictObject({ count: z.number().int().min(1).meta({ description: 'The limit, a whole number of at least one.' }) }),
+]).optional().meta({ description: `${LIMIT_DESCRIPTIONS[key]} A whole number of at least one, or { "count": <number> }, which says the same.` });
 
 /** A periodic's name, the key it is held under: one line, of at most 100 characters. */
 const periodicName = z.string().min(1).max(100).regex(/^\S(?:[^\n]*\S)?$/, 'a name is one line, with no space at either end');
 
+/** A periodic's limits, any one of which brings it due. */
+const whenSchema = z.strictObject(Object.fromEntries(LIMITS.map((key) => [key, limitSchema(key)])))
+  .superRefine((when, ctx) => {
+    const times = TIME_LIMITS.filter((key) => when[key] !== undefined);
+    if (times.length > 1) ctx.addIssue({ code: 'custom', path: ['hours'], message: 'when names one time limit: days and hours are one clock in two units, so set one of them' });
+    if (times.length === 0) ctx.addIssue({ code: 'custom', message: 'when names a time limit: one of days or hours' });
+  })
+  .meta({ description: 'The periodic\'s limits: it comes due when any one is reached. Exactly one of `days` and `hours`, and any of `merges`, `issuesOpened` and `issuesClosed`. Each is a whole number of at least one, or { "count": <number> }. At its day or hour limit, a periodic whose counts counted nothing starts no session.' });
+
 const periodicSchema = z.strictObject({
-  prompt: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'What the periodic\'s session runs: the text, or { "file": "<path>" }. Governor adds a line under it giving the last fire\'s time, and lists what each count counted since then.' }),
-  days: z.number().int().min(1).meta({ description: 'Required. The day limit, in whole days, at least one: the periodic is due on the sweep nearest that many days after its last fire.' }),
-  counts: z.strictObject(Object.fromEntries(COUNTS.map((kind) => [kind, z.number().int().min(1).optional().meta({ description: `${COUNT_DESCRIPTIONS[kind]} since the last fire that bring the periodic due, a whole number of at least one.` })])))
-    .refine((c) => Object.values(c).some((n) => n !== undefined), 'counts names at least one of merges, issuesOpened and issuesClosed')
-    .optional()
-    .meta({ description: 'Counts that bring the periodic due before its day limit, once any reaches its number since the last fire: `merges`, `issuesOpened` and `issuesClosed`. At its day limit, a periodic whose counts counted nothing starts no session.' }),
-  gapHours: z.number().int().min(1).optional().meta({ description: 'The fewest whole hours between two of the periodic\'s runs, at least one. A count reached inside the gap fires on the first event or sweep after it.' }),
+  prompt: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'What the periodic\'s session runs: the text, or { "file": "<path>" }. Governor adds a line under it giving the last fire\'s time, and lists what each count in `when` counted since then.' }),
+  when: whenSchema,
+  gapHours: z.number().int().min(1).optional().meta({ description: 'The fewest whole hours between two of the periodic\'s runs, at least one. A limit reached inside the gap fires on the first event or sweep after it.' }),
   connectors: z.array(z.string().regex(CONNECTOR_NAME, 'a connector name is letters, digits, hyphens and underscores'))
     .min(1, 'connectors names at least one connector, or is left out')
     .refine((names) => new Set(names).size === names.length, 'connectors names each connector once')
@@ -599,7 +625,7 @@ const plainSection = (/** @type {string} */ name) => z.strictObject({
  */
 const periodicsSchema = z.strictObject({
   enabled,
-  sessions: z.record(periodicName, periodicSchema).optional().meta({ description: 'The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed, each keyed by its name: one line, with no space at either end. Its session is named after it, and governor keys its record by it. At least one when on.' }),
+  sessions: z.record(periodicName, periodicSchema).optional().meta({ description: 'The recurring sessions governor starts on a day or hour limit, or on a count of merges, issues opened or issues closed, each keyed by its name: one line, with no space at either end. Its session is named after it, and governor keys its record by it. At least one when on.' }),
 });
 
 /** The `hooks` section: `enabled`, and `sessions`, each hook keyed by its name. */
@@ -718,6 +744,31 @@ const fileSchema = z.strictObject({
 const runSetting = ({ model, effort }) => ({ ...(model === undefined ? {} : { model }), ...(effort === undefined ? {} : { effort }) });
 
 /**
+ * A limit's number, from either form.
+ *
+ * @param {number | { count: number }} limit
+ */
+const countOf = (limit) => (typeof limit === 'number' ? limit : limit.count);
+
+/**
+ * A periodic as the file holds it, read into the shape the features take:
+ * its time limit as `days` or `hours`, and its other limits as `counts`,
+ * each a number whichever form the file gives it.
+ *
+ * @param {string} name
+ * @param {Record<string, any>} entry
+ */
+const periodicOf = (name, { when, ...rest }) => {
+  /** @type {Partial<Record<import('./webhook/fire.mjs').Count, number>>} */
+  const counts = {};
+  for (const kind of COUNTS) if (when[kind] !== undefined) counts[kind] = countOf(when[kind]);
+  const periodic = /** @type {Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }} */ ({ name, ...rest });
+  for (const key of TIME_LIMITS) if (when[key] !== undefined) periodic[key] = countOf(when[key]);
+  if (Object.keys(counts).length > 0) periodic.counts = counts;
+  return periodic;
+};
+
+/**
  * The file as written, read into the shape governor's code takes: each
  * switch in `features`, pickup's labels in `labels`, every prompt in
  * `prompts` keyed by its message kind, the deploy targets and tags in
@@ -756,7 +807,7 @@ const toConfig = (file) => {
     features,
     prompts,
     workflows: { ...(file.workflows?.ci === undefined ? {} : { ci: file.workflows.ci }), triage: deployMessages?.triage ?? [], tags: deployMessages?.tags ?? {} },
-    periodics: Object.entries(periodics?.sessions ?? {}).map(([name, p]) => ({ name, ...p })),
+    periodics: Object.entries(periodics?.sessions ?? {}).map(([name, p]) => periodicOf(name, p)),
     hooks: Object.entries(hooks?.sessions ?? {}).map(([name, h]) => ({ name, ...h })),
   };
   if (prReview?.prompt !== undefined) {
@@ -918,7 +969,10 @@ export const configSchema = fileSchema.transform(toConfig)
  * @typedef {{ model?: string, effort?: string }} RunSetting The model and effort one place sets, each only where it sets one.
  * @typedef {{ model: string, effort?: string }} Run The model a session or a review's run uses, and its effort where one is set.
  * @typedef {RunSetting & { sections: Record<string, RunSetting> }} Runs The file's own `model` and `effort`, and each section's.
- * @typedef {{ name: string, prompt: string, days: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] } & RunSetting} Periodic A recurring session, its prompt read.
+ * @typedef {{ name: string, prompt: string, days?: number, hours?: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] } & RunSetting} Periodic
+ *   A recurring session, its prompt read: its file's `when` read into its
+ *   time limit, exactly one of `days` and `hours` (the schema refuses both
+ *   and neither), and its counts.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number } & RunSetting} Hook A hook an outside system fires, its prompt read.
  * @typedef {{ success: string[], failure: string[], neutral: string[] }} Conclusions The labels each conclusion of an issue review adds.
  * @typedef {{ labels: string[], prompt?: string, conclusions?: Partial<Conclusions> }} ByLabel One `byLabel` entry of an issue review, its prompt read.
