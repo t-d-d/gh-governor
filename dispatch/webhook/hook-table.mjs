@@ -220,10 +220,10 @@ const TRUST = /** @type {ReadonlySet<string>} */ (new Set(TRUST_VALUES));
  *   its key version and its cap; null when the repo has no item. An item
  *   written before hooks had a cap gives each one 20. A read that fails, or
  *   an item that is malformed, throws: never a missing item.
- *   `item`: the repo's switches, ready labels, issue review labels and `trust.relay`, as the file read when the
+ *   `item`: the repo's switches, ready labels, issue review labels, `trust.relay`, claim label and measures, as the file read when the
  *   task last read it; null when the repo has no item. A read that fails,
- *   or switches or ready labels that are malformed, throw.
- *   `publish`: the repo's hooks, switches, ready labels, issue review labels and trust lists, as the file read at `at` holds them, put
+ *   or any of them that is malformed, throws.
+ *   `publish`: the repo's hooks, switches, ready labels, issue review labels, trust lists, claim label and measures, as the file read at `at` holds them, put
  *   unless a write from a later read stands, false then. Any other failure
  *   throws.
  *   `count`: one more fire of the hook in the clock hour holding `at`, taken

@@ -6,7 +6,8 @@
  *   `periodics` fire carries (fire.mjs).
  * - `wakes`: whether a webhook delivery is one it counts. The receiver
  *   queues a `periodics` fire naming it for each delivery it wakes on
- *   (route.mjs), carrying `base` where the entry gives one.
+ *   (route.mjs), carrying `base` where the entry gives one, unless the
+ *   repo's hook-table item says no limit in its file names it.
  * - `read`: its window, what happened after a time, read afresh from
  *   GitHub, oldest first. A read that fails throws.
  * - `heading`: what the lines under a periodic's prompt call it.

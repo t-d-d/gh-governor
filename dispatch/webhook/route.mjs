@@ -50,7 +50,8 @@
  * Each delivery a measure wakes on (measures.mjs), such as a merge into
  * the default branch, also queues a `periodics` fire naming it as `counted`, beside
  * whatever else the delivery queues, so the repo's periodics are checked
- * on a turn of their own ({@link counting}).
+ * on a turn of their own ({@link counting}), unless the repo's hook-table
+ * item lists the measures its limits name and not this one.
  * An issue opened, reopened, or edited with its body changed by anyone but
  * a bot, queues an `issueReview` fire naming it, whose turn runs the
  * repo's issue reviews on it (dispatch/issue-review.mjs). So does a label
@@ -867,7 +868,8 @@ const routeKind = ({ event, payload, appId, relay, bodies, count }) => {
  *   hook table (hook-table.mjs), the hooks its file listed when the task last
  *   read it. `countFire`: one more fire of a hook in the clock hour, taken
  *   only under its cap and once per signature (hook-table.mjs).
- *   `repoItem`: the repo's switches and ready labels in the hook table, as
+ *   `repoItem`: the repo's switches, ready labels, review labels, trust
+ *   lists, claim label and measures in the hook table, as
  *   its file read when the task last read it (hook-table.mjs). `now`: the
  *   receiver's clock, which a hook's timestamp is held to and an hour's
  *   count is kept by.
@@ -1015,7 +1017,8 @@ export const receiverRelay = (relay) => [...new Set([...SUMMONERS, ...(relay ?? 
  * the item's `trust.relay` ({@link receiverRelay}), a body read under that
  * list alone (the default where it names none), its ticket fires settled
  * by the item's claim label ({@link settleClaims}), and each fire the
- * item's ready labels or switches drop is dropped ({@link switchedOn}). A
+ * item's ready labels, review labels, measures or switches drop is dropped
+ * ({@link switchedOn}). A
  * read that fails, or an item that is malformed, is logged at error and
  * routes under the defaults and drops nothing by switch or label: the task
  * still refuses a fire its repo's file does not allow, and a 503 would

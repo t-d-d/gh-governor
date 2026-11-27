@@ -649,12 +649,14 @@ const turnOf = async (event, deps, built) => {
   /**
    * Each served repo's hooks, key versions and hourly caps, each of its
    * switches as {@link turnsOn} reads it, its ready labels, and the labels
-   * whose change can start an issue review ({@link reviewLabelsOf}), as its
+   * whose change can start an issue review ({@link reviewLabelsOf}), and the
+   * measures its periodics' limits name ({@link limitedMeasures}), as its
    * file reads now, to the receiver's hook table, in one write, so the
    * receiver refuses a revoked key, a removed hook or a fire past the cap
    * before the queue, drops a delivery's fire whose switch is off
    * (dispatch/webhook/switches.mjs), and queues a selection fire only for a
-   * ready label and an issue review fire only for a label a review names
+   * ready label, an issue review fire only for a label a review names, and
+   * a periodics fire only for a measure a limit names
    * (dispatch/webhook/route.mjs). It
    * is written before the turn refuses its fire, so a turn whose own switch
    * is off still brings the item up to the file. A write that
