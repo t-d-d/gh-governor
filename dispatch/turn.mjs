@@ -126,7 +126,7 @@ import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationGrant, turnResends } from '../scripts/lib/github-app.mjs';
 import { taskMemory } from './task-memory.mjs';
 import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
-import { limitedMeasures } from './periodics.mjs';
+import { FILES_RECORD_MAX_BYTES, limitedMeasures } from './periodics.mjs';
 import { BUILT_IN_RUN, CONFIG_PATH, SWITCHES, runOf, switchOf, switchesOf, turnsOn } from './repo-config.mjs';
 import { planWorkflow, withTickets } from './workflow.mjs';
 import { coverageOf } from './coverage.mjs';
@@ -2395,12 +2395,8 @@ const TOLD_TTL_S = 90 * 24 * 60 * 60;
  */
 export const FILES_TTL_S = 90 * 24 * 60 * 60;
 
-/**
- * The most a files record's list may take, in bytes of its JSON: under an
- * item's 400 KB with room for its key. A list past it is kept as the
- * cut-short mark alone, which counts as a match.
- */
-export const FILES_RECORD_MAX_BYTES = 350_000;
+/** The most a files record's list may take (dispatch/periodics.mjs). */
+export { FILES_RECORD_MAX_BYTES };
 
 /** The attribute the state table's TTL expires on (infra/governor.cfn.yml). */
 export const STATE_TTL_ATTRIBUTE = 'ttl';
@@ -2871,7 +2867,7 @@ export const dynamoState = (client, table) => {
       const count = (/** @type {unknown} */ n) => Number.isSafeInteger(n) && /** @type {number} */ (n) >= 0;
       // A malformed item is a failed read, never a missing one.
       if (typeof cut !== 'boolean' || !Array.isArray(files) || !files.every((f) => typeof f?.filename === 'string' && (f.previous === undefined || typeof f.previous === 'string') && count(f.additions) && count(f.deletions))) {
-        throw new Error(`the files item for ${repo}#${number} is malformed: ${JSON.stringify(item)}`);
+        throw new Error(`the files item for ${repo}#${number} is malformed: ${JSON.stringify(item).slice(0, 1000)}`);
       }
       return { files: files.map((f) => ({ filename: f.filename, ...(f.previous === undefined ? {} : { previous: f.previous }), additions: f.additions, deletions: f.deletions })), cut };
     },

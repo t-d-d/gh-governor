@@ -120,6 +120,15 @@ describe('the files record behind a paths limit', () => {
     assert.equal(long.written[0]?.record.cut, true);
   });
 
+  test('a merge whose list is too large to keep counts as a match on the check that reads it, as on every later one', async () => {
+    const long = 'x'.repeat(200);
+    const rows = Array.from({ length: Math.ceil(FILES_RECORD_MAX_BYTES / 200) + 1 }, (_, i) => ({ filename: `docs/${long}/${i}.md`, status: 'modified', additions: 1, deletions: 0 }));
+    const repo = repoOf([{ number: 1, files: rows }]);
+    const first = await check(repo, [{ ...infra, counts: { merges: 1 } }]);
+    assert.deepEqual(repo.written, [{ repo: REPO, number: 1, record: { files: [], cut: true } }]);
+    assert.equal(first.due.length, 1);
+  });
+
   test('a merge whose record carries the cut-short mark counts as a match', async () => {
     const repo = repoOf([{ number: 1, files: changed('docs/a.md') }], { 1: keptOf(changed('docs/a.md'), true) });
     const { due } = await check(repo, [{ ...infra, counts: { merges: 1 } }]);
@@ -227,5 +236,8 @@ describe('the files record in the state table', () => {
       const malformed = dynamoState({ send: async () => ({ Item: { pk: { S: 'files#acme/factory' }, sk: { S: '1' }, ...item } }) } as never, 'T');
       await assert.rejects(malformed.mergedFiles(REPO, 1), /malformed/, JSON.stringify(item));
     }
+    // The error names the item, not the whole of a list up to the size cap.
+    const large = dynamoState({ send: async () => ({ Item: { pk: { S: 'files#acme/factory' }, sk: { S: '1' }, files: { S: `[${'x'.repeat(FILES_RECORD_MAX_BYTES)}` }, cut: { BOOL: false } } }) } as never, 'T');
+    await assert.rejects(large.mergedFiles(REPO, 1), (error: Error) => /malformed/.test(error.message) && error.message.length < 2000);
   });
 });

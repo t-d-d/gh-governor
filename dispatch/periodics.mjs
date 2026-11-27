@@ -93,6 +93,15 @@ export const SWEEP_GRACE_MS = HOUR_MS / 2;
 export const LISTED_MAX = 100;
 
 /**
+ * The most a files record's list may take, in bytes of its JSON: under a
+ * state table item's 400 KB with room for its key. A list past it is kept
+ * as the cut-short mark alone, which counts as a match, and the check that
+ * reads it from GitHub counts it the same way, so a later check counts as
+ * this one did.
+ */
+export const FILES_RECORD_MAX_BYTES = 350_000;
+
+/**
  * @typedef {import('./webhook/fire.mjs').Count} Count
  * @typedef {{ at: string, session: string | null, baseline: boolean }} PeriodicRecord
  *   `at`: the last fire's time, or the baseline's. `session`: the session the
@@ -189,11 +198,12 @@ export const narrowOf = (reader, kept) => {
     const held = kept === undefined ? null : await kept.read(number);
     if (held !== null) return held;
     const rows = await reader.pullFiles(number);
+    const listed = rows.map((f) => ({ filename: f.filename, ...(f.previous === undefined ? {} : { previous: f.previous }), additions: f.additions ?? 0, deletions: f.deletions ?? 0 }));
+    // A list too large to keep is the cut-short mark alone, here as in the table.
     /** @type {FilesRecord} */
-    const record = {
-      files: rows.map((f) => ({ filename: f.filename, ...(f.previous === undefined ? {} : { previous: f.previous }), additions: f.additions ?? 0, deletions: f.deletions ?? 0 })),
-      cut: rows.length >= FILES_LISTED,
-    };
+    const record = Buffer.byteLength(JSON.stringify(listed)) > FILES_RECORD_MAX_BYTES
+      ? { files: [], cut: true }
+      : { files: listed, cut: rows.length >= FILES_LISTED };
     if (kept !== undefined) await kept.write(number, record);
     return record;
   };
