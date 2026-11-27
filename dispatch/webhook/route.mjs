@@ -580,7 +580,8 @@ const finalStatusReview = (payload, main) => {
  * (dispatch/periodics-fire.mjs), carrying `base` where the measure gives
  * one. No other fire carries the count. The receiver reads no config file,
  * so it queues the fires in every listed repo, and drops them only where
- * the repo's item says periodics is off.
+ * the repo's item says periodics is off, or lists the measures the repo's
+ * limits name and not this one ({@link switchedOn}).
  *
  * The fires go once into the delivery's decision: where a route places
  * them (`count`), beside the fire the event is chiefly for, else after
@@ -1048,10 +1049,12 @@ const judged = async (route, delivery, deps) => {
  * selection fire for a label the item's ready labels do not list, or for a
  * ticket whose labels hold none of them (`ready`, which names the first that
  * does as the fire's label), an issue review fire for a label change the
- * item's review labels do not list (`reviewLabel`), and each
+ * item's review labels do not list (`reviewLabel`), a `periodics` fire for
+ * a measure the item's measures do not list, and each
  * fire whose switch the item says is off ({@link droppedBy}). An item
  * without ready labels drops no selection fire, one without review labels
- * no issue review fire, and one without switches drops nothing by switch. A dropped fire's reason names the label or the
+ * no issue review fire, one without measures no periodics fire, and one
+ * without switches drops nothing by switch. A dropped fire's reason names the label or the
  * switch, so the App's Recent Deliveries says why it went nowhere.
  *
  * @param {Decision} decision
@@ -1086,6 +1089,10 @@ const switchedOn = (decision, item, delivery, deps) => {
       continue;
     }
     const off = droppedBy(fire, item?.switches ?? null);
+    if (off === null && fire.kind === 'periodics' && item?.measures && !item.measures.includes(fire.counted)) {
+      dropped.push(`its ${fire.kind} fire, as no limit in ${repo}'s file counts ${fire.counted}`);
+      continue;
+    }
     if (off === null) {
       kept.push(queued);
       continue;

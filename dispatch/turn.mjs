@@ -126,6 +126,7 @@ import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationGrant, turnResends } from '../scripts/lib/github-app.mjs';
 import { taskMemory } from './task-memory.mjs';
 import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
+import { limitedMeasures } from './periodics.mjs';
 import { BUILT_IN_RUN, CONFIG_PATH, SWITCHES, runOf, switchOf, switchesOf, turnsOn } from './repo-config.mjs';
 import { planWorkflow, withTickets } from './workflow.mjs';
 import { coverageOf } from './coverage.mjs';
@@ -670,7 +671,7 @@ const turnOf = async (event, deps, built) => {
       const hooks = turnsOn(config, 'hooks') ? config.hooks.map(({ name, keyVersion, perHour }) => ({ name, keyVersion, perHour: perHour ?? HOOK_PER_HOUR })) : [];
       const switches = Object.fromEntries(SWITCHES.map((name) => [name, turnsOn(config, name)]));
       try {
-        await deps.hookTable.publish(served, { hooks, switches, ready: config.labels.ready, reviewLabels: reviewLabelsOf(config), trust: { relay: relayOf(config) }, claim: config.labels.claim }, readAt);
+        await deps.hookTable.publish(served, { hooks, switches, ready: config.labels.ready, reviewLabels: reviewLabelsOf(config), trust: { relay: relayOf(config) }, claim: config.labels.claim, measures: limitedMeasures(config) }, readAt);
         return null;
       } catch (error) {
         deps.log('hook-table-unwritten', { level: 'error', repo: served, error: messageOf(error) });

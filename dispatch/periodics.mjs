@@ -63,7 +63,7 @@
 
 import { measureNames, measureOf } from './webhook/measures.mjs';
 import { AUTO } from './trust.mjs';
-import { runOf } from './repo-config.mjs';
+import { runOf, turnsOn } from './repo-config.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
 /** An hour, in milliseconds. */
@@ -231,6 +231,20 @@ const countsOf = (periodic) => measureNames().flatMap((kind) => {
   const n = periodic.counts?.[kind];
   return n === undefined ? [] : [/** @type {[Count, number]} */ ([kind, n])];
 });
+
+/**
+ * The measures a repo's limits name, in the measures table's order: each
+ * one some periodic's `when` holds, and none where the file turns periodics
+ * off. The task writes them into the receiver's hook-table item
+ * (dispatch/webhook/hook-table.mjs), and the receiver queues a `periodics`
+ * fire only for an event that wakes one of them (route.mjs).
+ *
+ * @param {import('./repo-config.mjs').RepoConfig} config
+ * @returns {string[]}
+ */
+export const limitedMeasures = (config) => (turnsOn(config, 'periodics')
+  ? measureNames().filter((kind) => config.periodics.some((periodic) => periodic.counts?.[/** @type {Count} */ (kind)] !== undefined))
+  : []);
 
 /**
  * A periodic's time limit: how long after its last fire it comes due, and

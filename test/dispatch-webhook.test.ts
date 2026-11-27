@@ -2277,6 +2277,60 @@ describe('fitness: the receiver drops a fire only where the repo\'s hook-table i
 });
 
 /**
+ * The receiver queues a `periodics` fire for an event only where the
+ * repo's hook-table item lists a measure that event wakes: the measures the
+ * repo's limits name, as the task last read its file. A missing item, an
+ * item without the list and a failed read queue the fire, and the task
+ * decides, as for the repo's switches.
+ */
+describe('fitness: a periodics fire is queued only where the repo\'s hook-table item lists a measure the event wakes, or cannot say (dispatcher-state.md)', () => {
+  const SHA = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
+  const at = { full_name: REPO, default_branch: 'main' };
+  const pr = { number: 12, user: { login: 't-d-d', type: 'User' }, author_association: 'OWNER', title: 'A change', html_url: `https://github.com/${REPO}/pull/12`, body: 'The change.', head: { ref: 'claude/x', sha: SHA }, base: { ref: 'main' } };
+  const merged = { action: 'closed', pull_request: { ...pr, merged: true, merge_commit_sha: SHA }, sender: member, repository: at };
+  const on = new Map(SWITCHES.map((name) => [name, true]));
+  /** The fires' kinds, less the merged PR's message to its owner, which goes by its own switch. */
+  const kinds = (queued: Array<{ message: Record<string, unknown> }>) => queued.map((q) => (q.message.fire as { kind: string }).kind).filter((kind) => kind !== 'message');
+  const handled = async (event: string, payload: unknown, repoItem: () => Promise<unknown>) => {
+    const h = harness({ repoItem });
+    const response = await handle(delivery(event, payload), h.deps as never);
+    return { ...h, response };
+  };
+  const listing = (measures: string[]) => async () => ({ switches: on, ready: null, measures });
+
+  test('a merge in a repo whose limits name only issuesOpened queues its conflicts fire and no periodics fire', async () => {
+    const { queued, response } = await handled('pull_request', merged, listing(['issuesOpened']));
+    assert.equal(response.statusCode, 202, response.body);
+    assert.deepEqual(kinds(queued), ['conflicts']);
+    assert.match(response.body, /dropped its periodics fire, as no limit in acme\/factory's file counts merges/);
+  });
+
+  test('a merge in a repo with a limit on merges queues both', async () => {
+    const { queued } = await handled('pull_request', merged, listing(['merges', 'issuesClosed']));
+    assert.deepEqual(kinds(queued), ['conflicts', 'periodics']);
+  });
+
+  test('an issue opened or closed queues its periodics fire only where a limit counts it', async () => {
+    const opened = { ...issuesEvent('opened'), repository: at };
+    const closed = { ...issuesEvent('closed'), repository: at };
+    assert.ok(kinds((await handled('issues', opened, listing(['issuesOpened']))).queued).includes('periodics'));
+    assert.ok(!kinds((await handled('issues', opened, listing(['merges']))).queued).includes('periodics'));
+    assert.ok(kinds((await handled('issues', closed, listing(['issuesClosed']))).queued).includes('periodics'));
+    const quiet = kinds((await handled('issues', closed, listing([]))).queued);
+    assert.ok(quiet.includes('schedule') && !quiet.includes('periodics'), JSON.stringify(quiet));
+  });
+
+  test('a missing item, an item without the list, and a failed read each queue the periodics fire, and the failed read logs at error', async () => {
+    assert.deepEqual(kinds((await handled('pull_request', merged, async () => null)).queued), ['conflicts', 'periodics']);
+    assert.deepEqual(kinds((await handled('pull_request', merged, async () => ({ switches: on, ready: null }))).queued), ['conflicts', 'periodics']);
+    const failed = await handled('pull_request', merged, async () => { throw new Error('AccessDeniedException'); });
+    assert.equal(failed.response.statusCode, 202);
+    assert.deepEqual(kinds(failed.queued), ['conflicts', 'periodics']);
+    assert.equal(failed.logged.find((l) => l.event === 'webhook-switches-unread')?.level, 'error');
+  });
+});
+
+/**
  * The receiver judges a label a person adds against the repo's ready labels
  * as the task last wrote them to the repo's hook-table item, in the same one
  * read as the switches. A label that is not one of them queues no selection
