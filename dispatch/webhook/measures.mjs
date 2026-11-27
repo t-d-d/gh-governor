@@ -16,7 +16,11 @@
  * - `filters`: the settings its object form takes beside `count`. Each
  *   one's value is a list of at least one string. A filter says what the
  *   schema says of it, how the prompt names it, which of the window's
- *   rows it keeps, and what more the prompt says of the rows it kept.
+ *   rows it keeps, and what more the prompt says of the rows it kept. A filter may also wake its measure: `wakes` then says
+ *   which deliveries do, and the receiver queues a `periodics` fire for
+ *   them only where a limit of the measure has the filter, as the repo's
+ *   hook-table item lists (route.mjs). `labels` wakes its measure on a
+ *   label change, since an issue often gets its labels just after it opens.
  *
  * The schema's keys, the receiver's fires, the fire's parser, the window
  * reads, the prompt and the heartbeat all read this table, so a new
@@ -29,8 +33,9 @@
  */
 
 /**
- * @typedef {{ number: number, title: string, at: string }} Counted One item a
- *   measure counted, and when it happened.
+ * @typedef {{ number: number, title: string, at: string, labels?: readonly string[] }} Counted One item a
+ *   measure counted, and when it happened. An issue carries the labels it
+ *   had when the window was read.
  * @typedef {{
  *   defaultBranch: () => Promise<string>,
  *   mergedSince: (base: string, since: string) => Promise<Counted[]>,
@@ -62,6 +67,7 @@
  *   heading: (values: readonly string[]) => string,
  *   keep: (row: Counted, values: readonly string[], context: FilterContext) => Promise<boolean>,
  *   detail?: (rows: Counted[], values: readonly string[], context: FilterContext) => Promise<string[]>,
+ *   wakes?: (event: string | undefined, payload: any) => boolean,
  * }} Filter One setting a measure's object form takes beside `count`.
  *   `detail`: the lines governor writes under the rows it kept, none where
  *   it kept none. It reads only what `keep` read for those rows.
@@ -90,6 +96,35 @@ const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
 /** @param {any} payload */
 const issueNumbered = (payload) => typeof payload?.issue?.number === 'number';
+
+/**
+ * Whether a delivery is a label added to an issue, or taken off one.
+ *
+ * @param {string | undefined} event
+ * @param {any} payload
+ */
+const relabelled = (event, payload) => event === 'issues' && (payload?.action === 'labeled' || payload?.action === 'unlabeled') && issueNumbered(payload);
+
+/**
+ * `labels` on an issues measure: an issue counts where it carries every
+ * label listed, in any case, as GitHub matches labels. The labels are
+ * those the window's read gave, which is the check's, so the filter reads
+ * nothing of its own. A label change wakes the measure where `wakes` says
+ * the issue can count toward it.
+ *
+ * @param {string} happened What happened to the issues the measure counts, `opened` or `closed`, for the schema's text.
+ * @param {(payload: any) => boolean} counts Whether the issue a label change names can count toward the measure.
+ * @returns {Filter}
+ */
+const labelsFilter = (happened, counts) => ({
+  describe: `Count only the issues ${happened} that carry every one of these labels, a list of at least one, matched in any case. Governor reads the labels an issue carries when the check runs, not the ones it had when it ${happened}, and a label added to an issue or taken off one checks the limit again. \`{ "count": 10, "labels": ["type: bug"] }\` runs after ten such issues carry \`type: bug\`, and \`{ "count": 1, "labels": ["type: bug", "sev: 1"] }\` runs for each issue that carries both.`,
+  heading: (values) => `carrying the label${values.length === 1 ? '' : 's'} ${values.map((v) => `\`${v}\``).join(' and ')}`,
+  keep: async (row, values) => {
+    const carried = new Set((row.labels ?? []).map((label) => label.toLowerCase()));
+    return values.every((label) => carried.has(label.toLowerCase()));
+  },
+  wakes: (event, payload) => relabelled(event, payload) && counts(payload),
+});
 
 /**
  * The table. A test may add an entry and take it out again, so every
@@ -154,7 +189,7 @@ export const MEASURES = [
     heading: 'Issues opened',
     line: ['issue opened', 'issues opened'],
     describe: 'Issues opened since the last fire.',
-    filters: {},
+    filters: { labels: labelsFilter('opened', () => true) },
   },
   {
     name: 'issuesClosed',
@@ -163,7 +198,8 @@ export const MEASURES = [
     heading: 'Issues closed',
     line: ['issue closed', 'issues closed'],
     describe: 'Issues closed since the last fire.',
-    filters: {},
+    // An open issue counts toward no close, whatever its labels.
+    filters: { labels: labelsFilter('closed', (payload) => payload?.issue?.state === 'closed') },
   },
 ];
 
@@ -179,13 +215,19 @@ export const measureOf = (name) => MEASURES.find((m) => m.name === name);
 
 /**
  * The measures a delivery wakes, each with the `base` its fire carries.
+ * One a filter wakes names the filter as `by`: the receiver queues its
+ * fire only where a limit of the measure has that filter (route.mjs). A
+ * measure the delivery wakes by its own events is not woken again by a
+ * filter.
  *
  * @param {string | undefined} event
  * @param {any} payload
  * @param {string | null} main The repo's default branch, null where the payload names none.
- * @returns {Array<{ name: string, base?: string }>}
+ * @returns {Array<{ name: string, base?: string, by?: string }>}
  */
 export const wokenBy = (event, payload, main) => MEASURES.flatMap((m) => {
   const woken = m.wakes(event, payload, main);
-  return woken === null ? [] : [{ name: m.name, ...(woken.base === undefined ? {} : { base: woken.base }) }];
+  if (woken !== null) return [{ name: m.name, ...(woken.base === undefined ? {} : { base: woken.base }) }];
+  const by = Object.entries(m.filters).find(([, filter]) => filter.wakes?.(event, payload) === true)?.[0];
+  return by === undefined ? [] : [{ name: m.name, by }];
 });

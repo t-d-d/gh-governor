@@ -219,6 +219,7 @@ const harness = (over: Record<string, unknown> = {}) => {
   const publishedClaim: Array<{ repo: string; claim: string | undefined }> = [];
   // Each write's measures, the ones the repo's limits name, which the receiver queues a periodics fire by.
   const publishedMeasures: Array<{ repo: string; measures: string[] | undefined }> = [];
+  const publishedFiltered: Array<{ repo: string; filtered: Record<string, string[]> | undefined }> = [];
   let loginOnDisk: string | null = null;
   const accounts: unknown[] = [];
   const deps = {
@@ -371,11 +372,12 @@ const harness = (over: Record<string, unknown> = {}) => {
     }),
     uuid: () => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
     hookTable: {
-      publish: async (repo: string, { hooks, switches, ready, reviewLabels, trust, claim, measures }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; reviewLabels?: { labeled: string[]; unlabeled: string[] }; trust?: { relay: string[] }; claim?: string; measures?: string[] }, at: string) => {
+      publish: async (repo: string, { hooks, switches, ready, reviewLabels, trust, claim, measures, filtered }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; reviewLabels?: { labeled: string[]; unlabeled: string[] }; trust?: { relay: string[] }; claim?: string; measures?: string[]; filtered?: Record<string, string[]> }, at: string) => {
         published.push({ repo, hooks, switches, ready, ...(reviewLabels === undefined ? {} : { reviewLabels }), at });
         publishedTrust.push({ repo, trust });
         publishedClaim.push({ repo, claim });
         publishedMeasures.push({ repo, measures });
+        publishedFiltered.push({ repo, filtered });
         return true;
       },
     },
@@ -470,7 +472,7 @@ const harness = (over: Record<string, unknown> = {}) => {
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, heldTold, correctionsTold, countsAsked, messageCounts, failedLaunches, routineCalls, routinesHeld, recorded, published, publishedTrust, publishedClaim, publishedMeasures, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, heldTold, correctionsTold, countsAsked, messageCounts, failedLaunches, routineCalls, routinesHeld, recorded, published, publishedTrust, publishedClaim, publishedMeasures, publishedFiltered, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -10258,6 +10260,17 @@ describe('run: the hook table', () => {
     const off = harness({ configFile: fileWith({ periodics: { ...periodics, enabled: false } }) });
     await run({ kind: 'schedule' }, off.deps as never);
     assert.deepEqual(off.publishedMeasures, [{ repo: REPO, measures: [] }]);
+  });
+
+  // The receiver queues a periodics fire for a label change only for a
+  // measure the item lists under labels (dispatch/webhook/route.mjs).
+  test('the item holds the measures with a limit that has labels, and none where no limit has them', async () => {
+    const h = harness();
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.publishedFiltered, [{ repo: REPO, filtered: { labels: [] } }], 'the factory has no limit with labels');
+    const bugs = harness({ configFile: fileWith({ periodics: { sessions: { Bugs: { prompt: 'Bugs.', when: { issuesOpened: { count: 2, labels: ['type: bug'] } } }, Weekly: { prompt: 'Look.', when: { days: 7, issuesClosed: 4 } } } } }) });
+    await run({ kind: 'schedule' }, bugs.deps as never);
+    assert.deepEqual(bugs.publishedFiltered, [{ repo: REPO, filtered: { labels: ['issuesOpened'] } }]);
   });
 
   // The receiver queues a selection fire only for a label the item lists

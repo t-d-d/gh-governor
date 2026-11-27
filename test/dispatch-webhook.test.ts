@@ -244,10 +244,10 @@ describe('routeEvent — what a periodic counts', () => {
     assert.deepEqual(fires.map((f) => [f.fire.kind, (f.fire as { counted?: string }).counted]), [['dispatch', undefined], ['periodics', 'issuesOpened'], ['issueReview', undefined]]);
   });
 
-  test('a PR opened, an issue reopened or labelled counts nothing', () => {
+  test('a PR opened or an issue reopened counts nothing, and an open issue labelled checks the issues opened by their labels', () => {
     assert.deepEqual(counted('pull_request', { action: 'opened', pull_request: { ...pullRequest, body: 'x', head: { ...pullRequest.head, sha: SHA } }, sender: member, repository: { full_name: REPO, default_branch: 'main' } }), []);
     assert.deepEqual(counted('issues', issuesEvent('reopened')), []);
-    assert.deepEqual(counted('issues', issuesEvent('labeled', { label: { name: 'workflow: ready for development' } })), []);
+    assert.deepEqual(counted('issues', issuesEvent('labeled', { label: { name: 'workflow: ready for development' } })), [[{ kind: 'periodics', counted: 'issuesOpened', repo: REPO }, 'periodics:issuesOpened']]);
   });
 
   test('a delivery for an unlisted owner counts nothing', () => {
@@ -1137,7 +1137,7 @@ describe('routeEvent — subscribers', () => {
     assert.deepEqual(labelled(`Filed.\n\n${subscribeLine(OWNER, ['labels'])}${footer}`).sent.map((m) => [m.session, m.event]), [[OWNER, 'labels']], 'a filer that asks for labels hears them');
 
     const ready = messages('issues', { action: 'labeled', label: { name: 'workflow: ready for development' }, issue: issue(`Filed.${footer}`), sender: member, repository: { full_name: REPO } });
-    assert.deepEqual(ready.all.map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: 'workflow: ready for development', repo: REPO }, { kind: 'issueReview', issue: 717, repo: REPO }], 'the ready label still schedules, beside the issue review fire the receiver judges');
+    assert.deepEqual(ready.all.map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: 'workflow: ready for development', repo: REPO }, { kind: 'issueReview', issue: 717, repo: REPO }, { kind: 'periodics', counted: 'issuesOpened', repo: REPO }], 'the ready label still schedules, beside the issue review and periodics fires the receiver judges');
   });
 
   test('a deployed: label added is a deploys event: it reaches deploys lines and lines naming no events, not labels lines, and the filer only through a line', () => {
@@ -1202,7 +1202,7 @@ describe('routeEvent — subscribers', () => {
 
   test('the ready label keeps its schedule fire beside the subscriber\'s message, and so does a close', () => {
     const ready = messages('issues', { action: 'labeled', label: { name: 'workflow: ready for development' }, issue: issue(), sender: member, repository: { full_name: REPO } });
-    assert.deepEqual(ready.all.map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: 'workflow: ready for development', repo: REPO }, ...ready.sent.map(({ key: _key, ...fire }) => fire), { kind: 'issueReview', issue: 717, repo: REPO }]);
+    assert.deepEqual(ready.all.map((f) => f.fire), [{ kind: 'schedule', issue: 717, label: 'workflow: ready for development', repo: REPO }, ...ready.sent.map(({ key: _key, ...fire }) => fire), { kind: 'issueReview', issue: 717, repo: REPO }, { kind: 'periodics', counted: 'issuesOpened', repo: REPO }]);
     assert.equal(ready.all[0]!.key, undefined, 'the schedule fire keys on the delivery alone, as before');
     assert.deepEqual(ready.sent.map((m) => m.event), ['labels']);
     const closed = messages('issues', { action: 'closed', issue: { ...issue(), state_reason: 'completed' }, sender: member, repository: { full_name: REPO } });
@@ -1568,10 +1568,12 @@ describe('routeEvent — a workflow run', () => {
 
 /** A repo's item whose file names no label an issue review reads, and says nothing else. */
 const NO_REVIEWS = async () => ({ switches: null, ready: null, reviewLabels: { labeled: [], unlabeled: [] } });
+/** As {@link NO_REVIEWS}, and no limit with labels, so a label change checks no periodic. */
+const NO_REVIEWS_OR_LABEL_LIMITS = async () => ({ ...await NO_REVIEWS(), filtered: { labels: [] } });
 
 describe('handle', () => {
   test('a signed ready-label delivery queues one schedule fire, keyed by the delivery so a redelivery is not a second fire', async () => {
-    const { deps, queued, logged } = harness({ repoItem: NO_REVIEWS });
+    const { deps, queued, logged } = harness({ repoItem: NO_REVIEWS_OR_LABEL_LIMITS });
     const response = await handle(delivery('issues', issuesEvent('labeled', { label: { name: 'workflow: ready for development' } })), deps);
     assert.equal(response.statusCode, 202);
     assert.equal(queued.length, 1);
@@ -1663,7 +1665,7 @@ describe('handle', () => {
   });
 
   test('a base64 body is verified as the bytes GitHub signed', async () => {
-    const { deps, queued } = harness({ repoItem: NO_REVIEWS });
+    const { deps, queued } = harness({ repoItem: NO_REVIEWS_OR_LABEL_LIMITS });
     const payload = issuesEvent('labeled', { label: { name: 'workflow: ready for development' } });
     const raw = JSON.stringify(payload);
     const response = await handle({
@@ -1676,7 +1678,7 @@ describe('handle', () => {
   });
 
   test('an event that routes nowhere is acknowledged and queues nothing', async () => {
-    const { deps, queued } = harness({ repoItem: NO_REVIEWS });
+    const { deps, queued } = harness({ repoItem: NO_REVIEWS_OR_LABEL_LIMITS });
     const response = await handle(delivery('issues', issuesEvent('unlabeled', { label: { name: 'type: bug' }, sender: { login: 'bot[bot]', type: 'Bot' } })), deps);
     assert.equal(response.statusCode, 200);
     assert.deepEqual(queued, []);
@@ -2328,6 +2330,41 @@ describe('fitness: a periodics fire is queued only where the repo\'s hook-table 
     assert.deepEqual(kinds(failed.queued), ['conflicts', 'periodics']);
     assert.equal(failed.logged.find((l) => l.event === 'webhook-switches-unread')?.level, 'error');
   });
+
+  // A label change wakes a measure only where a limit of it has labels:
+  // the item lists those measures under `labels` beside `measures`, under
+  // the same fallback.
+  const labelling = (measures: string[], labelled?: string[]) => async () => ({ switches: on, ready: null, measures, ...(labelled === undefined ? {} : { filtered: { labels: labelled } }) });
+  const relabelled = (action: string, state: string) => ({ ...issuesEvent(action, { label: { name: 'type: bug' } }), issue: { ...issuesEvent(action).issue, state }, repository: at });
+  const periodicsFires = (queued: Array<{ message: Record<string, unknown> }>) => queued.map((q) => q.message.fire as { kind: string, counted?: string }).filter((f) => f.kind === 'periodics').map((f) => f.counted);
+
+  test('an issue labelled or unlabelled queues a periodics fire for each measure a limit with labels names', async () => {
+    for (const action of ['labeled', 'unlabeled']) {
+      assert.deepEqual(periodicsFires((await handled('issues', relabelled(action, 'open'), labelling(['issuesOpened', 'issuesClosed'], ['issuesOpened', 'issuesClosed']))).queued), ['issuesOpened'], `${action}: an open issue counts toward no close`);
+      assert.deepEqual(periodicsFires((await handled('issues', relabelled(action, 'closed'), labelling(['issuesOpened', 'issuesClosed'], ['issuesOpened', 'issuesClosed']))).queued), ['issuesOpened', 'issuesClosed'], action);
+      assert.deepEqual(periodicsFires((await handled('issues', relabelled(action, 'closed'), labelling(['issuesOpened', 'issuesClosed'], ['issuesClosed']))).queued), ['issuesClosed'], action);
+    }
+  });
+
+  test('a closed issue labelled queues its two periodics fires under different deduplication ids, so the queue keeps both', async () => {
+    const { queued } = await handled('issues', relabelled('labeled', 'closed'), labelling(['issuesOpened', 'issuesClosed'], ['issuesOpened', 'issuesClosed']));
+    const ids = (queued as Array<{ message: Record<string, unknown>, dedupId?: string }>).filter((q) => (q.message.fire as { kind: string }).kind === 'periodics').map((q) => q.dedupId);
+    assert.equal(ids.length, 2);
+    assert.equal(new Set(ids).size, 2, `a FIFO queue drops a second message with the same id: ${JSON.stringify(ids)}`);
+  });
+
+  test('a label change in a repo with no limit that has labels queues no periodics fire', async () => {
+    const { queued, response } = await handled('issues', relabelled('labeled', 'closed'), labelling(['issuesOpened', 'issuesClosed'], []));
+    assert.deepEqual(periodicsFires(queued), []);
+    assert.match(response.body, /dropped its periodics fire, as no limit in acme\/factory's file counts issuesOpened by its labels/);
+    assert.deepEqual(periodicsFires((await handled('issues', relabelled('labeled', 'closed'), labelling([], []))).queued), []);
+  });
+
+  test('a missing item, an item without the list, and a failed read each queue the label change\'s periodics fires', async () => {
+    assert.deepEqual(periodicsFires((await handled('issues', relabelled('labeled', 'closed'), async () => null)).queued), ['issuesOpened', 'issuesClosed']);
+    assert.deepEqual(periodicsFires((await handled('issues', relabelled('labeled', 'closed'), labelling(['issuesOpened', 'issuesClosed']))).queued), ['issuesOpened', 'issuesClosed']);
+    assert.deepEqual(periodicsFires((await handled('issues', relabelled('labeled', 'closed'), async () => { throw new Error('AccessDeniedException'); })).queued), ['issuesOpened', 'issuesClosed']);
+  });
 });
 
 /**
@@ -2342,13 +2379,14 @@ describe('fitness: a label queues a selection fire only where the repo\'s hook-t
   const issue = { ...issuesEvent('labeled').issue, body: `Filed.\n\n${subscribeLine(WATCHER)}` };
   const labelled = (name: string, sender: Record<string, unknown> = member) => ({ ...issuesEvent('labeled', { issue, label: { name }, sender }), repository: { full_name: REPO } });
   const on = new Map(SWITCHES.map((name) => [name, true]));
-  type Item = { switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null, reviewLabels?: { labeled: string[], unlabeled: string[] } } | null;
+  type Item = { switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null, reviewLabels?: { labeled: string[], unlabeled: string[] }, filtered?: Record<string, string[]> } | null;
   const handled = async (payload: unknown, repoItem: () => Promise<Item>) => {
     const h = harness({ repoItem });
     const response = await handle(delivery('issues', payload), h.deps as never);
     return { ...h, response, selections: h.queued.map((q) => q.message.fire as { kind: string, label?: string }).filter((f) => f.kind === 'schedule') };
   };
-  const listed = async () => ({ switches: on, ready: READY, reviewLabels: { labeled: [], unlabeled: [] } });
+  // No limit with labels, so a label change checks no periodic.
+  const listed = async () => ({ switches: on, ready: READY, reviewLabels: { labeled: [], unlabeled: [] }, filtered: { labels: [] } });
 
   test('a person adding one of the repo\'s ready labels queues a selection fire', async () => {
     for (const name of READY) {

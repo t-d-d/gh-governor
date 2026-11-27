@@ -126,7 +126,7 @@ import { hookTable } from './webhook/hook-table.mjs';
 import { appInstallations, githubReader, installationGrant, turnResends } from '../scripts/lib/github-app.mjs';
 import { taskMemory } from './task-memory.mjs';
 import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
-import { FILES_RECORD_MAX_BYTES, limitedMeasures } from './periodics.mjs';
+import { FILES_RECORD_MAX_BYTES, filteredMeasures, limitedMeasures } from './periodics.mjs';
 import { BUILT_IN_RUN, CONFIG_PATH, SWITCHES, runOf, switchOf, switchesOf, turnsOn } from './repo-config.mjs';
 import { planWorkflow, withTickets } from './workflow.mjs';
 import { coverageOf } from './coverage.mjs';
@@ -650,14 +650,17 @@ const turnOf = async (event, deps, built) => {
    * Each served repo's hooks, key versions and hourly caps, each of its
    * switches as {@link turnsOn} reads it, its ready labels, and the labels
    * whose change can start an issue review ({@link reviewLabelsOf}), and the
-   * measures its periodics' limits name ({@link limitedMeasures}), as its
+   * measures its periodics' limits name ({@link limitedMeasures}) and, for
+   * each filter that wakes its measure, those a limit with it names
+   * ({@link filteredMeasures}), as its
    * file reads now, to the receiver's hook table, in one write, so the
    * receiver refuses a revoked key, a removed hook or a fire past the cap
    * before the queue, drops a delivery's fire whose switch is off
    * (dispatch/webhook/switches.mjs), and queues a selection fire only for a
    * ready label, an issue review fire only for a label a review names, and
-   * a periodics fire only for a measure a limit names
-   * (dispatch/webhook/route.mjs). It
+   * a periodics fire only for a measure a limit names, or, for one a
+   * filter woke, such as a label change, a measure a limit with that filter
+   * names (dispatch/webhook/route.mjs). It
    * is written before the turn refuses its fire, so a turn whose own switch
    * is off still brings the item up to the file. A write that
    * fails is logged at error and counts the repo unread, and the turn goes
@@ -673,7 +676,7 @@ const turnOf = async (event, deps, built) => {
       const hooks = turnsOn(config, 'hooks') ? config.hooks.map(({ name, keyVersion, perHour }) => ({ name, keyVersion, perHour: perHour ?? HOOK_PER_HOUR })) : [];
       const switches = Object.fromEntries(SWITCHES.map((name) => [name, turnsOn(config, name)]));
       try {
-        await deps.hookTable.publish(served, { hooks, switches, ready: config.labels.ready, reviewLabels: reviewLabelsOf(config), trust: { relay: relayOf(config) }, claim: config.labels.claim, measures: limitedMeasures(config) }, readAt);
+        await deps.hookTable.publish(served, { hooks, switches, ready: config.labels.ready, reviewLabels: reviewLabelsOf(config), trust: { relay: relayOf(config) }, claim: config.labels.claim, measures: limitedMeasures(config), filtered: filteredMeasures(config) }, readAt);
         return null;
       } catch (error) {
         deps.log('hook-table-unwritten', { level: 'error', repo: served, error: messageOf(error) });

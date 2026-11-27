@@ -725,6 +725,19 @@ describe('the hook table', () => {
     assert.deepEqual((none.sent[0]!.input.Item as Record<string, unknown>).measures, { L: [] }, 'an empty list is written, never left out: it says no limit wakes on any event');
   });
 
+  test('for each filter that wakes its measure, the measures a limit with it names are written beside the measures, and read back; an item without them reads none; malformed ones throw', async () => {
+    const c = client(() => ({}));
+    const at = '2026-09-21T12:00:00.000Z';
+    assert.equal(await hookTable(c as never, 'T').publish(REPO, { hooks: [], switches: {}, ready: READY, measures: ['issuesOpened'], filtered: { labels: ['issuesOpened'] } }, at), true);
+    const written = c.sent[0]!.input.Item as Record<string, unknown>;
+    assert.deepEqual(written.filtered, { M: { labels: { L: [{ S: 'issuesOpened' }] } } });
+    assert.deepEqual((await hookTable(client(() => ({ Item: written })) as never, 'T').item(REPO))?.filtered, { labels: ['issuesOpened'] });
+    assert.equal((await hookTable(client(() => ({ Item: ITEM })) as never, 'T').item(REPO))?.filtered, undefined);
+    for (const filtered of [{ L: [] }, { M: { labels: { S: 'issuesOpened' } } }, { M: { labels: { L: [{ N: '1' }] } } }]) {
+      await assert.rejects(hookTable(client(() => ({ Item: { ...ITEM, filtered } })) as never, 'T').item(REPO), /malformed/, JSON.stringify(filtered));
+    }
+  });
+
   test('an item written before it held the measures reads none; malformed ones throw', async () => {
     assert.equal((await hookTable(client(() => ({ Item: ITEM })) as never, 'T').item(REPO))?.measures, undefined);
     assert.deepEqual((await hookTable(client(() => ({ Item: { ...ITEM, measures: { L: [] } } })) as never, 'T').item(REPO))?.measures, []);

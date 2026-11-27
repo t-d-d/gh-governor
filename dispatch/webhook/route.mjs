@@ -51,7 +51,10 @@
  * the default branch, also queues a `periodics` fire naming it as `counted`, beside
  * whatever else the delivery queues, so the repo's periodics are checked
  * on a turn of their own ({@link counting}), unless the repo's hook-table
- * item lists the measures its limits name and not this one.
+ * item lists the measures its limits name and not this one. A delivery a
+ * measure's filter wakes on, such as a label added to an issue or taken
+ * off one, queues one for each measure a limit with that filter counts,
+ * as the item lists them.
  * An issue opened, reopened, or edited with its body changed by anyone but
  * a bot, queues an `issueReview` fire naming it, whose turn runs the
  * repo's issue reviews on it (dispatch/issue-review.mjs). So does a label
@@ -204,7 +207,7 @@ export const verifySignature = (secret, body, signature) => {
 /**
  * @typedef {import('./fire.mjs').Fire} Fire
  * @typedef {import('./fire.mjs').FireMessage} FireMessage
- * @typedef {{ fire: Fire, reason: string, key?: string, ready?: readonly string[], reviewLabel?: { label: string, change: 'labeled' | 'unlabeled' }, claimed?: { labels: string[], replaces: string | null }, fallback?: Queued }} Queued One fire, and the key that tells it from the delivery's others. `fallback`: the fire queued in its place where the item's switches drop it.
+ * @typedef {{ fire: Fire, reason: string, key?: string, ready?: readonly string[], reviewLabel?: { label: string, change: 'labeled' | 'unlabeled' }, claimed?: { labels: string[], replaces: string | null }, filter?: string, fallback?: Queued }} Queued One fire, and the key that tells it from the delivery's others. `fallback`: the fire queued in its place where the item's switches drop it.
  *   `claimed`: a ticket fire's issue's labels, and the key of the spec
  *   owner's message it replaces ({@link settleClaims}).
  *   `ready`: a selection fire's ticket's labels, one of which must be a
@@ -213,6 +216,10 @@ export const verifySignature = (secret, body, signature) => {
  *   `reviewLabel`: an issue review fire's label change, which the repo's
  *   hook-table item must list for the change for the fire to queue
  *   ({@link switchedOn}).
+ *   `filter`: the filter that woke a `periodics` fire's measure
+ *   (measures.mjs), where its own events did not, such as a label
+ *   change. The fire queues only where the repo's hook-table item
+ *   lists the measure under that filter, or cannot say ({@link switchedOn}).
  * @typedef {{ fires: Queued[], reason: string }} Decision
  */
 
@@ -582,7 +589,9 @@ const finalStatusReview = (payload, main) => {
  * one. No other fire carries the count. The receiver reads no config file,
  * so it queues the fires in every listed repo, and drops them only where
  * the repo's item says periodics is off, or lists the measures the repo's
- * limits name and not this one ({@link switchedOn}).
+ * limits name and not this one, or, for a fire a filter woke, lists the
+ * measures a limit with that filter names and not this one
+ * ({@link switchedOn}).
  *
  * The fires go once into the delivery's decision: where a route places
  * them (`count`), beside the fire the event is chiefly for, else after
@@ -593,7 +602,14 @@ const finalStatusReview = (payload, main) => {
  * @param {string | null} main
  */
 const counting = (event, payload, main) => {
-  const fires = wokenBy(event, payload, main).map(({ name, base }) => one({ fire: build.periodics({ counted: name, base }), reason: `count it for the repo's periodics (${name})`, key: 'periodics' }));
+  const fires = wokenBy(event, payload, main).map(({ name, base, by }) => one({
+    fire: build.periodics({ counted: name, base }),
+    reason: by === undefined ? `count it for the repo's periodics (${name})` : `check the repo's periodics that count ${name} by its ${by}`,
+    // A label change on a closed issue wakes two measures by one filter, and
+    // a FIFO queue drops a second message under the same id.
+    key: by === undefined ? 'periodics' : `periodics:${name}`,
+    ...(by === undefined ? {} : { filter: by }),
+  }));
   let placed = false;
   /** @param {Decision} decision @returns {Decision} */
   const count = (decision) => {
@@ -869,7 +885,7 @@ const routeKind = ({ event, payload, appId, relay, bodies, count }) => {
  *   read it. `countFire`: one more fire of a hook in the clock hour, taken
  *   only under its cap and once per signature (hook-table.mjs).
  *   `repoItem`: the repo's switches, ready labels, review labels, trust
- *   lists, claim label and measures in the hook table, as
+ *   lists, claim label, measures and filtered measures in the hook table, as
  *   its file read when the task last read it (hook-table.mjs). `now`: the
  *   receiver's clock, which a hook's timestamp is held to and an hour's
  *   count is kept by.
@@ -1053,10 +1069,12 @@ const judged = async (route, delivery, deps) => {
  * ticket whose labels hold none of them (`ready`, which names the first that
  * does as the fire's label), an issue review fire for a label change the
  * item's review labels do not list (`reviewLabel`), a `periodics` fire for
- * a measure the item's measures do not list, and each
+ * a measure the item's measures do not list, or, where a filter woke it,
+ * one the item's filtered measures do not list under that filter, and each
  * fire whose switch the item says is off ({@link droppedBy}). An item
  * without ready labels drops no selection fire, one without review labels
- * no issue review fire, one without measures no periodics fire, and one
+ * no issue review fire, one without measures or filtered measures no
+ * periodics fire by them, and one
  * without switches drops nothing by switch. A dropped fire's reason names the label or the
  * switch, so the App's Recent Deliveries says why it went nowhere.
  *
@@ -1094,6 +1112,11 @@ const switchedOn = (decision, item, delivery, deps) => {
     const off = droppedBy(fire, item?.switches ?? null);
     if (off === null && fire.kind === 'periodics' && item?.measures && !item.measures.includes(fire.counted)) {
       dropped.push(`its ${fire.kind} fire, as no limit in ${repo}'s file counts ${fire.counted}`);
+      continue;
+    }
+    const filtered = listed.filter === undefined ? undefined : item?.filtered?.[listed.filter];
+    if (off === null && fire.kind === 'periodics' && filtered !== undefined && !filtered.includes(fire.counted)) {
+      dropped.push(`its ${fire.kind} fire, as no limit in ${repo}'s file counts ${fire.counted} by its ${listed.filter}`);
       continue;
     }
     if (off === null) {

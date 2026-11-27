@@ -105,22 +105,36 @@ describe('fitness: a measure is one entry in the measures table, and nothing els
     }
   });
 
-  test('merges declares paths, and no other measure does', () => {
-    assert.deepEqual(MEASURES.map((m) => [m.name, Object.keys(m.filters)]), [['merges', ['paths']], ['issuesOpened', []], ['issuesClosed', []]]);
+  test('merges declares paths, and the issues measures labels', () => {
+    assert.deepEqual(MEASURES.map((m) => [m.name, Object.keys(m.filters)]), [['merges', ['paths']], ['issuesOpened', ['labels']], ['issuesClosed', ['labels']]]);
   });
+
+  /**
+   * A filter's name that another feature used for its own setting first:
+   * there the word may stand, as long as nothing reads a periodic's filter
+   * by it. `labels` is a pickup rule's and an issue review's key in the
+   * schema, and a subscription's event.
+   */
+  const SHARED: Readonly<Record<string, readonly string[]>> = {
+    labels: ['dispatch/repo-config.mjs', 'dispatch/webhook/fire.mjs'],
+  };
 
   test('no file that reads the table names a filter of its own, as a string or a key', () => {
     const filters = [...new Set(MEASURES.flatMap((m) => Object.keys(m.filters)))];
     for (const path of READERS) {
       const text = readFileSync(path, 'utf8');
       for (const name of filters) {
+        if (SHARED[name]?.includes(path)) {
+          assert.ok(!new RegExp(`filters\\b[^\\n]{0,40}\\b${name}\\b`).test(text), `${path} reads a periodic's filter ${name} by name`);
+          continue;
+        }
         assert.ok(!new RegExp(`(['"\`])${name}\\1`).test(text), `${path} names the filter ${name} as a string`);
         assert.ok(!new RegExp(`^\\s*${name}\\s*:`, 'm').test(text), `${path} names the filter ${name} as a key`);
       }
     }
   });
 
-  test('the committed schema\'s merges takes paths in its object form', () => {
+  test('the committed schema\'s merges takes paths in its object form, and the issues measures take labels', () => {
     const schema = readFileSync('schema/governor.schema.json', 'utf8');
     let found = false;
     JSON.parse(schema, (key, value) => {
@@ -128,6 +142,10 @@ describe('fitness: a measure is one entry in the measures table, and nothing els
         const object = value.properties.merges.anyOf.find((s: { type?: string }) => s.type === 'object');
         assert.deepEqual(Object.keys(object.properties), ['count', 'paths']);
         assert.equal(value.properties.issuesOpened.anyOf.find((s: { type?: string }) => s.type === 'object').properties.paths, undefined);
+        for (const kind of ['issuesOpened', 'issuesClosed']) {
+          assert.deepEqual(Object.keys(value.properties[kind].anyOf.find((s: { type?: string }) => s.type === 'object').properties), ['count', 'labels'], kind);
+        }
+        assert.equal(object.properties.labels, undefined, 'merges takes no labels');
         found = true;
       }
       return value;

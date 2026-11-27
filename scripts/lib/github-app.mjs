@@ -519,6 +519,8 @@ const pagesUntil = async (call, path, query, past, pages = 30) => {
  * from an issues list. With `by`, a trust list (dispatch/trust.mjs), only
  * the rows whose author it lets in are kept, judged as the receiver judges
  * them (`ticketAuthor`): an issue `appId`'s App filed is let in as the App.
+ * An issue row carries the labels it has now, by name, for a limit's
+ * `labels` (dispatch/webhook/measures.mjs).
  *
  * @param {any[]} rows
  * @param {string} field
@@ -532,7 +534,7 @@ const after = (rows, field, since, by, appId) => {
   return rows
     .filter((row) => !row.pull_request && typeof row[field] === 'string' && Date.parse(row[field]) > from)
     .filter((row) => by === undefined || lets(by, ticketAuthor({ author: row.user?.login, association: row.author_association, bot: row.user?.type === 'Bot', app: postedByApp(row, appId) })))
-    .map((row) => ({ number: row.number, title: String(row.title ?? ''), at: row[field] }))
+    .map((row) => ({ number: row.number, title: String(row.title ?? ''), at: row[field], ...(field === 'merged_at' ? {} : { labels: labelNames(row) }) }))
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 };
 
@@ -548,7 +550,7 @@ const after = (rows, field, since, by, appId) => {
  * }} HeldFiles
  */
 
-/** @typedef {{ number: number, title: string, at: string }} CountedRow One merge or issue in a periodic's window, and its time. */
+/** @typedef {{ number: number, title: string, at: string, labels?: string[] }} CountedRow One merge or issue in a periodic's window, and its time; an issue's labels by name. */
 
 /**
  * The reads the dispatcher makes, and its writes: a comment, a PR body a
