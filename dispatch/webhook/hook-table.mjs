@@ -11,8 +11,9 @@
  * switches to whether the file turns it on, the file's ready labels, the
  * labels whose change can start an issue review, its `trust` section, each list governor reads as the file sets or
  * narrows it (dispatch/trust.mjs), its claim label, and the measures its
- * periodics' limits name (dispatch/webhook/measures.mjs), none where the
- * file turns periodics off.
+ * periodics' limits name (dispatch/webhook/measures.mjs), and for each
+ * filter that wakes its measure, such as `labels`, those a limit with it
+ * names, none where the file turns periodics off.
  * Each list is an attribute of its own, so another can join the item
  * without reshaping it. The
  * receiver reads the item after
@@ -31,7 +32,8 @@
  * wrote or is judged by (route.mjs). By the claim label it tells whether
  * an issue's comment, close or reopen goes to the ticket's builders too.
  * By the measures it drops a `periodics` fire for an event no limit in the
- * file counts. There a missing item, one written
+ * file counts, and by the filtered measures one a filter woke, such as on
+ * a label change, where no limit with that filter counts it. There a missing item, one written
  * before it held them, and a read that fails all queue the fire by switch
  * and label, which leaves the task to decide, as it did before the item
  * held them, and judge by the default `trust.relay`.
@@ -183,6 +185,23 @@ const measuresOf = (repo, value) => {
   return /** @type {string[]} */ (names);
 };
 
+/**
+ * The item's filtered measures: for each filter that wakes its measure,
+ * the measures a limit with it names, read only where the item holds them.
+ * A malformed map is a failed read, never a missing one.
+ *
+ * @param {string} repo
+ * @param {import('@aws-sdk/client-dynamodb').AttributeValue} value
+ * @returns {Readonly<Record<string, readonly string[]>>}
+ */
+const filteredOf = (repo, value) => {
+  const entries = Object.entries(value.M ?? {}).map(([name, list]) => [name, list.L?.map((entry) => entry.S)]);
+  if (value.M === undefined || entries.some(([, names]) => names === undefined || /** @type {unknown[]} */ (names).some((name) => typeof name !== 'string'))) {
+    throw new Error(`the hook table's filtered measures for ${repo} are malformed: ${JSON.stringify(value)}`);
+  }
+  return Object.fromEntries(entries);
+};
+
 /** Every value a trust list may name. */
 const TRUST = /** @type {ReadonlySet<string>} */ (new Set(TRUST_VALUES));
 
@@ -195,20 +214,22 @@ const TRUST = /** @type {ReadonlySet<string>} */ (new Set(TRUST_VALUES));
  *   `labels` names; `unlabeled`, each a review's `when.exclude` or a
  *   `byLabel` entry's `labels` names (`reviewLabelsOf`,
  *   dispatch/issue-review.mjs).
- * @typedef {{ hooks: ReadonlyArray<{ name: string } & Listed>, switches: Readonly<Record<string, boolean>>, ready: readonly string[], reviewLabels?: ReviewLabels, trust?: { relay: readonly string[] }, claim?: string, measures?: readonly string[] }} Listing
+ * @typedef {{ hooks: ReadonlyArray<{ name: string } & Listed>, switches: Readonly<Record<string, boolean>>, ready: readonly string[], reviewLabels?: ReviewLabels, trust?: { relay: readonly string[] }, claim?: string, measures?: readonly string[], filtered?: Readonly<Record<string, readonly string[]>> }} Listing
  *   What the task writes of a repo's file: its hooks, each switch as
  *   `turnsOn` reads it, its ready labels (`labels.ready`), its issue
  *   review labels, and its trust lists as governor reads them (`relayOf`,
  *   dispatch/trust.mjs), its claim label (`labels.claim`), and the
- *   measures its periodics' limits name, empty where periodics is off. The
+ *   measures its periodics' limits name, and for each filter that wakes
+ *   its measure those a limit with it names (`filtered`), each empty where
+ *   periodics is off. The
  *   turn always writes the review labels, the trust lists, the claim label
- *   and the measures;
+ *   and both lists of measures;
  *   an item without them reads as unknown and the defaults.
- * @typedef {{ switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null, reviewLabels?: ReviewLabels | null, relay?: readonly string[], claim?: string, measures?: readonly string[] }} Known
+ * @typedef {{ switches: ReadonlyMap<string, boolean> | null, ready: readonly string[] | null, reviewLabels?: ReviewLabels | null, relay?: readonly string[], claim?: string, measures?: readonly string[], filtered?: Readonly<Record<string, readonly string[]>> }} Known
  *   What the receiver reads of a repo's item for a GitHub delivery: each
  *   switch, on or off, the ready labels, the issue review labels,
- *   `trust.relay`, the claim label and the measures the repo's limits
- *   name, each null or absent where the item was written before it held
+ *   `trust.relay`, the claim label, the measures the repo's limits
+ *   name and the filtered measures, each null or absent where the item was written before it held
  *   them.
  * @typedef {{
  *   listed: (repo: string) => Promise<ReadonlyMap<string, Listed> | null>,
@@ -266,11 +287,11 @@ export const hookTable = (client, table) => {
     item: async (repo) => {
       const item = await read(repo);
       if (item === undefined) return null;
-      return { switches: switchesOf(repo, item.switches), ready: readyOf(repo, item.ready), reviewLabels: reviewLabelsOf(repo, item.reviewLabels), ...(item.trust === undefined ? {} : { relay: relayOf(repo, item.trust) }), ...(item.claim === undefined ? {} : { claim: claimOf(repo, item.claim) }), ...(item.measures === undefined ? {} : { measures: measuresOf(repo, item.measures) }) };
+      return { switches: switchesOf(repo, item.switches), ready: readyOf(repo, item.ready), reviewLabels: reviewLabelsOf(repo, item.reviewLabels), ...(item.trust === undefined ? {} : { relay: relayOf(repo, item.trust) }), ...(item.claim === undefined ? {} : { claim: claimOf(repo, item.claim) }), ...(item.measures === undefined ? {} : { measures: measuresOf(repo, item.measures) }), ...(item.filtered === undefined ? {} : { filtered: filteredOf(repo, item.filtered) }) };
     },
     // Only over an item from an earlier read: two turns racing cannot put an
     // older file's list back.
-    publish: async (repo, { hooks, switches, ready, reviewLabels, trust, claim, measures }, at) => {
+    publish: async (repo, { hooks, switches, ready, reviewLabels, trust, claim, measures, filtered }, at) => {
       try {
         await client.send(new PutItemCommand({
           TableName: table,
@@ -285,6 +306,7 @@ export const hookTable = (client, table) => {
             ...(trust === undefined ? {} : { trust: { M: { relay: { L: trust.relay.map((value) => ({ S: value })) } } } }),
             ...(claim === undefined ? {} : { claim: { S: claim } }),
             ...(measures === undefined ? {} : { measures: { L: measures.map((name) => ({ S: name })) } }),
+            ...(filtered === undefined ? {} : { filtered: { M: Object.fromEntries(Object.entries(filtered).map(([name, list]) => [name, { L: list.map((measure) => ({ S: measure })) }])) } }),
           },
           ConditionExpression: 'attribute_not_exists(pk) OR #at <= :at',
           ExpressionAttributeNames: { '#at': 'at' },

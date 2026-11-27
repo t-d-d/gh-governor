@@ -1257,7 +1257,7 @@
                     ]
                   },
                   "issuesOpened": {
-                    "description": "Issues opened since the last fire. A whole number of at least one, or { \"count\": <number> }, which says the same.",
+                    "description": "Issues opened since the last fire. A whole number of at least one, or { \"count\": <number>, \"labels\": [...] }: the number alone, or the object without its filters, counts every one.",
                     "anyOf": [
                       {
                         "type": "integer",
@@ -1272,6 +1272,15 @@
                             "minimum": 1,
                             "maximum": 9007199254740991,
                             "description": "The limit, a whole number of at least one."
+                          },
+                          "labels": {
+                            "description": "Count only the issues opened that carry every one of these labels, a list of at least one, matched in any case. Governor reads the labels an issue carries when the check runs, not the ones it had when it opened, and a label added to an issue or taken off one checks the limit again. `{ \"count\": 10, \"labels\": [\"type: bug\"] }` runs after ten such issues carry `type: bug`, and `{ \"count\": 1, \"labels\": [\"type: bug\", \"sev: 1\"] }` runs for each issue that carries both.",
+                            "minItems": 1,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
                           }
                         },
                         "required": [
@@ -1282,7 +1291,7 @@
                     ]
                   },
                   "issuesClosed": {
-                    "description": "Issues closed since the last fire. A whole number of at least one, or { \"count\": <number> }, which says the same.",
+                    "description": "Issues closed since the last fire. A whole number of at least one, or { \"count\": <number>, \"labels\": [...] }: the number alone, or the object without its filters, counts every one.",
                     "anyOf": [
                       {
                         "type": "integer",
@@ -1297,6 +1306,15 @@
                             "minimum": 1,
                             "maximum": 9007199254740991,
                             "description": "The limit, a whole number of at least one."
+                          },
+                          "labels": {
+                            "description": "Count only the issues closed that carry every one of these labels, a list of at least one, matched in any case. Governor reads the labels an issue carries when the check runs, not the ones it had when it closed, and a label added to an issue or taken off one checks the limit again. `{ \"count\": 10, \"labels\": [\"type: bug\"] }` runs after ten such issues carry `type: bug`, and `{ \"count\": 1, \"labels\": [\"type: bug\", \"sev: 1\"] }` runs for each issue that carries both.",
+                            "minItems": 1,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
                           }
                         },
                         "required": [
