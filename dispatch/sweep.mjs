@@ -17,7 +17,7 @@ import { planSchedule, strangerReason } from '../scripts/lib/dispatch-router.mjs
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { clearWaitLabels, reportUnreadable } from './waits.mjs';
 import { GITHUB_SOURCE } from './deliveries.mjs';
-import { duePeriodics, logNotStarted, narrowOf, periodicLaunch, windowOf } from './periodics.mjs';
+import { duePeriodics, keptFilesOf, logNotStarted, narrowOf, periodicLaunch, windowOf } from './periodics.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { CONFIG_PATH, runOf, turnsOn } from './repo-config.mjs';
 import { byOf, failedLaunchesOf, failedReason, sweepDue, sweepHoursOf } from './pickup.mjs';
@@ -227,7 +227,7 @@ export const planSweep = async (invocation, ctx) => {
     for (const { repo, config } of ctx.served) {
       if (!turnsOn(config, 'periodics')) continue;
       const reader = await ctx.readerFor(repo);
-      const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(reader, undefined, autoOf(config)), narrow: narrowOf(reader), busy: ctx.busy });
+      const read = await duePeriodics({ repo, periodics: config.periodics, state: ctx.state, now: ctx.now(), log: ctx.log, window: windowOf(reader, undefined, autoOf(config)), narrow: narrowOf(reader, keptFilesOf(ctx.state, repo, ctx.log)), busy: ctx.busy });
       due.push(...read.due.map((d) => ({ ...d, repo })));
       // A cap of 0 starts no periodic. The repo's due periodics get the
       // line an event logs under the cap, and their records stay, so each
