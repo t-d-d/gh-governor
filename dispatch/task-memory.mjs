@@ -68,6 +68,20 @@ export const taskMemory = ({ now }) => {
     return grant !== null && grant.expiresAt - now() > TOKEN_LEFT_MS ? grant : null;
   };
 
+  /**
+   * A new token for the repo, unless another client started a mint while
+   * this one waited on the kept grant (`held`, what was kept when it
+   * asked): then that mint's token, so clients asking at once mint one.
+   *
+   * @param {string} repo
+   * @param {Promise<Grant> | undefined} held
+   * @param {Mint} mint
+   */
+  const fresh = async (repo, held, mint) => {
+    const since = tokens.get(repo);
+    return (since !== undefined && since !== held ? await since : await minted(repo, mint)).token;
+  };
+
   return {
     /**
      * The repo's token: the one kept, or a new one where none is kept or the
@@ -77,7 +91,11 @@ export const taskMemory = ({ now }) => {
      * @param {Mint} mint
      * @returns {Promise<string>}
      */
-    token: async (repo, mint) => (await usable(repo) ?? await minted(repo, mint)).token,
+    token: async (repo, mint) => {
+      const held = tokens.get(repo);
+      const kept = await usable(repo);
+      return kept === null ? fresh(repo, held, mint) : kept.token;
+    },
 
     /**
      * A token for the repo in place of `stale`, which GitHub refused. Where
@@ -89,9 +107,10 @@ export const taskMemory = ({ now }) => {
      * @returns {Promise<string>}
      */
     renew: async (repo, stale, mint) => {
+      const held = tokens.get(repo);
       const kept = await usable(repo);
       if (kept !== null && kept.token !== stale) return kept.token;
-      return (await minted(repo, mint)).token;
+      return fresh(repo, held, mint);
     },
 
     /**

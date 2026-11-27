@@ -17,10 +17,11 @@ deadline and leaves its work half done.
   permission, a rate limit that asks for a longer wait or names none, or a
   write not marked safe to repeat, which may have landed.
 - A call GitHub answers 401 is sent once more, under a new token, where
-  the client can renew its token (`renew`, scripts/lib/github-app.mjs). It
-  may be a write: GitHub refused it before it acted. The task keeps each
-  repo's token across its turns (dispatch/task-memory.mjs), so a kept token
-  GitHub stopped taking costs one more send, not the turn.
+  the client can renew its token (`renew`, scripts/lib/github-app.mjs) and
+  the turn's resends are not spent. It may be a write: GitHub refused it
+  before it acted. The task keeps each repo's token across its turns
+  (dispatch/task-memory.mjs), so a kept token GitHub stopped taking costs
+  one more send, not the turn.
 - Once one call has spent its sends on server errors or dropped connections,
   every later GitHub call in the same turn is sent once. A turn makes one
   switch (`turnResends`) and hands it to every GitHub client it builds

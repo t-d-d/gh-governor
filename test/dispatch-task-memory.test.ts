@@ -71,6 +71,23 @@ describe('taskMemory', () => {
     assert.equal(g.count(), 2);
   });
 
+  test('clients that ask at once for a token none is kept for mint one', async () => {
+    const memory = taskMemory({ now: () => 0 });
+    const g = grants(() => 0);
+    const slow = async () => { await new Promise((r) => setTimeout(r, 5)); return g.mint(); };
+    assert.deepEqual(await Promise.all([memory.token('acme/factory', slow), memory.token('acme/factory', slow)]), ['ghs_1', 'ghs_1']);
+    assert.equal(g.count(), 1);
+  });
+
+  test('clients refused the same token at once mint one new token between them', async () => {
+    const memory = taskMemory({ now: () => 0 });
+    const g = grants(() => 0);
+    await memory.token('acme/factory', g.mint);
+    const slow = async () => { await new Promise((r) => setTimeout(r, 5)); return g.mint(); };
+    assert.deepEqual(await Promise.all([memory.renew('acme/factory', 'ghs_1', slow), memory.renew('acme/factory', 'ghs_1', slow)]), ['ghs_2', 'ghs_2']);
+    assert.equal(g.count(), 2);
+  });
+
   test('a mint that fails is not kept', async () => {
     const memory = taskMemory({ now: () => 0 });
     await assert.rejects(memory.token('acme/factory', async () => { throw new Error('503'); }), /503/);

@@ -72,6 +72,47 @@ describe('a token GitHub refuses', () => {
     assert.equal(sent.length, 2);
   });
 
+  test('a renewal that fails throws GitHub\'s refusal, not the mint\'s answer', async () => {
+    const { fetch } = scripted([status(401)]);
+    const mintRefused = Object.assign(new Error('GET /repos/acme/factory/installation failed: 404'), { status: 404 });
+    const api = githubApi({ token: 'ghs_old', fetch, renew: async () => { throw mintRefused; } });
+    await assert.rejects(api('GET', '/repos/acme/factory/hooks'), (e: { status?: number, cause?: unknown }) => e.status === 401 && e.cause === mintRefused);
+  });
+
+  test('a file read whose renewal fails is refused, not read as no file', async () => {
+    const { fetch } = scripted([status(401)]);
+    const renew = async () => { throw Object.assign(new Error('installation not found'), { status: 404 }); };
+    await assert.rejects(githubReader({ token: 'ghs_old', repo: 'acme/factory', fetch, renew }).configFile(), (e: { status?: number }) => e.status === 401);
+  });
+
+  test('a turn whose resends are spent sends a refused call once, as every other', async () => {
+    const { fetch, sent } = scripted([status(401)]);
+    let renewed = 0;
+    const api = githubApi({ token: 'ghs_old', fetch, resends: { spent: true }, renew: async () => { renewed += 1; return 'ghs_new'; } });
+    await assert.rejects(api('GET', '/repos/acme/factory/hooks'), (e: { status?: number }) => e.status === 401);
+    assert.equal(renewed, 0);
+    assert.equal(sent.length, 1);
+  });
+
+  test('a call refused after its client renewed is sent again under the new token, with no second renewal', async () => {
+    const sent: string[] = [];
+    let refusals = 0;
+    const fetch = (async (_url: string, init?: RequestInit) => {
+      const auth = new Headers(init?.headers).get('authorization') ?? '';
+      sent.push(auth);
+      if (auth !== 'Bearer ghs_old') return json({ ok: true })();
+      // The second call's refusal arrives after the first call renewed.
+      refusals += 1;
+      if (refusals > 1) await new Promise((r) => setTimeout(r, 20));
+      return status(401)();
+    }) as unknown as typeof globalThis.fetch;
+    const stale: string[] = [];
+    const api = githubApi({ token: 'ghs_old', fetch, renew: async (token: string) => { stale.push(token); return 'ghs_new'; } });
+    assert.deepEqual(await Promise.all([api('GET', '/repos/acme/factory/hooks'), api('GET', '/repos/acme/factory/pulls')]), [{ ok: true }, { ok: true }]);
+    assert.deepEqual(stale, ['ghs_old']);
+    assert.deepEqual(sent, ['Bearer ghs_old', 'Bearer ghs_old', 'Bearer ghs_new', 'Bearer ghs_new']);
+  });
+
   test('a client with no way to renew is refused as before', async () => {
     const { fetch, sent } = scripted([status(401)]);
     await assert.rejects(githubApi({ token: 'ghs_old', fetch })('GET', '/repos/acme/factory/hooks'), (e: { status?: number }) => e.status === 401);

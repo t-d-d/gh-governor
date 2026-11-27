@@ -86,10 +86,11 @@ export const appJwt = ({ appId, privateKeyPem, now = Date.now() }) => {
 export const turnResends = () => ({ spent: false });
 
 /**
- * An installation token a client can renew: `renew` swaps in a new token
- * where GitHub refused the one it held.
+ * An installation token a client can renew: `renew` is handed the
+ * Authorization header GitHub refused, and swaps in a new token where the
+ * client still holds that one.
  *
- * @typedef {{ header: () => string, renew: () => Promise<void> }} Renewable
+ * @typedef {{ header: () => string, renew: (refused: string) => Promise<void> }} Renewable
  */
 
 /** What a conditional read answers when GitHub says the file has not changed. */
@@ -115,12 +116,15 @@ const request = async ({ fetch, sleep, log, resends }, auth, method, path, body,
   /** What the last answer asks of a resend: see `resendOf`. @type {Resend} */
   let resend = 'backoff';
   const header = typeof auth === 'string' ? () => auth : auth.header;
+  /** The Authorization header the last send went with, which `renew` is told was refused. */
+  let refusedWith = '';
   const send = async () => {
     resend = 'backoff';
+    refusedWith = header();
     const response = await fetch(`${API}${path}`, {
       method,
       headers: {
-        authorization: header(),
+        authorization: refusedWith,
         accept: 'application/vnd.github+json',
         'x-github-api-version': API_VERSION,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
@@ -156,10 +160,18 @@ const request = async ({ fetch, sleep, log, resends }, auth, method, path, body,
     } catch (error) {
       // A token GitHub refused: renewed once, and the call sent again under
       // the new one without spending a send.
-      if (!renewed && typeof auth !== 'string' && /** @type {{ status?: number }} */ (error)?.status === 401) {
+      // Not once the turn's resends are spent: then every call is sent once.
+      // A renewal that fails throws the refusal, so a caller reading its
+      // status reads GitHub's answer to the call, not the mint's.
+      if (!renewed && !resends.spent && typeof auth !== 'string' && /** @type {{ status?: number }} */ (error)?.status === 401) {
         renewed = true;
+        try {
+          await auth.renew(refusedWith);
+        } catch (renewError) {
+          log('dispatch-github-token-unrenewed', { level: 'warn', method, path, error: messageOf(renewError) });
+          throw Object.assign(/** @type {Error} */ (error), { cause: renewError });
+        }
         log('dispatch-github-token-renewed', { level: 'info', method, path });
-        await auth.renew();
         sent -= 1;
         continue;
       }
@@ -261,7 +273,11 @@ const authOf = (token, renew) => {
   let current = token;
   return {
     header: () => `Bearer ${current}`,
-    renew: async () => { current = await renew(current); },
+    // A call refused under a token this client has since renewed is sent
+    // again under the new one, with no second renewal.
+    renew: async (refused) => {
+      if (refused === `Bearer ${current}`) current = await renew(current);
+    },
   };
 };
 
