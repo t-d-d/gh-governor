@@ -16,6 +16,12 @@ deadline and leaves its work half done.
 - It never resends any other answer: a 404, a 422, a 403 for a missing
   permission, a rate limit that asks for a longer wait or names none, or a
   write not marked safe to repeat, which may have landed.
+- A call GitHub answers 401 is sent once more, under a new token, where
+  the client can renew its token (`renew`, scripts/lib/github-app.mjs) and
+  the turn's resends are not spent. It may be a write: GitHub refused it
+  before it acted. The task keeps each repo's token across its turns
+  (dispatch/task-memory.mjs), so a kept token GitHub stopped taking costs
+  one more send, not the turn.
 - Once one call has spent its sends on server errors or dropped connections,
   every later GitHub call in the same turn is sent once. A turn makes one
   switch (`turnResends`) and hands it to every GitHub client it builds
@@ -25,6 +31,7 @@ deadline and leaves its work half done.
 
 - `fitness: a turn's GitHub clients share one resend switch
   (github-calls.md)`, and the resend cases in test/scripts/github-app.test.ts.
+- The 401 cases in test/scripts/github-app-memory.test.ts.
 
 ## Do not
 
@@ -33,4 +40,4 @@ deadline and leaves its work half done.
 - Do not build a GitHub client in a turn without the turn's switch: it would
   keep resending after the turn has stopped.
 
-History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. Governor resends a safe call on a server error or a short rate limit, as it did a dropped connection, since #575. Once one call has spent its sends, every later call in the turn is sent once, since #576.
+History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. Governor resends a safe call on a server error or a short rate limit, as it did a dropped connection, since #575. Once one call has spent its sends, every later call in the turn is sent once, since #576. A call GitHub answers 401 is sent once more under a renewed token, since #773, which keeps a repo's token for the life of a task.

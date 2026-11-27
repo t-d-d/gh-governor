@@ -86,29 +86,53 @@ export const appJwt = ({ appId, privateKeyPem, now = Date.now() }) => {
 export const turnResends = () => ({ spent: false });
 
 /**
+ * An installation token a client can renew: `renew` is handed the
+ * Authorization header GitHub refused, and swaps in a new token where the
+ * client still holds that one.
+ *
+ * @typedef {{ header: () => string, renew: (refused: string) => Promise<void> }} Renewable
+ */
+
+/** What a conditional read answers when GitHub says the file has not changed. */
+const NOT_MODIFIED = Object.freeze({ notModified: /** @type {const} */ (true) });
+
+/**
+ * A GitHub call. A client holding a token it can renew (`Renewable`) sends a
+ * call GitHub answered 401 once more under a new token, whatever its method:
+ * GitHub refused it before it acted. A conditional read (`etag`, a string,
+ * or null for none held) sends the ETag in `If-None-Match`, answers
+ * `NOT_MODIFIED` on a 304, and otherwise the body with the ETag GitHub sent.
+ *
  * @param {{ fetch: typeof globalThis.fetch, sleep: (ms: number) => Promise<unknown>, log: Log, resends: Resends }} io
- * @param {string} auth The Authorization header value.
+ * @param {string | Renewable} auth The Authorization header value, or a token the client can renew.
  * @param {string} method
  * @param {string} path Under the API host.
  * @param {unknown} [body]
  * @param {boolean} [repeatable] Safe to send twice; a GET always is.
- * @returns {Promise<any>} The JSON body, or null for an empty answer.
+ * @param {{ etag: string | null }} [conditional]
+ * @returns {Promise<any>} The JSON body, or null for an empty answer; for a conditional read, `NOT_MODIFIED` or `{ body, etag }`.
  */
-const request = async ({ fetch, sleep, log, resends }, auth, method, path, body, repeatable = method.toUpperCase() === 'GET') => {
+const request = async ({ fetch, sleep, log, resends }, auth, method, path, body, repeatable = method.toUpperCase() === 'GET', conditional = undefined) => {
   /** What the last answer asks of a resend: see `resendOf`. @type {Resend} */
   let resend = 'backoff';
+  const header = typeof auth === 'string' ? () => auth : auth.header;
+  /** The Authorization header the last send went with, which `renew` is told was refused. */
+  let refusedWith = '';
   const send = async () => {
     resend = 'backoff';
+    refusedWith = header();
     const response = await fetch(`${API}${path}`, {
       method,
       headers: {
-        authorization: auth,
+        authorization: refusedWith,
         accept: 'application/vnd.github+json',
         'x-github-api-version': API_VERSION,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...(conditional?.etag == null ? {} : { 'if-none-match': conditional.etag }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
+    if (conditional !== undefined && response.status === 304) return NOT_MODIFIED;
     if (!response.ok) {
       // The status rides the error as a field: the path carries an issue
       // number, so a caller reading the status off the message would take
@@ -125,13 +149,32 @@ const request = async ({ fetch, sleep, log, resends }, auth, method, path, body,
     if (response.status === 204) return null;
     // Read inside the send: fetch resolves on the headers, so a connection
     // that drops mid-body throws here.
+    if (conditional !== undefined) return { body: await response.json(), etag: response.headers.get('etag') };
     return response.json();
   };
   const sends = repeatable ? SENDS : 1;
+  let renewed = false;
   for (let sent = 1; ; sent += 1) {
     try {
       return await send();
     } catch (error) {
+      // A token GitHub refused: renewed once, and the call sent again under
+      // the new one without spending a send.
+      // Not once the turn's resends are spent: then every call is sent once.
+      // A renewal that fails throws the refusal, so a caller reading its
+      // status reads GitHub's answer to the call, not the mint's.
+      if (!renewed && !resends.spent && typeof auth !== 'string' && /** @type {{ status?: number }} */ (error)?.status === 401) {
+        renewed = true;
+        try {
+          await auth.renew(refusedWith);
+        } catch (renewError) {
+          log('dispatch-github-token-unrenewed', { level: 'warn', method, path, error: messageOf(renewError) });
+          throw Object.assign(/** @type {Error} */ (error), { cause: renewError });
+        }
+        log('dispatch-github-token-renewed', { level: 'info', method, path });
+        sent -= 1;
+        continue;
+      }
       // A dropped connection leaves `resend` at its backoff: no answer came.
       if (resend === null || resends.spent) throw error;
       const status = /** @type {{ status?: number }} */ (error)?.status;
@@ -218,31 +261,64 @@ const apiMessage = async (response) => {
 };
 
 /**
- * A REST call as an installation token, by method and path. The shape
- * every fetch-side caller takes its `api` in.
+ * A token's Authorization header: fixed, or one `renew` replaces. `renew` is
+ * handed the refused token and answers the one to use.
  *
- * @param {{ token: string, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log, resends?: Resends }} args
+ * @param {string} token
+ * @param {((stale: string) => Promise<string>) | undefined} renew
+ * @returns {string | Renewable}
+ */
+const authOf = (token, renew) => {
+  if (renew === undefined) return `Bearer ${token}`;
+  let current = token;
+  return {
+    header: () => `Bearer ${current}`,
+    // A call refused under a token this client has since renewed is sent
+    // again under the new one, with no second renewal.
+    renew: async (refused) => {
+      if (refused === `Bearer ${current}`) current = await renew(current);
+    },
+  };
+};
+
+/**
+ * A REST call as an installation token, by method and path. The shape
+ * every fetch-side caller takes its `api` in. Given `renew`, a call GitHub
+ * refuses the token for is sent once more under the token `renew` answers.
+ *
+ * @param {{ token: string, renew?: (stale: string) => Promise<string>, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log, resends?: Resends }} args
  * @returns {(method: string, path: string, body?: unknown) => Promise<any>}
  */
-export const githubApi = ({ token, fetch = globalThis.fetch, sleep = realSleep, log = noLog, resends = turnResends() }) => {
-  const auth = `Bearer ${token}`;
+export const githubApi = ({ token, renew, fetch = globalThis.fetch, sleep = realSleep, log = noLog, resends = turnResends() }) => {
+  const auth = authOf(token, renew);
   return (method, path, body) => request({ fetch, sleep, log, resends }, auth, method, path, body);
 };
 
 /**
- * An installation token for the repository: the App's identity, scoped to the
- * one installation, good for an hour.
+ * An installation token for the repository and when it expires, in ms: the
+ * App's identity, scoped to the one installation, good for an hour. A grant
+ * naming no expiry GitHub's way reads as expired (0), so no one keeps it.
  *
  * @param {{ appId: string, privateKeyPem: string, repo: string, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log, resends?: Resends, now?: number }} args
- * @returns {Promise<string>}
+ * @returns {Promise<{ token: string, expiresAt: number }>}
  */
-export const installationToken = async ({ appId, privateKeyPem, repo, fetch = globalThis.fetch, sleep = realSleep, log = noLog, resends = turnResends(), now }) => {
+export const installationGrant = async ({ appId, privateKeyPem, repo, fetch = globalThis.fetch, sleep = realSleep, log = noLog, resends = turnResends(), now }) => {
   const auth = `Bearer ${appJwt({ appId, privateKeyPem, ...(now === undefined ? {} : { now }) })}`;
   const installation = await request({ fetch, sleep, log, resends }, auth, 'GET', `/repos/${repo}/installation`);
   // A second mint only issues a second token, so it is resent like a read.
   const minted = await request({ fetch, sleep, log, resends }, auth, 'POST', `/app/installations/${installation.id}/access_tokens`, undefined, true);
-  return String(minted.token);
+  const expiresAt = typeof minted.expires_at === 'string' ? Date.parse(minted.expires_at) : NaN;
+  return { token: String(minted.token), expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0 };
 };
+
+/**
+ * An installation token for the repository, as {@link installationGrant}
+ * mints it, without its expiry.
+ *
+ * @param {Parameters<typeof installationGrant>[0]} args
+ * @returns {Promise<string>}
+ */
+export const installationToken = async (args) => (await installationGrant(args)).token;
 
 /**
  * The App's installations and the repos each was granted: the
@@ -459,6 +535,18 @@ const after = (rows, field, since, by, appId) => {
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 };
 
+/**
+ * The config and prompt files a task holds, each with the ETag GitHub
+ * answered for it (dispatch/task-memory.mjs), and the count of the reads
+ * GitHub answered 200 and 304.
+ *
+ * @typedef {{
+ *   held: (repo: string, path: string) => { etag: string, text: string } | undefined,
+ *   keep: (repo: string, path: string, held: { etag: string, text: string }) => void,
+ *   answered: (status: 200 | 304) => void,
+ * }} HeldFiles
+ */
+
 /** @typedef {{ number: number, title: string, at: string }} CountedRow One merge or issue in a periodic's window, and its time. */
 
 /**
@@ -474,11 +562,13 @@ const after = (rows, field, since, by, appId) => {
  * commit; its writes are a comment edited, a merge and the `governor` check run. The
  * conflict check's: the open PRs, and the commit main is at.
  *
- * @param {{ token: string, repo: string, appId?: number, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log, resends?: Resends }} args
+ * @param {{ token: string, repo: string, appId?: number, renew?: (stale: string) => Promise<string>, files?: HeldFiles, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<unknown>, log?: Log, resends?: Resends }} args
  * `appId`: the App the token is an installation of, whose comments `allComments` marks,
  * and whose issues and PRs every trust list lets in (`own`).
+ * `renew`: answers a new token for the one GitHub refused, as {@link githubApi} takes it.
+ * `files`: the config and prompt files the task holds, which `configFile` reads against.
  */
-export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sleep = realSleep, log = noLog, resends = turnResends() }) => {
+export const githubReader = ({ token, repo, appId, renew, files, fetch = globalThis.fetch, sleep = realSleep, log = noLog, resends = turnResends() }) => {
   /**
    * The author of an issue or PR row, as a trust list judges it
    * (dispatch/webhook/fire.mjs): `NONE` where GitHub gave no association.
@@ -501,7 +591,10 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
    */
   const headOf = (row) => (String(row?.head?.repo?.full_name ?? '').toLowerCase() === repo.toLowerCase() ? String(row.head.ref ?? '') : '');
 
-  const call = githubApi({ token, fetch, sleep, log, resends });
+  const io = { fetch, sleep, log, resends };
+  const auth = authOf(token, renew);
+  /** @type {(method: string, path: string, body?: unknown) => Promise<any>} */
+  const call = (method, path, body) => request(io, auth, method, path, body);
   /** Every open issue and PR, its body, labels and author, read once for `openNaming`. @type {Promise<Array<OpenRow & { body: unknown, labels: string[] } & import('../../dispatch/webhook/fire.mjs').Author>> | null} */
   let openRows = null;
   /** Every open issue and PR, read once a reader, and again after a read that failed. */
@@ -1031,16 +1124,28 @@ export const githubReader = ({ token, repo, appId, fetch = globalThis.fetch, sle
     // dispatch/repo-config.mjs's CONFIG_PATH, written out so this file
     // takes no import of the schema (test/scripts/github-app.test.ts).
     configFile: async (path = '.github/governor.json') => {
+      // The file the task holds, if any, sent as its ETag: GitHub answers
+      // 304 where the file is unchanged, and the held text is the file.
+      const held = files?.held(repo, path);
       /** @type {any} */
       let answer;
       try {
-        answer = await call('GET', `/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`);
+        answer = await request(io, auth, 'GET', `/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`, undefined, true, { etag: held?.etag ?? null });
       } catch (error) {
         if (/** @type {{ status?: number }} */ (error)?.status === 404) return null;
         throw error;
       }
-      if (answer?.type !== 'file' || answer?.encoding !== 'base64' || typeof answer?.content !== 'string') throw new Error(`${path} in ${repo} is no file GitHub sent the text of`);
-      return Buffer.from(answer.content, 'base64').toString('utf8');
+      if (answer === NOT_MODIFIED) {
+        if (held === undefined) throw new Error(`GitHub answered ${path} in ${repo} unchanged, though no ETag was sent`);
+        files?.answered(304);
+        return held.text;
+      }
+      const { body, etag } = answer;
+      if (body?.type !== 'file' || body?.encoding !== 'base64' || typeof body?.content !== 'string') throw new Error(`${path} in ${repo} is no file GitHub sent the text of`);
+      const text = Buffer.from(body.content, 'base64').toString('utf8');
+      files?.answered(200);
+      if (typeof etag === 'string' && etag !== '') files?.keep(repo, path, { etag, text });
+      return text;
     },
 
     /** The repo's default branch, which the PR review reads PRs into. @returns {Promise<string>} */

@@ -498,6 +498,24 @@ describe('main: the lane', () => {
     assert.deepEqual(exits, [0]);
   });
 
+  test('each turn logs how many of its file reads GitHub answered 304 and 200, from its own deps', async () => {
+    const { lane } = laneOf([{ kind: 'schedule' }, { kind: 'schedule' }]);
+    let built = 0;
+    const { args, logged } = harness({
+      env: {},
+      lane,
+      deps: () => {
+        built += 1;
+        const turn = built;
+        return { fileReads: () => ({ notModified: turn === 1 ? 0 : 4, read: turn === 1 ? 4 : 0 }) };
+      },
+      run: async () => dispatched(),
+    });
+    await main(args as never);
+    const reads = logged.filter((l) => l.event === 'dispatch-file-reads');
+    assert.deepEqual(reads, [{ event: 'dispatch-file-reads', notModified: 0, read: 4 }, { event: 'dispatch-file-reads', notModified: 4, read: 0 }]);
+  });
+
   test('a turn that failed is logged with its message and its exit code, and the task takes the next fire', async () => {
     const { lane } = laneOf([{ kind: 'schedule' }, { kind: 'schedule' }]);
     let calls = 0;
