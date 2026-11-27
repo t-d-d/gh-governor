@@ -63,6 +63,7 @@
 
 import { measureNames, measureOf } from './webhook/measures.mjs';
 import { AUTO } from './trust.mjs';
+import { FILES_LISTED, globMatches } from './checklist.mjs';
 import { runOf, turnsOn } from './repo-config.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
 
@@ -115,6 +116,10 @@ export const LISTED_MAX = 100;
  * @typedef {(session: string) => Promise<boolean>} Busy
  *   Whether the session a record names (its URL) is in the middle of a turn:
  *   still there, not archived, and not idle. A read that fails throws.
+ * @typedef {Readonly<Record<string, readonly string[]>>} Filters What a limit's
+ *   object form set beside `count`, each by its name in its measure's entry.
+ * @typedef {(kind: Count, rows: Counted[], filters: Filters) => Promise<Counted[]>} Narrow
+ *   The rows a limit with filters counts, in their order; a read that fails throws.
  * @typedef {Partial<Record<Count, Counted[]>>} Windows
  * @typedef {{ periodic: import('./repo-config.mjs').Periodic, read: PeriodicRecord, due: number, by: import('./heartbeat.mjs').Limit, windows?: Windows, asOf?: string }} Due
  *   `by`: the limit that brought it due, its time limit or the first count
@@ -147,6 +152,62 @@ export const windowOf = (reader, base, auto = AUTO) => {
     return measure.read(reader, since, context);
   };
 };
+
+/**
+ * How a check narrows a limit's rows by its filters, each by its
+ * measure's own (dispatch/webhook/measures.mjs). A pull request's files
+ * are read at most once for the check, however many limits ask for them,
+ * and a read that fails throws for each limit that asks. The rows stay
+ * those the shared list holds (`sharedWindow`): only the count narrows.
+ *
+ * @param {{ pullFiles: (number: number) => Promise<import('./webhook/measures.mjs').ChangedFile[]> }} reader
+ * @returns {Narrow}
+ */
+export const narrowOf = (reader) => {
+  /** @type {Map<number, Promise<import('./webhook/measures.mjs').ChangedFile[]>>} */
+  const files = new Map();
+  /** @type {import('./webhook/measures.mjs').FilterContext} */
+  const context = {
+    files: (number) => {
+      let read = files.get(number);
+      if (read === undefined) {
+        read = reader.pullFiles(number);
+        files.set(number, read);
+      }
+      return read;
+    },
+    globMatches,
+    filesListed: FILES_LISTED,
+  };
+  return async (kind, rows, filters) => {
+    let kept = rows;
+    for (const [name, values] of Object.entries(filters)) {
+      const filter = measureOf(kind)?.filters[name];
+      if (filter === undefined) throw new Error(`${kind} takes no filter named ${name}`);
+      /** @type {Counted[]} */
+      const next = [];
+      // One at a time: a busy window would otherwise send every files read at once.
+      for (const row of kept) if (await filter.keep(row, values, context)) next.push(row);
+      kept = next;
+    }
+    return kept;
+  };
+};
+
+/** @type {Narrow} */
+const noNarrow = async (kind, rows, filters) => {
+  if (Object.keys(filters).length > 0) throw new Error(`no reader for ${kind}'s filters was given`);
+  return rows;
+};
+
+/**
+ * A periodic's filters on one of its counts; none where its file set none.
+ *
+ * @param {import('./repo-config.mjs').Periodic} periodic
+ * @param {Count} kind
+ * @returns {Filters}
+ */
+const filtersOn = (periodic, kind) => periodic.filters?.[kind] ?? {};
 
 /**
  * One check's windows: each measure's list read once, from the oldest of
@@ -191,14 +252,21 @@ export const sharedWindow = (window, oldest) => {
 const lastFireLine = (read) => (read.baseline ? 'This is the first run of this periodic that governor has a record of.' : `This periodic last fired at ${read.at}.`);
 
 /**
- * One kind's window, as the prompt lists it.
+ * One kind's window, as the prompt lists it: its heading names what its
+ * filters kept.
  *
  * @param {Count} kind
  * @param {Counted[]} items
  * @param {string} since
+ * @param {Filters} filters
  */
-const windowLines = (kind, items, since) => {
-  const head = `${measureOf(kind)?.heading ?? kind} since ${since}: ${items.length === 0 ? 'none' : items.length}`;
+const windowLines = (kind, items, since, filters) => {
+  const measure = measureOf(kind);
+  const named = Object.entries(filters).flatMap(([name, values]) => {
+    const filter = measure?.filters[name];
+    return filter === undefined ? [] : [filter.heading(values)];
+  });
+  const head = `${[measure?.heading ?? kind, ...named].join(' ')} since ${since}: ${items.length === 0 ? 'none' : items.length}`;
   const listed = items.slice(0, LISTED_MAX).map((i) => `- #${i.number} ${i.title.replace(/\s+/g, ' ').trim()}`);
   const more = items.length > LISTED_MAX ? [`- and ${items.length - LISTED_MAX} more`] : [];
   return [head, ...listed, ...more].join('\n');
@@ -211,13 +279,14 @@ const windowLines = (kind, items, since) => {
  * @param {string} prompt
  * @param {PeriodicRecord} read
  * @param {Windows} [windows]
+ * @param {import('./repo-config.mjs').Periodic['filters']} [filters] Its counts' filters, which the lines name.
  */
-export const periodicPrompt = (prompt, read, windows = {}) => [
+export const periodicPrompt = (prompt, read, windows = {}, filters = {}) => [
   prompt,
   lastFireLine(read),
   ...measureNames().flatMap((kind) => {
     const items = windows[kind];
-    return items === undefined ? [] : [windowLines(kind, items, read.at)];
+    return items === undefined ? [] : [windowLines(kind, items, read.at, filters[kind] ?? {})];
   }),
 ].join('\n\n');
 
@@ -295,12 +364,13 @@ const inGap = (periodic, read, now) => periodic.gapHours !== undefined && !read.
  *   now: number,
  *   log: (event: string, context?: Record<string, unknown>) => void,
  *   window?: Window,
+ *   narrow?: Narrow,
  *   busy?: Busy,
  *   event?: Count,
  * }} args
  * @returns {Promise<{ due: Due[], unread: Array<{ repo: string, error: string }>, beats: import('./heartbeat.mjs').PeriodicChange[] }>}
  */
-export const duePeriodics = async ({ repo, periodics, state, now, log, window = noWindow, busy = noBusy, event }) => {
+export const duePeriodics = async ({ repo, periodics, state, now, log, window = noWindow, narrow = noNarrow, busy = noBusy, event }) => {
   /** @type {Due[]} */
   const due = [];
   /** @type {import('./heartbeat.mjs').PeriodicChange[]} */
@@ -357,7 +427,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       if (read === null || inGap(periodic, read, now) || !counts.some(([k]) => k === kind)) continue;
       if (event !== undefined && kind !== event) {
         const n = counts.find(([k]) => k === event)?.[1] ?? Infinity;
-        const reached = await shared(event, read.at).then((rows) => rows.length >= n, () => false);
+        const reached = await counted(periodic, event, read.at).then((rows) => rows.length >= n, () => false);
         if (!reached) continue;
       }
       if (from === undefined || Date.parse(read.at) < Date.parse(from)) from = read.at;
@@ -366,6 +436,19 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
   };
   /** @type {Window} */
   const shared = sharedWindow(window, oldest);
+  /**
+   * What one of a periodic's counts counts: the shared list's rows after
+   * its last fire, narrowed by that count's filters.
+   *
+   * @param {import('./repo-config.mjs').Periodic} periodic
+   * @param {Count} kind
+   * @param {string} since
+   */
+  const counted = async (periodic, kind, since) => {
+    const rows = await shared(kind, since);
+    const filters = filtersOn(periodic, kind);
+    return Object.keys(filters).length === 0 ? rows : narrow(kind, rows, filters);
+  };
   for (const [i, periodic] of considered.entries()) {
     const { name } = periodic;
     const time = timeLimitOf(periodic);
@@ -411,11 +494,11 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     /** @type {[Count, number] | undefined} */
     let by;
     try {
-      for (const [kind] of counts.filter(([kind]) => event === undefined || kind === event)) windows[kind] = await shared(kind, read.at);
+      for (const [kind] of counts.filter(([kind]) => event === undefined || kind === event)) windows[kind] = await counted(periodic, kind, read.at);
       reached = counts.some(([kind, n]) => (windows[kind]?.length ?? 0) >= n);
       by = counts.find(([kind, n]) => (windows[kind]?.length ?? 0) >= n);
       if (!reached && !dayDue) continue;
-      for (const [kind] of counts) windows[kind] ??= await shared(kind, read.at);
+      for (const [kind] of counts) windows[kind] ??= await counted(periodic, kind, read.at);
     } catch (error) {
       refuse(name, error, 'what it counts could not be read, so it is refused this turn');
       continue;
@@ -520,7 +603,7 @@ export const periodicLaunch = ({ config, state, log, beats, unread }, repo, { pe
   claim: false,
   holdsRepo: true,
   periodic: periodic.name,
-  asked: { prompt: periodicPrompt(periodic.prompt, read, windows), sessionName: periodic.name, ...runOf(config, 'periodics', periodic), ...connectorsOf(periodic) },
+  asked: { prompt: periodicPrompt(periodic.prompt, read, windows, periodic.filters), sessionName: periodic.name, ...runOf(config, 'periodics', periodic), ...connectorsOf(periodic) },
   started: async ({ outcome, sessionUrl }, firedAt) => {
     if (outcome === 'failed') return;
     const at = asOf ?? firedAt;

@@ -41,6 +41,12 @@ connector the account has would hold more than its file named.
 - A check reads each measure's list once, from the oldest last fire among
   the periodics it reads, and each limit counts the rows after its own
   last fire (`sharedWindow`, dispatch/periodics.mjs).
+- A filter narrows its own limit's rows of that shared list, never the
+  list itself, by its entry's `keep` (`narrowOf`, dispatch/periodics.mjs).
+  A check reads one pull request's files once, however many limits with
+  `paths` ask for them, and a files read that fails refuses each periodic
+  that asked, as any window read does. A merge whose files GitHub cut
+  short counts as a match.
 - A periodic starts only through `launchPlan` (dispatch/launch-plan.mjs),
   from the sweep's plan or the periodics fire's (`planPeriodics`,
   dispatch/periodics-fire.mjs), each launch built by `periodicLaunch`
@@ -82,4 +88,4 @@ connector the account has would hold more than its file named.
   routine fires outside governor's records, a refused cron starts no
   periodic, and a session would hold connectors its file never named.
 
-History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. A hook fire arrives at the receiver on its own path, signed with its hook key, since #55, under PRD #53. A periodic may name the claude.ai connectors its session needs, and then starts as a run of its own routine, since #89. A routine the routines API refuses stops only its periodic since #91. A periodic's routine is kept disabled on a valid cron that fires once a year since #373. A periodic is held only while its last session is in the middle of a turn, not while it is open, since #752. A counted event queues a `periodics` fire of its own, and a periodic starts only through `launchPlan`, since #774, under PRD #772. A measure is one entry in one table, and a check reads each measure's list once, since #777, under PRD #772. The receiver queues a `periodics` fire only where a limit in the repo's file wakes on the event, since #778, under PRD #772.
+History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. A hook fire arrives at the receiver on its own path, signed with its hook key, since #55, under PRD #53. A periodic may name the claude.ai connectors its session needs, and then starts as a run of its own routine, since #89. A routine the routines API refuses stops only its periodic since #91. A periodic's routine is kept disabled on a valid cron that fires once a year since #373. A periodic is held only while its last session is in the middle of a turn, not while it is open, since #752. A counted event queues a `periodics` fire of its own, and a periodic starts only through `launchPlan`, since #774, under PRD #772. A measure is one entry in one table, and a check reads each measure's list once, since #777, under PRD #772. The receiver queues a `periodics` fire only where a limit in the repo's file wakes on the event, since #778, under PRD #772. `merges` takes `paths`, the first filter, declared in its entry and applied to each limit's share of the list, since #780, under PRD #772.

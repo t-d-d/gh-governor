@@ -11,7 +11,7 @@
  */
 
 import { messageOf } from '../scripts/lib/error-message.mjs';
-import { duePeriodics, logNotStarted, periodicLaunch, windowOf } from './periodics.mjs';
+import { duePeriodics, logNotStarted, narrowOf, periodicLaunch, windowOf } from './periodics.mjs';
 import { CAP_ZERO_REASON } from './launch-plan.mjs';
 import { fireRepoOf } from './repos.mjs';
 import { autoOf } from './trust.mjs';
@@ -45,8 +45,9 @@ export const planPeriodics = async (invocation, ctx) => {
   /** @type {Awaited<ReturnType<typeof duePeriodics>>} */
   let read;
   try {
-    const window = windowOf(await ctx.readerFor(repo), invocation.base, autoOf(config));
-    read = await duePeriodics({ repo, periodics: config.periodics ?? [], state: ctx.state, now: ctx.now(), log: ctx.log, window, busy: ctx.busy, event: invocation.counted });
+    const reader = await ctx.readerFor(repo);
+    const window = windowOf(reader, invocation.base, autoOf(config));
+    read = await duePeriodics({ repo, periodics: config.periodics ?? [], state: ctx.state, now: ctx.now(), log: ctx.log, window, narrow: narrowOf(reader), busy: ctx.busy, event: invocation.counted });
   } catch (error) {
     ctx.log('dispatch-periodic-unread', { level: 'error', repo, counted: invocation.counted, error: messageOf(error), reason: 'the periodics could not be checked: they wait for the next event or sweep' });
     return { launches: [], unread: [{ repo, error: `periodics: ${messageOf(error)}` }] };

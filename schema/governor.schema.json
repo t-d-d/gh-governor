@@ -1223,7 +1223,7 @@
                     ]
                   },
                   "merges": {
-                    "description": "Pull requests merged into the default branch since the last fire. A whole number of at least one, or { \"count\": <number> }, which says the same.",
+                    "description": "Pull requests merged into the default branch since the last fire. A whole number of at least one, or { \"count\": <number>, \"paths\": [...] }: the number alone, or the object without its filters, counts every one.",
                     "anyOf": [
                       {
                         "type": "integer",
@@ -1238,6 +1238,15 @@
                             "minimum": 1,
                             "maximum": 9007199254740991,
                             "description": "The limit, a whole number of at least one."
+                          },
+                          "paths": {
+                            "description": "Count only the merges that changed a file one of these patterns matches, a list of at least one, read as `review.humanOnly` reads its entries: a pattern with a slash is matched against the whole path from the root, one without matches a file of that name at any depth, `*` stays within a segment and `**` spans any. A rename counts under the path it left and the path it took. A merge that changed more files than GitHub lists, 3000, counts. `{ \"count\": 10, \"paths\": [\"dispatch/turn.mjs\", \"dispatch/webhook/**\"] }` runs after ten merges change that file or anything under that folder, and `{ \"count\": 1, \"paths\": [\"infra/**\"] }` runs on every change under `infra/`.",
+                            "minItems": 1,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
                           }
                         },
                         "required": [
