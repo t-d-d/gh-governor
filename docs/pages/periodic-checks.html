@@ -440,7 +440,7 @@ svg text { font-family: var(--font-mono); fill: var(--ink); }
       <li><strong>The starter and the login.</strong> A task is started when a fire waits and none runs, and each turn restores the claude.ai login. The receiver calls the starter once a delivery, however many fires it queued. <a href="fire-lane.html">The fire lane</a> follows both.</li>
       <li><strong>Which fires a merge queues.</strong> A merge into the default branch always queues its conflicts fire. It queues a periodics fire after it only where a limit in the repo's file counts merges, as the receiver reads from the repo's item in the hook table, which the task writes when it reads the file. The receiver cannot see a merge's files, so a merge that changed only <code>docs/</code> still queues one.</li>
       <li><strong>What an event's check reads.</strong> Only the periodics that count the event, and only that count. A time limit is never read there, so it comes due on the sweep. Once a count is reached, the periodic's other counts are read too, for the lines under its prompt.</li>
-      <li><strong>What a check reads.</strong> Each periodic's record from the state table. Then one list read from GitHub for each measure, from the oldest last fire among the periodics that count it, and each limit counts the rows after its own last fire. A <code>paths</code> limit needs each merge's files: they come from the state table, and from GitHub only for a merge not yet kept, which is usually the one that just landed. A check that finds nothing due writes nothing but the files it read, and stores no total.</li>
+      <li><strong>What a check reads.</strong> Each periodic's record from the state table. Then one list read from GitHub for each measure, from the oldest last fire among the periodics that count it, and each limit counts the rows after its own last fire. A <code>paths</code> limit needs each merge's files: they come from the state table, and from GitHub only for a merge not yet kept, which is usually the one that just landed. A check that finds nothing due writes nothing but the files it read and a new periodic's baseline, and stores no total.</li>
       <li><strong>The files record.</strong> A merged pull request's files never change, so the first check that reads them keeps them in the state table, one item a pull request, for 90 days. A record that is lost costs one more read from GitHub.</li>
       <li><strong>The minimum gap.</strong> A periodic with <code>gapHours</code> never fires inside that many hours of its last run. A count reached there fires on the first check after it.</li>
       <li><strong>A new periodic.</strong> With no record, the check writes now as the baseline and starts nothing. Its window opens there.</li>
@@ -602,13 +602,13 @@ svg text { font-family: var(--font-mono); fill: var(--ink); }
         { busy: true, line: 'S1 · in a turn', sub: '1 merge listed', sub2: '' },
       ),
       steps: [
-        { c: 'Two pull requests merge a minute apart, and both change infra/. Each delivery queues its conflicts fire and its periodics fire, so four fires wait in order.', focus: ['recv', 'queue'],
+        { c: 'Two pull requests merge seconds apart, and both change infra/. Each delivery queues its conflicts fire and its periodics fire, so four fires wait in order.', focus: ['recv', 'queue'],
           moves: [merge(), merge(380), { e: 'e-send', k: 'fire', t: 'X1', d: 900 }, { e: 'e-send', k: 'fire', t: 'P1', d: 1150 }, { e: 'e-send', k: 'fire', t: 'X2', d: 1400 }, { e: 'e-send', k: 'fire', t: 'P2', d: 1650 }, answer(1000), answer(1500)],
           apply: (s) => { s.queue.push('X1', 'P1', 'X2', 'P2'); s.receiver = '202 ×2, 4 queued'; } },
-        { c: 'The task runs X1, then takes P1. The window is read afresh, so P1\'s check sees both merges, not only the one that queued it. Two match, and the limit of 1 is reached.', focus: ['task', 'check'],
+        { c: 'The task runs X1, then takes P1. The window is read afresh, so P1\'s check sees both merges, not only the one that queued it. Their files are read from GitHub and kept. Two match, and the limit of 1 is reached.', focus: ['task', 'check'],
           pre: (s) => { take(s, 2); },
           moves: [...takeTwo('X1', 'P1'), ...readWindow('2 match', 1700)],
-          apply: (s) => { working(s, 'P1'); s.per.caller = 'periodics fire P1'; s.per.count = 2; verdict(s, 'due · merges 1', 'working'); } },
+          apply: (s) => { working(s, 'P1'); s.per.caller = 'periodics fire P1'; s.per.count = 2; s.table.files = kept(3); verdict(s, 'due · merges 1', 'working'); } },
         { c: 'The check asks whether S1 is in the middle of a turn. It is. A second session now would run over the first, so the fire is held.', focus: ['check', 'session'],
           moves: askSession('in a turn'), apply: (s) => { verdict(s, 'held · S1 in a turn', 'hold'); } },
         { c: 'A held fire starts nothing and leaves the record where it was, so the window stays open and the count keeps growing. Where the repo keeps a heartbeat issue, the periodic\'s line there says the fire is held.', focus: ['check', 'table'] },
@@ -626,7 +626,7 @@ svg text { font-family: var(--font-mono); fill: var(--ink); }
         { c: 'The task runs X3, then P3. The docs/ merge does not count, so the check still reads two. This time S1 is not in a turn, and nothing holds the fire.', focus: ['task', 'check', 'session'],
           pre: (s) => { take(s, 2); },
           moves: [...takeTwo('X3', 'P3'), ...readWindow('2 match', 1700), ...askSession('not in a turn', 2500)],
-          apply: (s) => { working(s, 'P3'); s.per.caller = 'periodics fire P3'; verdict(s, 'due · merges 1', 'working'); } },
+          apply: (s) => { working(s, 'P3'); s.per.caller = 'periodics fire P3'; s.table.files = kept(4); verdict(s, 'due · merges 1', 'working'); } },
         { c: 'One session, S2, starts with both merges listed, and then the record moves to this check. S1 is left as it is. Two merges cost one extra session, not two.', focus: ['check', 'session', 'table'],
           moves: [{ e: 'e-launch', k: 'signal', t: 'launch' }, { e: 'e-record', k: 'signal', t: 'record', d: 800 }],
           apply: (s) => { launched(s, 'S2', '2 merges listed'); recorded(s, 'S2'); } },
@@ -651,17 +651,18 @@ svg text { font-family: var(--font-mono); fill: var(--ink); }
         { c: 'The task takes H1. The sweep does its other work, and it runs the check for every served repo, reading every periodic against every limit. Its due periodics launch ahead of the ready tickets.', focus: ['task', 'check'],
           pre: (s) => { take(s); }, moves: [{ e: 'e-take', k: 'fire', t: 'H1' }, { e: 'e-check', k: 'signal', t: 'check', d: 700 }],
           apply: (s) => { working(s, 'H1'); s.per.caller = 'hourly sweep'; verdict(s, 'reading', 'on'); } },
-        { c: 'merges reads four of ten. days is a plain timer: it runs from the last fire, whatever was counted. The limit is an hour away. A sweep fires a time limit up to half an hour early, so the sweep nearest the limit fires it, and this sweep is not that one.', focus: ['check', 'api', 'table'],
-          moves: [...readRecord(), ...readWindow('4 match', 500)],
-          apply: (s) => { verdict(s, 'not due · 4 of 10'); } },
-        { c: 'An hour later the next sweep runs the same check. The last fire is now 30 days ago, so days is reached.', focus: ['check', 'api', 'table'],
-          moves: [{ e: 'e-check', k: 'signal', t: 'check' }, ...readRecord(700), ...readWindow('4 match', 1200)],
-          apply: (s) => { s.per.age = '30 d of 30 since the last fire'; s.table.fire = 'fired  30 d ago'; verdict(s, 'due · days 30', 'working'); } },
+        { c: 'merges reads four of ten. days is a plain timer: it runs from the last fire, whatever was counted. The limit is an hour away. A sweep fires a time limit up to half an hour early, so the sweep nearest the limit fires it, and this sweep is not that one. The turn ends and the task exits.', focus: ['check', 'api', 'table'],
+          moves: [...readRecord(), ...readWindow('9 merged', 500), ...readKept('files of 9', 1000)],
+          apply: (s) => { verdict(s, 'not due · 4 of 10'); noTask(s); s.per.caller = ''; s.receiver = 'idle'; } },
+        { c: 'An hour later the schedule queues H2, and its sweep runs the same check. The last fire is now 30 days ago, so days is reached.', focus: ['task', 'check', 'api', 'table'],
+          pre: (s) => { take(s); },
+          moves: [{ e: 'e-sched', k: 'delivery', t: 'schedule' }, { e: 'e-send', k: 'fire', t: 'H2', d: 700 }, { e: 'e-take', k: 'fire', t: 'H2', d: 1400 }, { e: 'e-check', k: 'signal', t: 'check', d: 2100 }, ...readRecord(2800), ...readWindow('9 merged', 3300), ...readKept('files of 9', 3800)],
+          apply: (s) => { working(s, 'H2'); s.per.age = '30 d of 30 since the last fire'; s.table.fire = 'fired  30 d ago'; verdict(s, 'due · days 30', 'working'); } },
         { c: 'S1 is not in a turn, so one session, S3, starts with the four merges listed, and the record moves. A periodic with days never goes much longer than that between runs.', focus: ['check', 'session', 'table'],
           moves: [...askSession('not in a turn'), { e: 'e-launch', k: 'signal', t: 'launch', d: 1100 }, { e: 'e-record', k: 'signal', t: 'record', d: 1900 }],
           apply: (s) => { launched(s, 'S3', '4 merges listed'); recorded(s, 'S3'); s.per.age = '0 d of 30 since the last fire'; } },
-        { c: 'The 30 days start again at this fire. If nothing merges in that time the session still starts, and governor\'s lines under the prompt say none. hours is the same timer in hours. Either comes due only on a sweep, the one nearest its limit. A periodic that should run only on changes leaves both out.', focus: ['check'],
-          apply: (s) => { stage(s, 'idle'); s.per.caller = ''; verdict(s, 'not due'); s.receiver = 'idle'; } },
+        { c: 'The 30 days start again at this fire. If nothing merges in that time the session still starts, and governor\'s lines under the prompt say none. hours is the same timer in hours. Either comes due only on a sweep, the one nearest its limit. A periodic that should run only on changes leaves both out. The lane stays empty and the task exits.', focus: ['check', 'task'],
+          apply: (s) => { noTask(s); s.per.caller = ''; verdict(s, 'not due'); s.receiver = 'idle'; } },
       ],
     },
   ];
