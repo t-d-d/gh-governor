@@ -489,16 +489,31 @@ const listed = (names, last, shown = (n) => n) => (names.length < 2 ? names.map(
 const MEASURE_LIST = listed(measureNames(), 'and', (n) => `\`${n}\``);
 
 /**
- * One limit in a periodic's `when`: a whole number of at least one, or
- * `{ count }` with that number. Later measures add their filters beside
- * `count`.
+ * The filters a limit's object form takes beside `count`, its measure's
+ * (dispatch/webhook/measures.mjs); none for a time limit.
  *
  * @param {string} key
  */
-const limitSchema = (key) => z.union([
-  z.number().int().min(1),
-  z.strictObject({ count: z.number().int().min(1).meta({ description: 'The limit, a whole number of at least one.' }) }),
-], { error: 'a limit is a whole number of at least one, or { "count": <number> }' }).optional().meta({ description: `${LIMIT_DESCRIPTIONS[key]} A whole number of at least one, or { "count": <number> }, which says the same.` });
+const filtersOf = (key) => Object.entries(MEASURES.find((m) => m.name === key)?.filters ?? {});
+
+/**
+ * One limit in a periodic's `when`: a whole number of at least one, or
+ * `{ count }` with that number and any filter its measure declares, each a
+ * list of at least one string.
+ *
+ * @param {string} key
+ */
+const limitSchema = (key) => {
+  const filters = filtersOf(key);
+  const shape = filters.length === 0 ? '{ "count": <number> }' : `{ "count": <number>, ${filters.map(([name]) => `"${name}": [...]`).join(', ')} }`;
+  return z.union([
+    z.number().int().min(1),
+    z.strictObject({
+      count: z.number().int().min(1).meta({ description: 'The limit, a whole number of at least one.' }),
+      ...Object.fromEntries(filters.map(([name, filter]) => [name, z.array(z.string().trim().min(1)).min(1).optional().meta({ description: filter.describe })])),
+    }),
+  ], { error: `a limit is a whole number of at least one, or ${shape}` }).optional().meta({ description: `${LIMIT_DESCRIPTIONS[key]} A whole number of at least one, or ${shape}${filters.length === 0 ? ', which says the same' : ': the number alone, or the object without its filters, counts every one'}.` });
+};
 
 /** A periodic's name, the key it is held under: one line, of at most 100 characters. */
 const periodicName = z.string().min(1).max(100).regex(/^\S(?:[^\n]*\S)?$/, 'a name is one line, with no space at either end');
@@ -767,10 +782,19 @@ const countOf = (limit) => (typeof limit === 'number' ? limit : limit.count);
 const periodicOf = (name, { when, ...rest }) => {
   /** @type {Partial<Record<import('./webhook/fire.mjs').Count, number>>} */
   const counts = {};
-  for (const kind of measureNames()) if (when[kind] !== undefined) counts[kind] = countOf(when[kind]);
+  /** @type {Partial<Record<import('./webhook/fire.mjs').Count, Record<string, string[]>>>} */
+  const filters = {};
+  for (const kind of measureNames()) {
+    const limit = when[kind];
+    if (limit === undefined) continue;
+    counts[kind] = countOf(limit);
+    const set = typeof limit === 'number' ? [] : filtersOf(kind).flatMap(([key]) => (limit[key] === undefined ? [] : [[key, limit[key]]]));
+    if (set.length > 0) filters[kind] = Object.fromEntries(set);
+  }
   const periodic = /** @type {Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }} */ ({ name, ...rest });
   for (const key of TIME_LIMITS) if (when[key] !== undefined) periodic[key] = countOf(when[key]);
   if (Object.keys(counts).length > 0) periodic.counts = counts;
+  if (Object.keys(filters).length > 0) periodic.filters = filters;
   return periodic;
 };
 
@@ -975,10 +999,11 @@ export const configSchema = fileSchema.transform(toConfig)
  * @typedef {{ model?: string, effort?: string }} RunSetting The model and effort one place sets, each only where it sets one.
  * @typedef {{ model: string, effort?: string }} Run The model a session or a review's run uses, and its effort where one is set.
  * @typedef {RunSetting & { sections: Record<string, RunSetting> }} Runs The file's own `model` and `effort`, and each section's.
- * @typedef {{ name: string, prompt: string, days?: number, hours?: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] } & RunSetting} Periodic
+ * @typedef {{ name: string, prompt: string, days?: number, hours?: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, filters?: Partial<Record<import('./webhook/fire.mjs').Count, Record<string, string[]>>>, gapHours?: number, connectors?: string[] } & RunSetting} Periodic
  *   A recurring session, its prompt read: its file's `when` read into its
  *   time limit, at most one of `days` and `hours` (the schema refuses
- *   both), and its counts; at least one of them all.
+ *   both), and its counts; at least one of them all. `filters`: what a
+ *   count's object form set beside `count`, only for a count that set one.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number } & RunSetting} Hook A hook an outside system fires, its prompt read.
  * @typedef {{ success: string[], failure: string[], neutral: string[] }} Conclusions The labels each conclusion of an issue review adds.
  * @typedef {{ labels: string[], prompt?: string, conclusions?: Partial<Conclusions> }} ByLabel One `byLabel` entry of an issue review, its prompt read.

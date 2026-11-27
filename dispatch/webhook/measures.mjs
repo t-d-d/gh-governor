@@ -12,7 +12,10 @@
  * - `heading`: what the lines under a periodic's prompt call it.
  * - `line`: what a heartbeat line calls one and many (dispatch/heartbeat.mjs).
  * - `describe`: what the schema says it counts (dispatch/repo-config.mjs).
- * - `filters`: the settings its object form takes beside `count`.
+ * - `filters`: the settings its object form takes beside `count`. Each
+ *   one's value is a list of at least one string. A filter says what the
+ *   schema says of it, how the prompt names it, and which of the window's
+ *   rows it keeps.
  *
  * The schema's keys, the receiver's fires, the fire's parser, the window
  * reads, the prompt and the heartbeat all read this table, so a new
@@ -37,6 +40,22 @@
  *   `branch`: the default branch, the fire's where it names one, else read
  *   once for the turn. `auto`: the repo's `trust.auto` (dispatch/trust.mjs):
  *   an issue is counted only where it lets its author in.
+ * @typedef {{ filename: string, previous?: string }} ChangedFile A file a pull
+ *   request changed, and the path a rename left.
+ * @typedef {{
+ *   files: (number: number) => Promise<ChangedFile[]>,
+ *   globMatches: (glob: string, path: string) => boolean,
+ *   filesListed: number,
+ * }} FilterContext What a filter reads beside the row: a pull request's
+ *   files, read at most once a check; the pattern grammar of the human-only
+ *   list (dispatch/checklist.mjs); and the most files GitHub lists for one
+ *   pull request. This file is a leaf the receiver packages, so the task
+ *   hands them in.
+ * @typedef {{
+ *   describe: string,
+ *   heading: (values: readonly string[]) => string,
+ *   keep: (row: Counted, values: readonly string[], context: FilterContext) => Promise<boolean>,
+ * }} Filter One setting a measure's object form takes beside `count`.
  * @typedef {{
  *   name: string,
  *   wakes: (event: string | undefined, payload: any, main: string | null) => { base?: string } | null,
@@ -44,7 +63,7 @@
  *   heading: string,
  *   line: readonly [string, string],
  *   describe: string,
- *   filters: Readonly<Record<string, never>>,
+ *   filters: Readonly<Record<string, Filter>>,
  * }} Measure
  */
 
@@ -72,7 +91,18 @@ export const MEASURES = [
     heading: 'Pull requests merged into the default branch',
     line: ['merge', 'merges'],
     describe: 'Pull requests merged into the default branch since the last fire.',
-    filters: {},
+    filters: {
+      paths: {
+        describe: 'Count only the merges that changed a file one of these patterns matches, a list of at least one, read as `review.humanOnly` reads its entries: a pattern with a slash is matched against the whole path from the root, one without matches a file of that name at any depth, `*` stays within a segment and `**` spans any. A rename counts under the path it left and the path it took. A merge that changed more files than GitHub lists, 3000, counts. `{ "count": 10, "paths": ["dispatch/turn.mjs", "dispatch/webhook/**"] }` runs after ten merges change that file or anything under that folder, and `{ "count": 1, "paths": ["infra/**"] }` runs on every change under `infra/`.',
+        heading: (values) => `that changed a file matching ${values.map((v) => `\`${v}\``).join(' or ')}`,
+        // Every path a merge changed, and each path a rename left.
+        keep: async (row, values, { files, globMatches, filesListed }) => {
+          const changed = await files(row.number);
+          if (changed.length >= filesListed) return true;
+          return changed.some((f) => [f.filename, ...(f.previous === undefined ? [] : [f.previous])].some((path) => values.some((glob) => globMatches(glob, path))));
+        },
+      },
+    },
   },
   {
     name: 'issuesOpened',

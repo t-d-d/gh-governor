@@ -97,8 +97,42 @@ describe('fitness: a measure is one entry in the measures table, and nothing els
       assert.equal(typeof m.read, 'function', m.name);
       assert.ok(m.heading.length > 0 && m.describe.length > 0, m.name);
       assert.equal(m.line.length, 2, m.name);
-      assert.deepEqual(m.filters, {}, `${m.name} takes no filter yet`);
+      for (const [name, filter] of Object.entries(m.filters)) {
+        assert.ok(filter.describe.length > 0, `${m.name}.${name} says what it does`);
+        assert.equal(typeof filter.heading, 'function', `${m.name}.${name} says how the prompt names it`);
+        assert.equal(typeof filter.keep, 'function', `${m.name}.${name} says which rows it keeps`);
+      }
     }
+  });
+
+  test('merges declares paths, and no other measure does', () => {
+    assert.deepEqual(MEASURES.map((m) => [m.name, Object.keys(m.filters)]), [['merges', ['paths']], ['issuesOpened', []], ['issuesClosed', []]]);
+  });
+
+  test('no file that reads the table names a filter of its own, as a string or a key', () => {
+    const filters = [...new Set(MEASURES.flatMap((m) => Object.keys(m.filters)))];
+    for (const path of READERS) {
+      const text = readFileSync(path, 'utf8');
+      for (const name of filters) {
+        assert.ok(!new RegExp(`(['"\`])${name}\\1`).test(text), `${path} names the filter ${name} as a string`);
+        assert.ok(!new RegExp(`^\\s*${name}\\s*:`, 'm').test(text), `${path} names the filter ${name} as a key`);
+      }
+    }
+  });
+
+  test('the committed schema\'s merges takes paths in its object form', () => {
+    const schema = readFileSync('schema/governor.schema.json', 'utf8');
+    let found = false;
+    JSON.parse(schema, (key, value) => {
+      if (key === 'when' && value?.properties?.days !== undefined) {
+        const object = value.properties.merges.anyOf.find((s: { type?: string }) => s.type === 'object');
+        assert.deepEqual(Object.keys(object.properties), ['count', 'paths']);
+        assert.equal(value.properties.issuesOpened.anyOf.find((s: { type?: string }) => s.type === 'object').properties.paths, undefined);
+        found = true;
+      }
+      return value;
+    });
+    assert.ok(found);
   });
 });
 

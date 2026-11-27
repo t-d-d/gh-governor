@@ -116,7 +116,8 @@ describe('the config file\'s periodics', () => {
       const counted = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { ...time, [key]: { count: 5 } } } } } }));
       assert.ok(bare.ok && counted.ok, `${key}: ${JSON.stringify([bare, counted])}`);
       assert.deepEqual(counted.config.periodics, bare.config.periodics, key);
-      for (const bad of [{ count: 0 }, { count: 1.5 }, { count: '5' }, {}, { count: 5, paths: ['x/**'] }]) {
+      // Only merges takes paths (test/periodics-paths.test.ts).
+      for (const bad of [{ count: 0 }, { count: 1.5 }, { count: '5' }, {}, ...(key === 'merges' ? [] : [{ count: 5, paths: ['x/**'] }])]) {
         const read = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { ...time, [key]: bad } } } } }));
         assert.ok(!read.ok, `${key}: ${JSON.stringify(bad)}`);
         assert.match(read.fault, new RegExp(`when\\.${key}`), `${key}: ${JSON.stringify(bad)}`);
