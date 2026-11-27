@@ -605,7 +605,9 @@ const counting = (event, payload, main) => {
   const fires = wokenBy(event, payload, main).map(({ name, base, by }) => one({
     fire: build.periodics({ counted: name, base }),
     reason: by === undefined ? `count it for the repo's periodics (${name})` : `check the repo's periodics that count ${name} by its ${by}`,
-    key: 'periodics',
+    // A label change on a closed issue wakes two measures by one filter, and
+    // a FIFO queue drops a second message under the same id.
+    key: by === undefined ? 'periodics' : `periodics:${name}`,
     ...(by === undefined ? {} : { filter: by }),
   }));
   let placed = false;
@@ -883,7 +885,7 @@ const routeKind = ({ event, payload, appId, relay, bodies, count }) => {
  *   read it. `countFire`: one more fire of a hook in the clock hour, taken
  *   only under its cap and once per signature (hook-table.mjs).
  *   `repoItem`: the repo's switches, ready labels, review labels, trust
- *   lists, claim label and measures in the hook table, as
+ *   lists, claim label, measures and filtered measures in the hook table, as
  *   its file read when the task last read it (hook-table.mjs). `now`: the
  *   receiver's clock, which a hook's timestamp is held to and an hour's
  *   count is kept by.

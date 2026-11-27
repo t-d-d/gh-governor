@@ -247,7 +247,7 @@ describe('routeEvent — what a periodic counts', () => {
   test('a PR opened or an issue reopened counts nothing, and an open issue labelled checks the issues opened by their labels', () => {
     assert.deepEqual(counted('pull_request', { action: 'opened', pull_request: { ...pullRequest, body: 'x', head: { ...pullRequest.head, sha: SHA } }, sender: member, repository: { full_name: REPO, default_branch: 'main' } }), []);
     assert.deepEqual(counted('issues', issuesEvent('reopened')), []);
-    assert.deepEqual(counted('issues', issuesEvent('labeled', { label: { name: 'workflow: ready for development' } })), [[{ kind: 'periodics', counted: 'issuesOpened', repo: REPO }, 'periodics']]);
+    assert.deepEqual(counted('issues', issuesEvent('labeled', { label: { name: 'workflow: ready for development' } })), [[{ kind: 'periodics', counted: 'issuesOpened', repo: REPO }, 'periodics:issuesOpened']]);
   });
 
   test('a delivery for an unlisted owner counts nothing', () => {
@@ -2344,6 +2344,13 @@ describe('fitness: a periodics fire is queued only where the repo\'s hook-table 
       assert.deepEqual(periodicsFires((await handled('issues', relabelled(action, 'closed'), labelling(['issuesOpened', 'issuesClosed'], ['issuesOpened', 'issuesClosed']))).queued), ['issuesOpened', 'issuesClosed'], action);
       assert.deepEqual(periodicsFires((await handled('issues', relabelled(action, 'closed'), labelling(['issuesOpened', 'issuesClosed'], ['issuesClosed']))).queued), ['issuesClosed'], action);
     }
+  });
+
+  test('a closed issue labelled queues its two periodics fires under different deduplication ids, so the queue keeps both', async () => {
+    const { queued } = await handled('issues', relabelled('labeled', 'closed'), labelling(['issuesOpened', 'issuesClosed'], ['issuesOpened', 'issuesClosed']));
+    const ids = (queued as Array<{ message: Record<string, unknown>, dedupId?: string }>).filter((q) => (q.message.fire as { kind: string }).kind === 'periodics').map((q) => q.dedupId);
+    assert.equal(ids.length, 2);
+    assert.equal(new Set(ids).size, 2, `a FIFO queue drops a second message with the same id: ${JSON.stringify(ids)}`);
   });
 
   test('a label change in a repo with no limit that has labels queues no periodics fire', async () => {
