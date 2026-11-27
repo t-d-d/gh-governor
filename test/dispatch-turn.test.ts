@@ -4265,12 +4265,17 @@ describe('run — periodics an event brings due', () => {
     assert.ok(h.reads.includes(`merges main ${ago(DAY)}`), 'the default branch read for the sweep');
   });
 
-  test('on the sweep at its day limit, empty windows start no session and record nothing to do', async () => {
+  test('on the sweep at its day limit, empty windows still start a session, whose prompt says none merged, and the record moves to the fire', async () => {
     const h = counting({});
     h.periodics.set(key(CODE.name), fired(7 * DAY));
     await run({ source: 'aws.events' }, h.deps as never);
-    assert.ok(!h.launches.some((l) => l.sessionName === CODE.name));
-    assert.deepEqual(h.periodics.get(key(CODE.name)), { at: new Date(NOW).toISOString(), session: null, baseline: false, nothing: true, lastRun: ago(7 * DAY) });
+    const launched = h.launches.find((l) => l.sessionName === CODE.name);
+    assert.ok(launched !== undefined, JSON.stringify(h.launches.map((l) => l.sessionName)));
+    assert.ok(launched.prompt.includes(`Pull requests merged into the default branch since ${ago(7 * DAY)}: none`), launched.prompt);
+    const record = h.periodics.get(key(CODE.name)) as Record<string, unknown>;
+    assert.equal(record.at, new Date(NOW).toISOString());
+    assert.equal(record.baseline, false);
+    assert.ok(!('nothing' in record) && !('lastRun' in record), JSON.stringify(record));
   });
 
   test('on the sweep at its day limit, a short window still starts it, listing what was counted', async () => {
@@ -7383,21 +7388,23 @@ describe('realDeps: the state table', () => {
     await assert.rejects(failing.countMessage('session_01ABC', null, 'hook', AT, 20), /AccessDeniedException/);
   });
 
-  // A day limit with nothing to do is its fire, and opens no minimum gap:
-  // the record says so, and reads back the same.
-  test('a periodic\'s nothing-to-do record, and the last run it keeps, are written and read back as such', async () => {
+  // Governor wrote a "nothing to do" record before it dropped that fire. Such
+  // an item still reads, as a last fire at its `at` that started no session.
+  test('a periodic\'s item from before the deploy, carrying nothing and lastRun, reads as a last fire at its time with no session', async () => {
     const AT = '2026-10-27T12:00:00.000Z';
     const RAN = '2026-10-20T12:00:00.000Z';
-    const sent: Array<Record<string, any>> = [];
     const state = dynamoState({
-      send: async (command: { constructor: { name: string }; input: Record<string, any> }) => {
-        sent.push(command.input);
-        return command.constructor.name === 'GetItemCommand' ? { Item: { pk: { S: 'periodic#acme/factory' }, sk: { S: 'Code review' }, at: { S: AT }, nothing: { BOOL: true }, lastRun: { S: RAN } } } : {};
-      },
+      send: async (command: { constructor: { name: string } }) => (command.constructor.name === 'GetItemCommand' ? { Item: { pk: { S: 'periodic#acme/factory' }, sk: { S: 'Code review' }, at: { S: AT }, nothing: { BOOL: true }, lastRun: { S: RAN } } } : {}),
     } as never, 'T');
-    await state.recordPeriodic(REPO, 'Code review', null, { at: AT, session: null, baseline: false, nothing: true, lastRun: RAN });
-    assert.deepEqual(sent[0]?.Item, { pk: { S: 'periodic#acme/factory' }, sk: { S: 'Code review' }, at: { S: AT }, nothing: { BOOL: true }, lastRun: { S: RAN } });
-    assert.deepEqual(await state.periodic(REPO, 'Code review'), { at: AT, session: null, baseline: false, nothing: true, lastRun: RAN });
+    assert.deepEqual(await state.periodic(REPO, 'Code review'), { at: AT, session: null, baseline: false });
+  });
+
+  test('a periodic\'s record is written with its time, its session and its baseline, and no other field', async () => {
+    const AT = '2026-10-27T12:00:00.000Z';
+    const sent: Array<Record<string, any>> = [];
+    const state = dynamoState({ send: async (command: { input: Record<string, any> }) => { sent.push(command.input); return {}; } } as never, 'T');
+    await state.recordPeriodic(REPO, 'Code review', null, { at: AT, session: null, baseline: false });
+    assert.deepEqual(sent[0]?.Item, { pk: { S: 'periodic#acme/factory' }, sk: { S: 'Code review' }, at: { S: AT } });
   });
 });
 
@@ -9502,11 +9509,11 @@ describe('fitness: every fire is recorded on the governor heartbeat, and only by
     assert.deepEqual(h.line(RETRO.name), { name: RETRO.name, at: AT, by: { days: 7 }, session: NEW, state: 'open' });
   });
 
-  test('a day limit on empty windows records nothing to do, at the fire\'s time, with no session', async () => {
+  test('a day limit on empty windows is a fire like any other: its line names the session it started, by its day limit', async () => {
     const h = beating();
     h.periodics.set(key(CODE.name), fired(8 * DAY));
     await run({ source: 'aws.events' }, h.deps as never);
-    assert.deepEqual(h.line(CODE.name), { name: CODE.name, at: AT, by: { days: 7 }, session: null, state: 'nothing to do' });
+    assert.deepEqual(h.line(CODE.name), { name: CODE.name, at: AT, by: { days: 7 }, session: NEW, state: 'open' });
   });
 
   test('a periodic governor first reads gets a line at the baseline\'s time, with no session, not fired yet', async () => {

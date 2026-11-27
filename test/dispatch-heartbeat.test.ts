@@ -50,7 +50,7 @@ describe('the governor block: a line for pickup and one per periodic', () => {
       { name: 'Code review', at: AT, by: { count: 'merges', number: 20 }, session: SESSION, state: 'open' },
       { name: 'Ticket "triage"', at: AT, by: { count: 'issuesOpened', number: 5 }, session: SESSION, state: 'signed off' },
       { name: 'Closed', at: AT, by: { count: 'issuesClosed', number: 1 }, session: OTHER, state: 'held' },
-      { name: 'Weekly retro', at: EARLIER, by: { days: 7 }, session: null, state: 'nothing to do' },
+      { name: 'Weekly retro', at: EARLIER, by: { days: 7 }, session: null, state: 'open' },
       { name: 'Daily', at: EARLIER, by: { days: 1 }, session: SESSION, state: 'open' },
       { name: 'Six hourly', at: EARLIER, by: { hours: 6 }, session: SESSION, state: 'open' },
       { name: 'Hourly', at: EARLIER, by: { hours: 1 }, session: SESSION, state: 'open' },
@@ -59,11 +59,21 @@ describe('the governor block: a line for pickup and one per periodic', () => {
     assert.match(body, /^- periodic "Six hourly": last fire 2026-10-28T08:00:00\.000Z, by its hour limit of 6 hours, session https:\/\/claude\.ai\/code\/session_01RUN, open$/m);
     assert.match(body, /by its hour limit of 1 hour, /);
     assert.match(body, /^- periodic "Code review": last fire 2026-10-29T20:00:00\.000Z, by 20 merges, session https:\/\/claude\.ai\/code\/session_01RUN, open$/m);
-    assert.match(body, /^- periodic "Weekly retro": last fire 2026-10-28T08:00:00\.000Z, by its day limit of 7 days, session none, nothing to do$/m);
+    assert.match(body, /^- periodic "Weekly retro": last fire 2026-10-28T08:00:00\.000Z, by its day limit of 7 days, session none, open$/m);
     assert.match(body, /by its day limit of 1 day, /);
     assert.match(body, /by 5 issues opened, .*, signed off$/m);
     assert.match(body, /by 1 issue closed, session https:\/\/claude\.ai\/code\/session_01OTHER, held while that session is open$/m);
     assert.deepEqual(readHeartbeat(body).periodics, lines);
+  });
+
+  test('a line governor wrote before it dropped its nothing-to-do fire still reads, and stands, until that periodic\'s next fire replaces it', () => {
+    const OLD_LINE = `- periodic "Weekly retro": last fire ${EARLIER}, by its day limit of 7 days, session none, nothing to do`;
+    const body = BODY.replace(HEARTBEAT_MARKER, `${HEARTBEAT_MARKER}\n${OLD_LINE}\n${HEARTBEAT_END}`);
+    assert.deepEqual(readHeartbeat(body).periodics, [{ name: 'Weekly retro', at: EARLIER, by: { days: 7 }, session: null, state: 'nothing to do' }]);
+    const other = stampHeartbeat(body, { pickup: { at: AT, started: 0 } });
+    assert.ok(other.includes(`${OLD_LINE}\n`), 'another fire leaves it as it was');
+    const next = stampHeartbeat(body, { periodics: [{ name: 'Weekly retro', at: AT, by: { days: 7 }, session: SESSION, state: 'open' }] });
+    assert.deepEqual(readHeartbeat(next).periodics.map((l) => l.state), ['open']);
   });
 
   test('governor changes nothing in the body outside its own block', () => {
@@ -127,7 +137,7 @@ describe('the governor block: a line for pickup and one per periodic', () => {
         { name: 'Code review', at: EARLIER, by: { count: 'merges', number: 20 }, session: SESSION, state: 'open' },
         { name: 'Weekly retro', at: EARLIER, by: { days: 7 }, session: SESSION, state: 'held' },
         { name: 'Ticket review', at: EARLIER, by: { days: 3 }, session: OTHER, state: 'open' },
-        { name: 'Daily', at: EARLIER, by: { days: 1 }, session: null, state: 'nothing to do' },
+        { name: 'Daily', at: EARLIER, by: { days: 1 }, session: null, state: 'open' },
       ],
     });
     const marked = readHeartbeat(stampHeartbeat(fired, { signedOff: ['session_01RUN'] })).periodics;
@@ -135,12 +145,12 @@ describe('the governor block: a line for pickup and one per periodic', () => {
       ['Code review', EARLIER, 'signed off'],
       ['Weekly retro', EARLIER, 'signed off'],
       ['Ticket review', EARLIER, 'open'],
-      ['Daily', EARLIER, 'nothing to do'],
+      ['Daily', EARLIER, 'open'],
     ]);
   });
 
   test('pickup\'s line comes first, then the periodics in the order governor first wrote them', () => {
-    let body = stampHeartbeat(BODY, { periodics: [{ name: 'B', at: AT, by: { days: 1 }, session: null, state: 'nothing to do' }] });
+    let body = stampHeartbeat(BODY, { periodics: [{ name: 'B', at: AT, by: { days: 1 }, session: null, state: 'open' }] });
     body = stampHeartbeat(body, { pickup: { at: AT, started: 0 }, periodics: [{ name: 'A', at: AT, by: { days: 1 }, session: SESSION, state: 'open' }] });
     const block = body.slice(body.indexOf(HEARTBEAT_MARKER), body.indexOf(HEARTBEAT_END));
     assert.deepEqual(block.split('\n').slice(1, -1).map((l) => l.split(':')[0]), ['- pickup', '- periodic "B"', '- periodic "A"']);

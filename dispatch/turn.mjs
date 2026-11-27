@@ -11,7 +11,7 @@
  * Mac runs), claiming each ticket before its launch, leave a marker
  * comment with the session URL on each ticket,
  * record each fire on the served repo's heartbeat issue (dispatch/heartbeat.mjs:
- * the bare fire's sweep and every periodic fire, held or nothing to do
+ * the bare fire's sweep and every periodic fire, held ones
  * included, and the sign-off sweep's marks), and put the login back in the secret if
  * the CLI refreshed it. A `message` turn restores the login the same way
  * and sends text into a cloud session that already exists (`claude -p
@@ -2817,19 +2817,16 @@ export const dynamoState = (client, table) => {
       if (at === undefined || Number.isNaN(Date.parse(at)) || (item.session !== undefined && item.session.S === undefined)) {
         throw new Error(`the periodic item for ${repo} ${name} is malformed: ${JSON.stringify(item)}`);
       }
-      return {
-        at,
-        session: item.session?.S ?? null,
-        baseline: item.baseline?.BOOL === true,
-        ...(item.nothing?.BOOL === true ? { nothing: /** @type {const} */ (true) } : {}),
-        ...(item.lastRun?.S === undefined ? {} : { lastRun: item.lastRun.S }),
-      };
+      // An item written before governor dropped its "nothing to do" fire may
+      // carry `nothing` and `lastRun`. Left out, it reads as a last fire at
+      // its `at` that started no session.
+      return { at, session: item.session?.S ?? null, baseline: item.baseline?.BOOL === true };
     },
-    recordPeriodic: async (repo, name, read, { at, session, baseline, nothing, lastRun }) => {
+    recordPeriodic: async (repo, name, read, { at, session, baseline }) => {
       try {
         await client.send(new PutItemCommand({
           TableName: table,
-          Item: { ...periodicKey(repo, name), at: { S: at }, ...(session === null ? {} : { session: { S: session } }), ...(baseline ? { baseline: { BOOL: true } } : {}), ...(nothing === true ? { nothing: { BOOL: true } } : {}), ...(lastRun === undefined ? {} : { lastRun: { S: lastRun } }) },
+          Item: { ...periodicKey(repo, name), at: { S: at }, ...(session === null ? {} : { session: { S: session } }), ...(baseline ? { baseline: { BOOL: true } } : {}) },
           ...(read === null
             ? { ConditionExpression: 'attribute_not_exists(pk)' }
             : { ConditionExpression: '#at = :read', ExpressionAttributeNames: { '#at': 'at' }, ExpressionAttributeValues: { ':read': { S: read.at } } }),

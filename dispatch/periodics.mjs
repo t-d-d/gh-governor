@@ -1,10 +1,10 @@
 /**
  * Periodics: recurring sessions a repo lists in its config file
- * (dispatch/repo-config.mjs), each with a name, a prompt and a time limit
- * in days or hours, and optionally counts of events and a minimum gap. The
- * file holds its limits in `when`; `toConfig` reads them into the time
- * limit and the counts this module takes. Below, "day limit" means the time
- * limit in either unit.
+ * (dispatch/repo-config.mjs), each with a name, a prompt, at least one
+ * limit and optionally a minimum gap. A limit is a time limit in days or
+ * hours, or a count of events. The file holds its limits in `when`;
+ * `toConfig` reads them into the time limit and the counts this module
+ * takes. Below, "day limit" means the time limit in either unit.
  *
  * The bare schedule fire reads each periodic's record from the state table
  * ({@link duePeriodics}): the time of its last fire and the session it
@@ -33,9 +33,7 @@
  * last fire started is in the middle of a turn is held ({@link Busy}): the
  * turn starts nothing and logs the fire held, naming that session, and
  * writes nothing, so its count keeps growing from the fire before and the
- * first check after that turn ends fires it. A day limit on empty windows is
- * held the same way: its nothing-to-do record names no session, so it would
- * let the next count start a second run over the busy one. An open session
+ * first check after that turn ends fires it. An open session
  * between turns does not hold it: the fire starts a new session and leaves
  * the old one as it is, whether or not it signed off or was archived. A
  * periodic's time limit and counts are its only clock, and its fire is never sent
@@ -44,13 +42,15 @@
  * be read refuses the periodic for the turn, and is never taken for an idle
  * one.
  *
- * At its day limit, a periodic with counts whose window is empty starts no
- * session: governor records "nothing to do" as its fire, so its next day
- * limit counts from then. A periodic with only a day limit always starts.
+ * A day limit is a plain timer: it runs from the last fire, whatever the
+ * counts counted, and starts a session even where every window is empty.
+ * The lines under the prompt then say none, and the repo's prompt decides
+ * what the session does. A periodic with no day limit comes due only when
+ * a count is reached.
  *
  * With no record, for a new periodic or a lost item, the turn writes now as
  * the baseline and starts nothing: the first run comes one day limit later,
- * and a lost record costs at most one late run, never a burst. The baseline
+ * or once a count since the baseline is reached, and a lost record costs at most one late run, never a burst. The baseline
  * writes the periodic's heartbeat line where it has none, so the repo can
  * see governor has read it, and each sweep sends that line again until the
  * first fire, in case the write failed. A read that
@@ -90,13 +90,14 @@ export const LISTED_MAX = 100;
 
 /**
  * @typedef {import('./webhook/fire.mjs').Count} Count
- * @typedef {{ at: string, session: string | null, baseline: boolean, nothing?: true, lastRun?: string }} PeriodicRecord
+ * @typedef {{ at: string, session: string | null, baseline: boolean }} PeriodicRecord
  *   `at`: the last fire's time, or the baseline's. `session`: the session the
- *   fire started, null for an unconfirmed launch, the baseline or nothing to do.
+ *   fire started, null for an unconfirmed launch or the baseline.
  *   `baseline`: governor wrote it with no record to go on, and started nothing.
- *   `nothing`: the day limit came due on empty windows, and started nothing;
- *   `lastRun` then keeps the time of the last fire that ran, if any, which
- *   the minimum gap runs from.
+ *   A record written before governor dropped its "nothing to do" fire may
+ *   still carry `nothing` and `lastRun`. The state table's reader leaves
+ *   them out, so it reads as a last fire at its `at` that started no
+ *   session.
  * @typedef {{
  *   periodic: (repo: string, name: string) => Promise<PeriodicRecord | null>,
  *   recordPeriodic: (repo: string, name: string, read: PeriodicRecord | null, record: PeriodicRecord) => Promise<boolean>,
@@ -157,16 +158,12 @@ export const windowOf = (reader, base, auto = AUTO) => {
 
 /**
  * The line governor writes under a periodic's prompt: when it last fired,
- * that its last day limit found nothing to do, or that this is the first run
- * governor knows of. No repo can drop or reword it.
+ * or that this is the first run governor knows of. No repo can drop or
+ * reword it.
  *
  * @param {PeriodicRecord} read The record the turn read.
  */
-export const lastFireLine = (read) => {
-  if (read.baseline) return 'This is the first run of this periodic that governor has a record of.';
-  if (read.nothing === true) return `This periodic last came due at ${read.at} with nothing to do, so it did not run then.`;
-  return `This periodic last fired at ${read.at}.`;
-};
+const lastFireLine = (read) => (read.baseline ? 'This is the first run of this periodic that governor has a record of.' : `This periodic last fired at ${read.at}.`);
 
 /**
  * One kind's window, as the prompt lists it.
@@ -212,37 +209,27 @@ const countsOf = (periodic) => COUNTS.flatMap((kind) => {
 
 /**
  * A periodic's time limit: how long after its last fire it comes due, and
- * the limit as its heartbeat line names it, in the unit its file gives.
+ * the limit as its heartbeat line names it, in the unit its file gives;
+ * null for a periodic with counts alone.
  *
  * @param {import('./repo-config.mjs').Periodic} periodic
- * @returns {{ ms: number, by: import('./heartbeat.mjs').Limit }}
+ * @returns {{ ms: number, by: import('./heartbeat.mjs').Limit } | null}
  */
 const timeLimitOf = ({ days, hours }) => {
   if (hours !== undefined) return { ms: hours * HOUR_MS, by: { hours } };
   if (days !== undefined) return { ms: days * DAY_MS, by: { days } };
-  throw new Error('a periodic names a time limit, days or hours: the schema refuses one with neither');
+  return null;
 };
 
 /**
- * The time of the last fire that ran, if the record knows one: a baseline
- * ran nothing, and a day limit with nothing to do keeps the run before it.
- *
- * @param {PeriodicRecord} read
- * @returns {string | undefined}
- */
-const lastRunOf = (read) => (read.baseline ? undefined : read.nothing === true ? read.lastRun : read.at);
-
-/**
- * Whether a periodic is inside its minimum gap since its last run.
+ * Whether a periodic is inside its minimum gap since its last fire. A
+ * baseline fired nothing, so it opens no gap.
  *
  * @param {import('./repo-config.mjs').Periodic} periodic
  * @param {PeriodicRecord} read
  * @param {number} now
  */
-const inGap = (periodic, read, now) => {
-  const ran = lastRunOf(read);
-  return periodic.gapHours !== undefined && ran !== undefined && now - Date.parse(ran) < periodic.gapHours * HOUR_MS;
-};
+const inGap = (periodic, read, now) => periodic.gapHours !== undefined && !read.baseline && now - Date.parse(read.at) < periodic.gapHours * HOUR_MS;
 
 /**
  * A repo's due periodics, each with the record the turn read, when it came
@@ -251,11 +238,11 @@ const inGap = (periodic, read, now) => {
  * no record gets now as its baseline, and is not due.
  *
  * On the sweep (`event` undefined), every periodic is read against its day
- * limit and its counts. On an event's turn, only the periodics that count
+ * limit, where it has one, and its counts. On an event's turn, only the periodics that count
  * `event` are read, and only against that count, so the event's turn starts
  * nothing the sweep would not; the rest of its counts are read for the
  * prompt once it is due. A due periodic whose last run is `busy`, in the
- * middle of a turn, is held, and is not due. A held fire, a nothing-to-do and a baseline this
+ * middle of a turn, is held, and is not due. A held fire and a baseline this
  * turn wrote come back as the heartbeat lines they change
  * (dispatch/heartbeat.mjs): a held one keeps the busy run's start and names
  * its session, and a baseline's says it has not fired yet, which the block
@@ -342,10 +329,10 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       continue;
     }
     const at = Date.parse(read.at);
-    const limit = at + time.ms;
-    const dayDue = event === undefined && now - at >= time.ms - SWEEP_GRACE_MS;
+    const dayDue = time !== null && event === undefined && now - at >= time.ms - SWEEP_GRACE_MS;
     if (counts.length === 0) {
-      if (dayDue && !(await held(name, read))) due.push({ periodic, read, due: limit, by: time.by });
+      if (time === null) throw new Error(`periodic ${name} names no limit: the schema refuses a when with none`);
+      if (dayDue && !(await held(name, read))) due.push({ periodic, read, due: at + time.ms, by: time.by });
       continue;
     }
     /** @type {Windows} */
@@ -363,26 +350,12 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       refuse(name, error, 'what it counts could not be read, so it is refused this turn');
       continue;
     }
-    // Held before a nothing-to-do too: its record names no session, so the
-    // next count would start a second run over the busy one.
     if (await held(name, read)) continue;
-    if (!reached && Object.values(windows).every((items) => items.length === 0)) {
-      // The day limit came due on empty windows: nothing to review, and the
-      // next day limit counts from now.
-      const ran = lastRunOf(read);
-      const record = { at: new Date(now).toISOString(), session: null, baseline: false, nothing: /** @type {const} */ (true), ...(ran === undefined ? {} : { lastRun: ran }) };
-      try {
-        const written = await state.recordPeriodic(repo, name, read, record);
-        log('dispatch-periodic', { repo, periodic: name, outcome: written ? 'nothing to do' : 'nothing to do, and its record moved since the read', at: record.at });
-        if (written) beats.push({ name, at: record.at, by: time.by, session: null, state: 'nothing to do' });
-      } catch (error) {
-        const message = messageOf(error);
-        log('dispatch-periodic-unrecorded', { level: 'error', repo, periodic: name, error: message, reason: 'its nothing-to-do could not be written, so the next fire reads its windows again' });
-        unread.push({ repo, error: `periodic ${name}: ${message}` });
-      }
-      continue;
-    }
-    due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, by: by === undefined ? time.by : { count: by[0], number: by[1] }, windows, asOf: new Date(now).toISOString() });
+    // Reached by a count, or else by the day limit, even on empty windows:
+    // the lines under the prompt then say none.
+    const limit = time === null ? now : at + time.ms;
+    const brought = by === undefined ? /** @type {{ by: import('./heartbeat.mjs').Limit }} */ (time).by : { count: by[0], number: by[1] };
+    due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, by: brought, windows, asOf: new Date(now).toISOString() });
   }
   return { due, unread, beats };
 };

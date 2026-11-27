@@ -92,15 +92,20 @@ export const HEARTBEAT_END = '<!-- governor:heartbeat-end -->';
  * @typedef {{ days: number } | { hours: number } | { count: Count, number: number }} Limit
  *   What fired a periodic: its time limit, in the unit its file gives, or
  *   the count that reached its number.
- * @typedef {'open' | 'signed off' | 'held' | 'nothing to do' | 'not fired'} RunState
- *   `held`: the fire came due while the session the line names was in the
+ * @typedef {'open' | 'signed off' | 'held' | 'not fired'} RunState
+ *   The states governor writes on a periodic's line. `held`: the fire came due while the session the line names was in the
  *   middle of a turn. Its text still reads "held while that session is open",
  *   which stays true, since a checker pinned to an older commit parses it.
  *   `not fired`: governor wrote the periodic's baseline and has not fired it
  *   since; the line's time is the baseline's, not a fire's.
+ * @typedef {RunState | 'nothing to do'} LineState
+ *   A state a periodic's line may read. `nothing to do` is on a line governor
+ *   wrote before a time limit always started a session. Governor writes it no
+ *   more, and reads it so the line stands until that periodic's next fire
+ *   replaces it.
  * @typedef {{ at: string, started: number }} PickupLine
  *   The last sweep's time, and how many ticket sessions it started.
- * @typedef {{ name: string, at: string, by?: Limit, session: string | null, state: RunState }} PeriodicLine
+ * @typedef {{ name: string, at: string, by?: Limit, session: string | null, state: LineState }} PeriodicLine
  *   `at`: the last fire's time, or the baseline's while `not fired`. `by`: the
  *   limit that fired it, where known.
  *   `session`: the session the fire started, null where none did.
@@ -109,8 +114,9 @@ export const HEARTBEAT_END = '<!-- governor:heartbeat-end -->';
  *   default branch, and why it is not current
  *   (dispatch/session-rules.mjs `blockIn`).
  * @typedef {{ pickup?: PickupLine, periodics: PeriodicLine[], rules?: RulesLine }} Heartbeat
- * @typedef {Partial<PeriodicLine> & { name: string }} PeriodicChange
- *   A periodic's line, or the fields of it that change.
+ * @typedef {Partial<Omit<PeriodicLine, 'state'>> & { name: string, state?: RunState }} PeriodicChange
+ *   A periodic's line, or the fields of it that change, in a state governor
+ *   writes.
  * @typedef {{ pickup?: PickupLine, periodics?: PeriodicChange[], signedOff?: string[], rules?: RulesLine | null }} Beat
  *   What a turn changes in the block. `signedOff`: the sessions the sign-off
  *   sweep archived, each `session_…`. `rules`: the session rules line, or
@@ -124,8 +130,12 @@ const COUNTED = /** @type {Record<Count, [string, string]>} */ ({
   issuesClosed: ['issue closed', 'issues closed'],
 });
 
-/** What a line calls each state: the heartbeat checker's issues quote it too. */
-export const STATES = /** @type {Record<RunState, string>} */ ({
+/**
+ * What a line calls each state: the heartbeat checker's issues quote it too.
+ * `nothing to do` is read only, from a line written before governor dropped
+ * that state.
+ */
+export const STATES = /** @type {Record<LineState, string>} */ ({
   open: 'open',
   'signed off': 'signed off',
   held: 'held while that session is open',
@@ -196,7 +206,7 @@ const lineOf = (text) => {
       at: String(at),
       ...(by === undefined ? {} : { by }),
       session: session === 'none' ? null : String(session),
-      state: /** @type {RunState} */ (Object.keys(STATES).find((k) => STATES[/** @type {RunState} */ (k)] === state)),
+      state: /** @type {LineState} */ (Object.keys(STATES).find((k) => STATES[/** @type {LineState} */ (k)] === state)),
     },
   };
 };
