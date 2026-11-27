@@ -50,7 +50,8 @@
  * Each delivery a measure wakes on (measures.mjs), such as a merge into
  * the default branch, also queues a `periodics` fire naming it as `counted`, beside
  * whatever else the delivery queues, so the repo's periodics are checked
- * on a turn of their own ({@link counting}).
+ * on a turn of their own ({@link counting}), unless the repo's hook-table
+ * item lists the measures its limits name and not this one.
  * An issue opened, reopened, or edited with its body changed by anyone but
  * a bot, queues an `issueReview` fire naming it, whose turn runs the
  * repo's issue reviews on it (dispatch/issue-review.mjs). So does a label
@@ -580,7 +581,8 @@ const finalStatusReview = (payload, main) => {
  * (dispatch/periodics-fire.mjs), carrying `base` where the measure gives
  * one. No other fire carries the count. The receiver reads no config file,
  * so it queues the fires in every listed repo, and drops them only where
- * the repo's item says periodics is off.
+ * the repo's item says periodics is off, or lists the measures the repo's
+ * limits name and not this one ({@link switchedOn}).
  *
  * The fires go once into the delivery's decision: where a route places
  * them (`count`), beside the fire the event is chiefly for, else after
@@ -866,7 +868,8 @@ const routeKind = ({ event, payload, appId, relay, bodies, count }) => {
  *   hook table (hook-table.mjs), the hooks its file listed when the task last
  *   read it. `countFire`: one more fire of a hook in the clock hour, taken
  *   only under its cap and once per signature (hook-table.mjs).
- *   `repoItem`: the repo's switches and ready labels in the hook table, as
+ *   `repoItem`: the repo's switches, ready labels, review labels, trust
+ *   lists, claim label and measures in the hook table, as
  *   its file read when the task last read it (hook-table.mjs). `now`: the
  *   receiver's clock, which a hook's timestamp is held to and an hour's
  *   count is kept by.
@@ -1014,7 +1017,8 @@ export const receiverRelay = (relay) => [...new Set([...SUMMONERS, ...(relay ?? 
  * the item's `trust.relay` ({@link receiverRelay}), a body read under that
  * list alone (the default where it names none), its ticket fires settled
  * by the item's claim label ({@link settleClaims}), and each fire the
- * item's ready labels or switches drop is dropped ({@link switchedOn}). A
+ * item's ready labels, review labels, measures or switches drop is dropped
+ * ({@link switchedOn}). A
  * read that fails, or an item that is malformed, is logged at error and
  * routes under the defaults and drops nothing by switch or label: the task
  * still refuses a fire its repo's file does not allow, and a 503 would
@@ -1048,10 +1052,12 @@ const judged = async (route, delivery, deps) => {
  * selection fire for a label the item's ready labels do not list, or for a
  * ticket whose labels hold none of them (`ready`, which names the first that
  * does as the fire's label), an issue review fire for a label change the
- * item's review labels do not list (`reviewLabel`), and each
+ * item's review labels do not list (`reviewLabel`), a `periodics` fire for
+ * a measure the item's measures do not list, and each
  * fire whose switch the item says is off ({@link droppedBy}). An item
  * without ready labels drops no selection fire, one without review labels
- * no issue review fire, and one without switches drops nothing by switch. A dropped fire's reason names the label or the
+ * no issue review fire, one without measures no periodics fire, and one
+ * without switches drops nothing by switch. A dropped fire's reason names the label or the
  * switch, so the App's Recent Deliveries says why it went nowhere.
  *
  * @param {Decision} decision
@@ -1086,6 +1092,10 @@ const switchedOn = (decision, item, delivery, deps) => {
       continue;
     }
     const off = droppedBy(fire, item?.switches ?? null);
+    if (off === null && fire.kind === 'periodics' && item?.measures && !item.measures.includes(fire.counted)) {
+      dropped.push(`its ${fire.kind} fire, as no limit in ${repo}'s file counts ${fire.counted}`);
+      continue;
+    }
     if (off === null) {
       kept.push(queued);
       continue;

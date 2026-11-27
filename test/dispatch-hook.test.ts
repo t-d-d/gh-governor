@@ -709,6 +709,30 @@ describe('the hook table', () => {
     }
   });
 
+  // The measures the repo's limits name, beside its switches: the receiver
+  // queues a periodics fire only for an event that wakes one of them, or
+  // where the item cannot say (route.mjs).
+  test('the measures the repo\'s limits name are written beside the switches, and read back from the same item', async () => {
+    const c = client(() => ({}));
+    const at = '2026-09-21T12:00:00.000Z';
+    assert.equal(await hookTable(c as never, 'T').publish(REPO, { hooks: [], switches: {}, ready: READY, measures: ['merges', 'issuesClosed'] }, at), true);
+    const written = c.sent[0]!.input.Item as Record<string, unknown>;
+    assert.deepEqual(written.measures, { L: [{ S: 'merges' }, { S: 'issuesClosed' }] });
+    const read = await hookTable(client(() => ({ Item: written })) as never, 'T').item(REPO);
+    assert.deepEqual(read?.measures, ['merges', 'issuesClosed']);
+    const none = client(() => ({}));
+    await hookTable(none as never, 'T').publish(REPO, { hooks: [], switches: {}, ready: READY, measures: [] }, at);
+    assert.deepEqual((none.sent[0]!.input.Item as Record<string, unknown>).measures, { L: [] }, 'an empty list is written, never left out: it says no limit wakes on any event');
+  });
+
+  test('an item written before it held the measures reads none; malformed ones throw', async () => {
+    assert.equal((await hookTable(client(() => ({ Item: ITEM })) as never, 'T').item(REPO))?.measures, undefined);
+    assert.deepEqual((await hookTable(client(() => ({ Item: { ...ITEM, measures: { L: [] } } })) as never, 'T').item(REPO))?.measures, []);
+    for (const measures of [{ S: 'merges' }, { SS: ['merges'] }, { L: [{ N: '1' }] }, { M: {} }]) {
+      await assert.rejects(hookTable(client(() => ({ Item: { ...ITEM, measures } })) as never, 'T').item(REPO), /malformed/, JSON.stringify(measures));
+    }
+  });
+
   const SIG = 'a'.repeat(64);
   const refused = (item?: Record<string, unknown>) => client(() => {
     throw Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException', ...(item === undefined ? {} : { Item: item }) });
