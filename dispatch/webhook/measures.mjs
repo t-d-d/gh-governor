@@ -48,15 +48,17 @@
  *   an issue is counted only where it lets its author in.
  * @typedef {{ filename: string, previous?: string }} ChangedFile A file a pull
  *   request changed, and the path a rename left.
+ * @typedef {{ files: ChangedFile[], cut: boolean }} ChangedFiles A pull
+ *   request's files, and `cut`: the list is not whole, as where GitHub
+ *   listed the most it lists.
  * @typedef {{
- *   files: (number: number) => Promise<ChangedFile[]>,
+ *   files: (number: number) => Promise<ChangedFiles>,
  *   globMatches: (glob: string, path: string) => boolean,
- *   filesListed: number,
  * }} FilterContext What a filter reads beside the row: a pull request's
- *   files, read at most once a check; the pattern grammar of the human-only
- *   list (dispatch/checklist.mjs); and the most files GitHub lists for one
- *   pull request. This file is a leaf the receiver packages, so the task
- *   hands them in.
+ *   files, read at most once a check, from the state table's files record
+ *   where it holds them; and the pattern grammar of the human-only list
+ *   (dispatch/checklist.mjs). This file is a leaf the receiver packages,
+ *   so the task hands them in.
  * @typedef {{
  *   describe: string,
  *   heading: (values: readonly string[]) => string,
@@ -129,12 +131,12 @@ export const MEASURES = [
     describe: 'Pull requests merged into the default branch since the last fire.',
     filters: {
       paths: {
-        describe: 'Count only the merges that changed a file one of these patterns matches, a list of at least one, read as `review.humanOnly` reads its entries: a pattern with a slash is matched against the whole path from the root, one without matches a file of that name at any depth, `*` stays within a segment and `**` spans any. A rename counts under the path it left and the path it took. A merge that changed more files than GitHub lists, 3000, counts. `{ "count": 10, "paths": ["dispatch/turn.mjs", "dispatch/webhook/**"] }` runs after ten merges change that file or anything under that folder, and `{ "count": 1, "paths": ["infra/**"] }` runs on every change under `infra/`.',
+        describe: 'Count only the merges that changed a file one of these patterns matches, a list of at least one, read as `review.humanOnly` reads its entries: a pattern with a slash is matched against the whole path from the root, one without matches a file of that name at any depth, `*` stays within a segment and `**` spans any. A rename counts under the path it left and the path it took. A merge that changed more files than GitHub lists, 3000, counts, and so does one whose list is too long for governor to keep, about 350 KB of paths. `{ "count": 10, "paths": ["dispatch/turn.mjs", "dispatch/webhook/**"] }` runs after ten merges change that file or anything under that folder, and `{ "count": 1, "paths": ["infra/**"] }` runs on every change under `infra/`.',
         heading: (values) => `that changed a file matching ${values.map((v) => `\`${v}\``).join(' or ')}`,
         // Every path a merge changed, and each path a rename left.
-        keep: async (row, values, { files, globMatches, filesListed }) => {
-          const changed = await files(row.number);
-          if (changed.length >= filesListed) return true;
+        keep: async (row, values, { files, globMatches }) => {
+          const { files: changed, cut } = await files(row.number);
+          if (cut) return true;
           return changed.some((f) => [f.filename, ...(f.previous === undefined ? [] : [f.previous])].some((path) => values.some((glob) => globMatches(glob, path))));
         },
       },

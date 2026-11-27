@@ -398,7 +398,8 @@ const labelNames = (row) =>
  *   its sign-off ask (`openNaming`).
  * @typedef {{ number: number, title: string, body: string, state: string, draft: boolean, base: string, headSha: string, mergeable: boolean | null, html_url: string, association: string, author: string, bot?: boolean }} PullRequestRow
  *   `author`: the login that opened it; `bot`: whether GitHub marks its account as a bot, which `trust.review` judges as `BOT`.
- * @typedef {{ filename: string, status: string, previous?: string }} FileRow `previous`: the path a rename left.
+ * @typedef {{ filename: string, status: string, previous?: string, additions?: number, deletions?: number }} FileRow `previous`: the path a rename left.
+ *   `additions`, `deletions`: its lines added and deleted.
  * @typedef {{ sha: string, author: string | null, committer: string | null, verified: boolean }} PullCommitRow
  *   `author`, `committer`: the logins GitHub ties them to, null for none; `verified`: GitHub verified its signature.
  * @typedef {{ number: number, id?: number, title: string, body: string, state: string, labels: string[], pull: boolean, created_at?: string, openBlockers?: number, wait?: import('./ready-work.mjs').Wait, author?: string, association?: string, app?: boolean }} TicketRow
@@ -1059,6 +1060,8 @@ export const githubReader = ({ token, repo, appId, renew, files, fetch = globalT
     pullFiles: async (number) =>
       (await allPages(call, `/repos/${repo}/pulls/${number}/files`, {})).map((row) => ({
         filename: row.filename, status: row.status, ...(typeof row.previous_filename === 'string' ? { previous: row.previous_filename } : {}),
+        additions: Number.isSafeInteger(row.additions) ? row.additions : 0,
+        deletions: Number.isSafeInteger(row.deletions) ? row.deletions : 0,
       })),
 
     /** A pull request's commits, oldest first, every page (GitHub lists 250 at most). @param {number} number @returns {Promise<PullCommitRow[]>} */
