@@ -15,8 +15,8 @@
  * - `describe`: what the schema says it counts (dispatch/repo-config.mjs).
  * - `filters`: the settings its object form takes beside `count`. Each
  *   one's value is a list of at least one string. A filter says what the
- *   schema says of it, how the prompt names it, and which of the window's
- *   rows it keeps.
+ *   schema says of it, how the prompt names it, which of the window's
+ *   rows it keeps, and what more the prompt says of the rows it kept.
  *
  * The schema's keys, the receiver's fires, the fire's parser, the window
  * reads, the prompt and the heartbeat all read this table, so a new
@@ -41,24 +41,30 @@
  *   `branch`: the default branch, the fire's where it names one, else read
  *   once for the turn. `auto`: the repo's `trust.auto` (dispatch/trust.mjs):
  *   an issue is counted only where it lets its author in.
- * @typedef {{ filename: string, previous?: string }} ChangedFile A file a pull
- *   request changed, and the path a rename left.
+ * @typedef {{ filename: string, previous?: string, additions?: number, deletions?: number }} ChangedFile
+ *   A file a pull request changed, the path a rename left, and its lines
+ *   added and deleted.
  * @typedef {{ files: ChangedFile[], cut: boolean }} ChangedFiles A pull
  *   request's files, and `cut`: the list is not whole, as where GitHub
  *   listed the most it lists.
  * @typedef {{
  *   files: (number: number) => Promise<ChangedFiles>,
  *   globMatches: (glob: string, path: string) => boolean,
+ *   listed: number,
  * }} FilterContext What a filter reads beside the row: a pull request's
  *   files, read at most once a check, from the state table's files record
- *   where it holds them; and the pattern grammar of the human-only list
- *   (dispatch/checklist.mjs). This file is a leaf the receiver packages,
- *   so the task hands them in.
+ *   where it holds them; the pattern grammar of the human-only list
+ *   (dispatch/checklist.mjs); and how many lines of one kind a prompt
+ *   lists before it says how many more. This file is a leaf the receiver
+ *   packages, so the task hands them in.
  * @typedef {{
  *   describe: string,
  *   heading: (values: readonly string[]) => string,
  *   keep: (row: Counted, values: readonly string[], context: FilterContext) => Promise<boolean>,
+ *   detail?: (rows: Counted[], values: readonly string[], context: FilterContext) => Promise<string[]>,
  * }} Filter One setting a measure's object form takes beside `count`.
+ *   `detail`: the lines governor writes under the rows it kept, none where
+ *   it kept none. It reads only what `keep` read for those rows.
  * @typedef {{
  *   name: string,
  *   wakes: (event: string | undefined, payload: any, main: string | null) => { base?: string } | null,
@@ -69,6 +75,18 @@
  *   filters: Readonly<Record<string, Filter>>,
  * }} Measure
  */
+
+/**
+ * Whether a changed file, or the path a rename left, matches any pattern.
+ *
+ * @param {ChangedFile} f
+ * @param {readonly string[]} values
+ * @param {(glob: string, path: string) => boolean} globMatches
+ */
+const matchesAny = (f, values, globMatches) => [f.filename, ...(f.previous === undefined ? [] : [f.previous])].some((path) => values.some((glob) => globMatches(glob, path)));
+
+/** @param {number} n @param {string} one */
+const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
 /** @param {any} payload */
 const issueNumbered = (payload) => typeof payload?.issue?.number === 'number';
@@ -96,13 +114,35 @@ export const MEASURES = [
     describe: 'Pull requests merged into the default branch since the last fire.',
     filters: {
       paths: {
-        describe: 'Count only the merges that changed a file one of these patterns matches, a list of at least one, read as `review.humanOnly` reads its entries: a pattern with a slash is matched against the whole path from the root, one without matches a file of that name at any depth, `*` stays within a segment and `**` spans any. A rename counts under the path it left and the path it took. A merge that changed more files than GitHub lists, 3000, counts, and so does one whose list is too long for governor to keep, about 350 KB of paths. `{ "count": 10, "paths": ["dispatch/turn.mjs", "dispatch/webhook/**"] }` runs after ten merges change that file or anything under that folder, and `{ "count": 1, "paths": ["infra/**"] }` runs on every change under `infra/`.',
+        describe: 'Count only the merges that changed a file one of these patterns matches, a list of at least one, read as `review.humanOnly` reads its entries: a pattern with a slash is matched against the whole path from the root, one without matches a file of that name at any depth, `*` stays within a segment and `**` spans any. A rename counts under the path it left and the path it took. A merge that changed more files than GitHub lists, 3000, counts, and so does one whose list is too long for governor to keep, about 350 KB of paths. `{ "count": 10, "paths": ["dispatch/turn.mjs", "dispatch/webhook/**"] }` runs after ten merges change that file or anything under that folder, and `{ "count": 1, "paths": ["infra/**"] }` runs on every change under `infra/`. Under the merges, the prompt lists the matching files they changed, the file the most merges changed first, with its lines added and deleted.',
         heading: (values) => `that changed a file matching ${values.map((v) => `\`${v}\``).join(' or ')}`,
         // Every path a merge changed, and each path a rename left.
         keep: async (row, values, { files, globMatches }) => {
           const { files: changed, cut } = await files(row.number);
           if (cut) return true;
-          return changed.some((f) => [f.filename, ...(f.previous === undefined ? [] : [f.previous])].some((path) => values.some((glob) => globMatches(glob, path))));
+          return changed.some((f) => matchesAny(f, values, globMatches));
+        },
+        // Each matching file the kept merges changed, the most merges first.
+        detail: async (rows, values, { files, globMatches, listed }) => {
+          if (rows.length === 0) return [];
+          /** @type {Map<string, { merges: number, additions: number, deletions: number }>} */
+          const byPath = new Map();
+          let short = 0;
+          for (const row of rows) {
+            const { files: changed, cut } = await files(row.number);
+            if (cut) short += 1;
+            for (const f of changed) {
+              if (!matchesAny(f, values, globMatches)) continue;
+              const got = byPath.get(f.filename) ?? { merges: 0, additions: 0, deletions: 0 };
+              byPath.set(f.filename, { merges: got.merges + 1, additions: got.additions + (f.additions ?? 0), deletions: got.deletions + (f.deletions ?? 0) });
+            }
+          }
+          const sorted = [...byPath].sort(([pa, a], [pb, b]) => b.merges - a.merges || (b.additions + b.deletions) - (a.additions + a.deletions) || (pa < pb ? -1 : pa > pb ? 1 : 0));
+          const notWhole = short === 0 ? '' : ` The list is not whole: it is missing files for ${plural(short, 'merge')}.`;
+          const head = `Files matching these patterns that the counted merges changed: ${sorted.length}, across ${plural(rows.length, 'merge')}.${notWhole}`;
+          const lines = sorted.slice(0, listed).map(([path, f]) => `- \`${path}\`: ${plural(f.merges, 'merge')}, +${f.additions} -${f.deletions}`);
+          const more = sorted.length > listed ? [`- and ${sorted.length - listed} more files`] : [];
+          return [head, ...lines, ...more];
         },
       },
     },

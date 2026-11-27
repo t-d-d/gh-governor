@@ -45,7 +45,7 @@
   "periodics": {
     "sessions": {
       "Code review": {
-        "prompt": "Review the pull requests merged into the default branch that governor lists below, which are the ones merged since the time it gives. Where governor lists no merge, make `Signing off.` the last line of your reply and do nothing else. Where it says there are more than it lists, find the rest yourself. Read each one's change against the code as it stands now. Raise one issue for each defect, missing test or piece of drift worth fixing, after searching the open issues so you raise none twice. Change no code yourself. When you are done, make `Signing off.` the last line of your reply.",
+        "prompt": "Review the pull requests merged into the default branch that governor lists below, which are the ones merged since the time it gives. Where governor lists no merge, make `Signing off.` the last line of your reply and do nothing else. Where it says there are more than it lists, find the rest yourself. Read each one's change against the code as it stands now. Your clone is shallow: where you want more history than governor's lists show, fetch it since the time governor gives, with `git fetch --shallow-since=<that time>`. Raise one issue for each defect, missing test or piece of drift worth fixing, after searching the open issues so you raise none twice. Change no code yourself. When you are done, make `Signing off.` the last line of your reply.",
         "when": { "days": 7, "merges": 10 },
         "gapHours": 4
       },

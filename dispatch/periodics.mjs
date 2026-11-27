@@ -139,13 +139,20 @@ export const FILES_RECORD_MAX_BYTES = 350_000;
  *   still there, not archived, and not idle. A read that fails throws.
  * @typedef {Readonly<Record<string, readonly string[]>>} Filters What a limit's
  *   object form set beside `count`, each by its name in its measure's entry.
- * @typedef {(kind: Count, rows: Counted[], filters: Filters) => Promise<Counted[]>} Narrow
- *   The rows a limit with filters counts, in their order; a read that fails throws.
+ * @typedef {(kind: Count, rows: Counted[], filters: Filters) => Promise<string[]>} Detail
+ *   The lines a limit's filters write under the rows it counted, none where
+ *   none writes any. It reads only what narrowing those rows read.
+ * @typedef {((kind: Count, rows: Counted[], filters: Filters) => Promise<Counted[]>) & { detail?: Detail }} Narrow
+ *   The rows a limit with filters counts, in their order; a read that fails
+ *   throws. `detail`, where the check can write lines under them.
+ * @typedef {Partial<Record<Count, string[]>>} Details
  * @typedef {Partial<Record<Count, Counted[]>>} Windows
- * @typedef {{ periodic: import('./repo-config.mjs').Periodic, read: PeriodicRecord, due: number, by: import('./heartbeat.mjs').Limit, windows?: Windows, asOf?: string }} Due
+ * @typedef {{ periodic: import('./repo-config.mjs').Periodic, read: PeriodicRecord, due: number, by: import('./heartbeat.mjs').Limit, windows?: Windows, details?: Details, asOf?: string }} Due
  *   `by`: the limit that brought it due, its time limit or the first count
  *   that reached its number.
  *   `windows`: what each of its counts counted, for one that has counts.
+ *   `details`: the lines its filters write under a count's rows, such as
+ *   the files a filtered limit's merges changed.
  *   `asOf`: then the time the windows were read from, which its fire
  *   records in place of the launch's, so whatever lands between the read and
  *   the launch is in the next window rather than neither.
@@ -180,6 +187,9 @@ export const windowOf = (reader, base, auto = AUTO) => {
  * are read at most once for the check, however many limits ask for them,
  * and a read that fails throws for each limit that asks. The rows stay
  * those the shared list holds (`sharedWindow`): only the count narrows.
+ *
+ * Its `detail` writes a filter's lines under the rows a limit counted,
+ * from the files narrowing them read, so it makes no read of its own.
  *
  * With `kept`, the state table's files record, a pull request's files are
  * read from its record first, and from GitHub only where it has none,
@@ -218,12 +228,26 @@ export const narrowOf = (reader, kept) => {
       return got;
     },
     globMatches,
+    listed: LISTED_MAX,
   };
-  return async (kind, rows, filters) => {
+  /** @param {Count} kind @param {string} name */
+  const filterOf = (kind, name) => {
+    const filter = measureOf(kind)?.filters[name];
+    if (filter === undefined) throw new Error(`${kind} takes no filter named ${name}`);
+    return filter;
+  };
+  /** @type {Detail} */
+  const detail = async (kind, rows, filters) => {
+    /** @type {string[]} */
+    const lines = [];
+    for (const [name, values] of Object.entries(filters)) lines.push(...(await filterOf(kind, name).detail?.(rows, values, context) ?? []));
+    return lines;
+  };
+  /** @type {Narrow} */
+  const narrow = async (kind, rows, filters) => {
     let kept = rows;
     for (const [name, values] of Object.entries(filters)) {
-      const filter = measureOf(kind)?.filters[name];
-      if (filter === undefined) throw new Error(`${kind} takes no filter named ${name}`);
+      const filter = filterOf(kind, name);
       /** @type {Counted[]} */
       const next = [];
       // One at a time: a busy window would otherwise send every files read at once.
@@ -232,6 +256,7 @@ export const narrowOf = (reader, kept) => {
     }
     return kept;
   };
+  return Object.assign(narrow, { detail });
 };
 
 /**
@@ -320,8 +345,9 @@ const lastFireLine = (read) => (read.baseline ? 'This is the first run of this p
  * @param {Counted[]} items
  * @param {string} since
  * @param {Filters} filters
+ * @param {string[]} detail What its filters write under it, as a block of its own.
  */
-const windowLines = (kind, items, since, filters) => {
+const windowLines = (kind, items, since, filters, detail) => {
   const measure = measureOf(kind);
   const named = Object.entries(filters).flatMap(([name, values]) => {
     const filter = measure?.filters[name];
@@ -330,7 +356,8 @@ const windowLines = (kind, items, since, filters) => {
   const head = `${[measure?.heading ?? kind, ...named].join(' ')} since ${since}: ${items.length === 0 ? 'none' : items.length}`;
   const listed = items.slice(0, LISTED_MAX).map((i) => `- #${i.number} ${i.title.replace(/\s+/g, ' ').trim()}`);
   const more = items.length > LISTED_MAX ? [`- and ${items.length - LISTED_MAX} more`] : [];
-  return [head, ...listed, ...more].join('\n');
+  const block = [head, ...listed, ...more].join('\n');
+  return detail.length === 0 ? block : `${block}\n\n${detail.join('\n')}`;
 };
 
 /**
@@ -341,13 +368,14 @@ const windowLines = (kind, items, since, filters) => {
  * @param {PeriodicRecord} read
  * @param {Windows} [windows]
  * @param {import('./repo-config.mjs').Periodic['filters']} [filters] Its counts' filters, which the lines name.
+ * @param {Details} [details] What its filters write under each count's rows.
  */
-export const periodicPrompt = (prompt, read, windows = {}, filters = {}) => [
+export const periodicPrompt = (prompt, read, windows = {}, filters = {}, details = {}) => [
   prompt,
   lastFireLine(read),
   ...measureNames().flatMap((kind) => {
     const items = windows[kind];
-    return items === undefined ? [] : [windowLines(kind, items, read.at, filters[kind] ?? {})];
+    return items === undefined ? [] : [windowLines(kind, items, read.at, filters[kind] ?? {}, details[kind] ?? [])];
   }),
 ].join('\n\n');
 
@@ -551,6 +579,8 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     }
     /** @type {Windows} */
     const windows = {};
+    /** @type {Details} */
+    const details = {};
     let reached = false;
     /** @type {[Count, number] | undefined} */
     let by;
@@ -560,6 +590,11 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       by = counts.find(([kind, n]) => (windows[kind]?.length ?? 0) >= n);
       if (!reached && !dayDue) continue;
       for (const [kind] of counts) windows[kind] ??= await counted(periodic, kind, read.at);
+      for (const [kind] of counts) {
+        const filters = filtersOn(periodic, kind);
+        const lines = Object.keys(filters).length === 0 || narrow.detail === undefined ? [] : await narrow.detail(kind, windows[kind] ?? [], filters);
+        if (lines.length > 0) details[kind] = lines;
+      }
     } catch (error) {
       refuse(name, error, 'what it counts could not be read, so it is refused this turn');
       continue;
@@ -569,7 +604,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     // the lines under the prompt then say none.
     const limit = time === null ? now : at + time.ms;
     const brought = by === undefined ? /** @type {{ by: import('./heartbeat.mjs').Limit }} */ (time).by : { count: by[0], number: by[1] };
-    due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, by: brought, windows, asOf: new Date(now).toISOString() });
+    due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, by: brought, windows, ...(Object.keys(details).length === 0 ? {} : { details }), asOf: new Date(now).toISOString() });
   }
   return { due, unread, beats };
 };
@@ -658,13 +693,13 @@ export const recordFire = async ({ state, log }, repo, { name, read }, at, sessi
  * @param {Due} due
  * @returns {import('./turn.mjs').PlannedLaunch}
  */
-export const periodicLaunch = ({ config, state, log, beats, unread }, repo, { periodic, read, by, windows, asOf }) => ({
+export const periodicLaunch = ({ config, state, log, beats, unread }, repo, { periodic, read, by, windows, details, asOf }) => ({
   repo,
   issue: null,
   claim: false,
   holdsRepo: true,
   periodic: periodic.name,
-  asked: { prompt: periodicPrompt(periodic.prompt, read, windows, periodic.filters), sessionName: periodic.name, ...runOf(config, 'periodics', periodic), ...connectorsOf(periodic) },
+  asked: { prompt: periodicPrompt(periodic.prompt, read, windows, periodic.filters, details), sessionName: periodic.name, ...runOf(config, 'periodics', periodic), ...connectorsOf(periodic) },
   started: async ({ outcome, sessionUrl }, firedAt) => {
     if (outcome === 'failed') return;
     const at = asOf ?? firedAt;
