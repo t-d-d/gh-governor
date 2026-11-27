@@ -226,6 +226,7 @@ svg text { font-family: var(--font-mono); fill: var(--ink); }
 .notes { display: grid; gap: 10px; max-width: 76ch; }
 .notes ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; color: var(--muted); }
 .notes li strong { color: var(--ink); font-weight: 600; }
+.notes a { color: var(--ink); }
 
 @media (prefers-reduced-motion: reduce) {
   .wire, .node .box { transition: none; }
@@ -421,6 +422,7 @@ svg text { font-family: var(--font-mono); fill: var(--ink); }
       <li><strong>Between fires.</strong> The task clears the CLI's state under HOME and its working directories, so one turn leaves nothing for the next.</li>
       <li><strong>The dead-letter queue.</strong> A fire the task's parser refuses goes to <code>governor-fires-dead.fifo</code> at once. A turn that fails is logged and not retried.</li>
       <li><strong>Fires that do not call the starter.</strong> A turn that queues <code>unblocked</code> fires, and <code>scripts/run-turn.mjs</code> run by hand, leave their fires on the lane. The running task takes them, or the backstop starts a task within a minute.</li>
+      <li><strong>A merge queues two fires.</strong> A merge into the default branch queues its conflicts fire and, where a limit in the repo's file counts merges, a periodics fire after it. The receiver still calls the starter once for the delivery. <a href="periodic-checks.html">Periodic checks</a> follows the second fire.</li>
       <li><strong>A failed call from the receiver.</strong> The receiver calls the starter asynchronously. If that call fails, it is logged and the delivery still answers 202. The fire is already on the lane for the backstop to find.</li>
     </ul>
   </section>
