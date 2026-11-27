@@ -192,7 +192,7 @@ const SWITCH_DESCRIPTIONS = Object.freeze({
   deployedLabels: 'Whether a shipping job labels the tickets it shipped `deployed: <target>`, and comments on each ticket the first time it gets that label, for people to read; the shipping job messages each such ticket\'s spec owner and builders itself. Default false.',
   prReview: 'The PR review: its prompt, and the lists it checks a PR against. Needs `prompt` when on.',
   heartbeat: 'Governor records each fire on the issue `issue` names: a line for pickup and one per periodic, under the `<!-- governor:heartbeat -->` marker its body must carry. Needs `issue` when on.',
-  periodics: 'A session per periodic in `sessions`, each time one of the limits in its `when` is reached: its day or hour limit passes, or one of its counts reaches its number. A merge into the default branch, an issue opened and an issue closed each queue a check of their own, so a merge runs two turns, its conflict check and its periodics check, and a count is checked whether or not the conflict check ran. A day or hour limit comes due on the hourly sweep. A due periodic starts a new session even while its last one is still open, unless that session is in the middle of a turn: then it waits for the turn to end. Needs at least one periodic when on.',
+  periodics: 'A session per periodic in `sessions`, each time one of the limits in its `when` is reached: its day or hour limit passes, or one of its counts reaches its number. A merge into the default branch, an issue opened and an issue closed each queue a check of their own, so a merge runs two turns, its conflict check and its periodics check, and a count is checked whether or not the conflict check ran. A day or hour limit comes due on the hourly sweep, and always starts a session, even where every count counted nothing: governor\'s lines under the prompt then say none. A repo that wants no run in a quiet week leaves the time limit out, so the periodic runs on its counts alone, or tells the session in its prompt what to do when nothing is listed. A due periodic starts a new session even while its last one is still open, unless that session is in the middle of a turn: then it waits for the turn to end. Needs at least one periodic when on.',
   hooks: 'A session on a hook\'s prompt when a signed request fires one of the hooks `sessions` holds. A fire while the hook\'s last session is open goes into that session as a message. Needs at least one hook when on.',
   waits: 'Every session governor starts is told how to make a ticket wait with a `Blocked until:` line. With `label` set, the hourly fire also takes that label off each open ticket whose date has passed, before its sweep. The hold itself needs no switch: every pickup path holds a ticket whose date is still to come, whatever this section says.',
   signOff: 'Governor archives an idle session in the repo whose last reply ends `Signing off.`, and a message about a close or a deploy, with nothing else open, asks the session to sign off.',
@@ -454,10 +454,11 @@ const trustSchema = z.strictObject({
  * A recurring session, held under its name in `periodics.sessions`: the
  * name, unique in the file, which the session is named after and its record
  * keyed by; `prompt`, what it runs; `when`, its limits, any one of which
- * brings it due. Its time limit, `days` or `hours`, is how long after its
- * last fire it comes due. Each of merges into the default branch, issues
- * opened and issues closed it names brings it due sooner, once that many
- * have happened since its last fire. A limit is a number, or `{ count }`.
+ * brings it due. Its time limit, `days` or `hours`, where it has one, is
+ * how long after its last fire it comes due, whatever its counts counted.
+ * Each of merges into the default branch, issues opened and issues closed
+ * it names brings it due sooner, once that many have happened since its
+ * last fire. A limit is a number, or `{ count }`.
  * `gapHours`: the fewest whole hours between two of its runs.
  * `connectors`: the claude.ai connectors its session needs, each by its
  * name in the account's connector list (`feed_prod`). A periodic that
@@ -469,14 +470,14 @@ export const CONNECTOR_NAME = /^[A-Za-z0-9_-]+$/;
 
 /** What each of a periodic's limits counts. @type {Readonly<Record<string, string>>} */
 const LIMIT_DESCRIPTIONS = Object.freeze({
-  days: 'The day limit: whole days since the last fire. The periodic is due on the sweep nearest that many days after its last fire.',
-  hours: 'The hour limit: whole hours since the last fire. The periodic is due on the sweep nearest that many hours after its last fire.',
+  days: 'The day limit: whole days since the last fire. The periodic is due on the sweep nearest that many days after its last fire, whatever its counts counted.',
+  hours: 'The hour limit: whole hours since the last fire. The periodic is due on the sweep nearest that many hours after its last fire, whatever its counts counted.',
   merges: 'Pull requests merged into the default branch since the last fire.',
   issuesOpened: 'Issues opened since the last fire.',
   issuesClosed: 'Issues closed since the last fire.',
 });
 
-/** The time limits a periodic's `when` may hold, exactly one of them. */
+/** The time limits a periodic's `when` may hold, at most one of them. */
 const TIME_LIMITS = /** @type {const} */ (['days', 'hours']);
 
 /** The limits a periodic's `when` may hold: its time limit, then the counts. */
@@ -502,9 +503,9 @@ const whenSchema = z.strictObject(Object.fromEntries(LIMITS.map((key) => [key, l
   .superRefine((when, ctx) => {
     const times = TIME_LIMITS.filter((key) => when[key] !== undefined);
     if (times.length > 1) ctx.addIssue({ code: 'custom', path: ['hours'], message: 'when names one time limit: days and hours are one clock in two units, so set one of them' });
-    if (times.length === 0) ctx.addIssue({ code: 'custom', message: 'when names a time limit: one of days or hours' });
+    if (LIMITS.every((key) => when[key] === undefined)) ctx.addIssue({ code: 'custom', message: 'when names at least one limit: days, hours, merges, issuesOpened or issuesClosed' });
   })
-  .meta({ description: 'The periodic\'s limits: it comes due when any one is reached. Exactly one of `days` and `hours`, and any of `merges`, `issuesOpened` and `issuesClosed`. Each is a whole number of at least one, or { "count": <number> }. At its day or hour limit, a periodic whose counts counted nothing starts no session.' });
+  .meta({ description: 'The periodic\'s limits: it comes due when any one is reached. At least one limit: at most one of `days` and `hours`, and any of `merges`, `issuesOpened` and `issuesClosed`. Each is a whole number of at least one, or { "count": <number> }. A day or hour limit always starts a session, even where every count counted nothing. A periodic with counts alone runs only when one is reached.' });
 
 const periodicSchema = z.strictObject({
   prompt: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'What the periodic\'s session runs: the text, or { "file": "<path>" }. Governor adds a line under it giving the last fire\'s time, and lists what each count in `when` counted since then.' }),
@@ -971,8 +972,8 @@ export const configSchema = fileSchema.transform(toConfig)
  * @typedef {RunSetting & { sections: Record<string, RunSetting> }} Runs The file's own `model` and `effort`, and each section's.
  * @typedef {{ name: string, prompt: string, days?: number, hours?: number, counts?: Partial<Record<import('./webhook/fire.mjs').Count, number>>, gapHours?: number, connectors?: string[] } & RunSetting} Periodic
  *   A recurring session, its prompt read: its file's `when` read into its
- *   time limit, exactly one of `days` and `hours` (the schema refuses both
- *   and neither), and its counts.
+ *   time limit, at most one of `days` and `hours` (the schema refuses
+ *   both), and its counts; at least one of them all.
  * @typedef {{ name: string, prompt: string, keyVersion: number, perHour?: number } & RunSetting} Hook A hook an outside system fires, its prompt read.
  * @typedef {{ success: string[], failure: string[], neutral: string[] }} Conclusions The labels each conclusion of an issue review adds.
  * @typedef {{ labels: string[], prompt?: string, conclusions?: Partial<Conclusions> }} ByLabel One `byLabel` entry of an issue review, its prompt read.

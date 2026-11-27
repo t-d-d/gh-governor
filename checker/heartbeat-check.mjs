@@ -15,7 +15,8 @@
  * `CLAUDE.md` lacks governor's current block, is read and raises nothing:
  * it reports the repo's file, not a stopped dispatcher. A periodic governor
  * has read but not fired yet has a line at its first read, and its day
- * limit runs from then. A check that
+ * limit runs from then. A periodic with counts alone has no time limit,
+ * so nothing to be overdue against, and the check leaves it out. A check that
  * cannot read the file or the issue keeps one issue open saying why, so a
  * broken check is never silence.
  *
@@ -43,13 +44,15 @@ const DAY_MS = 24 * HOUR_MS;
 /**
  * @typedef {{ issue: number, pickupHours: number | null, periodics: Array<{ name: string } & ({ days: number } | { hours: number })> }} CheckConfig
  *   `pickupHours`: pickup's sweep interval, null where pickup is off.
+ *   `periodics`: each periodic with a time limit. One with counts alone has
+ *   nothing to be overdue against, so it is left out.
  */
 
 /**
  * What the check needs of a config file, read by governor's `readConfig`:
  * the heartbeat issue, pickup's interval where pickup is on, and each
  * periodic's time limit, in days or in hours as its `when` gives it, where
- * the periodics are on. A file governor refuses,
+ * the periodics are on and it has one. A file governor refuses,
  * or one that leaves the heartbeat off, is a fault.
  *
  * @param {string} text
@@ -65,7 +68,9 @@ export const checkConfigOf = (text) => {
     config: {
       issue: config.heartbeat.issue,
       pickupHours: turnsOn(config, 'pickup') ? sweepHoursOf(config) : null,
-      periodics: turnsOn(config, 'periodics') ? config.periodics.map(({ name, days, hours }) => (hours !== undefined ? { name, hours } : { name, days: Number(days) })) : [],
+      periodics: turnsOn(config, 'periodics')
+        ? config.periodics.flatMap(({ name, days, hours }) => /** @type {CheckConfig['periodics']} */ (hours !== undefined ? [{ name, hours }] : days !== undefined ? [{ name, days }] : []))
+        : [],
     },
   };
 };
@@ -96,6 +101,7 @@ const holdText = (line) => {
     case 'held': return `Governor is holding it while its last run's session, ${line.session}, is in the middle of a turn. It fires on the first check once that turn ends.`;
     case 'open': return `Its last run's session, ${line.session}, has not signed off. Governor holds the next fire only while that session is in the middle of a turn, so an idle session does not stop it.`;
     case 'signed off': return 'Governor is not holding it: its last run\'s session signed off.';
+    // A line governor wrote before a time limit always started a session.
     default: return 'Governor is not holding it: its last fire found nothing to do.';
   }
 };

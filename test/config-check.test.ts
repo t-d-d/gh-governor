@@ -72,6 +72,15 @@ describe('the check fails on a file governor refuses', () => {
     assert.deepEqual(got.errors, [fault.fault]);
   });
 
+  test('a periodic whose when holds no limit, or both days and hours, is refused, naming the key', async () => {
+    const empty = await check(reads({ '.github/governor.json': file({ ...base(), periodics: { sessions: { R: { prompt: 'p', when: {} } } } }) }));
+    assert.match(String(empty.errors[0]), /periodics\.sessions\.R\.when: .*at least one limit/);
+    const both = await check(reads({ '.github/governor.json': file({ ...base(), periodics: { sessions: { R: { prompt: 'p', when: { days: 1, hours: 6 } } } } }) }));
+    assert.match(String(both.errors[0]), /periodics\.sessions\.R\.when\.hours: /);
+    const counts = await check(reads({ '.github/governor.json': file({ ...base(), periodics: { sessions: { R: { prompt: 'p', when: { merges: 1 } } } } }) }));
+    assert.deepEqual(counts.errors, [], 'counts alone are a valid when');
+  });
+
   test('prReview on with no prompt is refused', async () => {
     const got = await check(reads({ '.github/governor.json': file({ ...base(), prReview: {} }) }));
     assert.match(String(got.errors[0]), /prReview\.prompt: prReview is on, so its section needs a prompt/);

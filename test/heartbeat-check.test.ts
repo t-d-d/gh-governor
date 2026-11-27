@@ -249,14 +249,20 @@ const github = (over: { config?: unknown, configStatus?: number, heartbeat?: unk
   return { api, issues, calls, open: () => issues.filter((i) => i.state === 'open') };
 };
 
-const fresh = () => stampHeartbeat(BODY, {
+/**
+ * A body whose line for `name` reads `nothing to do`, as governor wrote it
+ * before it dropped that fire: the check still reads such a line.
+ */
+const nothingToDo = (body: string, name: string) => body.replace(new RegExp(`^(- periodic ${JSON.stringify(name)}: .*, session none), open$`, 'm'), '$1, nothing to do');
+
+const fresh = () => nothingToDo(stampHeartbeat(BODY, {
   pickup: { at: iso(NOW - HOUR), started: 0 },
   periodics: [
     { name: 'Weekly retro', at: iso(NOW - 6 * DAY), by: { days: 7 }, session: SESSION, state: 'signed off' },
-    { name: 'Ticket review', at: iso(NOW - 2 * DAY), by: { days: 3 }, session: null, state: 'nothing to do' },
+    { name: 'Ticket review', at: iso(NOW - 2 * DAY), by: { days: 3 }, session: null, state: 'open' },
     { name: 'Code review', at: iso(NOW - DAY), by: { count: 'merges', number: 20 }, session: SESSION, state: 'open' },
   ],
-});
+}), 'Ticket review');
 
 const run = (gh: ReturnType<typeof github>, over: Record<string, unknown> = {}) =>
   checker.check({ api: gh.api, repo: REPO, now: NOW, toleranceHours: 3, labels: ['heartbeat', 'ops: alert'], log: () => {}, ...over });
@@ -264,8 +270,17 @@ const run = (gh: ReturnType<typeof github>, over: Record<string, unknown> = {}) 
 describe('checking the heartbeat', () => {
   test('every line fresh: no issue opened', async () => {
     const gh = github({ heartbeat: fresh() });
+    assert.equal(readHeartbeat(fresh()).periodics.find((p) => p.name === 'Ticket review')?.state, 'nothing to do', 'an old nothing-to-do line among them');
     await run(gh);
     assert.deepEqual(gh.open(), []);
+  });
+
+  test('an old nothing-to-do line past its limit is overdue like any other, and the check reads it without a fault', async () => {
+    const stale = nothingToDo(stampHeartbeat(fresh(), { periodics: [{ name: 'Ticket review', at: iso(NOW - 4 * DAY), by: { days: 3 }, session: null, state: 'open' }] }), 'Ticket review');
+    const gh = github({ heartbeat: stale });
+    await run(gh);
+    assert.deepEqual(gh.open().map((i) => i.title), ['Heartbeat: periodic "Ticket review" is overdue']);
+    assert.match(String(gh.open()[0]?.body), /Its state: nothing to do\./);
   });
 
   test('a session rules line, missing or old, opens no issue: it is the operator\'s to read, not an alarm', async () => {
@@ -528,8 +543,21 @@ describe('checking the heartbeat', () => {
     assert.ok(gh.calls.filter((c) => c.path.startsWith(`/repos/${REPO}/commits?`) && !c.path.includes('path=')).length <= 10, 'the history read is bounded');
   });
 
+  test('a periodic whose when holds counts alone has nothing to be overdue against, so the check leaves it out; one with a time limit is still checked', async () => {
+    const file = factory();
+    file.periodics.sessions['Code review'].when = { merges: 20 };
+    assert.deepEqual((checker.checkConfigOf(JSON.stringify(file)) as { config: { periodics: unknown[] } }).config.periodics, [{ name: 'Weekly retro', days: 7 }, { name: 'Ticket review', days: 3 }]);
+    const ancient = stampHeartbeat(fresh(), { periodics: [{ name: 'Code review', at: iso(NOW - 90 * DAY), by: { count: 'merges', number: 20 }, session: SESSION, state: 'signed off' }] });
+    const quiet = github({ config: file, heartbeat: ancient });
+    await run(quiet);
+    assert.deepEqual(quiet.open(), [], 'a counts-only periodic quiet for months is not overdue');
+    const late = github({ config: file, heartbeat: stampHeartbeat(ancient, { periodics: [{ name: 'Weekly retro', at: iso(NOW - 8 * DAY), by: { days: 7 }, session: SESSION, state: 'signed off' }] }) });
+    await run(late);
+    assert.deepEqual(late.open().map((i) => i.title), ['Heartbeat: periodic "Weekly retro" is overdue']);
+  });
+
   test('periodics in the block the file no longer lists are not checked', async () => {
-    const gh = github({ heartbeat: stampHeartbeat(fresh(), { periodics: [{ name: 'Gone', at: iso(NOW - 90 * DAY), by: { days: 1 }, session: null, state: 'nothing to do' }] }) });
+    const gh = github({ heartbeat: stampHeartbeat(fresh(), { periodics: [{ name: 'Gone', at: iso(NOW - 90 * DAY), by: { days: 1 }, session: null, state: 'open' }] }) });
     await run(gh);
     assert.deepEqual(gh.open(), []);
   });

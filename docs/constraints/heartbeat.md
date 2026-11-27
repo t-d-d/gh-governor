@@ -17,6 +17,10 @@ stopped, and a wrong issue number must never overwrite a ticket.
 - A line's fire time changes only on the fire that line reports: pickup's on
   the bare schedule fire's sweep, a periodic's on its own fire. The sign-off
   sweep may mark a line's session signed off, but never moves its time.
+- Governor writes a periodic's line as `open`, `signed off`, `held` or
+  `not fired yet`. A line that still reads `nothing to do`, from before a
+  time limit always started a session, is read as it stands, by governor
+  and the checker, until that periodic's next fire replaces it.
 - Where the file turns `sessionRules` on, the bare schedule fire checks the
   repo's session rules block on its default branch, and a missing or old
   block sets a line on the heartbeat. None of it stops the repo being
@@ -38,4 +42,4 @@ stopped, and a wrong issue number must never overwrite a ticket.
 - Do not page on a missing session rules block: a served repo's own file is
   the repo's business, and a page would wake the operator over it.
 
-History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. The bare schedule fire checks each served repo's session rules block and keeps a line on the heartbeat while it is missing or old since #611, under PRD #599.
+History: Split out of the dispatcher repos file in #698, which kept only the rules that pass the admission test; that file's history, with every earlier decision, is in git. The heartbeat records every fire, one line each under governor's own marker, since #21, under PRD #17. The bare schedule fire checks each served repo's session rules block and keeps a line on the heartbeat while it is missing or old since #611, under PRD #599. A periodic's line lost its `nothing to do` state in #776, under PRD #772: a time limit always starts a session, so no fire finds nothing to do.

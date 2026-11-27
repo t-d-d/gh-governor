@@ -110,6 +110,19 @@ describe('the starter kit\'s config file', () => {
     assert.match(prompt, /claimed[^.]*no open pull request/);
   });
 
+  test('its code review signs off at once where governor lists no merge, since its day limit starts a session on an empty week', () => {
+    assert.ok(got.ok);
+    const code = String(got.config.periodics.find((p) => p.name === 'Code review')?.prompt);
+    assert.match(code, /Where governor lists no merge, make `Signing off\.` the last line of your reply and do nothing else\./);
+  });
+
+  test('its backlog review still lists the stuck tickets in a week with no issue opened', () => {
+    assert.ok(got.ok);
+    const backlog = String(got.config.periodics.find((p) => p.name === 'Backlog review')?.prompt);
+    assert.doesNotMatch(backlog, /lists no issue|no issue opened/, 'a quiet week still has stuck tickets to list');
+    assert.match(backlog, /list the open tickets left stuck, whenever they were opened/);
+  });
+
   test('keeps issue reviews off with "enabled": false, keeps no features section, and keeps its ready and exclude labels in pickup', () => {
     assert.ok(got.ok);
     assert.deepEqual((JSON.parse(text) as Record<string, unknown>).issueReviews, { enabled: false });
