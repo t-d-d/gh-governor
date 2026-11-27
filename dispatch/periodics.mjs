@@ -331,7 +331,8 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     const at = Date.parse(read.at);
     const dayDue = time !== null && event === undefined && now - at >= time.ms - SWEEP_GRACE_MS;
     if (counts.length === 0) {
-      if (time !== null && dayDue && !(await held(name, read))) due.push({ periodic, read, due: at + time.ms, by: time.by });
+      if (time === null) throw new Error(`periodic ${name} names no limit: the schema refuses a when with none`);
+      if (dayDue && !(await held(name, read))) due.push({ periodic, read, due: at + time.ms, by: time.by });
       continue;
     }
     /** @type {Windows} */

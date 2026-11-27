@@ -247,7 +247,7 @@ describe('periodicPrompt', () => {
 });
 
 type Record_ = { at: string; session: string | null; baseline: boolean };
-/** A record written before #776's deploy, by a day limit that came due on empty windows. */
+/** A record written before a time limit always started a session, by a day limit that came due on empty windows. */
 type OldRecord = Record_ & { nothing: true; lastRun?: string };
 
 /** No last run's session is in the middle of a turn. */
@@ -501,6 +501,11 @@ describe('duePeriodics — counts and the minimum gap', () => {
     assert.equal(due.length, 1);
     assert.equal(due[0]?.windows, undefined);
     assert.deepEqual(read.reads, []);
+  });
+
+  test('a periodic with no limit at all, which the schema refuses, is an error, never one that is silently never due', async () => {
+    const state = store({ Bare: { at: ago(400), session: 's', baseline: false } });
+    await assert.rejects(duePeriodics({ repo: REPO, busy: finished, periodics: [{ name: 'Bare', prompt: 'p' }], state, now: NOW, log, window: windows({}).window }), /names no limit/);
   });
 
   test('with no record, an event writes the baseline and starts nothing', async () => {

@@ -446,6 +446,21 @@ describe('checking the heartbeat', () => {
     assert.deepEqual(off.open(), []);
   });
 
+  test('closes an overdue periodic\'s issue once the file leaves it counts alone, saying it has no time limit, not that the file dropped it', async () => {
+    const late = stampHeartbeat(fresh(), { periodics: [{ name: 'Weekly retro', at: iso(NOW - 8 * DAY), by: { days: 7 }, session: SESSION, state: 'signed off' }] });
+    const gh = github({ heartbeat: late });
+    await run(gh);
+    assert.deepEqual(gh.open().map((i) => i.title), ['Heartbeat: periodic "Weekly retro" is overdue']);
+    const issue = gh.open()[0];
+    const file = factory();
+    file.periodics.sessions['Weekly retro'].when = { merges: 5 };
+    await run(github({ config: file, heartbeat: late, issues: gh.issues }));
+    assert.equal(issue?.state, 'closed');
+    const said = String((issue?.comments as unknown[]).at(-1));
+    assert.match(said, /no time limit/);
+    assert.doesNotMatch(said, /no longer lists/);
+  });
+
   test('leaves alone an issue that only quotes its marker', async () => {
     const quoting = { number: 5, state: 'open', title: 'How the check works', body: 'Its issues start with `<!-- governor:heartbeat-check pickup -->`.' };
     const gh = github({ heartbeat: stampHeartbeat(fresh(), { pickup: { at: iso(NOW - 6 * HOUR), started: 1 } }), issues: [quoting] });

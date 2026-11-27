@@ -195,6 +195,12 @@ describe('the starter kit\'s dark-factory config file', () => {
     assert.deepEqual(checkPin(), [commit], 'bump $schema in both files and the config check together');
   });
 
+  test('its code review signs off at once where governor lists no merge, since its day limit starts a session on an empty week', () => {
+    assert.ok(got.ok);
+    const code = String(got.config.periodics.find((p) => p.name === 'Code review')?.prompt);
+    assert.match(code, /Where governor lists no merge, make `Signing off\.` the last line of your reply and do nothing else\./);
+  });
+
   test('names the same commit as the heartbeat checker\'s pin', () => {
     const workflow = yaml.load(read(WORKFLOW_FILE)) as { jobs: Record<string, { uses?: string }> };
     const pins = Object.values(workflow.jobs).map((j) => /@([0-9a-f]{40})$/.exec(String(j.uses))?.[1]);

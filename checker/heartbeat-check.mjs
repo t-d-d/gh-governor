@@ -75,6 +75,19 @@ export const checkConfigOf = (text) => {
   };
 };
 
+/**
+ * The names of the periodics a config file lists with counts alone, where
+ * the periodics are on: the check leaves each out of `CheckConfig`.
+ *
+ * @param {string} text A file `checkConfigOf` took.
+ * @returns {string[]}
+ */
+const countsAloneOf = (text) => {
+  const read = readConfig(text);
+  if (!read.ok || !turnsOn(read.config, 'periodics')) return [];
+  return read.config.periodics.filter(({ days, hours }) => days === undefined && hours === undefined).map(({ name }) => name);
+};
+
 /** @param {number} n @param {string} one @param {string} many */
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
@@ -334,11 +347,15 @@ export const check = async ({ api, repo, now, toleranceHours, labels, log }) => 
       await close(j.key, `The line is fresh again: ${j.fresh}.`);
     } else await keep(j);
   }
-  // A line the file no longer lists, or a feature turned off, has no one
-  // left to close its issue but this.
+  // A line the file no longer lists, a feature turned off, or a periodic
+  // left with counts alone has no one left to close its issue but this.
   const judgedKeys = new Set(judged.map((j) => j.key));
+  const countsAlone = new Set(countsAloneOf(text).map(periodicKey));
   for (const key of [...kept.keys()]) {
-    if (key !== FAULT_KEY && !judgedKeys.has(key)) await close(key, `${CONFIG_PATH} no longer lists this line, so the check no longer watches it.`);
+    if (key === FAULT_KEY || judgedKeys.has(key)) continue;
+    await close(key, countsAlone.has(key)
+      ? `${CONFIG_PATH} now gives this periodic counts alone and no time limit, so it has nothing to be overdue against and the check no longer watches it.`
+      : `${CONFIG_PATH} no longer lists this line, so the check no longer watches it.`);
   }
 };
 
