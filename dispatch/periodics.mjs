@@ -61,7 +61,7 @@
  * so does a window that cannot be read, which is never an empty one.
  */
 
-import { measureNames, measureOf } from './webhook/measures.mjs';
+import { MEASURES, measureNames, measureOf } from './webhook/measures.mjs';
 import { AUTO } from './trust.mjs';
 import { FILES_LISTED, globMatches } from './checklist.mjs';
 import { runOf, turnsOn } from './repo-config.mjs';
@@ -375,6 +375,33 @@ const countsOf = (periodic) => measureNames().flatMap((kind) => {
 export const limitedMeasures = (config) => (turnsOn(config, 'periodics')
   ? measureNames().filter((kind) => config.periodics.some((periodic) => periodic.counts?.[/** @type {Count} */ (kind)] !== undefined))
   : []);
+
+/**
+ * For each filter that wakes its measure (dispatch/webhook/measures.mjs),
+ * as one does on a label change, the measures a repo's limits with that
+ * filter name, in the measures table's order; empty for each where the file turns
+ * periodics off. The task writes them into the receiver's hook-table item
+ * beside {@link limitedMeasures}, and the receiver queues a `periodics`
+ * fire a filter woke only for a measure listed under that filter
+ * (route.mjs).
+ *
+ * @param {import('./repo-config.mjs').RepoConfig} config
+ * @returns {Record<string, string[]>}
+ */
+export const filteredMeasures = (config) => {
+  const limited = limitedMeasures(config);
+  /** @type {Record<string, string[]>} */
+  const filtered = {};
+  for (const measure of MEASURES) {
+    for (const [name, filter] of Object.entries(measure.filters)) {
+      if (filter.wakes === undefined) continue;
+      filtered[name] ??= [];
+      const named = limited.includes(measure.name) && config.periodics.some((periodic) => filtersOn(periodic, /** @type {Count} */ (measure.name))[name] !== undefined);
+      if (named) filtered[name].push(measure.name);
+    }
+  }
+  return filtered;
+};
 
 /**
  * A periodic's time limit: how long after its last fire it comes due, and

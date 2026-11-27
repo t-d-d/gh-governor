@@ -886,8 +886,8 @@ describe('githubReader', () => {
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
     assert.deepEqual(await reader.issuesOpenedSince(SINCE), [
-      { number: 7, title: 'Older', at: '2026-10-21T00:00:00Z' },
-      { number: 9, title: 'Newest', at: '2026-10-22T00:00:00Z' },
+      { number: 7, title: 'Older', at: '2026-10-21T00:00:00Z', labels: [] },
+      { number: 9, title: 'Newest', at: '2026-10-22T00:00:00Z', labels: [] },
     ]);
     const query = new URL(calls[0]!.url).searchParams;
     assert.deepEqual([query.get('state'), query.get('sort'), query.get('direction')], ['all', 'created', 'desc']);
@@ -904,11 +904,19 @@ describe('githubReader', () => {
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
     assert.deepEqual(await reader.issuesClosedSince(SINCE), [
-      { number: 6, title: 'Closed early', at: '2026-10-21T00:00:00Z' },
-      { number: 9, title: 'Closed late', at: '2026-10-23T00:00:00Z' },
+      { number: 6, title: 'Closed early', at: '2026-10-21T00:00:00Z', labels: [] },
+      { number: 9, title: 'Closed late', at: '2026-10-23T00:00:00Z', labels: [] },
     ]);
     const query = new URL(calls[0]!.url).searchParams;
     assert.deepEqual([query.get('state'), query.get('since')], ['closed', SINCE]);
+  });
+
+  test('issuesOpenedSince and issuesClosedSince give each issue the labels it carries now, by name', async () => {
+    const rows = [{ number: 7, title: 'A bug', created_at: '2026-10-21T00:00:00Z', closed_at: '2026-10-21T00:00:00Z', labels: [{ name: 'type: bug' }, { name: 'Sev: 1' }] }];
+    const { fetch } = fakeFetch({ 'https://api.github.com/repos/acme/factory/issues': rows });
+    const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
+    assert.deepEqual((await reader.issuesOpenedSince(SINCE)).map((i) => i.labels), [['type: bug', 'Sev: 1']]);
+    assert.deepEqual((await reader.issuesClosedSince(SINCE)).map((i) => i.labels), [['type: bug', 'Sev: 1']]);
   });
 
   test('given a trust list, issuesOpenedSince and issuesClosedSince keep only the issues whose author it lets in, a bot\'s judged as BOT', async () => {
