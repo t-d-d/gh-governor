@@ -281,7 +281,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   verdict: (repo: string, pr: number) => Promise<(import('./review.mjs').Verdict & { at: string }) | null>,
  *   recordVerdict: (repo: string, pr: number, read: (import('./review.mjs').Verdict & { at: string }) | null, verdict: import('./review.mjs').Verdict) => Promise<boolean>,
  *   countMessage: (session: string, subject: string | null, kind: string, at: number, ceiling: number) => Promise<import('./deliveries.mjs').Count>,
- * } & import('./periodics.mjs').PeriodicState & import('./pickup.mjs').PickupState & import('./hooks.mjs').HookState} DispatchState
+ * } & import('./periodics.mjs').PeriodicState & import('./periodics.mjs').FilesState & import('./pickup.mjs').PickupState & import('./hooks.mjs').HookState} DispatchState
  *   Each label's cursor, by its repo, its workflow's file name and the
  *   label (null for CI's, which earns none): read (null when it has none),
  *   and moved forward (false when a cursor at or past it already stood).
@@ -2389,6 +2389,19 @@ const HELD_TTL_S = 90 * 24 * 60 * 60;
 /** How long a correction's record lasts, three months, as a held session's: a session is told once. */
 const TOLD_TTL_S = 90 * 24 * 60 * 60;
 
+/**
+ * How long a merged pull request's files record lasts, three months: a
+ * periodic's window rarely spans longer, and a lost item costs one read.
+ */
+export const FILES_TTL_S = 90 * 24 * 60 * 60;
+
+/**
+ * The most a files record's list may take, in bytes of its JSON: under an
+ * item's 400 KB with room for its key. A list past it is kept as the
+ * cut-short mark alone, which counts as a match.
+ */
+export const FILES_RECORD_MAX_BYTES = 350_000;
+
 /** The attribute the state table's TTL expires on (infra/governor.cfn.yml). */
 export const STATE_TTL_ATTRIBUTE = 'ttl';
 
@@ -2645,7 +2658,10 @@ export const cliEnv = (env, home, account) => ({
  * lost one costs that message. A ticket whose launch started nothing is the item
  * `pickup-failed#<repo>` / `<issue>`, holding the time pickup holds it
  * until, put after the launch over any earlier one, and expired at that
- * time: a lost one lets one more launch go.
+ * time: a lost one lets one more launch go. A merged pull request's files
+ * are the item `files#<repo>` / `<number>`, its list as JSON and its
+ * cut-short mark, put with no condition, since two writes hold the same
+ * facts, and expired three months on: a lost one costs one files read.
  *
  * @param {Pick<DynamoDBClient, 'send'>} client
  * @param {string} table
@@ -2656,6 +2672,7 @@ export const dynamoState = (client, table) => {
   const key = (/** @type {string} */ repo, /** @type {string} */ workflow, /** @type {string | null} */ label) => ({ pk: pk(repo, workflow), sk: { S: label === null ? 'cursor' : `cursor#${label}` } });
   const periodicKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `periodic#${repo}` }, sk: { S: name } });
   const hookKey = (/** @type {string} */ repo, /** @type {string} */ name) => ({ pk: { S: `hook#${repo}` }, sk: { S: name } });
+  const filesKey = (/** @type {string} */ repo, /** @type {number} */ number) => ({ pk: { S: `files#${repo}` }, sk: { S: String(number) } });
   const sweepKey = (/** @type {string} */ repo) => ({ pk: { S: `pickup#${repo}` }, sk: { S: 'sweep' } });
   const failedPk = (/** @type {string} */ repo) => ({ S: `pickup-failed#${repo}` });
   /** @param {unknown} error */
@@ -2839,6 +2856,34 @@ export const dynamoState = (client, table) => {
         if (error instanceof ConditionalCheckFailedException || /** @type {any} */ (error)?.name === 'ConditionalCheckFailedException') return false;
         throw error;
       }
+    },
+    mergedFiles: async (repo, number) => {
+      const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: filesKey(repo, number), ConsistentRead: true }));
+      if (item === undefined) return null;
+      const cut = item.cut?.BOOL;
+      /** @type {unknown} */
+      let files;
+      try {
+        files = JSON.parse(item.files?.S ?? '');
+      } catch {
+        files = undefined;
+      }
+      const count = (/** @type {unknown} */ n) => Number.isSafeInteger(n) && /** @type {number} */ (n) >= 0;
+      // A malformed item is a failed read, never a missing one.
+      if (typeof cut !== 'boolean' || !Array.isArray(files) || !files.every((f) => typeof f?.filename === 'string' && (f.previous === undefined || typeof f.previous === 'string') && count(f.additions) && count(f.deletions))) {
+        throw new Error(`the files item for ${repo}#${number} is malformed: ${JSON.stringify(item)}`);
+      }
+      return { files: files.map((f) => ({ filename: f.filename, ...(f.previous === undefined ? {} : { previous: f.previous }), additions: f.additions, deletions: f.deletions })), cut };
+    },
+    // Two writes of one pull request's record hold the same facts: no condition.
+    recordMergedFiles: async (repo, number, { files, cut }) => {
+      let list = JSON.stringify(files);
+      const whole = Buffer.byteLength(list) <= FILES_RECORD_MAX_BYTES;
+      if (!whole) list = '[]';
+      await client.send(new PutItemCommand({
+        TableName: table,
+        Item: { ...filesKey(repo, number), files: { S: list }, cut: { BOOL: cut || !whole }, [STATE_TTL_ATTRIBUTE]: { N: String(Math.floor(Date.now() / 1000) + FILES_TTL_S) } },
+      }));
     },
     hookSession: async (repo, name) => {
       const { Item: item } = await client.send(new GetItemCommand({ TableName: table, Key: hookKey(repo, name), ConsistentRead: true }));
@@ -3306,6 +3351,8 @@ export const realDeps = (memory = taskMemory({ now: Date.now })) => {
         recordVerdict: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         periodic: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordPeriodic: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        mergedFiles: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
+        recordMergedFiles: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         sweep: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         recordSweep: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },
         failedLaunches: async () => { throw new Error('DISPATCH_STATE_TABLE is unset'); },

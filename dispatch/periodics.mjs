@@ -109,6 +109,18 @@ export const LISTED_MAX = 100;
  *   A periodic's record, read (null when there is none; a read that fails
  *   throws), and written over the record `read` (none, for null): false
  *   where another record stands.
+ * @typedef {{ files: Array<{ filename: string, previous?: string, additions: number, deletions: number }>, cut: boolean }} FilesRecord
+ *   What a merged pull request changed: each file's path, the path a rename
+ *   left, and its lines added and deleted. `cut`: the list is not whole,
+ *   since GitHub listed the most it lists or the list was too large to keep.
+ * @typedef {{
+ *   mergedFiles: (repo: string, number: number) => Promise<FilesRecord | null>,
+ *   recordMergedFiles: (repo: string, number: number, record: FilesRecord) => Promise<void>,
+ * }} FilesState
+ *   A merged pull request's files record, read (null when there is none; a
+ *   read that fails throws), and written over whatever stands.
+ * @typedef {{ read: (number: number) => Promise<FilesRecord | null>, write: (number: number, record: FilesRecord) => Promise<void> }} KeptFiles
+ *   One repo's files records, as a check reads and writes them.
  * @typedef {import('./webhook/measures.mjs').Counted} Counted One item a measure counted, and when it happened.
  * @typedef {(kind: Count, since: string) => Promise<Counted[]>} Window
  *   What of `kind` happened after `since`, oldest first, read afresh; a read
@@ -160,24 +172,42 @@ export const windowOf = (reader, base, auto = AUTO) => {
  * and a read that fails throws for each limit that asks. The rows stay
  * those the shared list holds (`sharedWindow`): only the count narrows.
  *
- * @param {{ pullFiles: (number: number) => Promise<import('./webhook/measures.mjs').ChangedFile[]> }} reader
+ * With `kept`, the state table's files record, a pull request's files are
+ * read from its record first, and from GitHub only where it has none,
+ * then written to it. A record read that fails throws, as a files read
+ * does: it is never taken for a missing record.
+ *
+ * @param {{ pullFiles: (number: number) => Promise<Array<import('../scripts/lib/github-app.mjs').FileRow>> }} reader
+ * @param {KeptFiles} [kept]
  * @returns {Narrow}
  */
-export const narrowOf = (reader) => {
-  /** @type {Map<number, Promise<import('./webhook/measures.mjs').ChangedFile[]>>} */
+export const narrowOf = (reader, kept) => {
+  /** @type {Map<number, Promise<import('./webhook/measures.mjs').ChangedFiles>>} */
   const files = new Map();
+  /** @param {number} number @returns {Promise<FilesRecord>} */
+  const read = async (number) => {
+    const held = kept === undefined ? null : await kept.read(number);
+    if (held !== null) return held;
+    const rows = await reader.pullFiles(number);
+    /** @type {FilesRecord} */
+    const record = {
+      files: rows.map((f) => ({ filename: f.filename, ...(f.previous === undefined ? {} : { previous: f.previous }), additions: f.additions ?? 0, deletions: f.deletions ?? 0 })),
+      cut: rows.length >= FILES_LISTED,
+    };
+    if (kept !== undefined) await kept.write(number, record);
+    return record;
+  };
   /** @type {import('./webhook/measures.mjs').FilterContext} */
   const context = {
     files: (number) => {
-      let read = files.get(number);
-      if (read === undefined) {
-        read = reader.pullFiles(number);
-        files.set(number, read);
+      let got = files.get(number);
+      if (got === undefined) {
+        got = read(number);
+        files.set(number, got);
       }
-      return read;
+      return got;
     },
     globMatches,
-    filesListed: FILES_LISTED,
   };
   return async (kind, rows, filters) => {
     let kept = rows;
@@ -193,6 +223,27 @@ export const narrowOf = (reader) => {
     return kept;
   };
 };
+
+/**
+ * The files record of one repo in the state table, as `narrowOf` reads it.
+ * A write that fails is logged at warn and lets the check go on: the files
+ * were read, and a missing record costs one read on a later check.
+ *
+ * @param {FilesState} state
+ * @param {string} repo
+ * @param {(event: string, context?: Record<string, unknown>) => void} log
+ * @returns {KeptFiles}
+ */
+export const keptFilesOf = (state, repo, log) => ({
+  read: (number) => state.mergedFiles(repo, number),
+  write: async (number, record) => {
+    try {
+      await state.recordMergedFiles(repo, number, record);
+    } catch (error) {
+      log('dispatch-files-unrecorded', { level: 'warn', repo, pr: number, error: messageOf(error), reason: 'the merge\'s files were read but not kept: a later check reads them again' });
+    }
+  },
+});
 
 /** @type {Narrow} */
 const noNarrow = async (kind, rows, filters) => {

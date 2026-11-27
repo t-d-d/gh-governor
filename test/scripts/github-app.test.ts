@@ -821,16 +821,18 @@ describe('githubReader', () => {
       'https://api.github.com/repos/acme/factory/pulls/10/files': (_init: RequestInit | undefined, url: string) => {
         const page = Number(new URL(url).searchParams.get('page'));
         return page === 1
-          ? Array.from({ length: 100 }, (_, i) => ({ filename: `f${i}`, status: 'modified', additions: 1 }))
+          ? Array.from({ length: 100 }, (_, i) => ({ filename: `f${i}`, status: 'modified', additions: 1, deletions: i }))
           : [{ filename: 'moved', status: 'renamed', previous_filename: 'src/billing/entitlements.ts' }, { filename: 'last', status: 'added' }];
       },
     });
     const reader = githubReader({ token: 't', repo: 'acme/factory', fetch });
     const files = await reader.pullFiles(10);
     assert.equal(files.length, 102);
-    assert.deepEqual(files.at(-1), { filename: 'last', status: 'added' });
+    // Each file carries its lines added and deleted; a row without them reads as none.
+    assert.deepEqual(files[7], { filename: 'f7', status: 'modified', additions: 1, deletions: 7 });
+    assert.deepEqual(files.at(-1), { filename: 'last', status: 'added', additions: 0, deletions: 0 });
     // A rename keeps the path it left: moving a file out of a guarded path changes that path.
-    assert.deepEqual(files.at(-2), { filename: 'moved', status: 'renamed', previous: 'src/billing/entitlements.ts' });
+    assert.deepEqual(files.at(-2), { filename: 'moved', status: 'renamed', previous: 'src/billing/entitlements.ts', additions: 0, deletions: 0 });
     assert.equal(calls.length, 2);
   });
 
