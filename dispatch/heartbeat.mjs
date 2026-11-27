@@ -19,6 +19,7 @@
 
 import { messageOf } from '../scripts/lib/error-message.mjs';
 import { sessionId } from './webhook/subscribe.mjs';
+import { MEASURES, measureOf } from './webhook/measures.mjs';
 
 /**
  * A heartbeat the repo's file names an issue for, refused because the
@@ -123,12 +124,8 @@ export const HEARTBEAT_END = '<!-- governor:heartbeat-end -->';
  *   null to clear it; left out, the line stays as it is.
  */
 
-/** What a line calls each count, one and many. */
-const COUNTED = /** @type {Record<Count, [string, string]>} */ ({
-  merges: ['merge', 'merges'],
-  issuesOpened: ['issue opened', 'issues opened'],
-  issuesClosed: ['issue closed', 'issues closed'],
-});
+/** @param {string} text */
+const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * What a line calls each state: the heartbeat checker's issues quote it too.
@@ -156,9 +153,10 @@ const RULES_BLOCK_OF = /** @type {Record<string, RulesLine['block']>} */ (Object
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 const PICKUP = /^- pickup: last sweep (\S+), started (\d+) sessions?$/;
-const PERIODIC = new RegExp([
+/** A periodic's line, its measures' words read from the table when it runs (dispatch/webhook/measures.mjs). */
+const periodicLine = () => new RegExp([
   '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (last fire|first read) (\\S+)',
-  '(?:, by (?:its day limit of (\\d+) days?|its hour limit of (\\d+) hours?|(\\d+) (merges?|issues? opened|issues? closed)))?',
+  `(?:, by (?:its day limit of (\\d+) days?|its hour limit of (\\d+) hours?|(\\d+) (${MEASURES.flatMap((m) => m.line).map(escaped).join('|')})))?`,
   `, session (\\S+), (${Object.values(STATES).join('|')})$`,
 ].join(''));
 const RULES = new RegExp(`^- session rules: ("(?:[^"\\\\]|\\\\.)*") (${Object.values(RULES_BLOCKS).join('|')})$`);
@@ -167,7 +165,8 @@ const RULES = new RegExp(`^- session rules: ("(?:[^"\\\\]|\\\\.)*") (${Object.va
 const limitText = (by) => {
   if ('days' in by) return `its day limit of ${plural(by.days, 'day', 'days')}`;
   if ('hours' in by) return `its hour limit of ${plural(by.hours, 'hour', 'hours')}`;
-  return plural(by.number, ...COUNTED[by.count]);
+  const [one, many] = measureOf(by.count)?.line ?? [by.count, by.count];
+  return plural(by.number, one, many);
 };
 
 /** @param {PickupLine} line */
@@ -191,13 +190,13 @@ const lineOf = (text) => {
   if (pickup !== null) return { pickup: { at: String(pickup[1]), started: Number(pickup[2]) } };
   const rules = RULES.exec(text);
   if (rules !== null) return { rules: { file: JSON.parse(String(rules[1])), block: /** @type {RulesLine['block']} */ (RULES_BLOCK_OF[String(rules[2])]) } };
-  const m = PERIODIC.exec(text);
+  const m = periodicLine().exec(text);
   if (m === null) return null;
   const [, name, read, at, days, hours, number, counted, session, state] = m;
   // Governor writes `first read` only with `not fired yet`, and `last fire`
   // only with a fire's state: a line mixing them is not governor's.
   if ((read === 'first read') !== (state === STATES['not fired'])) return null;
-  const count = /** @type {Count | undefined} */ (Object.keys(COUNTED).find((k) => COUNTED[/** @type {Count} */ (k)].includes(String(counted))));
+  const count = MEASURES.find((m) => m.line.includes(String(counted)))?.name;
   /** @type {Limit | undefined} */
   const by = days !== undefined ? { days: Number(days) } : hours !== undefined ? { hours: Number(hours) } : count !== undefined ? { count, number: Number(number) } : undefined;
   return {

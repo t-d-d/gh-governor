@@ -51,9 +51,12 @@
  * removed that a review names, whose turn runs the repo's issue reviews on
  * it (dispatch/issue-review.mjs).
  *
- * Pure, and a leaf: the Lambda packages dispatch/webhook/ whole, and the
- * task image copies this file (dispatch/Dockerfile).
+ * Pure, importing only the measures table, itself a leaf: the Lambda
+ * packages dispatch/webhook/ whole, and the task image copies both files
+ * (dispatch/Dockerfile).
  */
+
+import { measureNames, measureOf } from './measures.mjs';
 
 // ── The vocabulary ───────────────────────────────────────────────────────
 
@@ -74,14 +77,12 @@ export const SUBSCRIPTION_EVENTS = /** @type {const} */ (['comments', 'reviews',
 const EVENTS = /** @type {ReadonlySet<string>} */ (new Set(SUBSCRIPTION_EVENTS));
 
 /**
- * The events a periodic can count (dispatch/periodics.mjs): a merge into
- * the default branch, an issue opened, an issue closed. Each queues a
- * `periodics` fire naming it as `counted`, whose turn plans the repo's due
- * periodics.
+ * A measure a periodic can count, by its name in the measures table
+ * (measures.mjs). Each event a measure wakes on queues a `periodics` fire
+ * naming it as `counted`, whose turn plans the repo's due periodics.
+ *
+ * @typedef {string} Count
  */
-export const COUNTS = /** @type {const} */ (['merges', 'issuesOpened', 'issuesClosed']);
-
-/** @typedef {typeof COUNTS[number]} Count */
 
 /** A run's conclusions that mean it went red; a cancelled one was stopped by someone. */
 export const RED = new Set(['failure', 'timed_out', 'startup_failure']);
@@ -944,7 +945,7 @@ const parseKind = (event) => {
   if (kind === 'periodics') {
     const counted = /** @type {Count} */ (e?.counted);
     const base = e?.base;
-    if (!COUNTS.includes(counted)) throw new Error(`a periodics fire's counted is one of ${COUNTS.join(', ')}, got: ${JSON.stringify(counted)}`);
+    if (typeof counted !== 'string' || measureOf(counted) === undefined) throw new Error(`a periodics fire's counted is one of ${measureNames().join(', ')}, got: ${JSON.stringify(counted)}`);
     if (base !== undefined && (typeof base !== 'string' || base === '')) throw new Error(`a periodics fire's base is a branch name, got: ${JSON.stringify(base)}`);
     return { kind, counted, ...(base === undefined ? {} : { base }) };
   }

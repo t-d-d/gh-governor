@@ -19,7 +19,7 @@
  * (hook-table.mjs). The task still checks every fire against the file
  * (dispatch/hooks.mjs).
  *
- * Pure, and a leaf beside fire.mjs: the Lambda packages dispatch/webhook/
+ * Pure, importing only fire.mjs: the Lambda packages dispatch/webhook/
  * whole, and the key script imports it.
  */
 

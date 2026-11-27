@@ -18,11 +18,14 @@
  * write comes after the launch: it is the one task at a time that keeps two
  * turns from both starting it.
  *
- * A merge into the default branch, an issue opened or an issue closed is
- * counted when it happens: it queues a `periodics` fire naming the kind
- * (`COUNTS`, dispatch/webhook/fire.mjs), whose planner
- * (dispatch/periodics-fire.mjs) reads that kind's count since each
- * periodic's last fire afresh from GitHub ({@link windowOf}). The sweep and
+ * What a count counts is a measure, one entry in the measures table
+ * (dispatch/webhook/measures.mjs), such as a merge into the default
+ * branch. An event a measure wakes on queues a `periodics` fire naming it,
+ * whose planner (dispatch/periodics-fire.mjs) reads that measure's count
+ * since each periodic's last fire afresh from GitHub ({@link windowOf}). A
+ * check reads each measure's list once, from the oldest last fire among
+ * the periodics it reads, and each limit counts the rows after its own
+ * last fire ({@link sharedWindow}). The sweep and
  * that planner each hand `launchPlan` (dispatch/launch-plan.mjs) their due
  * periodics, each turned into a launch by {@link periodicLaunch}. Governor
  * keeps no running total, so a lost webhook only delays a fire to the next
@@ -58,7 +61,7 @@
  * so does a window that cannot be read, which is never an empty one.
  */
 
-import { COUNTS } from './webhook/fire.mjs';
+import { measureNames, measureOf } from './webhook/measures.mjs';
 import { AUTO } from './trust.mjs';
 import { runOf } from './repo-config.mjs';
 import { messageOf } from '../scripts/lib/error-message.mjs';
@@ -105,7 +108,7 @@ export const LISTED_MAX = 100;
  *   A periodic's record, read (null when there is none; a read that fails
  *   throws), and written over the record `read` (none, for null): false
  *   where another record stands.
- * @typedef {{ number: number, title: string, at: string }} Counted One merge or issue, and when it was merged, opened or closed.
+ * @typedef {import('./webhook/measures.mjs').Counted} Counted One item a measure counted, and when it happened.
  * @typedef {(kind: Count, since: string) => Promise<Counted[]>} Window
  *   What of `kind` happened after `since`, oldest first, read afresh; a read
  *   that fails throws.
@@ -122,25 +125,12 @@ export const LISTED_MAX = 100;
  *   the launch is in the next window rather than neither.
  */
 
-/** What the prompt calls each kind. */
-const COUNTED_AS = /** @type {Record<Count, string>} */ ({
-  merges: 'Pull requests merged into the default branch',
-  issuesOpened: 'Issues opened',
-  issuesClosed: 'Issues closed',
-});
-
 /**
- * A repo's windows, read through its reader. Merges are counted by their
- * merge time into the default branch, `base` where the fire names it, else
- * read once. Never by comparing commits: that stops at 250, and a busy week
- * passes it.
+ * A repo's windows, read through its reader, each by its measure's own
+ * read (dispatch/webhook/measures.mjs). The default branch is `base` where
+ * the fire names it, else read once for the turn.
  *
- * @param {{
- *   defaultBranch: () => Promise<string>,
- *   mergedSince: (base: string, since: string) => Promise<Counted[]>,
- *   issuesOpenedSince: (since: string, by?: readonly string[]) => Promise<Counted[]>,
- *   issuesClosedSince: (since: string, by?: readonly string[]) => Promise<Counted[]>,
- * }} reader
+ * @param {import('./webhook/measures.mjs').WindowReader} reader
  * @param {string} [base]
  * @param {readonly string[]} [auto] The repo's `trust.auto` (dispatch/trust.mjs):
  *   an issue is counted and listed only where it lets its author in. A
@@ -150,9 +140,44 @@ const COUNTED_AS = /** @type {Record<Count, string>} */ ({
 export const windowOf = (reader, base, auto = AUTO) => {
   /** @type {Promise<string> | null} */
   let branch = base === undefined ? null : Promise.resolve(base);
+  const context = { branch: () => (branch ??= reader.defaultBranch()), auto };
   return async (kind, since) => {
-    if (kind === 'merges') return reader.mergedSince(await (branch ??= reader.defaultBranch()), since);
-    return kind === 'issuesOpened' ? reader.issuesOpenedSince(since, auto) : reader.issuesClosedSince(since, auto);
+    const measure = measureOf(kind);
+    if (measure === undefined) throw new Error(`no measure is named ${kind}`);
+    return measure.read(reader, since, context);
+  };
+};
+
+/**
+ * One check's windows: each measure's list read once, from the oldest of
+ * the times `oldest` gives for it, and each read after a later time taken
+ * as the rows after that time. A read that fails throws for every window
+ * it would have served.
+ *
+ * @param {Window} window
+ * @param {(kind: Count) => Promise<string | undefined>} oldest The oldest last fire among the periodics that will read `kind`.
+ * @returns {Window}
+ */
+export const sharedWindow = (window, oldest) => {
+  /** @type {Map<Count, Promise<{ since: string, rows: Counted[] }>>} */
+  const lists = new Map();
+  return async (kind, since) => {
+    let list = lists.get(kind);
+    if (list === undefined) {
+      list = (async () => {
+        const from = await oldest(kind);
+        const start = from !== undefined && Date.parse(from) < Date.parse(since) ? from : since;
+        return { since: start, rows: await window(kind, start) };
+      })();
+      lists.set(kind, list);
+    }
+    const { since: start, rows } = await list;
+    if (since === start) return rows;
+    const after = Date.parse(since);
+    // A time before the list's start is never asked for: the oldest covers
+    // every periodic that reads it. Were it, the list could not hold its rows.
+    if (after < Date.parse(start)) return window(kind, since);
+    return rows.filter((row) => Date.parse(row.at) > after);
   };
 };
 
@@ -173,7 +198,7 @@ const lastFireLine = (read) => (read.baseline ? 'This is the first run of this p
  * @param {string} since
  */
 const windowLines = (kind, items, since) => {
-  const head = `${COUNTED_AS[kind]} since ${since}: ${items.length === 0 ? 'none' : items.length}`;
+  const head = `${measureOf(kind)?.heading ?? kind} since ${since}: ${items.length === 0 ? 'none' : items.length}`;
   const listed = items.slice(0, LISTED_MAX).map((i) => `- #${i.number} ${i.title.replace(/\s+/g, ' ').trim()}`);
   const more = items.length > LISTED_MAX ? [`- and ${items.length - LISTED_MAX} more`] : [];
   return [head, ...listed, ...more].join('\n');
@@ -190,7 +215,7 @@ const windowLines = (kind, items, since) => {
 export const periodicPrompt = (prompt, read, windows = {}) => [
   prompt,
   lastFireLine(read),
-  ...COUNTS.flatMap((kind) => {
+  ...measureNames().flatMap((kind) => {
     const items = windows[kind];
     return items === undefined ? [] : [windowLines(kind, items, read.at)];
   }),
@@ -202,7 +227,7 @@ export const periodicPrompt = (prompt, read, windows = {}) => [
  * @param {import('./repo-config.mjs').Periodic} periodic
  * @returns {Array<[Count, number]>}
  */
-const countsOf = (periodic) => COUNTS.flatMap((kind) => {
+const countsOf = (periodic) => measureNames().flatMap((kind) => {
   const n = periodic.counts?.[kind];
   return n === undefined ? [] : [/** @type {[Count, number]} */ ([kind, n])];
 });
@@ -293,19 +318,50 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     beats.push({ name, at: read.at, session: read.session, state: 'held' });
     return true;
   };
-  for (const periodic of periodics) {
+  const considered = periodics.filter((periodic) => event === undefined || countsOf(periodic).some(([kind]) => kind === event));
+  // Every record first, so each measure's list is read once, from the
+  // oldest last fire among the periodics that count it.
+  /** @type {Array<{ read: PeriodicRecord | null } | { error: unknown }>} */
+  const records = [];
+  for (const { name } of considered) {
+    try {
+      records.push({ read: await state.periodic(repo, name) });
+    } catch (error) {
+      records.push({ error });
+    }
+  }
+  /** @param {Count} kind */
+  // On an event's turn, a measure other than the event's is read only by
+  // the periodics the event brings due, so only they set where its list starts.
+  const oldest = async (/** @type {Count} */ kind) => {
+    /** @type {string | undefined} */
+    let from;
+    for (const [i, periodic] of considered.entries()) {
+      const record = records[i];
+      const read = record !== undefined && 'read' in record ? record.read : null;
+      const counts = countsOf(periodic);
+      if (read === null || inGap(periodic, read, now) || !counts.some(([k]) => k === kind)) continue;
+      if (event !== undefined && kind !== event) {
+        const n = counts.find(([k]) => k === event)?.[1] ?? Infinity;
+        const reached = await shared(event, read.at).then((rows) => rows.length >= n, () => false);
+        if (!reached) continue;
+      }
+      if (from === undefined || Date.parse(read.at) < Date.parse(from)) from = read.at;
+    }
+    return from;
+  };
+  /** @type {Window} */
+  const shared = sharedWindow(window, oldest);
+  for (const [i, periodic] of considered.entries()) {
     const { name } = periodic;
     const time = timeLimitOf(periodic);
     const counts = countsOf(periodic);
-    if (event !== undefined && !counts.some(([kind]) => kind === event)) continue;
-    /** @type {PeriodicRecord | null} */
-    let read;
-    try {
-      read = await state.periodic(repo, name);
-    } catch (error) {
-      refuse(name, error, 'its record could not be read, so it is refused this turn');
+    const record = /** @type {{ read: PeriodicRecord | null } | { error: unknown }} */ (records[i]);
+    if ('error' in record) {
+      refuse(name, record.error, 'its record could not be read, so it is refused this turn');
       continue;
     }
+    const { read } = record;
     if (read === null) {
       const at = new Date(now).toISOString();
       try {
@@ -341,11 +397,11 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     /** @type {[Count, number] | undefined} */
     let by;
     try {
-      for (const [kind] of counts.filter(([kind]) => event === undefined || kind === event)) windows[kind] = await window(kind, read.at);
+      for (const [kind] of counts.filter(([kind]) => event === undefined || kind === event)) windows[kind] = await shared(kind, read.at);
       reached = counts.some(([kind, n]) => (windows[kind]?.length ?? 0) >= n);
       by = counts.find(([kind, n]) => (windows[kind]?.length ?? 0) >= n);
       if (!reached && !dayDue) continue;
-      for (const [kind] of counts) windows[kind] ??= await window(kind, read.at);
+      for (const [kind] of counts) windows[kind] ??= await shared(kind, read.at);
     } catch (error) {
       refuse(name, error, 'what it counts could not be read, so it is refused this turn');
       continue;
