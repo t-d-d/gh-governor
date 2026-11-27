@@ -24,6 +24,7 @@ import { isCliEntry } from '../scripts/lib/cli-entry.mjs';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { work, sqsLane } from './lane.mjs';
 import { CLAIM_STRANDED, clearTurnState, realDeps, run, ticketOf } from './turn.mjs';
+import { taskMemory } from './task-memory.mjs';
 import { SESSION_UNRECORDED, unrecordedLine } from './launcher.mjs';
 import { errorText } from './webhook/error-text.mjs';
 import { FIRE_VARIABLE } from './webhook/fire.mjs';
@@ -195,8 +196,11 @@ const oneTurn = async (eventOf, tag, { run: turn, deps, log, exit, schedule, can
     log('dispatch-failed', { reason: 'deadline', deadlineMs: DEADLINE_MS, ...(thrown === null ? {} : { error: errorText(thrown.error) }), ...tag(1) });
     exit(1);
   }, DEADLINE_MS);
+  /** @type {ReturnType<typeof realDeps> | null} */
+  let built = null;
   try {
-    const result = await turn(eventOf(), { ...deps(), claims, unrecorded, threw: (error) => { thrown = { error }; } });
+    built = deps();
+    const result = await turn(eventOf(), { ...built, claims, unrecorded, threw: (error) => { thrown = { error }; } });
     const code = exitCodeFor(result);
     // A message into an archived session exits 1 for its caller, but the
     // dispatcher did not fail: the send counts as taken for the alarm, so
@@ -214,6 +218,9 @@ const oneTurn = async (eventOf, tag, { run: turn, deps, log, exit, schedule, can
     return 1;
   } finally {
     cancel(deadline);
+    // What the task's held files saved: a 304 costs a round trip and no call.
+    const reads = built?.fileReads?.();
+    if (reads !== undefined) log('dispatch-file-reads', reads);
   }
 };
 
@@ -250,10 +257,12 @@ export const main = async (args) => {
 };
 
 if (isCliEntry(import.meta.url, process.argv[1])) {
+  // What the task keeps from one turn to the next, and drops when it exits.
+  const memory = taskMemory({ now: Date.now });
   await main({
     env: process.env,
     run,
-    deps: realDeps,
+    deps: () => realDeps(memory),
     log: (event, context = {}) => console.log(JSON.stringify({ event, ...context })),
     exit: (code) => process.exit(code),
     // unref: the deadline fires while a hung launcher keeps the loop alive,

@@ -4578,7 +4578,7 @@ describe('fitness: a turn\'s GitHub clients share one resend switch (github-call
     // built from a variable (`githubReader(args)`) shows no switch, so fails.
     const source = readFileSync('dispatch/turn.mjs', 'utf8');
     assert.equal((source.match(/= turnResends\(\)/g) ?? []).length, 1, 'realDeps makes one switch a turn');
-    const calls = [...source.matchAll(/\b(appInstallations|githubReader|installationToken|githubApi)\((.*)$/gm)];
+    const calls = [...source.matchAll(/\b(appInstallations|githubReader|installationToken|installationGrant|githubApi)\((.*)$/gm)];
     assert.ok(calls.length >= 4, 'turn.mjs builds its GitHub clients');
     for (const [call, name, rest] of calls) assert.match(rest!, /\bresends\b/, `${name} is handed the switch: ${call}`);
   });

@@ -123,7 +123,8 @@ import { planAuthor, relayedText, searchAuthor, tellAuthor, wroteIt } from './au
 import { editedText, searchCloser, searchEditor, tellEditor } from './editor.mjs';
 import { planSweep } from './sweep.mjs';
 import { hookTable } from './webhook/hook-table.mjs';
-import { appInstallations, githubReader, installationToken, turnResends } from '../scripts/lib/github-app.mjs';
+import { appInstallations, githubReader, installationGrant, turnResends } from '../scripts/lib/github-app.mjs';
+import { taskMemory } from './task-memory.mjs';
 import { fireRepoOf, repoServed, servedRepos } from './repos.mjs';
 import { BUILT_IN_RUN, CONFIG_PATH, SWITCHES, runOf, switchOf, switchesOf, turnsOn } from './repo-config.mjs';
 import { planWorkflow, withTickets } from './workflow.mjs';
@@ -198,6 +199,7 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   log: (event: string, context?: Record<string, unknown>) => void,
  *   secret: { get: () => Promise<string>, put: (text: string) => Promise<void> },
  *   githubToken: (repo: string) => Promise<string>,
+ *   fileReads?: (() => { notModified: number, read: number }) | undefined,
  *   appId: () => Promise<number>,
  *   reader: (token: string, appId: number, repo: string) => Reader,
  *   workspace: {
@@ -235,6 +237,8 @@ const REMINT = 're-mint: node scripts/mint-claude-login.mjs';
  *   `configFile`: a repo's config file text on its default branch, or a
  *   prompt file's at `path` beside it, null when it has none; any other
  *   failure throws.
+ *   `fileReads`: how many of the turn's config and prompt file reads GitHub
+ *   answered 304, from what the task holds, and how many 200.
  *   `environments`: the login's cloud environment list, parsed, under its
  *   access token and organization; any refusal throws.
  *   `refreshLogin`: one minimal CLI call under the restored login, which
@@ -590,7 +594,7 @@ const turnOf = async (event, deps, built) => {
   const invocation = parseFire(event);
   if (invocation.kind === 'probe') return { kind: 'probe', ...(await deps.probe()) };
   const started = deps.now();
-  /** One installation token a repo a turn. @type {Map<string, Promise<string>>} */
+  /** One installation token a repo a turn, which the task keeps across turns where it can (`taskGithub`). @type {Map<string, Promise<string>>} */
   const tokens = new Map();
   /** @param {string} repo */
   const tokenFor = (repo) => {
@@ -3144,8 +3148,58 @@ export const clearTurnState = (env) => {
   for (const path of [join(home, '.claude'), join(home, '.claude.json'), cwd, repos]) rmSync(path, { recursive: true, force: true });
 };
 
-/** @returns {Deps} */
-export const realDeps = () => {
+/**
+ * A turn's GitHub reads over what its task keeps (dispatch/task-memory.mjs):
+ * each repo's token, minted where the task holds none or the one it holds
+ * is close to its expiry, and minted again where GitHub refuses it; and
+ * each config and prompt file, asked for with the ETag the task holds.
+ * `fileReads` counts the turn's file reads GitHub answered 304 and 200.
+ *
+ * @param {{
+ *   memory: import('./task-memory.mjs').TaskMemory,
+ *   appKey: () => Promise<{ appId: string, privateKeyPem: string }>,
+ *   log: (event: string, context?: Record<string, unknown>) => void,
+ *   resends: import('../scripts/lib/github-app.mjs').Resends,
+ *   fetch?: typeof globalThis.fetch,
+ *   sleep?: (ms: number) => Promise<unknown>,
+ * }} args
+ */
+export const taskGithub = ({ memory, appKey, log, resends, fetch = globalThis.fetch, sleep }) => {
+  const io = { fetch, log, ...(sleep === undefined ? {} : { sleep }) };
+  const counts = { notModified: 0, read: 0 };
+  /** @type {import('../scripts/lib/github-app.mjs').HeldFiles} */
+  const files = {
+    held: memory.held,
+    keep: memory.keep,
+    answered: (status) => {
+      if (status === 304) counts.notModified += 1;
+      else counts.read += 1;
+    },
+  };
+  /** @param {string} repo */
+  const mint = (repo) => async () => installationGrant({ ...(await appKey()), repo, ...io, resends });
+  /** @param {string} repo */
+  const renew = (repo) => (/** @type {string} */ stale) => memory.renew(repo, stale, mint(repo));
+  return {
+    /** @param {string} repo */
+    githubToken: (repo) => memory.token(repo, mint(repo)),
+    /** @param {string} repo @param {string} token @param {string} [path] */
+    configFile: (repo, token, path) => githubReader({ token, repo, renew: renew(repo), files, ...io, resends }).configFile(path),
+    /** @param {string} token @param {number} appId @param {string} repo */
+    reader: (token, appId, repo) => githubReader({ token, repo, appId, renew: renew(repo), ...io, resends }),
+    fileReads: () => ({ ...counts }),
+  };
+};
+
+/**
+ * The real dependencies of one turn. `memory` is what the task keeps from
+ * one turn to the next (dispatch/cli.mjs makes one a task); without it the
+ * turn keeps nothing past itself.
+ *
+ * @param {import('./task-memory.mjs').TaskMemory} [memory]
+ * @returns {Deps}
+ */
+export const realDeps = (memory = taskMemory({ now: Date.now })) => {
   const env = process.env;
   const { home, cwd, repos } = turnPaths(env);
   const configPath = join(home, '.claude.json');
@@ -3209,11 +3263,13 @@ export const realDeps = () => {
   };
 
   const owners = dispatchOwners(env.DISPATCH_OWNERS);
+  const github = taskGithub({ memory, appKey, log, resends });
 
   return {
     owners,
     installations: async () => appInstallations({ ...(await appKey()), owners, log, resends }),
-    configFile: (served, token, path) => githubReader({ token, repo: served, log, resends }).configFile(path),
+    configFile: github.configFile,
+    fileReads: github.fileReads,
     environments: async (token, organization) => {
       const response = await fetch(ENVIRONMENTS_API, {
         headers: { Authorization: `Bearer ${token}`, 'anthropic-version': '2023-06-01', ...(organization === null ? {} : { 'x-organization-uuid': organization }) },
@@ -3232,13 +3288,13 @@ export const realDeps = () => {
         await secrets.send(new PutSecretValueCommand({ SecretId: String(env.CLAUDE_LOGIN_SECRET_ID), SecretString: text }));
       },
     },
-    githubToken: async (served) => installationToken({ ...(await appKey()), repo: served, log, resends }),
+    githubToken: github.githubToken,
     appId: async () => {
       const id = Number((await app()).appId);
       if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`the GitHub App secret's appId is not an App ID: ${String((await app()).appId)}`);
       return id;
     },
-    reader: (token, appId, served) => githubReader({ token, repo: served, appId, log, resends }),
+    reader: github.reader,
     workspace: {
       // The turn's own directory, where a message and a review run, a
       // checkout-less repo of the fire's; the bare schedule
