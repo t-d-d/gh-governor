@@ -217,6 +217,8 @@ const harness = (over: Record<string, unknown> = {}) => {
   const publishedTrust: Array<{ repo: string; trust: { relay: string[] } | undefined }> = [];
   // Each write's claim label, which the receiver tells a claimed ticket by.
   const publishedClaim: Array<{ repo: string; claim: string | undefined }> = [];
+  // Each write's measures, the ones the repo's limits name, which the receiver queues a periodics fire by.
+  const publishedMeasures: Array<{ repo: string; measures: string[] | undefined }> = [];
   let loginOnDisk: string | null = null;
   const accounts: unknown[] = [];
   const deps = {
@@ -369,10 +371,11 @@ const harness = (over: Record<string, unknown> = {}) => {
     }),
     uuid: () => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
     hookTable: {
-      publish: async (repo: string, { hooks, switches, ready, reviewLabels, trust, claim }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; reviewLabels?: { labeled: string[]; unlabeled: string[] }; trust?: { relay: string[] }; claim?: string }, at: string) => {
+      publish: async (repo: string, { hooks, switches, ready, reviewLabels, trust, claim, measures }: { hooks: Array<{ name: string; keyVersion: number; perHour: number }>; switches: Record<string, boolean>; ready: string[]; reviewLabels?: { labeled: string[]; unlabeled: string[] }; trust?: { relay: string[] }; claim?: string; measures?: string[] }, at: string) => {
         published.push({ repo, hooks, switches, ready, ...(reviewLabels === undefined ? {} : { reviewLabels }), at });
         publishedTrust.push({ repo, trust });
         publishedClaim.push({ repo, claim });
+        publishedMeasures.push({ repo, measures });
         return true;
       },
     },
@@ -467,7 +470,7 @@ const harness = (over: Record<string, unknown> = {}) => {
       ...(over.state as Record<string, unknown> | undefined),
     },
   };
-  return { deps, heldTold, correctionsTold, countsAsked, messageCounts, failedLaunches, routineCalls, routinesHeld, recorded, published, publishedTrust, publishedClaim, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
+  return { deps, heldTold, correctionsTold, countsAsked, messageCounts, failedLaunches, routineCalls, routinesHeld, recorded, published, publishedTrust, publishedClaim, publishedMeasures, cursors, periodics, periodicWrites, sweeps, sweepWrites, hooks, hookWrites, calls, accounts, launches, comments, edits, issueEdits, searches, stored, slept, logged, messages, archives, rows, pages, eventsRead, setLoginOnDisk: (t: string) => { loginOnDisk = t; } };
 };
 
 /**
@@ -10235,6 +10238,26 @@ describe('run: the hook table', () => {
     const h = harness({ configFile: fileWith({ pickup: { ...pickup, claim: 'building' } }) });
     await run({ kind: 'schedule' }, h.deps as never);
     assert.deepEqual(h.publishedClaim, [{ repo: REPO, claim: 'building' }]);
+  });
+
+  // The receiver queues a periodics fire only for an event that wakes a
+  // measure the item lists (dispatch/webhook/route.mjs), so the item holds
+  // the measures the repo's limits name, in the table's order, and none
+  // where periodics is off.
+  test('the item holds the measures the repo\'s limits name, and none with periodics off', async () => {
+    const h = harness();
+    await run({ kind: 'schedule' }, h.deps as never);
+    assert.deepEqual(h.publishedMeasures, [{ repo: REPO, measures: ['merges', 'issuesClosed'] }], 'the factory\'s Code review counts merges and issues closed; the rest are time limits');
+    const opened = harness({ configFile: fileWith({ periodics: { sessions: { Triage: { prompt: 'Triage.', when: { issuesOpened: 5, days: 7 } }, Weekly: { prompt: 'Look.', when: { days: 7 } } } } }) });
+    await run({ kind: 'schedule' }, opened.deps as never);
+    assert.deepEqual(opened.publishedMeasures, [{ repo: REPO, measures: ['issuesOpened'] }]);
+    const timeOnly = harness({ configFile: fileWith({ periodics: { sessions: { Weekly: { prompt: 'Look.', when: { days: 7 } } } } }) });
+    await run({ kind: 'schedule' }, timeOnly.deps as never);
+    assert.deepEqual(timeOnly.publishedMeasures, [{ repo: REPO, measures: [] }]);
+    const { periodics } = JSON.parse(FACTORY_FILE);
+    const off = harness({ configFile: fileWith({ periodics: { ...periodics, enabled: false } }) });
+    await run({ kind: 'schedule' }, off.deps as never);
+    assert.deepEqual(off.publishedMeasures, [{ repo: REPO, measures: [] }]);
   });
 
   // The receiver queues a selection fire only for a label the item lists

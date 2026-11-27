@@ -79,7 +79,8 @@ const EVENTS = /** @type {ReadonlySet<string>} */ (new Set(SUBSCRIPTION_EVENTS))
 /**
  * A measure a periodic can count, by its name in the measures table
  * (measures.mjs). Each event a measure wakes on queues a `periodics` fire
- * naming it as `counted`, whose turn plans the repo's due periodics.
+ * naming it as `counted`, whose turn plans the repo's due periodics,
+ * unless the repo's hook-table item says no limit names that measure.
  *
  * @typedef {string} Count
  */
