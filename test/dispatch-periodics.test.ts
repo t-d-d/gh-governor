@@ -79,6 +79,9 @@ describe('the config file\'s periodics', () => {
         assert.ok(!read.ok, `${key}: ${String(n)}`);
         assert.match(read.fault, new RegExp(`when\\.${key}`), `${key}: ${String(n)}`);
       }
+      const text = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { [key]: '7' } } } } }));
+      assert.ok(!text.ok);
+      assert.match(text.fault, new RegExp(`when\\.${key}: .*whole number of at least one, or \\{ "count": <number> \\}`), 'a value of the wrong type is told both forms');
       const read = readConfig(file({ periodics: { sessions: { R: { prompt: 'p', when: { [key]: 1 } } } } }));
       assert.ok(read.ok, JSON.stringify(read));
       assert.deepEqual(read.config.periodics, [{ name: 'R', prompt: 'p', [key]: 1 }]);

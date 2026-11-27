@@ -492,7 +492,7 @@ const LIMITS = [...TIME_LIMITS, ...COUNTS];
 const limitSchema = (key) => z.union([
   z.number().int().min(1),
   z.strictObject({ count: z.number().int().min(1).meta({ description: 'The limit, a whole number of at least one.' }) }),
-]).optional().meta({ description: `${LIMIT_DESCRIPTIONS[key]} A whole number of at least one, or { "count": <number> }, which says the same.` });
+], { error: 'a limit is a whole number of at least one, or { "count": <number> }' }).optional().meta({ description: `${LIMIT_DESCRIPTIONS[key]} A whole number of at least one, or { "count": <number> }, which says the same.` });
 
 /** A periodic's name, the key it is held under: one line, of at most 100 characters. */
 const periodicName = z.string().min(1).max(100).regex(/^\S(?:[^\n]*\S)?$/, 'a name is one line, with no space at either end');
